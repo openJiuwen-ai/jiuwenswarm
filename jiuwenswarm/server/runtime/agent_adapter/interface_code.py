@@ -50,6 +50,9 @@ from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
 from openjiuwen.harness.tools import WebFetchWebpageTool, WebPaidSearchTool, is_paid_search_enabled
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 
+from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+    AUTHORIZATION_EXECUTION_CONTEXTS,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _ContextEngineModelState,
     JiuWenSwarmDeepAdapter,
@@ -407,6 +410,7 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "skill_toolkit": "_build_skill_toolkit",
     "skill_retrieval": "_build_skill_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
+    "request_a4p_intent_authorization": "_build_a4p_tools",
 }
 
 
@@ -472,6 +476,7 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "enter_plan_mode",
     "exit_plan_mode",
     "ask_user",
+    "request_a4p_intent_authorization",
     "task_tool",
     "subagent_spawn",
     "subagent_wait",
@@ -529,6 +534,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # Treat a same-named resource entry as fixed so it cannot be mounted a
         # second time (or resolve to agent-core's deprecated RunKind rail).
         "HeartbeatRail",
+        "SessionMessagingRouteRail",
     })
 
     def __init__(self) -> None:
@@ -555,6 +561,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._custom_code_spec_active: bool = False
         self._session_instance_spec: DeepAgentSpec | None = None
         self._session_instance_build_context: BuildContext | None = None
+        self._session_instance_agent_definition: dict[str, Any] | None = None
 
     # ─── Language override ────────────────────────
 
@@ -603,12 +610,61 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _session_instance_extra_create_kwargs(self) -> dict[str, Any]:
         """Propagate an explicit Spec through lazy root and session builds."""
-        if self._session_instance_spec is None:
-            return {}
-        return {
-            "spec": self._session_instance_spec,
-            "build_context": self._session_instance_build_context,
+        if self._session_instance_spec is not None:
+            return {
+                "spec": self._session_instance_spec,
+                "build_context": self._session_instance_build_context,
+            }
+        if self._session_instance_agent_definition is not None:
+            return {
+                "agent_definition": dict(
+                    self._session_instance_agent_definition
+                )
+            }
+        return {}
+
+    @staticmethod
+    def _apply_runtime_agent_definition(
+        spec: DeepAgentSpec,
+        definition: dict[str, Any],
+    ) -> DeepAgentSpec:
+        """Overlay SDK identity fields on the complete product Code Spec.
+
+        Starting from the configured product Spec preserves its permission,
+        security, resilience, tool and extension rails. The declarative Agent
+        changes only identity, instructions and supported execution limits;
+        ``tools='*'`` retains the governed configured set.
+        """
+        if definition.get("tools") != "*":
+            raise ValueError("custom Agent tools must use the configured set")
+        name = str(definition.get("name") or "").strip()
+        instructions = str(definition.get("instructions") or "")
+        if not name or not instructions.strip():
+            raise ValueError("custom Agent name and instructions are required")
+
+        card = spec.card or AgentCard(name=name, id=_AGENT_CARD_ID)
+        card_updates: dict[str, Any] = {"name": name}
+        description = definition.get("description")
+        if isinstance(description, str) and description.strip():
+            card_updates["description"] = description.strip()
+        card = card.model_copy(deep=True, update=card_updates)
+
+        base_prompt = str(spec.system_prompt or "").rstrip()
+        instruction_prompt = instructions.strip()
+        system_prompt = (
+            f"{base_prompt}\n\n# Agent Instructions\n{instruction_prompt}"
+            if base_prompt
+            else instruction_prompt
+        )
+        updates: dict[str, Any] = {
+            "card": card,
+            "system_prompt": system_prompt,
+            "skills": list(definition.get("skills") or ()),
         }
+        max_iterations = definition.get("max_iterations")
+        if max_iterations is not None:
+            updates["max_iterations"] = max_iterations
+        return spec.model_copy(deep=True, update=updates)
 
     def _prepare_custom_code_build_context(
         self,
@@ -795,6 +851,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         sub_mode: str = None,
         spec: DeepAgentSpec | None = None,
         build_context: BuildContext | None = None,
+        agent_definition: dict[str, Any] | None = None,
     ) -> None:
         """Build Code mode from config.yaml or a caller-supplied DeepAgentSpec.
 
@@ -809,6 +866,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             raise TypeError("build_context must be a BuildContext")
         if spec is None and build_context is not None:
             raise ValueError("build_context requires a custom spec")
+        if spec is not None and agent_definition is not None:
+            raise ValueError("spec and agent_definition are mutually exclusive")
+        if agent_definition is not None and not isinstance(agent_definition, dict):
+            raise TypeError("agent_definition must be a dict")
         if spec is not None:
             # Treat caller input like config.yaml: snapshot it at the API
             # boundary so later caller mutations cannot change deferred root
@@ -825,7 +886,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._session_instance_sub_mode = sub_mode
         self._session_instance_spec = spec
         self._session_instance_build_context = build_context
-        self._custom_code_spec_active = spec is not None
+        self._session_instance_agent_definition = (
+            deepcopy(agent_definition) if agent_definition is not None else None
+        )
+        self._custom_code_spec_active = (
+            spec is not None or agent_definition is not None
+        )
         # Channel id drives the MCP load strategy (see the init gate below and
         # JiuWenSwarmDeepAdapter._sync_mcp_servers_for_runtime): TUI loads the
         # global-default set on init, web loads nothing. Mirror the deep
@@ -903,6 +969,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._code_agent_spec, self._code_build_context = (
                 self._build_code_spec_snapshot(config_base, config, model)
             )
+            if agent_definition is not None:
+                self._code_agent_spec = self._apply_runtime_agent_definition(
+                    self._code_agent_spec,
+                    agent_definition,
+                )
         else:
             code_agent_spec.register_code_spec_providers()
             self._code_build_context = self._prepare_custom_code_build_context(
@@ -1450,6 +1521,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
+            _RailBuildInfo(
+                "_session_messaging_route_rail",
+                self._build_session_messaging_route_rail,
+            ),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
             *self._permission_interrupt_rail_infos(config_base),
@@ -2133,13 +2208,28 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         resolved_language = self._resolve_runtime_language()
         resolved_channel = str(runtime_config.channel_id or
                                self._resolve_prompt_channel(runtime_config.session_id) or "web").strip() or "web"
+        self._sync_a4p_tools_for_runtime(
+            get_config(),
+            resolved_channel,
+            runtime_config.session_id,
+        )
         if self._runtime_prompt_rail:
+            execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(
+                runtime_config.session_id
+            )
             # Language section (response language) must follow the user's
             # preferred language, not the code-mode "en" which only governs
             # system-prompt scaffolding (time/runtime/env sections).
             self._runtime_prompt_rail.set_language(self._resolve_output_language())
             self._runtime_prompt_rail.set_force_english(self._force_english_runtime_prompt)
             self._runtime_prompt_rail.set_channel(resolved_channel)
+            self._runtime_prompt_rail.set_a4p_authorizer_available(
+                bool(
+                    execution_context is not None
+                    and execution_context.is_interactive_web
+                )
+            )
+            self._runtime_prompt_rail.set_request_metadata(runtime_config.request_metadata)
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
             self._runtime_prompt_rail.set_trusted_dirs(runtime_config.trusted_dirs)
@@ -2429,6 +2519,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     ) -> SkillRetrievalPromptRail | None:
         """Build prompt guidance from the active Code Spec snapshot."""
         return super()._build_skill_retrieval_prompt_rail()
+
+    def _build_a4p_tools(self, agent_id: str) -> list[Any]:
+        """Build session-bound A4P authorization tools."""
+        from jiuwenswarm.agents.harness.common.tools.a4p_tools import get_tools
+
+        self._a4p_tools = list(get_tools(session_id=self._parent_session_id))
+        self._a4p_tools_registered = bool(self._a4p_tools)
+        return self._a4p_tools
 
     def _build_skill_retrieval_toolkit(self, agent_id: str) -> list[Any] | None:
         """构建 SkillRetrievalToolkit 工具（不注册到 Runner，由 _get_tool_cards 统一注册）."""

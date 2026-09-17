@@ -2,10 +2,12 @@
 
 import logging
 import asyncio
+import inspect
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 from jiuwenswarm.common.schema.message import Message
@@ -18,6 +20,7 @@ if TYPE_CHECKING:
 
 # 连接钩子签名: (ws) -> None | Awaitable[None]
 ConnectHook = Callable[..., Any]
+_UNAUTHORIZED_BODY = b"Unauthorized\n"
 
 
 class ChannelType(str, Enum):
@@ -221,9 +224,48 @@ class BaseWebChannel(BaseChannel):
         super().__init__(config, router)
         self._connect_hooks: list[ConnectHook] = []
         self._disconnect_hooks: list[ConnectHook] = []
+        self._handshake_auth: Callable[..., Any] | None = None
 
     def on_connect(self, callback: ConnectHook) -> None:
         self._connect_hooks.append(callback)
 
     def on_disconnect(self, callback: ConnectHook) -> None:
         self._disconnect_hooks.append(callback)
+
+    def set_handshake_auth(self, callback: Callable[..., Any]) -> None:
+        self._handshake_auth = callback
+
+    async def handshake_auth_denied(
+        self,
+        *,
+        path: str,
+        headers: Any,
+        remote: str = "",
+        channel: str = "",
+    ) -> bool:
+        """Return True when handshake auth is set and rejected the upgrade."""
+        hook = self._handshake_auth
+        if hook is None:
+            return False
+        result = hook(path=path, headers=headers, remote=remote, channel=channel)
+        if inspect.isawaitable(result):
+            result = await result
+        return result is not None and not bool(getattr(result, "success", True))
+
+    @staticmethod
+    def unauthorized_handshake_response(process_request_args: tuple[Any, ...]) -> Any:
+        """Build a 401 response for legacy/new websockets process_request APIs."""
+        status = HTTPStatus.UNAUTHORIZED
+        headers = [
+            ("Content-Type", "text/plain; charset=utf-8"),
+            ("Content-Length", str(len(_UNAUTHORIZED_BODY))),
+        ]
+
+        if process_request_args and not isinstance(process_request_args[0], str):
+            from websockets.datastructures import Headers
+            from websockets.http11 import Response
+
+            return Response(status.value, status.phrase, Headers(headers), _UNAUTHORIZED_BODY)
+
+        return status, headers, _UNAUTHORIZED_BODY
+

@@ -24,7 +24,7 @@ from jiuwenswarm.gateway.cron.models import (
     normalize_cron_job_mode,
     resolve_cron_job_timeout_seconds,
 )
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
@@ -234,7 +234,7 @@ class CronSchedulerService:
     def __init__(
         self,
         *,
-        store: CronJobStore,
+        store: CronJobStoreBackend,
         agent_client: AgentServerClient,
         message_handler: MessageHandler,
         now_fn: Callable[[], float] = _now_utc_ts,
@@ -255,7 +255,14 @@ class CronSchedulerService:
         self._lifecycle_last_reconcile = 0.0
         self._lifecycle_owners: set[str] = {""}
         from jiuwenswarm.gateway.cron.lifecycle_owners import LifecycleOwners
-        self._lifecycle_owner_store = LifecycleOwners(store.path)
+        # Lifecycle ownership 是 Gateway 侧路由元数据，原本与 cron_jobs.json 同目录。
+        # etcd/HA 后端没有本地文件，退化为本机默认路径（每个 Gateway 各持一份）。
+        lifecycle_source = getattr(store, "path", None)
+        if lifecycle_source is None:
+            from jiuwenswarm.common.utils import get_cron_jobs_path
+
+            lifecycle_source = get_cron_jobs_path()
+        self._lifecycle_owner_store = LifecycleOwners(lifecycle_source)
         self._runs: dict[str, CronRunState] = {}  # run_id -> state
         self._run_tasks: dict[str, asyncio.Task] = {}
         # run_id -> job_id.  A run skipped during crash recovery must stay
@@ -263,47 +270,34 @@ class CronSchedulerService:
         # boot grace period could schedule the same orphaned wake again.
         self._crash_recovery_skipped_runs: dict[str, str] = {}
         self._last_store_mtime: float = 0.0
-        self._last_store_signature: tuple[int, int, int] = (0, 0, 0)
+        self._last_store_revision: int = 0
         self._store_poll_interval: float = 5.0  # seconds
         self._boot_time: float = now_fn()
+        self._watch_task: asyncio.Task | None = None
 
-    def _get_store_mtime(self) -> float:
-        """Return mtime of the cron_jobs.json file, or 0.0 if unavailable."""
+    async def _sync_store_revision(self) -> None:
+        """Snapshot current store revision to avoid redundant reloads."""
         try:
-            return self._store.path.stat().st_mtime
-        except OSError:
-            return 0.0
-
-    def _get_store_signature(self) -> tuple[int, int, int]:
-        """Return a high-resolution change signature for the job store.
-
-        Windows may report the same float ``st_mtime`` for two rapid atomic
-        writes.  Include nanosecond mtime, ctime and size so an external write
-        cannot be missed merely because it lands in that coarse timestamp tick.
-        """
-        try:
-            stat = self._store.path.stat()
-            return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
-        except OSError:
-            return (0, 0, 0)
-
-    def _sync_store_mtime(self) -> None:
-        """Snapshot current store file mtime to avoid redundant reloads."""
-        self._last_store_mtime = self._get_store_mtime()
-        self._last_store_signature = self._get_store_signature()
+            revision = int(await self._store.get_revision())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Cron] get_revision failed: %s", exc)
+            revision = 0
+        self._last_store_revision = revision
+        self._last_store_mtime = float(revision)
 
     async def _check_store_changed(self) -> bool:
-        """If cron_jobs.json was modified or deleted externally, reload and return True."""
-        signature = self._get_store_signature()
-        # Detect: file modified (signature changed, both nonzero),
-        #         file deleted (signature became (0,0,0) from nonzero),
-        #         file recreated (signature became nonzero from (0,0,0)).
-        # Skip: no change (signature == last), or both (0,0,0) (never had a file).
-        if (
-            signature != self._last_store_signature
-            and (signature != (0, 0, 0) or self._last_store_signature != (0, 0, 0))
+        """If the job store changed externally, reload and return True."""
+        if bool(getattr(self._store, "supports_watch", False)):
+            return False
+        try:
+            revision = int(await self._store.get_revision())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Cron] get_revision failed: %s", exc)
+            return False
+        if revision != self._last_store_revision and (
+            revision != 0 or self._last_store_revision != 0
         ):
-            if signature == (0, 0, 0) and self._jobs:
+            if revision == 0 and self._jobs and getattr(self._store, "path", None):
                 # Losing a populated store is not routine housekeeping: an
                 # INFO "changed" line reads the same whether the file was edited
                 # or relocated away. Name what stops.
@@ -315,9 +309,9 @@ class CronSchedulerService:
                 )
             else:
                 logger.info(
-                    "[Cron] store file changed (signature %s -> %s), reloading",
-                    self._last_store_signature,
-                    signature,
+                    "[Cron] store revision changed (%s -> %s), reloading",
+                    self._last_store_revision,
+                    revision,
                 )
             await self.reload()
             return True
@@ -325,6 +319,13 @@ class CronSchedulerService:
 
     def is_running(self) -> bool:
         return self._running
+
+    def _store_label(self) -> str:
+        """Human-readable store identity for logs (etcd/HA 后端没有本地文件路径)."""
+        path = getattr(self._store, "path", None)
+        if path is not None:
+            return str(path)
+        return type(self._store).__name__
 
     async def _cancel_agent_session(
         self,
@@ -429,10 +430,31 @@ class CronSchedulerService:
         self._boot_time = self._now_fn()
         await self.reload()
         self._task = asyncio.create_task(self._loop(), name="cron-scheduler")
+        if bool(getattr(self._store, "supports_watch", False)):
+            self._watch_task = asyncio.create_task(
+                self._watch_store(),
+                name="cron-store-watch",
+            )
         logger.info("[Cron] scheduler started")
+
+    async def _watch_store(self) -> None:
+        watch = getattr(self._store, "watch", None)
+        if watch is None:
+            return
+        try:
+            await watch(self.reload)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Cron] store watch exited: %s", exc)
 
     async def stop(self) -> None:
         self._running = False
+        if self._watch_task is not None:
+            self._watch_task.cancel()
+            try:
+                await self._watch_task
+            except asyncio.CancelledError:
+                pass
+            self._watch_task = None
         if self._task is not None:
             self._task.cancel()
             try:
@@ -440,6 +462,12 @@ class CronSchedulerService:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        closer = getattr(self._store, "aclose", None)
+        if closer is not None:
+            try:
+                await closer()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[Cron] store aclose failed: %s", exc)
         # best-effort cancel in-flight runs
         for t in list(self._run_tasks.values()):
             if not t.done():
@@ -456,17 +484,17 @@ class CronSchedulerService:
         continue executing and pushing results despite having no persistent record.
         """
         jobs = await self._store.list_jobs()
+        store_label = self._store_label()
         # A scheduler holding zero jobs is otherwise indistinguishable from a
         # healthy one, which is how a relocated store goes unnoticed.
         if jobs:
-            logger.info(
-                "[Cron] loaded %d job(s) from %s", len(jobs), self._store.path
-            )
+            logger.info("[Cron] loaded %d job(s) from %s", len(jobs), store_label)
         else:
+            store_path = getattr(self._store, "path", None)
             logger.warning(
                 "[Cron] loaded 0 jobs from %s (exists=%s) - nothing is scheduled",
-                self._store.path,
-                self._store.path.exists(),
+                store_label,
+                store_path.exists() if store_path is not None else "n/a",
             )
         self._jobs = {j.id: j for j in jobs}
         new_job_ids = set(self._jobs.keys())
@@ -612,7 +640,7 @@ class CronSchedulerService:
                     job.id, run_id, wake_dt.isoformat(),
                 )
 
-        self._sync_store_mtime()
+        await self._sync_store_revision()
         self._reload_event.set()
 
     async def reconcile_project_lifecycles(self) -> None:
@@ -639,22 +667,14 @@ class CronSchedulerService:
             for project in inventory.get("projects", []):
                 operation = project.get("operation") or {}
                 pending = operation and operation.get("status") != "completed"
-                if not pending and (not project.get("hidden") or operation.get("status") == "completed"):
+                if not pending or operation.get("kind") != "delete":
                     continue
                 if pending and not operation.get("retryable", True):
                     continue
                 project_id = project["project_id"]
-                action = operation.get("kind", "archive") if pending else "archive"
-                if pending and action == "archive":
-                    # Archive failures require an explicit retry, never stop work
-                    # or silently archive later after a busy response.
-                    continue
                 try:
-                    if action == "unarchive":
-                        await call("project.unarchive", {"project_id": project_id})
-                        continue
                     ok, token = await call(
-                        f"project.{action}",
+                        "project.delete",
                         {"project_id": project_id, "_lifecycle_stage": "prepare"},
                     )
                     if not ok or "operation_id" not in token:
@@ -673,18 +693,14 @@ class CronSchedulerService:
                     saved, _ = await call("project.lifecycle", {**token, "planned_cron_job_ids": planned})
                     if not saved:
                         continue
-                    stopped = 0
                     for job in matching:
                         if job.enabled:
                             await self._store.update_job(job.id, {"enabled": False})
-                            stopped += 1
                     await self.reload()
-                    if action == "delete":
-                        await self.stop_project_runs(project_id, owner)
+                    await self.stop_project_runs(project_id, owner)
                     completed = list(operation.get("completed_items", {}).get("cron", []))
                     for job in matching:
-                        if action == "delete":
-                            await self._store.delete_job(job.id)
+                        await self._store.delete_job(job.id)
                         if job.id not in completed:
                             completed.append(job.id)
                         saved, failure = await call("project.lifecycle", {**token, "completed_cron_job_ids": completed})
@@ -692,11 +708,10 @@ class CronSchedulerService:
                             raise RuntimeError(failure.get("error", "checkpoint failed"))
                     await self.reload()
                     await call(
-                        f"project.{action}",
+                        "project.delete",
                         {
                             **token,
                             "_lifecycle_stage": "finish",
-                            "stopped_cron_jobs": stopped,
                             "deleted_cron_jobs": len(planned),
                             "completed_cron_job_ids": completed,
                         },
@@ -705,7 +720,7 @@ class CronSchedulerService:
                     logger.warning("project lifecycle recovery deferred: %s: %s", project_id, exc)
                     if "token" in locals() and token.get("operation_id"):
                         await call("project.lifecycle", {**token, "failed": True, "error": str(exc),
-                                                         "phase": "delete_cron" if action == "delete" else "stop_cron"})
+                                                         "phase": "delete_cron"})
 
     def remember_lifecycle_owner(self, user_id: str | None) -> None:
         owner = str(user_id or "")
@@ -724,18 +739,6 @@ class CronSchedulerService:
         )
         return bool(ok and payload.get("exists") and not payload.get("execution_blocked", True))
 
-    def has_running_project_sessions(self, project_id: str, user_id: str | None = None) -> bool:
-        """Read in-flight cron runs, including those still creating a session."""
-        for state in self._runs.values():
-            if (
-                state.exec_project_id == project_id
-                and str(state.exec_user_id or "") == str(user_id or "")
-            ):
-                task = self._run_tasks.get(state.run_id)
-                if task is not None and not task.done():
-                    return True
-        return False
-
     async def stop_project_runs(self, project_id: str, user_id: str | None = None) -> None:
         matching = [state for state in list(self._runs.values())
                     if state.exec_project_id == project_id and str(state.exec_user_id or "") == str(user_id or "")]
@@ -751,6 +754,37 @@ class CronSchedulerService:
             if pending:
                 raise RuntimeError("cron runs are still stopping")
 
+    async def stop_job_runs(self, job_id: str) -> None:
+        matching = [state for state in list(self._runs.values()) if state.job_id == job_id]
+        tasks = []
+        for state in matching:
+            await self._cancel_agent_session(state, reason="cron_delete")
+            task = self._run_tasks.get(state.run_id)
+            if task is not None and not task.done():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=10)
+            if pending:
+                raise RuntimeError("cron runs are still stopping")
+
+    async def delete_cron_sessions(self, job_id: str, user_id: str | None) -> dict[str, Any]:
+        """Delete persisted AgentServer sessions belonging to a cron job."""
+        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+
+        ok, result = await fetch_agent_unary(
+            agent_client=self._agent_client,
+            req_method=ReqMethod.CRON_SESSIONS_DELETE,
+            params={"cron_id": job_id},
+            session_id=None,
+            user_id=user_id,
+            channel_id="__cron__",
+            timeout_seconds=120,
+        )
+        if not ok or result.get("failed_count"):
+            raise RuntimeError(result.get("error") or "cron sessions could not be deleted")
+        return result
+
     async def trigger_run_now(self, job_id: str) -> str:
         info = await self.trigger_run_now_info(job_id)
         return str(info["run_id"])
@@ -761,7 +795,7 @@ class CronSchedulerService:
         if job is None:
             raise KeyError("job not found")
         if not await self.project_execution_allowed(job.project_id, job.user_id):
-            raise ValueError("PROJECT_ARCHIVED: project execution is blocked")
+            raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         now = datetime.now(tz=ZoneInfo(job.timezone))
         push_dt = now
         wake_dt = now
@@ -1303,6 +1337,11 @@ class CronSchedulerService:
                 }
                 if job.model_name:
                     params["model_name"] = job.model_name
+                # 会话级 MCP 选择：注入 chat.send 的 ``mcp`` 字段，走 AgentServer
+                # 与 chat-session 相同的 reconcile_session_mcp 通道（增量注册/注销）；
+                # 未配置（None）时保持既有行为（仅 init 全局默认集）。
+                if job.mcp:
+                    params["mcp"] = list(job.mcp)
                 envelope = e2a_from_agent_fields(
                     request_id=f"cron-{run_id}",
                     channel_id=channel_id,
@@ -1312,7 +1351,13 @@ class CronSchedulerService:
                     is_stream=is_team_cron_mode(mode),
                     timestamp=self._now_fn(),
                     metadata={
-                        "cron": {"job_id": job.id, "run_id": run_id},
+                        "cron": {
+                            "job_id": job.id,
+                            "run_id": run_id,
+                            # 传给 UserTurn 信封：让「打印当前时间」类任务按任务
+                            # 时区渲染 timezone/timestamp，而非固定 Asia/Shanghai。
+                            "timezone": job.timezone,
+                        },
                         # 真实推送渠道（普通模式 channel 是内部 "__cron__"）。
                         # AgentServer 用它注册 send_file 等按渠道开关的工具，并作为
                         # 文件推送的 channel_id，与 cron 文本结果推送到同一批渠道。
@@ -1640,6 +1685,14 @@ class CronSchedulerService:
 
         async def _consume() -> tuple[str, bool]:
             publish_chunk = getattr(self._message_handler, "publish_stream_chunk", None)
+            # 本轮实际收到的事件类型（去重，取值域天然有界）。仅在兜底成
+            # 无细节文案时写进日志，用于定位后端报错为何没有透传出来。
+            seen_event_types: list[str] = []
+
+            def note_seen_event(event_type: str) -> None:
+                if event_type and event_type not in seen_event_types:
+                    seen_event_types.append(event_type)
+
             if publish_chunk is None:
                 logger.warning(
                     "[Cron] message_handler.publish_stream_chunk unavailable; "
@@ -1656,9 +1709,13 @@ class CronSchedulerService:
                         )
                     payload = chunk.payload if isinstance(chunk.payload, dict) else None
                     event_type = str((payload or {}).get("event_type") or "").strip()
+                    note_seen_event(event_type)
                     if payload:
                         apply_cron_team_round_event(round_state, payload)
-                        if event_type in ("chat.error", "execution.error"):
+                        # team.error 由团队运行时直接抛出，不会经 gateway 归一化成
+                        # chat.error；它同样是终端失败信号，漏认会让真实报错丢失，
+                        # 只剩「未产生有效报告」这种无因由的兜底文案。
+                        if event_type in ("chat.error", "execution.error", "team.error"):
                             consume_meta["ok"] = False
                             err = str(
                                 (payload.get("error") or payload.get("message") or "").strip()
@@ -1704,6 +1761,16 @@ class CronSchedulerService:
                 # 以免用户将不完整内容误认为成功报告。
                 return f"[cron] 任务执行失败: {consume_meta['error_text']}", False
             if _is_cron_team_result_insufficient(text=text):
+                # 兜底文案不含任何原因。若此处不记日志，gateway 日志里连失败痕迹
+                # 都没有，后端报错就彻底无声丢失。记录本轮见过的事件类型与 leader
+                # 原文，便于反查失败究竟停在哪一步。
+                logger.warning(
+                    "[Cron] team stream produced no usable report: request_id=%s "
+                    "seen_events=%s leader_text=%r",
+                    getattr(envelope, "request_id", ""),
+                    seen_event_types or ["<none>"],
+                    str(round_state.get("leader_text") or "")[:300],
+                )
                 return "[cron] 定时任务未产生有效报告", False
             return text, bool(consume_meta["ok"])
 

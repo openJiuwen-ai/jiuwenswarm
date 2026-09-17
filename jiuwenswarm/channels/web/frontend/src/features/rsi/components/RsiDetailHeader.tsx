@@ -20,7 +20,6 @@ import {
 } from '../rsiPresentation';
 import { useRsiStore } from '../rsiStore';
 import { usePluginPackageStore } from '../../../stores/pluginPackageStore';
-import { pluginPackagesApi } from '../../../services/pluginPackagesApi';
 import {
   rsiTaskDelete,
   rsiTrainingPause,
@@ -28,6 +27,7 @@ import {
   rsiTrainingTerminate,
   rsiArtifactDownload,
   rsiArtifactDownloadUrl,
+  rsiHarnessInstall,
 } from '../rsiApi';
 
 type DownloadCapableWindow = Window & {
@@ -109,14 +109,8 @@ export function RsiDetailHeader({
             window.open(downloadUrl, '_blank', 'noopener,noreferrer');
           }
         } else if (action === 'install') {
-          const artifactId =
-            report?.metrics.best_artifact_id
-            ?? report?.best_artifact?.artifact_id
-            ?? task.best_artifact?.artifact_id
-            ?? undefined;
-          const artifact = await rsiArtifactDownload(task.task_id, artifactId);
-          const { id } = await pluginPackagesApi.importLocal({ path: artifact.path });
-          await pluginPackagesApi.install(id);
+          // Harness artifacts are refs, not archives; the RSI installer resolves and registers the package.
+          await rsiHarnessInstall(task.task_id);
           markTaskInstalled(task.task_id);
           await usePluginPackageStore.getState().loadList('mine', { silent: true });
           const snapshotName =

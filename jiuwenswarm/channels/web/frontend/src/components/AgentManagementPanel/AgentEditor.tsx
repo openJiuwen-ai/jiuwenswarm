@@ -1,9 +1,7 @@
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Minus, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Minus, X } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import AddIcon from '../../assets/agent-management/add.svg?react';
-import DeleteIcon from '../../assets/agent-management/remove.svg?react';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
 import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
@@ -11,7 +9,8 @@ import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AgentDraft, McpOption, RequestStatus, SkillOption } from '../../features/agentManagement';
-import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
+import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../features/agentManagement/limits';
+import { AgentTagPicker } from './AgentTagPicker';
 
 type AgentEditorProps = {
   draft: AgentDraft;
@@ -24,12 +23,10 @@ type AgentEditorProps = {
   onChange: (draft: AgentDraft) => void;
   onReloadSkills: () => void;
   onReloadMcps: () => void;
+  onCreateGroup?: () => void;
   onCancel: () => void;
   onSave: () => void;
 };
-
-const AGENT_NAME_MAX_LENGTH = 50;
-const AGENT_DESCRIPTION_MAX_LENGTH = 2000;
 
 const MCP_TYPE_OPTIONS = [
   ['stdio-mcp', 'connectorMarket.detail.integrationType.stdioMcp'],
@@ -49,14 +46,12 @@ export function AgentEditor({
   onChange,
   onReloadSkills,
   onReloadMcps,
+  onCreateGroup,
   onCancel,
   onSave,
 }: AgentEditorProps) {
   const { t } = useTranslation();
   const [touched, setTouched] = useState(false);
-  const [tagMenuOpen, setTagMenuOpen] = useState(false);
-  const [canScrollTagsLeft, setCanScrollTagsLeft] = useState(false);
-  const [canScrollTagsRight, setCanScrollTagsRight] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(true);
   const [promptsOpen, setPromptsOpen] = useState(true);
@@ -65,13 +60,10 @@ export function AgentEditor({
   const [mcpDialogOpen, setMcpDialogOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState('');
   const [mcpQuery, setMcpQuery] = useState('');
-  const [customTagInput, setCustomTagInput] = useState('');
   const [mcpType, setMcpType] = useState('');
   const [mcpTypeOpen, setMcpTypeOpen] = useState(false);
   const [skillDraft, setSkillDraft] = useState<string[]>(draft.skillRefs);
   const [mcpDraft, setMcpDraft] = useState<string[]>(draft.mcpRefs);
-  const tagPickerRef = useRef<HTMLDivElement>(null);
-  const tagValuesRef = useRef<HTMLSpanElement>(null);
   const personaSurfaceRef = useRef<HTMLDivElement>(null);
   const mcpTypeRef = useRef<HTMLDivElement>(null);
   const skillDialogRef = useRef<HTMLElement>(null);
@@ -101,33 +93,6 @@ export function AgentEditor({
     return matchesQuery && matchesType;
   });
   const selectedMcpType = MCP_TYPE_OPTIONS.find(([value]) => value === mcpType);
-  const tagValueSignature = `${draft.tagIds.join('\u0000')}\u0001${draft.customTags.join('\u0000')}`;
-
-  const updateTagScrollState = useCallback(() => {
-    const values = tagValuesRef.current;
-    if (!values) return;
-    setCanScrollTagsLeft(values.scrollLeft > 1);
-    setCanScrollTagsRight(values.scrollLeft < values.scrollWidth - values.clientWidth - 1);
-  }, []);
-
-  useLayoutEffect(() => {
-    const values = tagValuesRef.current;
-    if (!values) return;
-    updateTagScrollState();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(updateTagScrollState);
-    observer.observe(values);
-    return () => observer.disconnect();
-  }, [tagValueSignature, updateTagScrollState]);
-
-  useEffect(() => {
-    if (!tagMenuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!tagPickerRef.current?.contains(event.target as Node)) setTagMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [tagMenuOpen]);
 
   useEffect(() => {
     if (!personaEditing) return;
@@ -185,30 +150,6 @@ export function AgentEditor({
 
   const update = (patch: Partial<AgentDraft>) => onChange({ ...draft, ...patch });
 
-  const toggleTag = (tagId: string) => {
-    const tagIds = draft.tagIds.includes(tagId)
-      ? draft.tagIds.filter((item) => item !== tagId)
-      : [...draft.tagIds, tagId];
-    update({ tagIds });
-  };
-
-  const addCustomTag = () => {
-    const value = customTagInput.trim();
-    if (!value || draft.customTags.includes(value)) return;
-    update({ customTags: [...draft.customTags, value] });
-    setCustomTagInput('');
-  };
-
-  const removeCustomTag = (tag: string) => {
-    update({ customTags: draft.customTags.filter((item) => item !== tag) });
-  };
-
-  const scrollTagValues = (direction: 1 | -1) => {
-    const values = tagValuesRef.current;
-    if (!values) return;
-    values.scrollBy({ left: direction * values.clientWidth * 0.8, behavior: 'smooth' });
-  };
-
   const openSkillDialog = () => {
     setSkillDraft(draft.skillRefs);
     setSkillQuery('');
@@ -263,6 +204,9 @@ export function AgentEditor({
               <span className="is-active" role="tab" aria-selected="true">
                 {t('agentManagement.form.createAgentTab')}
               </span>
+              <button type="button" role="tab" aria-selected="false" data-testid="agent-editor-group-tab" onClick={onCreateGroup}>
+                {t('agentManagement.group.form.createGroupTab')}
+              </button>
             </div>
           </header>
 
@@ -319,149 +263,15 @@ export function AgentEditor({
                   <small className="agent-management-field-error">{errors.description}</small>
                 ) : null}
               </div>
-              <div
-                className="agent-management-form-field--wide agent-management-form-field--tag-picker"
-                ref={tagPickerRef}
-              >
+              <div className="agent-management-form-field--wide agent-management-form-field--tag-picker">
                 <span>{t('agentManagement.form.tagLabel')}</span>
-                <div className="agent-management-tag-picker">
-                  <div
-                    className="agent-management-tag-picker__trigger"
-                    data-empty={draft.tagIds.length === 0 && draft.customTags.length === 0}
-                    onClick={(event) => {
-                      if ((event.target as HTMLElement).closest('button')) return;
-                      setTagMenuOpen((open) => !open);
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="agent-management-tag-picker__scroll agent-management-tag-picker__scroll--prev"
-                      aria-label={t('agentManagement.form.tagScrollPrev')}
-                      data-hidden={!canScrollTagsLeft}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        scrollTagValues(-1);
-                      }}
-                    >
-                      <ChevronLeft size={16} aria-hidden="true" />
-                    </button>
-                    <span
-                      ref={tagValuesRef}
-                      className="agent-management-tag-picker__values"
-                      onScroll={updateTagScrollState}
-                    >
-                      {draft.tagIds.length > 0 || draft.customTags.length > 0 ? (
-                        <>
-                          {draft.tagIds.map((tagId) => {
-                            const option = AGENT_TAG_OPTIONS.find((item) => item.id === tagId);
-                            if (!option) return null;
-                            return (
-                              <span key={tagId} className="agent-management-tag agent-management-tag--selected">
-                                <span>{t(option.labelKey)}</span>
-                                <button
-                                  type="button"
-                                  aria-label={t('agentManagement.form.removeTag', { name: t(option.labelKey) })}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    toggleTag(tagId);
-                                  }}
-                                >
-                                  <span aria-hidden="true">×</span>
-                                </button>
-                              </span>
-                            );
-                          })}
-                          {draft.customTags.map((tag) => (
-                            <span key={tag} className="agent-management-tag agent-management-tag--selected">
-                              <span>{tag}</span>
-                              <button
-                                type="button"
-                                aria-label={t('agentManagement.form.removeCustomTag', { name: tag })}
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  removeCustomTag(tag);
-                                }}
-                              >
-                                <span aria-hidden="true">×</span>
-                              </button>
-                            </span>
-                          ))}
-                        </>
-                      ) : (
-                        <span className="agent-management-form-placeholder">
-                          {t('agentManagement.form.tagPlaceholder')}
-                        </span>
-                      )}
-                    </span>
-                    <button
-                      type="button"
-                      className="agent-management-tag-picker__scroll agent-management-tag-picker__scroll--next"
-                      aria-label={t('agentManagement.form.tagScrollNext')}
-                      data-hidden={!canScrollTagsRight}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        scrollTagValues(1);
-                      }}
-                    >
-                      <ChevronRight size={16} aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      className="agent-management-tag-picker__toggle"
-                      aria-label={t('agentManagement.form.toggleTags')}
-                      aria-expanded={tagMenuOpen}
-                      aria-haspopup="listbox"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setTagMenuOpen((open) => !open);
-                      }}
-                    >
-                      <ChevronDown className="agent-management-tag-picker__chevron" size={16} aria-hidden="true" />
-                    </button>
-                  </div>
-                  {tagMenuOpen ? (
-                    <div
-                      className="agent-management-tag-picker__options"
-                      role="listbox"
-                      aria-label={t('agentManagement.form.tagLabel')}
-                    >
-                      {AGENT_TAG_OPTIONS.map((option) => {
-                        const selected = draft.tagIds.includes(option.id);
-                        return (
-                          <button
-                            key={option.id}
-                            type="button"
-                            role="option"
-                            aria-selected={selected}
-                            className={selected ? 'is-selected' : ''}
-                            onClick={() => toggleTag(option.id)}
-                          >
-                            <span>{t(option.labelKey)}</span>
-                            {selected ? <Check size={14} aria-hidden="true" /> : null}
-                          </button>
-                        );
-                      })}
-                      <div className="agent-management-tag-picker__custom">
-                        <input
-                          value={customTagInput}
-                          onChange={(event) => setCustomTagInput(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                              event.preventDefault();
-                              addCustomTag();
-                            }
-                          }}
-                          placeholder={t('agentManagement.form.customTagPlaceholder')}
-                          aria-label={t('agentManagement.form.customTagPlaceholder')}
-                        />
-                        <button type="button" onClick={addCustomTag} disabled={!customTagInput.trim()}>
-                          <PlusIcon aria-hidden="true" />
-                          {t('agentManagement.form.addCustomTag')}
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+                <AgentTagPicker
+                  tagIds={draft.tagIds}
+                  customTags={draft.customTags}
+                  label={t('agentManagement.form.tagLabel')}
+                  placeholder={t('agentManagement.form.tagPlaceholder')}
+                  onChange={(value) => update(value)}
+                />
               </div>
               <div className="agent-management-form-field--wide agent-management-persona-field">
                 <span>{t('agentManagement.form.personaLabel')}</span>
@@ -777,7 +587,7 @@ export function AgentEditor({
                                   <small>{skill.description}</small>
                                 </span>
                                 <span className="agent-management-selection-card__action" aria-hidden="true">
-                                  {selected ? <DeleteIcon /> : <AddIcon />}
+                                  {selected ? <Check size={12} strokeWidth={2.5} /> : null}
                                 </span>
                               </button>
                             );
@@ -936,7 +746,7 @@ export function AgentEditor({
                                   <small>{mcp.description}</small>
                                 </span>
                                 <span className="agent-management-selection-card__action" aria-hidden="true">
-                                  {selected ? <DeleteIcon /> : <AddIcon />}
+                                  {selected ? <Check size={12} strokeWidth={2.5} /> : null}
                                 </span>
                               </button>
                             );

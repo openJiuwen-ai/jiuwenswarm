@@ -59,6 +59,56 @@ def test_agent_evolution_enables_observability_without_manual_switch(monkeypatch
     assert agent_observability._agent_observability_active is True
 
 
+def test_agent_symphony_capture_enables_observability_without_manual_switch(
+    monkeypatch,
+):
+    acquired = []
+    monkeypatch.setattr(
+        agent_observability,
+        "get_config",
+        lambda: {
+            "react": {"evolution": {"skill_evolution": False}},
+            "agent_observability": {"enabled": False},
+            "symphony": {"enabled": True, "evolution": {"enabled": True}},
+        },
+    )
+    monkeypatch.setattr(
+        agent_observability,
+        "acquire_observability",
+        lambda config: acquired.append(config) or False,
+    )
+
+    agent_observability.sync_agent_observability()
+
+    assert len(acquired) == 1
+    assert agent_observability._agent_observability_active is True
+
+
+def test_team_symphony_capture_enables_observability_without_manual_switch(
+    monkeypatch,
+):
+    acquired = []
+    monkeypatch.setattr(
+        team_manager,
+        "get_config",
+        lambda: {
+            "react": {"evolution": {"skill_evolution": False}},
+            "team_observability": {"enabled": False},
+            "symphony": {"enabled": True, "evolution": {"enabled": True}},
+        },
+    )
+    monkeypatch.setattr(
+        team_manager.team_observability,
+        "acquire_observability",
+        lambda config: acquired.append(config) or False,
+    )
+
+    team_manager.sync_team_observability()
+
+    assert len(acquired) == 1
+    assert team_manager._observability_active is True
+
+
 def test_team_evolution_enables_observability_without_manual_switch(monkeypatch):
     acquired = []
     monkeypatch.setattr(

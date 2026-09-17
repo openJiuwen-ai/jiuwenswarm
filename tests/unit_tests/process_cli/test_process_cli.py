@@ -19,12 +19,15 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.request import resolve_request_runtime_mode
 from jiuwenswarm.runtime.session_provisioner import (
+    SessionCreateInput,
     SessionCreateResult,
     SessionDeleteResult,
     SessionDescriptor,
+    SessionForkInput,
     SessionForkResult,
     SessionProvisionCommitTiming,
     SessionProvisionState,
+    SessionSwitchInput,
     SessionSwitchResult,
 )
 
@@ -408,16 +411,52 @@ async def test_runtime_client_invoke_delegates_to_shared_runtime() -> None:
     assert await client.invoke(request) is expected
 
 
+def test_runtime_client_mcp_validation_only_delegates_to_runtime() -> None:
+    expected = object()
+    references = (name for name in ("local.tools", "docs-mcp"))
+
+    class RuntimeStub:
+        def validate_mcp_references(self, value):
+            assert value is references
+            return expected
+
+    client = InProcessRuntimeClient(RuntimeStub())
+
+    assert client.validate_mcp_references(references) is expected
+
+
 @pytest.mark.asyncio
 async def test_runtime_client_session_methods_only_delegate_to_runtime() -> None:
     calls: list[tuple[str, object]] = []
-    prepared = object()
+    prepared_result = SessionCreateResult(
+        channel_id="process_cli",
+        session_id="process_cli_created",
+        project_id="",
+        project_dir="",
+        work_mode="code",
+        persist_session=False,
+        prewarm_hit=False,
+        prewarm_status="disabled",
+        created=True,
+        canonical_mode="agent.code.normal",
+    )
+
+    class Prepared:
+        result = prepared_result
+
+    prepared = Prepared()
     deleted = SessionDeleteResult(ok=True, session_id="process_cli_target")
+    descriptor = SessionDescriptor(
+        session_id="process_cli_target",
+        channel_id="process_cli",
+        mode="agent.code.normal",
+        work_mode="code",
+    )
 
     class RuntimeStub:
         async def describe_session(self, *, session_id):
             calls.append(("describe", session_id))
-            return "descriptor"
+            return descriptor
 
         async def prepare_session_create(self, value):
             calls.append(("create", value))
@@ -443,13 +482,17 @@ async def test_runtime_client_session_methods_only_delegate_to_runtime() -> None
             return deleted
 
     client = InProcessRuntimeClient(RuntimeStub())
-    create_input = object()
-    switch_input = object()
-    fork_input = object()
-
-    assert await client.describe_session(session_id="process_cli_target") == (
-        "descriptor"
+    create_input = SessionCreateInput(channel_id="process_cli")
+    switch_input = SessionSwitchInput(
+        channel_id="process_cli",
+        target_session_id="process_cli_target",
     )
+    fork_input = SessionForkInput(
+        channel_id="process_cli",
+        source_session_id="process_cli_target",
+    )
+
+    assert await client.describe_session(session_id="process_cli_target") is descriptor
     assert await client.prepare_session_create(create_input) is prepared
     assert await client.prepare_session_switch(switch_input) is prepared
     assert await client.prepare_session_fork(fork_input) is prepared

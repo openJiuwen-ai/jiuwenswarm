@@ -10,13 +10,16 @@ const mocks = {
   '../../../stores/pluginPackageStore': 'export const usePluginPackageStore = { getState: () => globalThis.rsiInstallProbe.plugins };',
   'react-i18next': 'export const useTranslation = () => ({ t: key => key });',
   '../../../services/pluginPackagesApi': `export const pluginPackagesApi = {
-    importLocal: async () => ({ id: 'plugin-1' }),
+    importLocal: async ({ path }) => { globalThis.rsiInstallProbe.calls.push(['import', path]); return { id: 'plugin-1' }; },
     install: id => globalThis.rsiInstallProbe.install(id),
   };`,
   '../rsiApi': `
     export const rsiHarnessInstall = id => globalThis.rsiInstallProbe.install(id);
     export const rsiTaskDelete = () => {}, rsiTrainingPause = () => {}, rsiTrainingResume = () => {},
-      rsiTrainingTerminate = () => {}, rsiArtifactDownload = async () => ({ path: '/artifacts/plugin' }), rsiArtifactDownloadUrl = () => {};
+      rsiTrainingTerminate = () => {}, rsiArtifactDownload = async () => {
+        globalThis.rsiInstallProbe.calls.push(['download']);
+        return { path: '/artifacts/plugin.zip' };
+      }, rsiArtifactDownloadUrl = () => {};
   `,
 };
 await build({
@@ -31,13 +34,14 @@ await build({
 });
 const { RsiDetailHeader } = await import('../node_modules/.cache/rsi-plugin-install/header.mjs');
 
-test('RSI install refreshes the shared extension list only after backend success', async () => {
+test('Harness refs are installed through RSI, not imported as archives, and refresh only after success', async () => {
   const dom = new JSDOM('<div id="root"></div>');
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const calls = [];
   globalThis.rsiInstallProbe = {
+    calls,
     store: { installedTaskIds: {}, markTaskInstalled: id => calls.push(['installed', id]) },
     install: async id => { calls.push(['install', id]); },
     plugins: { loadList: async (...args) => calls.push(['refresh', ...args]) },
@@ -53,7 +57,7 @@ test('RSI install refreshes the shared extension list only after backend success
     await act(async () => root.render(React.createElement(RsiDetailHeader, props)));
     await act(async () => document.querySelector('[data-testid="rsi-action-install"]').click());
     assert.deepEqual(calls, [
-      ['install', 'plugin-1'], ['installed', 'task-1'], ['refresh', 'mine', { silent: true }],
+      ['install', 'task-1'], ['installed', 'task-1'], ['refresh', 'mine', { silent: true }],
     ]);
     calls.length = 0;
     globalThis.rsiInstallProbe.install = async () => { throw new Error('activation failed'); };

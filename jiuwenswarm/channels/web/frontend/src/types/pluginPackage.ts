@@ -36,8 +36,11 @@ export interface PluginPackageSummary {
   displayDescription: LocalizedText;
   /** 分类；来自 manifest.category；后端缺省为 ""——前端按"未分类"归进"其他"桶处理。 */
   category: string;
+  tags?: LocalizedText[];
   /** local: 用户自己创建，builtin: 广场内置。 */
   source: PluginPackageSource;
+  /** 包内头像 data URL；manifest.avatar 为空或解析失败则为 "" / 缺省。list/show 都下发。 */
+  avatar?: string;
   /** 是否已安装；未登记时后端按目录存在视为 true。 */
   installed: boolean;
   /**
@@ -55,8 +58,6 @@ export interface PluginCapabilityRef {
 }
 
 export interface PluginPackageDetail extends PluginPackageSummary {
-  /** 包内头像相对路径；manifest 无则 ""。 */
-  avatar?: string;
   version?: string;
   details?: string;
   tags: LocalizedText[];

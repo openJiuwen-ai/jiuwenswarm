@@ -65,6 +65,61 @@ class _FakeClient:
         self.frames.append(json.loads(data))
 
 
+@pytest.mark.asyncio
+async def test_web_channel_preserves_a4p_authorization_request_payload():
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = _FakeClient()
+    routing_key = RoutingKey(
+        channel_id="web",
+        app_id="default",
+        user_id="test_user",
+        session_id="sess-1",
+        agent_ref=None,
+    )
+    await channel.register_ws(client, routing_key)
+    try:
+        await channel.send(
+            Message(
+                id="a4p_operation_1",
+                type="event",
+                channel_id="web",
+                session_id="sess-1",
+                params={},
+                timestamp=0.0,
+                ok=True,
+                payload={
+                    "event_type": "a4p.authorization_request",
+                    "requestId": "mdt_intent_1",
+                    "kind": "intent",
+                    "mandate": {
+                        "type": "a4p/v1/intent-mandate",
+                        "mandateId": "mdt_intent_1",
+                        "intent": {
+                            "actions": [
+                                {"name": "bash", "params": {"command": "pwd"}}
+                            ]
+                        },
+                    },
+                    "signingOptions": {},
+                    "uiContext": {"kind": "intent", "sessionId": "sess-1"},
+                },
+                event_type=None,
+            )
+        )
+        for _ in range(20):
+            if client.frames:
+                break
+            await asyncio.sleep(0.005)
+
+        assert client.frames[0]["event"] == "a4p.authorization_request"
+        assert client.frames[0]["payload"]["mandate"]["intent"]["actions"] == [
+            {"name": "bash", "params": {"command": "pwd"}}
+        ]
+        assert client.frames[0]["payload"]["session_id"] == "sess-1"
+    finally:
+        await channel.unregister_ws(client)
+
+
 def test_web_channel_exposes_heartbeat_marker_without_routing_metadata():
     automation = {
         "kind": "heartbeat",
@@ -92,6 +147,47 @@ def test_web_channel_exposes_heartbeat_marker_without_routing_metadata():
     assert frame["payload"]["metadata"] == {"automation": automation}
     assert "ws_id" not in payload["metadata"]
     assert "ws_id" not in frame["payload"]["metadata"]
+
+
+def test_web_channel_preserves_cross_session_stream_identity():
+    cross_session = {
+        "message_id": "sm-1",
+        "source_session_id": "source-1",
+        "source_title": "Source",
+        "content": "check",
+    }
+    msg = Message(
+        id="execution-1",
+        type="event",
+        channel_id="web",
+        session_id="target-1",
+        params={},
+        timestamp=1.0,
+        ok=True,
+        payload={
+            "event_type": "chat.final",
+            "content": "done",
+            "turn_request_id": "execution-1",
+            "final_mode": "patch_segment",
+            "message_origin": "cross_session_agent",
+            "session_message_id": "sm-1",
+            "cross_session": cross_session,
+        },
+        event_type=EventType.CHAT_FINAL,
+    )
+
+    payload = WebChannel._build_event_payload(msg, "chat.final")
+
+    assert payload == {
+        "session_id": "target-1",
+        "request_id": "execution-1",
+        "turn_request_id": "execution-1",
+        "content": "done",
+        "final_mode": "patch_segment",
+        "message_origin": "cross_session_agent",
+        "session_message_id": "sm-1",
+        "cross_session": cross_session,
+    }
 
 
 def test_web_channel_preserves_goal_structured_payloads():

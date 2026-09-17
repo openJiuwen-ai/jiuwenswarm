@@ -9,14 +9,38 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 from openjiuwen.harness.schema.task import TodoItem, TodoStatus
 
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.harness.schema.interaction import SendInputRequest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueue
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import RootPermissionDispatch
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionQueue,
+    RootPermissionQueueError,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.root_ask_user import (
+    ASK_USER_CONTINUATION_METADATA_KEY,
+    ASK_USER_RESUME_DTO_KEY,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    ROOT_CONTEXT_KEY,
+    RootDecisionContext,
+    RootIntentTurn,
+    RootIntentTurnKind,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
+    ROOT_NON_PERMISSION_RESUME_DTO_KEY,
+    RootNonPermissionResume,
+)
+from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
+    RootPermissionDispatch, RootPermissionDispatchHandoff,
+)
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
+)
 
 
 def _build_cancel_request(session_id: str = "tui_sess_1") -> AgentRequest:
@@ -69,9 +93,223 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
         "_root_permission_queue", RootPermissionQueue()
     )
     adapter._permission_dispatch = RootPermissionDispatch(adapter._root_permission_queue)
+    adapter._permission_dispatch.lock = state.pop("dispatch_lock", adapter._permission_dispatch.lock)
+    adapter._permission_dispatch.handoff = state.pop("handoff", None)
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter
+
+
+def _make_smart_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
+    """Enable Smart only for fixtures exercising its queue and continuation."""
+    return _make_adapter(_enable_auto_permission=True, **state)
+
+
+def _begin_invocation(
+    queue: RootPermissionQueue,
+    *,
+    session_id: str,
+    request_id: str,
+    tool_call_id: str,
+):
+    return queue.begin(
+        root_session_id=session_id,
+        request_id=request_id,
+        execution_session_id=session_id,
+        tool_call_id=tool_call_id,
+        tool_name="bash",
+    )
+
+
+def _pending_permission_state(queue: RootPermissionQueue, *, session_id: str):
+    card = _begin_invocation(
+        queue,
+        session_id=session_id,
+        request_id="request-old",
+        tool_call_id="call-old",
+    )
+    request = InterruptRequest(
+        message="approve",
+        metadata={"tool_invocation_key": card.key.to_wire()},
+    )
+    queue.mark_pending(
+        card.key,
+        request=request,
+        auto_manual=True,
+        root_context=None,
+    )
+    tool_call = SimpleNamespace(id=card.key.tool_call_id, name="bash")
+    return card, SimpleNamespace(
+        ai_message=SimpleNamespace(tool_calls=[tool_call]),
+        interrupted_tools={
+            tool_call.id: SimpleNamespace(
+                tool_call=tool_call,
+                interrupt_requests={card.key.tool_call_id: request},
+            )
+        },
+    )
+
+
+def _permission_core_state(session_id: str, interruption_state: object):
+    loop_session = MagicMock()
+    loop_session.get_session_id.return_value = session_id
+    loop_session.get_state.return_value = interruption_state
+    context = MagicMock()
+    context.get_messages.return_value = [interruption_state.ai_message]
+    context.add_messages = AsyncMock()
+    context_engine = MagicMock()
+    context_engine.get_context.return_value = context
+    context_engine.save_contexts = AsyncMock()
+    return loop_session, context, context_engine
+
+
+def _nonpermission_core_state(
+    session_id: str,
+    *,
+    tool_name: str,
+    tool_call_id: str = "call-control",
+    metadata: dict | None = None,
+) -> SimpleNamespace:
+    tool_call = SimpleNamespace(id=tool_call_id, name=tool_name)
+    request = InterruptRequest(metadata=metadata or {})
+    state = SimpleNamespace(
+        interrupted_tools={
+            tool_call_id: SimpleNamespace(
+                tool_call=tool_call,
+                interrupt_requests={tool_call_id: request},
+            )
+        }
+    )
+    return SimpleNamespace(
+        get_session_id=MagicMock(return_value=session_id),
+        get_state=MagicMock(return_value=state),
+    )
+
+
+def test_nonpermission_resume_dispatch_stamps_generic_typed_marker() -> None:
+    tool_name = "exit_plan_mode"
+    session_id = "session-control"
+    loop_session = _nonpermission_core_state(session_id, tool_name=tool_name)
+    adapter = _make_adapter(
+        _instance=SimpleNamespace(loop_session=loop_session),
+    )
+    incoming = InteractiveInput()
+    incoming.update(
+        "call-control",
+        {"approved": True, "auto_confirm": True},
+    )
+    request = AgentRequest(
+        request_id="request-control",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent", "source": "confirm_interrupt"},
+    )
+
+    prepared = adapter._prepare_permission_resume_dispatch(
+        request,
+        {"query": incoming},
+    )
+
+    assert prepared is not None
+    marker = prepared["run"]["context"]["extra"][ROOT_NON_PERMISSION_RESUME_DTO_KEY]
+    assert marker == RootNonPermissionResume(
+        session_id,
+        "call-control",
+        tool_name,
+    )
+    assert prepared["query"] is incoming
+
+
+def test_ask_resume_keeps_generic_routing_separate_from_intent_payload() -> None:
+    session_id = "session-ask"
+    tool_call_id = "call-ask"
+    root_context = RootDecisionContext(
+        session_id=session_id,
+        request_id="request-original",
+        channel_id="web",
+        trusted_turns=(),
+    )
+    loop_session = _nonpermission_core_state(
+        session_id,
+        tool_name="ask_user",
+        tool_call_id=tool_call_id,
+        metadata={
+            ASK_USER_CONTINUATION_METADATA_KEY: {
+                "tool_call_id": tool_call_id,
+                "context": root_context.to_mapping(),
+                "questions": [
+                    {
+                        "question": "Which project?",
+                        "options": [],
+                        "multi_select": False,
+                    }
+                ],
+            }
+        },
+    )
+    adapter = _make_adapter(
+        _instance=SimpleNamespace(loop_session=loop_session),
+    )
+    incoming = InteractiveInput()
+    incoming.update(
+        tool_call_id,
+        {"answers": {"Which project?": "JiuwenSwarm"}},
+    )
+    request = AgentRequest(
+        request_id="request-answer",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent", "source": "ask_user_interrupt"},
+    )
+
+    prepared = adapter._prepare_permission_resume_dispatch(
+        request,
+        {"query": incoming},
+    )
+
+    extra = prepared["run"]["context"]["extra"]
+    assert extra[ROOT_NON_PERMISSION_RESUME_DTO_KEY] == RootNonPermissionResume(
+        session_id,
+        tool_call_id,
+        "ask_user",
+    )
+    assert extra[ASK_USER_RESUME_DTO_KEY].clarifications[0].answers == ("JiuwenSwarm",)
+
+
+def test_nonpermission_resume_dispatch_rejects_live_permission_scope() -> None:
+    session_id = "session-conflict"
+    queue = RootPermissionQueue()
+    _begin_invocation(
+        queue,
+        session_id=session_id,
+        request_id="request-active",
+        tool_call_id="call-active",
+    )
+    loop_session = _nonpermission_core_state(
+        session_id,
+        tool_name="exit_plan_mode",
+    )
+    adapter = _make_smart_adapter(
+        _instance=SimpleNamespace(loop_session=loop_session),
+        _root_permission_queue=queue,
+    )
+    incoming = InteractiveInput()
+    incoming.update("call-control", {"approved": True})
+    request = AgentRequest(
+        request_id="request-control",
+        channel_id="web",
+        session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "agent", "source": "confirm_interrupt"},
+    )
+
+    with pytest.raises(
+        RootPermissionQueueError,
+        match="nonpermission_resume_permission_conflict",
+    ):
+        adapter._prepare_permission_resume_dispatch(request, {"query": incoming})
 
 
 @pytest.mark.asyncio
@@ -314,6 +552,629 @@ async def test_interaction_cancel_pauses_active_goal_before_cancel_round() -> No
     assert response.payload["event_type"] == "chat.interrupt_result"
     assert response.payload["goal"]["status"] == "paused"
     assert response.payload["goal"]["objective"] == "keep going"
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_interaction_cancel_quarantines_inflight_permission() -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-inflight")
+    card = _begin_invocation(
+        queue,
+        session_id="sess-unknown-cancel",
+        request_id="request-old",
+        tool_call_id="call-old",
+    )
+    pending = queue.mark_pending(
+        card.key,
+        request=InterruptRequest(
+            message="approve",
+            metadata={"tool_invocation_key": card.key.to_wire()},
+        ),
+        auto_manual=True,
+        root_context=None,
+    )
+    queue.reconcile(
+        {
+            "result_type": "interrupt",
+            "interrupt_ids": ["call-old"],
+            "state": [{"id": "call-old", "value": pending.request}],
+        },
+        root_session_id="sess-unknown-cancel",
+    )
+    answer = InteractiveInput()
+    answer.update(
+        card.key.invocation_id,
+        {
+            "approved": True,
+            "auto_confirm": False,
+            "feedback": "",
+        },
+    )
+    queue.reserve_answer("sess-unknown-cancel", answer)
+
+    instance = MagicMock()
+    instance._interaction_started = True
+    instance.goal_manager = None
+    instance.cancel_round = AsyncMock(return_value=False)
+    rail = MagicMock()
+    rail.get_cancelled_tool_results.return_value = []
+    adapter = _make_smart_adapter(
+        _active_session_ids={"sess-unknown-cancel": 1},
+        _stream_event_rail=rail,
+        _instance=instance,
+        _root_permission_queue=queue,
+    )
+
+    await adapter.process_interrupt(_build_cancel_request("sess-unknown-cancel"))
+
+    assert queue.get(card.key).state == "resuming"
+    with pytest.raises(RootPermissionQueueError, match="permission_queue_quarantined"):
+        queue.raise_if_quarantined("sess-unknown-cancel")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nested", [False, True])
+async def test_interaction_cancel_discards_exact_permission_continuation(nested) -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-discard")
+    card, state = _pending_permission_state(queue, session_id="sess-discard")
+    if nested:
+        entry = state.interrupted_tools.pop("call-old")
+        entry.tool_call.id, entry.tool_call.name = "outer-call", "tool_call"
+        state.interrupted_tools["outer-call"] = entry
+    loop_session, context, context_engine = _permission_core_state(
+        "sess-discard", state
+    )
+    instance = MagicMock()
+    instance._interaction_started = True
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.goal_manager = None
+    instance.cancel_round = AsyncMock(return_value=False)
+    rail = MagicMock()
+    rail.get_cancelled_tool_results.return_value = []
+    adapter = _make_smart_adapter(
+        _active_session_ids={"sess-discard": 1},
+        _stream_event_rail=rail,
+        _instance=instance,
+        _root_permission_queue=queue,
+    )
+
+    response = await adapter.process_interrupt(_build_cancel_request("sess-discard"))
+
+    assert response.ok is True
+    assert response.payload["success"] is True
+    assert queue.get(card.key) is None
+    queue.raise_if_quarantined("sess-discard")
+    added_message = context.add_messages.await_args.args[0]
+    assert added_message.tool_call_id == ("outer-call" if nested else "call-old")
+    assert "Superseded by new user input" in added_message.content
+    loop_session.update_state.assert_called_once_with({INTERRUPTION_KEY: None})
+    context_engine.save_contexts.assert_awaited_once_with(loop_session)
+
+
+@pytest.mark.asyncio
+async def test_fresh_input_discards_exact_old_permission_before_admission() -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-fresh")
+    card, state = _pending_permission_state(queue, session_id="sess-fresh")
+    loop_session, _context, context_engine = _permission_core_state("sess-fresh", state)
+    instance = MagicMock()
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.cancel_round = AsyncMock(return_value=False)
+    adapter = _make_smart_adapter(_instance=instance, _root_permission_queue=queue)
+    request = AgentRequest(
+        request_id="request-new",
+        channel_id="web",
+        session_id="sess-fresh",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "继续执行", "mode": "agent"},
+    )
+
+    prepared = await adapter._prepare_root_input_dispatch(
+        request,
+        {"query": "继续执行"},
+    )
+
+    assert prepared is not None
+    assert prepared["query"] == "继续执行"
+    adapter._permission_dispatch.release(prepared)
+    instance.cancel_round.assert_awaited_once_with(reason="fresh_user_input")
+    assert queue.get(card.key) is None
+    queue.raise_if_quarantined("sess-fresh")
+
+
+@pytest.mark.asyncio
+async def test_fresh_cutover_consumes_admitted_answer_before_late_callback() -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-race")
+    card, state = _pending_permission_state(queue, session_id="sess-race")
+    pending = queue.get(card.key)
+    assert pending is not None
+    queue.reconcile(
+        {
+            "result_type": "interrupt",
+            "interrupt_ids": [pending.key.tool_call_id],
+            "state": [{"id": pending.key.tool_call_id, "value": pending.request}],
+        },
+        root_session_id="sess-race",
+    )
+    incoming = InteractiveInput()
+    incoming.update(
+        pending.key.invocation_id,
+        {"approved": True, "auto_confirm": False, "feedback": ""},
+    )
+    answer = queue.reserve_answer("sess-race", incoming)
+    loop_session, _context, context_engine = _permission_core_state("sess-race", state)
+    core_cleared = asyncio.Event()
+    allow_cancel_return = asyncio.Event()
+
+    async def cancel_round(*, reason: str) -> bool:
+        assert reason == "fresh_user_input"
+        loop_session.get_state.return_value = None
+        core_cleared.set()
+        await allow_cancel_return.wait()
+        return True
+
+    instance = MagicMock()
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.cancel_round = cancel_round
+    dispatch_lock = asyncio.Lock()
+    old_handoff = RootPermissionDispatchHandoff(
+        lock=dispatch_lock,
+        root_session_id="sess-race",
+        answer=answer,
+        accepted=True,
+    )
+    adapter = _make_smart_adapter(
+        _instance=instance,
+        _root_permission_queue=queue,
+        dispatch_lock=dispatch_lock,
+        handoff=old_handoff,
+    )
+    request = AgentRequest(
+        request_id="request-new",
+        channel_id="web",
+        session_id="sess-race",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "开始新任务", "mode": "agent"},
+    )
+
+    fresh_task = asyncio.create_task(
+        adapter._prepare_root_input_dispatch(request, {"query": "开始新任务"})
+    )
+    await core_cleared.wait()
+
+    assert dispatch_lock.locked() is True
+    assert queue.get(answer.card.key).state == "resuming"
+    allow_cancel_return.set()
+    prepared = await fresh_task
+
+    assert queue.get(answer.card.key) is None
+    with pytest.raises(
+        RootPermissionQueueError,
+        match="permission_queue_answer_not_reserved",
+    ):
+        queue.claim_answer_for_call(
+            root_session_id="sess-race",
+            execution_session_id="sess-race",
+            tool_call_id=pending.key.tool_call_id,
+            tool_name="bash",
+        )
+    adapter._permission_dispatch.release(prepared)
+
+
+@pytest.mark.asyncio
+async def test_two_fresh_dispatches_serialize_only_until_handoff_established() -> None:
+    instance = MagicMock()
+    instance.cancel_round = AsyncMock(return_value=False)
+    adapter = _make_smart_adapter(_instance=instance)
+    first_request = AgentRequest(
+        request_id="request-first",
+        channel_id="web",
+        session_id="sess-serialized",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "first", "mode": "agent"},
+    )
+    second_request = AgentRequest(
+        request_id="request-second",
+        channel_id="web",
+        session_id="sess-serialized",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "second", "mode": "agent"},
+    )
+
+    first = await adapter._prepare_root_input_dispatch(
+        first_request,
+        {"query": "first"},
+    )
+    second_started = asyncio.Event()
+
+    async def prepare_second():
+        second_started.set()
+        return await adapter._prepare_root_input_dispatch(
+            second_request,
+            {"query": "second"},
+        )
+
+    second_task = asyncio.create_task(prepare_second())
+    await second_started.wait()
+
+    assert second_task.done() is False
+    adapter._permission_dispatch.release(first)
+    second = await second_task
+
+    assert second["query"] == "second"
+    adapter._permission_dispatch.release(second)
+
+
+@pytest.mark.asyncio
+async def test_permission_resume_waits_for_fresh_cutover_mutex() -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-fresh-resume")
+    card, state = _pending_permission_state(queue, session_id="sess-fresh-resume")
+    pending = queue.get(card.key)
+    assert pending is not None
+    queue.reconcile(
+        {
+            "result_type": "interrupt",
+            "interrupt_ids": [pending.key.tool_call_id],
+            "state": [{"id": pending.key.tool_call_id, "value": pending.request}],
+        },
+        root_session_id="sess-fresh-resume",
+    )
+    loop_session, _context, context_engine = _permission_core_state(
+        "sess-fresh-resume",
+        state,
+    )
+    cutover_entered = asyncio.Event()
+    allow_cutover = asyncio.Event()
+
+    async def cancel_round(*, reason: str) -> bool:
+        assert reason == "fresh_user_input"
+        cutover_entered.set()
+        await allow_cutover.wait()
+        return True
+
+    instance = MagicMock()
+    instance.loop_session = loop_session
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.cancel_round = cancel_round
+    adapter = _make_smart_adapter(_instance=instance, _root_permission_queue=queue)
+    fresh_request = AgentRequest(
+        request_id="request-fresh",
+        channel_id="web",
+        session_id="sess-fresh-resume",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "fresh", "mode": "agent"},
+    )
+    resume_input = InteractiveInput()
+    resume_input.update(
+        pending.key.invocation_id,
+        {"approved": True, "auto_confirm": False, "feedback": ""},
+    )
+    resume_request = AgentRequest(
+        request_id="request-resume",
+        channel_id="web",
+        session_id="sess-fresh-resume",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "resume",
+            "mode": "agent",
+            "source": "permission_interrupt",
+        },
+    )
+
+    fresh_task = asyncio.create_task(
+        adapter._prepare_root_input_dispatch(fresh_request, {"query": "fresh"})
+    )
+    await cutover_entered.wait()
+    resume_started = asyncio.Event()
+
+    async def prepare_resume():
+        resume_started.set()
+        return await adapter._prepare_root_input_dispatch(
+            resume_request,
+            {"query": resume_input},
+        )
+
+    resume_task = asyncio.create_task(prepare_resume())
+    await resume_started.wait()
+
+    assert adapter._permission_dispatch.lock.locked() is True
+    assert resume_task.done() is False
+    allow_cutover.set()
+    fresh = await fresh_task
+    loop_session.get_state.return_value = None
+    adapter._permission_dispatch.release(fresh)
+    with pytest.raises(
+        RootPermissionQueueError,
+        match="interaction_resume_state_missing",
+    ):
+        await resume_task
+
+
+def test_callback_claim_retires_accepted_handoff_after_request_finalizes() -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-claimed-handoff")
+    card, _state = _pending_permission_state(
+        queue,
+        session_id="sess-claimed-handoff",
+    )
+    pending = queue.get(card.key)
+    assert pending is not None
+    queue.reconcile(
+        {
+            "result_type": "interrupt",
+            "interrupt_ids": [pending.key.tool_call_id],
+            "state": [{"id": pending.key.tool_call_id, "value": pending.request}],
+        },
+        root_session_id="sess-claimed-handoff",
+    )
+    incoming = InteractiveInput()
+    incoming.update(
+        pending.key.invocation_id,
+        {"approved": True, "auto_confirm": False, "feedback": ""},
+    )
+    answer = queue.reserve_answer("sess-claimed-handoff", incoming)
+    handoff = RootPermissionDispatchHandoff(
+        lock=asyncio.Lock(),
+        root_session_id="sess-claimed-handoff",
+        answer=answer,
+        accepted=True,
+    )
+    adapter = _make_smart_adapter(
+        _root_permission_queue=queue,
+        dispatch_lock=handoff.lock,
+        handoff=handoff,
+    )
+    inputs = {
+        "_jiuwenswarm_root_permission_answer": answer,
+        "_jiuwenswarm_root_permission_handoff": handoff,
+    }
+
+    adapter._permission_dispatch.finalize(inputs)
+    assert adapter._has_live_root_permission_owner("sess-claimed-handoff") is True
+
+    claim = queue.claim_answer_for_call(
+        root_session_id="sess-claimed-handoff",
+        execution_session_id="sess-claimed-handoff",
+        tool_call_id=pending.key.tool_call_id,
+        tool_name="bash",
+    )
+    adapter._permission_dispatch.close_claimed(claim.card.key)
+    queue.finish(claim.card.key)
+
+    assert handoff.closed is True
+    assert adapter._permission_dispatch.handoff is None
+    assert adapter._has_live_root_permission_owner("sess-claimed-handoff") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("send rejected"), asyncio.CancelledError()],
+)
+async def test_permission_resume_preaccept_failure_restores_exact_pending_card(
+    failure: BaseException,
+) -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-preaccept")
+    card, _state = _pending_permission_state(queue, session_id="sess-preaccept")
+    pending = queue.get(card.key)
+    assert pending is not None
+    queue.reconcile(
+        {
+            "result_type": "interrupt",
+            "interrupt_ids": [pending.key.tool_call_id],
+            "state": [{"id": pending.key.tool_call_id, "value": pending.request}],
+        },
+        root_session_id="sess-preaccept",
+    )
+    incoming = InteractiveInput()
+    incoming.update(
+        pending.key.invocation_id,
+        {"approved": True, "auto_confirm": False, "feedback": ""},
+    )
+    answer = queue.reserve_answer("sess-preaccept", incoming)
+    dispatch_lock = asyncio.Lock()
+    await dispatch_lock.acquire()
+    handoff = RootPermissionDispatchHandoff(
+        lock=dispatch_lock,
+        root_session_id="sess-preaccept",
+        answer=answer,
+    )
+    instance = MagicMock()
+    instance.send_input = AsyncMock(side_effect=failure)
+    adapter = _make_smart_adapter(
+        _instance=instance,
+        _root_permission_queue=queue,
+        dispatch_lock=dispatch_lock,
+        handoff=None,
+    )
+    request = SendInputRequest(
+        request_id="resume-preaccept",
+        inputs={
+            "query": answer.interactive_input,
+            "_jiuwenswarm_root_permission_answer": answer,
+            "_jiuwenswarm_root_permission_handoff": handoff,
+        },
+    )
+
+    with pytest.raises(type(failure)):
+        await adapter._send_input_with_permission_resume_guard(request)
+
+    restored = queue.get(answer.card.key)
+    assert restored is not None and restored.state == "pending"
+    assert dispatch_lock.locked() is False
+    assert handoff.closed is True
+    assert adapter._permission_dispatch.handoff is None
+    retry = queue.reserve_answer("sess-preaccept", incoming)
+    assert retry.card.state == "resuming"
+    queue.release_answer(retry)
+
+
+@pytest.mark.asyncio
+async def test_fresh_input_preserves_completed_sibling_context() -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-sibling")
+    card, state = _pending_permission_state(queue, session_id="sess-sibling")
+    completed_call = SimpleNamespace(id="call-complete", name="read_file")
+    state.ai_message.tool_calls.insert(0, completed_call)
+    loop_session, context, context_engine = _permission_core_state(
+        "sess-sibling", state
+    )
+    completed_result = SimpleNamespace(
+        role="tool",
+        tool_call_id="call-complete",
+        content="already completed",
+    )
+    context.get_messages.return_value = [state.ai_message, completed_result]
+    instance = MagicMock()
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.cancel_round = AsyncMock(return_value=False)
+    adapter = _make_smart_adapter(_instance=instance, _root_permission_queue=queue)
+    request = AgentRequest(
+        request_id="request-new",
+        channel_id="web",
+        session_id="sess-sibling",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "开始新任务", "mode": "agent"},
+    )
+
+    await adapter._prepare_root_input_dispatch(request, {"query": "开始新任务"})
+
+    assert context.get_messages.return_value[-1] is completed_result
+    assert context.add_messages.await_args.args[0].tool_call_id == card.key.tool_call_id
+    context.pop_messages.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fresh_input_rejects_missing_completed_sibling_result() -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-missing-result")
+    _card, state = _pending_permission_state(queue, session_id="sess-missing-result")
+    state.ai_message.tool_calls.insert(
+        0,
+        SimpleNamespace(id="call-complete", name="read_file"),
+    )
+    loop_session, context, context_engine = _permission_core_state(
+        "sess-missing-result", state
+    )
+    instance = MagicMock()
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.cancel_round = AsyncMock(return_value=True)
+    adapter = _make_smart_adapter(_instance=instance, _root_permission_queue=queue)
+    request = AgentRequest(
+        request_id="request-new",
+        channel_id="web",
+        session_id="sess-missing-result",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "开始新任务", "mode": "agent"},
+    )
+
+    with pytest.raises(
+        RootPermissionQueueError,
+        match="permission_continuation_discard_failed",
+    ):
+        await adapter._prepare_root_input_dispatch(request, {"query": "开始新任务"})
+
+    context.add_messages.assert_not_awaited()
+    with pytest.raises(RootPermissionQueueError, match="permission_queue_quarantined"):
+        queue.raise_if_quarantined("sess-missing-result")
+
+
+@pytest.mark.asyncio
+async def test_fresh_input_rolls_back_partial_synthetic_tool_results() -> None:
+    invocation_ids = iter(("tiv-pending-one", "tiv-pending-two"))
+    queue = RootPermissionQueue(id_factory=lambda: next(invocation_ids))
+    entries = {}
+    cards = []
+    tool_calls = []
+    for tool_call_id in ("call-one", "call-two"):
+        card = _begin_invocation(
+            queue,
+            session_id="sess-partial-write",
+            request_id="request-old",
+            tool_call_id=tool_call_id,
+        )
+        request = InterruptRequest(
+            message="approve",
+            metadata={"tool_invocation_key": card.key.to_wire()},
+        )
+        queue.mark_pending(
+            card.key,
+            request=request,
+            auto_manual=True,
+            root_context=None,
+        )
+        tool_call = SimpleNamespace(id=tool_call_id, name="bash")
+        entries[tool_call_id] = SimpleNamespace(
+            tool_call=tool_call,
+            interrupt_requests={card.key.tool_call_id: request},
+        )
+        cards.append(card)
+        tool_calls.append(tool_call)
+    state = SimpleNamespace(
+        ai_message=SimpleNamespace(tool_calls=tool_calls),
+        interrupted_tools=entries,
+    )
+    loop_session, context, context_engine = _permission_core_state(
+        "sess-partial-write", state
+    )
+    context.add_messages.side_effect = [None, RuntimeError("write failed")]
+    instance = MagicMock()
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.cancel_round = AsyncMock(return_value=True)
+    adapter = _make_smart_adapter(_instance=instance, _root_permission_queue=queue)
+    request = AgentRequest(
+        request_id="request-new",
+        channel_id="web",
+        session_id="sess-partial-write",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "开始新任务", "mode": "agent"},
+    )
+
+    with pytest.raises(
+        RootPermissionQueueError,
+        match="permission_continuation_discard_failed",
+    ):
+        await adapter._prepare_root_input_dispatch(request, {"query": "开始新任务"})
+
+    context.pop_messages.assert_called_once_with(1, with_history=True)
+    assert all(queue.get(card.key) is not None for card in cards)
+    with pytest.raises(RootPermissionQueueError, match="permission_queue_quarantined"):
+        queue.raise_if_quarantined("sess-partial-write")
+
+
+@pytest.mark.asyncio
+async def test_fresh_input_rejects_unprovable_permission_discard() -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "tiv-stale")
+    card, state = _pending_permission_state(queue, session_id="sess-stale")
+    loop_session, context, context_engine = _permission_core_state("sess-stale", state)
+    context.get_messages.return_value = [
+        SimpleNamespace(tool_calls=[SimpleNamespace(id="different-call", name="bash")])
+    ]
+    instance = MagicMock()
+    instance._loop_session = loop_session
+    instance.react_agent = SimpleNamespace(context_engine=context_engine)
+    instance.cancel_round = AsyncMock(return_value=True)
+    adapter = _make_smart_adapter(_instance=instance, _root_permission_queue=queue)
+    request = AgentRequest(
+        request_id="request-new",
+        channel_id="web",
+        session_id="sess-stale",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "继续执行", "mode": "agent"},
+    )
+
+    with pytest.raises(
+        RootPermissionQueueError,
+        match="permission_continuation_discard_failed",
+    ):
+        await adapter._prepare_root_input_dispatch(request, {"query": "继续执行"})
+
+    assert queue.get(card.key) is not None
+    with pytest.raises(RootPermissionQueueError, match="permission_queue_quarantined"):
+        queue.raise_if_quarantined("sess-stale")
+    context.add_messages.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -628,3 +1489,73 @@ def test_runtime_cron_tool_context_falls_back_to_last_bound_session(
     assert metadata["project_id"] == "proj_runtime"
     assert metadata["project_dir"] == "D:\\runtime-project"
     assert metadata["work_mode"] == "work"
+
+
+def test_permission_resume_dispatch_reuses_frozen_root_context() -> None:
+    queue = RootPermissionQueue(id_factory=lambda: "invocation-1")
+    context = RootDecisionContext(
+        session_id="root-session",
+        request_id="original-request",
+        channel_id="web",
+        trusted_turns=(
+            RootIntentTurn(
+                request_id="original-request",
+                kind=RootIntentTurnKind.FRESH,
+                text="Search the current project and summarize it",
+            ),
+        ),
+    )
+    card = queue.begin(
+        root_session_id="root-session",
+        request_id="root-request",
+        execution_session_id="root-session",
+        tool_call_id="call-1",
+        tool_name="bash",
+    )
+    pending = queue.mark_pending(
+        card.key,
+        request=InterruptRequest(
+            message="approve",
+            metadata={"tool_invocation_key": card.key.to_wire()},
+        ),
+        auto_manual=True,
+        root_context=context,
+    )
+    queue.reconcile(
+        {
+            "result_type": "interrupt",
+            "interrupt_ids": ["call-1"],
+            "state": [{"id": card.key.tool_call_id, "value": pending.request}],
+        },
+        root_session_id="root-session",
+    )
+    incoming = InteractiveInput()
+    incoming.update(
+        card.key.invocation_id,
+        {"approved": True, "auto_confirm": False, "feedback": ""},
+    )
+    answer = queue.reserve_answer("root-session", incoming)
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._enable_auto_permission = True
+    request = SimpleNamespace(
+        params={
+            "source": "permission_interrupt",
+            "request_id": "resume-request",
+            "answers": [{}],
+            "mode": "agent",
+        },
+        request_id="resume-request",
+        session_id="root-session",
+        channel_id="web",
+        req_method="chat.send",
+    )
+
+    prepared = adapter._with_root_context(
+        request,
+        {
+            "query": answer.interactive_input,
+            "_jiuwenswarm_root_permission_answer": answer,
+        },
+    )
+
+    assert prepared["run"]["context"]["extra"][ROOT_CONTEXT_KEY] == context.to_mapping()

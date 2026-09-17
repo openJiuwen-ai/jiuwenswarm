@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.gateway.cron.models import validate_cron_model
+from jiuwenswarm.gateway.cron.models import (
+    CronJob,
+    normalize_cron_job_mcp,
+    validate_cron_model,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -214,3 +218,47 @@ def test_validate_cron_model_zen_cache_empty_still_rejected(
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
     with pytest.raises(ValueError, match="Unknown model 'deepseek-v4-flash-free'"):
         validate_cron_model("deepseek-v4-flash-free")
+
+
+# ---------------------------------------------------------------------------
+# 会话级 MCP 选择（mcp）：类型规范化 + CronJob 序列化 round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_cron_job_mcp_variants() -> None:
+    assert normalize_cron_job_mcp(None) is None
+    assert normalize_cron_job_mcp("not-a-list") is None
+    assert normalize_cron_job_mcp(42) is None
+    assert normalize_cron_job_mcp([]) is None
+    # strip / 去空 / 去重 / 过滤非字符串元素
+    assert normalize_cron_job_mcp([" a ", "b", "b", "", None, 123]) == ["a", "b"]
+    assert normalize_cron_job_mcp(("x",)) == ["x"]
+
+
+def _mcp_round_trip_job() -> CronJob:
+    return CronJob(
+        id="job-mcp-1",
+        name="daily",
+        enabled=True,
+        cron_expr="0 0 9 * * ? *",
+        timezone="Asia/Shanghai",
+        description="hello",
+        targets="web",
+        mcp=["feishu-doc", "github"],
+    )
+
+
+def test_cron_job_mcp_round_trip() -> None:
+    job = _mcp_round_trip_job()
+    d = job.to_dict()
+    assert d["mcp"] == ["feishu-doc", "github"]
+    restored = CronJob.from_dict(d)
+    assert restored.mcp == ["feishu-doc", "github"]
+
+
+def test_cron_job_without_mcp_round_trip_keeps_none() -> None:
+    """旧数据无 mcp 字段 → from_dict 兜底 None，行为与改造前一致。"""
+    job = _mcp_round_trip_job()
+    legacy = {k: v for k, v in job.to_dict().items() if k != "mcp"}
+    assert "mcp" not in legacy
+    assert CronJob.from_dict(legacy).mcp is None

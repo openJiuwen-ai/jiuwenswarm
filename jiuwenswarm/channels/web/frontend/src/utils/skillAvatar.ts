@@ -32,8 +32,9 @@ function hexToRgba(hex: string, alpha: number): string {
  * `style` 会覆盖调用方的 `text-text-inverse`（浅色底上白字不可读，字母改用配套深色）。 */
 export function getSkillAvatar(name: string): AvatarStyle {
   const trimmed = String(name || '').trim() || '?';
-  const firstChar = trimmed.charAt(0).toUpperCase();
-  const colorSeed = trimmed.charAt(0).toLowerCase().charCodeAt(0) || 0;
+  // Array.from 按码点取首字符：中文正常，emoji 等增补平面字符不会被切成半个代理对
+  const firstChar = (Array.from(trimmed)[0] ?? '?').toUpperCase();
+  const colorSeed = (Array.from(trimmed)[0] ?? '?').toLowerCase().codePointAt(0) || 0;
   const { surface, text } = avatarPalette[colorSeed % avatarPalette.length];
   return {
     firstChar,

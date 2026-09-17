@@ -27,7 +27,11 @@ from jiuwenswarm.runtime import service as runtime_service_module
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
-from jiuwenswarm.runtime.session.model import SessionExecutionState, SessionWorkKind
+from jiuwenswarm.runtime.session.model import (
+    SessionCloseTimeoutError,
+    SessionExecutionState,
+    SessionWorkKind,
+)
 from jiuwenswarm.runtime.session_provisioner import (
     SessionCreateResult,
     SessionDescriptor,
@@ -165,6 +169,99 @@ class FakeAgent:
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("case", [
+    "smart", "no_callback", "manual", "ordinary", "goal", "control_id",
+    "foreign_session", "failed_handoff",
+])
+async def test_permission_control_ack_precedes_continuation_completion(streaming, case):
+    paused, release = asyncio.Event(), asyncio.Event()
+    received = []
+
+    class WaitingAgent(FakeAgent):
+        async def process_message_stream(self, request):
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id,
+                payload={"event_type": "chat.ask_user_question", "request_id": "inner-call"},
+            )
+
+        async def deliver_control_input(self, request):
+            if case == "failed_handoff":
+                paused.set()
+                raise RuntimeError("handoff failed")
+            ack_id = "inner-call" if case == "control_id" else request.request_id
+            payload = {"event_type": "runtime.accepted", "request_id": ack_id}
+            if case == "foreign_session":
+                payload["session_id"] = "other-session"
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id, payload=payload,
+            )
+            paused.set()
+            await release.wait()
+            yield AgentResponseChunk(
+                request_id=request.request_id, channel_id=request.channel_id,
+                payload={"event_type": "chat.final", "content": "continued"}, is_complete=True,
+            )
+
+    class WaitingManager(FakeAgentManager):
+        def get_agent_for_session_nowait(self, channel_id, session_id):
+            return self.agent
+
+    manager = WaitingManager()
+    manager.agent = WaitingAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager, initializer=AsyncMock(), plan_controller=FakePlanController(),
+    )
+    original = AgentRequest(
+        request_id="original", channel_id="web", session_id="permission-session",
+        req_method=ReqMethod.COMMAND_GOAL if case == "goal" else ReqMethod.CHAT_SEND,
+        is_stream=True,
+        params={"query": "Continue the task", "mode": "agent", "action": "set", "objective": "finish the task"},
+    )
+    await _collect_events(runtime.stream(original, trigger_hook=False))
+    answer = AgentRequest(
+        request_id="answer-transport", channel_id="web", session_id="permission-session",
+        req_method=ReqMethod.CHAT_SEND, is_stream=streaming,
+        params={
+            "query": "", "mode": "agent", "request_id": "inner-call",
+            "source": "ask_user_interrupt" if case in {"ordinary", "goal"} else "permission_interrupt",
+            "answers": [{
+                "selected_options": ["allow"],
+                **({} if case in {"manual", "ordinary", "goal"} else {"card_id": "opaque-card"}),
+            }],
+        },
+    )
+    callback = AsyncMock(side_effect=lambda event: received.append(event))
+    callback_arg = None if case == "no_callback" else callback
+    task = asyncio.create_task(
+        _collect_events(runtime.stream(answer, trigger_hook=False, on_control_event=callback_arg))
+        if streaming else runtime.invoke(answer, trigger_hook=False, on_control_event=callback_arg)
+    )
+    try:
+        await asyncio.wait_for(paused.wait(), timeout=1)
+        assert len(received) == (1 if case == "smart" else 0)
+        if case == "failed_handoff":
+            with pytest.raises(RuntimeError, match="handoff failed"):
+                await task
+        else:
+            assert not task.done()
+            release.set()
+            events = await asyncio.wait_for(task, timeout=1)
+            assert [event.event_type for event in events] == (
+                ["chat.final"] if case == "smart" else ["runtime.accepted", "chat.final"]
+            )
+            if received:
+                assert received[0].request_id == "answer-transport"
+                assert received[0].payload["request_id"] != answer.params["request_id"]
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await runtime.close()
+
+
 class AskUserAgent(FakeAgent):
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         return AgentResponse(
@@ -257,23 +354,23 @@ class FakePlanController:
 async def test_runtime_kvc_tracking_uses_current_product_hook_contract(
     monkeypatch,
 ) -> None:
-    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_product_hooks
+    from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
 
-    started: list[tuple[str, str]] = []
-    finished: list[tuple[str, bool]] = []
+    events: list[tuple[str, str, object]] = []
 
-    async def record_started(
-        *, session_id: str, params: dict[str, object], channel_id: str
-    ) -> None:
-        started.append((session_id, channel_id))
+    class Participant:
+        async def execution_started(self, event) -> None:
+            events.append(("started", event.target.descriptor.session_id, event.request_id))
 
-    def record_finished(*, session_id: str, succeeded: bool) -> None:
-        finished.append((session_id, succeeded))
+        def execution_finished(self, event) -> None:
+            events.append(("finished", event.target.descriptor.session_id, event.succeeded))
 
-    monkeypatch.setattr(kv_cache_product_hooks, "record_chat_started", record_started)
-    monkeypatch.setattr(kv_cache_product_hooks, "record_chat_finished", record_finished)
-
-    runtime = AgentRuntime(agent_manager=FakeAgentManager())
+    registry = RuntimeParticipantRegistry()
+    registry.replace_session_participants(activity=(Participant(),), delete=())
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        participant_registry=registry,
+    )
     request = AgentRequest(
         request_id="kvc-contract",
         channel_id="web",
@@ -282,11 +379,36 @@ async def test_runtime_kvc_tracking_uses_current_product_hook_contract(
         params={},
     )
 
-    await runtime._record_kvc_chat_started(request)
-    runtime._record_kvc_chat_finished(request, succeeded=True)
+    await runtime._record_session_execution_started(request)
+    runtime._record_session_execution_finished(request, succeeded=True)
 
-    assert started == [("session-a", "web")]
-    assert finished == [("session-a", True)]
+    assert events == [
+        ("started", "session-a", "kvc-contract"),
+        ("finished", "session-a", True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_activity_tracking_off_skips_target_and_history(monkeypatch) -> None:
+    runtime = AgentRuntime(agent_manager=FakeAgentManager())
+    request = AgentRequest(
+        request_id="tracking-off",
+        channel_id="web",
+        session_id="session-off",
+        req_method=ReqMethod.CHAT_SEND,
+        params={},
+    )
+    target_lookup = MagicMock(side_effect=AssertionError("target must not be built"))
+    monkeypatch.setattr(runtime, "_activity_target", target_lookup)
+
+    started = await runtime._record_session_execution_started(request)
+    runtime._record_session_execution_finished(request, succeeded=True)
+    prepare_result = await runtime.record_session_prepare(request)
+    await runtime.record_session_inactive(request)
+
+    assert started is False
+    assert prepare_result == "disabled"
+    target_lookup.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2809,8 +2931,8 @@ async def test_close_finishes_cleanup_before_propagating_cancellation() -> None:
 @pytest.mark.parametrize("error_type", [TimeoutError, RuntimeError])
 async def test_close_drain_failure_still_runs_host_and_agent_cleanup(error_type) -> None:
     manager = FakeAgentManager()
-    host_cleanup = AsyncMock()
-    runtime = AgentRuntime(agent_manager=manager, before_agent_cleanup=host_cleanup)
+    lease = SimpleNamespace(release=AsyncMock())
+    runtime = AgentRuntime(agent_manager=manager, resource_lease=lease)
     coordinator_close = AsyncMock(side_effect=error_type("drain failed"))
     runtime._session_coordinator.close = coordinator_close
 
@@ -2819,64 +2941,69 @@ async def test_close_drain_failure_still_runs_host_and_agent_cleanup(error_type)
 
     assert runtime.closed
     assert manager.cleanup_calls == 1
-    host_cleanup.assert_awaited_once()
+    lease.release.assert_awaited_once()
     coordinator_close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_optional_host_cleanup_failure_is_ignored_and_only_runs_once() -> None:
+async def test_close_timeout_keeps_runtime_and_agent_resources_alive() -> None:
     manager = FakeAgentManager()
-    cleanup = AsyncMock(side_effect=RuntimeError("optional cleanup failed"))
-    runtime = AgentRuntime(agent_manager=manager, before_agent_cleanup=cleanup)
+    lease = SimpleNamespace(release=AsyncMock())
+    runtime = AgentRuntime(agent_manager=manager, resource_lease=lease)
+    error = SessionCloseTimeoutError("runtime", ("heartbeat-run",))
+    runtime._session_coordinator.close = AsyncMock(side_effect=error)
 
-    await runtime.close()
+    with pytest.raises(SessionCloseTimeoutError):
+        await runtime.close()
+
+    assert not runtime.closed
+    assert manager.cleanup_calls == 0
+    lease.release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resource_lease_failure_propagates_after_agent_cleanup() -> None:
+    manager = FakeAgentManager()
+    lease = SimpleNamespace(
+        release=AsyncMock(side_effect=RuntimeError("lease release failed"))
+    )
+    runtime = AgentRuntime(agent_manager=manager, resource_lease=lease)
+
+    with pytest.raises(RuntimeError, match="lease release failed"):
+        await runtime.close()
     await runtime.close()
 
-    cleanup.assert_awaited_once()
+    lease.release.assert_awaited_once()
     assert manager.cleanup_calls == 1
     assert runtime.closed
 
 
 @pytest.mark.asyncio
-async def test_plain_runtime_does_not_run_another_owners_cleanup() -> None:
-    cleanup = AsyncMock()
-    owner = AgentRuntime(agent_manager=FakeAgentManager(), before_agent_cleanup=cleanup)
+async def test_plain_runtime_does_not_release_another_runtimes_lease() -> None:
+    lease = SimpleNamespace(release=AsyncMock())
+    owner = AgentRuntime(agent_manager=FakeAgentManager(), resource_lease=lease)
     plain = AgentRuntime(agent_manager=FakeAgentManager())
 
     await plain.close()
-    cleanup.assert_not_awaited()
+    lease.release.assert_not_awaited()
     await owner.close()
-    cleanup.assert_awaited_once()
+    lease.release.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("phase", ["cancel_pending_tasks", "close_kv_cache_runtime"])
-@pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError, asyncio.CancelledError])
-async def test_agent_server_kvc_cleanup_failure_still_closes_runtime(
-    monkeypatch, phase, error_type,
-) -> None:
+async def test_agent_server_stop_never_closes_kvc_runtime(monkeypatch) -> None:
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.server.runtime.session.kv_cache import (
-        kv_cache_application_runtime,
-        kv_cache_product_hooks,
-    )
+    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_application_runtime
 
     server = AgentWebSocketServer()
     previous_runtime = server.get_runtime()
     server._personal_context_host.stop = AsyncMock()
-    error = error_type("optional KVC cleanup failed")
-    drain = AsyncMock(side_effect=error if phase == "cancel_pending_tasks" else None)
-    close_kvc = AsyncMock(side_effect=error if phase == "close_kv_cache_runtime" else None)
-    monkeypatch.setattr(kv_cache_product_hooks, "cancel_pending_tasks", drain)
+    close_kvc = AsyncMock()
     monkeypatch.setattr(kv_cache_application_runtime, "close_kv_cache_runtime", close_kvc)
 
-    if error_type is asyncio.CancelledError:
-        with pytest.raises(asyncio.CancelledError):
-            await server.stop()
-    else:
-        await server.stop()
-        close_kvc.assert_awaited_once()
+    await server.stop()
 
+    close_kvc.assert_not_awaited()
     assert previous_runtime.closed
     assert server.get_runtime() is not previous_runtime
     server._personal_context_host.stop.assert_awaited_once()
@@ -2906,14 +3033,13 @@ async def test_agent_server_drain_cancellation_still_closes_runtime(monkeypatch)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("affinity_enabled", [False, True])
-async def test_agent_server_close_orders_drain_kvc_and_agent_cleanup(
+async def test_agent_server_close_does_not_schedule_remote_kvc_cleanup(
     monkeypatch, affinity_enabled,
 ) -> None:
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.session.kv_cache import (
         kv_cache_application_runtime,
         kv_cache_model_provider,
-        kv_cache_product_hooks,
     )
 
     monkeypatch.setattr(kv_cache_model_provider, "is_kv_cache_affinity_enabled", lambda: affinity_enabled)
@@ -2936,26 +3062,21 @@ async def test_agent_server_close_orders_drain_kvc_and_agent_cleanup(
     closing_runtime._session_coordinator.close = AsyncMock(side_effect=drain_sessions)
     closing_runtime.agent_manager.cancel_all_inflight_work = AsyncMock(side_effect=cancel_work)
     closing_runtime.agent_manager.cleanup = AsyncMock(side_effect=dispose_agents)
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "cancel_pending_tasks",
-        lambda: record("kvc-task-drain"),
+    server._suspend_kv_cache = AsyncMock(
+        side_effect=lambda: events.append("kvc-suspend")
     )
-    monkeypatch.setattr(
-        kv_cache_application_runtime,
-        "close_kv_cache_runtime",
-        lambda: record("kvc-runtime-close"),
-    )
+    close_kvc = AsyncMock(side_effect=lambda: record("kvc-runtime-close"))
+    monkeypatch.setattr(kv_cache_application_runtime, "close_kv_cache_runtime", close_kvc)
 
     await server.stop()
 
     assert events == [
+        "kvc-suspend",
         "session-drain",
         "inflight-cancel",
-        "kvc-task-drain",
-        "kvc-runtime-close",
         "agent-cleanup",
     ]
+    close_kvc.assert_not_awaited()
     closing_runtime._session_coordinator.close.assert_awaited_once()
 
 
@@ -2963,7 +3084,6 @@ async def test_agent_server_close_orders_drain_kvc_and_agent_cleanup(
 async def test_agent_server_stop_replaces_closed_one_shot_runtime(monkeypatch) -> None:
     from jiuwenswarm.server import agent_ws_server as server_module
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_product_hooks
 
     server = AgentWebSocketServer()
     previous_runtime = server.get_runtime()
@@ -2972,12 +3092,6 @@ async def test_agent_server_stop_replaces_closed_one_shot_runtime(monkeypatch) -
     previous_plan_controller.exited_sessions.add("session-before-stop")
     previous_lock = previous_plan_controller.lock_for("session-before-stop")
     previous_runtime.close = AsyncMock()
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "cancel_pending_tasks",
-        AsyncMock(),
-    )
-
     await server.stop()
 
     previous_runtime.close.assert_awaited_once()
@@ -2996,6 +3110,43 @@ async def test_agent_server_stop_replaces_closed_one_shot_runtime(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_agent_server_stop_does_not_recreate_kvc_runtime(monkeypatch) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.session.kv_cache import (
+        kv_cache_application_owner,
+        kv_cache_application_runtime,
+        kv_cache_model_provider,
+    )
+
+    runtime_lookups: list[str] = []
+    monkeypatch.setattr(kv_cache_application_owner, "_OWNER", None)
+    monkeypatch.setattr(
+        kv_cache_model_provider,
+        "is_kv_cache_affinity_enabled",
+        lambda: True,
+    )
+    kvc_runtime = object()
+    monkeypatch.setattr(
+        kv_cache_application_runtime,
+        "get_kv_cache_runtime",
+        lambda: runtime_lookups.append("get") or kvc_runtime,
+    )
+    close_kvc = AsyncMock()
+    monkeypatch.setattr(kv_cache_application_runtime, "close_kv_cache_runtime", close_kvc)
+    server = AgentWebSocketServer()
+    server._personal_context_host.stop = AsyncMock()
+
+    assert runtime_lookups == []
+    await server._kv_cache_application_owner.set_enabled(True)
+    assert runtime_lookups == ["get"]
+    await server.stop()
+
+    assert runtime_lookups == ["get"]
+    assert server._kv_cache_application_owner.state.value == "suspended"
+    close_kvc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_agent_server_stop_retains_runtime_when_close_is_rejected(
     monkeypatch,
 ) -> None:
@@ -3004,7 +3155,6 @@ async def test_agent_server_stop_retains_runtime_when_close_is_rejected(
     from jiuwenswarm.server.runtime.session.kv_cache import (
         kv_cache_application_runtime,
         kv_cache_model_provider,
-        kv_cache_product_hooks,
     )
 
     monkeypatch.setattr(kv_cache_model_provider, "is_kv_cache_affinity_enabled", lambda: True)
@@ -3038,16 +3188,13 @@ async def test_agent_server_stop_retains_runtime_when_close_is_rejected(
     )
     previous_runtime._session_provision_prepares = 1
     previous_runtime.close = AsyncMock(wraps=previous_runtime.close)
+    await server._kv_cache_application_owner.activate_from_config()
+    assert server._kv_cache_application_owner.state.value == "enabled"
     close_kv_cache_runtime = AsyncMock()
     monkeypatch.setattr(
         kv_cache_application_runtime,
         "close_kv_cache_runtime",
         close_kv_cache_runtime,
-    )
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "cancel_pending_tasks",
-        AsyncMock(),
     )
 
     with pytest.raises(RuntimeStateError) as caught:
@@ -3066,12 +3213,13 @@ async def test_agent_server_stop_retains_runtime_when_close_is_rejected(
     server._personal_context_host.stop.assert_awaited_once_with()
     previous_runtime.close.assert_awaited_once_with()
     close_kv_cache_runtime.assert_not_awaited()
+    assert server._kv_cache_application_owner.state.value == "suspended"
 
     previous_runtime._session_provision_prepares = 0
     await server.stop()
 
     assert previous_runtime.close.await_count == 2
-    close_kv_cache_runtime.assert_awaited_once_with()
+    close_kv_cache_runtime.assert_not_awaited()
     assert server.get_runtime() is not previous_runtime
     assert server.get_runtime().agent_manager is server.get_agent_manager()
 
@@ -3081,8 +3229,6 @@ async def test_agent_server_stop_replaces_runtime_after_closed_cleanup_error(
     monkeypatch,
 ) -> None:
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_product_hooks
-
     server = AgentWebSocketServer()
     previous_runtime = server.get_runtime()
 
@@ -3092,11 +3238,6 @@ async def test_agent_server_stop_replaces_runtime_after_closed_cleanup_error(
         raise RuntimeError("runtime cleanup failed")
 
     previous_runtime.close = AsyncMock(side_effect=close_with_cleanup_error)
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "cancel_pending_tasks",
-        AsyncMock(),
-    )
 
     await server.stop()
 
@@ -3112,8 +3253,6 @@ async def test_agent_server_start_restores_remote_service_after_stop(
 ) -> None:
     from jiuwenswarm.server import agent_ws_server as server_module
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_product_hooks
-
     class FakeWebSocketServer:
         def __init__(self) -> None:
             self.closed = False
@@ -3141,12 +3280,6 @@ async def test_agent_server_start_restores_remote_service_after_stop(
         server_module,
         "restore_runtime_push_handler",
         restore_runtime_push_handler,
-    )
-    cancel_pending_tasks = AsyncMock()
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "cancel_pending_tasks",
-        cancel_pending_tasks,
     )
 
     server = AgentWebSocketServer()
@@ -3185,4 +3318,3 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     await server.stop()
     recovered_runtime.close.assert_awaited_once_with()
     assert listeners[1].closed is True
-    assert cancel_pending_tasks.await_count == 2

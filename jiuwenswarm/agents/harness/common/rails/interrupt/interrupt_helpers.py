@@ -39,9 +39,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue i
     RootPermissionCard,
     RootPermissionQueue,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import (
-    install_permission_file_semantics,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
     redact_secret_values,
     sanitize_permission_ui_payload,
@@ -93,9 +90,20 @@ _AUTO_REVIEWER_UI_MAX_TEXT_LENGTH = 512
 
 
 def resolve_permission_workspace_dir(session_id: str | None = None) -> Path:
-    """Default file_guard workspace: session task dir, not the whole agent workspace."""
+    """Default file_guard workspace for manual permission mode.
+
+    Prefer an already-bound projectless task root (Documents/JiuwenSwarm) so
+    file_guard matches the operational workspace used by bash and file tools.
+    Fall back to the legacy per-session directory under agent/workspace/projects.
+    """
+    from jiuwenswarm.common.projectless_workspace import (
+        get_registered_projectless_task_root,
+    )
     from jiuwenswarm.common.utils import get_default_project_session_workspace_dir
 
+    registered = get_registered_projectless_task_root(session_id)
+    if registered is not None:
+        return registered
     return get_default_project_session_workspace_dir(session_id)
 
 
@@ -198,7 +206,6 @@ def build_permission_rail(
         PermissionConfirmResponse,
         PermissionSceneHookInput,
         ToolPermissionHost,
-        build_permission_interrupt_rail,
     )
 
     from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
@@ -220,6 +227,9 @@ def build_permission_rail(
     from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
         is_auto_permission_enabled,
         normalize_permissions_for_runtime,
+    )
+    from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+        AUTHORIZATION_EXECUTION_CONTEXTS,
     )
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
@@ -258,8 +268,6 @@ def build_permission_rail(
             session_id=bound_session_id,
         )
     )
-    if enable_auto_permission:
-        install_permission_file_semantics()
 
     def _collect_optional_tool_tags(cfg: dict[str, Any]) -> list[str]:
         # openjiuwen PermissionInterruptRail 会拦截所有工具；
@@ -342,6 +350,12 @@ def build_permission_rail(
                     return value.strip()
             return None
 
+        def _resolve_cron_job_id(metadata: dict[str, Any]) -> str:
+            cron = metadata.get("cron") if isinstance(metadata, dict) else None
+            if not isinstance(cron, dict):
+                return ""
+            return str(cron.get("job_id") or cron.get("jobId") or "").strip()
+
         async def _request_permission_confirmation(
             req: PermissionConfirmationRequest,
         ) -> PermissionConfirmResponse | str | None:
@@ -359,11 +373,176 @@ def build_permission_rail(
                     feedback="",
                 )
 
-            channel = TOOL_PERMISSION_CHANNEL_ID.get() or "web"
+            session_id = _resolve_session_id(req.ctx)
+            execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
+            channel = (
+                execution_context.channel_id
+                if execution_context is not None
+                else (TOOL_PERMISSION_CHANNEL_ID.get() or "web")
+            )
+
+            tool_call = req.tool_call
+            tool_name = getattr(tool_call, "name", "") if tool_call is not None else ""
+            tool_args_raw = getattr(tool_call, "arguments", None) if tool_call is not None else None
+            tool_args = _normalize_tool_args(tool_args_raw) or {}
+
+            if tool_name == "request_a4p_intent_authorization":
+                return PermissionConfirmResponse(
+                    approved=True,
+                    auto_confirm=False,
+                    feedback="",
+                )
+
+            def _matching_a4p_attempt() -> Any | None:
+                attempt = AUTHORIZATION_EXECUTION_CONTEXTS.get_attempt(session_id)
+                if attempt is None or execution_context is None:
+                    return None
+                if attempt.request_id != execution_context.request_id or attempt.status == "not_requested":
+                    return None
+                return attempt
+
+            def _deny_a4p_attempt(
+                attempt: Any,
+                *,
+                verification_error: str = "",
+            ) -> PermissionConfirmResponse:
+                code = (
+                    "A4P_SCOPE_DENIED"
+                    if attempt.status == "approved"
+                    else "A4P_AUTHORIZATION_UNAVAILABLE"
+                )
+                detail = (
+                    verification_error
+                    or attempt.error
+                    or "the approved token does not match the actual action and params"
+                )
+                return PermissionConfirmResponse(
+                    approved=False,
+                    auto_confirm=False,
+                    feedback=(
+                        f"[{code}] A4P authorization status={attempt.status}; "
+                        f"tool={tool_name}; {detail}. "
+                        "Correct the action scope and request authorization again; "
+                        "do not retry the protected call unchanged."
+                    ),
+                )
+
+            cron_job_id = ""
+            is_interactive_web = bool(
+                execution_context is not None
+                and execution_context.is_interactive_web
+            )
+
+            def _deny_cron_scope(reason: str) -> PermissionConfirmResponse:
+                return PermissionConfirmResponse(
+                    approved=False,
+                    auto_confirm=False,
+                    feedback=(
+                        "[A4P_CRON_SCOPE_DENIED] 定时任务无法使用交互式审批。"
+                        f"job={cron_job_id or 'unknown'} tool={tool_name or 'unknown'}；{reason}。"
+                        "请检查运行上下文中注入的 A4P action/params scope、token 有效期和 "
+                        "agent 绑定；不要原样重试 scope 外调用。"
+                    ),
+                )
+
+            if channel == "__cron__" or is_interactive_web:
+                try:
+                    from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                        get_a4p_runtime,
+                        is_a4p_enabled,
+                        resolve_a4p_identity,
+                    )
+
+                    config = get_config()
+                    if is_a4p_enabled(config):
+                        metadata = (
+                            execution_context.metadata
+                            if execution_context is not None
+                            else {}
+                        )
+                        agent_name = (
+                            execution_context.agent_id
+                            if execution_context is not None
+                            else ""
+                        )
+                        identity = resolve_a4p_identity(
+                            metadata=metadata,
+                            agent_name=agent_name,
+                        )
+                        runtime = get_a4p_runtime()
+                        cron_job_id = _resolve_cron_job_id(metadata)
+                        if cron_job_id:
+                            token = await runtime.find_valid_cron_intent_token(
+                                cron_job_id=cron_job_id,
+                                identity=identity,
+                                action=tool_name,
+                                params=tool_args,
+                            )
+                            if token is not None:
+                                logger.info(
+                                    "[InterruptHelpers] A4P cron intent token approved tool=%s cron_job=%s",
+                                    tool_name,
+                                    cron_job_id,
+                                )
+                                return PermissionConfirmResponse(
+                                    approved=True,
+                                    auto_confirm=False,
+                                    feedback="",
+                                )
+                            if channel == "__cron__":
+                                return _deny_cron_scope(
+                                    "没有匹配当前 action 和实际参数的有效 A4P cron intent token，"
+                                    "或 token 已过期、agent 绑定不匹配"
+                                )
+
+                        if channel == "__cron__":
+                            return _deny_cron_scope(
+                                "请求 metadata.cron.job_id 缺失，无法定位 job 授权"
+                            )
+
+                        if not session_id:
+                            logger.warning(
+                                "[InterruptHelpers] A4P intent token check skipped: session_id missing"
+                            )
+                            return "interrupt"
+                        token = await runtime.find_valid_intent_token(
+                            session_id=session_id,
+                            identity=identity,
+                            action=tool_name,
+                            params=tool_args,
+                        )
+                        if token is not None:
+                            logger.info(
+                                "[InterruptHelpers] A4P intent token approved tool=%s session=%s",
+                                tool_name,
+                                session_id,
+                            )
+                            return PermissionConfirmResponse(
+                                approved=True,
+                                auto_confirm=False,
+                                feedback="",
+                            )
+                        attempt = _matching_a4p_attempt()
+                        if attempt is not None:
+                            return _deny_a4p_attempt(attempt)
+                        return "interrupt"
+                except Exception as exc:
+                    logger.warning(
+                        "[InterruptHelpers] A4P intent authorization check failed: %s",
+                        exc,
+                    )
+                    if channel == "__cron__":
+                        return _deny_cron_scope(f"A4P token 校验异常：{exc}")
+                    attempt = _matching_a4p_attempt()
+                    if attempt is not None:
+                        return _deny_a4p_attempt(
+                            attempt,
+                            verification_error=f"A4P token verification failed: {exc}",
+                        )
+
             if channel != "acp":
                 return "interrupt"
 
-            session_id = _resolve_session_id(req.ctx)
             if not session_id:
                 return None
 
@@ -620,35 +799,36 @@ def build_permission_rail(
             return persisted
 
         effective_workspace_root = (
-            workspace_root if enable_auto_permission and workspace_root is not None
+            Path(workspace_root).resolve(strict=False)
+            if enable_auto_permission and workspace_root is not None
             else resolve_permission_workspace_dir(bound_session_id)
         )
+
+        def _resolve_host_workspace_dir() -> Path:
+            if enable_auto_permission and workspace_root is not None:
+                return Path(workspace_root).resolve(strict=False)
+            return resolve_permission_workspace_dir(bound_session_id)
+
         host = ToolPermissionHost(
             get_permissions_snapshot=_get_installed_permissions,
             persist_allow_rule=_persist_allow_rule,
             persist_session_allow_rule=_persist_session_allow_rule,
-            resolve_workspace_dir=lambda: effective_workspace_root,
+            resolve_workspace_dir=_resolve_host_workspace_dir,
             permission_yaml_path=get_config_file(),
             request_permission_confirmation=_request_permission_confirmation,
             permission_scene_hook=_permission_scene_hook,
         )
 
-        if enable_auto_permission:
-            permission_rail = JiuwenSwarmPermissionInterruptRail(
-                config=permission_config,
-                tool_names=tool_names,
-                llm=llm,
-                model_name=model_name,
-                host=host,
-                exact_persist_callback=_persist_exact_allow_rule,
-            )
-        else:
-            permission_rail = build_permission_interrupt_rail(
-                permissions=permission_config,
-                llm=llm,
-                model_name=model_name,
-                host=host,
-            )
+        permission_rail = JiuwenSwarmPermissionInterruptRail(
+            config=permission_config,
+            tool_names=tool_names,
+            llm=llm,
+            model_name=model_name,
+            host=host,
+            exact_persist_callback=(
+                _persist_exact_allow_rule if enable_auto_permission else None
+            ),
+        )
         if enable_auto_permission:
             from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
                 normalize_auto_permission_options,
@@ -797,6 +977,7 @@ def _build_plain_ask_user_question(value_obj: Any) -> dict | None:
 _PERMISSION_INTERRUPT_MARKERS = (
     "需要授权才能执行",
     "需要授权后才能使用",
+    "需要确认后才能执行",
     "检测到受保护的文件路径访问",
     "检测到需确认的网络访问",
     "检测到需确认的命令执行",

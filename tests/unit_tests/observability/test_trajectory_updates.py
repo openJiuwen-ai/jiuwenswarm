@@ -85,6 +85,7 @@ async def test_webchannel_routes_trace_update_to_matching_session_only() -> None
         "session_id": "session-1",
         "trace_id": "2" * 32,
         "revision": 9,
+        "frame_seq": 0,
         "store_epoch": "epoch-2",
         "lifecycle": "final",
     }
@@ -138,3 +139,50 @@ async def test_webchannel_coalesces_running_backlog_into_latest_final_hint(
     assert channel._trajectory_pending_updates == {}
     assert channel._trajectory_send_task is None
     test_logger.info("latest final hint absorbed the queued running backlog")
+
+
+@pytest.mark.asyncio
+async def test_webchannel_hint_survives_when_only_frames_advanced(monkeypatch) -> None:
+    """New frames on an unchanged record must still wake the reader.
+
+    A streaming span commits frames far more often than it rewrites its own
+    record. If coalescing ranked hints by revision alone, the hint carrying
+    those frames would tie with the one already queued and could be dropped,
+    leaving a live answer frozen until the span ended.
+    """
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect."
+        "_TRAJECTORY_HINT_COALESCE_SECONDS",
+        0,
+    )
+    channel = WebChannel.__new__(WebChannel)
+    channel._trajectory_pending_updates = {}
+    channel._trajectory_send_task = None
+    sent: list[tuple[CommittedTraceUpdate, ...]] = []
+
+    async def _send(updates) -> None:
+        sent.append(tuple(updates))
+
+    channel._send_trajectory_updates = _send
+    earlier = CommittedTraceUpdate(
+        session_id="session-1",
+        trace_id="4" * 32,
+        revision=50,
+        lifecycle="running",
+        frame_seq=10,
+    )
+    more_frames = CommittedTraceUpdate(
+        session_id="session-1",
+        trace_id="4" * 32,
+        revision=50,
+        lifecycle="running",
+        frame_seq=90,
+    )
+
+    channel.schedule_trajectory_updates((earlier, more_frames))
+    task = channel._trajectory_send_task
+    assert task is not None
+    await task
+
+    assert sent == [(more_frames,)]
+    test_logger.info("frame watermark advanced the hint without a record change")

@@ -13,6 +13,11 @@ import { SkillTreePath } from './SkillTreePath';
 import { BeamSearchTree } from './BeamSearchTree';
 import { MarkdownRenderer } from '../MarkdownRenderer/MarkdownRenderer';
 import { classifyToolCall, describeToolCall, type ToolCategory } from './toolCategory';
+import {
+  resolveTeamLeaderDisplayName,
+  type TeamLeaderIdentity,
+} from '../../features/teamLeaderIdentity';
+import { AutoReviewerDetails, AutoReviewerStatusBadge } from './AutoReviewerStatus';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
@@ -20,6 +25,7 @@ interface ToolGroupDisplayProps {
   showAvatar?: boolean;
   teamLayout?: boolean;
   agentTemplateName?: string;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
   collapseSkillTreeWhenContentStarts?: boolean;
   viewedSkillIds?: string[];
 }
@@ -178,6 +184,7 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
     : null;
   const isSymphonyComposeGraph = toolCall.name === 'symphony_compose_graph' || result?.toolName === 'symphony_compose_graph';
   const mermaid = isSymphonyComposeGraph ? result?.mermaid : undefined;
+  const reviewer = result?.reviewer ?? toolCall.reviewer;
 
   return (
     <div className="tool-tree-item__detail" data-testid="chat-panel-tool-execution-details">
@@ -189,7 +196,7 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
           {toolNameLabel}
         </pre>
       </div>
-
+      <AutoReviewerDetails reviewer={reviewer} />
       {hasArguments && (
         <div className="tool-tree-item__detail-block" data-testid="chat-panel-tool-execution-details-arguments">
           <div className="tool-tree-item__detail-label">
@@ -391,10 +398,11 @@ export function ToolGroupDisplay({
   showAvatar = true,
   teamLayout = false,
   agentTemplateName,
+  teamLeaderIdentity,
   collapseSkillTreeWhenContentStarts = false,
   viewedSkillIds: turnViewedSkillIds = [],
 }: ToolGroupDisplayProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
   const toggleLine = useCallback((key: string) => {
     setOpenKeys((current) => ({ ...current, [key]: !current[key] }));
@@ -435,6 +443,13 @@ export function ToolGroupDisplay({
         <div className="pt-0.5 tool-group-frame__avatar" data-testid="chat-panel-tool-group-avatar">
           {!teamLayout && agentTemplateName ? (
             <AgentAvatar agentId={agentTemplateName} alt="" />
+          ) : teamLeaderIdentity ? (
+            <div className="flex items-center gap-3">
+              <AgentAvatar identityOverride={teamLeaderIdentity} alt="" />
+              <span className="chat-avatar-name">
+                {resolveTeamLeaderDisplayName(teamLeaderIdentity, i18n.language)}
+              </span>
+            </div>
           ) : (
             <TeamMemberAvatar member="team_leader" />
           )}
@@ -481,6 +496,12 @@ export function ToolGroupDisplay({
                     >
                       {line.text}
                     </span>
+                    <AutoReviewerStatusBadge
+                      reviewer={
+                        line.executions[0]?.result?.reviewer ??
+                        line.executions[0]?.toolCall.reviewer
+                      }
+                    />
                     <span
                       className={clsx('tool-tree-item__disclosure', open && 'is-open')}
                       aria-hidden="true"

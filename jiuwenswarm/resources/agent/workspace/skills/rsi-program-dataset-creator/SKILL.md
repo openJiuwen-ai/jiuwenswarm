@@ -140,7 +140,7 @@ The program goes under `seed/`, and the card's `entrypoint` names the file the e
 
 - **One Python file** → `seed/candidate.py`, `"entrypoint": "candidate.py"`. Any other name works the same way as long as the two agree; AlgoTune-style tasks whose harness imports `solver.py` write `seed/solver.py` and `"entrypoint": "solver.py"`.
 - **One file that is not Python** → keeps its own name — `seed/solve.sh`, `seed/solve.js` — and `entrypoint` says so. Nothing renames it and nothing parses it. See "A program that is not Python" below.
-- **A tree** → keeps its own layout under `seed/`, and `entrypoint` names the file the evaluator imports, as a path relative to `seed/`. A tree whose entrypoint the card does not name is refused rather than guessed at.
+- **A tree** → keeps its own layout under `seed/`, and `entrypoint` names the file the evaluator imports, as a path relative to `seed/`. A tree whose entrypoint the card does not name is refused rather than guessed at. **`task.json`'s `artifact_path` must then be `seed`, not `seed/<entrypoint>`** — the provider loads exactly what that key names, and naming the entrypoint loads that one file and drops the rest of the tree (Step 4).
 
 **A tree is loaded by extension, and the list is short**: `.md .txt .py .json .yaml .yml .toml .sh .cfg .ini`. Anything else in a seed *directory* is dropped without a word — a directory of `.js` keeps only its `.sh`, and a directory of `.rs` fails with "no files matched". A one-file seed does not go through that loader, so a lone `solve.js` or `solve.rs` is fine. So: a non-Python program is one file, unless its extension is on that list. `__pycache__`, `.git`, `node_modules`, `.venv` and `.DS_Store` are excluded on purpose — a stray `__pycache__` from your own testing does not reach the run.
 
@@ -173,7 +173,7 @@ The one file in the folder written for the caller rather than for the run. The p
 | key | write | what it is |
 |---|---|---|
 | `task_id` | `evolve-<task>` | The folder's name for itself. The run's own id is assigned by the caller; this one is what a reader searches for. |
-| `artifact_path` | `seed/<entrypoint>` | Where the program is, relative to the folder. |
+| `artifact_path` | `seed/<entrypoint>` for one file, `seed` for several | **The program, as the run will load it — not a label.** The provider reads this key first and takes it literally: `seed/candidate.py` means the program *is* that one file. For a tree it must be `seed`, the directory, or every other file is left out of the program. Measured: a tokenizer seeded as `seed/candidate.py` + `seed/rules.py` with `artifact_path: seed/candidate.py` was refused at folder selection with `import 'rules' is not installed in the candidate runtime` — `rules.py` never reached the program, so the gate did not know it was local and went looking for an installed package. One file keeps the file form because a directory is loaded by extension (Step 3) and a lone `solve.js` in a directory would be dropped. |
 | `run_dir` | `run` | Where the card and prompts are, relative to the folder. |
 | `max_iterations` | the card's `iterations` | **Must equal `iterations` in the card.** A caller that has to fill in the contract's `max_iterations` reads it here; the provider reads the card; the two must not disagree. |
 | `entrypoint` | the card's `entrypoint` | Repeated here so the manifest is complete on its own. Must equal the card's. |

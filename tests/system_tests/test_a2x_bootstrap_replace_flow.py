@@ -33,7 +33,7 @@ async def test_shutdown_cleanup_scheduler_deletes_team_session_and_pushes_notice
     async def fake_sleep(_delay: float) -> None:
         return None
 
-    manager = SimpleNamespace(delete_session_runtime=AsyncMock(return_value=True))
+    manager = SimpleNamespace(stop_session_runtime=AsyncMock(return_value=True))
     notices: list[dict] = []
 
     async def fake_push_shutdown_cleanup_notice(**kwargs) -> None:
@@ -104,7 +104,7 @@ async def test_shutdown_cleanup_scheduler_deletes_team_session_and_pushes_notice
     )
 
     assert cleaned is True
-    manager.delete_session_runtime.assert_awaited_once_with(
+    manager.stop_session_runtime.assert_awaited_once_with(
         "sess-shutdown",
         reason="team.shutdown_all_members: ",
     )

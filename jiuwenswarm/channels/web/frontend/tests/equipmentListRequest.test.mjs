@@ -17,7 +17,7 @@ test('equipment list requests wait long enough for the backend Hub fallback resp
   assert.deepEqual(result, { items: [] });
   assert.deepEqual(requestCall, {
     method: 'mcp.list',
-    params: { filter: 'builtin' },
+    params: { filter: 'builtin', cache_mode: 'prefer_cache' },
     options: { timeoutMs: 75_000 },
   });
 });

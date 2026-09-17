@@ -4,7 +4,11 @@ import type { Element as HastElement } from 'hast';
 import { unescapeLiteralNewlines } from '../../utils/finalContent';
 import { getFencedCodeBlock } from './codeBlocks/fencedCode';
 import { getFencedCodeAdapter } from './codeBlocks/registry';
-import { MARKDOWN_REHYPE_PLUGINS, MARKDOWN_REMARK_PLUGINS } from './markdownPlugins';
+import {
+  MARKDOWN_REHYPE_HTML_ONLY_PLUGINS,
+  MARKDOWN_REHYPE_PLUGINS,
+  MARKDOWN_REMARK_PLUGINS,
+} from './markdownPlugins';
 import { repairCollapsedGfmTables } from './markdownTransforms';
 import './MarkdownRenderer.css';
 
@@ -21,6 +25,7 @@ interface MarkdownRendererProps {
 const MarkdownContentLinesContext = createContext<string[]>([]);
 const MarkdownStreamingContext = createContext(false);
 const MermaidCanvasMinHeightContext = createContext<number | undefined>(undefined);
+export const MarkdownIncludeMathMLContext = createContext(true);
 const MarkdownLinkClickContext = createContext<MarkdownRendererProps['onLinkClick']>(undefined);
 
 function MarkdownLink({ href, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>): JSX.Element {
@@ -92,6 +97,7 @@ const MARKDOWN_COMPONENTS = {
 export function MarkdownRenderer({ content, className, testId, isStreaming = false, mermaidCanvasMinHeight, onLinkClick }: MarkdownRendererProps): JSX.Element {
   const markdown = useMemo(() => repairCollapsedGfmTables(unescapeLiteralNewlines(content)), [content]);
   const contentLines = useMemo(() => markdown.split(/\r\n|\n|\r/), [markdown]);
+  const includeMathML = useContext(MarkdownIncludeMathMLContext);
 
   return (
     <div className={className} data-testid={testId}>
@@ -99,7 +105,11 @@ export function MarkdownRenderer({ content, className, testId, isStreaming = fal
         <MarkdownStreamingContext.Provider value={isStreaming}>
           <MermaidCanvasMinHeightContext.Provider value={mermaidCanvasMinHeight}>
             <MarkdownLinkClickContext.Provider value={onLinkClick}>
-              <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS} rehypePlugins={MARKDOWN_REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
+              <ReactMarkdown
+                remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                rehypePlugins={includeMathML ? MARKDOWN_REHYPE_PLUGINS : MARKDOWN_REHYPE_HTML_ONLY_PLUGINS}
+                components={MARKDOWN_COMPONENTS}
+              >
                 {markdown}
               </ReactMarkdown>
             </MarkdownLinkClickContext.Provider>

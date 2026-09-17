@@ -2,7 +2,7 @@
 
 /** Idempotent reducer for canonical OpenJiuwen trajectory schema-v2 events. */
 
-import { OPENJIUWEN_ATTRIBUTES } from '../semconv/constants.ts'
+import { OPENJIUWEN_ATTRIBUTES, STANDARD_ATTRIBUTES } from '../semconv/constants.ts'
 import { attributeMap } from '../shared/otlp.ts'
 import type { OtlpExportTraceServiceRequest, OtlpSpan } from '../shared/otlp.ts'
 import type { TrajectoryDiagnostic, TrajectoryPromptSnapshot } from '../trajectory/model.ts'
@@ -36,7 +36,8 @@ interface ContextCommitPayload {
   window_id: string
   base_window_id: string | null
   complete: true
-  messages: ContextMessage[]
+  /** Present only on a baseline; every other commit states its delta alone. */
+  messages?: ContextMessage[]
   delta: ContextDelta[]
   request_purpose?: string
   correlation_kind?: string
@@ -275,7 +276,7 @@ function parseEvent(record: OtlpExportTraceServiceRequest): ParsedEvent | Trajec
     attributes,
     OPENJIUWEN_ATTRIBUTES.trajectoryRecordedAtUnixNano,
   )
-  const sessionId = textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.trajectorySessionId)
+  const sessionId = textAttribute(attributes, STANDARD_ATTRIBUTES.conversationId)
   const payload = payloadAttribute(attributes)
   if (subjectId === undefined || eventId === undefined || eventKind === undefined
     || sequence === undefined || sequenceEpoch === undefined
@@ -301,11 +302,11 @@ function parseEvent(record: OtlpExportTraceServiceRequest): ParsedEvent | Trajec
     record,
     span,
     traceId: span.traceId,
-    requestId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.trajectoryRequestId),
+    requestId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.requestId),
     turn: safePositiveInteger(bigintAttribute(attributes, OPENJIUWEN_ATTRIBUTES.turnNumber)) ?? 1,
     step: safePositiveInteger(bigintAttribute(attributes, OPENJIUWEN_ATTRIBUTES.stepNumber)) ?? 1,
-    stepId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.trajectoryStepId),
-    turnId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.trajectoryTurnId),
+    stepId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.stepId),
+    turnId: textAttribute(attributes, OPENJIUWEN_ATTRIBUTES.turnId),
   }
 }
 
@@ -355,8 +356,14 @@ function contextDelta(value: unknown): ContextDelta | undefined {
 
 function contextCommitPayload(value: Record<string, unknown>): ContextCommitPayload | undefined {
   if (typeof value.window_id !== 'string' || value.window_id.trim() === ''
-    || value.complete !== true || !Array.isArray(value.messages) || !Array.isArray(value.delta)
+    || value.complete !== true || !Array.isArray(value.delta)
     || !(value.base_window_id === null || typeof value.base_window_id === 'string')) return undefined
+  // A baseline must state its window; anywhere else it is optional extra that
+  // the delta rebuild is checked against.
+  if (value.transition_kind === 'epoch_baseline' && !Array.isArray(value.messages)) {
+    return undefined
+  }
+  if (value.messages !== undefined && !Array.isArray(value.messages)) return undefined
   const optionalTextFields = [
     value.request_purpose,
     value.baseline_reason,
@@ -370,13 +377,18 @@ function contextCommitPayload(value: Record<string, unknown>): ContextCommitPayl
   }
   if (value.input_window_id !== undefined && value.input_window_id !== null
     && typeof value.input_window_id !== 'string') return undefined
-  const messages = value.messages.map(contextMessage)
+  const messages = Array.isArray(value.messages)
+    ? value.messages.map(contextMessage)
+    : undefined
   const delta = value.delta.map(contextDelta)
-  if (messages.some(message => message === undefined) || delta.some(operation => operation === undefined)) {
+  if (messages?.some(message => message === undefined)
+    || delta.some(operation => operation === undefined)) {
     return undefined
   }
-  const messageIds = (messages as ContextMessage[]).map(message => message.message_id)
-  if (new Set(messageIds).size !== messageIds.length) return undefined
+  if (messages !== undefined) {
+    const messageIds = (messages as ContextMessage[]).map(message => message.message_id)
+    if (new Set(messageIds).size !== messageIds.length) return undefined
+  }
   const epochBaseline = value.transition_kind === 'epoch_baseline'
   if (epochBaseline && (value.base_window_id !== null
     || value.baseline_reason !== 'runtime_epoch_start'
@@ -386,7 +398,7 @@ function contextCommitPayload(value: Record<string, unknown>): ContextCommitPayl
     window_id: value.window_id,
     base_window_id: value.base_window_id,
     complete: true,
-    messages: messages as ContextMessage[],
+    ...(messages === undefined ? {} : { messages: messages as ContextMessage[] }),
     delta: delta as ContextDelta[],
     ...(typeof value.baseline_reason === 'string' ? { baseline_reason: value.baseline_reason } : {}),
     ...(typeof value.request_purpose === 'string' ? { request_purpose: value.request_purpose } : {}),
@@ -479,12 +491,18 @@ const EPOCH_INPUT_SOURCE_KINDS = new Set(['query', 'resume', 'steering'])
 function epochBaselineCells(
   event: ParsedEvent,
   payload: ContextCommitPayload,
+  messages: readonly ContextMessage[],
   previous: readonly ContextMessage[],
   behaviorOrder: number,
 ): TrajectoryCell[] {
   const previousSlots = new Map(logicalSystemSlots(previous).map(slot => [slot.key, slot]))
+  // What the epoch before this one already carried. A baseline restates its
+  // whole window rather than the change, so a run that resumes an existing
+  // conversation restates everything the user ever said. Without this, each
+  // restart presents those messages again as though they were just spoken.
+  const carriedOver = new Set(previous.map(message => message.message_id))
   const operations: ContextDelta[] = []
-  for (const slot of logicalSystemSlots(payload.messages)) {
+  for (const slot of logicalSystemSlots(messages)) {
     const previousSlot = previousSlots.get(slot.key)
     if (previousSlot !== undefined
       && systemSlotFingerprint(previousSlot.message) === systemSlotFingerprint(slot.message)) continue
@@ -495,10 +513,14 @@ function epochBaselineCells(
       message: slot.message,
     })
   }
-  payload.messages.forEach((message, index) => {
+  messages.forEach((message, index) => {
     if (message.role !== 'user' || message.origin !== 'external_user'
       || message.source_kind === undefined
       || !EPOCH_INPUT_SOURCE_KINDS.has(message.source_kind)) return
+    // Message ids survive a restart, so one already in the previous window is
+    // one this reader has seen. Only what the user said since is new, which
+    // is the same test the system slots above make by fingerprint.
+    if (carriedOver.has(message.message_id)) return
     operations.push({
       op: 'insert',
       message_id: message.message_id,
@@ -509,6 +531,7 @@ function epochBaselineCells(
   return contextCells(
     event,
     { ...payload, delta: operations },
+    messages,
     previous,
     undefined,
     behaviorOrder,
@@ -692,6 +715,7 @@ function contextDisplayOperations(
 function contextCells(
   event: ParsedEvent,
   payload: ContextCommitPayload,
+  messages: readonly ContextMessage[],
   base: readonly ContextMessage[] | undefined,
   compactionOperationId?: string,
   behaviorOrder = event.sequence,
@@ -699,7 +723,7 @@ function contextCells(
   const rawOperations = payload.delta.length > 0
     ? payload.delta
     : payload.base_window_id === null
-      ? payload.messages.map((message, index): ContextDelta => ({
+      ? messages.map((message, index): ContextDelta => ({
           op: 'insert',
           message_id: message.message_id,
           index,
@@ -708,7 +732,7 @@ function contextCells(
       : []
   const operations = contextDisplayOperations(rawOperations, base ?? [])
   const baseById = new Map((base ?? []).map(message => [message.message_id, message]))
-  const prompt = contextPromptMaterialization(payload.messages)
+  const prompt = contextPromptMaterialization(messages)
   const previousPrompt = base === undefined
     ? undefined
     : contextPromptMaterialization(base)
@@ -726,7 +750,7 @@ function contextCells(
     const previousMessage = operation.display_previous_message
       ?? (operation.op === 'replace' ? baseById.get(operation.message_id) : undefined)
     const previousText = displayContent(previousMessage)
-    const currentMessageIndex = payload.messages.findIndex(
+    const currentMessageIndex = messages.findIndex(
       candidate => candidate.message_id === operation.message_id,
     )
     const previousMessageIndex = (base ?? []).findIndex(
@@ -737,7 +761,7 @@ function contextCells(
         && (base?.length ?? 0) === 0
         && currentMessageIndex >= 0
     )
-      ? contextPromptMaterialization(payload.messages.slice(0, currentMessageIndex))
+      ? contextPromptMaterialization(messages.slice(0, currentMessageIndex))
       : previousPrompt
     const promptSystemMessageIndex = prompt.slotByMessageId.get(operation.message_id)
       ?? operationPreviousPrompt?.slotByMessageId.get(operation.message_id)
@@ -1109,21 +1133,40 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
         ))
       }
       const epochBaseline = payload.transition_kind === 'epoch_baseline'
-      if (base !== undefined && !epochBaseline) {
-        const reconstructed = applyContextDelta(base, payload.delta)
-        if (reconstructed === undefined || !sameCheckpoint(reconstructed, payload.messages)) {
-          accumulator.diagnostics.push(diagnostic(
-            'v2.delta_checkpoint_mismatch',
-            'Context delta does not reconstruct its complete checkpoint; the last valid window was retained.',
-            subjectId,
-            event.eventId,
-            event.sequence,
-          ))
-          continue
-        }
+      // A baseline states its window; every other commit states the change and
+      // the window is rebuilt by applying it onto the base. When both are
+      // present the rebuild doubles as a check that they agree.
+      const reconstructed = base === undefined || epochBaseline
+        ? undefined
+        : applyContextDelta(base, payload.delta)
+      if (base !== undefined && !epochBaseline
+        && (reconstructed === undefined
+          || (payload.messages !== undefined
+            && !sameCheckpoint(reconstructed, payload.messages)))) {
+        accumulator.diagnostics.push(diagnostic(
+          'v2.delta_checkpoint_mismatch',
+          'Context delta does not reconstruct its complete checkpoint; the last valid window was retained.',
+          subjectId,
+          event.eventId,
+          event.sequence,
+        ))
+        continue
       }
-      accumulator.windows.set(payload.window_id, payload.messages)
-      lastWindow = payload.messages
+      const window = payload.messages ?? reconstructed
+      if (window === undefined) {
+        // The chain is broken here: no complete window was stated and the base
+        // this delta applies onto was never read.
+        accumulator.diagnostics.push(diagnostic(
+          'v2.missing_base_window',
+          `Base context window ${payload.base_window_id} is not available and this commit states no complete window.`,
+          subjectId,
+          event.eventId,
+          event.sequence,
+        ))
+        continue
+      }
+      accumulator.windows.set(payload.window_id, window)
+      lastWindow = window
       accumulator.handledInferenceIds.add(event.inferenceIds[0])
       const referencedOperationId = payload.caused_by_operation_id?.trim()
       if (referencedOperationId) {
@@ -1157,12 +1200,14 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
           ? epochBaselineCells(
               event,
               payload,
+              window,
               epochBaselineBase,
               subjectOrder,
             )
           : contextCells(
               event,
               payload,
+              window,
               base,
               correlation.operationId,
               subjectOrder,

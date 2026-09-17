@@ -31,3 +31,40 @@ test('stale send completion cannot consume a newer Agent clear intent', () => {
     useSessionStore.getState().removeRuntime(sessionId);
   }
 });
+
+test('an AgentGroup selection can be locked optimistically while awaiting binding', () => {
+  const sessionId = 'agent-group-binding-pending';
+  const store = useSessionStore.getState();
+  store.ensureRuntime(sessionId);
+  try {
+    store.setAgentGroupSelectionIntent(sessionId, { kind: 'select', id: 'group-a' });
+    store.setAgentGroupBindingPending(sessionId, 'group-a');
+
+    let runtime = useSessionStore.getState().getRuntime(sessionId);
+    assert.equal(runtime?.agentGroupBinding, null);
+    assert.equal(runtime?.agentGroupBindingPending, 'group-a');
+    assert.deepEqual(runtime?.agentGroupSelectionIntent, { kind: 'select', id: 'group-a' });
+
+    store.setAgentGroupBinding(sessionId, 'group-a');
+    runtime = useSessionStore.getState().getRuntime(sessionId);
+    assert.equal(runtime?.agentGroupBinding, 'group-a');
+    assert.equal(runtime?.agentGroupBindingPending, null);
+
+    store.setAgentGroupBindingPending(sessionId, 'group-b');
+    store.setCurrentSession({ session_id: sessionId, mode: 'team', agent_group_name: null });
+    runtime = useSessionStore.getState().getRuntime(sessionId);
+    assert.equal(runtime?.agentGroupBindingPending, 'group-b');
+
+    store.setCurrentSession({ session_id: sessionId, mode: 'team', agent_group_name: 'group-b' });
+    runtime = useSessionStore.getState().getRuntime(sessionId);
+    assert.equal(runtime?.agentGroupBindingPending, null);
+
+    store.setAgentGroupBindingPending(sessionId, 'group-c');
+    store.setAgentGroupBinding(sessionId, null);
+    runtime = useSessionStore.getState().getRuntime(sessionId);
+    assert.equal(runtime?.agentGroupBinding, null);
+    assert.equal(runtime?.agentGroupBindingPending, null);
+  } finally {
+    useSessionStore.getState().removeRuntime(sessionId);
+  }
+});

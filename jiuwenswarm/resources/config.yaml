@@ -30,6 +30,10 @@ a2ui:
 rsi:
   enabled: true
 
+a4p:
+  enabled: false
+  require_user_signature: false
+
 symphony:
   enabled: false
   paths:
@@ -52,9 +56,10 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: false  # true = 消费 Session 轨迹并使用动态 overlay
+    enabled: false  # true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
+    # 以下 flow 参数仅供旧 Session-history 蒸馏接口兼容；Core 经验沉淀随 enabled 同步启停。
     flow:
-      enabled: false            # true = 任务结束后蒸馏 skill pack
+      enabled: false            # legacy 路径是否在任务结束后蒸馏 skill pack
       min_edge_support: 1      # 边至少出现几次（调试=1，正式=2-3）
       min_edge_success_rate: 0.5  # 边成功率阈值（调试=0.5，正式=0.8）
       min_successes_candidate: 2  # 至少成功几次产出 candidate pack
@@ -98,7 +103,7 @@ symphony:
 auto_memory_enabled: false
 
 # 日志目录：~/.jiuwenswarm/agent/.logs/
-# gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总。
+# gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总（不含 gateway 日志）。
 # level：未单独指定时的默认级别。console_level：控制台；可省略则用 level。
 # 环境变量 LOG_LEVEL 仅覆盖控制台级别（不覆盖各日志文件）。
 logging:
@@ -287,7 +292,7 @@ models:
         stream_idle_timeout: 120
         verify_ssl: true
         custom_headers: {}
-      model_config_obj:
+      model_config_obj: {}
         # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
         # defaults / agentos / video / audio / vision / image_gen 均可填）。
         # 经 _build_model_from_entry 放进 core 的 ModelRequestConfig，供 core 从
@@ -299,8 +304,8 @@ models:
         # 公共出口对 context_window 统一 pop 防发厂商；core 加正式字段后
         # （届时 core 自行 exclude 不发厂商、self.model_config.context_window 可读），
         # jiuwenswarm 自动停止 pop，把值留给 core。无需人工同步。
-        # 不填 = core 按模型名查表 / 兜底 200000。
-        context_window: 131072
+        # 未显式填写时，JiuwenSwarm 使用固定的 256K 上下文默认值。
+        # 如需覆盖默认值，可在 model_config_obj 下配置 context_window。
       is_default: true
   video:
       model_client_config:
@@ -371,7 +376,7 @@ models:
   #   公共出口对 context_window 统一 pop 防发厂商；core 加正式字段后
   #   （届时 core 自行 exclude 不发厂商、self.model_config.context_window 可读），
   #   jiuwenswarm 自动停止 pop，把值留给 core。无需人工同步。
-  #   不填 = core 按模型名查表 / 兜底 200000。
+  #   不填 = JiuwenSwarm 使用固定的 256K 上下文默认值。
   # agentos:
   #   - model_client_config:
   #       api_base: ""
@@ -382,7 +387,7 @@ models:
   #       timeout: 1800
   #     model_config_obj:
   #       temperature: 0.95
-  #       context_window: 131072
+  #       context_window: 262144
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
 acp_agents:
@@ -535,7 +540,6 @@ trajectory_ui:
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
   batch_size: 64                    # writer 单事务最大记录数
   flush_interval_ms: 200            # writer 最大合批等待时间
-  poll_interval_ms: 2000            # Web 端兜底轮询间隔
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
 
 experimental:
@@ -623,7 +627,7 @@ react:
   # ============ 上下文引擎（上下文压缩/召回/会话记忆）============
   context_engine_config:
     enabled: true # 全局开关：false 时整个上下文引擎（含下列所有处理器）不生效
-    enable_openrouter_model_context_window_tokens: true # 从 OpenRouter 拉取模型的上下文窗口大小；false 时按内置模型表解析
+    enable_openrouter_model_context_window_tokens: false # 已停用模型上下文自动获取；上下文窗口由模型配置或固定默认值决定
     # 是否预下载/使用模型词表进行精确 token 计算；关闭时使用字符串长度兜底，默认不联网。
     enable_tiktoken_counter: false
     # 词表统一缓存目录；相对路径相对于 ~/.jiuwenswarm（可由 JIUWENSWARM_DATA_DIR 改变）。
@@ -643,11 +647,11 @@ react:
     #     model: qwen-max
     #     source: modelscope
     #     id: Qwen/Qwen2.5-72B-Instruct
-    # 显式覆盖上下文窗口 token 上限（正整数）；注释掉或留空则按模型自动解析
-    # context_window_tokens: 131072
-    # 可选的模型名到上下文窗口映射；优先级低于全局值和当前模型的 context_window
+    # 显式覆盖上下文窗口 token 上限（正整数）；不填写则使用当前模型配置或 256K 默认值
+    # context_window_tokens: 262144
+    # 可选的手工模型名到上下文窗口映射；不会自动补全或联网获取。
     # model_context_window_tokens:
-    #   some-model: 131072
+    #   some-model: 262144
     enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
 
     # 压缩召回：压缩器替换原始消息时，把原文分块归档到会话目录 compression_recall/，
@@ -745,6 +749,10 @@ gateway:
   # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
   session_map_scope: per_chat_bot
 
+  # Cron 作业定义持久化，默认本地文件。etcd 仅 AgentOS 一体机模板配置。
+  cron:
+    store_backend: ${CRON_STORE_BACKEND:-file}
+
   # AgentClient 配置 - Gateway 连接到 AgentServer 的方式
   # type: websocket（默认） | yuanrong（直接函数调用） | agentos_router（AgentOS 扩展）
   agent_client:
@@ -762,6 +770,27 @@ gateway:
   # AgentOS Router Extension 配置；agent_client.type=agentos_router 时生效。
   agentos:
     creating_timeout_seconds: 60
+    # GET /api/agent/:id 等到 status=running 的超时（秒）。须覆盖一次 create
+    # 的 startup 探针预算：initial_delay + period * failure_threshold
+    #（builtin 默认 3+3*6=21；3rdagent 默认 2+3*8=26）。load_router_config
+    # 取二者较大值，若本值更小则告警并抬到该下限。liveness 在 running 之后，
+    # 不计入 GET 等待。环境变量 AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS 可覆盖。
+    wait_running_timeout_seconds: 60
+    # GET 轮询间隔（秒）。环境变量 AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS 可覆盖。
+    wait_running_interval_seconds: 1
+    # YuanRong runtime_spec.probes。builtin 用这些时序打 18092；3rdagent 在
+    # registry 未带 probes 时：未改本节/环境变量则用 delay=2/failure=8，
+    # 有改动则与 builtin 共用配置打 SSH 2222。环境变量
+    # AGENTOS_PROBE_STARTUP_* / AGENTOS_PROBE_LIVENESS_* 可覆盖对应字段。
+    probes:
+      startup:
+        initial_delay_seconds: 3
+        period_seconds: 3
+        timeout_seconds: 2
+        failure_threshold: 6
+      liveness:
+        timeout_seconds: 2
+        failure_threshold: 3
     # Agent create 时宿主机 workspace 父目录；实际路径为 {workspace_root}/{user_id}
     workspace_root: "/home/agentos/users"
     # Agent 复用 key 字段，默认 user_id + agent_type。
@@ -780,12 +809,12 @@ gateway:
       # 本机 nodeIP，供 POST /api/nodes/{node}/heartbeat
       node:
     # SSH 南向接入 YuanRong 实例（配合 channels.ssh 北向使用）：
-    # ssh -p <port> 'yr:instance:<instance_id>'@<frontend-host>
+    # ssh -p <port> 'yr:instance:<instance_id>:port=2222'@<frontend-host>
     # 主机取自 agent_client.frontend_endpoint；<instance_id> 为 create agent 返回的实例 id。
     # 客户端私钥目录（默认 /root/.ssh；若模板含 {user_id} 则按用户替换）。
     ssh:
       port: 2222
-      user_template: "yr:instance:{instance}"
+      user_template: "yr:instance:{instance}:port=2222"
       connect_timeout_s: 30
       client_keys_dir: "/root/.ssh"
     auth_service_url: ${AGENTOS_AUTH_SERVICE_URL:-http://iam-agentos:8090}
@@ -1003,7 +1032,7 @@ channels:
   ssh:
     # SSH channel -> MessageHandler（北向）；南向经 gateway.agent_client
     # （type=agentos_router 时由 AgentOS Router 创建 YuanRong 实例并
-    # 以 yr:instance:<instance_id> 中继到 frontend）。
+    # 以 yr:instance:<instance_id>:port=2222 中继到 frontend）。
     # 启用前请安装可选依赖: pip install "jiuwenswarm[ssh]" 或 uv sync --extra ssh
     # 客户端: ssh -p <listen_port> user@<gateway-host>
     # 南向连接参数见 gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。
@@ -1036,6 +1065,13 @@ permissions:
   enabled: false
   schema: tiered_policy
   permission_mode: normal
+  # Host-only. Inject agent-core package builtin_rules.yaml (command rules +
+  # sensitive_paths + net_urls). Default true; User/Session cannot override.
+  package_builtin_rules: true
+  # 缺省两项为 true。产品关闭结构地板与解释器汇点；危险命令仍走 builtin / rules。
+  shell_guard:
+    unknown_structure: false
+    interpreter_sink: false
   # manual keeps the existing approval flow; auto enables Smart Approval.
   mode: manual
 
@@ -1235,22 +1271,6 @@ permissions:
     - id: shell_ask_erase
       tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "erase *"
-      severity: HIGH
-    - id: shell_ask_mv
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "mv *"
-      severity: HIGH
-    - id: shell_ask_cp
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "cp *"
-      severity: HIGH
-    - id: shell_ask_chmod
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "chmod *"
-      severity: HIGH
-    - id: shell_ask_chown
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "chown *"
       severity: HIGH
     - id: shell_ask_sensitive_file_reads
       tools: [bash, powershell, mcp_exec_command, create_terminal]

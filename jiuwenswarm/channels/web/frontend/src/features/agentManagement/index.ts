@@ -1,6 +1,7 @@
 export * from './types';
 export * from './adapter';
 export * from './client';
+export * from './groupClient';
 export * from './port';
 export * from './state';
 export * from './upload';

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo >/dev/null 2>&1
 
+# gateway 就绪检查最大重试次数（服务健康检查与部署前端口检查共用）
+GATEWAY_MAX_RETRY=15
+
 gateway_get_config_dir() {
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
     if [ -n "${instance_name}" ]; then
@@ -107,6 +110,10 @@ gateway_start_systemd() {
     local dropin_dir="/etc/systemd/system/${svc_name}.service.d"
     local dropin_file="${dropin_dir}/env.conf"
 
+    # gateway 日志独立目录（gateway.log 及轮转归档）；源码默认与其它日志同目录，
+    # 由部署脚本显式指定 /var/log/agentos（Linux），可通过 .env.custom 覆盖。
+    local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
+
     # 解析 jiuwenswarm-gateway 和 python bin/lib 目录的绝对路径（远程主机上）
     local gw_bin py_bindir py_libdir
     gw_bin=$(exec_on_host "${master_host}" "command -v jiuwenswarm-gateway" 2>/dev/null | tr -d '\r') || true
@@ -168,7 +175,8 @@ Environment=PATH=${py_bindir}:${remote_path}
 Environment=LD_LIBRARY_PATH=${py_libdir}:${remote_ld_lib}
 Environment=GATEWAY_HOST=${gw_host}
 Environment=GATEWAY_PORT=${gw_port}
-Environment=WEB_PORT=${web_port}"
+Environment=WEB_PORT=${web_port}
+Environment=AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir}"
     if [ "${force_root_home}" = "1" ]; then
         dropin_content="${dropin_content}
 Environment=JIUWENSWARM_HOME=/root"
@@ -177,6 +185,9 @@ Environment=JIUWENSWARM_HOME=/root"
         dropin_content="${dropin_content}
 Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
     fi
+
+    # 确保 gateway 日志目录存在且运行用户可写（服务以 root 运行，通常天然可写）
+    exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
 
     # 写本地临时文件后 copy_to_host 到目标主机（与 config 文件下发方式一致）
     info "Creating systemd unit ${svc_name} on ${master_host}..."
@@ -195,20 +206,38 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
     exec_on_host "${master_host}" "systemctl enable ${svc_name}" 2>/dev/null || true
     exec_on_host "${master_host}" "systemctl restart ${svc_name}" || error "Failed to start ${svc_name} on ${master_host}"
 
-    # 健康检查
+    # 健康检查：systemd active 且 GATEWAY_PORT/WEB_PORT 端口均处于 LISTEN，
+    # 避免服务"刚开始即崩溃"时 is-active 短暂返回 active 而误报成功。
     local retry=0
-    local max_retry=10
-    while [ ${retry} -lt ${max_retry} ]; do
+    while [ ${retry} -lt ${GATEWAY_MAX_RETRY} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null; then
-            success "Gateway service is running on ${master_host} (systemd: ${svc_name})"
+        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null \
+            && port_is_listening "${master_host}" "${gw_port}" \
+            && port_is_listening "${master_host}" "${web_port}"; then
+            success "Gateway service is running on ${master_host} (systemd: ${svc_name}) (ports ${gw_port}/${web_port} listening)"
             return 0
         fi
         retry=$((retry + 1))
-        info "Waiting for gateway to start... (${retry}/${max_retry})"
+        info "Waiting for gateway to start... (${retry}/${GATEWAY_MAX_RETRY})"
     done
 
-    error "Gateway service failed to start on ${master_host}, check: journalctl -u ${svc_name}"
+    # 服务起不来：分别探测 systemd 状态与端口监听，明确给出是 gateway 未启动、还是启动了但端口未监听。
+    # 直接取 systemctl is-active 的原始输出（active/inactive/failed/activating/auto-restart/deactivating 等），
+    # 避免仅用 --quiet 判断导致正在重试启动(activating/auto-restart)被误报为 inactive。
+    local gw_state
+    gw_state=$(exec_on_host "${master_host}" "systemctl is-active ${svc_name} 2>/dev/null" | tr -d '\r')
+    [ -n "${gw_state}" ] || gw_state="unknown"
+
+    local gw_listen="no" web_listen="no"
+    port_is_listening "${master_host}" "${gw_port}" && gw_listen="yes"
+    port_is_listening "${master_host}" "${web_port}" && web_listen="yes"
+    info "jiuwenswarm-gateway on ${master_host}: systemd=${gw_state}; port ${gw_port}(GATEWAY_PORT)=${gw_listen}, port ${web_port}(WEB_PORT)=${web_listen}"
+
+    warning "netstat -ltn on ${master_host} (ports ${gw_port}/${web_port}):"
+    exec_on_host "${master_host}" "netstat -ltn 2>/dev/null | grep -E ':(${gw_port}|${web_port})\\b' || true"
+    warning "systemctl status ${svc_name} on ${master_host}:"
+    exec_on_host "${master_host}" "systemctl status --no-pager -l ${svc_name} 2>/dev/null || true"
+    error "jiuwenswarm-gateway did NOT start on ${master_host} (systemd=${gw_state}, ports ${gw_port}=${gw_listen}/${web_port}=${web_listen}). Check: journalctl -u ${svc_name} -n 50"
 }
 
 # nohup 模式启动（systemd 不可用时回退）
@@ -216,35 +245,112 @@ gateway_start_nohup() {
     local master_host="$1"
     local home_prefix="${2:-}"
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
+    local gw_port="${DEPLOY_VARS["GATEWAY_PORT"]:-19001}"
+    local web_port="${DEPLOY_VARS["WEB_PORT"]:-19000}"
 
-    local start_cmd="${home_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+    # gateway 日志独立目录（与 systemd 模式一致），通过环境变量传给进程
+    local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
+    exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
+    local log_dir_prefix="AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
+
+    local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     if [ -n "${instance_name}" ]; then
-        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} ${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     fi
 
     info "Starting jiuwenswarm-gateway on ${master_host} (nohup)..."
     exec_on_host "${master_host}" "bash -c '${start_cmd}'"
 
     local retry=0
-    local max_retry=10
-    while [ ${retry} -lt ${max_retry} ]; do
+    while [ ${retry} -lt ${GATEWAY_MAX_RETRY} ]; do
         sleep 2
-        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1"; then
-            success "Gateway process is running on ${master_host}"
+        if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" \
+            && port_is_listening "${master_host}" "${gw_port}" \
+            && port_is_listening "${master_host}" "${web_port}"; then
+            success "Gateway process is running on ${master_host} (ports ${gw_port}/${web_port} listening)"
             return 0
         fi
         retry=$((retry + 1))
-        info "Waiting for gateway to start... (${retry}/${max_retry})"
+        info "Waiting for gateway to start... (${retry}/${GATEWAY_MAX_RETRY})"
     done
 
-    error "Gateway process failed to start on ${master_host}, check /tmp/jiuwenswarm-gateway.log"
+    # 失败诊断：区分是进程没起来、还是起来了但端口未监听（对标 systemd 分支的 gw_state/监听探测）。
+    local gw_proc="no" gw_listen="no" web_listen="no"
+    exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" && gw_proc="yes"
+    port_is_listening "${master_host}" "${gw_port}" && gw_listen="yes"
+    port_is_listening "${master_host}" "${web_port}" && web_listen="yes"
+    info "jiuwenswarm-gateway on ${master_host}: proc(alive)=${gw_proc}; port ${gw_port}(GATEWAY_PORT)=${gw_listen}, port ${web_port}(WEB_PORT)=${web_listen}"
+
+    warning "netstat -ltn on ${master_host} (ports ${gw_port}/${web_port}):"
+    exec_on_host "${master_host}" "netstat -ltn 2>/dev/null | grep -E ':(${gw_port}|${web_port})\\b' || true"
+    error "Gateway process failed to start on ${master_host} (proc=${gw_proc}, ports ${gw_port}=${gw_listen}/${web_port}=${web_listen}). Check: /tmp/jiuwenswarm-gateway.log"
+}
+
+# 本机是否属于 config.yaml 的 cluster.master_nodes；返回 0 表示属于。
+# 部署层据此安装 gateway（含 ExecStartPre VIP 拦截），启动时再判定是否持有 VIP。
+# 无 master_nodes 配置视为单机模式：本机即 master 节点（向后兼容）。
+gateway_is_master_node() {
+    local nodes
+    nodes=$(_master_nodes || true)
+    if [ -z "${nodes}" ]; then
+        warning "master_nodes not configured in ~/.agentos/deploy/config.yaml, treating local host as master (single-node compat)."
+        return 0
+    fi
+
+    local local_ips local_ip master_node
+    local_ips=$(hostname -I 2>/dev/null || echo "")
+    for local_ip in ${local_ips}; do
+        for master_node in ${nodes}; do
+            if [ "${master_node}" = "${local_ip}" ]; then
+                return 0
+            fi
+        done
+    done
+    # 单机通配：master_nodes 含 127.0.0.1 / 0.0.0.0 视为匹配本机
+    for master_node in ${nodes}; do
+        if [ "${master_node}" = "127.0.0.1" ] || [ "${master_node}" = "0.0.0.0" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 判断本机是否持有 ingress_virtual_ip（与 agentos-check-ingress-master 的 ExecStartPre 判定一致）。
+# 未配置 VIP（单机/无 config 兼容）或本机持有 VIP → 0；配置了 VIP 但本机未持有 → 1。
+gateway_holds_vip() {
+    local vip
+    vip=$(_ingress_vip || true)
+    if [ -z "${vip}" ]; then
+        return 0
+    fi
+    if hostname -I 2>/dev/null | tr ' ' '\n' | grep -qx "${vip}"; then
+        return 0
+    fi
+    if ip addr show 2>/dev/null | grep -qw "${vip}"; then
+        return 0
+    fi
+    return 1
+}
+
+# 带重试的端口就绪检查：网关部署前的前置端口检查改为轮询等待组件就绪，
+# 避免 yuanrong/注册中心 systemd 已 active 但端口尚未监听时单次探测误报失败（如 frontend 8888 绑定滞后）。
+gateway_wait_port() {
+    local host="$1" port="$2" retry=0
+    while [ ${retry} -lt ${GATEWAY_MAX_RETRY} ]; do
+        if port_is_listening "${host}" "${port}"; then
+            return 0
+        fi
+        retry=$((retry + 1))
+        [ ${retry} -lt ${GATEWAY_MAX_RETRY} ] && sleep 2
+    done
+    return 1
 }
 
 gateway_deploy_process() {
-    # gateway 跟随 ingress_virtual_ip：仅在本机持有 VIP 时部署/启动 gateway，否则跳过。
-    # 不依赖 master_nodes / CLUSTER_HOSTS[0]（可能有多个 master_nodes，且其 IP 与 VIP 不同）。
-    if ! /usr/local/bin/agentos-check-ingress-master >/dev/null 2>&1; then
-        warning "Local host does not hold ingress vip, skip gateway deploy process."
+    # gateway 部署跟随 master_nodes：本机属于 master_nodes 即安装 systemd 服务，
+    # 不区分 VIP 持有；启动时由系统单元的 ExecStartPre (= check-ingress-master) 判定是否持有 VIP。
+    if ! gateway_is_master_node; then
+        warning "Local host is not in config.yaml cluster.master_nodes, skip gateway deploy process."
         return 0
     fi
 
@@ -252,7 +358,39 @@ gateway_deploy_process() {
     master_host=$(get_local_ip)   # 本机即 ingress master，gateway 部署在本机
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
 
+    # 幂等保护：服务已运行时跳过整个部署（与 agent-registry 一致），
+    # 避免重复 up 触发 jiuwenswarm-init 重建工作区 + systemctl restart 重启运行中进程、
+    # 以及 nohup 模式重复拉起；配置更新需先 down 再 up。
+    local svc_name
+    svc_name=$(gateway_service_name)
+    if gateway_has_systemd "${master_host}"; then
+        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null; then
+            warning "${svc_name} already running; run 'down' first to redeploy"
+            return 0
+        fi
+    fi
+    if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1"; then
+        warning "jiuwenswarm-gateway process already alive (unit not active: deactivating/legacy nohup); run 'down' first to redeploy"
+        return 0
+    fi
+
     info "Deploying gateway on ${master_host}..."
+
+    # 前置端口检查仅对实际持有 ingress_virtual_ip 的节点执行：
+    # 非持有者不会启动 gateway/registry（启动由 ExecStartPre 判定 VIP 归属），
+    # 且探测 VIP 会落到 SSH 分支、依赖节点间免密，缺失时反而误报失败，故跳过。
+    if gateway_holds_vip; then
+        # yuanrong/注册中心 systemd 已 active 但组件端口可能仍需数秒才就绪，
+        # 单次探测会命中竞态窗口而误报失败，故等待 GATEWAY_MAX_RETRY 次（每次间隔 2s）。
+        if ! gateway_wait_port "${DEPLOY_VARS["MASTER_NODE_IP"]}" "${DEPLOY_VARS["FRONTEND_PORT"]}"; then
+            error "yuanrong frontend not reachable on ${DEPLOY_VARS["MASTER_NODE_IP"]}:${DEPLOY_VARS["FRONTEND_PORT"]} after ${GATEWAY_MAX_RETRY} retries; ensure yuanrong is up before jiuwenswarm"
+        fi
+        if ! gateway_wait_port "${DEPLOY_VARS["INGRESS_VIP"]}" "${DEPLOY_VARS["REGISTRY_PORT"]}"; then
+            error "AgentRegistry not reachable on ${DEPLOY_VARS["INGRESS_VIP"]}:${DEPLOY_VARS["REGISTRY_PORT"]} after ${GATEWAY_MAX_RETRY} retries; ensure 'agent-gateway' is up before jiuwenswarm"
+        fi
+    else
+        info "Local host does not hold ingress VIP, skipping pre-deploy port checks"
+    fi
 
     gateway_gen_config
 
@@ -315,9 +453,9 @@ gateway_stop_nohup() {
 }
 
 gateway_undeploy_process() {
-    # 与 up 对称：gateway 跟随 ingress_virtual_ip，仅在本机持有 VIP 时停止本机 gateway。
-    if ! /usr/local/bin/agentos-check-ingress-master >/dev/null 2>&1; then
-        warning "Local host does not hold ingress vip, skip stopping jiuwenswarm-gateway."
+    # 与 up 对称：gateway 部署跟随 master_nodes，仅对本机属于 master_nodes 停止 gateway。
+    if ! gateway_is_master_node; then
+        warning "Local host is not in config.yaml cluster.master_nodes, skip stopping jiuwenswarm-gateway."
         return 0
     fi
 

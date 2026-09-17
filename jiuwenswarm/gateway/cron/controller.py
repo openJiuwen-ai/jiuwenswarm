@@ -18,12 +18,13 @@ from jiuwenswarm.gateway.cron.models import (
     cron_job_metadata,
     cron_job_modes_for_tools,
     is_valid_target_channel_id,
+    normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_target_channel_id,
     validate_cron_model,
 )
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 
 
 def _serialize_mutation(method):
@@ -42,7 +43,7 @@ class CronController:
 
     _instance: ClassVar[CronController | None] = None
 
-    def __init__(self, *, store: CronJobStore, scheduler: CronSchedulerService) -> None:
+    def __init__(self, *, store: CronJobStoreBackend, scheduler: CronSchedulerService) -> None:
         self._store = store
         self._scheduler = scheduler
         if not hasattr(scheduler, "_lifecycle_mutation_lock"):
@@ -67,7 +68,7 @@ class CronController:
     def get_instance(
         cls,
         *,
-        store: CronJobStore | None = None,
+        store: CronJobStoreBackend | None = None,
         scheduler: CronSchedulerService | None = None,
     ) -> CronController:
         """Return the singleton instance.
@@ -168,8 +169,8 @@ class CronController:
         ]
 
     @_serialize_mutation
-    async def stop_project_jobs(
-        self, project_id: str, *, user_id=None, delete=False, checkpoint=None, plan=None
+    async def delete_project_jobs(
+        self, project_id: str, *, user_id=None, checkpoint=None, plan=None
     ) -> dict:
         jobs = []
         for job in await self._store.list_jobs():
@@ -177,22 +178,18 @@ class CronController:
                 jobs.append(job)
         if plan:
             await plan([job.id for job in jobs])
-        stopped = 0
         for job in jobs:
             if job.enabled:
                 await self._store.update_job(job.id, {"enabled": False})
-                stopped += 1
         await self._scheduler.reload()
-        if delete:
-            await self._scheduler.stop_project_runs(project_id, user_id)
+        await self._scheduler.stop_project_runs(project_id, user_id)
         for job in jobs:
-            if delete:
-                # Preserve store protection rules; no blanket force deletion.
-                await self.delete_job(job.id)
+            # Project finish deletes its sessions after cron jobs are removed.
+            await self._store.delete_job(job.id)
             if checkpoint:
                 await checkpoint(job.id)
         await self._scheduler.reload()
-        return {"stopped_cron_jobs": stopped}
+        return {"deleted_cron_jobs": len(jobs)}
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         job = await self._store.get_job(job_id)
@@ -226,6 +223,10 @@ class CronController:
         else:
             mode = None
         model_name = validate_cron_model(params.get("model_name"))
+        # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
+        # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
+        # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
+        mcp = normalize_cron_job_mcp(params.get("mcp"))
 
         targets = self._normalize_targets(raw_targets)
 
@@ -291,7 +292,7 @@ class CronController:
         if not await self._scheduler.project_execution_allowed(
             resolved_project_id, user_id
         ):
-            raise ValueError("PROJECT_ARCHIVED: project execution is blocked")
+            raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         job = await self._store.create_job(
             job_id=str(params.get("id") or "").strip() or None,
             name=name,
@@ -310,6 +311,7 @@ class CronController:
             timeout_seconds=timeout_seconds,
             project_id=resolved_project_id,
             model_name=model_name,
+            mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
@@ -327,6 +329,9 @@ class CronController:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
         if "model_name" in patch:
             patch["model_name"] = validate_cron_model(patch.get("model_name"))
+        if "mcp" in patch:
+            # 显式传 null/[] 归 None（清除选择，执行时回到全局默认集）。
+            patch["mcp"] = normalize_cron_job_mcp(patch.get("mcp"))
         if "targets" in patch:
             patch["targets"] = self._normalize_targets(patch["targets"])
         existing = await self._store.get_job(job_id)
@@ -388,12 +393,25 @@ class CronController:
             if not await self._scheduler.project_execution_allowed(
                 patch.get("project_id", existing.project_id), existing.user_id
             ):
-                raise ValueError("PROJECT_ARCHIVED: project execution is blocked")
+                raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         job = await self._store.update_job(job_id, patch)
         await self._scheduler.reload()
         return job.to_dict()
 
-    async def delete_job(self, job_id: str, *, force: bool = False) -> bool:
+    async def delete_job(
+        self, job_id: str, *, force: bool = False, delete_sessions: bool = True
+    ) -> bool:
+        existing = await self._store.get_job(job_id)
+        if existing is None:
+            return False
+        if not force and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
+            return await self._store.delete_job(job_id)
+        if delete_sessions:
+            if existing.enabled:
+                await self._store.update_job(job_id, {"enabled": False})
+                await self._scheduler.reload()
+            await self._scheduler.stop_job_runs(job_id)
+            await self._scheduler.delete_cron_sessions(job_id, existing.user_id)
         deleted = await self._store.delete_job(job_id, force=force)
         if deleted:
             await self._scheduler.reload()
@@ -407,7 +425,7 @@ class CronController:
         if enabled and not await self._scheduler.project_execution_allowed(
             existing.project_id, existing.user_id
         ):
-            raise ValueError("PROJECT_ARCHIVED: project execution is blocked")
+            raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         job = await self._store.update_job(job_id, {"enabled": bool(enabled)})
         await self._scheduler.reload()
         return job.to_dict()
@@ -457,6 +475,7 @@ class CronController:
         mode: str | None = None,
         timeout_seconds: int | None = None,
         model_name: str | None = None,
+        mcp: list[str] | None = None,
         project_dir: str | None = None,
         project_id: str | None = None,
         work_mode: str | None = None,
@@ -477,6 +496,8 @@ class CronController:
             params["timeout_seconds"] = timeout_seconds
         if model_name is not None and str(model_name).strip():
             params["model_name"] = validate_cron_model(model_name)
+        if mcp is not None:
+            params["mcp"] = mcp
         if project_dir is not None:
             params["project_dir"] = str(project_dir).strip()
         if project_id is not None and str(project_id).strip():
@@ -648,6 +669,15 @@ class CronController:
                                 "If omitted, uses the AgentServer default model."
                             ),
                         },
+                        "mcp": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Session-scoped MCP server names to enable when "
+                                "the job runs. Omit to inherit the creating "
+                                "session's MCP selection; pass [] for none."
+                            ),
+                        },
                         "project_dir": {
                             "type": "string",
                             "description": (
@@ -682,7 +712,7 @@ class CronController:
                 description=(
                     "Update an existing cron job. Pass job_id and a patch dict with fields to update "
                     "(name, enabled, cron_expr, timezone, description, wake_offset_seconds, "
-                    "targets, mode, model_name, project_dir, project_id). "
+                    "targets, mode, model_name, mcp, project_dir, project_id). "
                     f"name max {CRON_JOB_NAME_MAX_LENGTH} characters, "
                     f"description max {CRON_JOB_DESCRIPTION_MAX_LENGTH} characters."
                 ),
@@ -695,7 +725,7 @@ class CronController:
                             "description": (
                                 "Fields to update (name, enabled, cron_expr, timezone, "
                                 "description, wake_offset_seconds, targets, mode, model_name, "
-                                "project_dir, project_id). work_mode is not accepted as an "
+                                "mcp, project_dir, project_id). work_mode is not accepted as an "
                                 "independent patch field; to change work_mode, patch project_id "
                                 "or project_dir + work_mode (work_mode only disambiguates the "
                                 "target project when resolving project_dir)."
@@ -717,6 +747,14 @@ class CronController:
                                     "type": "string",
                                     "description": "Model to use when the job runs. \
                                         Set to empty string to reset to default.",
+                                },
+                                "mcp": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Session-scoped MCP server names to enable when the "
+                                        "job runs. Set to [] to clear (use default set only)."
+                                    ),
                                 },
                                 "project_dir": {
                                     "type": "string",
