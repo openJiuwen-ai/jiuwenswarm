@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from jiuwenswarm.server.runtime.skill_turbo.executor import SkillTurboExecutor
-from jiuwenswarm.server.runtime.skill_turbo.plan_node import PlanNode
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
-    _merge_subplan_result,
+from jiuwenswarm.server.runtime.skill_turbo.plan_node import (
+    FallbackContractError,
+    PlanNode,
 )
 
 
@@ -119,7 +119,7 @@ def _make_executor() -> SkillTurboExecutor:
     env = MagicMock()
     env.config = {}
     env.skill_code_import_prefixes = (
-        "jiuwenswarm.server.runtime.skill_turbo.skill_codes",
+        "skill_turbo_codes_ppt.ppt",
     )
     return SkillTurboExecutor(environment=env)
 
@@ -392,296 +392,28 @@ class TestExecutorSuppressSubplanStartBanner:
         assert await ex._should_suppress_subplan_start_banner(p2, {}) is False
 
 
-class TestMergeSubplanResultIgnoresSkipFields:
-    def test_ignores_skipped_and_resume_skip(self):
-        inputs: dict[str, Any] = {"query": "keep"}
-        _merge_subplan_result(
-            inputs,
-            {
-                "node": "p0_pipeline_init",
-                "status": "ok",
-                "message": "resume skip completed stage",
-                "skipped": True,
-                "resume_skip": True,
-                "useful": 1,
-            },
-        )
-        assert inputs == {"query": "keep", "useful": 1}
-        assert "skipped" not in inputs
-        assert "resume_skip" not in inputs
-
-
-class TestPPTGenRootResumeProgressSilence:
-    @pytest.mark.asyncio
-    async def test_run_subplan_stream_silent_when_resume_skip(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
-            PPTGenRootNode,
-        )
-
-        root = PPTGenRootNode()
-
-        async def should_skip(_sp: PlanNode, _inp: dict[str, Any]) -> bool:
-            return True
-
-        root.set_runtime_callbacks(should_skip_subplan_execute=should_skip)
-
-        messages: list[str] = []
-        results: list[dict[str, Any]] = []
-        async for chunk in root._run_subplan_stream(
-            root._p0, {}, results, index=1, total_steps=14
-        ):
-            msg = chunk.get("message")
-            if isinstance(msg, str) and msg.strip():
-                messages.append(msg)
-
-        assert messages == []
-        assert len(results) == 1
-        assert results[0]["node"] == "p0_pipeline_init"
+class TestFallbackContractErrorSemantics:
+    """FallbackContractError 语义（自 test_ppt_skill_code_registration 迁入，纯引擎）。"""
 
     @pytest.mark.asyncio
-    async def test_skip_p3_subplan_stream_silent_when_resume_skip(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
-            PPTGenRootNode,
-            _P3_SKIP_MESSAGE,
-        )
+    async def test_run_rethrows_fallback_contract_without_llm_fallback(self):
+        """PlanNode.run 对 FallbackContractError 原样重抛，不消耗 fallback 预算。"""
 
-        root = PPTGenRootNode()
+        class _RejectNode(PlanNode):
+            def __init__(self) -> None:
+                super().__init__(plan_name="t", instruction="t", sub_plans=[])
 
-        async def should_skip(_sp: PlanNode, _inp: dict[str, Any]) -> bool:
-            return _sp.plan_name == "p3_document_parse"
+            async def _execute(self, inputs: dict) -> dict:
+                raise FallbackContractError(node_name="t", reason="early reject")
 
-        root.set_runtime_callbacks(should_skip_subplan_execute=should_skip)
+        called = {"n": 0}
 
-        messages: list[str] = []
-        results: list[dict[str, Any]] = []
-        async for chunk in root._skip_p3_subplan_stream(
-            {}, results, index=3, total_steps=14
-        ):
-            msg = chunk.get("message")
-            if isinstance(msg, str) and msg.strip():
-                messages.append(msg)
+        async def _fallback(_node, _inputs, _err):
+            called["n"] += 1
+            return {"status": "fallback"}
 
-        assert messages == []
-        assert _P3_SKIP_MESSAGE not in messages
-        assert len(results) == 1
-        assert results[0]["node"] == "p3_document_parse"
-
-    @pytest.mark.asyncio
-    async def test_execute_stream_omits_root_banner_on_resume(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
-            PPTGenRootNode,
-        )
-
-        root = PPTGenRootNode()
-
-        async def should_skip(sp: PlanNode, _inp: dict[str, Any]) -> bool:
-            return sp.plan_name == "p0_pipeline_init"
-
-        root.set_runtime_callbacks(should_skip_subplan_execute=should_skip)
-
-        # p0 静默跳过后，首条可见消息不应是根节点 banner（即便后续 stage 仍会正常广播）。
-        collected: list[str] = []
-        gen = root._execute_stream({"has_documents": False})
-        try:
-            async for chunk in gen:
-                msg = chunk.get("message")
-                if isinstance(msg, str) and msg.strip():
-                    collected.append(msg)
-                if collected:
-                    break
-        finally:
-            await gen.aclose()
-
-        assert "PPT生成任务流开始执行" not in collected
-
-    @pytest.mark.asyncio
-    async def test_run_subplan_stream_omits_start_banner_for_in_progress_resume(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
-            PPTGenRootNode,
-        )
-
-        root = PPTGenRootNode()
-        child = _LeafNode("p2_requirement_collect", depth=1)
-
-        async def should_skip(_sp: PlanNode, _inp: dict[str, Any]) -> bool:
-            return False
-
-        async def suppress_start(_sp: PlanNode, _inp: dict[str, Any]) -> bool:
-            return _sp.plan_name == "p2_requirement_collect"
-
-        root.set_runtime_callbacks(
-            should_skip_subplan_execute=should_skip,
-            should_suppress_subplan_start_banner=suppress_start,
-        )
-
-        messages: list[str] = []
-        results: list[dict[str, Any]] = []
-        async for chunk in root._run_subplan_stream(
-            child, {}, results, index=4, total_steps=14
-        ):
-            msg = chunk.get("message")
-            if isinstance(msg, str) and msg.strip():
-                messages.append(msg)
-
-        assert not any(msg.startswith("开始执行") for msg in messages)
-        assert child.run_stream_calls == 1
-        assert any(msg.startswith("完成执行") for msg in messages)
-
-    @pytest.mark.asyncio
-    async def test_progress_banners_outside_before_and_after_hooks(self):
-        """横幅位于 task 生命周期外，保持在左下主回答气泡展示。"""
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
-            PPTGenRootNode,
-        )
-
-        root = PPTGenRootNode()
-        child = _LeafNode("p5_content_plan", depth=1)
-        events: list[str] = []
-
-        async def should_skip(_sp: PlanNode, _inp: dict[str, Any]) -> bool:
-            return False
-
-        async def before(_sp: PlanNode, _inp: dict[str, Any]) -> None:
-            events.append("before")
-
-        async def after(_sp: PlanNode, _inp: dict[str, Any], _result: Any) -> None:
-            events.append("after")
-
-        root.set_runtime_callbacks(
-            should_skip_subplan_execute=should_skip,
-            before_subplan_execute=before,
-            after_subplan_execute=after,
-        )
-
-        results: list[dict[str, Any]] = []
-        async for chunk in root._run_subplan_stream(
-            child, {}, results, index=6, total_steps=14
-        ):
-            msg = chunk.get("message")
-            if isinstance(msg, str) and msg.startswith("开始执行"):
-                events.append("start_banner")
-            elif isinstance(msg, str) and msg.startswith("完成执行"):
-                events.append("complete_banner")
-            elif chunk.get("ran") is True:
-                events.append("body")
-
-        assert events == [
-            "start_banner",
-            "before",
-            "body",
-            "after",
-            "complete_banner",
-        ]
-
-    @pytest.mark.asyncio
-    async def test_skip_p3_banners_between_before_and_after_hooks(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
-            PPTGenRootNode,
-            _P3_SKIP_MESSAGE,
-        )
-
-        root = PPTGenRootNode()
-        events: list[str] = []
-
-        async def should_skip(_sp: PlanNode, _inp: dict[str, Any]) -> bool:
-            return False
-
-        async def before(_sp: PlanNode, _inp: dict[str, Any]) -> None:
-            events.append("before")
-
-        async def after(_sp: PlanNode, _inp: dict[str, Any], _result: Any) -> None:
-            events.append("after")
-
-        root.set_runtime_callbacks(
-            should_skip_subplan_execute=should_skip,
-            before_subplan_execute=before,
-            after_subplan_execute=after,
-        )
-
-        results: list[dict[str, Any]] = []
-        async for chunk in root._skip_p3_subplan_stream(
-            {}, results, index=3, total_steps=14
-        ):
-            msg = chunk.get("message")
-            if isinstance(msg, str) and msg.startswith("开始执行"):
-                events.append("start_banner")
-            elif msg == _P3_SKIP_MESSAGE:
-                events.append("skip_body")
-            elif isinstance(msg, str) and msg.startswith("完成执行"):
-                events.append("complete_banner")
-
-        assert events == [
-            "start_banner",
-            "before",
-            "skip_body",
-            "after",
-            "complete_banner",
-        ]
-
-    @pytest.mark.asyncio
-    async def test_start_banner_close_does_not_open_task_context(self):
-        """开始横幅处关闭流时 task.start 尚未发生，无需清理 task。"""
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
-            PPTGenRootNode,
-        )
-
-        root = PPTGenRootNode()
-        child = _LeafNode("p5_content_plan", depth=1)
-        events: list[str] = []
-
-        async def should_skip(_sp: PlanNode, _inp: dict[str, Any]) -> bool:
-            return False
-
-        async def before(_sp: PlanNode, _inp: dict[str, Any]) -> None:
-            events.append("before")
-
-        async def after(_sp: PlanNode, _inp: dict[str, Any], _result: Any) -> None:
-            events.append("after")
-
-        root.set_runtime_callbacks(
-            should_skip_subplan_execute=should_skip,
-            before_subplan_execute=before,
-            after_subplan_execute=after,
-        )
-
-        stream = root._run_subplan_stream(
-            child, {}, [], index=6, total_steps=14
-        )
-        first = await anext(stream)
-        assert first["message"].startswith("开始执行")
-        assert first["_bubble_progress"] is True
-
-        await stream.aclose()
-
-        assert events == []
-        assert child.run_stream_calls == 0
-
-    @pytest.mark.asyncio
-    async def test_silent_resume_skip_falls_back_when_skip_disagrees(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
-            PPTGenRootNode,
-        )
-
-        root = PPTGenRootNode()
-        child = _LeafNode("p0_pipeline_init", depth=1)
-        calls = {"n": 0}
-
-        async def flaky_should_skip(_sp: PlanNode, _inp: dict[str, Any]) -> bool:
-            calls["n"] += 1
-            return calls["n"] == 1
-
-        root.set_runtime_callbacks(should_skip_subplan_execute=flaky_should_skip)
-
-        results: list[dict[str, Any]] = []
-        chunks = [
-            c
-            async for c in root._run_subplan_stream(
-                child, {}, results, index=1, total_steps=14
-            )
-        ]
-
-        assert calls["n"] == 2
-        assert child.run_stream_calls == 1
-        assert len(results) == 1
-        assert results[0]["result"].get("ran") is True
-        assert chunks == [{"node": "p0_pipeline_init", "status": "ok", "ran": True}]
+        node = _RejectNode()
+        node.set_runtime_callbacks(fallback=_fallback)
+        with pytest.raises(FallbackContractError):
+            await node.run({})
+        assert called["n"] == 0

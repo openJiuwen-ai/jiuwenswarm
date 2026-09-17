@@ -46,10 +46,21 @@ async def test_skill_turbo_prompt_skipped_when_acceleration_disabled():
 
 
 @pytest.mark.asyncio
-async def test_skill_turbo_prompt_injected_when_tool_enabled():
+async def test_skill_turbo_prompt_injected_when_tool_enabled(monkeypatch):
     builder = _FakeBuilder()
     deep = SimpleNamespace(system_prompt_builder=builder)
     react_like = SimpleNamespace(system_prompt_builder=builder)
+
+    # 清单动态化后：仅当当前上下文可见加速技能时注入指南（空清单整段
+    # 不注入，对齐 acceleration_disabled 先例）。CI 无 turbo 技能目录，
+    # 须 stub 非空清单；rail 内部延迟 import 取模块属性，monkeypatch 生效。
+    from jiuwenswarm.server.runtime.skill_turbo import skill_turbo_tools
+
+    monkeypatch.setattr(
+        skill_turbo_tools,
+        "refresh_skill_acceleration_description",
+        lambda: ["pptx-craft"],
+    )
 
     rail = SkillTurboPromptRail(acceleration_disabled=False)
     rail.init(deep)

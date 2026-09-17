@@ -138,8 +138,18 @@ class CodeValidationPolicy:
                 # AbortError / FallbackContractError 经 plan_node 统一 re-export；
                 # skill_code 禁止直连 openjiuwen / fallback_handler
                 "jiuwenswarm.server.runtime.skill_turbo.plan_node",
+                # 外部 turbo code 的中立门面：契约符号 + 通用工具（runtime kit）。
+                # skill_code 经 sys.modules["skill_turbo_runtime"]
+                # 取契约符号，禁止绕过门面引用引擎内部模块。
+                "skill_turbo_runtime",
+                "skill_turbo_runtime.tool_utils",
             ),
             allowed_import_prefixes=tuple(allowed_import_prefixes or ()),
+            # 相对导入放行：外部 turbo code 包内互引（from .ppt_common import ...）。
+            # 相对导入只能命中动态注册包的受控 __path__，inherently safe
+            # （同 enterprise_dev_skill_online_v6 sandbox 结论）；
+            # plan_code 策略仍禁相对导入（plan_code 无包上下文）。
+            deny_relative_import=False,
             denied_import_exact=(
                 "builtins",
                 "ctypes",
@@ -302,8 +312,12 @@ class PlanCodeValidator:
                 errors.append(self._format_import_error(module, node.lineno))
 
     def _check_import_from(self, node: ast.ImportFrom, errors: list[str]) -> None:
-        if node.level and node.level > 0 and self._policy.deny_relative_import:
-            errors.append(f"禁止相对 import (行 {node.lineno})")
+        if node.level and node.level > 0:
+            if self._policy.deny_relative_import:
+                errors.append(f"禁止相对 import (行 {node.lineno})")
+                return
+            # 相对导入放行（deny_relative_import=False 策略）：包内互引，
+            # 目标模块只能命中动态注册包的受控 __path__，白名单不适用。
             return
 
         module = node.module or ""

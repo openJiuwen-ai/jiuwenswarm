@@ -13,14 +13,6 @@ from jiuwenswarm.server.runtime.skill_turbo.thinking_seam import (
     resolve_skill_turbo_thinking_kwargs,
 )
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import DisableThinkingMixin, PlanNode
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.deep_research import (
-    PageWorkerNode as P6PageWorkerNode,
-    PrepareNode as P6PrepareNode,
-)
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
-    PPTPageGenNode,
-    PageWorkerNode as P8PageWorkerNode,
-)
 
 
 class _ThinkingProbeNode(DisableThinkingMixin, PlanNode):
@@ -107,13 +99,3 @@ class TestDisableThinkingMixin:
         async for _ in node.stream_llm("hi", thinking="default"):
             pass
         assert captured["thinking"] == "off"
-
-
-class TestPptNodeMixinMount:
-    def test_p6_nodes_inherit_mixin(self):
-        assert issubclass(P6PrepareNode, DisableThinkingMixin)
-        assert issubclass(P6PageWorkerNode, DisableThinkingMixin)
-
-    def test_p8_worker_and_root_inherit_mixin(self):
-        assert issubclass(P8PageWorkerNode, DisableThinkingMixin)
-        assert issubclass(PPTPageGenNode, DisableThinkingMixin)

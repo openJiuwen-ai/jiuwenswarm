@@ -6,6 +6,9 @@
 非流式 fallback 兜底成功且 contract passed，但契约结果未回写共享 inputs，
 下游 P4.1/P4.3 连续读到空 search_mode 失败，3 次兜底预算耗尽后
 FallbackLimitExceededError 导致 stage6 规划执行终态失败。
+
+纯引擎测试：失败节点与异常类型均为本地合成（引擎 fallback 只取
+``type(error).__name__``，不区分异常类型）。
 """
 
 from __future__ import annotations
@@ -20,9 +23,10 @@ from jiuwenswarm.server.runtime.skill_turbo.fallback_handler import (
     FallbackContractError,
 )
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import PlanNode
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.requirement_collect import (
-    RequirementCollectError,
-)
+
+
+class RequirementCollectError(RuntimeError):
+    """事故节点抛出的业务异常（本地合成，等价原 code 侧异常类型）。"""
 
 # 复刻事故中兜底子代理的真实输出形态：分析正文 + 末尾单行 JSON 契约
 _CONTRACT_OUTPUT = (

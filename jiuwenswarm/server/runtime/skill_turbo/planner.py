@@ -53,6 +53,12 @@ class SkillTurboPlanner:
             logger.info("[SkillTurboPlanner] no skill routed")
             return None
 
+        # [TEMP-EXTERNAL-SKILL] 路由命中后同步外部 skill 目录名，
+        # 保证 executor 注入的 inputs["skill_name"] 指向该技能的外部目录
+        # （meta.json external_name，如 pptx-content-summarizer），
+        # 而非 config 构造期的单技能默认值（pptx-craft）。
+        self._env.set_skill_name(skill)
+
         return self.build_plan_code(skill)
 
     async def match_skill(
@@ -257,26 +263,28 @@ class SkillTurboPlanner:
         return None
 
     def _find_skill_root_file(self, skill_name: str) -> Path | None:
+        # 入口判定收口到 environment.find_skill_root_file（与注册扫描、
+        # 工具描述共用同一实现，防止三处规则漂移）。
+        # 延迟 import：模块级 import environment 会改变 import 拓扑，
+        # 触发 jiuwenswarm rails → openjiuwen skill_use_rail 的循环初始化
+        # （本文件顶部仅 TYPE_CHECKING 引用 environment 即为此因）；
+        # 运行时 environment 必已加载（SkillTurbo 先构造 env 再构造 planner）。
+        from jiuwenswarm.server.runtime.skill_turbo.environment import (
+            find_skill_root_file,
+        )
+
+        # 外部 turbo skill：入口文件位于 {turbo_codes_dir}/{skill_name}/
+        skill = self._env.skills.get(skill_name)
+        turbo_codes_dir = getattr(skill, "turbo_codes_dir", "") if skill else ""
+        if turbo_codes_dir:
+            skill_dir = Path(turbo_codes_dir) / skill_name
+            if skill_dir.is_dir():
+                return find_skill_root_file(skill_dir)
+
         skill_dir = self._skill_codes_dir() / skill_name
         if not skill_dir.is_dir():
             return None
-
-        candidates = [
-            skill_dir / f"{skill_name}_gen_root.py",
-            skill_dir / f"{skill_name}_root.py",
-            *sorted(skill_dir.glob("*_gen_root.py")),
-            *sorted(skill_dir.glob("*_root.py")),
-            skill_dir / "plan_code.py",
-        ]
-
-        seen: set[Path] = set()
-        for candidate in candidates:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            if candidate.is_file():
-                return candidate
-        return None
+        return find_skill_root_file(skill_dir)
 
     def _skill_codes_dir(self) -> Path:
         configured = (
@@ -288,6 +296,11 @@ class SkillTurboPlanner:
         return Path(__file__).resolve().parent / "skill_codes"
 
     def _to_skill_root_module(self, skill_name: str, root_file: Path) -> str:
+        # 外部 turbo skill：动态包名（如 skill_turbo_codes_ppt.ppt.ppt_gen_root）
+        skill = self._env.skills.get(skill_name)
+        package_name = getattr(skill, "package_name", "") if skill else ""
+        if package_name:
+            return f"{package_name}.{skill_name}.{root_file.stem}"
         package = (
             getattr(self._env, "skill_code_import_package", "")
             or _SKILL_CODES_PACKAGE
