@@ -1,12 +1,21 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-"""ChannelManager - Channel 生命周期管理抽象与实现."""
+"""ChannelManager - Channel 生命周期管理抽象与实现.
+
+issue #1548：出站派发改为「路由循环 + per-session 串行发送」。
+- 路由循环：从 MessageHandler 消费 robot_messages，按 (channel_id, session_id)
+  分发到对应 SessionSender（无 await 重活，仅 get/put）。
+- SessionSender：每个 (channel, session) 一个 worker，串行执行 Outbound
+  Pipeline（含 LLM 分类）与 channel.send —— 慢操作只阻塞本 session，
+  不再阻塞其他 session，也不再让入队顺序被打乱。
+- 发送失败退避重试（不丢弃），恢复后按序补发；backlog 有上限，溢出丢最旧并告警。
+"""
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
-import asyncio
 import time
 from abc import ABC
 from dataclasses import dataclass
@@ -20,6 +29,143 @@ if TYPE_CHECKING:
     from jiuwenswarm.gateway.channel_manager.base import BaseChannel
     from jiuwenswarm.gateway.message_handler import MessageHandler
     from jiuwenswarm.common.schema.message import Message
+
+
+# 同一 (channel, session) 的待发消息上限；溢出丢最旧并告警（防止不可达 session 无限积压）。
+_SESSION_BACKLOG_CAP = 200
+# 单条消息发送失败的最大重试次数（指数退避 0.5s/1s/2s/4s），超过后跳过该条。
+_SEND_MAX_ATTEMPTS = 4
+_SEND_BACKOFF_BASE = 0.5
+
+
+class SessionSender:
+    """单个 (channel, session) 的串行发送 worker（issue #1548）。
+
+    顺序保证：队列 FIFO + worker 串行消费，同一 session 的消息严格按
+    入队顺序发出；Outbound Pipeline 的 LLM 分类延迟只作用于本 session。
+
+    发送目标通过 ``channel_lookup`` 在发送时解析（而非创建时固化）：
+    渠道热重载后，排队中的消息会改投到新 channel 实例，与直接
+    ``channel.send`` 的上游行为一致。
+    """
+
+    def __init__(
+        self,
+        channel_lookup: Callable[[], "BaseChannel | None"],
+        outbound_apply: Callable[["Message"], Awaitable[None]] | None,
+        key: tuple[ChannelKey, str],
+        on_permanent_failure: Callable[["Message", Exception], Awaitable[None]] | None = None,
+    ) -> None:
+        self.channel_lookup = channel_lookup
+        self.outbound_apply = outbound_apply
+        self.key = key  # (ChannelKey, session_id)
+        self.on_permanent_failure = on_permanent_failure
+        self.queue: asyncio.Queue["Message"] = asyncio.Queue(maxsize=_SESSION_BACKLOG_CAP)
+        self.task: asyncio.Task | None = None
+
+    def submit(self, msg: "Message") -> bool:
+        """入队（非阻塞）。队列满时丢最旧并告警，维持最新输出可达。"""
+        try:
+            self.queue.put_nowait(msg)
+        except asyncio.QueueFull:
+            try:
+                dropped = self.queue.get_nowait()
+                logger.warning(
+                    "[SessionSender] backlog 溢出(cap=%d)，丢弃最旧消息: channel=%s session=%s id=%s",
+                    _SESSION_BACKLOG_CAP, self.key[0], self.key[1], getattr(dropped, "id", "?"),
+                )
+            except asyncio.QueueEmpty:
+                pass
+            self.queue.put_nowait(msg)
+        return True
+
+    async def run(self) -> None:
+        while True:
+            msg = await self.queue.get()
+            try:
+                # Outbound Pipeline（数字分身路由，含 LLM 分类）——从入队临界区
+                # 移到这里：只挂起本 session 的后续消息，不再打乱全局入队顺序。
+                if self.outbound_apply is not None:
+                    try:
+                        await self.outbound_apply(msg)
+                    except Exception:
+                        logger.exception(
+                            "[SessionSender] outbound pipeline error, send without routing: "
+                            "channel=%s session=%s id=%s",
+                            self.key[0], self.key[1], getattr(msg, "id", "?"),
+                        )
+                channel = self.channel_lookup()
+                if channel is None:
+                    # channel_lookup 动态解析后不可达（如渠道被注销且未重建）：
+                    # 跳过该条而非无限重试，防止不可达 session 卡死后面积压。
+                    logger.error(
+                        "[SessionSender] channel 已不可达(跳过该条): channel=%s session=%s id=%s",
+                        self.key[0], self.key[1], getattr(msg, "id", "?"),
+                    )
+                else:
+                    await self._send_with_retry(channel, msg)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # _send_with_retry 内部已重试并记录；这里兜底防 worker 死亡
+                logger.exception(
+                    "[SessionSender] 发送异常(跳过该条): channel=%s session=%s id=%s",
+                    self.key[0], self.key[1], getattr(msg, "id", "?"),
+                )
+            finally:
+                self.queue.task_done()
+
+    async def _send_with_retry(self, channel: "BaseChannel", msg: "Message") -> None:
+        for attempt in range(1, _SEND_MAX_ATTEMPTS + 1):
+            try:
+                await channel.send(msg)
+                self._log_delivered_if_a4p(msg)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                if attempt >= _SEND_MAX_ATTEMPTS:
+                    await self._handle_permanent_failure(msg, e)
+                    return
+                backoff = _SEND_BACKOFF_BASE * (2 ** (attempt - 1))
+                logger.warning(
+                    "[SessionSender] 发送失败，%.1fs 后重试(%d/%d): channel=%s session=%s id=%s err=%s",
+                    backoff, attempt, _SEND_MAX_ATTEMPTS, self.key[0], self.key[1],
+                    getattr(msg, "id", "?"), e,
+                )
+                await asyncio.sleep(backoff)
+
+    def _log_delivered_if_a4p(self, msg: "Message") -> None:
+        """A4P 事件投递确认日志（授权弹窗是否送达前端的排查依据）.
+
+        上游原先在兜底路径 await channel.send 成功后记录；SessionSender 化后
+        移到这里——发送实际完成处，语义不变且覆盖所有经 SessionSender 的事件。
+        """
+        payload = msg.payload if isinstance(msg.payload, dict) else {}
+        event_type = str(payload.get("event_type") or "").strip()
+        if event_type.startswith("a4p."):
+            logger.info(
+                "[ChannelManager] A4P robot_message delivered: channel_id=%s id=%s event_type=%s",
+                msg.channel_id,
+                msg.id,
+                event_type,
+            )
+
+    async def _handle_permanent_failure(self, msg: "Message", error: Exception) -> None:
+        """重试耗尽后的收尾：记录跳过，并触发 on_permanent_failure 回调（如 cron 失败通知）。"""
+        logger.error(
+            "[SessionSender] 发送失败(已重试 %d 次，跳过): channel=%s session=%s id=%s err=%s",
+            _SEND_MAX_ATTEMPTS, self.key[0], self.key[1], getattr(msg, "id", "?"), error,
+        )
+        if self.on_permanent_failure is None:
+            return
+        try:
+            await self.on_permanent_failure(msg, error)
+        except Exception:
+            logger.exception(
+                "[SessionSender] 永久失败回调异常(忽略): channel=%s session=%s id=%s",
+                self.key[0], self.key[1], getattr(msg, "id", "?"),
+            )
 
 
 @dataclass
@@ -59,6 +205,12 @@ class ChannelManager(ABC):
         self._channels: dict[ChannelKey, "BaseChannel"] = {}
         self._dispatch_task: asyncio.Task | None = None
         self._running = False
+        # issue #1548：(ChannelKey, session_id) -> SessionSender
+        self._session_senders: dict[tuple[ChannelKey, str], SessionSender] = {}
+        # issue #1548：SessionSender 的 Outbound Pipeline 入口（MessageHandler 的
+        # apply_outbound_pipeline；MessageHandler 未提供时为 None）。
+        _outbound_apply = getattr(message_handler, "apply_outbound_pipeline", None)
+        self._outbound_apply = _outbound_apply if callable(_outbound_apply) else None
         # 统一管理 Channel 相关配置（例如 FeishuChannel / XiaoyiChannel 等）。
         # 默认仅在网关侧使用；其他简单用法可以忽略该字段。
         self._config: dict[str, Any] = dict(config or {})
@@ -306,7 +458,12 @@ class ChannelManager(ABC):
             setter(self.report_channel_event)
 
     def unregister_channel(self, channel_id: str | ChannelKey) -> None:
-        """注销指定 Channel."""
+        """注销指定 Channel.
+
+        SessionSender 不在此处停止：发送时按 ChannelKey 动态解析实例，渠道
+        热重载后排队消息改投新实例（中途杀 worker 会把热重载变成丢消息）。
+        仅在 stop_dispatch 收尾时统一清理（_stop_session_senders）。
+        """
         if isinstance(channel_id, ChannelKey):
             self._channels.pop(channel_id, None)
         else:
@@ -315,14 +472,23 @@ class ChannelManager(ABC):
                 del self._channels[k]
         logger.info("[ChannelManager] 已注销 Channel: channel_id=%s", channel_id)
 
+    def _stop_session_sender(self, key: tuple[ChannelKey, str]) -> None:
+        """停止单个 SessionSender（仅生命周期收尾时调用；注销 Channel 不停止，见 unregister_channel）."""
+        sender = self._session_senders.pop(key, None)
+        if sender is None:
+            return
+        task = sender.task
+        if task is not None and not task.done():
+            task.cancel()
+
     def get_channel(self, channel_id: str | ChannelKey) -> "BaseChannel | None":
-        """根据 channel_id（字符串）或 ChannelKey 获取 Channel。"""
+        """根据 channel_id（字符串）或 ChannelKey 获取 Channel."""
         if isinstance(channel_id, ChannelKey):
             return self._channels.get(channel_id)
         return self._get_channel_by_id(channel_id)
 
     def get_by_key(self, channel_key: ChannelKey) -> "BaseChannel | None":
-        """按 ChannelKey 精确查找 Channel。"""
+        """按 ChannelKey 精确查找 Channel."""
         return self._channels.get(channel_key)
 
     def pop_channels_by_id(self, channel_id: str) -> list["BaseChannel"]:
@@ -410,9 +576,13 @@ class ChannelManager(ABC):
         self._on_config_updated = callback
 
     async def _dispatch_robot_messages(self) -> None:
-        """出队派发循环：从 MessageHandler 消费 robot_messages，按 channel_id 投递到对应 Channel.
+        """路由循环：从 MessageHandler 消费 robot_messages，按 (channel, session) 分发到 SessionSender.
 
-        V2: 支持通过 metadata.fan_out_targets 进行 team 模式多目标分发。
+        issue #1548：本循环的单目标兜底路径不再直接 await channel.send（那会让
+        最慢的通道/重试阻塞所有通道所有 session），改交由每个 (channel, session)
+        的 SessionSender worker 串行发送；本循环只做无重活的路由。
+        同时支持 V2 fan_out_targets team 模式多目标分发与飞书 cron/心跳 fan-out
+        （这两类 fan-out 保持直接 channel.send，见循环体注释）。
         """
         from jiuwenswarm.gateway.routing.session_sharing import dispatch_to_session
 
@@ -554,26 +724,18 @@ class ChannelManager(ABC):
                     app_id, bool(channel), type(channel).__name__ if channel else None,
                 )
                 if channel:
-                    try:
-                        await channel.send(msg)
-                        payload = msg.payload if isinstance(msg.payload, dict) else {}
-                        event_type = str(payload.get("event_type") or "").strip()
-                        if event_type.startswith("a4p."):
-                            logger.info(
-                                "[ChannelManager] A4P robot_message delivered: channel_id=%s id=%s event_type=%s",
-                                msg.channel_id,
-                                msg.id,
-                                event_type,
-                            )
-                    except Exception as e:
-                        logger.error("send to channel %s: %s", msg.channel_id, e, exc_info=True)
-                        if msg.id and msg.id.startswith("cron-push-"):
-                            await self._notify_cron_delivery_error(msg, e)
+                    # issue #1548：兜底路径也走 SessionSender（串行保序 + 失败重试），
+                    # 而非直接 await channel.send。cron 推送失败的通知改由
+                    # SessionSender 的重试/告警兜底（_notify_cron_delivery_error
+                    # 经 on_permanent_failure 回调触发）；A4P 事件的投递确认
+                    # 日志在 SessionSender._send_with_retry 的发送成功处。
+                    self._submit_to_session_sender(channel, msg)
                 else:
                     logger.warning(
                         "[ChannelManager] 未找到 Channel，丢弃 robot_messages: channel_id=%s id=%s",
                         msg.channel_id, msg.id,
                     )
+                    continue
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -693,13 +855,55 @@ class ChannelManager(ABC):
         )
         return fan_out
 
+    def _submit_to_session_sender(self, channel: "BaseChannel", msg: "Message") -> None:
+        """路由到 (channel, session) 的 SessionSender；无 session 的消息落 "_no_session_" 桶串行发送."""
+        session_id = str(msg.session_id or "").strip() or "_no_session_"
+        # 键以消息的 channel_id 为准（路由主体）；app_id 取路由到的实例——
+        # 它就是 dispatch 刚按同一 ChannelKey 选出的实例，二者必然一致。
+        channel_key = ChannelKey(msg.channel_id, self._resolve_app_id(channel))
+        full_key = (channel_key, session_id)
+        sender = self._session_senders.get(full_key)
+        if sender is None or sender.task is None or sender.task.done():
+            sender = self._create_session_sender(channel_key, full_key)
+        sender.submit(msg)
+
+    def _create_session_sender(
+        self, channel_key: ChannelKey, full_key: tuple[ChannelKey, str]
+    ) -> SessionSender:
+        """创建并启动一个 SessionSender worker（同 key 已停 worker 的重建路径）.
+
+        发送目标在发送时按 ChannelKey 解析（channel_lookup）：渠道热重载换掉
+        实例后，排队中的消息改投新实例，行为与直接 channel.send 一致。
+        """
+        session_id = full_key[1]
+        sender = SessionSender(
+            lambda: self._channels.get(channel_key),
+            self._outbound_apply,
+            full_key,
+            on_permanent_failure=self._notify_cron_delivery_error,
+        )
+        sender.task = asyncio.create_task(
+            sender.run(), name=f"session-sender-{channel_key}-{session_id[:24]}"
+        )
+        self._session_senders[full_key] = sender
+        logger.info(
+            "[ChannelManager] SessionSender 已启动: channel=%s session=%s",
+            channel_key, session_id,
+        )
+        return sender
+
+    def _stop_session_senders(self) -> None:
+        """停止并清空全部 SessionSender（生命周期收尾）."""
+        for key in list(self._session_senders):
+            self._stop_session_sender(key)
+
     async def start_dispatch(self) -> None:
         """启动出队派发任务（消费 MessageHandler.robot_messages 并发送到各 Channel）."""
         if self._dispatch_task is not None:
             return
         self._running = True
         self._dispatch_task = asyncio.create_task(self._dispatch_robot_messages())
-        logger.info("[ChannelManager] 出队派发循环已启动 (robot_messages -> Channel.send)")
+        logger.info("[ChannelManager] 出队派发循环已启动 (robot_messages -> SessionSender -> Channel.send)")
 
     async def stop_dispatch(self) -> None:
         """停止出队派发任务."""
@@ -711,4 +915,5 @@ class ChannelManager(ABC):
             except asyncio.CancelledError:
                 pass
             self._dispatch_task = None
+        self._stop_session_senders()
         logger.info("[ChannelManager] 出队派发循环已停止")

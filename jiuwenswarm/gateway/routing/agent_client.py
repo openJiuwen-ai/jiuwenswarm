@@ -167,6 +167,10 @@ class WebSocketAgentServerClient(AgentServerClient):
         self._running = False
         # AgentServer send_push：旁路投递，勿进入与 request_id 绑定的 RPC 等待队列
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+        # issue #1548：server_push 单 FIFO worker。此前每条 push 一个 create_task，
+        # task 间无顺序保证——Agent 连发多条时入队顺序=处理完成顺序≠产生顺序。
+        self._server_push_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._server_push_worker_task: asyncio.Task | None = None
         # receiver 致命错误（连接断开 / ping 超时 / 发送失败）后的断连通知回调
         self._on_disconnect: Callable[[BaseException], Awaitable[None]] | None = None
 
@@ -175,6 +179,30 @@ class WebSocketAgentServerClient(AgentServerClient):
     ) -> None:
         """注册 Agent 主动推送处理回调（metadata 含 ``E2A_WIRE_SERVER_PUSH_KEY`` 的帧）。"""
         self._on_server_push = handler
+        self._ensure_server_push_worker()
+
+    def _ensure_server_push_worker(self) -> None:
+        """启动 server_push 单 FIFO worker（幂等）。"""
+        if self._server_push_worker_task is None or self._server_push_worker_task.done():
+            self._server_push_worker_task = asyncio.create_task(
+                self._server_push_worker_loop(), name="agent-server-push-worker"
+            )
+
+    async def _server_push_worker_loop(self) -> None:
+        """按到达顺序串行处理 server_push（issue #1548：消除 per-message task 乱序）."""
+        while True:
+            data = await self._server_push_queue.get()
+            try:
+                await self._on_server_push(data)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "[WebSocketAgentServerClient] server_push 处理失败: request_id=%s",
+                    data.get("request_id"),
+                )
+            finally:
+                self._server_push_queue.task_done()
 
     def set_disconnect_handler(
         self, handler: Callable[[BaseException], Awaitable[None]] | None
@@ -273,6 +301,9 @@ class WebSocketAgentServerClient(AgentServerClient):
         # 启动消息接收和分发任务
         self._running = True
         self._receiver_task = asyncio.create_task(self._message_receiver_loop())
+        # server_push 单 FIFO worker（issue #1548；handler 可能早于 connect 注册）
+        if self._on_server_push is not None:
+            self._ensure_server_push_worker()
         logger.info("[WebSocketAgentServerClient] 消息接收任务已启动")
 
     async def _message_receiver_loop(self) -> None:
@@ -297,7 +328,9 @@ class WebSocketAgentServerClient(AgentServerClient):
                     meta = data.get("metadata")
                     if isinstance(meta, dict) and meta.get(E2A_WIRE_SERVER_PUSH_KEY):
                         if self._on_server_push is not None:
-                            asyncio.create_task(self._on_server_push(data))
+                            # issue #1548：入 FIFO 队列由单 worker 串行处理，
+                            # 保证 server_push 按到达顺序（即 Agent 产生顺序）处理。
+                            self._server_push_queue.put_nowait(data)
                         else:
                             logger.warning(
                                 "[WebSocketAgentServerClient] 收到 server_push 但未注册 handler，已丢弃: "
@@ -417,6 +450,15 @@ class WebSocketAgentServerClient(AgentServerClient):
             except asyncio.CancelledError:
                 pass
             self._receiver_task = None
+
+        # 停止 server_push worker（issue #1548）
+        if self._server_push_worker_task is not None and not self._server_push_worker_task.done():
+            self._server_push_worker_task.cancel()
+            try:
+                await self._server_push_worker_task
+            except asyncio.CancelledError:
+                pass
+            self._server_push_worker_task = None
 
         # 清理所有队列
         self._message_queues.clear()

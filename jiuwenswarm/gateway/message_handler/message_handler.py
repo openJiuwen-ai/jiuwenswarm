@@ -71,6 +71,9 @@ logger = logging.getLogger(__name__)
 
 _ACP_CHANNEL_ID = "acp"
 _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
+# issue #1548：无 session_id 的消息统一落此桶（出站序号 / 流式串行锁共用），
+# 保持各 per-session 字典键类型一致。
+_NO_SESSION_BUCKET = "_no_session_"
 # \mode 切换合法输入集：新 canonical + 旧 canonical（DEPRECATION_MAP.keys()）
 # + 正式别名（MODE_ALIASES.keys()，如 team.plan / team.code）。
 # 单一事实源，前置校验与分发同源，避免和 ModeSubcommand/_VALID_MODE_LINES 漂移。
@@ -311,6 +314,10 @@ class MessageHandler(ABC):
         self._stream_user_ids: dict[str, str] = {}
         self._stream_modes: dict[str, str] = {}  # request_id -> mode
         self._stream_emits_processing_status: dict[str, bool] = {}  # request_id -> emits chat.processing_status
+        # issue #1548：per-session 出站序号（入队时分配，单调递增；诊断/校验用）
+        self._out_seq_counters: dict[str, int] = {}
+        # issue #1548：per-session 流式串行锁（同 session 并发 chat.send 排队输出）
+        self._session_stream_locks: dict[str, asyncio.Lock] = {}
         # request_id -> req_method value（如 chat.send / command.goal / history.get）。
         # 用于 processing_status=false 守卫：仅 chat.send(emit=True) 与 command.goal
         # 长流可挡住补发；history.get 等短只读流不得挡住。
@@ -431,6 +438,19 @@ class MessageHandler(ABC):
         self._evolution_auto_save_enabled = get_evolution_auto_save_enabled(
             config_payload if isinstance(config_payload, dict) else {}
         )
+
+    async def apply_outbound_pipeline(self, msg: "Message") -> None:
+        """出站管线（数字分身路由，含 LLM 分类）。
+
+        issue #1548：从 publish_robot_messages 的入队临界区移到 SessionSender
+        发送阶段执行——慢分类只挂起本 session 的发送，不再打乱全局入队顺序。
+        """
+        if self._outbound_pipeline is None:
+            return
+        try:
+            await self._outbound_pipeline.apply(msg)
+        except Exception:
+            logger.exception("Outbound pipeline error, message sent without routing")
 
     @classmethod
     def get_instance(cls, agent_client: "AgentServerClient | None" = None) -> "MessageHandler":
@@ -1026,15 +1046,15 @@ class MessageHandler(ABC):
     ) -> bool:
         """Whether an ordinary chat.send replaces this in-flight host stream.
 
-        Same-session ordinary chat preserves the pre-Goal JiuwenSwarm
-        lifecycle: finish/cancel the old request before the new request starts.
-        Runtime-managed Goal input is filtered by
-        ``_should_cancel_existing_stream_before_chat_send`` before this method
-        is reached. ACP additionally replaces an orphan stream from another
-        session because it is a single-user channel.
+        issue #1548：同 session 的流不再被新 chat.send 顶替——改由
+        ``_start_stream_task`` 的 per-session 锁排队保序（先到的请求先完整
+        输出，后到的排队等待），否则连发场景下先发请求的最终输出会被丢弃。
+        本方法的取消目标因此收窄为单用户 channel（如 acp）的跨 session
+        孤儿流清理。runtime-managed Goal 输入不属于此处：它由
+        ``_should_cancel_existing_stream_before_chat_send`` 在调用方提前过滤。
         """
         if new_session_id and task_session == new_session_id:
-            return True
+            return False  # 同 session：不取消，交给 per-session 锁排队
         return self._is_single_user_channel(channel_id)
 
     def _resolve_stream_cancel_session_id(
@@ -2488,6 +2508,16 @@ class MessageHandler(ABC):
 
     # ---------- robot_messages ----------
 
+    def _next_out_seq(self, session_id: str | None) -> int:
+        """同一 session 内单调递增的出站序号（issue #1548：保序诊断/校验用）.
+
+        事件循环下无 await，天然原子；仅用于日志与通道侧兜底校验，不做重排。
+        """
+        key = str(session_id or "").strip() or _NO_SESSION_BUCKET
+        seq = self._out_seq_counters.get(key, 0) + 1
+        self._out_seq_counters[key] = seq
+        return seq
+
     def _is_chat_stream(self, rid: str) -> bool:
         """``rid`` 是否为计入运行态的对话流（``chat.send``）。
 
@@ -2606,17 +2636,16 @@ class MessageHandler(ABC):
             return None
 
     async def publish_robot_messages(self, msg: "Message") -> None:
-        """将 Agent 响应放入 robot_messages 队列."""
-        # Outbound Pipeline（数字分身出站路由）— 在入队前运行
-        if self._outbound_pipeline is not None:
-            try:
-                await self._outbound_pipeline.apply(msg)
-            except Exception:
-                logger.exception("Outbound pipeline error, message queued without routing")
-        await self._robot_messages.put(msg)
+        """将 Agent 响应放入 robot_messages 队列（issue #1548：入队即有序）.
 
-    def publish_robot_messages_nowait(self, msg: "Message") -> None:
-        """将 Agent 响应放入 robot_messages 队列（同步）."""
+        Outbound Pipeline（含 LLM 分类）已移至 ChannelManager 的 per-session
+        发送阶段（SessionSender），只影响本 session 的发送顺序——若在入队前
+        await，先产生的消息会被后产生的消息插队。本方法入队临界区内无
+        await，事件循环下原子：入队顺序 = 生产顺序。
+        """
+        meta = dict(msg.metadata) if isinstance(msg.metadata, dict) else {}
+        meta["out_seq"] = self._next_out_seq(msg.session_id)
+        msg.metadata = meta
         self._robot_messages.put_nowait(msg)
 
     async def consume_robot_messages(self, timeout: float | None = None) -> "Message | None":
@@ -4619,6 +4648,38 @@ class MessageHandler(ABC):
                             getattr(msg, "id", None),
                         )
 
+    def _get_session_stream_lock(self, session_id: str | None) -> asyncio.Lock:
+        """获取（或惰性创建）session 的流式串行锁（issue #1548）."""
+        key = str(session_id or "").strip() or _NO_SESSION_BUCKET
+        lock = self._session_stream_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_stream_locks[key] = lock
+        return lock
+
+    async def _run_stream_locked(
+        self,
+        lock: asyncio.Lock,
+        request_id: str,
+        env: "E2AEnvelope",
+        session_id: str | None,
+        request_metadata: dict[str, Any] | None,
+        *,
+        emit_processing_status: bool = True,
+    ) -> None:
+        """在 session 锁下运行 process_stream（issue #1548，per-session 串行）.
+
+        等待锁期间请求可能已被取消（如用户 interrupt、单用户 channel 的新消息
+        顶替），锁释放后检查 rid 仍在 _stream_tasks 才继续，已清理则直接退出。
+        """
+        async with lock:
+            if request_id not in self._stream_tasks:
+                return  # 已被取消/清理
+            await self.process_stream(
+                env, session_id, request_metadata,
+                emit_processing_status=emit_processing_status,
+            )
+
     async def process_stream(
         self,
         env: "E2AEnvelope",
@@ -4857,37 +4918,6 @@ class MessageHandler(ABC):
                 exc,
             )
 
-    async def _send_stream_cancelled_notification(
-        self, request_id: str | None, channel_id: str, session_id: str | None
-    ) -> None:
-        """发送流式任务被取消的通知到客户端."""
-        if not request_id:
-            return
-
-        from jiuwenswarm.common.schema.message import Message, EventType
-
-        cancel_msg = Message(
-            id=request_id,
-            type="event",
-            channel_id=channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            payload={
-                "event_type": "chat.interrupt_result",
-                "intent": "cancel",
-                "success": True,
-                "message": "任务已取消",
-            },
-            event_type=EventType.CHAT_INTERRUPT_RESULT,
-            metadata=None,
-        )
-        await self.publish_robot_messages(cancel_msg)
-        logger.info(
-            "[MessageHandler] 已发送流式任务取消通知: request_id=%s",
-            request_id,
-        )
 
     async def _start_stream_task(
         self,
@@ -4910,13 +4940,20 @@ class MessageHandler(ABC):
                 is_processing=True,
                 app_id=msg.app_id or "",
             )
+        # issue #1548：per-session 串行化——同一 session 的并发 chat.send 各自仍是
+        # 后台 task（不阻塞 _forward_loop），但流式 chunk 的发布被 session 锁串行化：
+        # 先到的请求先完整输出，后到的请求排队等待，chunk 不再交错写入 robot_messages。
+        # Agent 侧两请求仍并行执行，仅输出顺序按请求顺序呈递给用户。
+        lock = self._get_session_stream_lock(msg.session_id)
         task = asyncio.create_task(
-            self.process_stream(
+            self._run_stream_locked(
+                lock,
+                stream_rid,
                 env,
                 msg.session_id,
                 msg.metadata,
                 emit_processing_status=emit_processing_status,
-            )
+            ),
         )
         self._stream_tasks[stream_rid] = task
         self._stream_channels[stream_rid] = msg.channel_id

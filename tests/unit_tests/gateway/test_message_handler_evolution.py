@@ -480,7 +480,8 @@ async def test_interrupt_evolution_approval_does_not_read_auto_save_config(
     out = await handler.consume_robot_messages(timeout=0)
     assert out is not None
     assert out.payload["request_id"] == "call_123"
-    assert out.metadata == {"k": "v"}
+    # out_seq 是 issue #1548 出站保序注入的序号，属预期附带字段
+    assert {k: v for k, v in out.metadata.items() if k != "out_seq"} == {"k": "v"}
 
 
 def test_processing_status_is_only_emitted_for_chat_streams() -> None:
@@ -639,7 +640,8 @@ async def test_resolved_approval_replays_deferred_approval_before_supplement(
     assert out is not None
     assert out.payload["event_type"] == "chat.ask_user_question"
     assert out.payload["request_id"] == "team_skill_evolve_new"
-    assert out.metadata == {"k": "v"}
+    # out_seq 是 issue #1548 出站保序注入的序号，属预期附带字段
+    assert {k: v for k, v in out.metadata.items() if k != "out_seq"} == {"k": "v"}
     assert handler.pending_evolution_approval("sess-1") == "team_skill_evolve_new"
     assert handler.queued_supplement_input("sess-1") == {"new_input": "继续补充"}
     assert _FakeAgentClient.sent_stream_requests == []
