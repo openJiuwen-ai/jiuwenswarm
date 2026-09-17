@@ -639,10 +639,15 @@ def _build_deepresearch_child_env(
         # sidecar resolves it via cwd with ``python -m``. The child starts in
         # script mode where cwd is never on sys.path, so without this entry the
         # child cannot import jiuwenswarm (deepresearch runner's MaaS auth
-        # backend on OHOS), crashing with ModuleNotFoundError.
+        # backend on OHOS), crashing with ModuleNotFoundError. Derive the root
+        # from the *imported* jiuwenswarm package itself so it works in both
+        # bundle layouts (vendor tree beside jiuwenswarm/ and venv
+        # site-packages) and never depends on this file's in-package depth.
         try:
-            jiuwenswarm_pkg_dir = os.path.dirname(os.path.dirname(__file__))
-            vendor_root = os.path.dirname(jiuwenswarm_pkg_dir)
+            import jiuwenswarm
+
+            pkg_dir = os.path.dirname(os.path.abspath(jiuwenswarm.__file__))
+            vendor_root = os.path.dirname(pkg_dir)
             if os.path.isdir(os.path.join(vendor_root, "jiuwenswarm")):
                 child_pythonpath = f"{child_pythonpath}{os.pathsep}{vendor_root}"
         except Exception:  # pragma: no cover - path resolution must not break spawn
