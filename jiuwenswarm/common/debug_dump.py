@@ -33,6 +33,21 @@ from jiuwenswarm.common.utils import get_logs_dir
 
 logger = logging.getLogger(__name__)
 
+# debug_dump 的日志需归属到调用进程的日志分桶（按 utils 的 logger 名前缀分类），
+# 否则 jiuwenswarm.common.* 一律落入 gateway 桶：非 gateway 进程（如 jiuwenswarm-web）
+# 会在默认日志目录写出 gateway.log，与"gateway 日志只在 AGENTOS_GATEWAY_LOG_DIR"的
+# 部署约定冲突。未知 service_name 回退模块 logger（gateway 桶，保持旧行为）。
+_SERVICE_LOGGER_NAMES = {
+    "web": "jiuwenswarm.channels.web.debug_dump",
+    "agentserver": "jiuwenswarm.server.debug_dump",
+    "gateway": "jiuwenswarm.gateway.debug_dump",
+}
+
+
+def _service_logger(service_name: str) -> logging.Logger:
+    """Return a logger whose records classify into the calling process's bucket."""
+    return logging.getLogger(_SERVICE_LOGGER_NAMES.get(service_name, __name__))
+
 _SYNC_PRIMITIVE_TYPES = (asyncio.Lock, asyncio.Event, asyncio.Condition, asyncio.Semaphore)
 
 
@@ -118,6 +133,7 @@ def dump_async_state(service_name: str) -> Path | None:
     Returns:
         Path of the written dump file, or None if the dump failed.
     """
+    log = _service_logger(service_name)
     try:
         dump_dir = get_logs_dir() / "async_dump"
         dump_dir.mkdir(parents=True, exist_ok=True)
@@ -133,10 +149,10 @@ def dump_async_state(service_name: str) -> Path | None:
             _write_tasks(out, tasks)
             _write_waiting_primitives(out, primitives, queues)
             out.write("\n===== END OF DUMP =====\n")
-        logger.info("[debug_dump] async state dumped to %s", dump_path)
+        log.info("[debug_dump] async state dumped to %s", dump_path)
         return dump_path
     except Exception:
-        logger.exception("[debug_dump] async state dump failed")
+        log.exception("[debug_dump] async state dump failed")
         return None
 
 
@@ -157,7 +173,7 @@ def install_async_dump_handler(service_name: str) -> None:
         dump_async_state(service_name)
 
     signal.signal(signal.SIGUSR1, _handler)
-    logger.info(
+    _service_logger(service_name).info(
         "[debug_dump] async dump handler installed for %s: kill -USR1 %s",
         service_name,
         os.getpid(),

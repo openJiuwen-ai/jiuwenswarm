@@ -33,6 +33,8 @@ _LIFECYCLE_METHODS: tuple[tuple[ReqMethod, str], ...] = (
     (ReqMethod.AGENT_GROUPS_INSTALL, "agent_groups.install"),
     (ReqMethod.AGENT_GROUPS_UNINSTALL, "agent_groups.uninstall"),
     (ReqMethod.AGENT_TEMPLATES_CREATE, "agent_templates.create"),
+    (ReqMethod.AGENT_TEMPLATES_UPDATE, "agent_templates.update"),
+    (ReqMethod.AGENT_TEMPLATES_DELETE, "agent_templates.delete"),
     (ReqMethod.AGENT_TEMPLATES_IMPORT_LOCAL, "agent_templates.import_local"),
     (ReqMethod.AGENT_TEMPLATES_INSTALL, "agent_templates.install"),
     (ReqMethod.AGENT_TEMPLATES_UNINSTALL, "agent_templates.uninstall"),
@@ -720,6 +722,48 @@ class TestPackageCatalogReqMethodRouting:
         assert response.payload == {}
         assert calls == [{"id": "group-a"}]
 
+    async def test_agent_template_update_payload(self, monkeypatch) -> None:
+        """agent_templates.update falls through to update_agent_template(params)."""
+        iface = _iface()
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            iface.package_manager,
+            "update_agent_template",
+            lambda params: calls.append(params),
+        )
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"id": "expert-a", "name": "N"}, method=ReqMethod.AGENT_TEMPLATES_UPDATE),
+        )
+        assert response.ok is True
+        assert response.payload == {}
+        assert calls == [{"id": "expert-a", "name": "N"}]
+
+    async def test_agent_template_delete_payload_unloads_first(self, monkeypatch) -> None:
+        """agent_templates.delete unloads live equipment, then deletes the package."""
+        iface = _iface()
+        calls: list[tuple[str, str]] = []
+        deleted: list[dict] = []
+
+        async def _unload(self, kind, package_id):
+            calls.append((kind, package_id))
+
+        monkeypatch.setattr(iface.JiuWenSwarm, "_unload_live_equipment", _unload)
+        monkeypatch.setattr(
+            iface.package_manager,
+            "delete_agent_template",
+            lambda params: deleted.append(params),
+        )
+        owner = iface.JiuWenSwarm.__new__(iface.JiuWenSwarm)
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            owner,
+            _req({"id": "expert-a"}, method=ReqMethod.AGENT_TEMPLATES_DELETE),
+        )
+        assert response.ok is True
+        assert response.payload == {}
+        assert calls == [(AGENT_TEMPLATES, "expert-a")]
+        assert deleted == [{"id": "expert-a"}]
+
     def test_legacy_plugins_routes_stay_separate(self) -> None:
         iface = _iface()
         for method in (
@@ -826,3 +870,32 @@ class TestPackageCatalogReqMethodRouting:
 
         assert response.ok is True
         assert calls == [(AGENT_TEMPLATES, "sales-expert")]
+
+@pytest.mark.asyncio
+async def test_missing_hub_expert_invalidates_catalog_and_returns_code(monkeypatch):
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
+    from jiuwenswarm.server.runtime.marketplace import hub_catalog_cache
+    iface = _iface()
+    monkeypatch.setattr(iface.package_manager, 'show_agent_template_with_hub', AsyncMock(side_effect=HubNotFoundError('missing')))
+    invalidate = MagicMock()
+    monkeypatch.setattr(hub_catalog_cache, 'invalidate_hub_catalog', invalidate)
+    response = await iface.JiuWenSwarm._handle_package_catalog_request(None, _req({'id': 'old-id'}, method=ReqMethod.AGENT_TEMPLATES_SHOW))
+    assert response.ok is False
+    assert response.payload['code'] == 'HUB_ASSET_NOT_FOUND'
+    invalidate.assert_called_once_with('agent_template')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [ReqMethod.PLUGIN_PACKAGES_INSTALL, ReqMethod.AGENT_TEMPLATES_INSTALL])
+async def test_equipment_install_has_total_timeout(monkeypatch, method):
+    iface = _iface()
+    async def expired(operation, *, timeout):
+        assert timeout == 120
+        operation.close()
+        raise TimeoutError()
+    monkeypatch.setattr(iface.asyncio, "wait_for", expired)
+    response = await iface.JiuWenSwarm._handle_package_catalog_request(
+        None, _req({"id": "slow-hub-asset"}, method=method)
+    )
+    assert response.ok is False
+    assert response.payload["error"] == "安装超时，请稍后重试"

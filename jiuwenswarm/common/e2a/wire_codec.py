@@ -278,6 +278,12 @@ def encode_agent_response_for_wire(
         )
 
 
+def _legacy_chunk_dict(chunk: AgentResponseChunk) -> dict[str, Any]:
+    legacy = asdict(chunk)
+    legacy.pop("runtime_completion", None)
+    return legacy
+
+
 def encode_agent_chunk_for_wire(
     chunk: AgentResponseChunk,
     *,
@@ -308,7 +314,7 @@ def encode_agent_chunk_for_wire(
                 te,
             )
             return _fallback_wire_chunk_from_legacy(
-                _json_safe(asdict(chunk)),
+                _json_safe(_legacy_chunk_dict(chunk)),
                 response_id=response_id,
                 sequence=sequence,
                 exc=te,
@@ -324,7 +330,7 @@ def encode_agent_chunk_for_wire(
             e,
         )
         return _fallback_wire_chunk_from_legacy(
-            _json_safe(asdict(chunk)),
+            _json_safe(_legacy_chunk_dict(chunk)),
             response_id=response_id,
             sequence=sequence,
             exc=e,

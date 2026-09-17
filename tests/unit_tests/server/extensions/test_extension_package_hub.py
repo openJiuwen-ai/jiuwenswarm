@@ -485,8 +485,9 @@ async def test_catalog_list_keeps_hub_card_when_same_named_local_exists(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_filter", [None, "builtin+hub", "mine"])
 async def test_list_uses_provenance_to_return_installed_hub_package_once(
-    extension_workspace: Path,
+    extension_workspace: Path, source_filter,
 ) -> None:
     local = (
         extension_workspace / "plugins" / "agent_templates" / "local" / "sales-expert"
@@ -509,11 +510,14 @@ async def test_list_uses_provenance_to_return_installed_hub_package_once(
         )
     )
 
-    cards = await catalog.list_agent_templates_with_hub({}, hub_port=FakeHubAssetPort())
+    cards = await catalog.list_agent_templates_with_hub({"filter": source_filter}, hub_port=FakeHubAssetPort())
 
     assert [(card["id"], card["source"], card["installed"]) for card in cards] == [
         ("sales-expert", "hub", True)
     ]
+    if source_filter != "mine":
+        assert cards[0]["displayName"]["zh"] == "销售专家"
+        assert cards[0]["avatar"] == "https://example.test/icon.png"
 
 
 @pytest.mark.asyncio
@@ -1122,3 +1126,18 @@ async def test_hub_asset_uuid_remains_external_while_package_name_drives_runtime
     assert [(card["id"], card["installed"]) for card in cards] == [
         (asset_id, False)
     ]
+
+@pytest.mark.asyncio
+async def test_expert_catalog_keeps_hub_card_with_same_named_local_package(extension_workspace):
+    local = extension_workspace / 'plugins' / 'agent_templates' / 'local' / 'sales-expert'
+    local.mkdir(parents=True)
+    (local / 'manifest.json').write_text(json.dumps({'package_type': 'agent_template', 'name': 'sales-expert'}))
+    catalog.upsert_agent_template_marketplace_entry('sales-expert', installed=True, source='local')
+    hub = FakeHubAssetPort(_item(asset_id='remote-expert-id', package_name='sales-expert'))
+    cards = await catalog.list_agent_templates_with_hub({'filter': 'builtin+hub'}, hub_port=hub)
+    assert [(c['id'], c['source']) for c in cards] == [('remote-expert-id', 'hub')]
+    assert cards[0]['avatar'] == hub.item.icon_uri
+    # A matching name alone does not prove the local copy was installed from Hub.
+    assert cards[0]['installed'] is False
+    mine = await catalog.list_agent_templates_with_hub({'filter': 'mine'}, hub_port=hub)
+    assert [(c['id'], c['source']) for c in mine] == [('sales-expert', 'local')]

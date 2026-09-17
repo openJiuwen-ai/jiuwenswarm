@@ -1238,7 +1238,7 @@ async def test_distributed_runtime_activations_switch_atomically(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_deletes_single_team_session_team(
+async def legacy_delete_session_runtime_deletes_single_team_session_team(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1277,7 +1277,7 @@ async def test_delete_session_runtime_deletes_single_team_session_team(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_uses_metadata_not_active_team_name(
+async def legacy_delete_session_runtime_uses_metadata_not_active_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1827,7 +1827,7 @@ async def test_stop_session_runtime_uses_metadata_team_name_for_non_active_sessi
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_uses_metadata_team_name(
+async def legacy_delete_session_runtime_uses_metadata_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1865,7 +1865,7 @@ async def test_delete_session_runtime_uses_metadata_team_name(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_falls_back_to_release_without_team_name(
+async def legacy_delete_session_runtime_falls_back_to_release_without_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -2323,3 +2323,62 @@ async def test_cleanup_drops_controller_on_stop_but_keeps_it_across_pause(monkey
 
     await tm._cleanup_runtime_locals("s")                             # stop/cancel path
     assert tm.get_background_task_controller("s") is not ctl
+
+@pytest.mark.asyncio
+async def test_permanent_delete_quiesce_closes_team_execution_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = TeamManager()
+    monkeypatch.setattr(manager, "_dispatch_swarmflow_controller", AsyncMock())
+    monkeypatch.setattr(manager, "_cleanup_runtime_locals", AsyncMock())
+    target = SimpleNamespace(descriptor=SimpleNamespace(session_id="deleting-session"))
+
+    await manager.quiesce_for_delete(target, reason="permanent-delete")
+
+    with pytest.raises(RuntimeError, match="permanently deleted"):
+        manager.begin_round("deleting-session", "request-1")
+    with pytest.raises(RuntimeError, match="permanently deleted"):
+        await manager.prepare_runtime_activation("deleting-session", "team-1")
+
+    manager.delete_aborted(target)
+    assert "deleting-session" not in manager._terminal_delete_sessions
+
+    await manager.quiesce_for_delete(target, reason="permanent-delete-retry")
+    manager.delete_committed(target)
+    assert "deleting-session" not in manager._terminal_delete_sessions
+
+
+@pytest.mark.asyncio
+async def test_team_running_window_follows_round_not_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """归档闸门：运行中 = 请求在途或 round 存活，而非持久 stream/常驻运行时。"""
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+
+    manager = TeamManager()
+    monkeypatch.setattr(team_manager_module, "_team_manager", manager)
+    session_id = "sess-running"
+
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    # 进入适配器即算运行中：round 之前的 spec 组装/运行时激活阶段也必须挡住归档。
+    manager.begin_request(session_id, "request-1")
+    assert team_manager_module.is_team_session_running(session_id)
+
+    manager.begin_round(session_id, "request-1")
+    assert team_manager_module.is_team_session_running(session_id)
+
+    # 持久 stream 与常驻运行时在 round 结束后仍然存在，但不得继续算运行中。
+    manager.commit_runtime_ready(session_id, "team-1")
+    manager._stream_tasks[session_id] = SimpleNamespace()  # type: ignore[assignment]
+    await manager.release_round(session_id, "request-1")
+
+    assert not manager.is_round_active(session_id)
+    assert manager.has_stream_task(session_id)
+    assert manager.is_runtime_active(session_id)
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    # 提前退出的请求（校验失败等）由适配器兜底解除标记。
+    manager.begin_request(session_id, "request-2")
+    manager.end_request(session_id, "request-2")
+    assert not team_manager_module.is_team_session_running(session_id)

@@ -14,6 +14,7 @@ import {
   Copy,
   Code2,
   FileText,
+  GitFork,
   Image as ImageIcon,
   Info,
   LoaderCircle,
@@ -26,7 +27,15 @@ import {
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
-import { AgentMode, MediaItem, Message, UserAnswer, type ProjectInfo } from '../../types';
+import {
+  AgentMode,
+  MediaItem,
+  Message,
+  UserAnswer,
+  type MessageForkPoint,
+  type Permission,
+  type ProjectInfo,
+} from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { MessageList } from './MessageList';
@@ -89,6 +98,14 @@ export interface ChatHistoryPagerProps {
 interface ChatPanelProps {
   onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
+  onNewSession: () => void;
+  onForkSession: (
+    sourceSessionId: string,
+    forkPoint?: MessageForkPoint,
+  ) => Promise<void>;
+  onStartSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
+  continuedFromSessionId?: string | null;
+  onOpenContinuedFromSession?: (sourceSessionId: string) => void;
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (
     content: string,
@@ -138,17 +155,18 @@ interface ChatPanelProps {
   onToggleTeamArea?: (expanded: boolean | null) => void;
   /** 打开右侧面板并切换到代码审核 Tab */
   onOpenCodeReview?: (target: CodeReviewTarget) => void;
-  permissionsEnabled: boolean;
   /** 心跳面板展开状态：由 App.tsx 统一管理，跟团队/代码审核面板一样占用右侧工作区一栏 */
   heartbeatPanelOpen?: boolean;
   /** 切换心跳面板展开状态 */
   onToggleHeartbeatPanel?: () => void;
+  permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** Goal（持续目标）控制，见 GoalBar 组件 */
-  onSetGoal?: (sessionId: string, objective: string) => void;
-  onPauseGoal?: (sessionId: string) => void;
-  onResumeGoal?: (sessionId: string) => void;
-  onClearGoal?: (sessionId: string) => void;
+  onSetGoal?: (sessionId: string, objective: string) => void | Promise<void>;
+  onPauseGoal?: (sessionId: string) => void | Promise<void>;
+  onResumeGoal?: (sessionId: string) => void | Promise<void>;
+  onRefreshGoal?: (sessionId: string) => void | Promise<void>;
+  onClearGoal?: (sessionId: string) => void | Promise<void>;
   /** 目标 active 但当前无处理中任务时，消息入队后主动排空一次，见 InputArea.tsx 对应调用点 */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
   /** 专家团「通过聊天创建」入口的 4.9 高保真欢迎态。 */
@@ -887,8 +905,19 @@ function scrollToBottom(el: HTMLDivElement): void {
 }
 
 const BEE_ANIMATION_DURATION = 4536;
+const WELCOME_BUBBLE_HIDE_DELAY = 3000;
 
-function BeeBanner({ className, altText, onTrigger }: { className: string; altText: string; onTrigger: () => void }) {
+function BeeBanner({
+  className,
+  altText,
+  onTrigger,
+  onLeave,
+}: {
+  className: string;
+  altText: string;
+  onTrigger: () => void;
+  onLeave: () => void;
+}) {
   const [isPlaying, setIsPlaying] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -917,6 +946,7 @@ function BeeBanner({ className, altText, onTrigger }: { className: string; altTe
       alt={altText}
       data-testid="chat-panel-welcome-banner"
       onMouseEnter={handleMouseEnter}
+      onMouseLeave={onLeave}
     />
   );
 }
@@ -929,6 +959,11 @@ function BeeBanner({ className, altText, onTrigger }: { className: string; altTe
 export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
   onEnsureSession,
+  onNewSession,
+  onForkSession,
+  onStartSideConversation,
+  continuedFromSessionId = null,
+  onOpenContinuedFromSession,
   onInputIntent,
   onPersistMedia,
   onPersistDocuments,
@@ -953,11 +988,12 @@ export const ChatPanel = React.memo(function ChatPanel({
   onOpenCodeReview,
   heartbeatPanelOpen = false,
   onToggleHeartbeatPanel,
-  permissionsEnabled,
+  permissionProfile,
   onSavePermission,
   onSetGoal,
   onPauseGoal,
   onResumeGoal,
+  onRefreshGoal,
   onClearGoal,
   onDrainTaskQueueIfIdle,
   welcomeVariant = null,
@@ -1032,6 +1068,31 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const [bubbleVisible, setBubbleVisible] = useState(false);
+  const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleBubbleShow = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+      bubbleHideTimerRef.current = null;
+    }
+    setBubbleVisible(true);
+  }, []);
+  const handleBubbleLeave = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+    }
+    bubbleHideTimerRef.current = setTimeout(() => {
+      bubbleHideTimerRef.current = null;
+      setBubbleVisible(false);
+    }, WELCOME_BUBBLE_HIDE_DELAY);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (bubbleHideTimerRef.current) {
+        clearTimeout(bubbleHideTimerRef.current);
+        bubbleHideTimerRef.current = null;
+      }
+    };
+  }, []);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
   const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const handlePluginConversationItem = useCallback((sid: string, role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => {
@@ -1123,6 +1184,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, []);
   const {
     turnsByMessageId: codeTurnsByMessageId,
+    turnCardAnchors: codeTurnCardAnchors,
     loading: codeTurnHistoryLoading,
     reload: reloadCodeTurnHistory,
     latestTurnKey: latestCodeTurnKey,
@@ -1141,6 +1203,9 @@ export const ChatPanel = React.memo(function ChatPanel({
     (message: Message) => {
       const turns = codeTurnsByMessageId.get(message.id);
       if (!turns?.length) return null;
+      // 同一轮的多条消息共享同一个 id（后端每个 chat.final 一条记录、同一个
+      // `<request_id>:assistant`），只在锚点消息上出卡片，避免重复渲染多张。
+      if (!codeTurnCardAnchors.has(message)) return null;
       return turns.map((turn) => {
         const turnKey = turnDiffKey(turn);
         const isLatest = turnKey === latestCodeTurnKey;
@@ -1162,6 +1227,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       });
     },
     [
+      codeTurnCardAnchors,
       codeTurnHistoryLoading,
       codeTurnsByMessageId,
       discardLatestTurn,
@@ -1173,6 +1239,72 @@ export const ChatPanel = React.memo(function ChatPanel({
       turnChangeError,
       turnChangeOperation,
     ],
+  );
+
+  const forkBoundaryMessageKey = useMemo(() => {
+    if (!continuedFromSessionId) return null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.forkedFromSessionId === continuedFromSessionId) {
+        return message.renderKey ?? message.id;
+      }
+    }
+    return null;
+  }, [continuedFromSessionId, messages]);
+
+  const renderAfterMessage = useCallback(
+    (message: Message) => {
+      const codeChanges = renderCodeChangesAfterMessage(message);
+      const messageKey = message.renderKey ?? message.id;
+      if (
+        !forkBoundaryMessageKey ||
+        messageKey !== forkBoundaryMessageKey ||
+        !continuedFromSessionId ||
+        !onOpenContinuedFromSession
+      ) {
+        return codeChanges;
+      }
+      return (
+        <>
+          {codeChanges}
+          <button
+            type="button"
+            className="chat-fork-origin"
+            data-testid="chat-panel-continued-from-chat"
+            title={t('chat.openSourceChat')}
+            aria-label={t('chat.openSourceChat')}
+            onClick={() => onOpenContinuedFromSession(continuedFromSessionId)}
+          >
+            <span className="chat-fork-origin__label" data-testid="chat-panel-continued-from-chat-label">
+              <GitFork size={14} strokeWidth={1.75} aria-hidden="true" />
+              {t('chat.continuedFromChat')}
+            </span>
+          </button>
+        </>
+      );
+    },
+    [
+      continuedFromSessionId,
+      forkBoundaryMessageKey,
+      onOpenContinuedFromSession,
+      renderCodeChangesAfterMessage,
+      t,
+    ],
+  );
+
+  const handleForkFromMessage = useCallback(
+    (message: Message) => {
+      if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) {
+        return Promise.reject(new Error('A persisted session is required to fork'));
+      }
+      return onForkSession(activeSessionId, {
+        messageId: message.id,
+        role: message.role,
+        content: message.content,
+        timestamp: message.completedAt ?? message.timestamp,
+      });
+    },
+    [activeSessionId, onForkSession],
   );
 
   // 跟踪用户是否正在查看历史消息（不在底部）
@@ -1725,10 +1857,11 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <>
                   <MessageList
                     messages={messages}
-                    renderAfterMessage={renderCodeChangesAfterMessage}
+                    renderAfterMessage={renderAfterMessage}
                     canLoadOlderHistory={canRequestOlderHistory}
                     onLoadOlderHistory={historyOnLoadMore}
                     teamGroupIdentityOverride={teamGroupIdentity}
+                    onForkFromMessage={handleForkFromMessage}
                   />
                   {shouldShowHumanShare && (
                     <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
@@ -1778,7 +1911,8 @@ export const ChatPanel = React.memo(function ChatPanel({
                     <BeeBanner
                       className="chat-welcome__banner chat-welcome__banner--bee"
                       altText={t('chat.welcomeLogoAlt')}
-                      onTrigger={() => setBubbleVisible(true)}
+                      onTrigger={handleBubbleShow}
+                      onLeave={handleBubbleLeave}
                     />
                   </>
                 )}
@@ -1790,6 +1924,9 @@ export const ChatPanel = React.memo(function ChatPanel({
                   ref={inputAreaRef}
                   onSubmit={handleSendMessage}
                   onEnsureSession={onEnsureSession}
+                  onNewSession={onNewSession}
+                  onForkSession={onForkSession}
+                  onStartSideConversation={onStartSideConversation}
                   onInputIntent={onInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
@@ -1801,9 +1938,12 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onNavigateToSkills={onNavigateToSkills}
                   onNavigateToAgents={onNavigateToAgents}
                   onAgentGroupIdentityChange={setTeamGroupIdentity}
-                  permissionsEnabled={permissionsEnabled}
+                  permissionProfile={permissionProfile}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
+                  onPauseGoal={onPauseGoal}
+                  onResumeGoal={onResumeGoal}
+                  onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
               </div>
@@ -1860,6 +2000,9 @@ export const ChatPanel = React.memo(function ChatPanel({
             ref={inputAreaRef}
             onSubmit={handleSendMessage}
             onEnsureSession={onEnsureSession}
+            onNewSession={onNewSession}
+            onForkSession={onForkSession}
+            onStartSideConversation={onStartSideConversation}
             onInputIntent={onInputIntent}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}
@@ -1871,9 +2014,12 @@ export const ChatPanel = React.memo(function ChatPanel({
             onNavigateToSkills={onNavigateToSkills}
             onNavigateToAgents={onNavigateToAgents}
             onAgentGroupIdentityChange={setTeamGroupIdentity}
-            permissionsEnabled={permissionsEnabled}
+            permissionProfile={permissionProfile}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}
+            onPauseGoal={onPauseGoal}
+            onResumeGoal={onResumeGoal}
+            onRefreshGoal={onRefreshGoal}
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />

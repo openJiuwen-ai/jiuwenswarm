@@ -25,6 +25,7 @@ from openjiuwen.symphony.discovery import (
 )
 
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
@@ -267,38 +268,12 @@ def build_model_discovery_settings(
     context_engine = react.get("context_engine_config")
     context_engine = context_engine if isinstance(context_engine, dict) else {}
 
-    def _positive_int(value: Any) -> int | None:
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return None
-        return parsed if parsed > 0 else None
-
-    # AgentOS attaches the selected entry's input window to the built Model;
-    # otherwise use the normal context-engine fallback and model-specific map.
-    fallback = _positive_int(getattr(model, "_agentos_ctx_window", None))
-    if fallback is None:
-        fallback = _positive_int(context_engine.get("context_window_tokens"))
-    if not model_name and fallback is None:
-        return settings
-
-    model_windows = context_engine.get("model_context_window_tokens")
-    model_windows = model_windows if isinstance(model_windows, dict) else None
-    try:
-        from openjiuwen.core.context_engine.context.context_utils import ContextUtils
-
-        context_window_tokens = ContextUtils.resolve_context_max(
-            model_name=model_name or None,
-            fallback_context_window_tokens=fallback,
-            model_context_window_tokens=model_windows,
-        )
-    except Exception:
-        logger.warning(
-            "Unable to resolve Skill retrieval model context: %s",
-            model_name or "<unknown>",
-            exc_info=True,
-        )
-        context_window_tokens = fallback or settings.context_window_tokens
+    context_window_tokens = resolve_context_window_tokens(
+        model_name=model_name or None,
+        context_engine_config=react,
+        model_config_obj=getattr(model, "model_config", None),
+        model_context_window_override=getattr(model, "_agentos_ctx_window", None),
+    )
     return replace(
         settings,
         context_window_tokens=max(1, int(context_window_tokens)),

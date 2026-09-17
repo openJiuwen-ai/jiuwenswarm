@@ -17,6 +17,7 @@ export function ModelNameField({
   id,
   value,
   mode,
+  allowCustomValue = false,
   options,
   disabled,
   invalid,
@@ -34,6 +35,7 @@ export function ModelNameField({
   id: string;
   value: string;
   mode: ModelInputMode;
+  allowCustomValue?: boolean;
   options: string[];
   disabled: boolean;
   invalid: boolean;
@@ -130,8 +132,10 @@ export function ModelNameField({
 
   const filteredOptions = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    return normalized ? options.filter((option) => option.toLocaleLowerCase().includes(normalized)) : options;
-  }, [options, query]);
+    const matches = normalized ? options.filter((option) => option.toLocaleLowerCase().includes(normalized)) : options;
+    const customValue = query.trim();
+    return allowCustomValue && customValue && !options.includes(customValue) ? [...matches, customValue] : matches;
+  }, [allowCustomValue, options, query]);
 
   const selectOption = (option: string) => {
     onChange(option);
@@ -202,7 +206,7 @@ export function ModelNameField({
           aria-autocomplete="list"
           aria-invalid={invalid || undefined}
           disabled={disabled}
-          placeholder={t('settingsPanel.models.searchModel')}
+          placeholder={t(allowCustomValue ? 'settingsPanel.models.modelIdPlaceholder' : 'settingsPanel.models.searchModel')}
           data-testid="settings-model-name-field-input"
           data-variant="combo"
           onFocus={openMenu}

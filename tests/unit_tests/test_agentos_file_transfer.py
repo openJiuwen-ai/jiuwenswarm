@@ -4,7 +4,10 @@ from __future__ import annotations
 # ``http://test`` base; loopback listeners bind ephemeral local test servers.
 
 import base64
+import email.message
+import io
 import json
+import urllib.error
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -227,6 +230,18 @@ def _make_router_with_runtime(*, sandbox_id: str = "inst-1") -> AgentOSRouterCli
     manager._runtimes[key] = runtime  # noqa: SLF001 - test helper
     router._current_agent_types["user-1"] = "claude"  # noqa: SLF001 - test helper
     return router
+
+
+def _http_error(
+    url: str,
+    code: int,
+    body: bytes = b"",
+    headers: dict[str, str] | None = None,
+) -> urllib.error.HTTPError:
+    hdrs = email.message.Message()
+    for key, value in (headers or {}).items():
+        hdrs[key] = value
+    return urllib.error.HTTPError(url, code, "error", hdrs, io.BytesIO(body))
 
 
 def test_build_auth_headers_from_token_adds_bearer_prefix() -> None:
@@ -582,6 +597,11 @@ def test_yuanrong_parse_content_range_total() -> None:
         fallback_size=1024,
     )
     assert total == 2048
+    unsatisfiable = client._parse_content_range_total(  # noqa: SLF001 - test helper
+        "bytes */10",
+        fallback_size=0,
+    )
+    assert unsatisfiable == 10
 
 
 def test_yuanrong_file_download_http_error_maps_to_file_not_found() -> None:
@@ -592,6 +612,28 @@ def test_yuanrong_file_download_http_error_maps_to_file_not_found() -> None:
     with pytest.raises(YuanrongAgentFileError) as exc:
         client._raise_agent_file_http_error(404, b'{"error":"file not found"}')  # noqa: SLF001
     assert exc.value.error_code == "file_not_found"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (b"", "file_not_found"),
+        (b'{"error":"directory not found"}', "file_not_found"),
+        (b'{"error":"path not found"}', "file_not_found"),
+        (b'{"message":"no such file or directory"}', "file_not_found"),
+        (b'{"error":"instance not found"}', "instance_not_found"),
+        (b'{"error":"sandbox not found"}', "instance_not_found"),
+    ],
+)
+def test_yuanrong_file_http_404_classifies_path_vs_instance(body: bytes, expected: str) -> None:
+    client = YuanrongFrontendAgentClient(
+        frontend_endpoint="http://yuanrong.test:8888",
+        function_version_urn="urn:test:function:1",
+    )
+    with pytest.raises(YuanrongAgentFileError) as exc:
+        client._raise_agent_file_http_error(404, body)  # noqa: SLF001
+    assert exc.value.error_code == expected
+    assert exc.value.http_status == 404
 
 
 @pytest.mark.asyncio
@@ -627,6 +669,64 @@ async def test_yuanrong_download_agent_file_reads_binary_with_range() -> None:
     assert chunk.content_type == "application/pdf"
 
 
+@pytest.mark.asyncio
+async def test_yuanrong_download_agent_file_offset_past_eof_returns_empty_chunk() -> None:
+    client = YuanrongFrontendAgentClient(
+        frontend_endpoint="http://yuanrong.test:8888",
+        function_version_urn="urn:test:function:1",
+    )
+    client._connected = True  # noqa: SLF001 - test setup
+
+    def _raise_416(req, timeout=None):
+        del timeout
+        raise _http_error(
+            req.full_url,
+            416,
+            body=b'{"error":"Requested Range Not Satisfiable"}',
+            headers={"Content-Range": "bytes */10", "Content-Type": "application/json"},
+        )
+
+    with patch("urllib.request.urlopen", side_effect=_raise_416):
+        chunk = await client.download_agent_file(
+            "inst-1",
+            "/home/agentos/docs/report.pdf",
+            offset=10,
+            limit=5,
+        )
+
+    assert chunk.data == b""
+    assert chunk.chunk_size == 0
+    assert chunk.offset == 10
+    assert chunk.size == 10
+    assert chunk.eof is True
+    assert chunk.content_type == "application/octet-stream"
+
+
+@pytest.mark.asyncio
+async def test_yuanrong_download_agent_file_416_without_range_uses_offset() -> None:
+    client = YuanrongFrontendAgentClient(
+        frontend_endpoint="http://yuanrong.test:8888",
+        function_version_urn="urn:test:function:1",
+    )
+    client._connected = True  # noqa: SLF001 - test setup
+
+    def _raise_416(req, timeout=None):
+        del timeout
+        raise _http_error(req.full_url, 416, body=b"Requested Range Not Satisfiable")
+
+    with patch("urllib.request.urlopen", side_effect=_raise_416):
+        chunk = await client.download_agent_file(
+            "inst-1",
+            "/home/agentos/docs/report.pdf",
+            offset=1000,
+            limit=64,
+        )
+
+    assert chunk.data == b""
+    assert chunk.size == 1000
+    assert chunk.eof is True
+
+
 def test_yuanrong_parse_agent_file_list_response_array_and_wrapped() -> None:
     client = YuanrongFrontendAgentClient(
         frontend_endpoint="http://yuanrong.test:8888",
@@ -654,6 +754,9 @@ def test_yuanrong_parse_agent_file_list_response_array_and_wrapped() -> None:
     with pytest.raises(YuanrongAgentFileError) as missing:
         client._parse_agent_file_list_response('{"error":"file not found"}', 404)  # noqa: SLF001
     assert missing.value.error_code == "file_not_found"
+    with pytest.raises(YuanrongAgentFileError) as dir_missing:
+        client._parse_agent_file_list_response('{"error":"directory not found"}', 404)  # noqa: SLF001
+    assert dir_missing.value.error_code == "file_not_found"
 
 
 @pytest.mark.asyncio
@@ -768,7 +871,7 @@ async def test_container_file_http_raw_file_returns_binary_and_json() -> None:
             eof=True,
         )
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -804,6 +907,94 @@ async def test_container_file_http_raw_file_returns_binary_and_json() -> None:
 
 
 @pytest.mark.asyncio
+async def test_container_file_http_raw_file_offset_beyond_eof_returns_empty() -> None:
+    import httpx
+
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+
+    router = _make_router_with_runtime()
+    router.download_container_file = AsyncMock(  # type: ignore[method-assign]
+        return_value=AgentFileDownloadChunk(
+            data=b"",
+            path="/home/agentos/uploads/a.bin",
+            offset=10,
+            chunk_size=0,
+            size=10,
+            content_type="application/octet-stream",
+            eof=True,
+        )
+    )
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel.container_file_client = router
+    app = build_web_channel_app(channel)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        binary = await client.get(
+            "/file-api/raw-file",
+            params={
+                "path": "/home/agentos/uploads/a.bin",
+                "user_id": "user-1",
+                "offset": 10,
+                "limit": 5,
+            },
+            headers={"Authorization": "Bearer tok-1"},
+        )
+        json_resp = await client.get(
+            "/file-api/raw-file",
+            params={
+                "path": "/home/agentos/uploads/a.bin",
+                "user_id": "user-1",
+                "offset": 10,
+                "limit": 5,
+                "format": "json",
+            },
+            headers={"Authorization": "Bearer tok-1"},
+        )
+
+    assert binary.status_code == 200
+    assert binary.content == b""
+    assert json_resp.status_code == 200
+    body = json_resp.json()
+    assert body["chunk_size"] == 0
+    assert body["data_base64"] == ""
+    assert body["eof"] is True
+    assert body["size"] == 10
+    assert body["offset"] == 10
+
+
+@pytest.mark.asyncio
+async def test_container_file_http_raw_file_missing_path_is_file_not_found() -> None:
+    import httpx
+
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+
+    router = _make_router_with_runtime()
+    router.download_container_file = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AgentOSFileTransferError("directory not found", code="file_not_found")
+    )
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel.container_file_client = router
+    app = build_web_channel_app(channel)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/file-api/raw-file",
+            params={"path": "/home/agentos/missing.bin", "user_id": "user-1"},
+            headers={"Authorization": "Bearer tok-1"},
+        )
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["code"] == "file_not_found"
+    assert body["code"] != "instance_not_found"
+
+
+@pytest.mark.asyncio
 async def test_container_file_http_downloads_sent_file_from_token() -> None:
     import httpx
 
@@ -826,7 +1017,7 @@ async def test_container_file_http_downloads_sent_file_from_token() -> None:
     payload = base64.urlsafe_b64encode(
         json.dumps({"path": "/home/agentos/reports/result.txt", "sid": "session-1"}).encode()
     ).decode().rstrip("=")
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -898,7 +1089,7 @@ async def test_container_file_http_routes_verified_download_through_e2a(
         ).encode()
     ).decode().rstrip("=")
     channel = WebChannel(
-        WebChannelConfig(enabled=True, dual_protocol=True),
+        WebChannelConfig(enabled=True),
         RobotMessageRouter(),
         agent_client=router,
     )
@@ -974,7 +1165,7 @@ async def test_container_file_http_rejects_verified_chunk_past_declared_size(
         ).encode()
     ).decode().rstrip("=")
     channel = WebChannel(
-        WebChannelConfig(enabled=True, dual_protocol=True),
+        WebChannelConfig(enabled=True),
         RobotMessageRouter(),
         agent_client=router,
     )
@@ -1021,7 +1212,7 @@ async def test_container_file_http_verified_cross_user_rejection_has_no_fallback
         ).encode()
     ).decode().rstrip("=")
     channel = WebChannel(
-        WebChannelConfig(enabled=True, dual_protocol=True),
+        WebChannelConfig(enabled=True),
         RobotMessageRouter(),
         agent_client=router,
     )
@@ -1054,7 +1245,7 @@ async def test_container_file_http_upload_multipart() -> None:
             "size": 4,
         }
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -1096,7 +1287,7 @@ async def test_container_file_http_upload_multipart_with_dir() -> None:
             "size": 4,
         }
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -1132,7 +1323,7 @@ async def test_container_file_http_file_content_text() -> None:
             "size": 7,
         }
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -1164,7 +1355,7 @@ async def test_container_file_http_absent_without_router_client() -> None:
     from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
 
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     app = build_web_channel_app(channel)
     paths = {getattr(r, "path", None) for r in app.router.routes}
     assert "/file-api/upload" not in paths
@@ -1235,7 +1426,7 @@ async def test_container_file_http_list_files_and_markdown() -> None:
 
     router = _make_router_with_runtime()
     router.list_container_files = AsyncMock(return_value=yuanrong_items)  # type: ignore[method-assign]
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -1283,6 +1474,40 @@ async def test_container_file_http_list_files_and_markdown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_container_file_http_list_missing_dir_is_file_not_found() -> None:
+    import httpx
+
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
+
+    router = _make_router_with_runtime()
+    router.list_container_files = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AgentOSFileTransferError("directory not found", code="file_not_found")
+    )
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel.container_file_client = router
+    app = build_web_channel_app(channel)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        listed = await client.get(
+            "/file-api/list-files",
+            params={"dir": "/home/agentos/missing", "user_id": "user-1"},
+            headers={"Authorization": "Bearer tok-1"},
+        )
+        markdown = await client.get(
+            "/file-api/list-markdown",
+            params={"dir": "/home/agentos/missing", "user_id": "user-1"},
+            headers={"Authorization": "Bearer tok-1"},
+        )
+    assert listed.status_code == 404
+    assert listed.json()["code"] == "file_not_found"
+    assert markdown.status_code == 404
+    assert markdown.json()["code"] == "file_not_found"
+
+
+@pytest.mark.asyncio
 async def test_container_file_http_mkdir() -> None:
     import httpx
 
@@ -1298,7 +1523,7 @@ async def test_container_file_http_mkdir() -> None:
             "created": True,
         }
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 

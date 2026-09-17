@@ -1,3 +1,6 @@
+import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
+import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
+import { scheduleCatalogRefresh, catalogScope, withCatalogCache, catalogCacheOf } from '../../features/catalogCache';
 import { ChevronDown } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -10,11 +13,15 @@ import { DefinitionUploadDialog } from './AgentGroupUploadDialog';
 import { GroupCatalogPage, GROUP_PAGE_SIZE } from './GroupCatalogPage';
 import { PendingConnectorModals, usePendingConnectorFlow } from '../ConnectorMarket/usePendingConnectorFlow';
 import { useConnectorStore } from '../../stores/connectorStore';
+import { seedAgentCatalog } from '../../stores/agentCatalogStore';
 import {
   AgentInstallPendingError,
+  AgentManagementError,
   createAgentGroupManagementClient,
+
   createAgentManagementClient,
   type AgentCatalogItem,
+  type AgentDetail,
   type AgentDraft,
   type AgentGroupCatalogItem,
   type AgentGroupDetail,
@@ -33,9 +40,10 @@ import {
   mergeAgentDetailWithCatalog,
   mergeAgentGroupDetailWithCatalog,
 } from '../../features/agentManagement';
+import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 import './agentManagement.css';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
-import { PageHeader, PageToolbarSearch, Tabs } from '../ui';
+import { CategoryTabs, PageHeader, PageToolbarSearch, Tabs } from '../ui';
 
 type PanelView = 'catalog' | 'teams' | 'mine' | 'detail' | 'group-detail' | 'create' | 'group-create';
 
@@ -75,6 +83,25 @@ const EMPTY_GROUP_DRAFT: AgentGroupDraft = {
   skillRefs: [],
   suggestedPrompts: [],
 };
+
+function detailToDraft(detail: AgentDetail): AgentDraft {
+  const presetIds = new Set<string>(AGENT_TAG_OPTIONS.map((option) => option.id));
+  const tagIds = detail.tags
+    .map((tag) => tag.id)
+    .filter((id): id is string => presetIds.has(id));
+  const customTags = detail.tags.filter((tag) => !presetIds.has(tag.id)).map((tag) => tag.label);
+  return {
+    id: detail.id,
+    name: detail.displayName,
+    description: detail.description,
+    persona: detail.persona,
+    tagIds,
+    customTags,
+    skillRefs: detail.skills.map((skill) => skill.id),
+    mcpRefs: detail.mcps.map((mcp) => mcp.id),
+    suggestedPrompts: detail.suggestedPrompts,
+  };
+}
 
 function getErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -206,6 +233,8 @@ export function AgentManagementPanel({
   const [mineKind, setMineKind] = useState<'agent' | 'group'>('agent');
   const [detailTab, setDetailTab] = useState<'content' | 'files'>('content');
   const [query, setQuery] = useState('');
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [minePage, setMinePage] = useState(1);
   const [mineQuery, setMineQuery] = useState('');
   const [category, setCategory] = useState('');
   const [groupCategory, setGroupCategory] = useState('');
@@ -220,6 +249,7 @@ export function AgentManagementPanel({
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [connectorFlowId, setConnectorFlowId] = useState<string | null>(null);
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
@@ -283,23 +313,25 @@ export function AgentManagementPanel({
     }, 3000);
   }, []);
 
+  const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
   const catalogView = useMemo(
     () =>
-      buildCatalogViewModel(state.catalog, {
+      buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
         scope: 'catalog',
         category,
         query,
       }),
-    [state.catalog, category, query],
+    [state.catalog, category, query, installationFilter],
+
   );
   const mineView = useMemo(
     () =>
-      buildCatalogViewModel(state.catalog, {
+      buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
         scope: 'mine',
         category: '',
         query: mineQuery,
       }),
-    [state.catalog, mineQuery],
+    [state.catalog, mineQuery, installationFilter],
   );
   const groupCatalogView = useMemo(
     () => buildGroupCatalogViewModel(groupCatalog, {
@@ -320,10 +352,12 @@ export function AgentManagementPanel({
       pageSize: GROUP_PAGE_SIZE,
     }),
     [groupMine, groupMineQuery, groupMinePage],
+
   );
 
   const loadCatalog = useCallback(async (options: { includeTeamCompatibility?: boolean } = {}) => {
     const revision = ++catalogRevisionRef.current;
+    const requestScope = catalogScope();
     dispatch({ type: 'catalog.loading' });
     try {
       const compatibilityOptions = options.includeTeamCompatibility
@@ -333,15 +367,19 @@ export function AgentManagementPanel({
         client.listCatalog({ filter: equipmentListFilter('agent', 'catalog'), ...compatibilityOptions }),
         client.listCatalog({ filter: equipmentListFilter('agent', 'mine'), ...compatibilityOptions }),
       ]);
+      if (requestScope !== catalogScope()) return;
+      scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(); }, () => catalogRevisionRef.current === revision);
       const catalog = Array.from(
-        new Map([...marketplaceCatalog, ...mineCatalog].map((item) => [item.id, item])).values(),
+        new Map([...mineCatalog, ...marketplaceCatalog].map((item) => [item.id, item])).values(),
       );
       if (revision !== catalogRevisionRef.current) return;
+      withCatalogCache(catalog, marketplaceCatalog.cache);
       catalogRef.current = catalog;
+      // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
+      seedAgentCatalog(catalog);
       dispatch({ type: 'catalog.loaded', catalog });
     } catch (error) {
       if (revision !== catalogRevisionRef.current) return;
-      catalogRef.current = [];
       dispatch({ type: 'catalog.error', message: formatActionError(error, t('agentManagement.states.loadError')) });
     }
   }, [client, formatActionError, t]);
@@ -409,6 +447,7 @@ export function AgentManagementPanel({
 
   useEffect(() => {
     return () => {
+      catalogRevisionRef.current++;
       if (actionNoticeTimerRef.current !== null) {
         window.clearTimeout(actionNoticeTimerRef.current);
       }
@@ -441,10 +480,16 @@ export function AgentManagementPanel({
         });
       } catch (error) {
         if (revision !== detailRevisionRef.current) return;
-        dispatch({ type: 'detail.error', message: formatActionError(error, t('agentManagement.states.detailError')) });
+        const payload = error instanceof AgentManagementError ? error.payload as { code?: string } | undefined : undefined;
+        if (payload?.code === 'HUB_ASSET_NOT_FOUND') {
+          void loadCatalog();
+          dispatch({ type: 'detail.error', message: t('agentManagement.states.hubAssetChanged') });
+        } else {
+          dispatch({ type: 'detail.error', message: formatActionError(error, t('agentManagement.states.detailError')) });
+        }
       }
     },
-    [client, formatActionError, t, view],
+    [client, formatActionError, loadCatalog, t, view],
   );
 
   const loadFiles = useCallback(
@@ -801,6 +846,7 @@ export function AgentManagementPanel({
     setCreateMenuOpen(false);
     setMineKind('agent');
     setDraft(EMPTY_DRAFT);
+    setEditingId(null);
     setCreateError(null);
     setActionError(null);
     setActionNotice(null);
@@ -821,15 +867,37 @@ export function AgentManagementPanel({
     if (state.skillsStatus === 'idle') void loadSkills();
   };
 
+  const handleEdit = async (id: string) => {
+    setActionError(null);
+    setActionNotice(null);
+    setCreateError(null);
+    try {
+      const detail = state.detail?.id === id ? state.detail : await client.getDefinition(id);
+      setDraft(detailToDraft(detail));
+      setEditingId(id);
+      setView('create');
+      if (state.skillsStatus === 'idle') void loadSkills();
+      void loadMcps();
+    } catch (error) {
+      setActionError(formatActionError(error, t('agentManagement.states.detailError')));
+    }
+  };
+
   const handleCreate = async () => {
     setSaving(true);
     setCreateError(null);
     setActionError(null);
     setActionNotice(null);
     try {
-      await client.createAgent({ ...draft, id: draft.id || deriveAgentId(draft.name) });
+      if (editingId) {
+        await client.updateAgent({ ...draft, id: editingId });
+      } else {
+        await client.createAgent({ ...draft, id: draft.id || deriveAgentId(draft.name) });
+      }
       await loadCatalog();
+      setEditingId(null);
       setMineQuery('');
+        setMinePage(1);
       setView('mine');
     } catch (error) {
       setCreateError(formatActionError(error, t('agentManagement.form.saveError')));
@@ -855,6 +923,23 @@ export function AgentManagementPanel({
       setGroupCreateError(formatActionError(error, t('agentManagement.group.form.saveError')));
     } finally {
       setGroupSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    const confirmed = window.confirm(t('agentManagement.confirm.deleteMessage', { name }));
+    if (!confirmed) return;
+    setBusyId(id);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      await client.deleteDefinition(id);
+      await loadCatalog();
+      setView('mine');
+    } catch (error) {
+      setActionError(formatActionError(error, t('agentManagement.states.actionError')));
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -896,6 +981,7 @@ export function AgentManagementPanel({
         await loadCatalog();
         setMineKind('agent');
         setMineQuery('');
+        setMinePage(1);
       }
       setUploadDialogOpen(false);
       setUploadError(null);
@@ -998,14 +1084,13 @@ export function AgentManagementPanel({
                 { value: 'teams', label: t('agentManagement.tabs.teams') },
                 { value: 'mine', label: t('agentManagement.tabs.mine') },
               ]}
+
             />
             {isMine ? (
-              <Tabs
-                role="tablist"
-                ariaLabel={t('agentManagement.tabs.mineLabel')}
+              <CategoryTabs
                 wrapperTestId="agent-management-secondary-tabs"
                 itemTestId="agent-management-secondary-tab"
-                className="agent-management-secondary-tabs text-base"
+                className="agent-management-secondary-tabs"
                 value={mineKind}
                 onChange={(nextKind) => setMineKind(nextKind as 'agent' | 'group')}
                 items={[
@@ -1015,6 +1100,7 @@ export function AgentManagementPanel({
               />
             ) : null}
             <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
+              {!isGroupView && <InstallationFilterSelect value={installationFilter} onChange={value => { setInstallationFilter(value); setCatalogPage(1); setMinePage(1); }} />}
               <PageToolbarSearch
                 wrapperTestId="agent-management-search"
                 inputTestId="agent-management-search-input"
@@ -1033,8 +1119,10 @@ export function AgentManagementPanel({
                     setGroupMinePage(1);
                   } else if (isMine) {
                     setMineQuery(nextValue);
+                    setMinePage(1);
                   } else {
                     setQuery(nextValue);
+                    setCatalogPage(1);
                   }
                 }}
                 onClear={() => {
@@ -1046,8 +1134,10 @@ export function AgentManagementPanel({
                     setGroupMinePage(1);
                   } else if (isMine) {
                     setMineQuery('');
+                    setMinePage(1);
                   } else {
                     setQuery('');
+                    setCatalogPage(1);
                   }
                 }}
                 placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView ? 'agentManagement.searchMineGroup' : isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
@@ -1110,6 +1200,7 @@ export function AgentManagementPanel({
             </div>
           ) : null}
           </div>
+          {!isGroupView && <CatalogCacheNotice cache={catalogCacheOf(state.catalog)} />}
           {isGroupView ? (
             <GroupCatalogPage
               scope={view === 'teams' ? 'catalog' : 'mine'}
@@ -1134,6 +1225,8 @@ export function AgentManagementPanel({
           ) : (
             <CatalogPage
               scope={isMine ? 'mine' : 'catalog'}
+              page={isMine ? minePage : catalogPage}
+              onPageChange={isMine ? setMinePage : setCatalogPage}
               items={isMine ? mineView.items : catalogView.items}
               totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
               query={isMine ? mineQuery : query}
@@ -1141,13 +1234,12 @@ export function AgentManagementPanel({
               status={state.catalogStatus}
               error={state.catalogError}
               busyId={busyId}
-              onCategoryChange={setCategory}
+              onCategoryChange={value => { setCategory(value); setCatalogPage(1); }}
               onRetry={loadCatalog}
               onOpen={openDetail}
               onUse={handleUse}
               onReconnect={handleReconnect}
               onInstall={handleInstall}
-              onUninstall={handleUninstall}
               onCreate={openCreate}
             />
           )}
@@ -1181,16 +1273,20 @@ export function AgentManagementPanel({
             })
           }
           onSelectFile={handleSelectFile}
+
           onUse={handleUse}
           onUsePrompt={onUsePrompt}
           onReconnect={handleReconnect}
           onInstall={handleInstall}
           onUninstall={handleUninstall}
+          onDelete={handleDelete}
+          onEdit={handleEdit}
         />
       )}
       {view === 'create' && (
         <AgentEditor
           draft={draft}
+          mode={editingId ? 'edit' : 'create'}
           skillOptions={state.skillOptions}
           skillsStatus={state.skillsStatus}
           mcpOptions={mcpOptions}
@@ -1202,6 +1298,8 @@ export function AgentManagementPanel({
           onReloadMcps={loadMcps}
           onCreateGroup={openGroupCreate}
           onCancel={() => {
+            setEditingId(null);
+            setDraft(EMPTY_DRAFT);
             setActionError(null);
             setActionNotice(null);
             setView('mine');

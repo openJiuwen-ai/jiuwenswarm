@@ -143,7 +143,9 @@ def _safe_schema_reason(error: Exception) -> str:
     return "run input does not match the schema"
 
 
-def read_run_input(source: str, *, stdin: TextIO | None = None) -> OneShotRunInput:
+def read_run_input(
+    source: str, *, stdin: BinaryIO | TextIO | None = None
+) -> OneShotRunInput:
     """Read one strict UTF-8 JSON document from a file or stdin through EOF.
 
     ``source='-'`` uses the supplied stdin, or the process stdin. A binary
@@ -151,6 +153,19 @@ def read_run_input(source: str, *, stdin: TextIO | None = None) -> OneShotRunInp
     reinterpret a UTF-8 request. Borrowed stdin streams are never closed.
     """
 
+    value = read_machine_document(source, stdin=stdin)
+    try:
+        return OneShotRunInput.from_dict(value)
+    except (TypeError, ValueError, OverflowError, RecursionError) as error:
+        raise MachineInputError(
+            _safe_schema_reason(error), request_id=_request_id(value)
+        ) from None
+
+
+def read_machine_document(
+    source: str, *, stdin: BinaryIO | TextIO | None = None
+) -> dict[str, Any]:
+    """Read a bounded strict UTF-8 document before any Runtime import."""
     try:
         if source == "-":
             input_stream = sys.stdin if stdin is None else stdin
@@ -165,13 +180,7 @@ def read_run_input(source: str, *, stdin: TextIO | None = None) -> OneShotRunInp
         raise MachineInputError("run input must be valid UTF-8") from None
     except (OSError, ValueError):
         raise MachineInputError("run input could not be read") from None
-    value = decode_machine_document(document)
-    try:
-        return OneShotRunInput.from_dict(value)
-    except (TypeError, ValueError, OverflowError, RecursionError) as error:
-        raise MachineInputError(
-            _safe_schema_reason(error), request_id=_request_id(value)
-        ) from None
+    return decode_machine_document(document)
 
 
 class OneShotWriter:

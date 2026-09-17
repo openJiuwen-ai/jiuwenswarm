@@ -91,6 +91,8 @@ class ReqMethod(Enum):
     CONFIG_CACHE_CLEAR = "config.cache_clear"
     AGENT_RELOAD_CONFIG = "agent.reload_config"
     AGENT_PREWARM_SYNC = "agent.prewarm.sync"
+    # Gateway → AgentServer：登录模型凭据续期后的新 token / 会话注销后的撤销
+    AUTH_CREDENTIALS_UPDATE = "auth.credentials.update"
 
     MEMORY_COMPUTE = "memory.compute"
     # TUI memory management (Phase 3: execute in the target AgentServer's
@@ -117,6 +119,7 @@ class ReqMethod(Enum):
     SESSION_ARCHIVE = "session.archive"
     SESSION_UNARCHIVE = "session.unarchive"
     SESSION_ARCHIVED_LIST = "session.archived.list"
+    CRON_SESSIONS_DELETE = "cron.sessions.delete"
     PROJECT_DELETE = "project.delete"
     PROJECT_LIFECYCLE = "project.lifecycle"
     PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"
@@ -180,6 +183,14 @@ class ReqMethod(Enum):
     AGENTS_TOOLS_LIST = "agents.tools_list"
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
+
+    # Unified asset publishing; dispatched by AgentServer independently of chats.
+    ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
+    ASSETS_PUBLISH_PREPARE = "assets.publish.prepare"
+    ASSETS_PUBLISH_COMMIT = "assets.publish.commit"
+    ASSETS_PUBLISH_STATUS = "assets.publish.status"
+    ASSETS_PUBLISH_RECORDS = "assets.publish.records"
+    ASSETS_PUBLISH_LOCAL_STATUS = "assets.publish.local_status"
 
     # mcp management.
     MCP_LIST = "mcp.list"
@@ -251,6 +262,8 @@ class ReqMethod(Enum):
     SKILLS_GRAPH_STATUS = "skills.graph.status"
     SKILLS_GRAPH_GET = "skills.graph.get"
     SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
+    SKILLS_EXPERIENCE_LIST = "skills.experience.list"
+    SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
 
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
     PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
@@ -315,6 +328,8 @@ class ReqMethod(Enum):
     AGENT_TEMPLATES_FILE_LIST = "agent_templates.file.list"
     AGENT_TEMPLATES_FILE_READ = "agent_templates.file.read"
     AGENT_TEMPLATES_CREATE = "agent_templates.create"
+    AGENT_TEMPLATES_UPDATE = "agent_templates.update"
+    AGENT_TEMPLATES_DELETE = "agent_templates.delete"
     AGENT_TEMPLATES_IMPORT_LOCAL = "agent_templates.import_local"
     AGENT_TEMPLATES_INSTALL = "agent_templates.install"
     AGENT_TEMPLATES_UNINSTALL = "agent_templates.uninstall"
@@ -353,6 +368,16 @@ class ReqMethod(Enum):
 
     MEMORY_FORBIDDEN_GET = "memory.forbidden.get"
     MEMORY_FORBIDDEN_SET = "memory.forbidden.set"
+
+    # A4P 授权桥接（Web User Authorizer → AgentServer A4PServer）
+    A4P_AUTHORIZATION_COMPLETE = "a4p.authorization.complete"
+    A4P_AUTHORIZATION_REJECT = "a4p.authorization.reject"
+    A4P_AUTHORIZATION_PENDING = "a4p.authorization.pending"
+    A4P_CONFIG_GET = "a4p.config.get"
+    A4P_CONFIG_UPDATE = "a4p.config.update"
+    A4P_WEBAUTHN_CREDENTIALS_GET = "a4p.webauthn.credentials.get"
+    A4P_WEBAUTHN_REGISTRATION_OPTIONS = "a4p.webauthn.registration.options"
+    A4P_WEBAUTHN_REGISTRATION_VERIFY = "a4p.webauthn.registration.verify"
 
     CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
     CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"

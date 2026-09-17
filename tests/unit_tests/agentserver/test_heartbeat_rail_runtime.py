@@ -41,6 +41,20 @@ from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 
+class _ManagedHeartbeatServer:
+    def get_runtime(self):
+        return self
+
+    async def run_heartbeat(self, _request, operation, *, timeout_seconds):
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                await operation()
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"heartbeat execution timed out after {timeout_seconds:g} seconds"
+            ) from exc
+
+
 def test_heartbeat_injection_preserves_work_and_code_adapter_initializer_state() -> None:
     for adapter in (JiuWenSwarmDeepAdapter(), JiuwenSwarmCodeAdapter()):
         assert adapter._last_models_config_fingerprint is None
@@ -296,7 +310,7 @@ async def test_session_delete_quiesce_breaks_real_manager_retention_cycle(
     manager = AgentManager()
     run_started = asyncio.Event()
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         def get_agent_manager(self):
             return manager
 
@@ -440,7 +454,7 @@ async def test_agentserver_maps_runtime_not_ready_to_service_unavailable() -> No
 async def test_execution_uses_local_agentserver_and_exact_completion() -> None:
     completed: list[tuple[str, str, str]] = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             assert request.req_method.value == "chat.send"
             assert request.session_id == "s1"
@@ -486,7 +500,7 @@ async def test_execution_uses_local_agentserver_and_exact_completion() -> None:
 async def test_execution_cancel_is_exact() -> None:
     started = asyncio.Event()
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             started.set()
             await asyncio.Event().wait()
@@ -527,7 +541,7 @@ async def test_user_request_preempts_active_heartbeat(team_request: bool) -> Non
     cancelled = asyncio.Event()
     completed: list[tuple[str, str, str, str | None, bool]] = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             started.set()
             try:
@@ -579,7 +593,7 @@ async def test_heartbeat_execution_timeout_releases_session() -> None:
     cancelled = asyncio.Event()
     completed: list[tuple[str, str, str, str | None]] = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             try:
                 await asyncio.Event().wait()
@@ -664,7 +678,7 @@ async def test_user_preemption_requires_admission_release() -> None:
 async def test_concurrent_users_share_one_heartbeat_preemption() -> None:
     started = asyncio.Event()
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             started.set()
             await asyncio.Event().wait()
@@ -697,7 +711,7 @@ async def test_concurrent_users_share_one_heartbeat_preemption() -> None:
 async def test_cancel_before_execution_task_starts_releases_admission() -> None:
     completed: list[tuple[str, str, str]] = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             await asyncio.Event().wait()
 
@@ -731,10 +745,16 @@ async def test_cancel_before_execution_task_starts_releases_admission() -> None:
     assert service.active_session_ids() == set()
 
 
-async def test_cancel_before_start_contains_finish_error() -> None:
+async def test_cancel_before_start_retries_finish_error() -> None:
+    attempts = 0
+
     class Scheduler:
         async def on_run_finished(self, *args, **kwargs):  # noqa: ANN001
-            raise RuntimeError("persist failed")
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("persist failed")
+            return True
 
     admission = SessionRunAdmission()
     service = HeartbeatExecutionService(object(), admission)
@@ -744,21 +764,23 @@ async def test_cancel_before_start_contains_finish_error() -> None:
     assert await service.dispatch(job, "run-cancel-error", SimpleNamespace()) is True
     assert await service.cancel("run-cancel-error", reason="user_request") is True
 
+    assert attempts == 2
     assert service.active_session_ids() == set()
     assert service._tasks == {}
     assert service._jobs == {}
 
 
-async def test_stop_continues_after_finish_error() -> None:
-    finished_runs: list[str] = []
+async def test_stop_retries_finish_error_without_skipping_other_runs() -> None:
+    attempts: dict[str, int] = {}
 
     class Scheduler:
         async def on_run_finished(
             self, job_id, run_id, *, outcome, **kwargs
         ):  # noqa: ANN001
-            finished_runs.append(run_id)
-            if run_id == "run-stop-error":
+            attempts[run_id] = attempts.get(run_id, 0) + 1
+            if run_id == "run-stop-error" and attempts[run_id] == 1:
                 raise RuntimeError("persist failed")
+            return True
 
     admission = SessionRunAdmission()
     service = HeartbeatExecutionService(object(), admission)
@@ -773,7 +795,7 @@ async def test_stop_continues_after_finish_error() -> None:
     assert await service.dispatch(jobs[1], "run-stop-next", message) is True
     await service.stop()
 
-    assert finished_runs == ["run-stop-error", "run-stop-next"]
+    assert attempts == {"run-stop-error": 2, "run-stop-next": 1}
     assert service.active_session_ids() == set()
     assert service._tasks == {}
     assert service._jobs == {}
@@ -810,8 +832,8 @@ async def test_active_heartbeat_prevents_session_adapter_cleanup() -> None:
     adapter.cleanup.assert_not_awaited()
 
 
-async def test_completion_hook_failure_does_not_escape_execution_task() -> None:
-    class Server:
+async def test_completion_hook_failure_is_retried_before_releasing_owner() -> None:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             return None
 
@@ -819,8 +841,13 @@ async def test_completion_hook_failure_does_not_escape_execution_task() -> None:
         async def on_run_finished(self, *args, **kwargs):  # noqa: ANN001
             return True
 
+    attempts = 0
+
     async def failing_hook(session_id: str) -> None:
-        raise RuntimeError(f"release failed for {session_id}")
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError(f"release failed for {session_id}")
 
     service = HeartbeatExecutionService(Server(), SessionRunAdmission())
     service.set_scheduler(Scheduler())
@@ -844,4 +871,5 @@ async def test_completion_hook_failure_does_not_escape_execution_task() -> None:
 
     assert await service.dispatch(job, "run-hook", message) is True
     await asyncio.gather(*service._tasks.values())
+    assert attempts == 2
     assert service.active_session_ids() == set()

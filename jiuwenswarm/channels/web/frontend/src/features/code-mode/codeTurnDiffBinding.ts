@@ -122,3 +122,38 @@ export function bindTurnDiffsToMessages(messages: Message[], turns: GitTurnDiff[
   if (messageId) result.set(messageId, [turn]);
   return result;
 }
+
+/**
+ * 为每个已绑定的轮次选出唯一的卡片锚点消息。
+ *
+ * 后端把同一 request 的所有记录都写成同一个 id（`<request_id>:assistant`），
+ * 而每个 `chat.final` 在历史恢复时都会变成一条独立消息，因此
+ * ``bindTurnDiffsToMessages`` 返回的 id 键可能命中**多条**消息；渲染层是
+ * 「每条消息问一次要不要出卡片」（`MessageList` 对每个 message 项调一次
+ * `renderAfterMessage`），直接按 id 命中就会把同一个轮次的卡片重复渲染成
+ * 多张（该轮有几条 `chat.final` 就有几张）。
+ *
+ * 这里每个 id 只保留**最后一条**消息作为锚点——同一 id 必属同一 request，故
+ * 最后一条即该轮末尾，卡片位置语义也正确。渲染层仅在该锚点上出卡片。
+ *
+ * 用消息对象身份（而非 id）区分：`messages` 从 store 到 `MessageList` 全程
+ * 透传同一批对象引用，无需依赖 `renderKey` 是否已赋值。
+ */
+export function resolveTurnCardAnchors(
+  messages: Message[],
+  turnsByMessageId: Map<string, GitTurnDiff[]>
+): Set<Message> {
+  const anchors = new Set<Message>();
+  if (turnsByMessageId.size === 0) return anchors;
+
+  const anchorByMessageId = new Map<string, Message>();
+  for (const message of messages) {
+    if (turnsByMessageId.has(message.id)) {
+      anchorByMessageId.set(message.id, message);
+    }
+  }
+  for (const anchor of anchorByMessageId.values()) {
+    anchors.add(anchor);
+  }
+  return anchors;
+}

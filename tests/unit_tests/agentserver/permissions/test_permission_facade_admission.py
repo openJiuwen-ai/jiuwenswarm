@@ -24,7 +24,6 @@ def borrowed_facade(lifecycle, monkeypatch):
     monkeypatch.setattr(interface, "SkillManager", Mock())
     monkeypatch.setattr(interface, "append_history_record", Mock())
     monkeypatch.setattr(interface, "restore_chat_send_equipment_params", Mock())
-    monkeypatch.setattr(interface, "_schedule_symphony_session_feedback", Mock())
     facade = interface.JiuWenSwarm()
     parent = interface_deep.JiuWenSwarmDeepAdapter()
     parent._session_instance_mode = "agent"

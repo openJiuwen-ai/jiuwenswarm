@@ -40,10 +40,6 @@ const STATUS_TONE: Record<string, DisplayTone> = {
   blocked: 'blocked',
 };
 
-// 暂时隐藏暂停/恢复按钮的展示入口，功能逻辑（onPauseGoal/onResumeGoal 等）保留不动，
-// 后续要恢复展示只需把这个开关改回 true。
-const SHOW_PAUSE_RESUME_BUTTON = false;
-
 function formatSeconds(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
   if (seconds < 60) return `${seconds}s`;
@@ -176,7 +172,7 @@ export function GoalBar({ onSetGoal, onPauseGoal, onResumeGoal, onClearGoal }: G
               <Pencil size={14} strokeWidth={2} />
             </button>
           )}
-          {SHOW_PAUSE_RESUME_BUTTON && (isPausable || isResumable) && (
+          {(isPausable || isResumable) && (
             <button
               type="button"
               title={displayAsPausable ? t('goal.action.pauseTooltip') : t('goal.action.resumeTooltip')}

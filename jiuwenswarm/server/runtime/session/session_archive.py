@@ -8,6 +8,7 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from jiuwenswarm.common.work_mode import is_default_project_id
@@ -19,6 +20,15 @@ logger = logging.getLogger(__name__)
 
 def get_agent_sessions_dir():
     return lc.get_agent_sessions_dir()
+
+
+@dataclass(frozen=True)
+class ProjectSessionInventoryItem:
+    """One session found while scanning the active and archived roots."""
+
+    session_id: str
+    metadata: dict
+    active: bool
 
 
 class SessionArchiveService:
@@ -191,6 +201,18 @@ class SessionArchiveService:
         service = getattr(self.runtime, "session_message_service", None)
         return service if service is not None else None
 
+    def _session_is_busy_for_action(
+        self, session_id: str, action: str, active: Path, is_cron_session: bool
+    ) -> bool:
+        """Whether this lifecycle action must wait for an active session to stop."""
+        if action not in {"archive", "delete"}:
+            return False
+        if not active.exists():
+            return False
+        if action == "delete" and is_cron_session:
+            return False
+        return self.runtime.is_session_running(session_id)
+
     async def _session(
         self,
         session_id: str,
@@ -199,6 +221,7 @@ class SessionArchiveService:
         project_id: str,
         *,
         pre_stopped: bool = False,
+        defer_pin_reindex: bool = False,
     ) -> dict:
         async with self.lock("session", session_id):
             active, archived = lc.session_paths(session_id)
@@ -211,9 +234,11 @@ class SessionArchiveService:
             ):
                 raise lc.LifecycleError("NOT_FOUND", "session not found")
             meta = lc.raw_metadata(session_id)
-            if action != "delete" and (
-                meta.get("cron_id") or session_id.startswith(("cron_", "heartbeat_"))
-            ):
+            is_cron_session = bool(meta.get("cron_id")) or session_id.startswith(
+                ("cron_", "heartbeat_")
+            )
+            pin_reindex_required = action == "archive" and bool(meta.get("pinned"))
+            if action != "delete" and is_cron_session:
                 raise lc.LifecycleError(
                     "FORBIDDEN",
                     "cron and heartbeat sessions cannot be archived separately",
@@ -235,10 +260,12 @@ class SessionArchiveService:
                         restored=False,
                         project_id=project_id,
                     )
-            if action == "archive" and self.runtime.is_session_running(session_id):
+            if self._session_is_busy_for_action(
+                session_id, action, active, is_cron_session
+            ):
                 raise lc.LifecycleError(
                     "SESSION_BUSY",
-                    "Session is running; finish it before archiving",
+                    f"Session is running; stop it before {action}",
                     {"stop_pending": False},
                 )
             operation = lc.begin(
@@ -352,7 +379,7 @@ class SessionArchiveService:
                 )
 
                 remove_session_metadata_cache(session_id)
-                if action == "archive":
+                if action == "archive" and not defer_pin_reindex:
                     self.reindex_pins()
                 payload = (
                     dict(
@@ -371,9 +398,18 @@ class SessionArchiveService:
                         project_id=project_id,
                     )
                 )
+                deferred_pin_reindex = action == "archive" and defer_pin_reindex
+                if deferred_pin_reindex:
+                    # The batch owner consumes this private marker before
+                    # returning its public result.  A pinned session was
+                    # removed from the active ordering and requires one
+                    # reindex after the whole batch, not one per session.
+                    deferred_pin_reindex_required = pin_reindex_required
                 lc.complete(
                     "session", session_id, archived=action == "archive", result=payload
                 )
+                if deferred_pin_reindex:
+                    payload["_pins_reindex_required"] = deferred_pin_reindex_required
                 return payload
             except Exception as exc:
                 if mailbox is not None:
@@ -498,17 +534,96 @@ class SessionArchiveService:
         return lc.page(items, params, "sessions", 200)
 
     @staticmethod
+    def project_session_inventory(project_id: str) -> list[ProjectSessionInventoryItem]:
+        """Return a stable, operation-local project membership snapshot.
+
+        The session directory is not partitioned by project.  A scan is still
+        required, but metadata is read exactly once per directory and the
+        legacy project lookup is built at most once for the entire scan.
+        Callers must use this inventory for selection instead of re-reading
+        metadata immediately after ``project_sessions``.
+        """
+        active = get_agent_sessions_dir()
+        result: list[ProjectSessionInventoryItem] = []
+        project_lookup = None
+        scanned = 0
+        started_at = time.perf_counter()
+        for root in (active, active.parent / "sessions_archived"):
+            for path in root.iterdir() if root.exists() else ():
+                if not path.is_dir():
+                    continue
+                scanned += 1
+                metadata = lc.raw_metadata(path.name)
+                if not metadata.get("project_id") and metadata.get("project_dir"):
+                    if project_lookup is None:
+                        project_lookup = lc.build_project_lookup()
+                    resolved_project_id = lc.project_id_for(
+                        metadata, project_lookup=project_lookup
+                    )
+                else:
+                    resolved_project_id = lc.project_id_for(metadata)
+                if resolved_project_id == project_id:
+                    result.append(
+                        ProjectSessionInventoryItem(
+                            session_id=path.name,
+                            metadata=metadata,
+                            active=root == active,
+                        )
+                    )
+        logger.info(
+            "project session inventory: project_id=%s scanned=%d matched=%d "
+            "legacy_lookup=%s elapsed_ms=%.1f",
+            project_id,
+            scanned,
+            len(result),
+            project_lookup is not None,
+            (time.perf_counter() - started_at) * 1000,
+        )
+        return result
+
+    @staticmethod
     def project_sessions(project_id: str) -> list[str]:
+        return [
+            item.session_id
+            for item in SessionArchiveService.project_session_inventory(project_id)
+        ]
+
+    @staticmethod
+    def _matches_cron_session(
+        session_id: str, cron_id: str, metadata: dict
+    ) -> bool:
+        if metadata.get("cron_id") == cron_id:
+            return True
+        if session_id == f"cron_{cron_id}":
+            return True
+        return session_id.startswith("cron_") and session_id.endswith(f"_{cron_id}")
+
+    @staticmethod
+    def cron_sessions(cron_id: str) -> list[str]:
         active = get_agent_sessions_dir()
         result = []
         for root in (active, active.parent / "sessions_archived"):
             for path in root.iterdir() if root.exists() else ():
-                if (
-                    path.is_dir()
-                    and lc.project_id_for(lc.raw_metadata(path.name)) == project_id
+                if path.is_dir() and SessionArchiveService._matches_cron_session(
+                    path.name, cron_id, lc.raw_metadata(path.name)
                 ):
                     result.append(path.name)
         return result
+
+    async def delete_cron_sessions(self, cron_id: str, channel_id: str) -> dict:
+        lc.validate_id(cron_id)
+        results = []
+        for sid in self.cron_sessions(cron_id):
+            try:
+                results.append(await self.session(sid, "delete", channel_id))
+            except lc.LifecycleError as exc:
+                results.append(dict(session_id=sid, ok=False, code=exc.code, error=str(exc)))
+        return dict(
+            cron_id=cron_id,
+            succeeded_count=sum(item["ok"] for item in results),
+            failed_count=sum(not item["ok"] for item in results),
+            results=results,
+        )
 
     async def project_batch(
         self, project_id: str, action: str, channel_id: str
@@ -522,28 +637,36 @@ class SessionArchiveService:
                 project_id
             ) and not project_store.get_project_by_id(project_id, cache_bust=True):
                 raise lc.LifecycleError("NOT_FOUND", "project not found")
+            inventory = self.project_session_inventory(project_id)
             ids = []
-            for sid in self.project_sessions(project_id):
-                active, archived = lc.session_paths(sid)
-                meta = lc.raw_metadata(sid)
+            for item in inventory:
+                sid = item.session_id
+                meta = item.metadata
                 if action == "archive":
-                    if active.exists() and not (
+                    if item.active and not (
                         meta.get("cron_id") or sid.startswith(("cron_", "heartbeat_"))
                     ):
                         ids.append(sid)
-                elif archived.exists():
+                elif not item.active:
                     ids.append(sid)
             results = []
+            pins_reindex_required = False
             for sid in sorted(set(ids)):
                 try:
-                    results.append(
-                        await self._session(
-                            sid,
-                            "archive" if action == "archive" else "delete",
-                            channel_id,
-                            project_id,
-                        )
+                    result = await self._session(
+                        sid,
+                        "archive" if action == "archive" else "delete",
+                        channel_id,
+                        project_id,
+                        defer_pin_reindex=action == "archive",
                     )
+                    session_pin_reindex_required = bool(
+                        result.pop("_pins_reindex_required", False)
+                    )
+                    pins_reindex_required = (
+                        pins_reindex_required or session_pin_reindex_required
+                    )
+                    results.append(result)
                 except lc.LifecycleError as exc:
                     results.append(
                         dict(
@@ -554,6 +677,8 @@ class SessionArchiveService:
                             **exc.details,
                         )
                     )
+            if action == "archive" and pins_reindex_required:
+                self.reindex_pins()
             succeeded = sum(item["ok"] for item in results)
             return dict(
                 project_id=project_id,
@@ -608,38 +733,47 @@ class SessionArchiveService:
                     "OPERATION_IN_PROGRESS", "stale project lifecycle generation"
                 )
             try:
+                inventory = self.project_session_inventory(project_id)
+                inventory_by_id = {item.session_id: item for item in inventory}
                 ids = list(
                     dict.fromkeys(
                         [
                             *operation.get("session_ids", []),
-                            *self.project_sessions(project_id),
+                            *inventory_by_id,
                         ]
                     )
                 )
+                conversation_ids = list(operation.get("conversation_session_ids", []))
+                for sid in ids:
+                    item = inventory_by_id.get(sid)
+                    if item is None:
+                        # A retry can contain an item saved by a previous
+                        # operation snapshot. Re-check it individually rather
+                        # than assuming the current inventory still has it.
+                        active, archived = lc.session_paths(sid)
+                        if not (active.exists() or archived.exists()):
+                            continue
+                        meta = lc.raw_metadata(sid)
+                    else:
+                        meta = item.metadata
+                    if not (
+                        meta.get("cron_id")
+                        or sid.startswith(("cron_", "heartbeat_"))
+                    ):
+                        conversation_ids.append(sid)
+                conversation_ids = list(dict.fromkeys(conversation_ids))
                 operation = lc.update(
                     "project",
                     project_id,
                     session_ids=ids,
+                    conversation_session_ids=conversation_ids,
                     phase="stop_sessions",
                     status="running",
                 )
-                # Stop every producer before deleting any child data.
-                stopped_ids: set[str] = set()
-                for sid in ids:
-                    if lc.state("session", sid).get("deleted"):
-                        continue
-                    if not lc.session_paths(sid)[0].exists():
-                        # 归档区会话没有运行时生产者，无需停止。
-                        continue
-                    await self.stop(
-                        sid,
-                        str(lc.raw_metadata(sid).get("channel_id") or channel_id),
-                    )
-                    stopped_ids.add(sid)
-                lc.fence_writes("project", project_id)
                 lc.update("project", project_id, phase="delete_sessions")
                 completed = dict(operation.get("completed_items", {}))
                 done_ids = list(completed.get("sessions", []))
+                busy_ids: list[str] = []
                 for sid in ids:
                     if sid in done_ids:
                         continue
@@ -652,23 +786,46 @@ class SessionArchiveService:
                         completed["sessions"] = done_ids
                         lc.update("project", project_id, completed_items=completed)
                         continue
-                    await self.session(
-                        sid,
-                        "delete",
-                        channel_id,
-                        parent_operation=operation["operation_id"],
-                        pre_stopped=sid in stopped_ids,
-                    )
+                    active, _ = lc.session_paths(sid)
+                    meta = lc.raw_metadata(sid)
+                    is_cron = bool(meta.get("cron_id")) or sid.startswith(("cron_", "heartbeat_"))
+                    if active.exists() and not is_cron and self.runtime.is_session_running(sid):
+                        busy_ids.append(sid)
+                        continue
+                    try:
+                        await self.session(
+                            sid,
+                            "delete",
+                            channel_id,
+                            parent_operation=operation["operation_id"],
+                        )
+                    except lc.LifecycleError as exc:
+                        if exc.code == "SESSION_BUSY":
+                            busy_ids.append(sid)
+                            continue
+                        raise
                     if sid not in done_ids:
                         done_ids.append(sid)
                     completed["sessions"] = done_ids
                     lc.update("project", project_id, completed_items=completed)
+                if busy_ids:
+                    result = dict(
+                        project_id=project_id,
+                        deleted=False,
+                        deleted_sessions=len(done_ids),
+                        deleted_conversation_sessions=len(set(done_ids) & set(conversation_ids)),
+                        deleted_cron_jobs=params.get("deleted_cron_jobs", 0),
+                        skipped_running_session_ids=busy_ids,
+                    )
+                    lc.complete("project", project_id, result=result)
+                    return result
                 if self.project_sessions(project_id):
                     raise lc.LifecycleError("DELETE_FAILED", "project sessions remain")
                 result = dict(
                     project_id=project_id,
                     deleted=True,
                     deleted_sessions=len(done_ids),
+                    deleted_conversation_sessions=len(set(done_ids) & set(conversation_ids)),
                     deleted_cron_jobs=params.get("deleted_cron_jobs", 0),
                 )
                 lc.update("project", project_id, phase="delete_project", result=result)
@@ -693,6 +850,10 @@ class SessionArchiveService:
                     retryable=operation["retryable"],
                     completed_session_ids=operation.get("completed_items", {}).get(
                         "sessions", []
+                    ),
+                    completed_conversation_session_ids=list(
+                        set(operation.get("completed_items", {}).get("sessions", []))
+                        & set(operation.get("conversation_session_ids", []))
                     ),
                     completed_cron_job_ids=params.get("completed_cron_job_ids", []),
                     failed_items=[

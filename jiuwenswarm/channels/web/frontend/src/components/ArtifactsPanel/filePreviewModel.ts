@@ -11,7 +11,7 @@ type PreviewResource = {
 };
 
 type TextKind = 'markdown' | 'text' | 'code' | 'json' | 'jsonl';
-export type PreviewKind = TextKind | 'html' | 'image' | 'pdf' | 'docx' | 'spreadsheet' | 'presentation' | 'unsupported';
+export type PreviewKind = TextKind | 'html' | 'image' | 'video' | 'pdf' | 'docx' | 'spreadsheet' | 'presentation' | 'unsupported';
 
 const TEXT_EXTENSIONS = new Set(['conf', 'csv', 'ini', 'log', 'text', 'txt']);
 const IMAGE_MIME_TYPES = new Set([
@@ -75,6 +75,7 @@ export function previewKind(file: PreviewFile): PreviewKind {
   if (mime === 'text/html' || mime === 'application/xhtml+xml' || ext === 'html' || ext === 'htm') return 'html';
   if (mime === 'application/javascript' || mime === 'text/javascript' || mime === 'application/typescript' || isCodeLanguageExtension(ext)) return 'code';
   if (IMAGE_MIME_TYPES.has(mime) || IMAGE_EXTENSIONS.has(ext)) return 'image';
+  if (mime.startsWith('video/')) return 'video';
   if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
   if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || ext === 'docx') return 'docx';
   if (

@@ -1,3 +1,4 @@
+import { openAssetPublish } from '../../features/assetPublishEvents';
 /**
  * 技能详情页（统一组件）
  *
@@ -25,7 +26,6 @@ import {
   type FilePreviewTreeNode,
 } from '../ui';
 import { Switch } from '../Switch';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { buildSkillVersionOptions } from './skillVersionOptions';
 import type {
   EvolutionEntry,
@@ -176,10 +176,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     const { hubSkill, hubDetail, installedSkillMap, actionTarget, onInstallHubSkill, onGoToChat } = props;
     const isInstalled = installedSkillMap.has(hubSkill.name);
     const installing = actionTarget === `install:${hubSkill.identifier || hubSkill.asset_id}`;
-    const hubAvatar = getSkillAvatar(hubSkill.name);
     return renderShell(
       {
-        avatar: hubAvatar,
+        avatar: { name: hubSkill.display_name || hubSkill.name, iconUrl: hubSkill.icon_uri, testId: 'skill-panel-hub-avatar' },
         title: hubSkill.display_name || hubSkill.name,
       },
       /* 下载/去试试按钮 */
@@ -201,7 +200,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
             style={{ width: '96px', height: '32px' }}
             data-testid="skill-panel-hub-detail-install-btn"
           >
-            {installing ? t('common.processing') : t('skills.actions.install')}
+            {installing ? t('skills.actions.installing') : t('skills.actions.install')}
           </button>
         )}
       </div>,
@@ -263,11 +262,13 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     onToggleSkillDisabled,
     onGoToChat,
   } = props;
-  const skillAvatar = getSkillAvatar(selectedSkill.name);
+  const skillDisplayName = selectedSkill.display_name || selectedSkill.name;
+  const uninstallPluginName = installedSkillMap.get(selectedSkill.name)?.plugin_name || selectedSkill.name;
+  const uninstalling = actionTarget === `uninstall:${uninstallPluginName}`;
   return renderShell(
     {
-      avatar: skillAvatar,
-      title: selectedSkill.display_name || selectedSkill.name,
+      avatar: { name: skillDisplayName, testId: 'skill-panel-my-detail-avatar' },
+      title: skillDisplayName,
       titleEnd: selectedSkill.has_evolutions ? (
         <button
           onClick={(e) => {
@@ -304,6 +305,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     },
     /* 右侧操作按钮 */
     <div className="flex items-center gap-6 flex-shrink-0">
+      <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="skill-panel-my-detail-publish-btn" onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}>{t('skills.actions.publish')}</button>
       {/* ... 菜单：编辑/卸载 */}
       <div className="relative">
         <button
@@ -334,15 +336,19 @@ export function SkillDetailView(props: SkillDetailViewProps) {
                 {t('skills.actions.edit')}
               </button>
               <button
-                onClick={() => {
-                  setDetailMenuOpen(false);
-                  const plugin = installedSkillMap.get(selectedSkill.name);
-                  onUninstall(plugin?.plugin_name || selectedSkill.name);
-                }}
-                className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary"
+                onClick={
+                  uninstalling
+                    ? undefined
+                    : () => {
+                        setDetailMenuOpen(false);
+                        onUninstall(uninstallPluginName);
+                      }
+                }
+                disabled={uninstalling}
+                className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                 data-testid="skill-panel-my-detail-menu-uninstall"
               >
-                {t('skills.actions.uninstall')}
+                {t(uninstalling ? 'skills.actions.uninstalling' : 'skills.actions.uninstall')}
               </button>
             </div>
           </>

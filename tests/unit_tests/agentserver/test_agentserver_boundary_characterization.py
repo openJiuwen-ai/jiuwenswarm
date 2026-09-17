@@ -215,9 +215,21 @@ class PortableRuntime:
         self.create_calls: list[tuple[str, str | None]] = []
         self.fork_inputs: list[Any] = []
         self.fork_error: ValueError | None = None
+        self._pending_chat_requests: dict[str, set[str]] = {}
 
     async def start(self) -> None:
         self.trace.append("runtime.start")
+
+    def begin_chat_request(self, session_id: str, request_id: str) -> None:
+        self._pending_chat_requests.setdefault(session_id, set()).add(request_id)
+
+    def end_chat_request(self, session_id: str, request_id: str) -> None:
+        requests = self._pending_chat_requests.get(session_id)
+        if requests is None:
+            return
+        requests.discard(request_id)
+        if not requests:
+            self._pending_chat_requests.pop(session_id, None)
 
     async def create_or_resume_session(
         self,
@@ -242,6 +254,7 @@ class PortableRuntime:
                 session_id=target_session_id,
                 source_session_id=provision_input.source_session_id,
                 title=provision_input.title,
+                ephemeral=provision_input.side_conversation,
             )
         )
 
@@ -453,12 +466,6 @@ def configure_message_path(
     monkeypatch.setattr(server, "_prepare_code_mode_chat_turn", prepare_turn)
     monkeypatch.setattr(server, "_ensure_code_mode_state", ensure_state)
     monkeypatch.setattr(server, "_check_post_process_plan_exit", noop_async)
-    monkeypatch.setattr(server, "_record_kvc_chat_started", noop_async)
-    monkeypatch.setattr(
-        server,
-        "_record_kvc_chat_finished",
-        lambda *_args, **_kwargs: None,
-    )
 
 
 async def install_blocking_stream_task(

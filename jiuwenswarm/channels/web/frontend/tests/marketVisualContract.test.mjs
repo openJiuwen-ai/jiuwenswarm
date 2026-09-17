@@ -61,9 +61,11 @@ test('market cards use the design card dimensions and typography', async () => {
     console.error = originalError;
   }
 
-  assert.match(markup, /min-h-\[160px\]/);
-  assert.match(markup, /h-12 w-12/);
-  assert.match(markup, /text-\[18px\]/);
+  assert.match(markup, /class="page-card/);
+  assert.match(markup, /entity-header/);
+  const cardCss = readFileSync(new URL('../src/components/ui/PageCard/PageCard.css', import.meta.url), 'utf8');
+  assert.match(cardCss, /height: 160px/);
+  assert.match(cardCss, /min-width: 360px/);
 });
 
 test('connector card connect action resolves in both supported locales', async () => {

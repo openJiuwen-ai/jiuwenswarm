@@ -21,7 +21,7 @@
      ContextEngineConfig.context_window_tokens（压缩阈值）的桥接，已拆除（见第 3 类）。
    - 所有模型条目均生效，AgentOS 的 _source 标记只表示配置来源。
 3. 压缩阈值桥接已拆除：_deep_agent_context_engine_config 不再做 agentos per-model 覆盖，
-   context_window_tokens 只取全局 react.context_engine_config 值（或 None 由 core 兜底），
+   context_window_tokens 只取全局 react.context_engine_config 值（或固定 256K 默认值），
    与 defaults 行为一致；签名简化为只接受 react_cfg。
 
 注意：不再有 max_output_tokens（输出侧用户自定义已移除）。输出 token 上限完全由
@@ -36,7 +36,10 @@ from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
 from openjiuwen.core.foundation.llm.schema.config import ModelRequestConfig
 from openjiuwen.harness import DeepAgent
 from jiuwenswarm.common.config import get_default_models
-from jiuwenswarm.common.context_window import resolve_context_window_tokens
+from jiuwenswarm.common.context_window import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    resolve_context_window_tokens,
+)
 from jiuwenswarm.common.reasoning_injector import (
     build_reasoning_model_request_kwargs,
     core_has_context_window_field,
@@ -435,10 +438,10 @@ class TestCompressionBridgeRemoved:
         assert cec.context_window_tokens == 65536
 
     @staticmethod
-    def test_react_none_yields_none():
-        # react 无 context_engine_config -> context_window_tokens=None（由 core 兜底）
+    def test_react_none_uses_fixed_default():
+        # react 无 context_engine_config -> 使用 JiuwenSwarm 固定默认值
         cec = _deep_agent_context_engine_config({})
-        assert cec.context_window_tokens is None
+        assert cec.context_window_tokens == DEFAULT_CONTEXT_WINDOW_TOKENS
 
     @staticmethod
     def test_signature_rejects_legacy_kwargs():

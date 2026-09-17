@@ -722,16 +722,36 @@ function readHistoryAgentTemplateName(record: Record<string, unknown>): string |
   return readAgentTemplateName(payload) ?? readAgentTemplateName(record);
 }
 
-function hasMismatchedHistoryBoundary(value: unknown, sessionId: string): boolean {
+function readForkSourceSessionId(value: Record<string, unknown>): string {
+  const marker = value.forked_from ?? value.forkedFrom;
+  if (typeof marker === 'string') return marker.trim();
+  if (!isRecord(marker)) return '';
+  return pickFirstString(marker, ['session_id', 'sessionId']) ?? '';
+}
+
+function hasMismatchedHistoryBoundary(
+  value: unknown,
+  sessionId: string,
+  inheritedForkSourceSessionId = '',
+): boolean {
   if (Array.isArray(value)) {
-    return value.some((item) => hasMismatchedHistoryBoundary(item, sessionId));
+    return value.some((item) => hasMismatchedHistoryBoundary(item, sessionId, inheritedForkSourceSessionId));
   }
   if (!isRecord(value)) return false;
-  if (['session_id', 'parent_session_id', 'sessionId', 'parentSessionId'].some((key) => {
-    const boundary = pickFirstString(value, [key]);
-    return Boolean(boundary && boundary !== sessionId);
-  })) return true;
-  return Object.values(value).some((nested) => hasMismatchedHistoryBoundary(nested, sessionId));
+  const forkSourceSessionId = readForkSourceSessionId(value) || inheritedForkSourceSessionId;
+  if (
+    ['session_id', 'parent_session_id', 'sessionId', 'parentSessionId'].some((key) => {
+      const boundary = pickFirstString(value, [key]);
+      return Boolean(boundary && boundary !== sessionId && boundary !== forkSourceSessionId);
+    })
+  )
+    return true;
+  return Object.entries(value).some(
+    ([key, nested]) =>
+      key !== 'forked_from' &&
+      key !== 'forkedFrom' &&
+      hasMismatchedHistoryBoundary(nested, sessionId, forkSourceSessionId),
+  );
 }
 
 export function parseSubagentHistoryReplay(
@@ -739,6 +759,7 @@ export function parseSubagentHistoryReplay(
   sessionId: string,
   subagentId: string,
 ): HistorySubagentReplayItem | null {
+  const forkSourceSessionId = readForkSourceSessionId(record);
   if (hasMismatchedHistoryBoundary(record, sessionId)) return null;
 
   const eventType = typeof record.event_type === 'string' ? record.event_type.trim() : '';
@@ -748,11 +769,9 @@ export function parseSubagentHistoryReplay(
   if (eventType === 'chat.subtask_update' && typeof record.role === 'string' && payload.role == null) {
     payload.role = record.role;
   }
-  if (hasMismatchedHistoryBoundary(payload, sessionId)) return null;
+  if (hasMismatchedHistoryBoundary(payload, sessionId, forkSourceSessionId)) return null;
 
   if (eventType === 'chat.final') {
-    const finalParentSessionId = pickFirstString(payload, ['parent_session_id', 'parentSessionId']);
-    if (finalParentSessionId && finalParentSessionId !== sessionId) return null;
     const content = typeof payload.content === 'string' ? payload.content : '';
     return content.trim() ? { kind: 'message', at, payload } : null;
   }
@@ -764,7 +783,7 @@ export function parseSubagentHistoryReplay(
 
   if (eventType !== 'chat.subagent_activity') return null;
   const activity = isRecord(payload.subagent_activity) ? payload.subagent_activity : payload;
-  if (hasMismatchedHistoryBoundary(activity, sessionId)) return null;
+  if (hasMismatchedHistoryBoundary(activity, sessionId, forkSourceSessionId)) return null;
   const activitySubagentId = pickFirstString(activity, ['subagent_id', 'subagentId']);
   if (!activitySubagentId || activitySubagentId !== subagentId) return null;
   return { kind: 'activity', at, payload: activity };
@@ -850,10 +869,19 @@ function appendHistoryMediaItems(
   seenKeys: Set<string>,
   value: unknown
 ): void {
-  if (!Array.isArray(value)) {
+  // Support new scoped structure: { items: [...], scope: "current_turn" }
+  let items: unknown;
+  if (isRecord(value) && Array.isArray(value.items)) {
+    items = value.items;
+  } else if (Array.isArray(value)) {
+    items = value;
+  } else {
     return;
   }
-  for (const item of value) {
+  if (!Array.isArray(items)) {
+    return;
+  }
+  for (const item of items) {
     const normalized = normalizeHistoryMediaItem(item);
     if (!normalized) {
       continue;
@@ -946,6 +974,7 @@ function parseHistoryTimelineEntry(
 ): HistoryTimelineEntry | null {
   const role = normalizeHistoryRole(record.role);
   const at = recordTimestampIso(record) ?? '';
+  const forkedFromSessionId = readForkSourceSessionId(record);
 
   if (role === 'user') {
     const rawContent = record.content ?? record.text ?? record.body;
@@ -983,6 +1012,7 @@ function parseHistoryTimelineEntry(
         role: 'user',
         content,
         timestamp: at,
+        ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
         ...(isGoalObjectiveMessage ? { isGoalObjectiveMessage: true } : {}),
         ...(skills && skills.length > 0 ? { skills } : {}),
@@ -1033,8 +1063,9 @@ function parseHistoryTimelineEntry(
       message: {
         id,
         role: 'system',
-        content: `team.event:${JSON.stringify(teamPayload)}`,
-        timestamp: at,
+          content: `team.event:${JSON.stringify(teamPayload)}`,
+          timestamp: at,
+          ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
       },
     };
   }
@@ -1099,6 +1130,7 @@ function parseHistoryTimelineEntry(
             timestamp: safeTimestampMs(at),
           })}`,
           timestamp: at,
+          ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         },
       };
     }
@@ -1132,6 +1164,7 @@ function parseHistoryTimelineEntry(
         role: 'assistant',
         content,
         timestamp: at,
+        ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         ...(payload.presentation === 'tool_result' || record.presentation === 'tool_result'
           ? { presentation: 'tool_result' as const }
           : {}),
@@ -1645,6 +1678,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
           formatted_args: n.formatted_args,
           display_name: n.display_name,
           memberName: n.memberName,
+          reviewer: n.reviewer,
         },
         // 与实时一致：先 pending，等 tool_result 再落终态；无 result 的孤儿在循环末尾结算。
         status: 'pending',
@@ -1673,6 +1707,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       ...(n.mermaid ? { mermaid: n.mermaid } : {}),
       ...(n.timedOut ? { timedOut: true as const } : {}),
       ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
+      reviewer: n.reviewer,
     };
     const resultStatus: ToolExecution['status'] = n.pending
       ? 'pending'

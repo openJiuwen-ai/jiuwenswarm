@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
@@ -32,6 +32,15 @@ from jiuwenswarm.server.runtime.marketplace.hub_asset_type_adapter import (
     get_hub_asset_type_contract,
     resolve_hub_asset_kind,
 )
+
+if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.marketplace.asset_publish_models import PublishResult
+    from jiuwenswarm.server.runtime.marketplace.hub_publish_client import (
+        PublishAuth,
+        PublishRequest,
+    )
+    from jiuwenswarm.server.runtime.marketplace.hub_publish_port import HubPublishPort
+
 
 DEFAULT_HUB_BASE_URL = "https://swarmskills.openjiuwen.com"
 _DEFAULT_HUB_TIMEOUT = 60.0
@@ -109,14 +118,17 @@ class HttpHubTransport:
                     params=params,
                     headers=self._headers(),
                 )
+        except httpx.TimeoutException as exc:
+            raise HubProtocolError("Hub 响应超时，请稍后重试") from exc
         except Exception as exc:
-            raise HubProtocolError(f"无法连接 Team Skills Hub: {exc}") from exc
+            raise HubProtocolError(f"无法连接 Team Skills Hub（{type(exc).__name__}），请检查网络后重试") from exc
         if response.status_code == 404:
             raise HubNotFoundError("SkillHub 资源不存在")
         if not response.is_success:
-            raise HubProtocolError(
-                f"Team Skills Hub API 错误 HTTP {response.status_code}"
-            )
+            error = HubProtocolError(f"Team Skills Hub API 错误 HTTP {response.status_code}")
+            error.status_code = response.status_code
+            error.retry_after = response.headers.get("Retry-After")
+            raise error
         try:
             payload = response.json()
         except Exception as exc:
@@ -144,7 +156,9 @@ class HubClient(HubAssetPort):
         timeout: float | None = None,
         token: str | None = None,
         system_token: str | None = None,
+        publisher: HubPublishPort | None = None,
     ) -> None:
+        self._publisher = publisher
         self.transport = transport or HttpHubTransport(
             base_url=base_url,
             timeout=timeout,
@@ -158,6 +172,16 @@ class HubClient(HubAssetPort):
             or DEFAULT_HUB_BASE_URL
         )
         self.base_url = str(configured_base_url).strip().rstrip("/")
+
+    async def publish(self, request: PublishRequest, *, auth: PublishAuth) -> PublishResult:
+        """Publishing always uses caller credentials, never the read client's system token."""
+        if self._publisher is None:
+            from jiuwenswarm.server.runtime.marketplace.hub_publish_client import (
+                HubPublishClient,
+            )
+
+            self._publisher = HubPublishClient(base_url=self.base_url)
+        return await self._publisher.publish(request, auth=auth)
 
     def _normalize_icon_uri(self, icon_uri: str) -> str:
         icon = str(icon_uri or "").strip()

@@ -204,6 +204,14 @@ def _should_apply_sse_invoke_patch() -> bool:
 
 if _should_apply_sse_invoke_patch():
     apply_openai_sse_invoke_patch()
+
+# 登录模型的api_key是凭据句柄
+try:
+    from jiuwenswarm.common.auth.login_credentials import apply_login_credential_patch
+
+    apply_login_credential_patch()
+except Exception:  # noqa: BLE001 — 补丁装不上不该拖垮启动
+    logging.getLogger(__name__).warning("[LoginCredential] 凭据钩子安装失败", exc_info=True)
 _mark_startup_import_phase("entry_module_ready")
 
 # ``TaskTool`` 的 /debug 跟踪补丁按首个开启 subagent trace 的请求再加载。

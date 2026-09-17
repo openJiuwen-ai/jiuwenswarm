@@ -27,6 +27,12 @@ export interface Session {
   display_title?: string | null;
   is_custom_title?: boolean;
   title_source?: 'auto' | 'user';
+  /** Direct parent session when this conversation was created by fork. */
+  forked_from?: string;
+  /** Temporary side conversations are omitted from the normal session list. */
+  ephemeral?: boolean;
+  /** Direct parent for an ephemeral side conversation. */
+  side_parent_session_id?: string;
   model?: string;
   mode: AgentMode;
   status: SessionStatus;
@@ -71,7 +77,7 @@ export type AgentMode =
   | 'team.code.normal'
   | 'team.code.plan';
 export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted';
-export type Permission = 'default' | 'full_access';
+export type Permission = 'default' | 'automatic' | 'full_access';
 
 export type ModelPlan = 'token_plan' | 'coding_plan' | 'custom_api';
 
@@ -126,6 +132,10 @@ export interface ModelEntry {
   is_agentos?: boolean;
   /** RSI 模型目录中的免费模型标识；仅用于前端展示分组。 */
   is_free?: boolean;
+  /** 模型来源。登录后自动获得的模型为 "huawei-maas-login"；用户自配的不带此字段。 */
+  source?: string;
+  /** 登录来源的模型是只读的：改了也不会写进 config.yaml（服务端会过滤）。 */
+  read_only?: boolean;
 }
 
 export interface VendorPreset {

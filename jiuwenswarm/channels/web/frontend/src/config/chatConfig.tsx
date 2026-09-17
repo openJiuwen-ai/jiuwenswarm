@@ -1,4 +1,4 @@
-import { CircleAlert } from 'lucide-react';
+import { CircleAlert, Sparkles } from 'lucide-react';
 import type { AgentMode, Permission } from '../types';
 
 export interface ChatOptionDef<T extends string> {
@@ -28,6 +28,10 @@ function SafeAccessPermissionIcon({ className }: { className?: string }) {
   return <CircleAlert className={className} aria-hidden="true" />;
 }
 
+function AutomaticPermissionIcon({ className }: { className?: string }) {
+  return <Sparkles className={className} aria-hidden="true" />;
+}
+
 // ── 工作模式选项 ────────────────────────────────────────────────
 // 只暴露面向用户的 2 种模式；auto_harness 不在此列
 
@@ -53,6 +57,12 @@ export const PERMISSION_OPTIONS: ChatOptionDef<Permission>[] = [
     i18nKey: 'chat.config.permission.default',
     descriptionI18nKey: 'chat.config.permission.defaultDesc',
     icon: DefaultPermissionIcon,
+  },
+  {
+    value: 'automatic',
+    i18nKey: 'chat.config.permission.automatic',
+    descriptionI18nKey: 'chat.config.permission.automaticDesc',
+    icon: AutomaticPermissionIcon,
   },
   {
     value: 'full_access',

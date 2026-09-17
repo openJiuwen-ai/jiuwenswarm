@@ -22,15 +22,14 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     AgentCreatingTimeout,
     AgentDeleted,
     AgentManager,
+    AgentPreCreateError,
     AgentRuntime,
     is_third_party_agent_type,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
 from jiuwenswarm.extensions.agentos.auth.common import (
-    extract_headers,
-    extract_token,
     extract_token_from_path_and_headers,
-    get_remote_addr,
+    headers_to_dict,
 )
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthContext, AuthResult
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
@@ -49,18 +48,39 @@ from jiuwenswarm.extensions.agentos.agentos_router.models import (
 )
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryClient,
+    RegistryConflictError,
+    RegistryConnectionError,
+    RegistryError,
+    RegistryNotFoundError,
+    RegistryValidationError,
+    cmd_for_access_mode,
+    compute_backoff_delay,
     instance_service_id,
+)
+from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import (
+    cleanup_stale_sandboxes,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     DEFAULT_CLIENT_KEYS_DIR,
+    DEFAULT_SSH_PORT,
+    SshSouthConnectError,
     YuanrongSshRelay,
+    _is_ssh_connect_retryable,
     resolve_client_keys_dir,
 )
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     AgentFileDownloadChunk,
     AgentRuntimeSpec,
+    DEFAULT_RUNTIME_PROBE_SETTINGS,
+    DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    RuntimeProbeSettings,
+    YuanrongAgentApiError,
     YuanrongAgentFileError,
+    YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
+    apply_trace_header,
+    extract_trace_id,
+    bind_southbound_trace_id,
 )
 from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
 from jiuwenswarm.gateway import ChannelManager
@@ -91,8 +111,8 @@ _CONNECT_WARMUP_CHANNELS = frozenset(
     {ChannelType.WEB.value, ChannelType.CLI.value}
 )
 
-# create_sandbox 返回后 agentserver 仍在进程内启动；YuanRong WS 代理此时会回
-# HTTP 502。在 deadline 内重试，避免首条 chat 立刻空失败（TUI "Worked for 0s"）。
+# create 后先 GET 等到 status=running（端口探针成功），再连 WS。
+# 探针刚过时代理仍可能 502，故保留 deadline 内重试。
 _WS_CONNECT_READY_TIMEOUT_SECONDS = 60.0
 _WS_CONNECT_RETRY_INTERVAL_SECONDS = 1.0
 _WS_CONNECT_RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
@@ -108,6 +128,23 @@ _WS_CONNECT_RETRYABLE_TEXT_TOKENS = (
 def _should_log_ws_retry(attempt: int) -> bool:
     """Log retry WARNING sparsely: first attempt + every 10th attempt."""
     return attempt == 1 or attempt % 10 == 0
+
+
+async def _connect_ws_client(
+    client: Any,
+    uri: str,
+    *,
+    extra_headers: Mapping[str, str] | None = None,
+) -> None:
+    """Connect a WS client; test doubles may not accept extra_headers."""
+    connect = client.connect
+    if extra_headers:
+        try:
+            await connect(uri, extra_headers=extra_headers)
+            return
+        except TypeError:
+            pass
+    await connect(uri)
 
 
 def _is_team_mode(params: Any) -> bool:
@@ -154,6 +191,14 @@ _DISCONNECT_CLEANUP_MAX_ATTEMPTS = 3
 # + READY，宽限只需覆盖 release 的 touch 落地竞态，秒级即可。
 _DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS = 1.0
 
+# 注册中心写操作的指数退避重试：初始 1s、倍率 2、上限 30s。
+# 连接类错误（RegistryConnectionError / 5xx）按此退避重试直至成功、agent 被
+# 删除、或退避达到封顶 30s（此时记 error 视为本轮注册中心不可恢复）；409 冲突
+# 单次重试（幂等 upsert 覆盖）；语义错误（4xx）快速失败。注册是后台任务。
+_REGISTRY_BACKOFF_INITIAL_SECONDS = 1.0
+_REGISTRY_BACKOFF_MULTIPLIER = 2.0
+_REGISTRY_BACKOFF_MAX_SECONDS = 30.0
+
 
 def _is_agent_network_error(exc: BaseException) -> bool:
     """True when *exc* indicates an AgentServer network-layer failure.
@@ -178,6 +223,37 @@ def _is_agent_network_error(exc: BaseException) -> bool:
         if token in text:
             return True
     return False
+
+
+def _first_nonempty(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _extract_placement_ips(instance_info: Mapping[str, Any] | None) -> tuple[str, str]:
+    """Read node / sandbox IP from YuanRong GET, including jiuwenbox aliases.
+
+    Register writes a placeholder ``address`` (instance_id) because the
+    registry rejects empty address. Placement must be PATCHed once the
+    actual IPs exist. YuanRong may use ``node_ip`` / ``sandbox_ip`` or
+    pass through jiuwenbox ``ip_address``.
+    """
+    if not isinstance(instance_info, Mapping):
+        return "", ""
+    node_ip = _first_nonempty(
+        instance_info.get("node_ip"),
+        instance_info.get("nodeIp"),
+    )
+    sandbox_ip = _first_nonempty(
+        instance_info.get("sandbox_ip"),
+        instance_info.get("sandboxIp"),
+        instance_info.get("ip_address"),
+        instance_info.get("ipAddress"),
+    )
+    return node_ip, sandbox_ip
 
 
 class UnsupportedAgentType(ValueError):
@@ -314,6 +390,58 @@ def build_inline_runtime_spec(image_info: ImageInfo) -> AgentRuntimeSpec:
     return dict(raw_spec)  # type: ignore[return-value]
 
 
+def _third_agent_ssh_probe_port(ssh_relay: YuanrongSshRelay | None) -> int:
+    """YuanRong SSH 南向端口（默认 2222），用作 3rdagent startup 探针。"""
+    if ssh_relay is not None:
+        try:
+            port = int(getattr(ssh_relay, "backend_port", 0) or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if port > 0:
+            return port
+    return DEFAULT_SSH_PORT
+
+
+def _resolve_third_agent_probe_settings(
+    probe_settings: RuntimeProbeSettings | None,
+) -> RuntimeProbeSettings:
+    """Use gateway/env probe timings when customized; else 3rdagent defaults.
+
+    ``gateway.agentos.probes`` / ``AGENTOS_PROBE_*`` load into the same
+    ``RuntimeProbeSettings`` as builtin. Unchanged TCP timings keep
+    ``DEFAULT_THIRD_AGENT_PROBE_SETTINGS`` (delay 2 / failure 8).
+    """
+    if probe_settings is None:
+        return DEFAULT_THIRD_AGENT_PROBE_SETTINGS
+    if probe_settings.same_tcp_timings(DEFAULT_RUNTIME_PROBE_SETTINGS):
+        return DEFAULT_THIRD_AGENT_PROBE_SETTINGS
+    return probe_settings
+
+
+def _with_default_third_agent_probes(
+    runtime_spec: Mapping[str, Any],
+    *,
+    ssh_port: int,
+    probe_settings: RuntimeProbeSettings | None = None,
+) -> dict[str, Any]:
+    """Registry 未带 probes 时补 startup+liveness TCP（默认端口 2222）。
+
+    未改 gateway/env 探针时序时：startup delay 2 / period 3 / timeout 2 /
+    failure 8；liveness timeout 2 / failure 3。yaml 或 AGENTOS_PROBE_* 相对
+    builtin 默认值有改动时改用配置值。
+    """
+    spec = dict(runtime_spec)
+    probes = spec.get("probes")
+    if isinstance(probes, Mapping) and any(
+        isinstance(probes.get(key), Mapping) and probes.get(key)
+        for key in ("startup", "liveness", "readiness")
+    ):
+        return spec
+    settings = _resolve_third_agent_probe_settings(probe_settings)
+    spec["probes"] = settings.tcp_probes(int(ssh_port), with_liveness=True)
+    return spec
+
+
 def resolve_agent_workspace(user_id: str, *, workspace_root: str | None = None) -> str:
     """Resolve host workspace bind path for one agent user.
 
@@ -367,6 +495,7 @@ class AgentOSRouterClient(AgentServerClient):
         connect_warmup_enabled: bool = True,
         auth_client: AgentOSAuthenticator | None = None,
         ws_client_factory: Callable[[], WebSocketAgentServerClient] | None = None,
+        probe_settings: RuntimeProbeSettings | None = None,
     ) -> None:
         self._yuanrong = yuanrong
         self._registry = registry
@@ -388,7 +517,9 @@ class AgentOSRouterClient(AgentServerClient):
             disconnect_cleanup_timeout_seconds
         )
         self._connect_warmup_enabled = bool(connect_warmup_enabled)
+        self._probe_settings = probe_settings or DEFAULT_RUNTIME_PROBE_SETTINGS
         self._idle_reaper_task: asyncio.Task[None] | None = None
+        self._stale_cleanup_task: asyncio.Task[None] | None = None
         self._server_ready = False
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
@@ -410,29 +541,16 @@ class AgentOSRouterClient(AgentServerClient):
 
 
     def set_channel_manager(self, channel_manager: ChannelManager) -> None:
-        """Subscribe Web/TUI connect hooks (token auth) and channel disconnect events."""
+        """Attach handshake IAM for Web/TUI and subscribe channel disconnect events."""
         web_channel = channel_manager.get_channel(ChannelType.WEB)
         tui_channel = channel_manager.get_channel(ChannelType.CLI)
 
         if web_channel:
-            on_connect = getattr(web_channel, "on_connect", None)
-            if callable(on_connect):
-                on_connect(self.on_connect)
+            web_channel.set_handshake_auth(self.authenticate_http)
         if tui_channel:
-            on_connect = getattr(tui_channel, "on_connect", None)
-            if callable(on_connect):
-                on_connect(self.on_connect)
+            tui_channel.set_handshake_auth(self.authenticate_http)
 
         channel_manager.subscribe_channel_events(self._on_channel_event)
-
-    @staticmethod
-    def _ws_channel_name(ws: Any) -> str:
-        path = str(getattr(ws, "path", "") or "")
-        if "/tui" in path:
-            return "tui"
-        if "/ws" in path:
-            return "web"
-        return str(getattr(ws, "channel_id", "") or "")
 
     @staticmethod
     def _runtime_log_fields(runtime: AgentRuntime) -> dict[str, Any]:
@@ -556,31 +674,14 @@ class AgentOSRouterClient(AgentServerClient):
         credential; callers must pass ``allow_query_token=False`` on that path.
         """
         token_path = path if allow_query_token else urllib.parse.urlparse(path).path
-        token = extract_token_from_path_and_headers(token_path, headers)
+        header_map = headers_to_dict(headers)
+        token = extract_token_from_path_and_headers(token_path, header_map or headers)
         return await self._verify_request_token(
             token=token,
-            headers=headers,
+            headers=header_map,
             remote=remote,
             channel=channel,
         )
-
-    async def on_connect(self, ws: Any) -> AuthResult | None:
-        channel = self._ws_channel_name(ws)
-        remote = get_remote_addr(ws)
-        headers = extract_headers(ws)
-        result = await self._verify_request_token(
-            token=extract_token(ws),
-            headers=headers,
-            remote=remote,
-            channel=channel,
-        )
-        if not result.success:
-            close = getattr(ws, "close", None)
-            if callable(close):
-                ret = close(code=1008, reason="unauthorized")
-                if hasattr(ret, "__await__"):
-                    await ret
-        return result
 
     def set_key_issuer(
         self,
@@ -752,6 +853,19 @@ class AgentOSRouterClient(AgentServerClient):
         Must not raise: handshake / connection.ack already succeeded. Chat
         still goes through get_or_create_agent, so a failed warmup only
         means the first request pays the cold-start cost.
+
+        A thrown create is stored as FAILED and never auto-retried (anti
+        double-create). Idle reaper / delayed cleanup only pop READY
+        runtimes, so a leftover FAILED would make every later chat raise
+        AgentCreateFailed until process restart. Drop only FAILED here so
+        chat can cold-start; leave READY if create succeeded and only
+        instance WS warmup failed.
+
+        The whole warmup (create + instance WS) holds one task_count via
+        acquire=True so the disconnect cleanup / idle reaper cannot delete
+        the sandbox mid-warmup (create done but WS not yet established).
+        Released at warmup terminal state; afterwards protection is the
+        normal "connection online" semantics.
         """
         if self._closed:
             return
@@ -766,9 +880,15 @@ class AgentOSRouterClient(AgentServerClient):
                 user_id,
                 agent_type,
                 creator=self._create_agent,
-                acquire=False,
+                acquire=True,
             )
-            await self._get_ws_client(runtime)
+            try:
+                await self._get_ws_client(runtime)
+            finally:
+                # 预热终态（WS 就绪或失败）即释放：在途窗口 task_count>0
+                # 保护实例不被断开清理误删；释放后保护职责交还给
+                # “连接在线”语义（连接数>0 期间清理本就不触发）。
+                await self._agent_manager.release(runtime.key)
         except Exception:
             logger.warning(
                 "[AgentOSRouter] connect warmup failed: user=%s agent_type=%s",
@@ -776,6 +896,16 @@ class AgentOSRouterClient(AgentServerClient):
                 agent_type,
                 exc_info=True,
             )
+            try:
+                existing = await self._agent_manager.get_agent(user_id, agent_type)
+                if existing is not None and existing.is_failed():
+                    await self._agent_manager.delete_agent(user_id, agent_type)
+            except Exception:
+                logger.debug(
+                    "[AgentOSRouter] warmup cleanup delete failed: user=%s",
+                    user_id,
+                    exc_info=True,
+                )
             return
         if self._closed:
             return
@@ -1043,6 +1173,7 @@ class AgentOSRouterClient(AgentServerClient):
         self._closed = False
         self._server_ready = True
         self._ensure_idle_reaper_task()
+        self._ensure_stale_cleanup_task()
 
     async def disconnect(self) -> None:
         if self._closed:
@@ -1050,6 +1181,7 @@ class AgentOSRouterClient(AgentServerClient):
         self._closed = True
         self._server_ready = False
         await self._stop_idle_reaper_task()
+        await self._stop_stale_cleanup_task()
         # 取消所有挂起的延迟清理任务
         for task in self._pending_cleanups.values():
             if not task.done():
@@ -1114,6 +1246,9 @@ class AgentOSRouterClient(AgentServerClient):
         uri = self._agent_ws_url(instance_id, agent_port)
         deadline = asyncio.get_running_loop().time() + _WS_CONNECT_READY_TIMEOUT_SECONDS
         attempt = 0
+        # One reconnect (including 502 retries) shares one southbound id.
+        ws_headers = apply_trace_header({})
+        ws_trace_id = extract_trace_id(ws_headers)
 
         while True:
             attempt += 1
@@ -1130,9 +1265,23 @@ class AgentOSRouterClient(AgentServerClient):
                 agent_type=agent_type,
                 instance=instance_id,
                 attempt=attempt,
+                trace_id=ws_trace_id,
             )
             try:
-                await client.connect(uri)
+                await _connect_ws_client(
+                    client,
+                    uri,
+                    extra_headers=ws_headers,
+                )
+                # 建连成功即注册断连通知（早于 _get_ws_client 写缓存，缩小
+                # 「已连接但未注册」的漏报窗口）；test double 无该接口时跳过。
+                self._register_ws_disconnect_handler(
+                    client,
+                    user_id=user_id,
+                    session_id=session_id,
+                    agent_type=agent_type,
+                    instance_id=instance_id,
+                )
                 log_agentos(
                     logger,
                     logging.INFO,
@@ -1198,10 +1347,51 @@ class AgentOSRouterClient(AgentServerClient):
                 )
                 await asyncio.sleep(sleep_for)
 
+    async def _wait_yuanrong_running(
+        self,
+        instance_id: str,
+        *,
+        user_id: str = "",
+        session_id: str = "",
+        agent_type: str = "",
+    ) -> dict[str, Any]:
+        """GET /api/agent/:id until YuanRong reports ``status=running``.
+
+        Create 端口探针成功后实例才 running；在此之前连 WS/SSH 会失败，
+        且 node_ip / sandbox_ip 通常也尚未写入。返回最后一次 GET 的
+        instance dict，供注册中心 placement PATCH 使用。
+        Test doubles without ``wait_until_running`` fall back to one GET.
+        """
+        waiter = getattr(self._yuanrong, "wait_until_running", None)
+        if not callable(waiter):
+            getter = getattr(self._yuanrong, "get_agent_info", None)
+            if callable(getter):
+                info = await getter(instance_id)
+                return info if isinstance(info, dict) else {}
+            return {}
+        poll_trace_id = bind_southbound_trace_id()
+        log_agentos(
+            logger,
+            logging.DEBUG,
+            "agent.instance.wait_running",
+            user_id=user_id,
+            session_id=session_id,
+            sandbox_id=instance_id,
+            agent_type=agent_type,
+            instance=instance_id,
+            trace_id=poll_trace_id,
+        )
+        try:
+            info = await waiter(instance_id, trace_id=poll_trace_id)
+        except TypeError:
+            info = await waiter(instance_id)
+        return info if isinstance(info, dict) else {}
+
     async def _get_ws_client(self, runtime: AgentRuntime) -> WebSocketAgentServerClient:
         """获取（或建立）到该 agent instance 的 WS 直连，不走 invoke 链路.
 
-        冷启动时 create 返回早于 agentserver listen：对可重试错误做就绪等待。
+        create 后先 GET 等到 status=running（端口探针成功），再连 WS。
+        冷启动代理仍可能 502：对可重试错误做就绪等待。
         同一 instance 的并发首连合并到一个 Future，避免多路同时打 502。
         """
         info = runtime.info
@@ -1236,6 +1426,12 @@ class AgentOSRouterClient(AgentServerClient):
             return await asyncio.shield(inflight)
 
         try:
+            await self._wait_yuanrong_running(
+                instance_id,
+                user_id=str(info.user_id or ""),
+                session_id=str(info.metadata.get("session_id") or ""),
+                agent_type=str(info.agent_type or ""),
+            )
             client = await self._connect_ws_until_ready(
                 instance_id=instance_id,
                 agent_port=agent_port,
@@ -1293,6 +1489,76 @@ class AgentOSRouterClient(AgentServerClient):
             except Exception:
                 logger.warning("[AgentOSRouter] close agent ws failed", exc_info=True)
 
+    def _register_ws_disconnect_handler(
+        self,
+        client: Any,
+        *,
+        user_id: str,
+        session_id: str,
+        agent_type: str,
+        instance_id: str,
+    ) -> None:
+        """注册南向实例 WS 断连通知；test double 无该接口时静默跳过。"""
+        setter = getattr(client, "set_disconnect_handler", None)
+        if not callable(setter):
+            return
+
+        async def _on_ws_closed(exc: BaseException) -> None:
+            await self._handle_agent_ws_closed(client, user_id=user_id, session_id=session_id, agent_type=agent_type,
+                                               instance_id=instance_id, reason=type(exc).__name__)
+
+        setter(_on_ws_closed)
+
+    async def _handle_agent_ws_closed(
+        self,
+        client: Any,
+        *,
+        user_id: str,
+        session_id: str,
+        agent_type: str,
+        instance_id: str,
+        reason: str,
+    ) -> None:
+        """南向实例 WS 断开：摘除死 client 缓存，并把既有延迟清理提前排上。
+
+        清理复用北向断连的 :meth:`_delayed_cleanup`（连接数复核 → task_count 复核 → pop_if_idle
+        in-flight 请求持有 task_count 时会拒绝删除），不走 ``_cleanup_agent_on_network_failure``
+        强制路径——WS开不代表沙箱有问题（YuanRong 代理抖动 / supervisor 拉起中），强制清理会误杀可恢复实例。
+        """
+        if self._closed:
+            # 关停期：_close_all_ws_clients 走正常 disconnect()，不应有事件；
+            # 即使有也不触发清理
+            return
+        # 摘除死 client：仅当缓存中仍是该 client（可能已被正常摘除或替换）。
+        # 下个请求走 _get_ws_client 正常重建，避免误用死连接。
+        async with self._ws_clients_lock:
+            if self._ws_clients.get(instance_id) is client:
+                self._ws_clients.pop(instance_id, None)
+        log_agentos(logger, logging.WARNING, "agent.ws.closed", user_id=user_id, session_id=session_id,
+                    sandbox_id=instance_id, agent_type=agent_type, instance=instance_id, reason=reason)
+        if self._disconnect_cleanup_timeout_seconds <= 0:
+            # 与北向断连同一开关：<=0 关闭延迟清理路径
+            return
+        if self._agent_manager.get_user_connection_count(user_id) > 0:
+            # 用户在线：实例真死由请求路径很快发现并走其网络失败清理
+            # （基于数据面真实异常，比这里更准）；控制面抖动时不抢跑。
+            log_agentos(logger, logging.INFO, "agent.ws.cleanup.skip_online", user_id=user_id,
+                        session_id=session_id, sandbox_id=instance_id, agent_type=agent_type, instance=instance_id)
+            return
+        existing = self._pending_cleanups.get(user_id)
+        if existing is not None and not existing.done():
+            return
+        log_agentos(logger, logging.INFO, "agent.ws.cleanup.scheduled", user_id=user_id, session_id=session_id,
+                    sandbox_id=instance_id, agent_type=agent_type, instance=instance_id,
+                    wait_s=f"{self._disconnect_cleanup_timeout_seconds:.0f}s")
+        task = asyncio.create_task(
+            self._delayed_cleanup(user_id),
+            name=f"agentos-ws-closed-cleanup-{user_id[:24]}",
+        )
+        self._pending_cleanups[user_id] = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     async def send_request(
         self,
         envelope: E2AEnvelope,
@@ -1304,11 +1570,24 @@ class AgentOSRouterClient(AgentServerClient):
         if self._is_ssh_relay_request(envelope):
             return await self._handle_ssh_relay(envelope)
         await self._inject_external_cli_agents(envelope)
-        try:
-            runtime = await self._resolve_agent(envelope, acquire=True)
-        except (ValueError, AgentCreatingTimeout, AgentCreateFailed) as exc:
-            self._log_route("route.error", envelope, level=logging.WARNING, error=str(exc))
-            return self._routing_error_response(envelope, str(exc))
+
+        # chat.interrupt（含断连延迟 cancel）不得冷启动沙箱：没有就绪的
+        # builtin 实例时直接视为成功 no-op，避免与断连清理竞态重建出孤儿沙箱。
+        if self._is_cancel_method(envelope):
+            runtime = await self._agent_manager.get_agent(
+                self._extract_user_id(envelope),
+                self._extract_agent_type(envelope),
+                key_values={"session_id": envelope.session_id},
+                acquire=True,
+            )
+            if runtime is None or not runtime.is_ready():
+                return self._cancel_noop_response(envelope)
+        else:
+            try:
+                runtime = await self._resolve_agent(envelope, acquire=True)
+            except (ValueError, AgentCreatingTimeout, AgentCreateFailed) as exc:
+                self._log_route("route.error", envelope, level=logging.WARNING, error=str(exc))
+                return self._routing_error_response(envelope, str(exc))
         try:
             runtime.attach_to_envelope(envelope)
             if not self._uses_direct_yuanrong(runtime.info.agent_type):
@@ -1329,6 +1608,16 @@ class AgentOSRouterClient(AgentServerClient):
                     error=str(exc),
                 )
                 return self._routing_error_response(envelope, str(exc))
+            except YuanrongAgentApiError as exc:
+                # wait_until_running 确认实例不存在/停止（管理面删除沙箱、实例残留
+                # stopped 等）：不属于网络错误 token，但同为"沙箱不可用"的硬证据，
+                # 走同款删除重建流程并打独立日志，避免 runtime 永久卡在死沙箱上。
+                error = f"agent instance unavailable: {exc}"
+                self._log_route(
+                    "route.error", envelope, runtime, level=logging.WARNING, error=error
+                )
+                await self._cleanup_agent_on_instance_unavailable(runtime, exc=exc)
+                return self._routing_error_response(envelope, error)
             except Exception as exc:
                 if not _is_agent_network_error(exc):
                     raise
@@ -1388,6 +1677,16 @@ class AgentOSRouterClient(AgentServerClient):
                     error=str(exc),
                 )
                 yield self._routing_error_chunk(envelope, str(exc))
+                return
+            except YuanrongAgentApiError as exc:
+                # wait_until_running 确认实例不存在/停止：同 send_request 分支，
+                # 走删除重建流程并打独立日志，避免 runtime 永久卡在死沙箱上。
+                error = f"agent instance unavailable: {exc}"
+                self._log_route(
+                    "route.error", envelope, runtime, level=logging.WARNING, error=error
+                )
+                await self._cleanup_agent_on_instance_unavailable(runtime, exc=exc)
+                yield self._routing_error_chunk(envelope, error)
                 return
             except Exception as exc:
                 if not _is_agent_network_error(exc):
@@ -1491,8 +1790,13 @@ class AgentOSRouterClient(AgentServerClient):
         *,
         user_id: str,
         current_agent_type: str = "",
+        access_mode: str = "",
     ) -> dict[str, Any]:
-        """Handle ``3rdagent.list``: list switchable third-party agent images."""
+        """Handle ``3rdagent.list``: list switchable third-party agent images.
+
+        Each agent includes ``cmd``. TUI requests pass ``access_mode="tui"``
+        so ``cmd`` is taken from the registry row whose ``name`` is ``tui``.
+        """
         uid = str(user_id or "").strip()
         if not uid:
             return {
@@ -1500,20 +1804,19 @@ class AgentOSRouterClient(AgentServerClient):
                 "error": "user_id is required for AgentOS routing",
                 "code": "BAD_REQUEST",
             }
+        mode = str(access_mode or "").strip()
         images = await self._registry.list_user_images(uid)
         agents: list[dict[str, Any]] = []
         for image in images:
-            agent_type = str(
-                (image.metadata or {}).get("agent_type") or image.image_name or ""
-            ).strip()
+            meta = dict(image.metadata or {})
+            name = str(meta.get("name") or image.image_name or "").strip()
+            agent_type = str(meta.get("agent_type") or name).strip()
             if not agent_type:
                 continue
             agents.append(
                 {
                     "agent_type": agent_type,
-                    "image_name": image.image_name,
-                    "image_uri": image.image_uri,
-                    "metadata": dict(image.metadata or {}),
+                    "cmd": cmd_for_access_mode(meta.get("access_mode"), mode),
                 }
             )
         current = (
@@ -1632,7 +1935,14 @@ class AgentOSRouterClient(AgentServerClient):
                     "code": "INTERNAL_ERROR",
                 }
             try:
-                # create 返回不代表 sshd 已听端口；等南向 SSH 通了再让客户端连。
+                # create 返回不代表端口探针已成功；先等 GET status=running，
+                # 再探测南向 SSH，避免 sshd 未听端口时立刻掐连接。
+                await self._wait_yuanrong_running(
+                    instance_id,
+                    user_id=uid,
+                    session_id=session_id,
+                    agent_type=normalized,
+                )
                 await ssh_relay.wait_until_ready(instance_id, user_id=uid)
             except Exception as exc:
                 log_agentos(
@@ -1644,6 +1954,7 @@ class AgentOSRouterClient(AgentServerClient):
                     sandbox_id=instance_id,
                     instance=instance_id,
                     error=type(exc).__name__,
+                    unreachable=str(_is_ssh_connect_retryable(exc)).lower(),
                 )
                 return {
                     "ok": False,
@@ -1835,6 +2146,27 @@ class AgentOSRouterClient(AgentServerClient):
                 instance_id,
                 user_id=runtime.info.user_id,
             )
+        except SshSouthConnectError as exc:
+            original = exc.original
+            if _is_ssh_connect_retryable(original):
+                await self._cleanup_agent_on_network_failure(
+                    runtime,
+                    reason=f"ssh_south_unreachable:{type(original).__name__}",
+                )
+            else:
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    "ssh.south.cleanup_skip",
+                    user_id=runtime.info.user_id,
+                    session_id=str(relay_session.session_id or ""),
+                    sandbox_id=instance_id,
+                    agent_type=runtime.info.agent_type,
+                    instance=instance_id,
+                    error=type(original).__name__,
+                    reason="non-network connect failure (auth/key/config)",
+                    channel="ssh",
+                )
         finally:
             await self._agent_manager.release(runtime.key)
 
@@ -1918,6 +2250,39 @@ class AgentOSRouterClient(AgentServerClient):
         except asyncio.CancelledError:
             pass
 
+    def _ensure_stale_cleanup_task(self) -> None:
+        if self._closed or not getattr(self._registry, "enabled", False):
+            return
+        if self._stale_cleanup_task is not None and not self._stale_cleanup_task.done():
+            return
+        self._stale_cleanup_task = asyncio.create_task(
+            self._startup_cleanup_sandboxes(),
+            name="agentos-startup-sandbox-cleanup",
+        )
+
+    async def _stop_stale_cleanup_task(self) -> None:
+        task = self._stale_cleanup_task
+        self._stale_cleanup_task = None
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _startup_cleanup_sandboxes(self) -> None:
+        try:
+            await cleanup_stale_sandboxes(
+                yuanrong=self._yuanrong,
+                registry=self._registry,
+                agent_manager=self._agent_manager,
+                is_closed=lambda: self._closed,
+            )
+        except Exception:  # noqa: BLE001 - startup cleanup must not take down connect()
+            logger.exception("[AgentOSRouter] startup sandbox cleanup failed")
+
     async def _idle_reaper_loop(self) -> None:
         while not self._closed:
             await asyncio.sleep(self._sandbox_idle_check_interval_seconds)
@@ -1962,10 +2327,15 @@ class AgentOSRouterClient(AgentServerClient):
         return reaped
 
     async def _create_agent(self, agent_info: AgentInfo) -> AgentInfo:
-        workspace = resolve_agent_workspace(
-            agent_info.user_id,
-            workspace_root=self._workspace_root,
-        )
+        try:
+            workspace = resolve_agent_workspace(
+                agent_info.user_id,
+                workspace_root=self._workspace_root,
+            )
+        except ValueError as exc:
+            # workspace 校验失败发生在 create_sandbox 之前，属于可重试的
+            # pre-create 错误，避免被缓存为永久 FAILED。
+            raise AgentPreCreateError(str(exc)) from exc
         # runtime_spec 获取方式因 agent_type 而异
         env_vars: dict[str, str] | None = None
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:
@@ -1979,6 +2349,7 @@ class AgentOSRouterClient(AgentServerClient):
                     "user": "agentos",
                 },
                 "cmds": [["sh", "-c", f"exec jiuwenswarm-agentserver --port {port}"]],
+                "probes": self._probe_settings.tcp_probes(port, with_liveness=True),
                 "cpu": int(os.environ.get("AGENTOS_BUILTIN_AGENT_CPU", "2000")),
                 "memory": int(os.environ.get("AGENTOS_BUILTIN_AGENT_MEMORY", "4096"))
             }
@@ -1992,7 +2363,11 @@ class AgentOSRouterClient(AgentServerClient):
             extra_metadata: dict[str, Any] = {"agent_port": port}
         else:
             image_info = await self._registry.get_image_info(agent_info.agent_type)
-            runtime_spec = build_inline_runtime_spec(image_info)
+            runtime_spec = _with_default_third_agent_probes(
+                build_inline_runtime_spec(image_info),
+                ssh_port=_third_agent_ssh_probe_port(self._ssh_relay),
+                probe_settings=self._probe_settings,
+            )
             env_raw = image_info.metadata.get("env_vars")
             env_vars = (
                 {str(k): str(v) for k, v in dict(env_raw).items()}
@@ -2000,21 +2375,40 @@ class AgentOSRouterClient(AgentServerClient):
                 else None
             )
             extra_metadata = {"image_info": dict(image_info.metadata)}
-            # 3rdagent 走 SSH，不连 agentserver WS；create 的 rootfs 不传 ports。
-            rootfs = runtime_spec.get("rootfs")
-            if isinstance(rootfs, dict) and "ports" in rootfs:
-                runtime_spec["rootfs"] = {
-                    key: value for key, value in rootfs.items() if key != "ports"
-                }
+            # 3rdagent 走 SSH：registry 未带 probes 时补 startup+liveness
+            # TCP:2222（gateway.agentos.ssh.port）。未改探针配置时用
+            # delay=2/failure=8；gateway.agentos.probes / AGENTOS_PROBE_*
+            # 有改动时与 builtin 共用配置。已有 probes 原样透传。
 
         started = time.monotonic()
-        sandbox = await self._yuanrong.create_sandbox(
-            namespace=self._yuanrong.agent_namespace,
-            name=f"{agent_info.user_id}+{agent_info.agent_type}",
-            workspace=workspace,
-            runtime_spec=runtime_spec,
-            env_vars=env_vars,
-        )
+
+        async def _create_sandbox_once():
+            return await self._yuanrong.create_sandbox(
+                namespace=self._yuanrong.agent_namespace,
+                name=f"{agent_info.user_id}+{agent_info.agent_type}",
+                workspace=workspace,
+                runtime_spec=runtime_spec,
+                env_vars=env_vars,
+            )
+
+        try:
+            sandbox = await _create_sandbox_once()
+        except YuanrongAgentTimeoutError:
+            # create 超时（请求可能已生效而响应丢失的半成功状态）：以相同参数
+            # 重试一次做幂等回查。name 由 user_id+agent_type
+            # 确定性派生，即实例标识——首次请求未达则正常新建；已创建则按
+            # 同名幂等复用，不产生第二个实例。二次仍失败则按原语义上抛
+            # （runtime 标 FAILED，防双创建）。
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "sandbox.create.reconcile",
+                user_id=agent_info.user_id,
+                session_id=str(agent_info.metadata.get("session_id") or ""),
+                agent_type=agent_info.agent_type,
+                reason="create_timeout",
+            )
+            sandbox = await _create_sandbox_once()
         latency_ms = max(0, int((time.monotonic() - started) * 1000))
         instance_id = sandbox.sandbox_id
         agent_info.sandbox_id = instance_id
@@ -2039,6 +2433,7 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type=agent_info.agent_type,
             instance=instance_id,
             latency_ms=latency_ms,
+            trace_id=str(sandbox.metadata.get("trace_id") or ""),
         )
 
         task = asyncio.create_task(
@@ -2087,7 +2482,27 @@ class AgentOSRouterClient(AgentServerClient):
             )
         await self._close_ws_client(agent_info.sandbox_id)
         if agent_info.sandbox_id:
-            await self._yuanrong.delete_sandbox(agent_info.sandbox_id)
+            try:
+                await self._yuanrong.delete_sandbox(agent_info.sandbox_id)
+            except Exception:
+                # YuanRong 删除失败不阻断后续清理：继续移除
+                # 内存 runtime 并注销注册中心，避免残留僵尸 runtime / 注册条目；
+                # 孤儿沙箱按 best_effort 语义交由手工 / 后续对账兜底。
+                logger.exception(
+                    format_agentos(
+                        "sandbox.delete.fail",
+                        user_id=agent_info.user_id,
+                        session_id=str(agent_info.metadata.get("session_id") or ""),
+                        sandbox_id=str(agent_info.sandbox_id or ""),
+                        agent_type=agent_info.agent_type,
+                        instance=str(agent_info.sandbox_id or ""),
+                        error="yuanrong_delete_failed",
+                    ),
+                    extra=agentos_extra(
+                        session_id=str(agent_info.metadata.get("session_id") or ""),
+                        sandbox_id=str(agent_info.sandbox_id or ""),
+                    ),
+                )
         await self._agent_manager.delete_agent(
             agent_info.user_id,
             agent_info.agent_type,
@@ -2172,6 +2587,36 @@ class AgentOSRouterClient(AgentServerClient):
                 sandbox_id,
             )
 
+    async def _cleanup_agent_on_instance_unavailable(
+        self,
+        runtime: AgentRuntime,
+        *,
+        exc: BaseException,
+    ) -> None:
+        """wait_until_running 确认实例不可用（不存在/停止）时的强制清理。
+
+        与 :meth:`_cleanup_agent_on_network_failure` 同一删除重建流程（关闭
+        WS → 删除沙箱 → 移除 runtime → 注销注册中心），但记录独立日志事件
+        ``sandbox.cleanup.instance_unavailable``，便于与普通网络错误区分触发源。
+        """
+        info = runtime.info
+        session_id = str(info.metadata.get("session_id") or "")
+        sandbox_id = str(info.sandbox_id or "")
+        log_agentos(
+            logger,
+            logging.WARNING,
+            "sandbox.cleanup.instance_unavailable",
+            user_id=info.user_id,
+            session_id=session_id,
+            sandbox_id=sandbox_id,
+            agent_type=info.agent_type,
+            instance=sandbox_id,
+            reason=type(exc).__name__,
+        )
+        await self._cleanup_agent_on_network_failure(
+            runtime, reason=f"instance_unavailable:{type(exc).__name__}"
+        )
+
     async def _release_agent_resources(
         self,
         agent_info: AgentInfo,
@@ -2217,68 +2662,179 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type=agent_info.agent_type,
         )
 
-    async def _register_agent(self, agent_info: AgentInfo) -> None:
-        # 网络失败清理（delete_agent 强制路径）可能先于本后台任务执行：注册前
-        # 确认内存 runtime 仍存在（强制删除会 pop 掉 runtime），避免清理注销后
-        # 又把僵尸 instance 条目写回注册中心。
+    async def _call_registry_with_backoff(
+        self,
+        event: str,
+        operation: Callable[[], Awaitable[Any]],
+        *,
+        agent_info: AgentInfo,
+        ok_fields: dict[str, Any] | None = None,
+    ) -> bool:
+        """注册中心写操作 + 指数退避重试。
+
+        - ``RegistryConnectionError``（网络抖动 / 临时不可用 / 超时）及其它
+          5xx ``RegistryHTTPError``：按指数退避（初始 1s、倍率 2、上限 30s）
+          重试，直至成功或 agent 已被删除；一旦退避达到封顶 30s（注册中心在
+          本轮请求周期内持续不可恢复）则记 error 后放弃本轮；
+        - ``RegistryConflictError``（409）：``instance_service_id`` 为幂等
+          upsert，409 通常为并发写冲突，立即重试一次以最新数据覆盖；
+        - ``RegistryValidationError`` / ``RegistryNotFoundError``：语义错误，
+          快速失败不重试。
+
+        每次尝试前确认内存 runtime 仍存在：网络失败清理可能已删除该 agent，
+        此时终止重试，避免把已清理的实例写回注册中心。
+        """
+        user_id = agent_info.user_id
+        agent_type = agent_info.agent_type
+        sandbox_id = str(agent_info.sandbox_id or "")
         session_id = str(agent_info.metadata.get("session_id") or "")
         key_values: dict[str, Any] | None = None
         if "session_id" in self._agent_manager.key_fields and session_id:
             key_values = {"session_id": session_id}
-        live = await self._agent_manager.get_agent(
-            agent_info.user_id,
-            agent_info.agent_type,
-            key_values=key_values,
-        )
-        if live is None:
-            logger.info(
-                "[AgentOSRouter] registry register skipped (agent already "
-                "cleaned up): user_id=%s session_id=%s sandbox_id=%s agent_type=%s",
-                agent_info.user_id,
-                session_id,
-                str(agent_info.sandbox_id or ""),
-                agent_info.agent_type,
+        fields = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "sandbox_id": sandbox_id,
+            "agent_type": agent_type,
+            "instance": sandbox_id,
+        }
+        attempt = 0
+        conflict_retried = False
+        while True:
+            live = await self._agent_manager.get_agent(
+                user_id, agent_type, key_values=key_values
             )
-            return
-        try:
-            await self._registry.register_agent(agent_info)
-        except Exception:
-            logger.exception(
-                "[AgentOSRouter] async registry registration failed: agent_id=%s",
-                agent_info.agent_id,
-            )
-            return
-
-        # 创建后查询 YuanRong 获取 node_ip / sandbox_ip，更新注册中心 instance
-        # 的 placement 字段（node + address），供调度/路由使用。
-        try:
-            instance_info = await self._yuanrong.get_agent_info(
-                agent_info.sandbox_id
-            )
-            node_ip = str(instance_info.get("node_ip") or "").strip()
-            sandbox_ip = str(instance_info.get("sandbox_ip") or "").strip()
-            if node_ip or sandbox_ip:
-                service_id = instance_service_id(
-                    agent_info.user_id, agent_info.agent_type
+            if live is None:
+                log_agentos(logger, logging.INFO, f"{event}.skip_deleted", **fields)
+                return False
+            attempt += 1
+            try:
+                await operation()
+            except RegistryConflictError as exc:
+                if conflict_retried:
+                    log_agentos(
+                        logger,
+                        logging.WARNING,
+                        f"{event}.fail",
+                        error=str(exc),
+                        reason="conflict_persisted",
+                        **fields,
+                    )
+                    return False
+                conflict_retried = True
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    f"{event}.retry",
+                    attempt=attempt,
+                    error="conflict",
+                    **fields,
                 )
-                await self._registry.update_instance(
+                continue
+            except (RegistryValidationError, RegistryNotFoundError) as exc:
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    f"{event}.fail",
+                    error=str(exc),
+                    reason="non_retryable",
+                    **fields,
+                )
+                return False
+            except RegistryError as exc:
+                delay = compute_backoff_delay(
+                    attempt,
+                    initial_delay=_REGISTRY_BACKOFF_INITIAL_SECONDS,
+                    multiplier=_REGISTRY_BACKOFF_MULTIPLIER,
+                    max_delay=_REGISTRY_BACKOFF_MAX_SECONDS,
+                )
+                if delay >= _REGISTRY_BACKOFF_MAX_SECONDS:
+                    # 退避已达到封顶 30s：注册中心在本轮请求周期内持续不可恢复，
+                    # 不再继续尝试，记 error 后放弃本轮注册/更新。
+                    log_agentos(
+                        logger,
+                        logging.ERROR,
+                        f"{event}.unrecoverable",
+                        attempt=attempt,
+                        error=type(exc).__name__,
+                        sleep=f"{delay:.1f}s",
+                        **fields,
+                    )
+                    return False
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    f"{event}.retry",
+                    attempt=attempt,
+                    error=type(exc).__name__,
+                    sleep=f"{delay:.1f}s",
+                    **fields,
+                )
+                await asyncio.sleep(delay)
+                continue
+            log_agentos(
+                logger,
+                logging.INFO,
+                f"{event}.ok",
+                attempt=attempt,
+                **{**fields, **(ok_fields or {})},
+            )
+            return True
+
+    async def _register_agent(self, agent_info: AgentInfo) -> None:
+        # 网络失败清理（delete_agent 强制路径）可能先于本后台任务执行：注册前
+        # 确认内存 runtime 仍存在（强制删除会 pop 掉 runtime），避免清理注销后
+        # 又把僵尸 instance 条目写回注册中心。
+        try:
+            if not await self._call_registry_with_backoff(
+                "registry.register",
+                lambda: self._registry.register_agent(agent_info),
+                agent_info=agent_info,
+            ):
+                return
+
+            # create 返回时沙箱通常还在探针中：placeholder address=instance_id。
+            # 等到 status=running 后再读 node_ip / sandbox_ip（含 jiuwenbox
+            # ip_address），PATCH 注册中心 placement，供调度/路由使用。
+            sandbox_id = str(agent_info.sandbox_id or "").strip()
+            instance_info = await self._wait_yuanrong_running(
+                sandbox_id,
+                user_id=str(agent_info.user_id or ""),
+                session_id=str(agent_info.metadata.get("session_id") or ""),
+                agent_type=str(agent_info.agent_type or ""),
+            )
+            node_ip, sandbox_ip = _extract_placement_ips(instance_info)
+            if not (node_ip or sandbox_ip):
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    "registry.instance.skip_no_ip",
+                    user_id=agent_info.user_id,
+                    session_id=str(agent_info.metadata.get("session_id") or ""),
+                    sandbox_id=sandbox_id,
+                    agent_type=agent_info.agent_type,
+                    instance=sandbox_id,
+                )
+                return
+            service_id = instance_service_id(
+                agent_info.user_id, agent_info.agent_type
+            )
+            await self._call_registry_with_backoff(
+                "registry.instance",
+                lambda: self._registry.update_instance(
                     service_id,
                     node=node_ip or None,
                     address=sandbox_ip or None,
-                )
-                log_agentos(
-                    logger,
-                    logging.INFO,
-                    "registry.instance.ok",
-                    user_id=agent_info.user_id,
-                    session_id=str(agent_info.metadata.get("session_id") or ""),
-                    sandbox_id=str(agent_info.sandbox_id or ""),
-                    agent_type=agent_info.agent_type,
-                    instance=str(agent_info.sandbox_id or ""),
-                    service_id=service_id,
-                    node=node_ip,
-                    address=sandbox_ip,
-                )
+                    instance_id=str(agent_info.sandbox_id or "").strip() or None,
+                ),
+                agent_info=agent_info,
+                ok_fields={
+                    "service_id": service_id,
+                    "node": node_ip,
+                    "address": sandbox_ip,
+                    "instance_id": str(agent_info.sandbox_id or ""),
+                },
+            )
         except Exception:
             logger.exception(
                 format_agentos(
@@ -2312,6 +2868,23 @@ class AgentOSRouterClient(AgentServerClient):
             return AgentRuntime.normalize_agent_type(raw)
         except ValueError as exc:
             raise UnsupportedAgentType(str(exc)) from exc
+
+    @staticmethod
+    def _is_cancel_method(envelope: E2AEnvelope) -> bool:
+        return str(envelope.method or "") == ReqMethod.CHAT_CANCEL.value
+
+    @staticmethod
+    def _cancel_noop_response(envelope: E2AEnvelope) -> AgentResponse:
+        return AgentResponse(
+            request_id=str(envelope.request_id or ""),
+            channel_id=str(envelope.channel or ""),
+            ok=True,
+            payload={
+                "event_type": "chat.interrupt_result",
+                "success": True,
+                "session_id": str(envelope.session_id or ""),
+            },
+        )
 
     @staticmethod
     def _routing_error_response(

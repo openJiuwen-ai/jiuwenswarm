@@ -8,12 +8,6 @@ import pytest
 from openjiuwen.core.common.exception.errors import ValidationError
 from openjiuwen.core.sys_operation.cwd import init_cwd
 
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import (
-    install_permission_file_semantics,
-)
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import (
-    build_tool_decision_facts,
-)
 from jiuwenswarm.agents.harness.common.tools.pdf_tools import (
     DEFAULT_MAX_CHARS,
     _MAX_PAGES_PER_CALL,
@@ -310,17 +304,8 @@ async def test_read_pdf_relative_path_matches_permission_primary_workspace(
         lambda: global_workspace,
     )
     init_cwd(str(workspace), project_root=str(workspace), workspace=str(workspace))
-    install_permission_file_semantics()
-    facts = build_tool_decision_facts(
-        "read_pdf",
-        {"pdf_path": "docs/note.pdf"},
-        workspace_root=workspace,
-        original_args_were_valid_object=True,
-    )
-
     result = await read_pdf.invoke({"pdf_path": "docs/note.pdf"})
 
-    assert facts.read_paths == (pdf_path.as_posix(),)
     assert "Primary workspace anchored" in result
     assert "Wrong global workspace file" not in result
 

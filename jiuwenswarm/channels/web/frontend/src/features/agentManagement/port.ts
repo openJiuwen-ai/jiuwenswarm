@@ -1,3 +1,4 @@
+import type { CatalogItems } from '../catalogCache';
 import type {
   AgentCatalogItem,
   AgentDetail,
@@ -59,13 +60,15 @@ export interface AgentCatalogListOptions {
 
 export interface AgentManagementClient {
   readonly source: AgentManagementSource;
-  listCatalog(options?: AgentCatalogListOptions): Promise<AgentCatalogItem[]>;
+  listCatalog(options?: AgentCatalogListOptions): Promise<CatalogItems<AgentCatalogItem>>;
   getDefinition(id: string): Promise<AgentDetail>;
   getDefinitionFiles(id: string): Promise<DefinitionFileEntry[]>;
   getDefinitionFile(id: string, relativePath: string): Promise<AgentFileContent>;
   listSkillOptions(): Promise<SkillOption[]>;
   listMcpOptions(): Promise<McpOption[]>;
   createAgent(draft: AgentDraft): Promise<void>;
+  updateAgent(draft: AgentDraft): Promise<void>;
+  deleteDefinition(id: string): Promise<void>;
   importAgentTemplate(path: string): Promise<{ id: string }>;
   installDefinition(id: string): Promise<AgentInstallResult>;
   uninstallDefinition(id: string): Promise<{ notice?: string }>;

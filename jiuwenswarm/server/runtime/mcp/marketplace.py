@@ -89,6 +89,8 @@ async def list_mcps_with_hub(
     mcp_filter: str = "builtin",
     *,
     hub_port: HubAssetPort | None = None,
+    cache_mode: str | None = None,
+    refresh: bool = False,
 ) -> list[dict[str, Any]]:
     """Merge installed packages with ordinary, non-persisted Hub cards."""
     local = registry.list_marketplace_mcps("local" if mcp_filter == "local" else "builtin")
@@ -116,10 +118,15 @@ async def list_mcps_with_hub(
     if mcp_filter == "local":
         return list(cards.values())
     port = hub_port or create_default_hub_asset_port()
-    try:
-        remote_items = await _all_remote(port)
-    except Exception:
-        return list(cards.values())
+    cache_state = None
+    if cache_mode == "prefer_cache":
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import cached_asset_catalog
+        remote_items, cache_state = await cached_asset_catalog(port, "mcp", refresh=refresh)
+    else:
+        try:
+            remote_items = await _all_remote(port)
+        except Exception:
+            return list(cards.values())
     for item in remote_items:
         if (
             not item.package_name
@@ -130,13 +137,17 @@ async def list_mcps_with_hub(
         cards[item.package_name] = _remote_card(item)
     # Use the same marketplace sort as registry.list_marketplace_mcps.
     priority = {"huaweiyun-mcp": 0, "harmonyos-mcp": 0}
-    return sorted(
+    sorted_cards = sorted(
         cards.values(),
         key=lambda card: (
             priority.get(str(card.get("name") or ""), 1),
             str(card.get("name") or ""),
         ),
     )
+    if cache_state is not None:
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
+        return CatalogCards(sorted_cards, cache_state)
+    return sorted_cards
 
 
 async def show_mcp_with_hub(
