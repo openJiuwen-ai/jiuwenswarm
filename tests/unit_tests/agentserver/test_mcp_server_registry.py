@@ -150,6 +150,32 @@ async def test_add_accepts_stdio_user_connector(registry: McpServerRegistry, mon
 
 
 @pytest.mark.asyncio
+async def test_add_rejects_stdio_in_enterprise(registry: McpServerRegistry, monkeypatch) -> None:
+    """企业版即便绕过 handler，准入层也不接受本地 stdio。"""
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_config.is_enterprise", lambda: True
+    )
+    called: list[str] = []
+
+    async def discover(name, config):
+        called.append(name)
+        return [], {}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        discover,
+    )
+    results = await registry.add_servers(
+        [{"name": "local", "command": "node", "args": ["mcp.js"]}]
+    )
+    assert results[0]["ok"] is False
+    assert "stdio" in results[0]["error"].lower()
+    assert called == []
+    assert await registry.list_servers() == []
+
+
+@pytest.mark.asyncio
 async def test_add_rejects_private_remote_url_without_scanning(registry, monkeypatch) -> None:
     called: list[str] = []
 

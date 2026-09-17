@@ -170,7 +170,11 @@ def is_remote_mcp_config(config: Mapping[str, Any]) -> bool:
 
 
 def _admit_server_config(name: str, config: Mapping[str, Any]) -> None:
-    """CRUD 准入：create_mcp_tool 白名单/危险参数；sse/http 再做 SSRF 主机屏蔽。"""
+    """CRUD 准入：create_mcp_tool 白名单/危险参数；sse/http 再做 SSRF 主机屏蔽。
+
+    个人版可通过本路径登记本地 stdio；企业版在 create_mcp_tool 内拒绝 stdio
+    （handler 层也会整组拦截 mcp.server.*）。
+    """
 
     create_mcp_tool(json.dumps({**dict(config), "name": name}, ensure_ascii=False))
     if is_remote_mcp_config(config):

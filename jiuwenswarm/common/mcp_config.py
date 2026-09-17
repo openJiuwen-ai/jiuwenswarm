@@ -28,6 +28,8 @@ from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.tool import McpServerConfig, Tool, ToolCard
 
+from jiuwenswarm.edition import is_enterprise
+
 try:
     from openjiuwen.core.foundation.tool.mcp.client import (
         sse_client as _sse_client,  # noqa: F401
@@ -140,6 +142,9 @@ def build_mcp_server_config(
         payload["server_id"] = explicit_server_id
 
     if transport == "stdio":
+        # 个人版可用本地 stdio（mcp.servers / mcp.server）；企业版仅远程模板。
+        if is_enterprise():
+            return None
         command = str(entry.get("command", "")).strip()
         if not command:
             return None
@@ -583,9 +588,14 @@ def _validate_request_scoped_remote_mcp(tool_name: str, cfg: dict) -> None:
 def create_mcp_tool(config_str: str) -> McpServerConfig:
     """从 JSON 字符串解析并构造 ``McpServerConfig``。
 
-    用户连接器支持 stdio（node/python/npx/uvx 白名单）以及远程
-    sse / streamable-http / playwright / openapi（方案 §5.2 / §10.1）。
+    个人版用户连接器支持本地 stdio（node/python/npx/uvx 白名单，供
+    ``mcp.server`` / 请求级连接器）以及远程 sse / streamable-http /
+    playwright / openapi（方案 §5.2 / §10.1）。
+    企业版禁止用户可配本地 stdio，仅允许远程类型（本地 /mcp 与
+    ``mcp.server.*`` 管理面另有入口拦截）。
     远程鉴权经 ``_resolve_remote_mcp_auth`` 写入 SDK ``auth_headers``。
+    OfficeClaw Relay 自带 bundle 走 ``validate_office_claw_mcp_config``，
+    不经过本入口的 stdio 分支。
     """
     try:
         config = json.loads(config_str)
@@ -685,6 +695,14 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
 
     if not isinstance(args, list):
         raise ValueError(f"工具 '{tool_name}' 的 args 必须是列表类型")
+
+    # 缺省 type / 显式 stdio：个人版放行本地 mcp.server；企业版拒绝。
+    if is_enterprise():
+        raise ValueError(
+            f"工具 '{tool_name}' 不支持本地 stdio；"
+            "企业版仅允许远程 MCP（sse / streamable-http / playwright / openapi），"
+            "请通过管理端模板下发"
+        )
 
     _check_dangerous_args(tool_name, args)
 
