@@ -464,6 +464,28 @@ def _bind_requested_team(
         get_team_entity_store,
     )
 
+    def _write_team_identity(bound: Any) -> None:
+        # Record the bound team into session metadata on every path that
+        # successfully binds (normal and CONFLICT-race alike) — the team
+        # stream resolves its identity from there first. The caller binds
+        # the tenant env ns so this write lands in the same session
+        # metadata root the team stream reads (agent_<agent_id>).
+        update_session_metadata(
+            session_id=session_id,
+            channel_id=request.channel_id or None,
+            user_content=user_content,
+            mode=canonical_mode,
+            team_name=bound.team_name,
+            runtime_team_name=TeamManager.build_session_scoped_team_name(
+                bound.team_name,
+                session_id,
+            ),
+            team_template_id=bound.template_id,
+            touch_last_message_at=False,
+            sync_write=True,
+            sessions_root=sessions_root,
+        )
+
     try:
         binding_store = get_team_binding_store()
         entity_store = get_team_entity_store()
@@ -485,27 +507,12 @@ def _bind_requested_team(
             team_name=binding.team_name,
             session_id=session_id,
         )
-        # The caller binds the tenant env ns so this write lands in the same
-        # session metadata root the team stream reads (agent_<agent_id>).
-        update_session_metadata(
-            session_id=session_id,
-            channel_id=request.channel_id or None,
-            user_content=user_content,
-            mode=canonical_mode,
-            team_name=binding.team_name,
-            runtime_team_name=TeamManager.build_session_scoped_team_name(
-                binding.team_name,
-                session_id,
-            ),
-            team_template_id=binding.template_id,
-            touch_last_message_at=False,
-            sync_write=True,
-            sessions_root=sessions_root,
-        )
+        _write_team_identity(binding)
         return binding
     except TeamBindingStoreError as exc:
         if str(exc.code) == "CONFLICT":
-            # Raced another session creating the same team — re-read and bind.
+            # Raced another session creating the same team — re-read, bind,
+            # and record the identity exactly like the normal path.
             try:
                 binding_store = get_team_binding_store()
                 binding = binding_store.get(team_name)
@@ -515,6 +522,7 @@ def _bind_requested_team(
                     team_name=binding.team_name,
                     session_id=session_id,
                 )
+                _write_team_identity(binding)
                 return binding
             except Exception:  # noqa: BLE001 — fall back to generation
                 return None
