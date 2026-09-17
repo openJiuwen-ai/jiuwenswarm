@@ -39,7 +39,9 @@ function getFileExtension(filename: string): string {
 }
 
 function isImageFile(file: File): boolean {
-  if (ACCEPTED_IMAGE_TYPES.has(file.type)) return true;
+  const type = file.type.toLowerCase();
+  if (ACCEPTED_IMAGE_TYPES.has(type)) return true;
+  if (type && type !== 'application/octet-stream') return false;
   return IMAGE_EXTENSIONS.has(getFileExtension(file.name || ''));
 }
 
@@ -61,20 +63,65 @@ export type ClipboardFileItemLike = {
 
 export type ClipboardDataLike = {
   items?: ArrayLike<ClipboardFileItemLike> | null;
+  files?: ArrayLike<File> | null;
 };
 
 /**
- * Prefer clipboardData.items only — Chromium often mirrors the same screenshot in files.
+ * Prefer clipboardData.items — Chromium often mirrors the same screenshot in files.
+ * Fall back to files only when there are no file items.
  * Do not dedupe by name/size/MIME: distinct images can share those metadata fields.
  */
-export function getClipboardImageFiles(clipboardData: ClipboardDataLike | null | undefined): File[] {
-  if (!clipboardData) return [];
+export function inspectClipboardImageFiles(clipboardData: ClipboardDataLike | null | undefined): {
+  files: File[];
+  hasUnsupportedFiles: boolean;
+} {
   const files: File[] = [];
-  for (const item of Array.from(clipboardData.items || [])) {
-    if (item.kind !== 'file') continue;
-    const file = item.getAsFile();
-    if (!file || !isImageFile(file)) continue;
+  let hasUnsupportedFiles = false;
+  const fileItems = Array.from(clipboardData?.items || []).filter((item) => item.kind === 'file');
+  const clipboardFiles = fileItems.length
+    ? fileItems.map((item) => item.getAsFile())
+    : Array.from(clipboardData?.files || []);
+  for (const file of clipboardFiles) {
+    if (!file || !isImageFile(file)) {
+      hasUnsupportedFiles = true;
+      continue;
+    }
     files.push(ensureClipboardImageFilename(file));
   }
-  return files;
+  return { files, hasUnsupportedFiles };
+}
+
+export function getClipboardImageFiles(clipboardData: ClipboardDataLike | null | undefined): File[] {
+  return inspectClipboardImageFiles(clipboardData).files;
+}
+
+/** Dispatched by desktop context-menu paste when Clipboard API yields image blobs. */
+export const DESKTOP_CLIPBOARD_IMAGES_EVENT = 'jiuwen-desktop-clipboard-images';
+
+export type DesktopClipboardImagesEventDetail = {
+  files?: File[];
+};
+
+/**
+ * Read image blobs via Clipboard API (screenshots / copied bitmaps).
+ * Used when there is no paste ClipboardEvent (e.g. custom context-menu Paste).
+ */
+export async function readClipboardImageFilesFromClipboardApi(
+  clipboard: Clipboard | null | undefined = typeof navigator !== 'undefined' ? navigator.clipboard : undefined,
+): Promise<File[]> {
+  if (!clipboard || typeof clipboard.read !== 'function') return [];
+  try {
+    const items = await clipboard.read();
+    const files: File[] = [];
+    for (const item of items) {
+      const imageType = item.types.find((type) => ACCEPTED_IMAGE_TYPES.has(type.toLowerCase()));
+      if (!imageType) continue;
+      const blob = await item.getType(imageType);
+      const type = ACCEPTED_IMAGE_TYPES.has(blob.type) ? blob.type : imageType.toLowerCase();
+      files.push(ensureClipboardImageFilename(new File([blob], '', { type })));
+    }
+    return files;
+  } catch {
+    return [];
+  }
 }

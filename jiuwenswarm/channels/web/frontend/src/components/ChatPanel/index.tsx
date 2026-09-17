@@ -1625,7 +1625,8 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   const ingestDesktopLocalFiles = useCallback(
     (detail: DesktopLocalFilesEventDetail | null | undefined, files: LocalFilePick[]) => {
-      if (detail?.source && detail.source !== 'drop') return;
+      // Native drop bridge uses source=drop; context-menu paste uses source=paste.
+      if (detail?.source && detail.source !== 'drop' && detail.source !== 'paste') return;
       if (!files.length) {
         clearDesktopFileDropZone();
         return;

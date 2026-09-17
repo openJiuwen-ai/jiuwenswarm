@@ -22,7 +22,13 @@
     "expandMore": "展开 {{count}} 个",
     "optional": "（可选）",
     "processing": "处理中…",
-    "retry": "重试"
+    "retry": "重试",
+    "editMenu": {
+      "cut": "剪切",
+      "copy": "复制",
+      "paste": "粘贴",
+      "selectAll": "全选"
+    }
   },
   "a2ui": {
     "generating": "A2UI 界面生成中...",
@@ -746,6 +752,7 @@
     "addImageDisabled": "处理中或录音中不可添加图片",
     "addFile": "上传文件",
     "addFileDisabled": "处理中或录音中不可上传文件",
+    "unsupportedImagePaste": "不支持粘贴该文件格式，仅支持粘贴 PNG、JPG/JPEG、WebP、GIF 图片。",
     "addFileTooltip": "可添加文件、专家、技能、连接器",
     "addAttachment": "添加附件",
     "removeImage": "移除图片",

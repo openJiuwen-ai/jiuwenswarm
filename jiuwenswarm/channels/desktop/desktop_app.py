@@ -781,6 +781,172 @@ def _clipboard_file_paths() -> list[str]:
     return []
 
 
+def _global_lock_bytes(handle: int) -> bytes | None:
+    """Copy bytes from a Win32 HGLOBAL clipboard handle."""
+    if not handle:
+        return None
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalSize.restype = ctypes.c_size_t
+
+    ptr = kernel32.GlobalLock(handle)
+    if not ptr:
+        return None
+    try:
+        size = int(kernel32.GlobalSize(handle))
+        if size <= 0:
+            return None
+        return ctypes.string_at(ptr, size)
+    finally:
+        kernel32.GlobalUnlock(handle)
+
+
+def _dib_to_png_bytes(dib: bytes) -> bytes | None:
+    """Convert a CF_DIB payload (BITMAPINFOHEADER + pixels) to PNG bytes."""
+    if len(dib) < 40:
+        return None
+    try:
+        from io import BytesIO
+        import struct
+
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        return None
+
+    try:
+        header_size = struct.unpack_from("<I", dib, 0)[0]
+        if header_size < 40 or header_size > len(dib):
+            return None
+        bit_count = struct.unpack_from("<H", dib, 14)[0]
+        clr_used = struct.unpack_from("<I", dib, 32)[0]
+        if clr_used == 0 and bit_count <= 8:
+            clr_used = 1 << bit_count
+        # BITMAPFILEHEADER(14) + DIB
+        pixel_offset = 14 + header_size + (clr_used * 4 if bit_count <= 8 else 0)
+        file_size = 14 + len(dib)
+        bmp = struct.pack("<2sIHHI", b"BM", file_size, 0, 0, pixel_offset) + dib
+        with Image.open(BytesIO(bmp)) as image:
+            out = BytesIO()
+            image.save(out, format="PNG")
+            return out.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[desktop] clipboard DIB convert failed: %s", exc)
+        return None
+
+
+def _clipboard_image_png_bytes_windows() -> bytes | None:
+    """Read a bitmap/PNG image from the Windows clipboard (screenshots, Copy Image)."""
+    user32 = ctypes.windll.user32
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+    user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+    user32.RegisterClipboardFormatW.restype = wintypes.UINT
+
+    cf_dib = 8
+    png_format = user32.RegisterClipboardFormatW("PNG")
+
+    if not user32.OpenClipboard(None):
+        return None
+    try:
+        if png_format and user32.IsClipboardFormatAvailable(png_format):
+            handle = user32.GetClipboardData(png_format)
+            data = _global_lock_bytes(int(handle) if handle else 0)
+            if data and data.startswith(PNG_SIGNATURE):
+                return data
+        if user32.IsClipboardFormatAvailable(cf_dib):
+            handle = user32.GetClipboardData(cf_dib)
+            dib = _global_lock_bytes(int(handle) if handle else 0)
+            if dib:
+                return _dib_to_png_bytes(dib)
+    finally:
+        user32.CloseClipboard()
+    return None
+
+
+def _clipboard_image_png_bytes_macos() -> bytes | None:
+    """Read PNG/TIFF image bytes from the macOS general pasteboard."""
+    try:
+        from AppKit import (  # type: ignore[import-not-found]
+            NSPasteboard,
+            NSPasteboardTypePNG,
+            NSPasteboardTypeTIFF,
+        )
+        from PIL import Image
+        from io import BytesIO
+    except Exception:  # noqa: BLE001
+        return None
+
+    try:
+        pasteboard = NSPasteboard.generalPasteboard()
+        png_data = pasteboard.dataForType_(NSPasteboardTypePNG)
+        if png_data is not None:
+            raw = bytes(png_data)
+            if raw:
+                return raw
+        tiff_data = pasteboard.dataForType_(NSPasteboardTypeTIFF)
+        if tiff_data is None:
+            return None
+        raw = bytes(tiff_data)
+        if not raw:
+            return None
+        with Image.open(BytesIO(raw)) as image:
+            out = BytesIO()
+            image.save(out, format="PNG")
+            return out.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[desktop] clipboard image read failed: %s", exc)
+        return None
+
+
+def _clipboard_image_png_bytes() -> bytes | None:
+    try:
+        if os.name == "nt":
+            return _clipboard_image_png_bytes_windows()
+        if sys.platform == "darwin":
+            return _clipboard_image_png_bytes_macos()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[desktop] clipboard image read failed: %s", exc)
+    return None
+
+
+def _clipboard_image_pick() -> dict[str, Any] | None:
+    """Build a LocalFilePick-shaped dict for a clipboard bitmap/screenshot."""
+    raw = _clipboard_image_png_bytes()
+    if not raw:
+        return None
+    filename = "clipboard-image.png"
+    # Synthetic path so frontend normalizePick accepts image+base64 payloads.
+    path = f"clipboard://{filename}"
+    size = len(raw)
+    if size > MAX_IMAGE_BYTES:
+        return {
+            "path": path,
+            "filename": filename,
+            "size": size,
+            "mime_type": "image/png",
+            "kind": "image",
+            "error": "image_too_large",
+        }
+    return {
+        "path": path,
+        "filename": filename,
+        "size": size,
+        "mime_type": "image/png",
+        "kind": "image",
+        "base64": base64.b64encode(raw).decode("ascii"),
+    }
+
+
 class DesktopRuntime:
     def __init__(
         self, frontend_host: str, ports: dict[str, int]
@@ -1714,7 +1880,21 @@ class DesktopRuntime:
         return results
 
     def get_clipboard_files(self) -> list[dict[str, Any]]:
-        return self.describe_local_files(_clipboard_file_paths())
+        """Return Explorer/Finder file picks, or a clipboard screenshot image pick."""
+        # Brief retries: OpenClipboard can fail while another app still holds it.
+        picks: list[dict[str, Any]] = []
+        for attempt in range(3):
+            paths = _clipboard_file_paths()
+            if paths:
+                picks = self.describe_local_files(paths)
+                if picks:
+                    return picks
+            image = _clipboard_image_pick()
+            if image is not None:
+                return [image]
+            if attempt < 2:
+                time.sleep(0.05)
+        return picks
 
     def _evaluate_js(self, script: str) -> None:
         if self.window is None:
