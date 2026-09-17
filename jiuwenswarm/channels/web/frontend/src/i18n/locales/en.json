@@ -2924,6 +2924,7 @@
   "chatUi": {
     "copyMessage": "Copy message",
     "copied": "Copied",
+    "copyFailed": "Copy failed. Please copy manually",
     "stopReading": "Stop reading",
     "readMessage": "Read message",
     "forkFromMessage": "Create a conversation branch from this message",
@@ -3143,6 +3144,7 @@
     "instructionHint": "Members will join team tasks through the WorkSwarm platform configured for them and participate as their assigned identity.",
     "copy": "Copy",
     "copied": "Copied",
+    "copyFailed": "Copy failed. Please copy manually",
     "joinedNote": "This member has joined. No need to send the join command again.",
     "commandPending": "Waiting for member details. The join command will appear when ready.",
     "exitTitle": "Exit command",
