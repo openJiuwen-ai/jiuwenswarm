@@ -247,29 +247,78 @@ def _build_cap_from_entry(
     )
 
 
+def _load_models_json() -> dict | None:
+    """加载 sidecar 模式落盘的 models.json（relay spawn 前写入）。
+
+    路径：``get_config_dir()/routing_state/models.json``（与 classifier_mapper.json /
+    model_capability_map.json 同目录）。结构对齐 config.yaml::models::
+
+        {"defaults": [<entry>, ...], "vision": {<entry>}}
+
+    每个 entry 含 ``model_client_config`` / ``model_config_obj`` / 顶层能力字段，
+    直接喂 ``_build_cap_from_entry``。key 在文件里（与 tip 文件同级安全，不进 os.environ）。
+
+    sidecar 链路识别信号：文件存在 → sidecar 模式（读文件）；缺失 → stock 模式（读 config.yaml）。
+    缺失/解析失败 → 返回 None（调用方回退 config.yaml）。
+    """
+    try:
+        from jiuwenswarm.common.utils import get_config_dir
+        path = get_config_dir() / "routing_state" / "models.json"
+    except Exception as exc:
+        logger.debug("[ModelRouting] get_config_dir failed in _load_models_json: %s", exc)
+        return None
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            logger.info("[ModelRouting] models.json loaded from %s", path)
+            return data
+        logger.warning("[ModelRouting] models.json not a dict at %s, ignored", path)
+        return None
+    except Exception as exc:
+        logger.warning("[ModelRouting] models.json load failed (%s): %s", path, exc)
+        return None
+
+
 def build_capability_table_from_config(
     config: dict[str, Any] | None,
     *,
     model_builder: Optional[Callable[[dict, dict], Any]] = None,
 ) -> list[ModelCapability]:
-    """从 config.yaml::models.defaults 加载能力表（启动时/配置更新时调用）。
+    """从能力表来源加载 ModelCapability 列表（启动时/配置更新时调用）。
 
-    - 普通模型：``models.defaults`` 列表，每条 -> 一个 cap（model_type 从条目顶层读）。
-    - vision 专用模型：``models.vision``（api_base 配了才进表），作为 ``model_type="vision"`` 候选，
-      仅含图请求时参与路由（``_decide_and_select`` 在非含图请求里排除 vision 候选）。
-    - 能力字段（cost/performance/score/max_length/group/provider）由
-      model_capability_map.json 按 model_name 覆盖（命中即用），未命中回退 config 条目值/默认。
+    来源优先级（sidecar 模式优先）：
+    1. ``routing_state/models.json``（relay sidecar spawn 前落盘，含全模型 + key）
+       → ``json["defaults"]``，每条 -> 一个 cap（model_type 从条目顶层读）。
+    2. 回退 ``config.yaml::models.defaults``（stock 模式）。
+
+    vision 专用模型：优先 ``models.json::vision``，回退 ``config.yaml::models.vision``。
+    api_base 配了才进表，作为 ``model_type="vision"`` 候选，仅含图请求时参与路由。
+
+    能力字段（cost/performance/score/max_length/group/provider）由
+    model_capability_map.json 按 model_name 覆盖（命中即用），未命中回退条目值/默认。
     """
-    try:
-        from jiuwenswarm.common.config import get_default_models
-
-        entries = get_default_models(config) if config is not None else []
-    except Exception as exc:
-        logger.debug("[ModelRouting] load capability table failed: %s", exc)
-        return []
+    # 优先 models.json（sidecar 模式）；缺失回退 config.yaml（stock 模式）
+    models_json = _load_models_json()
+    json_defaults = models_json.get("defaults") if isinstance(models_json, dict) else None
+    if isinstance(json_defaults, list):
+        entries = json_defaults
+    else:
+        try:
+            from jiuwenswarm.common.config import get_default_models
+            entries = get_default_models(config) if config is not None else []
+        except Exception as exc:
+            logger.debug("[ModelRouting] load capability table failed: %s", exc)
+            return []
     table: list[ModelCapability] = [_build_cap_from_entry(e, model_builder) for e in entries]
-    # vision 专用模型（models.vision，api_base 配了才进表）
-    vision_cfg = (config or {}).get("models", {}).get("vision")
+    # vision 专用模型：models.json::vision > config.yaml::models.vision
+    vision_cfg = None
+    if isinstance(models_json, dict):
+        vision_cfg = models_json.get("vision")
+    if vision_cfg is None:
+        vision_cfg = (config or {}).get("models", {}).get("vision")
     if isinstance(vision_cfg, dict):
         vmcc = vision_cfg.get("model_client_config", {}) or {}
         if isinstance(vmcc, dict) and str(vmcc.get("api_base") or "").strip():

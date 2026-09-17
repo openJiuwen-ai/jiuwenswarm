@@ -5165,14 +5165,49 @@ class JiuWenSwarmDeepAdapter:
     def _build_vision_model_config(
         config_base: dict[str, Any],
     ) -> VisionModelConfig | None:
-        """Build DeepAgent vision config from service config/env mapping."""
-        if not dedicated_multimodal_model_configured(config_base, "vision"):
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] vision tools skipped: models.vision has no dedicated "
-                "api_key in config.yaml"
+        """Build DeepAgent vision config from service config/env mapping.
+
+        sidecar 模式（relay 落盘 models.json）：优先读 ``models.json::vision`` 的
+        ``model_client_config``，注入 VISION_* env，使 ``visual_question_answering`` 工具
+        在 sidecar 自动注册（无需 config.yaml::models.vision）。
+        stock 模式（无 models.json）：回退 config.yaml::models.vision + VISION_* env。
+        """
+        # sidecar 模式：models.json::vision 注入 VISION_* env（复用现有 read_env 逻辑）
+        try:
+            from jiuwenswarm.agents.harness.common.rails.model_routing.capability import (
+                _load_models_json,
             )
-            return None
-        apply_vision_model_config_from_yaml(config_base)
+            models_json = _load_models_json()
+            vision_from_json = models_json.get("vision") if isinstance(models_json, dict) else None
+            if isinstance(vision_from_json, dict):
+                vmcc = vision_from_json.get("model_client_config", {}) or {}
+                if isinstance(vmcc, dict) and str(vmcc.get("api_base") or "").strip():
+                    import os
+                    if str(vmcc.get("api_key") or "").strip():
+                        os.environ["VISION_API_KEY"] = str(vmcc.get("api_key"))
+                    os.environ["VISION_API_BASE"] = str(vmcc.get("api_base", ""))
+                    if str(vmcc.get("model_name") or "").strip():
+                        os.environ["VISION_MODEL_NAME"] = str(vmcc.get("model_name"))
+        except Exception as exc:
+            logger.debug("[JiuWenSwarmDeepAdapter] models.json vision inject skipped: %s", exc)
+
+        dedicated_ok = dedicated_multimodal_model_configured(config_base, "vision")
+        if dedicated_ok:
+            apply_vision_model_config_from_yaml(config_base)
+        else:
+            # sidecar 模式下 models.json 已注入 VISION_* env，但 config.yaml::models.vision
+            # 可能空 → dedicated 检测 False。若 env 已完整，仍尝试构建（visual_question_answering 依赖）。
+            env_complete = bool(
+                str(read_env("VISION_API_KEY", "")).strip()
+                and str(read_env("VISION_BASE_URL") or read_env("VISION_API_BASE") or "").strip()
+                and str(read_env("VISION_MODEL") or read_env("VISION_MODEL_NAME") or "").strip()
+            )
+            if not env_complete:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] vision tools skipped: models.vision has no dedicated "
+                    "api_key in config.yaml"
+                )
+                return None
         api_key = str(read_env("VISION_API_KEY", "")).strip()
         base_url = str(read_env("VISION_BASE_URL") or read_env("VISION_API_BASE") or "").strip()
         model_name = str(read_env("VISION_MODEL") or read_env("VISION_MODEL_NAME") or "").strip()
