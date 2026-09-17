@@ -2902,6 +2902,11 @@
     "fileMissingSuffix": "创建该文件后再编辑。",
     "notPreviewable": "该文件无法预览，仅支持 Markdown/JSON（.md/.mdx/.json）文件"
   },
+  "markdown": {
+    "copyInlineCode": "复制",
+    "copiedInlineCode": "已复制",
+    "copyInlineCodeFailed": "复制失败，请手动复制"
+  },
   "chatUi": {
     "copyMessage": "复制消息",
     "copied": "已复制",

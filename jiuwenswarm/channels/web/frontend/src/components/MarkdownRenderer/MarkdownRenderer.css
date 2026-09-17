@@ -8,6 +8,57 @@
   max-width: min(100%, 52rem);
 }
 
+/* Inline code one-click copy (#4360): hover-revealed affordance anchored to
+   the code element; copies the full raw value while the visible text may be
+   truncated. Anchored to the right edge so wrapping/links keep their layout. */
+.markdown-inline-code {
+  position: relative;
+}
+
+.markdown-inline-code__copy {
+  position: absolute;
+  left: calc(100% + 4px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-surface-card);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  /* 不占据内容布局：锚定在 code 右侧外沿，避免撑开行内排版 */
+  z-index: 1;
+}
+
+.markdown-inline-code__icon {
+  width: 14px;
+  height: 14px;
+}
+
+.markdown-inline-code:hover .markdown-inline-code__copy,
+.markdown-inline-code__copy:focus-visible,
+.markdown-inline-code__copy[data-state='copied'],
+.markdown-inline-code__copy[data-state='failed'] {
+  opacity: 1;
+}
+
+.markdown-inline-code__copy:hover {
+  color: var(--color-text-primary);
+}
+
+.markdown-inline-code__copy[data-state='copied'] {
+  color: var(--color-feedback-success);
+}
+
+.markdown-inline-code__copy[data-state='failed'] {
+  color: var(--color-feedback-danger);
+}
+
 /* Toolbar button */
 .markdown-toolbar-btn {
   display: inline-flex;
