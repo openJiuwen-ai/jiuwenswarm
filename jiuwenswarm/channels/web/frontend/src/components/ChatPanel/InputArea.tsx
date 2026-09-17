@@ -87,10 +87,13 @@ import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { getInputProjectOptions, isDefaultInputProject } from './projectSelection';
 import {
+  DESKTOP_CLIPBOARD_IMAGES_EVENT,
   getClipboardImageFiles,
+  inspectClipboardImageFiles,
   IMAGE_INPUT_DISABLED_ALERT_KEY,
   isImageInputDisabled,
   shouldAlertImagePasteDisabled,
+  type DesktopClipboardImagesEventDetail,
 } from './clipboardImagePaste';
 import AgentPickerIcon from '../../assets/agent-management/智能体选择.svg?react';
 import AttachmentIcon from '../../assets/agent-management/attachment.svg?react';
@@ -2597,8 +2600,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       }
       if (handleDesktopFilePaste(event)) return;
 
-      const imageFiles = getClipboardImageFiles(event.clipboardData);
-      if (imageFiles.length && !hasText) {
+      const { files: imageFiles, hasUnsupportedFiles } = inspectClipboardImageFiles(event.clipboardData);
+      if (hasUnsupportedFiles) {
+        event.preventDefault();
+        pushAttachmentAlert(t('chat.unsupportedImagePaste'));
+      }
+      if (imageFiles.length) {
         event.preventDefault();
         if (shouldAlertImagePasteDisabled(imageInputDisabled, true)) {
           pushAttachmentAlert(t(IMAGE_INPUT_DISABLED_ALERT_KEY));
@@ -2627,6 +2634,25 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     document.addEventListener('paste', onDocumentPaste);
     return () => document.removeEventListener('paste', onDocumentPaste);
   }, [handleDesktopFilePaste, isDesktopBridgeReady]);
+
+  useEffect(() => {
+    // Context-menu Paste has no ClipboardEvent; desktop menu dispatches image blobs here.
+    const onDesktopClipboardImages = (event: Event) => {
+      const files = (event as CustomEvent<DesktopClipboardImagesEventDetail>).detail?.files;
+      if (!files?.length) return;
+      if (shouldAlertImagePasteDisabled(imageInputDisabled, true)) {
+        pushAttachmentAlert(t(IMAGE_INPUT_DISABLED_ALERT_KEY));
+        return;
+      }
+      if (imageInputDisabled) return;
+      appendAttachmentFiles(files);
+    };
+
+    window.addEventListener(DESKTOP_CLIPBOARD_IMAGES_EVENT, onDesktopClipboardImages as EventListener);
+    return () => {
+      window.removeEventListener(DESKTOP_CLIPBOARD_IMAGES_EVENT, onDesktopClipboardImages as EventListener);
+    };
+  }, [appendAttachmentFiles, imageInputDisabled, pushAttachmentAlert, t]);
 
   const handleFileDragOver = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
