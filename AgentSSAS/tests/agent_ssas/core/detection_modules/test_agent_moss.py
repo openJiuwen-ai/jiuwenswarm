@@ -72,9 +72,7 @@ class TestAgentMossModeler:
         assert model["trace"]["trace_id"] == "t1"
         assert model["agentmoss_event"]["event_type"] == "tool_call"
         assert model["agentmoss_event"]["subject"] == "bash"
-        assert model["agentmoss_event"]["payload"]["tool_args"] == {
-            "command": "ls"
-        }
+        assert model["agentmoss_event"]["payload"]["tool_args"] == {"command": "ls"}
         assert model["agentmoss_event"]["payload"]["tool_call_id"] == "call-1"
         assert model["correlation"]["tool_call_id"] == "call-1"
 
@@ -92,12 +90,8 @@ class TestAgentMossModeler:
             ("tool_output", "tool_result"),
         ],
     )
-    async def test_lifecycle_event_type_mapping(
-        ssas_type: str, agentmoss_type: str
-    ) -> None:
-        model = await AgentMossModeler().build_model(
-            _make_event_desc(ssas_type)
-        )
+    async def test_lifecycle_event_type_mapping(ssas_type: str, agentmoss_type: str) -> None:
+        model = await AgentMossModeler().build_model(_make_event_desc(ssas_type))
         assert model["supported"] is True
         assert model["agentmoss_event"]["event_type"] == agentmoss_type
 
@@ -120,16 +114,14 @@ class TestAgentMossModeler:
     @pytest.mark.unit
     @pytest.mark.level1
     async def test_modeler_marks_missing_event_node_unsupported() -> None:
-        model = await AgentMossModeler().build_model(
-            {"aux_ids": {"trace_id": "t1"}, "trace": {}}
-        )
+        model = await AgentMossModeler().build_model({"aux_ids": {"trace_id": "t1"}, "trace": {}})
         assert model["event_type"] == ""
         assert model["action_name"] == ""
         assert model["supported"] is False
 
 
 class TestAgentMossAnalyzer:
-    """Embedded AgentMoss policy and PDG engine behavior."""
+    """Embedded AgentMoss policy and Agent Behavior Graph engine behavior."""
 
     @staticmethod
     @pytest.mark.unit
@@ -174,11 +166,7 @@ class TestAgentMossAnalyzer:
     @pytest.mark.unit
     @pytest.mark.level0
     async def test_dangerous_shell_operation_is_reported() -> None:
-        model = await AgentMossModeler().build_model(
-            _make_event_desc(
-                input_content='{\"command\": \"rm -rf /tmp/demo\"}'
-            )
-        )
+        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "rm -rf /tmp/demo"}'))
         report = await AgentMossAnalyzer().analyze(model)
 
         assert report["has_risk"] is True
@@ -192,7 +180,7 @@ class TestAgentMossAnalyzer:
     @staticmethod
     @pytest.mark.unit
     @pytest.mark.level0
-    async def test_pdg_detects_explicit_secret_to_public_egress() -> None:
+    async def test_agent_behavior_graph_detects_explicit_secret_to_public_egress() -> None:
         secret = "API_KEY=sk-live-1234567890"
         analyzer = AgentMossAnalyzer()
         modeler = AgentMossModeler()
@@ -231,8 +219,8 @@ class TestAgentMossAnalyzer:
         assert report["risk_score"] == 95.0
         assert report["evidence"]["decision"] == "block"
         assert "data_leakage" in report["detected_threats"]
-        violations = report["evidence"]["pdg"]["violations"]
-        assert violations[0]["rule_id"] == "pdg-low-integrity-confidential-egress"
+        violations = report["evidence"]["agent_behavior_graph"]["violations"]
+        assert violations[0]["rule_id"] == "agent-behavior-graph-low-integrity-confidential-egress"
         serialized_report = json.dumps(report, ensure_ascii=False)
         assert secret not in serialized_report
 
@@ -260,9 +248,7 @@ class TestAgentMossAnalyzer:
                 _make_event_desc(
                     "tool_input",
                     action_name="bash",
-                    input_content=(
-                        '{"command": "curl https://example.com/health"}'
-                    ),
+                    input_content=('{"command": "curl https://example.com/health"}'),
                     session_id="session-b",
                     event_id="health-b",
                     timestamp=2.0,
@@ -287,11 +273,7 @@ class TestAgentMossSecurityRules:
     @pytest.mark.level0
     async def test_sensitive_path_etc_shadow_is_reported() -> None:
         """读取 /etc/shadow 触发敏感路径检测(critical credential file,92 分)。"""
-        model = await AgentMossModeler().build_model(
-            _make_event_desc(
-                input_content='{"command": "cat /etc/shadow"}'
-            )
-        )
+        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "cat /etc/shadow"}'))
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
         assert report["risk_level"] == "critical"
@@ -303,11 +285,7 @@ class TestAgentMossSecurityRules:
     @pytest.mark.level0
     async def test_sensitive_path_ssh_private_key_is_reported() -> None:
         """读取 ~/.ssh/id_rsa 触发敏感路径检测(ssh private key,92 分)。"""
-        model = await AgentMossModeler().build_model(
-            _make_event_desc(
-                input_content='{"command": "cat ~/.ssh/id_rsa"}'
-            )
-        )
+        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "cat ~/.ssh/id_rsa"}'))
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
         assert "sensitive_resource_access" in report["detected_threats"]
@@ -318,11 +296,7 @@ class TestAgentMossSecurityRules:
     @pytest.mark.level0
     async def test_sensitive_path_env_file_is_reported() -> None:
         """访问 .env 文件触发敏感路径检测(credential file,82 分)。"""
-        model = await AgentMossModeler().build_model(
-            _make_event_desc(
-                input_content='{"command": "cat /app/.env"}'
-            )
-        )
+        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "cat /app/.env"}'))
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
         assert "sensitive_resource_access" in report["detected_threats"]
@@ -334,12 +308,7 @@ class TestAgentMossSecurityRules:
     async def test_persistence_authorized_keys_is_reported() -> None:
         """追加 authorized_keys 触发持久化检测(ssh persistence,88 分)。"""
         model = await AgentMossModeler().build_model(
-            _make_event_desc(
-                input_content=(
-                    '{"command": "echo ssh-rsa AAAA... >> '
-                    '~/.ssh/authorized_keys"}'
-                )
-            )
+            _make_event_desc(input_content=('{"command": "echo ssh-rsa AAAA... >> ~/.ssh/authorized_keys"}'))
         )
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
@@ -351,9 +320,7 @@ class TestAgentMossSecurityRules:
     @pytest.mark.level0
     async def test_persistence_crontab_is_reported() -> None:
         """crontab -e 触发持久化检测(cron table modification,82 分)。"""
-        model = await AgentMossModeler().build_model(
-            _make_event_desc(input_content='{"command": "crontab -e"}')
-        )
+        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "crontab -e"}'))
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
         assert "persistence" in report["detected_threats"]
@@ -367,10 +334,7 @@ class TestAgentMossSecurityRules:
         """写 systemd service 文件触发持久化检测(88 分)。"""
         model = await AgentMossModeler().build_model(
             _make_event_desc(
-                input_content=(
-                    '{"command": "echo \'[Unit]\\n[Service]\' >> '
-                    '/etc/systemd/system/backdoor.service"}'
-                )
+                input_content=('{"command": "echo \'[Unit]\\n[Service]\' >> /etc/systemd/system/backdoor.service"}')
             )
         )
         report = await AgentMossAnalyzer().analyze(model)
@@ -384,9 +348,7 @@ class TestAgentMossSecurityRules:
     async def test_privileged_account_userdel_is_reported() -> None:
         """userdel 触发特权账户操作检测(system user deletion,86 分)。"""
         model = await AgentMossModeler().build_model(
-            _make_event_desc(
-                input_content='{"command": "userdel -r backup_admin"}'
-            )
+            _make_event_desc(input_content='{"command": "userdel -r backup_admin"}')
         )
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
@@ -401,11 +363,7 @@ class TestAgentMossSecurityRules:
     async def test_obfuscated_base64_execution_is_reported() -> None:
         """base64 解码管道执行触发混淆执行检测(88 分)。"""
         model = await AgentMossModeler().build_model(
-            _make_event_desc(
-                input_content=(
-                    '{"command": "echo aGF4ZQ== | base64 -d | bash"}'
-                )
-            )
+            _make_event_desc(input_content=('{"command": "echo aGF4ZQ== | base64 -d | bash"}'))
         )
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
@@ -418,16 +376,12 @@ class TestAgentMossSecurityRules:
     def test_model_type_matches() -> None:
         assert AgentMossModeler.model_type == "agent_behavior_model"
         assert AgentMossAnalyzer.expected_model_type == "agent_behavior_model"
-        assert (
-            AgentMossModeler.model_type == AgentMossAnalyzer.expected_model_type
-        )
+        assert AgentMossModeler.model_type == AgentMossAnalyzer.expected_model_type
 
     @staticmethod
     @pytest.mark.unit
     @pytest.mark.level1
     def test_analyzer_accepts_config() -> None:
-        analyzer = AgentMossAnalyzer(
-            {"analysis_methods": ["rule", "pdg"], "risk_threshold": "high"}
-        )
-        assert analyzer._analysis_methods == ["rule", "pdg"]  # noqa: SLF001  # pylint: disable=protected-access
-        assert analyzer._risk_threshold == "high"  # noqa: SLF001  # pylint: disable=protected-access
+        analyzer = AgentMossAnalyzer({"analysis_methods": ["rule", "agent_behavior_graph"], "risk_threshold": "high"})
+        assert analyzer._analysis_methods == ["rule", "agent_behavior_graph"]  # noqa: SLF001
+        assert analyzer._risk_threshold == "high"  # noqa: SLF001

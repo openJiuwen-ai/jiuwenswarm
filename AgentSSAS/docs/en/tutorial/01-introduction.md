@@ -56,7 +56,7 @@ AgentSSAS ships with 3 detection modules:
 
 | Module | Default State | Subscribed Events | Description |
 | ------ | ------------- | ----------------- | ----------- |
-| `agent_moss` | `enabled: true` | 6 lifecycle events | Built-in AgentMoss analysis engine, providing three analysis methods: rule (deterministic rules), behavior_chain (behavior chains), and pdg (data leakage analysis) |
+| `agent_moss` | `enabled: true` | 6 lifecycle events | Built-in AgentMoss analysis engine, providing three analysis methods: rule (deterministic rules), behavior_chain (behavior chains), and agent_behavior_graph (data leakage analysis) |
 | `security_rail_detection` | `enabled: true` | `permission_interrupt_tool` | Identifies and reports the interception decisions of other security Rails; reporting and presentation only |
 | `test_detection` | `enabled: false` | `*` (all events) | Blank plugins that pass all events through, used to verify that the pipeline works |
 

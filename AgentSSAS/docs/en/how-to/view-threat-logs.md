@@ -153,7 +153,10 @@ The current event is filled into the level matching its type and sequence number
 
 ## Complete Example
 
-The following is an actual threat log (`agent_moss` module, invoke_start event, no risk detected):
+The following historical no-risk AgentMoss report illustrates the complete OCSF structure.
+AgentMoss now enables `report_only_risks: true` by default, so this kind of safe
+report is persisted only when that option is disabled; the default configuration
+produces threat logs only for actual risk reports.
 
 ```json
 {
@@ -274,7 +277,7 @@ Besides the JSON threat logs, events and detection results are also persisted in
 ├── ssas_core.db                      # Core database: raw_events / events / alerts tables (alerts land here)
 ├── modules/<module_name>/
 │   ├── process.db                    # Process database: modeled data, intermediate results
-│   ├── result.db                     # Result database: the module's threat analysis reports (including no-risk ones)
+│   ├── result.db                     # Result database: reports that pass the module's output policy
 │   └── config/                       # Detection rules, baselines, threshold parameters
 └── reports/threat_log/*.json         # OCSF threat logs
 ```
@@ -286,7 +289,7 @@ Time is stored in two columns:
 - `timestamp`: Unix floating-point seconds, used for computation and sorting;
 - `timestamp_text`: local-timezone human-readable format (`YYYY-MM-DD HH:MM:SS.mmm`), convenient for direct inspection; when an older database is opened, the column is added automatically by migration and historical rows are backfilled.
 
-Risky detection reports are written by the ThreatAnalysisPipeline into the **alerts table of the core ssas_core.db** (covering both the notify background task and the auth synchronous path), so cross-module alert queries should target the core database; each module's `result.db` holds all of that module's threat analysis reports (including no-risk ones). An alert record's `alert_id` has the format `{event_id}_{module_name}` and carries a `module_name` field, so the detection module that raised the alert can be traced.
+Risky detection reports are written by the ThreatAnalysisPipeline into the **alerts table of the core ssas_core.db** (covering both the notify background task and the auth synchronous path), so cross-module alert queries should target the core database. Each module's `result.db` holds reports that pass that module's output policy; by default this includes no-risk reports. AgentMoss sets `report_only_risks: true`, so its `result.db` and OCSF threat logs contain only reports with `has_risk=true`. An alert record's `alert_id` has the format `{event_id}_{module_name}` and carries a `module_name` field, so the detection module that raised the alert can be traced.
 
 ### Querying Raw Events (the raw_events Table in ssas_core.db)
 
@@ -333,7 +336,8 @@ sqlite3 ~/.jiuwenswarm/ssas/ssas_core.db \
 ### Querying Detection Results (modules/*/result.db)
 
 ```sql
--- View a detection module's most recent reports (including no-risk ones)
+-- View a detection module's most recent reports
+-- Modules with report_only_risks enabled (such as AgentMoss) omit no-risk reports
 SELECT event_id, event_type, risk_level, risk_type, timestamp_text
 FROM events
 ORDER BY id DESC

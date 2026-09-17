@@ -49,7 +49,7 @@
 
 - **双运行模式**：进程内模式（`inprocess`，默认，零网络延迟）与 HTTP 服务模式（`http`，独立 FastAPI 服务，多 Agent 共享分析引擎）
 - **插件化检测模块**：检测模块通过 `module.yaml` 声明式注册，以"数据建模插件 + 威胁分析插件"成对组织；新增检测能力零侵入框架代码
-- **3 个内置检测模块**：`agent_moss`（规则 + 行为链 + PDG 数据泄露分析）、`security_rail_detection`（其他安全 Rail 检测结果的衍生分析）、`test_detection`（链路验证，默认关闭）
+- **3 个内置检测模块**：`agent_moss`（规则 + 行为链 + Agent行为图（Agent Behavior Graph，ABG）数据泄露分析）、`security_rail_detection`（其他安全 Rail 检测结果的衍生分析）、`test_detection`（链路验证，默认关闭）
 - **notify / auth 双订阅模式**：notify 后台异步检测不阻断业务；auth 同步参与安全决策，支持超时兜底策略
 - **决策策略**：`observe_only`（默认，仅态势感知全部放行）与 `active_protection`（critical 阻断、其余告警），通过配置一键切换
 - **fail-open 设计**：SSAS 自身任何故障（初始化失败、事件非法、检测超时）都不阻断 JiuwenSwarm 主流程

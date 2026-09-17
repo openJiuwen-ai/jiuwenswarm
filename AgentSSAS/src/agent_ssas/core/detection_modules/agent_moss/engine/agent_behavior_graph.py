@@ -33,9 +33,7 @@ _HIGH_ENTROPY_VALUE_PATTERNS = (
 )
 
 _SENSITIVE_RESOURCE_PATTERNS = (
-    re.compile(
-        r"(?i)(?:^|/)(?:\.env(?:\.[^/]+)?|credentials(?:\.json)?|secrets?\.ya?ml)$"
-    ),
+    re.compile(r"(?i)(?:^|/)(?:\.env(?:\.[^/]+)?|credentials(?:\.json)?|secrets?\.ya?ml)$"),
     re.compile(r"(?i)(?:^|/)\.ssh/(?:id_rsa|id_ed25519|id_ecdsa)$"),
     re.compile(r"(?i)^/(?:etc/(?:shadow|sudoers)|var/run/docker\.sock|dev/mem)$"),
 )
@@ -60,7 +58,7 @@ class SecurityLabel:
 
 
 @dataclass
-class PdgNode:
+class AgentBehaviorGraphNode:
     node_id: str
     event_id: str
     node_type: str
@@ -71,7 +69,7 @@ class PdgNode:
 
 
 @dataclass(frozen=True)
-class PdgEdge:
+class AgentBehaviorGraphEdge:
     source: str
     target: str
     edge_type: str
@@ -79,9 +77,9 @@ class PdgEdge:
 
 
 @dataclass
-class ProgramDependenceGraph:
-    nodes: list[PdgNode] = field(default_factory=list)
-    edges: list[PdgEdge] = field(default_factory=list)
+class AgentBehaviorGraph:
+    nodes: list[AgentBehaviorGraphNode] = field(default_factory=list)
+    edges: list[AgentBehaviorGraphEdge] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -91,7 +89,7 @@ class ProgramDependenceGraph:
 
 
 @dataclass(frozen=True)
-class PdgViolation:
+class AgentBehaviorGraphViolation:
     rule_id: str
     risk_score: int
     target_node_id: str
@@ -100,11 +98,11 @@ class PdgViolation:
 
 
 @dataclass
-class PdgInspection:
+class AgentBehaviorGraphInspection:
     risk_score: int = 0
     findings: list[str] = field(default_factory=list)
-    violations: list[PdgViolation] = field(default_factory=list)
-    graph: ProgramDependenceGraph = field(default_factory=ProgramDependenceGraph)
+    violations: list[AgentBehaviorGraphViolation] = field(default_factory=list)
+    graph: AgentBehaviorGraph = field(default_factory=AgentBehaviorGraph)
 
 
 @dataclass(frozen=True)
@@ -134,28 +132,24 @@ def _config_bool(config: dict[str, Any], key: str, default: bool) -> bool:
     return bool(value)
 
 
-class DataLeakagePDGDetector:
-    """Build and inspect a runtime PDG before an outbound tool executes.
+class AgentBehaviorGraphDetector:
+    """Build and inspect a runtime Agent Behavior Graph before an outbound tool executes.
 
     The implementation follows AgentArmor's constructor -> annotator -> inspector
     split, but keeps dependency inference deterministic. Exact secret fingerprints,
-    resource identity, tool-call identity, and explicit event order are used as
-    proof-bearing edges. Ambiguous natural-language dependencies are not promoted
-    to data-flow facts.
+    resource identity, and tool-call identity create data-dependency edges; explicit
+    event order creates only control-flow and control-dependency edges. Ambiguous
+    natural-language dependencies are not promoted to data-flow facts.
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         cfg = config or {}
-        self.enabled = _config_bool(cfg, "analyze_pdg_data_leakage", True)
-        self.max_events = max(5, int(cfg.get("pdg_max_events", 80)))
-        self.sensitive_patterns = self._compile_sensitive_patterns(
-            cfg.get("sensitive_patterns")
-        )
-        trusted = cfg.get("pdg_trusted_egress_patterns")
+        self.enabled = _config_bool(cfg, "analyze_agent_behavior_graph", True)
+        self.max_events = max(5, int(cfg.get("agent_behavior_graph_max_events", 80)))
+        self.sensitive_patterns = self._compile_sensitive_patterns(cfg.get("sensitive_patterns"))
+        trusted = cfg.get("agent_behavior_graph_trusted_egress_patterns")
         self.trusted_egress_patterns = self._compile_regex_list(trusted)
-        self.egress_tool_patterns = self._compile_regex_list(
-            cfg.get("pdg_egress_tool_patterns")
-        )
+        self.egress_tool_patterns = self._compile_regex_list(cfg.get("agent_behavior_graph_egress_tool_patterns"))
 
     def inspect(
         self,
@@ -164,9 +158,9 @@ class DataLeakagePDGDetector:
         subject: str,
         payload: dict[str, Any],
         history: Iterable[EventRecord],
-    ) -> PdgInspection:
+    ) -> AgentBehaviorGraphInspection:
         if not self.enabled or event_type != "tool_call":
-            return PdgInspection()
+            return AgentBehaviorGraphInspection()
 
         trace = self._trace_with_candidate(
             event_type=event_type,
@@ -179,75 +173,66 @@ class DataLeakagePDGDetector:
         nodes_by_id = {node.node_id: node for node in graph.nodes}
         action = nodes_by_id.get(action_id)
         if action is None or action.action_class != "public_egress":
-            return PdgInspection(graph=graph)
+            return AgentBehaviorGraphInspection(graph=graph)
         if self._is_trusted_egress(subject, payload):
-            return PdgInspection(graph=graph)
+            return AgentBehaviorGraphInspection(graph=graph)
         if action.label.confidentiality != "high":
-            return PdgInspection(graph=graph)
+            return AgentBehaviorGraphInspection(graph=graph)
 
         upstream_ids = self._upstream_data_nodes(graph, action_id)
-        upstream = [
-            nodes_by_id[node_id] for node_id in upstream_ids if node_id in nodes_by_id
-        ]
+        upstream = [nodes_by_id[node_id] for node_id in upstream_ids if node_id in nodes_by_id]
         evidence_ids = tuple(sorted({action_id, *upstream_ids}))
 
         has_staging = any(
-            node.node_type == "tool_action"
-            and node.action_class == "write"
-            and node.event_id != "candidate"
+            node.node_type == "tool_action" and node.action_class == "write" and node.event_id != "candidate"
             for node in upstream
         )
-        has_sensitive_resource = any(
-            "sensitive_resource" in node.label.sensitive_kinds for node in upstream
-        )
+        has_sensitive_resource = any("sensitive_resource" in node.label.sensitive_kinds for node in upstream)
         has_low_integrity_source = any(
-            node.event_id != "candidate"
-            and _INTEGRITY_RANK.get(node.label.integrity, 1) < _INTEGRITY_RANK["medium"]
+            node.event_id != "candidate" and _INTEGRITY_RANK.get(node.label.integrity, 1) < _INTEGRITY_RANK["medium"]
             for node in upstream
         )
 
         if has_staging:
-            rule_id = "pdg-sensitive-data-staging-to-public-egress"
-            finding = (
-                "pdg:data-leak: staged high-confidentiality data reaches public egress"
-            )
+            rule_id = "agent-behavior-graph-sensitive-data-staging-to-public-egress"
+            finding = "agent_behavior_graph:data-leak: staged high-confidentiality data reaches public egress"
             risk_score = 96
         elif has_sensitive_resource:
-            rule_id = "pdg-sensitive-resource-to-public-egress"
-            finding = "pdg:data-leak: sensitive resource reaches public egress"
+            rule_id = "agent-behavior-graph-sensitive-resource-to-public-egress"
+            finding = "agent_behavior_graph:data-leak: sensitive resource reaches public egress"
             risk_score = 95
         elif has_low_integrity_source:
-            rule_id = "pdg-low-integrity-confidential-egress"
-            finding = "pdg:data-leak: low-integrity source controls confidential public egress"
+            rule_id = "agent-behavior-graph-low-integrity-confidential-egress"
+            finding = "agent_behavior_graph:data-leak: low-integrity source controls confidential public egress"
             risk_score = 95
         else:
-            rule_id = "pdg-high-confidentiality-to-public-egress"
-            finding = "pdg:data-leak: high-confidentiality data reaches public egress"
+            rule_id = "agent-behavior-graph-high-confidentiality-to-public-egress"
+            finding = "agent_behavior_graph:data-leak: high-confidentiality data reaches public egress"
             risk_score = 95
 
-        violation = PdgViolation(
+        violation = AgentBehaviorGraphViolation(
             rule_id=rule_id,
             risk_score=risk_score,
             target_node_id=action_id,
             evidence_node_ids=evidence_ids,
             finding=finding,
         )
-        return PdgInspection(
+        return AgentBehaviorGraphInspection(
             risk_score=risk_score,
             findings=[
                 finding,
-                f"pdg:rule:{rule_id}",
-                f"pdg:evidence: {len(evidence_ids)} graph nodes linked to {subject or 'tool'}",
+                f"agent_behavior_graph:rule:{rule_id}",
+                f"agent_behavior_graph:evidence: {len(evidence_ids)} graph nodes linked to {subject or 'tool'}",
             ],
             violations=[violation],
             graph=graph,
         )
 
-    def build_graph(self, events: Iterable[EventRecord]) -> ProgramDependenceGraph:
+    def build_graph(self, events: Iterable[EventRecord]) -> AgentBehaviorGraph:
         trace = [self._trace_event(record) for record in events]
         trace = [event for event in trace if event.event_type in _RELEVANT_EVENT_TYPES]
         trace.sort(key=lambda event: (event.timestamp, event.event_id))
-        return self._build_graph(trace[-self.max_events:])
+        return self._build_graph(trace[-self.max_events :])
 
     def _trace_with_candidate(
         self,
@@ -260,7 +245,7 @@ class DataLeakagePDGDetector:
         trace = [self._trace_event(record) for record in history]
         trace = [event for event in trace if event.event_type in _RELEVANT_EVENT_TYPES]
         trace.sort(key=lambda event: (event.timestamp, event.event_id))
-        trace = trace[-(self.max_events - 1):]
+        trace = trace[-(self.max_events - 1) :]
         timestamp = trace[-1].timestamp + 0.000001 if trace else 0.0
         trace.append(
             _TraceEvent(
@@ -287,10 +272,10 @@ class DataLeakagePDGDetector:
             prev_event_ids=tuple(record.prev_event_ids),
         )
 
-    def _build_graph(self, trace: list[_TraceEvent]) -> ProgramDependenceGraph:
-        graph = ProgramDependenceGraph()
+    def _build_graph(self, trace: list[_TraceEvent]) -> AgentBehaviorGraph:
+        graph = AgentBehaviorGraph()
         facts: dict[str, _NodeFacts] = {}
-        nodes_by_event: dict[str, list[PdgNode]] = {}
+        nodes_by_event: dict[str, list[AgentBehaviorGraphNode]] = {}
         edge_keys: set[tuple[str, str, str, str]] = set()
 
         for event in trace:
@@ -308,7 +293,7 @@ class DataLeakagePDGDetector:
                 self._add_edge(
                     graph,
                     edge_keys,
-                    PdgEdge(
+                    AgentBehaviorGraphEdge(
                         previous_nodes[-1].node_id,
                         current_nodes[0].node_id,
                         "control_flow",
@@ -325,7 +310,7 @@ class DataLeakagePDGDetector:
                     self._add_edge(
                         graph,
                         edge_keys,
-                        PdgEdge(
+                        AgentBehaviorGraphEdge(
                             parent_nodes[-1].node_id,
                             current_nodes[0].node_id,
                             "control_dependency",
@@ -333,7 +318,7 @@ class DataLeakagePDGDetector:
                         ),
                     )
 
-        call_actions: dict[str, PdgNode] = {}
+        call_actions: dict[str, AgentBehaviorGraphNode] = {}
         for event in trace:
             call_id = _tool_call_id(event.payload)
             if not call_id:
@@ -349,7 +334,7 @@ class DataLeakagePDGDetector:
                     self._add_edge(
                         graph,
                         edge_keys,
-                        PdgEdge(
+                        AgentBehaviorGraphEdge(
                             action.node_id,
                             observation.node_id,
                             "data_dependency",
@@ -357,12 +342,8 @@ class DataLeakagePDGDetector:
                         ),
                     )
 
-        ordered_nodes = [
-            node for event in trace for node in nodes_by_event.get(event.event_id, [])
-        ]
-        node_position = {
-            node.node_id: index for index, node in enumerate(ordered_nodes)
-        }
+        ordered_nodes = [node for event in trace for node in nodes_by_event.get(event.event_id, [])]
+        node_position = {node.node_id: index for index, node in enumerate(ordered_nodes)}
         target_types = {"tool_param", "resource"}
         source_types = {
             "user_prompt",
@@ -381,29 +362,23 @@ class DataLeakagePDGDetector:
                 if source.node_type not in source_types:
                     continue
                 source_facts = facts.get(source.node_id, _NodeFacts())
-                shared_fingerprints = (
-                    source_facts.fingerprints & target_facts.fingerprints
-                )
+                shared_fingerprints = source_facts.fingerprints & target_facts.fingerprints
                 shared_resources = source_facts.resources & target_facts.resources
                 if not shared_fingerprints and not shared_resources:
                     continue
-                reason = (
-                    "secret_identity" if shared_fingerprints else "resource_identity"
-                )
+                reason = "secret_identity" if shared_fingerprints else "resource_identity"
                 self._add_edge(
                     graph,
                     edge_keys,
-                    PdgEdge(source.node_id, target.node_id, "data_dependency", reason),
+                    AgentBehaviorGraphEdge(source.node_id, target.node_id, "data_dependency", reason),
                 )
                 if source.label.integrity == "low":
-                    target_action = nodes_by_id.get(
-                        _node_id(target.event_id, "tool_action")
-                    )
+                    target_action = nodes_by_id.get(_node_id(target.event_id, "tool_action"))
                     if target_action is not None:
                         self._add_edge(
                             graph,
                             edge_keys,
-                            PdgEdge(
+                            AgentBehaviorGraphEdge(
                                 source.node_id,
                                 target_action.node_id,
                                 "control_dependency",
@@ -417,9 +392,9 @@ class DataLeakagePDGDetector:
     def _decompose_event(
         self,
         event: _TraceEvent,
-    ) -> tuple[list[PdgNode], list[PdgEdge], dict[str, _NodeFacts]]:
-        nodes: list[PdgNode] = []
-        edges: list[PdgEdge] = []
+    ) -> tuple[list[AgentBehaviorGraphNode], list[AgentBehaviorGraphEdge], dict[str, _NodeFacts]]:
+        nodes: list[AgentBehaviorGraphNode] = []
+        edges: list[AgentBehaviorGraphEdge] = []
         facts: dict[str, _NodeFacts] = {}
         integrity = self._event_integrity(event.event_type)
 
@@ -430,7 +405,7 @@ class DataLeakagePDGDetector:
                 params,
                 self.egress_tool_patterns,
             )
-            tool_name = PdgNode(
+            tool_name = AgentBehaviorGraphNode(
                 node_id=_node_id(event.event_id, "tool_name"),
                 event_id=event.event_id,
                 node_type="tool_name",
@@ -440,7 +415,7 @@ class DataLeakagePDGDetector:
             nodes.append(tool_name)
             facts[tool_name.node_id] = self._facts(event.subject, event.findings)
 
-            parameter_nodes: list[PdgNode] = []
+            parameter_nodes: list[AgentBehaviorGraphNode] = []
             for key, value in _flatten_mapping(params):
                 node = self._content_node(
                     event=event,
@@ -454,7 +429,7 @@ class DataLeakagePDGDetector:
                 parameter_nodes.append(node)
                 facts[node.node_id] = self._facts(_json_text(value), event.findings)
 
-            action = PdgNode(
+            action = AgentBehaviorGraphNode(
                 node_id=_node_id(event.event_id, "tool_action"),
                 event_id=event.event_id,
                 node_type="tool_action",
@@ -464,7 +439,7 @@ class DataLeakagePDGDetector:
             nodes.append(action)
             facts[action.node_id] = self._facts(_json_text(params), event.findings)
             edges.append(
-                PdgEdge(
+                AgentBehaviorGraphEdge(
                     tool_name.node_id,
                     action.node_id,
                     "control_dependency",
@@ -473,7 +448,7 @@ class DataLeakagePDGDetector:
             )
             for parameter in parameter_nodes:
                 edges.append(
-                    PdgEdge(
+                    AgentBehaviorGraphEdge(
                         parameter.node_id,
                         action.node_id,
                         "data_dependency",
@@ -496,7 +471,7 @@ class DataLeakagePDGDetector:
                     facts[resource_node.node_id] = self._facts(resource, event.findings)
                     if action_class == "read":
                         edges.append(
-                            PdgEdge(
+                            AgentBehaviorGraphEdge(
                                 resource_node.node_id,
                                 action.node_id,
                                 "data_dependency",
@@ -505,7 +480,7 @@ class DataLeakagePDGDetector:
                         )
                     else:
                         edges.append(
-                            PdgEdge(
+                            AgentBehaviorGraphEdge(
                                 action.node_id,
                                 resource_node.node_id,
                                 "data_dependency",
@@ -549,7 +524,7 @@ class DataLeakagePDGDetector:
                 nodes.append(resource_node)
                 facts[resource_node.node_id] = self._facts(resource, event.findings)
                 edges.append(
-                    PdgEdge(
+                    AgentBehaviorGraphEdge(
                         resource_node.node_id,
                         node.node_id,
                         "data_dependency",
@@ -567,10 +542,10 @@ class DataLeakagePDGDetector:
         text: str,
         integrity: str,
         action_class: str,
-    ) -> PdgNode:
+    ) -> AgentBehaviorGraphNode:
         node_facts = self._facts(text, event.findings)
         sensitive_kinds = self._sensitive_kinds(text, event.findings)
-        return PdgNode(
+        return AgentBehaviorGraphNode(
             node_id=_node_id(event.event_id, node_type, suffix),
             event_id=event.event_id,
             node_type=node_type,
@@ -597,9 +572,7 @@ class DataLeakagePDGDetector:
 
     def _sensitive_kinds(self, text: str, findings: Iterable[str]) -> list[str]:
         kinds = {
-            finding.split(":", 1)[1]
-            for finding in findings
-            if finding.startswith("sensitive:") and ":" in finding
+            finding.split(":", 1)[1] for finding in findings if finding.startswith("sensitive:") and ":" in finding
         }
         for name, pattern in self.sensitive_patterns:
             if pattern.search(text):
@@ -622,9 +595,9 @@ class DataLeakagePDGDetector:
 
     @staticmethod
     def _add_edge(
-        graph: ProgramDependenceGraph,
+        graph: AgentBehaviorGraph,
         edge_keys: set[tuple[str, str, str, str]],
-        edge: PdgEdge,
+        edge: AgentBehaviorGraphEdge,
     ) -> None:
         key = (edge.source, edge.target, edge.edge_type, edge.reason)
         if edge.source == edge.target or key in edge_keys:
@@ -633,11 +606,9 @@ class DataLeakagePDGDetector:
         graph.edges.append(edge)
 
     @staticmethod
-    def _propagate_labels(graph: ProgramDependenceGraph) -> None:
+    def _propagate_labels(graph: AgentBehaviorGraph) -> None:
         nodes = {node.node_id: node for node in graph.nodes}
-        dependency_edges = [
-            edge for edge in graph.edges if edge.edge_type == "data_dependency"
-        ]
+        dependency_edges = [edge for edge in graph.edges if edge.edge_type == "data_dependency"]
         for _ in range(max(1, len(nodes))):
             changed = False
             for edge in dependency_edges:
@@ -649,12 +620,8 @@ class DataLeakagePDGDetector:
                     target.label.confidentiality,
                     source.label.confidentiality,
                 )
-                integrity = _join_integrity(
-                    target.label.integrity, source.label.integrity
-                )
-                kinds = sorted(
-                    {*target.label.sensitive_kinds, *source.label.sensitive_kinds}
-                )
+                integrity = _join_integrity(target.label.integrity, source.label.integrity)
+                kinds = sorted({*target.label.sensitive_kinds, *source.label.sensitive_kinds})
                 if (
                     confidentiality != target.label.confidentiality
                     or integrity != target.label.integrity
@@ -668,7 +635,7 @@ class DataLeakagePDGDetector:
                 break
 
     @staticmethod
-    def _upstream_data_nodes(graph: ProgramDependenceGraph, target_id: str) -> set[str]:
+    def _upstream_data_nodes(graph: AgentBehaviorGraph, target_id: str) -> set[str]:
         incoming: dict[str, list[str]] = {}
         for edge in graph.edges:
             if edge.edge_type != "data_dependency":
@@ -721,23 +688,15 @@ class DataLeakagePDGDetector:
                 continue
         if compiled:
             return compiled
-        return [
-            (name, re.compile(pattern)) for name, pattern in _DEFAULT_SENSITIVE_PATTERNS
-        ]
+        return [(name, re.compile(pattern)) for name, pattern in _DEFAULT_SENSITIVE_PATTERNS]
 
 
 def _join_confidentiality(left: str, right: str) -> str:
-    return (
-        left
-        if _CONFIDENTIALITY_RANK.get(left, 0) >= _CONFIDENTIALITY_RANK.get(right, 0)
-        else right
-    )
+    return left if _CONFIDENTIALITY_RANK.get(left, 0) >= _CONFIDENTIALITY_RANK.get(right, 0) else right
 
 
 def _join_integrity(left: str, right: str) -> str:
-    return (
-        left if _INTEGRITY_RANK.get(left, 1) <= _INTEGRITY_RANK.get(right, 1) else right
-    )
+    return left if _INTEGRITY_RANK.get(left, 1) <= _INTEGRITY_RANK.get(right, 1) else right
 
 
 def _fingerprint(value: str) -> str:
@@ -767,14 +726,11 @@ def _decode_jsonish(value: Any, depth: int = 0) -> Any:
         if stripped[:1] in {"{", "["}:
             try:
                 return _decode_jsonish(json.loads(stripped), depth + 1)
-            except (TypeError, ValueError):
-                # 注: json.JSONDecodeError 是 ValueError 子类,捕获 ValueError 即可覆盖
+            except (json.JSONDecodeError, TypeError, ValueError):
                 return value
         return value
     if isinstance(value, dict):
-        return {
-            str(key): _decode_jsonish(item, depth + 1) for key, item in value.items()
-        }
+        return {str(key): _decode_jsonish(item, depth + 1) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_decode_jsonish(item, depth + 1) for item in value]
     return value
@@ -815,9 +771,7 @@ def _tool_params(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in decoded.items() if key not in ignored}
 
 
-def _flatten_mapping(
-    value: Any, prefix: str = "", depth: int = 0
-) -> list[tuple[str, Any]]:
+def _flatten_mapping(value: Any, prefix: str = "", depth: int = 0) -> list[tuple[str, Any]]:
     if depth >= 5:
         return [(prefix or "value", value)]
     if isinstance(value, dict):
@@ -858,36 +812,35 @@ def _classify_action(
     name = subject.lower()
     text = (name + "\n" + _json_text(params)).lower()
     registered_egress = any(pattern.search(name) for pattern in egress_tool_patterns)
-    egress_name_markers = (
-        "send_email", "send_http", "send_message", "send_file",
-        "upload", "webhook", "http_post", "http_put", "post_request",
-        "scp", "sftp", "rsync",
+    egress_name = any(
+        marker in name
+        for marker in (
+            "send_email",
+            "send_http",
+            "send_message",
+            "send_file",
+            "upload",
+            "webhook",
+            "http_post",
+            "http_put",
+            "post_request",
+            "scp",
+            "sftp",
+            "rsync",
+        )
     )
     egress_command = bool(re.search(r"\b(?:curl|wget|scp|sftp|rsync|ftp)\b", text))
     http_request_egress = bool(
         any(marker in name for marker in ("http", "request", "api"))
-        and re.search(
-            r"(?:\bpost\b|\bput\b|\bpatch\b|\bupload\b|\bbody\b|\bdata\b)", text
-        )
+        and re.search(r"(?:\bpost\b|\bput\b|\bpatch\b|\bupload\b|\bbody\b|\bdata\b)", text)
     )
-    # 注: egress 判定合并为单一 any,控制布尔表达式数量
-    if any((registered_egress, egress_command, http_request_egress)) or any(
-        marker in name for marker in egress_name_markers
-    ):
+    if registered_egress or egress_name or egress_command or http_request_egress:
         return "public_egress"
-    if any(
-        marker in name for marker in ("write", "edit", "append", "save", "create_file")
-    ):
+    if any(marker in name for marker in ("write", "edit", "append", "save", "create_file")):
         return "write"
-    if any(
-        marker in name
-        for marker in ("read", "cat", "grep", "search", "glob", "list_file")
-    ):
+    if any(marker in name for marker in ("read", "cat", "grep", "search", "glob", "list_file")):
         return "read"
-    if any(
-        marker in name
-        for marker in ("bash", "shell", "terminal", "python", "execute", "run_command")
-    ):
+    if any(marker in name for marker in ("bash", "shell", "terminal", "python", "execute", "run_command")):
         return "compute"
     return "other"
 
@@ -897,10 +850,7 @@ def _resource_ids(value: Any) -> set[str]:
     resources: set[str] = set()
     patterns = (
         r"(?<![A-Za-z0-9:])@?((?:/|\./|\.\./)[A-Za-z0-9_./~+\-]+)",
-        (
-            r"(?i)(?<![A-Za-z0-9_.-])((?:\.env(?:\.[A-Za-z0-9_-]+)?"
-            r"|credentials(?:\.json)?|secrets?\.ya?ml))(?![A-Za-z0-9_.-])"
-        ),
+        r"(?i)(?<![A-Za-z0-9_.-])((?:\.env(?:\.[A-Za-z0-9_-]+)?|credentials(?:\.json)?|secrets?\.ya?ml))(?![A-Za-z0-9_.-])",
     )
     for pattern in patterns:
         for match in re.finditer(pattern, text):

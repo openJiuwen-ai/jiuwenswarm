@@ -2736,12 +2736,12 @@ plugins:
 
 **建模插件**：`AgentMossModeler`，基于生命周期事件构建 Agent 行为模型，包括行为基线、模式特征等。
 
-**分析插件**：`AgentMossAnalyzer`，基于行为模型执行多维度威胁分析，输出威胁检测结果。可组合规则分析、小模型分析、LLM 分析等。0.1 版本启用规则、行为链、PDG 三种确定性分析（`analysis_methods: [rule, behavior_chain, pdg]`），小模型/LLM 分析为后续版本拓展。运行参数（`policy` 段的阈值与分析开关等）详见 `detection_modules/agent_moss/module.yaml` 及模块 README。
+**分析插件**：`AgentMossAnalyzer`，基于行为模型执行多维度威胁分析，输出威胁检测结果。可组合规则分析、小模型分析、LLM 分析等。0.1 版本启用规则、行为链、Agent行为图（Agent Behavior Graph，ABG）三种确定性分析（`analysis_methods: [rule, behavior_chain, agent_behavior_graph]`），小模型/LLM 分析为后续版本拓展。运行参数（`policy` 段的阈值与分析开关等）详见 `detection_modules/agent_moss/module.yaml` 及模块 README。
 
 ```yaml
 # detection_modules/agent_moss/module.yaml
 name: agent_moss
-display_name: "AgentMoss 行为链与 PDG 检测模块"
+display_name: "AgentMoss 行为链与 Agent行为图检测模块"
 enabled: true
 event_version: "1.0"
 subscribed_events:
@@ -2762,7 +2762,7 @@ plugins:
     name: AgentMossAnalyzer
     expected_model_type: agent_behavior_model
     config:
-      analysis_methods: [rule, behavior_chain, pdg]
+      analysis_methods: [rule, behavior_chain, agent_behavior_graph]
       risk_threshold: low
       # policy 段（ask/block 阈值、各分析开关等）的完整默认值
       # 见 detection_modules/agent_moss/module.yaml

@@ -153,7 +153,9 @@ threat_demo-trace_security_rail_detection_20260904_165015_489.json
 
 ## 完整示例
 
-以下是一份实际的威胁日志（`agent_moss` 模块、invoke_start 事件、未检出风险）：
+以下使用一份未检出风险的 AgentMoss 历史报告展示完整 OCSF 结构。
+当前 AgentMoss 默认启用 `report_only_risks: true`，因此这类安全报告只有在
+关闭该选项时才会落盘；默认运行时仅生成实际风险报告。
 
 ```json
 {
@@ -274,7 +276,7 @@ threat_demo-trace_security_rail_detection_20260904_165015_489.json
 ├── ssas_core.db                      # 核心库：raw_events / events / alerts 表（告警统一落此库）
 ├── modules/<模块名>/
 │   ├── process.db                    # 过程库：建模数据、中间结果
-│   ├── result.db                     # 结果库：该模块的威胁分析报告（含无风险报告）
+│   ├── result.db                     # 结果库：该模块通过输出策略的威胁分析报告
 │   └── config/                       # 检测规则、基线、阈值参数
 └── reports/threat_log/*.json         # OCSF 威胁日志
 ```
@@ -286,7 +288,7 @@ threat_demo-trace_security_rail_detection_20260904_165015_489.json
 - `timestamp`：Unix 浮点秒，用于计算与排序；
 - `timestamp_text`：本地时区可读格式（`YYYY-MM-DD HH:MM:SS.mmm`），便于直接查看；旧库打开时自动迁移补列并回填历史数据。
 
-有风险的检测报告由 ThreatAnalysisPipeline 统一写入**主库 ssas_core.db 的 alerts 表**（notify 后台任务与 auth 同步路径均覆盖），因此跨模块查询告警应查主库；各模块的 `result.db` 则保存该模块的全部威胁分析报告（含无风险报告）。告警记录的 `alert_id` 格式为 `{event_id}_{module_name}`，并含 `module_name` 字段，可追溯产生告警的检测模块。
+有风险的检测报告由 ThreatAnalysisPipeline 统一写入**主库 ssas_core.db 的 alerts 表**（notify 后台任务与 auth 同步路径均覆盖），因此跨模块查询告警应查主库。各模块的 `result.db` 保存通过该模块输出策略的报告；默认包含无风险报告，AgentMoss 配置了 `report_only_risks: true`，因此它的 `result.db` 和 OCSF 威胁日志只保留 `has_risk=true` 的报告。告警记录的 `alert_id` 格式为 `{event_id}_{module_name}`，并含 `module_name` 字段，可追溯产生告警的检测模块。
 
 ### 查询原始事件（ssas_core.db 的 raw_events 表）
 
@@ -333,7 +335,8 @@ sqlite3 ~/.jiuwenswarm/ssas/ssas_core.db \
 ### 查询检测结果（modules/*/result.db）
 
 ```sql
--- 查看某检测模块产出的最近报告(含无风险报告)
+-- 查看某检测模块产出的最近报告
+-- 开启 report_only_risks 的模块（如 AgentMoss）不会包含无风险报告
 SELECT event_id, event_type, risk_level, risk_type, timestamp_text
 FROM events
 ORDER BY id DESC

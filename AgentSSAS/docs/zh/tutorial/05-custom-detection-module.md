@@ -258,7 +258,7 @@ plugins:
     name: AgentMossAnalyzer
     expected_model_type: agent_behavior_model
     config:
-      analysis_methods: [rule, behavior_chain, pdg]
+      analysis_methods: [rule, behavior_chain, agent_behavior_graph]
       risk_threshold: low
       max_history_events: 200
 ```

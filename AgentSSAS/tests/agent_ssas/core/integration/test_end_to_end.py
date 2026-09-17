@@ -41,7 +41,7 @@ class TestEndToEnd:
 
         验证:
         1. 每个事件都返回 RiskAssessment
-        2. 威胁日志文件已生成
+        2. 无风险的 AgentMoss 结果不生成威胁日志
         3. SQLite 数据库中记录了事件
         """
         config = AgentSSASConfig(ssas_home=str(ssas_home))
@@ -67,30 +67,14 @@ class TestEndToEnd:
         for a in assessments:
             assert a.risk_level == RiskLevel.SAFE
 
-        # 验证威胁日志文件已生成(test_detection 通配订阅,会触发呈现)
-        # 等待 notify 模式异步任务完成写入
+        # 等待 notify 分析完成,确认 AgentMoss 安全结果不落盘
         await asyncio.sleep(0.2)
         threat_log_dir = Path(config.storage_path) / "reports" / "threat_log"
         threat_files = list(threat_log_dir.glob("threat_e2e-trace_*.json"))
-        assert len(threat_files) >= 1, "应生成至少一个威胁日志文件"
-
-        # 验证威胁日志内容为 OCSF Detection Finding 格式
-        # 等待文件写入完成(notify 异步任务可能正在写入)
-        ocsf = None
-        for _ in range(10):
-            try:
-                with open(threat_files[0], "r", encoding="utf-8") as f:
-                    ocsf = json.load(f)
-                break
-            except (json.JSONDecodeError, OSError):
-                await asyncio.sleep(0.1)
-        assert ocsf["activity_id"] == 1
-        assert ocsf["category_uid"] == 2
-        assert ocsf["class_uid"] == 2004
-        assert ocsf["trace_id"] == "e2e-trace"
+        assert threat_files == []
 
         # 验证 SQLite 数据库中记录了事件
-        db_events = await backend._storage.get_events_by_trace_id(  # pylint: disable=protected-access
+        db_events = await backend._storage.get_events_by_trace_id(
             "e2e-trace"
         )
         # 至少应有 raw_event 记录
@@ -122,9 +106,13 @@ class TestEndToEnd:
         await backend.initialize()
 
         raw_event = generate_permission_interrupt_event(
-            ids=EventIds(session_id="e2e-sec-session", agent_id="e2e-sec-agent", trace_id="e2e-sec-trace"),
-            tool_call_seq=0,
+            ids=EventIds(
+                session_id="e2e-sec-session",
+                agent_id="e2e-sec-agent",
+                trace_id="e2e-sec-trace",
+            ),
             interaction_seq=0,
+            tool_call_seq=0,
             risk=RiskInfo(risk_level="high"),
         )
         assessment = await backend.report_event(raw_event)
@@ -136,7 +124,9 @@ class TestEndToEnd:
         await asyncio.sleep(0.2)
         # 验证威胁日志文件已以 OCSF 格式落盘
         threat_log_dir = Path(config.storage_path) / "reports" / "threat_log"
-        threat_files = list(threat_log_dir.glob("threat_e2e-sec-trace_*.json"))
+        threat_files = list(
+            threat_log_dir.glob("threat_e2e-sec-trace_*.json")
+        )
         assert len(threat_files) >= 1, "应生成至少一个威胁日志文件"
         # 验证文件内容为 OCSF Detection Finding 格式
         with open(threat_files[0], "r", encoding="utf-8") as f:
@@ -184,10 +174,17 @@ class TestEndToEnd:
 
         # 安全检测事件
         security_event = generate_permission_interrupt_event(
-            ids=EventIds(session_id="mix-session", agent_id="mix-agent", trace_id="mix-trace-sec"),
-            tool_call_seq=0,
+            ids=EventIds(
+                session_id="mix-session",
+                agent_id="mix-agent",
+                trace_id="mix-trace-sec",
+            ),
             interaction_seq=1,
-            risk=RiskInfo(risk_level="critical", risk_type="tool_permission_denied"),
+            tool_call_seq=0,
+            risk=RiskInfo(
+                risk_level="critical",
+                risk_type="tool_permission_denied",
+            ),
         )
         assessment = await backend.report_event(security_event)
         # notify 模式:report_event 不等待后台检测,直接返回无风险
@@ -196,11 +193,16 @@ class TestEndToEnd:
 
         # 等待 notify 模式后台异步任务完成写入威胁日志
         await asyncio.sleep(0.2)
-        # 验证两类威胁日志都已生成
+        # 生命周期事件无风险,不生成 AgentMoss 威胁日志;
+        # 安全检测事件有风险,仍正常生成威胁日志。
         threat_log_dir = Path(config.storage_path) / "reports" / "threat_log"
-        lifecycle_files = list(threat_log_dir.glob("threat_mix-trace_*.json"))
-        security_files = list(threat_log_dir.glob("threat_mix-trace-sec_*.json"))
-        assert len(lifecycle_files) >= 1
+        lifecycle_files = list(
+            threat_log_dir.glob("threat_mix-trace_*.json")
+        )
+        security_files = list(
+            threat_log_dir.glob("threat_mix-trace-sec_*.json")
+        )
+        assert lifecycle_files == []
         assert len(security_files) >= 1
 
     @staticmethod
@@ -221,14 +223,19 @@ class TestEndToEnd:
         await backend.initialize()
 
         raw_event = create_raw_event(
-            "tool_input", ids=EventIds(session_id="mod-session", agent_id="mod-agent", trace_id="mod-trace")
+            "tool_input",
+            ids=EventIds(
+                session_id="mod-session",
+                agent_id="mod-agent",
+                trace_id="mod-trace",
+            ),
         )
         await backend.report_event(raw_event)
         # 等待 notify 模式异步任务完成写入
         await asyncio.sleep(0.1)
 
         # 查询 test_detection 模块的 result_store
-        module = backend._module_manager.get_module("test_detection")  # pylint: disable=protected-access
+        module = backend._module_manager.get_module("test_detection")
         assert module is not None
         reports = await module.storage.result_store.get_events(limit=10)
         assert len(reports) >= 1

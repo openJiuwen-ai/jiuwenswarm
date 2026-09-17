@@ -25,10 +25,10 @@ _RISK_THRESHOLD_SCORES = {
 
 
 class AgentMossAnalyzer:
-    """Run AgentMoss policy and PDG analysis over correlated SSAS events.
+    """Run AgentMoss policy and Agent Behavior Graph analysis over correlated SSAS events.
 
     The analyzer keeps bounded per-session history because AgentMoss behavior
-    chain and PDG rules are stateful. The AgentSSAS module is subscribed in
+    chain and Agent Behavior Graph rules are stateful. The AgentSSAS module is subscribed in
     notify mode, so decisions are advisory reports and do not gate execution.
     """
 
@@ -38,19 +38,15 @@ class AgentMossAnalyzer:
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self._config = config or {}
         self._analysis_methods = self._config.get(
-            "analysis_methods", ["rule", "behavior_chain", "pdg"]
+            "analysis_methods", ["rule", "behavior_chain", "agent_behavior_graph"]
         )
         self._risk_threshold = self._config.get("risk_threshold", "low")
         policy_config = self._config.get("policy", self._config)
         if not isinstance(policy_config, dict):
             policy_config = {}
         self._policy = PolicyEngine(policy_config)
-        self._max_history_events = max(
-            5, int(self._config.get("max_history_events", 200))
-        )
-        self._include_pdg_graph = _config_bool(
-            self._config, "include_pdg_graph", True
-        )
+        self._max_history_events = max(5, int(self._config.get("max_history_events", 200)))
+        self._include_agent_behavior_graph = _config_bool(self._config, "include_agent_behavior_graph", True)
         self._history: dict[str, list[EventRecord]] = {}
         self._report_cache: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
@@ -91,11 +87,7 @@ class AgentMossAnalyzer:
             history_key = self._history_key(event)
             complete_history = list(self._history.get(history_key, []))
             timestamp = _float(event.get("timestamp"))
-            history = [
-                item
-                for item in complete_history
-                if (item.timestamp, item.event_id) < (timestamp, event_id)
-            ]
+            history = [item for item in complete_history if (item.timestamp, item.event_id) < (timestamp, event_id)]
             payload = event.get("payload", {})
             if not isinstance(payload, dict):
                 payload = {"value": payload}
@@ -105,7 +97,7 @@ class AgentMossAnalyzer:
                 payload=payload,
                 history=history,
             )
-            pdg_evidence = self._pdg_evidence(
+            agent_behavior_graph_evidence = self._agent_behavior_graph_evidence(
                 event=event,
                 payload=payload,
                 history=history,
@@ -128,12 +120,12 @@ class AgentMossAnalyzer:
             )
             complete_history.append(record)
             complete_history.sort(key=lambda item: (item.timestamp, item.event_id))
-            self._history[history_key] = complete_history[-self._max_history_events:]
+            self._history[history_key] = complete_history[-self._max_history_events :]
 
             report = self._build_report(
                 model_data=model_data,
                 decision=decision,
-                pdg_evidence=pdg_evidence,
+                agent_behavior_graph_evidence=agent_behavior_graph_evidence,
                 history_size=len(history),
             )
             self._report_cache[event_id] = _copy_report(report)
@@ -153,7 +145,7 @@ class AgentMossAnalyzer:
         *,
         model_data: dict[str, Any],
         decision: Any,
-        pdg_evidence: dict[str, Any],
+        agent_behavior_graph_evidence: dict[str, Any],
         history_size: int,
     ) -> dict[str, Any]:
         score = int(decision.risk_score)
@@ -169,21 +161,18 @@ class AgentMossAnalyzer:
             "findings": list(decision.findings),
             "event_mapping": {
                 "source_event_type": model_data.get("event_type", ""),
-                "agentmoss_event_type": model_data.get("agentmoss_event", {}).get(
-                    "event_type", ""
-                ),
+                "agentmoss_event_type": model_data.get("agentmoss_event", {}).get("event_type", ""),
                 "adapter_version": model_data.get("adapter_version", ""),
             },
             "correlation": correlation if isinstance(correlation, dict) else {},
             "history_events_analyzed": history_size,
         }
-        if pdg_evidence:
-            evidence["pdg"] = pdg_evidence
+        if agent_behavior_graph_evidence:
+            evidence["agent_behavior_graph"] = agent_behavior_graph_evidence
 
         if decision.findings:
             description = (
-                f"AgentMoss detected {len(decision.findings)} behavior signal(s); "
-                f"decision={decision.decision}"
+                f"AgentMoss detected {len(decision.findings)} behavior signal(s); decision={decision.decision}"
             )
         else:
             description = "AgentMoss found no behavior risk"
@@ -195,16 +184,14 @@ class AgentMossAnalyzer:
             "risk_score": float(score),
             "confidence": 1.0,
             "detected_threats": threats,
-            "recommended_actions": _recommended_actions(
-                decision.decision, has_risk
-            ),
+            "recommended_actions": _recommended_actions(decision.decision, has_risk),
             "analytic_name": "AgentMoss Runtime Behavior Analysis",
             "description": description,
             "evidence": evidence,
             "module_name": "agent_moss",
         }
 
-    def _pdg_evidence(
+    def _agent_behavior_graph_evidence(
         self,
         *,
         event: dict[str, Any],
@@ -212,9 +199,9 @@ class AgentMossAnalyzer:
         history: list[EventRecord],
         findings: list[str],
     ) -> dict[str, Any]:
-        if not any(item.startswith("pdg:") for item in findings):
+        if not any(item.startswith("agent_behavior_graph:") for item in findings):
             return {}
-        inspection = self._policy.pdg_data_leakage.inspect(
+        inspection = self._policy.agent_behavior_graph.inspect(
             event_type=str(event.get("event_type") or ""),
             subject=str(event.get("subject") or ""),
             payload=payload,
@@ -223,7 +210,7 @@ class AgentMossAnalyzer:
         evidence: dict[str, Any] = {
             "violations": [asdict(item) for item in inspection.violations],
         }
-        if self._include_pdg_graph:
+        if self._include_agent_behavior_graph:
             evidence["graph"] = inspection.graph.to_dict()
         return evidence
 
@@ -290,7 +277,7 @@ def _threat_types(findings: list[str]) -> list[str]:
     types: list[str] = []
     text = "\n".join(findings).lower()
     candidates = (
-        ("data_leakage", "pdg:data-leak"),
+        ("data_leakage", "agent_behavior_graph:data-leak"),
         ("behavior_chain", "behavior chain:"),
         ("prompt_injection", "instruction override"),
         ("prompt_injection", "prompt exfiltration"),

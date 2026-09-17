@@ -76,6 +76,15 @@ class ThreatAnalysisPipeline:
         # 后台任务引用集合, 防止 task 被 GC 回收
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
+    def track_background_task(self, task: asyncio.Task[Any]) -> None:
+        """登记后台任务引用,防止被 GC 回收,完成后自动移除。
+
+        Args:
+            task: 需要保活的后台任务(如 TTL 清理任务)。
+        """
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     async def run(self, unified: UnifiedEvent) -> RiskAssessment:
         """执行威胁分析流水线,返回聚合的 RiskAssessment。
 
@@ -338,6 +347,8 @@ class ThreatAnalysisPipeline:
 
         任一步骤异常时记录日志并跳过该模块,不影响其他模块的执行。
         建模或分析失败时返回 None;存储或呈现失败时仍返回已产出的报告。
+        模块启用 report_only_risks 时,无风险报告仍用于聚合,
+        但跳过模块结果存储和 OCSF 呈现。
 
         Args:
             module_name: 检测模块名。
@@ -396,6 +407,19 @@ class ThreatAnalysisPipeline:
             analytic_type_id = module_config.get("analytic_type_id", 0)
             if isinstance(analytic_type_id, int):
                 report.setdefault("analytic_type_id", analytic_type_id)
+
+        # 可选的模块级输出策略:分析仍然已完成,报告也仍返回给聚合层,
+        # 但无风险结果不写入模块结果库,也不生成 OCSF 威胁日志。
+        # 默认为 False,保持其他检测模块的现有审计行为。
+        report_only_risks = (
+            isinstance(module_config, dict)
+            and module_config.get("report_only_risks", False) is True
+        )
+        if report_only_risks and not report.get("has_risk", False):
+            logger.debug(
+                "无风险报告不上报: module_name=%s", module_name
+            )
+            return report
 
         # 存储持久化(失败不影响后续呈现和聚合)
         try:

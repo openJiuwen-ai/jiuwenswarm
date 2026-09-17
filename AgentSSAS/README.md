@@ -49,7 +49,7 @@ Core capabilities:
 
 - **Two runtime modes**: in-process mode (`inprocess`, default, zero network latency) and HTTP service mode (`http`, standalone FastAPI service shared by multiple agents)
 - **Pluggable detection modules**: modules register declaratively via `module.yaml` and are organized as a "data modeling plugin + threat analysis plugin" pair; new detection capabilities require zero framework changes
-- **3 built-in detection modules**: `agent_moss` (rule + behavior-chain + PDG data-leakage analysis), `security_rail_detection` (derivative analysis of other security rails' findings), `test_detection` (pipeline verification, disabled by default)
+- **3 built-in detection modules**: `agent_moss` (rule + behavior-chain + Agent Behavior Graph (ABG) data-leakage analysis), `security_rail_detection` (derivative analysis of other security rails' findings), `test_detection` (pipeline verification, disabled by default)
 - **notify / auth subscription modes**: notify runs detection asynchronously in the background without blocking; auth participates synchronously in security decisions with timeout fallback policies
 - **Decision policies**: `observe_only` (default, observation-only, allows everything) and `active_protection` (critical blocked, others alerted), switchable via a single config entry
 - **fail-open design**: any SSAS failure (initialization error, malformed event, detection timeout) never blocks the JiuwenSwarm main flow

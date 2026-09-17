@@ -83,7 +83,8 @@ class DetectionModule:
     Attributes:
         name: 检测模块名(唯一标识,与 module.yaml 的 name 字段对应)。
         config: 完整的 module.yaml 解析结果,包含 display_name、enabled、
-            event_version、subscribed_events、modeler、analyzer 等字段。
+            event_version、subscribed_events、report_only_risks、modeler、
+            analyzer 等字段。
         modeler: 数据建模插件实例,实现 DataModelerPlugin 协议。
         analyzer: 威胁分析插件实例,实现 ThreatAnalyzerPlugin 协议。
         storage: 该模块的独立存储管理器,包含 process.db 和 result.db。
@@ -200,8 +201,7 @@ class DetectionModuleManager:
             except Exception:
                 logger.exception("清理检测模块存储失败: module=%s", name)
 
-    @staticmethod
-    def _get_modules_dir() -> Path:
+    def _get_modules_dir(self) -> Path:
         """获取 detection_modules 目录路径。
 
         从 agent_ssas 包安装路径推导,返回 agent_ssas/detection_modules 目录。
@@ -338,8 +338,7 @@ class DetectionModuleManager:
             self._subscriber_counts.get(sub.event_type, 0) + 1
         )
 
-    @staticmethod
-    def _parse_module_yaml(module_yaml: Path) -> dict[str, Any]:
+    def _parse_module_yaml(self, module_yaml: Path) -> dict[str, Any]:
         """解析 module.yaml 配置。
 
         读取 YAML 文件,校验必需字段,将 plugins 列表拆分为
@@ -350,7 +349,7 @@ class DetectionModuleManager:
 
         Returns:
             解析后的配置字典,包含 name、display_name、enabled、event_version、
-            subscribed_events、modeler、analyzer 字段。
+            subscribed_events、report_only_risks、modeler、analyzer 字段。
 
         Raises:
             ValueError: YAML 根节点不是 dict、缺少 name 字段、
@@ -405,6 +404,7 @@ class DetectionModuleManager:
             "subscribed_events": data.get("subscribed_events", ["*"]),
             "auth_timeout_policy": data.get("auth_timeout_policy", "allow"),
             "analytic_type_id": data.get("analytic_type_id", 0),
+            "report_only_risks": data.get("report_only_risks", False),
             "modeler": modeler_config,
             "analyzer": analyzer_config,
         }

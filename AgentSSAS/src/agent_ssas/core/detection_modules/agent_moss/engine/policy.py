@@ -7,26 +7,22 @@ import re
 from typing import Any, Iterable
 
 from .events import EventRecord, PolicyDecision
-from .pdg import DataLeakagePDGDetector
+from .agent_behavior_graph import AgentBehaviorGraphDetector
 
 
 _DANGEROUS_SHELL_PATTERNS = [
-    # rm -rf / (递归强制删除根目录) 与 rm -rf 任意目标
     (
-        r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*"
-        r"|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\s+/(?:\s|$)",
+        r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\s+/(?:\s|$)",
         "recursive force remove at filesystem root",
         95,
     ),
     (
-        r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*"
-        r"|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\b",
+        r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\b",
         "recursive force remove",
         82,
     ),
     (
-        r"(?i)\brm\s+-[^\s;|&]*r[^\s;|&]*\s+"
-        r"/(?:etc|var|home|boot|usr|sys|proc)\b",
+        r"(?i)\brm\s+-[^\s;|&]*r[^\s;|&]*\s+/(?:etc|var|home|boot|usr|sys|proc)\b",
         "recursive remove of critical system directory",
         90,
     ),
@@ -50,16 +46,13 @@ _NETWORK_TRANSFER_PATTERNS = [
 
 _EXFILTRATION_PATTERNS = [
     (
-        r"(?is)\bcurl\b(?=.*\b(?:-d|--data|--data-binary"
-        r"|--data-urlencode|--upload-file|-T|--form|-F)\b)",
+        r"(?is)\bcurl\b(?=.*\b(?:-d|--data|--data-binary|--data-urlencode|--upload-file|-T|--form|-F)\b)",
         "curl data upload",
         85,
     ),
     (r"(?is)\bwget\b(?=.*\b(?:--post-data|--post-file|--method=POST)\b)", "wget data upload", 85),
     (
-        r"(?is)\b(?:curl|wget|scp|rsync)\b"
-        r"(?=.*(?:/etc/shadow|/etc/passwd|/etc/sudoers|\.ssh/id_"
-        r"|api[_-]?key|secret|token|password))",
+        r"(?is)\b(?:curl|wget|scp|rsync)\b(?=.*(?:/etc/shadow|/etc/passwd|/etc/sudoers|\.ssh/id_|api[_-]?key|secret|token|password))",
         "sensitive data exfiltration command",
         90,
     ),
@@ -69,8 +62,7 @@ _EXFILTRATION_PATTERNS = [
 
 _SENSITIVE_PATH_PATTERNS = [
     (
-        r"(?i)(?:^|[\s\"'=:@])/(?:etc/(?:shadow|sudoers)"
-        r"|dev/mem|var/run/docker\.sock)(?:[\s\"':/]|$)",
+        r"(?i)(?:^|[\s\"'=:@])/(?:etc/(?:shadow|sudoers)|dev/mem|var/run/docker\.sock)(?:[\s\"':/]|$)",
         "sensitive path access: critical credential or control file",
         92,
     ),
@@ -80,21 +72,17 @@ _SENSITIVE_PATH_PATTERNS = [
         88,
     ),
     (
-        r"(?i)(?:^|[\s\"'=:@])(?:~|/[^\s\"']*)?/?\.ssh/"
-        r"(?:id_rsa|id_ed25519|id_ecdsa)(?:\b|[\s\"'])",
+        r"(?i)(?:^|[\s\"'=:@])(?:~|/[^\s\"']*)?/?\.ssh/(?:id_rsa|id_ed25519|id_ecdsa)(?:\b|[\s\"'])",
         "sensitive path access: ssh private key",
         92,
     ),
     (
-        r"(?i)(?:^|[\s\"'=:@])/(?:etc/passwd|etc/ssh/sshd_config"
-        r"|etc/crontab|etc/systemd/)(?:[\s\"':/]|$)",
+        r"(?i)(?:^|[\s\"'=:@])/(?:etc/passwd|etc/ssh/sshd_config|etc/crontab|etc/systemd/)(?:[\s\"':/]|$)",
         "sensitive path access: system configuration",
         78,
     ),
     (
-        r"(?i)(?:^|[\s\"'=:@])(?:[^\s\"']*/)?"
-        r"(?:\.env|credentials(?:\.json)?|secrets?\.ya?ml|llm_secrets\.json)"
-        r"(?:[\s\"']|$)",
+        r"(?i)(?:^|[\s\"'=:@])(?:[^\s\"']*/)?(?:\.env|credentials(?:\.json)?|secrets?\.ya?ml|llm_secrets\.json)(?:[\s\"']|$)",
         "sensitive path access: credential file",
         82,
     ),
@@ -112,20 +100,13 @@ _ACCOUNT_MANAGEMENT_PATTERNS = [
 _PERSISTENCE_PATTERNS = [
     (r"(?i)\bcrontab\s+(?:-e|-r)\b", "cron table modification", 82),
     (
-        r"(?i)(?:\|\s*crontab\b|>>?\s*/etc/"
-        r"(?:crontab|cron\.d/|cron\.daily/|cron\.hourly/))",
+        r"(?i)(?:\|\s*crontab\b|>>?\s*/etc/(?:crontab|cron\.d/|cron\.daily/|cron\.hourly/))",
         "cron persistence modification",
         88,
     ),
+    (r"(?i)(?:>>?|tee\s+-?a?)\s+(?:~|/[^\s\"']*)?/?\.ssh/authorized_keys\b", "ssh authorized_keys persistence", 88),
     (
-        r"(?i)(?:>>?|tee\s+-?a?)\s+(?:~|/[^\s\"']*)?/?"
-        r"\.ssh/authorized_keys\b",
-        "ssh authorized_keys persistence",
-        88,
-    ),
-    (
-        r"(?i)(?:>>?|tee\s+-?a?|chmod\s+\+x"
-        r"|chmod\s+[0-7]{3,4})\s+[^\n;|&]*\.git/hooks/",
+        r"(?i)(?:>>?|tee\s+-?a?|chmod\s+\+x|chmod\s+[0-7]{3,4})\s+[^\n;|&]*\.git/hooks/",
         "git hook persistence modification",
         84,
     ),
@@ -135,9 +116,7 @@ _PERSISTENCE_PATTERNS = [
 
 _OBFUSCATED_EXECUTION_PATTERNS = [
     (
-        r"(?i)\bbase64\b[^\n;|&]*(?:-d|--decode)[^\n;|&]*"
-        r"(?:\|\s*(?:sh|bash|zsh|python|python3)\b"
-        r"|\b(?:sh|bash|zsh|python|python3)\s+-c\b)",
+        r"(?i)\bbase64\b[^\n;|&]*(?:-d|--decode)[^\n;|&]*(?:\|\s*(?:sh|bash|zsh|python|python3)\b|\b(?:sh|bash|zsh|python|python3)\s+-c\b)",
         "base64 decoded execution",
         88,
     ),
@@ -198,9 +177,7 @@ class PolicyEngine:
         self.ask_threshold = int(cfg.get("ask_threshold", 45))
         self.block_threshold = int(cfg.get("block_threshold", 80))
         self.default_decision = str(cfg.get("default_decision", "allow"))
-        self.enforcement_scope = _normalize_enforcement_scope(
-            str(cfg.get("enforcement_scope", "behavior_chain"))
-        )
+        self.enforcement_scope = _normalize_enforcement_scope(str(cfg.get("enforcement_scope", "behavior_chain")))
         self.enforce_behavior_chain = _config_bool(
             cfg,
             "enforce_behavior_chain",
@@ -237,15 +214,13 @@ class PolicyEngine:
             "analyze_obfuscated_execution",
             bool(cfg.get("block_on_obfuscated_execution", True)),
         )
-        self.enforce_pdg_data_leakage = _config_bool(
+        self.enforce_agent_behavior_graph = _config_bool(
             cfg,
-            "enforce_pdg_data_leakage",
+            "enforce_agent_behavior_graph",
             True,
         )
-        self.sensitive_patterns = self._compile_sensitive_patterns(
-            cfg.get("sensitive_patterns")
-        )
-        self.pdg_data_leakage = DataLeakagePDGDetector(cfg)
+        self.sensitive_patterns = self._compile_sensitive_patterns(cfg.get("sensitive_patterns"))
+        self.agent_behavior_graph = AgentBehaviorGraphDetector(cfg)
 
     def evaluate_event(
         self,
@@ -272,22 +247,20 @@ class PolicyEngine:
             tool_score = self._evaluate_tool_call(subject, text, findings)
             signal_score = max(signal_score, tool_score)
             chain_score = self._evaluate_chain(subject, text, history, findings)
-            pdg_inspection = self.pdg_data_leakage.inspect(
+            graph_inspection = self.agent_behavior_graph.inspect(
                 event_type=event_type,
                 subject=subject,
                 payload=payload,
                 history=history,
             )
-            if pdg_inspection.findings:
-                findings.extend(pdg_inspection.findings)
-                signal_score = max(signal_score, pdg_inspection.risk_score)
-                if self.enforce_pdg_data_leakage:
-                    chain_score = max(chain_score, pdg_inspection.risk_score)
+            if graph_inspection.findings:
+                findings.extend(graph_inspection.findings)
+                signal_score = max(signal_score, graph_inspection.risk_score)
+                if self.enforce_agent_behavior_graph:
+                    chain_score = max(chain_score, graph_inspection.risk_score)
 
         score = max(signal_score, chain_score)
-        decision = self._decision_for(
-            self._enforced_score(signal_score=signal_score, chain_score=chain_score)
-        )
+        decision = self._decision_for(self._enforced_score(signal_score=signal_score, chain_score=chain_score))
         reason = "; ".join(findings[:4])
         return PolicyDecision(decision=decision, risk_score=score, findings=findings, reason=reason)
 
@@ -295,8 +268,7 @@ class PolicyEngine:
         score = 0
         lower_subject = subject.lower()
         shell_like = any(
-            name in lower_subject
-            for name in ("bash", "shell", "terminal", "run_command", "execute", "cmd")
+            name in lower_subject for name in ("bash", "shell", "terminal", "run_command", "execute", "cmd")
         )
         if shell_like:
             if self.analyze_destructive_shell:
@@ -308,9 +280,7 @@ class PolicyEngine:
             if self.analyze_obfuscated_execution:
                 score = max(score, self._match_patterns(text, _OBFUSCATED_EXECUTION_PATTERNS, findings))
 
-        # 敏感路径访问仅对 shell 类或文件访问类工具启用分析
-        file_access_like = shell_like or self._is_file_access_tool(lower_subject)
-        if self.analyze_sensitive_path_access and file_access_like:
+        if self.analyze_sensitive_path_access and (shell_like or self._is_file_access_tool(lower_subject)):
             score = max(score, self._match_patterns(text, _SENSITIVE_PATH_PATTERNS, findings))
 
         if self.analyze_data_exfiltration:
@@ -379,10 +349,18 @@ class PolicyEngine:
 
     @staticmethod
     def _is_file_access_tool(lower_subject: str) -> bool:
-        # 注: for 子句必须保持单行(推导式子句跨行会触发 G.EXP.04)
         return any(
             name in lower_subject
-            for name in ("cat", "file", "grep", "head", "read", "tail", "write", "workspace")
+            for name in (
+                "cat",
+                "file",
+                "grep",
+                "head",
+                "read",
+                "tail",
+                "write",
+                "workspace",
+            )
         )
 
     @staticmethod
@@ -403,7 +381,4 @@ class PolicyEngine:
             compiled.append((name, re.compile(str(pattern))))
         if compiled:
             return compiled
-        default_compiled: list[tuple[str, re.Pattern[str]]] = []
-        for name, pattern in _DEFAULT_SENSITIVE_PATTERNS:
-            default_compiled.append((name, re.compile(pattern)))
-        return default_compiled
+        return [(name, re.compile(pattern)) for name, pattern in _DEFAULT_SENSITIVE_PATTERNS]

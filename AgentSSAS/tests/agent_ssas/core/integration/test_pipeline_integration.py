@@ -44,9 +44,13 @@ class TestPipelineIntegration:
         await backend.initialize()
         raw_event = create_raw_event(
             "tool_input",
-            ids=EventIds(session_id="int-session", agent_id="int-agent", trace_id="int-trace"),
-            call=CallInfo(tool_call_seq=0, tool_call_id="call-001"),
+            ids=EventIds(
+                session_id="int-session",
+                agent_id="int-agent",
+                trace_id="int-trace",
+            ),
             interaction_seq=0,
+            call=CallInfo(tool_call_seq=0, tool_call_id="call-001"),
         )
         assessment = await backend.report_event(raw_event)
         assert isinstance(assessment, RiskAssessment)
@@ -68,36 +72,60 @@ class TestPipelineIntegration:
         events = [
             create_raw_event(
                 "invoke_start",
-                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
+                ids=EventIds(
+                    session_id="seq-session",
+                    agent_id="seq-agent",
+                    trace_id="seq-trace",
+                ),
                 interaction_seq=0,
             ),
             create_raw_event(
                 "llm_input",
-                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
-                call=CallInfo(llm_call_seq=0),
+                ids=EventIds(
+                    session_id="seq-session",
+                    agent_id="seq-agent",
+                    trace_id="seq-trace",
+                ),
                 interaction_seq=0,
+                call=CallInfo(llm_call_seq=0),
             ),
             create_raw_event(
                 "tool_input",
-                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
-                call=CallInfo(tool_call_seq=0, tool_call_id="call-001"),
+                ids=EventIds(
+                    session_id="seq-session",
+                    agent_id="seq-agent",
+                    trace_id="seq-trace",
+                ),
                 interaction_seq=0,
+                call=CallInfo(tool_call_seq=0, tool_call_id="call-001"),
             ),
             create_raw_event(
                 "tool_output",
-                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
-                call=CallInfo(tool_call_seq=0, tool_call_id="call-001"),
+                ids=EventIds(
+                    session_id="seq-session",
+                    agent_id="seq-agent",
+                    trace_id="seq-trace",
+                ),
                 interaction_seq=0,
+                call=CallInfo(tool_call_seq=0, tool_call_id="call-001"),
             ),
             create_raw_event(
                 "llm_output",
-                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
-                call=CallInfo(llm_call_seq=0),
+                ids=EventIds(
+                    session_id="seq-session",
+                    agent_id="seq-agent",
+                    trace_id="seq-trace",
+                ),
                 interaction_seq=0,
+                call=CallInfo(llm_call_seq=0),
             ),
             create_raw_event(
                 "invoke_end",
-                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
+                ids=EventIds(
+                    session_id="seq-session",
+                    agent_id="seq-agent",
+                    trace_id="seq-trace",
+                ),
                 interaction_seq=0,
             ),
         ]
@@ -121,10 +149,17 @@ class TestPipelineIntegration:
         backend = AgentSSASBackend(config)
         await backend.initialize()
         raw_event = generate_permission_interrupt_event(
-            ids=EventIds(session_id="sec-session", agent_id="sec-agent", trace_id="sec-trace"),
-            tool_call_seq=0,
+            ids=EventIds(
+                session_id="sec-session",
+                agent_id="sec-agent",
+                trace_id="sec-trace",
+            ),
             interaction_seq=0,
-            risk=RiskInfo(risk_level="high", risk_type="tool_permission_denied"),
+            tool_call_seq=0,
+            risk=RiskInfo(
+                risk_level="high",
+                risk_type="tool_permission_denied",
+            ),
         )
         assessment = await backend.report_event(raw_event)
         assert isinstance(assessment, RiskAssessment)
@@ -141,12 +176,16 @@ class TestPipelineIntegration:
         config = AgentSSASConfig(ssas_home=str(ssas_home))
         backend = AgentSSASBackend(config)
         await backend.initialize()
-        raw_event = create_raw_event("tool_input", ids=EventIds(session_id="persist-session", trace_id="persist-trace"))
+        raw_event = create_raw_event(
+            "tool_input",
+            ids=EventIds(
+                session_id="persist-session",
+                trace_id="persist-trace",
+            ),
+        )
         await backend.report_event(raw_event)
         # 从存储查询 raw_events
-        events = await backend._storage.get_events_by_trace_id(  # pylint: disable=protected-access
-            "persist-trace"
-        )
+        events = await backend._storage.get_events_by_trace_id("persist-trace")
         # 至少应有 raw_event 记录
         assert len(events) >= 1
 
@@ -162,9 +201,13 @@ class TestPipelineIntegration:
         await backend.initialize()
         raw_event = create_raw_event(
             "tool_input",
-            ids=EventIds(session_id="moss-session", agent_id="moss-agent", trace_id="moss-trace"),
-            call=CallInfo(tool_call_seq=0, tool_call_id="moss-call-1"),
+            ids=EventIds(
+                session_id="moss-session",
+                agent_id="moss-agent",
+                trace_id="moss-trace",
+            ),
             interaction_seq=0,
+            call=CallInfo(tool_call_seq=0, tool_call_id="moss-call-1"),
             payload={
                 "tool_name": "bash",
                 "content": {"tool_args": {"command": "rm -rf /tmp/demo"}},
@@ -177,10 +220,9 @@ class TestPipelineIntegration:
         assert assessment.risk_level == RiskLevel.SAFE
         await asyncio.sleep(0.05)
 
-        module = backend._module_manager.get_module("agent_moss")  # pylint: disable=protected-access
+        module = backend._module_manager.get_module("agent_moss")
         assert module is not None
         reports = await module.storage.result_store.get_events(limit=20)
-        # 仅保留 agent_moss 模块且风险分达 80 的报告
         moss_reports = [
             report
             for report in reports
@@ -191,3 +233,45 @@ class TestPipelineIntegration:
         assert report["risk_level"] == "high"
         assert report["evidence"]["decision_mode"] == "advisory_notify"
         assert report["evidence"]["correlation"]["tool_call_id"] == "moss-call-1"
+
+    @staticmethod
+    @pytest.mark.integration
+    @pytest.mark.level0
+    async def test_agent_moss_does_not_report_safe_event(
+        ssas_home: Path,
+    ) -> None:
+        """AgentMoss 分析安全事件,但不生成结果记录或威胁日志。"""
+        config = AgentSSASConfig(ssas_home=str(ssas_home))
+        backend = AgentSSASBackend(config)
+        await backend.initialize()
+        raw_event = create_raw_event(
+            "tool_input",
+            ids=EventIds(
+                session_id="moss-safe-session",
+                agent_id="moss-safe-agent",
+                trace_id="moss-safe-trace",
+            ),
+            interaction_seq=0,
+            call=CallInfo(tool_call_seq=0, tool_call_id="moss-safe-call-1"),
+            payload={
+                "tool_name": "bash",
+                "content": {"tool_args": {"command": "ls"}},
+            },
+        )
+
+        assessment = await backend.report_event(raw_event)
+        assert assessment.risk_level == RiskLevel.SAFE
+        if backend._pipeline._background_tasks:
+            await asyncio.gather(
+                *backend._pipeline._background_tasks,
+                return_exceptions=True,
+            )
+
+        module = backend._module_manager.get_module("agent_moss")
+        assert module is not None
+        assert len(module.analyzer._history["session:moss-safe-session"]) == 1
+        reports = await module.storage.result_store.get_events(limit=20)
+        assert not [report for report in reports if report.get("module_name") == "agent_moss"]
+
+        threat_log_dir = Path(config.storage_path) / "reports" / "threat_log"
+        assert not list(threat_log_dir.glob("*_agent_moss_*.json"))

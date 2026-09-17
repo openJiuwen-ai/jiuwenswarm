@@ -40,10 +40,11 @@ class TestDetectionModuleManager:
         agent_moss = manager.get_module("agent_moss")
         assert agent_moss is not None
         assert agent_moss.config["analytic_type_id"] == 2
+        assert agent_moss.config["report_only_risks"] is True
         assert agent_moss.config["analyzer"]["config"]["analysis_methods"] == [
             "rule",
             "behavior_chain",
-            "pdg",
+            "agent_behavior_graph",
         ]
 
     @staticmethod

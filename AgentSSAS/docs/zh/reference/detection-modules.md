@@ -31,6 +31,7 @@ subscribed_events:                # 可选,默认 ["*"]
   - "permission_interrupt_tool:auth"  #   :auth 后缀声明 auth 模式
 analytic_type_id: 1               # 可选,分析类型 ID(OCSF 映射: 1=Rule, 2=Behavior),默认 0
 auth_timeout_policy: allow        # 可选,auth 订阅者超时后的默认策略,默认 "allow"
+report_only_risks: false          # 可选,是否只持久化和呈现 has_risk=true 的报告
 
 plugins:                          # 必需,须同时包含以下两类插件
   - type: data_modeling           # 数据建模插件
@@ -54,6 +55,7 @@ plugins:                          # 必需,须同时包含以下两类插件
 | `subscribed_events` | 否 | 订阅事件列表，默认 `["*"]` |
 | `analytic_type_id` | 否 | 分析类型 ID，用于 OCSF 报告的 `analytic.type` 映射：1=Rule、2=Behavior，默认 0 |
 | `auth_timeout_policy` | 否 | auth 模式订阅者超时后的默认策略，默认 `allow` |
+| `report_only_risks` | 否 | 为 `true` 时仍分析所有事件，但只将 `has_risk=true` 的报告写入模块结果库并生成 OCSF 日志，默认 `false` |
 | `plugins` | 是 | 插件列表，必须同时包含一个 `data_modeling` 与一个 `threat_analysis` 插件 |
 
 插件类型：
@@ -87,11 +89,11 @@ auth 模式只作用在聚合事件的结束事件上，其余展开事件均为
 
 ### agent_moss
 
-AgentMoss 行为链与 PDG 检测模块，默认启用。完整 `module.yaml`（`src/agent_ssas/core/detection_modules/agent_moss/module.yaml`）：
+AgentMoss 行为链与 Agent行为图（Agent Behavior Graph，ABG）检测模块，默认启用。完整 `module.yaml`（`src/agent_ssas/core/detection_modules/agent_moss/module.yaml`）：
 
 ```yaml
 name: agent_moss
-display_name: "AgentMoss 行为链与 PDG 检测模块"
+display_name: "AgentMoss 行为链与 Agent行为图检测模块"
 enabled: true
 event_version: "1.0"
 subscribed_events:
@@ -102,6 +104,7 @@ subscribed_events:
   - "tool_output"
   - "invoke_end"
 analytic_type_id: 2
+report_only_risks: true
 
 plugins:
   - type: data_modeling
@@ -111,10 +114,10 @@ plugins:
     name: AgentMossAnalyzer
     expected_model_type: agent_behavior_model
     config:
-      analysis_methods: [rule, behavior_chain, pdg]
+      analysis_methods: [rule, behavior_chain, agent_behavior_graph]
       risk_threshold: low
       max_history_events: 200
-      include_pdg_graph: true
+      include_agent_behavior_graph: true
       policy:
         default_decision: allow
         # AgentSSAS subscribes in notify mode. Decisions are reported as
@@ -124,11 +127,11 @@ plugins:
         block_threshold: 80
         enforce_behavior_chain: true
         analyze_behavior_chain: true
-        analyze_pdg_data_leakage: true
-        enforce_pdg_data_leakage: true
-        pdg_max_events: 80
-        pdg_trusted_egress_patterns: []
-        pdg_egress_tool_patterns: []
+        analyze_agent_behavior_graph: true
+        enforce_agent_behavior_graph: true
+        agent_behavior_graph_max_events: 80
+        agent_behavior_graph_trusted_egress_patterns: []
+        agent_behavior_graph_egress_tool_patterns: []
         analyze_destructive_shell: true
         analyze_sensitive_path_access: true
         analyze_data_exfiltration: true
@@ -140,17 +143,17 @@ plugins:
 行为说明：
 
 - 订阅全部 6 个生命周期事件（notify 模式），通过结构适配层转换为 AgentMoss 事件（invoke_start→chat_request、llm_input→model_call、llm_output/invoke_end→model_output、tool_input→tool_call、tool_output→tool_result），保留 trace_id、session_id、各序号与 tool_call_id。
-- `analysis_methods` 声明三类分析方法：`rule`（确定性规则）、`behavior_chain`（行为链分析）、`pdg`（程序依赖图数据泄露分析）。
+- `analysis_methods` 声明三类分析方法：`rule`（确定性规则）、`behavior_chain`（行为链分析）、`agent_behavior_graph`（Agent行为图数据泄露分析）。
 - `policy` 段为 AgentMoss 分析引擎的运行参数，关键项含义：
   - `default_decision`：无风险时的默认决策。
   - `ask_threshold` / `block_threshold`：风险分数达到阈值时分别产生 ask（询问）与 block（阻断）建议。
   - `enforcement_scope`：强制执行的分析范围（behavior_chain）。
-  - `analyze_*` 系列：各检测维度的开关（行为链、PDG 数据泄露、破坏性 shell、敏感路径访问、数据外泄、特权账户操作、持久化操作、混淆执行）。
-  - `enforce_behavior_chain` / `enforce_pdg_data_leakage`：对应维度的强制执行开关。
-  - `pdg_max_events`：PDG 分析的最大历史事件数。
-  - `pdg_trusted_egress_patterns` / `pdg_egress_tool_patterns`：可信出口模式与出口工具模式白名单。
+  - `analyze_*` 系列：各检测维度的开关（行为链、ABG 数据泄露、破坏性 shell、敏感路径访问、数据外泄、特权账户操作、持久化操作、混淆执行）。
+  - `enforce_behavior_chain` / `enforce_agent_behavior_graph`：对应维度的强制执行开关。
+  - `agent_behavior_graph_max_events`：ABG 分析的最大历史事件数。
+  - `agent_behavior_graph_trusted_egress_patterns` / `agent_behavior_graph_egress_tool_patterns`：可信出口模式与出口工具模式白名单。
   - `max_history_events`：按 session 维护的有界历史上限。
-- 模块以 notify 模式运行：风险结果、建议动作与脱敏 PDG 证据写入 `modules/agent_moss/result.db` 及威胁日志，决策以建议形式上报（`advisory_notify`），不直接阻断 JiuwenSwarm。
+- 模块以 notify 模式运行：所有事件仍会分析并更新会话历史；由于 `report_only_risks: true`，只有风险结果、建议动作与脱敏 ABG 证据会写入 `modules/agent_moss/result.db` 及威胁日志，无风险结果不上报。决策以建议形式上报（`advisory_notify`），不直接阻断 JiuwenSwarm。
 - `analytic_type_id: 2` 在 OCSF 报告中映射为 `analytic.type = "Behavior"`。
 
 ### security_rail_detection

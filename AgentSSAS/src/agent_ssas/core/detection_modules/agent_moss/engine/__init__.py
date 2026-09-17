@@ -3,11 +3,11 @@
 """AgentMoss deterministic runtime analysis engine embedded in AgentSSAS."""
 
 from .events import EventRecord, PolicyDecision
-from .pdg import DataLeakagePDGDetector
+from .agent_behavior_graph import AgentBehaviorGraphDetector
 from .policy import PolicyEngine
 
 __all__ = [
-    "DataLeakagePDGDetector",
+    "AgentBehaviorGraphDetector",
     "EventRecord",
     "PolicyDecision",
     "PolicyEngine",

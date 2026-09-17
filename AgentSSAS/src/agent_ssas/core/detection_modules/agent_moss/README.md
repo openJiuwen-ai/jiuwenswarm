@@ -7,17 +7,21 @@ AgentSSAS 采集的 Agent 生命周期事件转换为 AgentMoss 运行时事件�
 
 - 单事件安全规则分析；
 - 同一 session 内的行为链关联分析；
-- 基于程序依赖图（Program Dependence Graph，PDG）的数据泄露分析。
+- 基于 Agent行为图（Agent Behavior Graph，ABG）的数据泄露分析。
 
-该模块当前运行在 AgentSSAS 的 `notify` 分析路径中：检测结果会进入模块结果库
-和威胁日志，但不会直接阻断 JiuwenSwarm 的 Agent 执行。报告中的 `block`、
-`ask` 是 AgentMoss 给出的建议决策，不代表 AgentSSAS 已经执行了阻断或询问。
+该模块当前运行在 AgentSSAS 的 `notify` 分析路径中：所有订阅事件仍会被
+分析并纳入会话历史，但只有 `has_risk=true` 的结果会写入模块结果库、
+威胁日志和告警表；无风险结果不对 AgentSSAS 生成上报记录。该路径不会直接
+阻断 JiuwenSwarm 的 Agent 执行。报告中的 `block`、`ask` 是 AgentMoss 给出的
+建议决策，不代表 AgentSSAS 已经执行了阻断或询问。
 
 ## 2. 目录结构
 
 ```text
 agent_moss/
 ├── README.md                  # 本说明文档
+├── docs/
+│   └── agent_moss_detailed_design.md  # 详细设计与接入说明
 ├── module.yaml               # 模块订阅、分析方法和策略配置
 ├── agent_moss_modeler.py     # AgentSSAS 建模插件入口
 ├── event_adapter.py          # AgentSSAS → AgentMoss 事件结构适配
@@ -25,9 +29,12 @@ agent_moss/
 └── engine/
     ├── events.py             # AgentMoss 事件与策略决策数据结构
     ├── policy.py             # 单事件规则和行为链策略引擎
-    ├── pdg.py                # PDG 构建、标注、传播和违规检查
+    ├── agent_behavior_graph.py  # Agent行为图构建、标注、传播和违规检查
     └── SOURCE.md             # 内置引擎的来源版本和文件哈希
 ```
+
+更细的数据契约、分析算法、上报语义、配置和运维说明见
+[`docs/agent_moss_detailed_design.md`](docs/agent_moss_detailed_design.md)。
 
 ## 3. 运行链路
 
@@ -47,10 +54,12 @@ AgentMoss 事件 + 显式关联 ID
 AgentMossAnalyzer
         ├── 单事件规则
         ├── 同 session 行为链
-        └── PDG 数据泄露分析
+        └── ABG 数据泄露分析
         │
         ▼
-AgentSSAS 威胁报告 / result.db / OCSF 威胁日志
+AgentMoss 威胁报告
+        ├── has_risk=true  → result.db / OCSF 威胁日志 / alerts
+        └── has_risk=false → 不上报（会话历史仍已更新）
 ```
 
 `AgentMossModeler` 和 `AgentMossAnalyzer` 的模型类型均为
@@ -159,16 +168,16 @@ AgentSSAS 威胁报告 / result.db / OCSF 威胁日志
 缺少 `session_id` 时使用 `trace_id`；两者均缺失时，事件不会被合并到全局历史，
 避免不同 Agent 或会话之间发生错误关联。
 
-### 5.3 PDG 数据泄露分析
+### 5.3 ABG 数据泄露分析
 
-PDG 分析采用构建、标注、传播、检查四个阶段：
+ABG 分析采用构建、标注、传播、检查四个阶段：
 
 1. 将用户输入、模型输出、工具名、工具参数、工具动作、工具结果和资源构造成图节点；
 2. 根据敏感数据模式、资源类型和事件来源生成初始机密性/完整性标签；
 3. 沿显式数据依赖边传播安全标签；
 4. 在公共外传动作发生前检查高机密数据是否可证明地到达外传节点。
 
-当前覆盖的主要 PDG 违规包括：
+当前覆盖的主要 ABG 违规包括：
 
 - 高机密数据直接进入公共外传；
 - 敏感资源进入公共外传；
@@ -193,12 +202,12 @@ AgentMoss 只将以下信息作为可证明的数据依赖证据：
 - 必需的生命周期 hook、payload 或关联 ID 缺失；
 - 上游事件被截断、未上报或不在历史窗口内。
 
-这类情况应视为 `unknown`，而不是“已证明安全”。当前报告可能没有 PDG
+这类情况应视为 `unknown`，而不是“已证明安全”。当前报告可能没有 ABG
 违规，但这只表示在现有事件和证据边界内未证明违规，不代表开放环境中的绝对安全。
 
-PDG 报告只保留规则 ID、图节点 ID、资源标识和不可逆短指纹，不写入匹配到的
+ABG 报告只保留规则 ID、图节点 ID、资源标识和不可逆短指纹，不写入匹配到的
 敏感明文。原始事件是否保存明文由 AgentSSAS 上游采集与存储策略决定，不由本模块
-的 PDG 脱敏替代。
+的 ABG 脱敏替代。
 
 ## 7. 风险报告
 
@@ -215,7 +224,7 @@ PDG 报告只保留规则 ID、图节点 ID、资源标识和不可逆短指纹�
 | `evidence.findings` | AgentMoss 规则发现 |
 | `evidence.event_mapping` | SSAS 与 AgentMoss 事件映射 |
 | `evidence.correlation` | 显式关联字段 |
-| `evidence.pdg` | 脱敏的 PDG 违规和图结构（命中时） |
+| `evidence.agent_behavior_graph` | 脱敏的 ABG 违规和图结构（命中时） |
 
 风险分数到等级的转换为：
 
@@ -236,10 +245,11 @@ PDG 报告只保留规则 ID、图节点 ID、资源标识和不可逆短指纹�
 | 配置项 | 默认值 | 说明 |
 |---|---:|---|
 | `enabled` | `true` | 是否加载 AgentMoss 模块 |
-| `analysis_methods` | `[rule, behavior_chain, pdg]` | 当前分析能力声明；实际开关由 `policy` 配置控制 |
+| `report_only_risks` | `true` | 只持久化和呈现 `has_risk=true` 的报告，安全事件仍参与分析与历史构建 |
+| `analysis_methods` | `[rule, behavior_chain, agent_behavior_graph]` | 当前分析能力声明；实际开关由 `policy` 配置控制 |
 | `risk_threshold` | `low` | `has_risk` 的最低上报门槛 |
 | `max_history_events` | `200` | 每个 session 的最大历史事件数 |
-| `include_pdg_graph` | `true` | 命中 PDG 违规时是否输出脱敏图 |
+| `include_agent_behavior_graph` | `true` | 命中 ABG 违规时是否输出脱敏图 |
 
 ### 8.2 策略配置
 
@@ -250,26 +260,26 @@ PDG 报告只保留规则 ID、图节点 ID、资源标识和不可逆短指纹�
 | `ask_threshold` | `45` | 建议询问阈值 |
 | `block_threshold` | `80` | 建议阻断阈值 |
 | `analyze_behavior_chain` | `true` | 是否分析行为链 |
-| `analyze_pdg_data_leakage` | `true` | 是否构建并检查 PDG |
-| `enforce_pdg_data_leakage` | `true` | PDG 风险是否参与建议决策 |
-| `pdg_max_events` | `80` | 单次 PDG 使用的最大事件数 |
-| `pdg_trusted_egress_patterns` | `[]` | 可信外传目标正则列表 |
-| `pdg_egress_tool_patterns` | `[]` | 自定义外传工具名正则列表 |
+| `analyze_agent_behavior_graph` | `true` | 是否构建并检查 ABG |
+| `enforce_agent_behavior_graph` | `true` | ABG 风险是否参与建议决策 |
+| `agent_behavior_graph_max_events` | `80` | 单次 ABG 使用的最大事件数 |
+| `agent_behavior_graph_trusted_egress_patterns` | `[]` | 可信外传目标正则列表 |
+| `agent_behavior_graph_egress_tool_patterns` | `[]` | 自定义外传工具名正则列表 |
 
 `enforcement_scope: behavior_chain` 表示单事件规则仍会产生风险分数和发现，
-但默认只让行为链/PDG 风险影响 AgentMoss 的 `ask`、`block` 建议。
+但默认只让行为链/ABG 风险影响 AgentMoss 的 `ask`、`block` 建议。
 若改为 `all`，单事件规则也会参与建议决策。无论哪种配置，当前 AgentSSAS
 订阅仍是 `notify`，不会仅因这里出现 `block` 就自动阻断执行。
 
 ## 9. 结果存储
 
-AgentSSAS 默认将该模块的分析结果写入：
+AgentSSAS 只将该模块 `has_risk=true` 的分析结果写入：
 
 ```text
 <ssas_home>/ssas/modules/agent_moss/result.db
 ```
 
-同时，AgentSSAS 呈现层会根据全局配置生成 OCSF 威胁日志。分析过程中的
+同时，AgentSSAS 呈现层只为这些风险报告生成 OCSF 威胁日志。分析过程中的
 session 历史保存在当前分析器实例内，属于有界内存状态，不等同于
 `result.db` 中的长期审计记录；进程重启后不会从结果库自动恢复分析历史。
 
@@ -281,10 +291,10 @@ session 历史保存在当前分析器实例内，属于有界内存状态，不
 
 更新引擎时应至少执行：
 
-1. 比对 `events.py`、`policy.py`、`pdg.py` 与上游版本；
+1. 比对 `events.py`、`policy.py`、`agent_behavior_graph.py` 与上游版本；
 2. 只调整包内相对导入，不混入 SSAS 适配逻辑；
 3. 更新 `engine/SOURCE.md` 的来源提交和哈希；
-4. 重新验证事件映射、规则、行为链、PDG、会话隔离和敏感证据脱敏；
+4. 重新验证事件映射、规则、行为链、ABG、会话隔离和敏感证据脱敏；
 5. 运行 AgentMoss 原测试以及 AgentSSAS 全量测试。
 
 ## 11. 验证
@@ -306,7 +316,7 @@ PYTHONPATH=src <python> -m pytest tests -q
 - 六类生命周期事件映射；
 - `tool_call_id` 的保留和缺失回退；
 - 危险 Shell 操作报告；
-- 读取敏感数据后显式外传的 PDG 违规；
-- PDG 证据中不包含敏感明文；
+- 读取敏感数据后显式外传的 ABG 违规；
+- ABG 证据中不包含敏感明文；
 - 不同 session 之间不共享行为历史；
-- 真实 AgentSSAS 流水线中的 notify 分析和结果落库。
+- 真实 AgentSSAS 流水线中的 notify 分析，风险结果落库以及安全结果不上报。

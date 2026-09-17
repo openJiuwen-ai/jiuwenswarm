@@ -50,7 +50,7 @@ graph TB
 拆分的本质动机是**把"采集"与"检测"解耦**：
 
 - **采集必须贴近运行时**。事件 ID（如 `interaction_seq`、`tool_call_seq`）必须在 JiuwenSwarm 的回调上下文（`AgentCallbackContext`）中维护，离开这个进程就拿不到准确的事件顺序了。所以采集层必须以 Rail 形式运行在 Agent 进程内。
-- **检测应该独立于运行时**。威胁检测引擎（行为建模、规则分析、PDG 图）是纯计算逻辑，与具体的智能体框架无关。如果检测代码和采集代码纠缠在一起，每次扩展检测能力都要改动运行时侧代码，还要重新验证对主流程的影响。
+- **检测应该独立于运行时**。威胁检测引擎（行为建模、规则分析、Agent行为图（ABG））是纯计算逻辑，与具体的智能体框架无关。如果检测代码和采集代码纠缠在一起，每次扩展检测能力都要改动运行时侧代码，还要重新验证对主流程的影响。
 
 因此边界被划在 `AgentSSASBackendProtocol.report_event(raw_event) -> RiskAssessment` 这一个接口上（`src/agent_ssas/core/framework/access_adapter/protocol.py`）：
 
@@ -170,7 +170,7 @@ AgentSSASCore 采用"框架 + 插件"架构。每个检测模块由一个 `modul
 ├── modules/
 │   └── <module_name>/
 │       ├── process.db              # 模块过程数据
-│       └── result.db               # 模块威胁分析报告（含无风险报告）
+│       └── result.db               # 通过模块输出策略的威胁分析报告
 └── reports/
     └── threat_log/
         └── threat_{trace_id}_{module_name}_{YYYYMMDD_HHMMSS_mmm}.json   # OCSF Detection Finding 格式
@@ -178,7 +178,7 @@ AgentSSASCore 采用"框架 + 插件"架构。每个检测模块由一个 `modul
 
 三类存储对应三种消费者：`ssas_core.db` 面向事件回放与查询，`result.db` 面向模块级结果分析，OCSF JSON 面向标准化日志管道（OCSF 是开放网络安全 schema，方便与外部 SIEM 对接）。
 
-有风险的检测报告由 ThreatAnalysisPipeline 统一写入主库 `ssas_core.db` 的 alerts 表（notify 后台任务与 auth 同步路径均覆盖）。`alert_id` 格式为 `{event_id}_{module_name}`，告警记录含 `module_name` 字段，可追溯产生告警的检测模块。各模块的 `result.db` 则保存该模块的全部威胁分析报告（含无风险报告）。
+有风险的检测报告由 ThreatAnalysisPipeline 统一写入主库 `ssas_core.db` 的 alerts 表（notify 后台任务与 auth 同步路径均覆盖）。`alert_id` 格式为 `{event_id}_{module_name}`，告警记录含 `module_name` 字段，可追溯产生告警的检测模块。各模块的 `result.db` 保存通过其输出策略的报告；默认包含无风险报告，AgentMoss 则只保存 `has_risk=true` 的风险报告。
 
 ## 小结
 

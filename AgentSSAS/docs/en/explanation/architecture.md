@@ -50,7 +50,7 @@ Data flows in one direction: the Agent runtime produces events; AgentSSASSecurit
 The essential motivation for the split is to **decouple "collection" from "detection"**:
 
 - **Collection must stay close to the runtime.** Event IDs (such as `interaction_seq` and `tool_call_seq`) must be maintained inside JiuwenSwarm's callback context (`AgentCallbackContext`); once you leave that process, accurate event ordering is no longer obtainable. So the collection layer must run inside the Agent process, as a Rail.
-- **Detection should be independent of the runtime.** The threat detection engine (behavior modeling, rule analysis, PDG graph) is pure computational logic, unrelated to any specific agent framework. If detection code were entangled with collection code, every extension of detection capability would require changes on the runtime side, plus re-verification of the impact on the main flow.
+- **Detection should be independent of the runtime.** The threat detection engine (behavior modeling, rule analysis, and Agent Behavior Graph (ABG) analysis) is pure computational logic, unrelated to any specific agent framework. If detection code were entangled with collection code, every extension of detection capability would require changes on the runtime side, plus re-verification of the impact on the main flow.
 
 The boundary is therefore drawn at a single interface, `AgentSSASBackendProtocol.report_event(raw_event) -> RiskAssessment` (`src/agent_ssas/core/framework/access_adapter/protocol.py`):
 
@@ -170,7 +170,7 @@ All artifacts are concentrated under the storage root directory (default `~/.jiu
 ├── modules/
 │   └── <module_name>/
 │       ├── process.db              # module process data
-│       └── result.db               # module threat analysis reports (including no-risk ones)
+│       └── result.db               # threat reports that pass the module's output policy
 └── reports/
     └── threat_log/
         └── threat_{trace_id}_{module_name}_{YYYYMMDD_HHMMSS_mmm}.json   # OCSF Detection Finding format
@@ -178,7 +178,7 @@ All artifacts are concentrated under the storage root directory (default `~/.jiu
 
 The three kinds of storage serve three kinds of consumers: `ssas_core.db` is for event replay and query, `result.db` is for module-level result analysis, and the OCSF JSON is for standardized log pipelines (OCSF is an open cybersecurity schema, convenient for integration with external SIEMs).
 
-Risky detection reports are written by the ThreatAnalysisPipeline into the alerts table of the core `ssas_core.db` (covering both the notify background task and the auth synchronous path). The `alert_id` format is `{event_id}_{module_name}`; the alert record carries a `module_name` field, making the detection module that raised the alert traceable. Each module's `result.db` holds all of that module's threat analysis reports (including no-risk ones).
+Risky detection reports are written by the ThreatAnalysisPipeline into the alerts table of the core `ssas_core.db` (covering both the notify background task and the auth synchronous path). The `alert_id` format is `{event_id}_{module_name}`; the alert record carries a `module_name` field, making the detection module that raised the alert traceable. Each module's `result.db` holds reports that pass its output policy; the default includes no-risk reports, while AgentMoss stores only reports with `has_risk=true`.
 
 ## Summary
 

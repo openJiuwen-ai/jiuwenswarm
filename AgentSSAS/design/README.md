@@ -9,11 +9,12 @@
 | [AgentSSAS_01_整体架构设计文档.md](AgentSSAS_01_整体架构设计文档.md) | 整体架构、设计思路、跨仓接口规格、交互、构建、验证、工作计划 |
 | [AgentSSAS_02_AgentSSASClient功能设计文档.md](AgentSSAS_02_AgentSSASClient功能设计文档.md) | AgentSSASClient 子系统功能设计（事件采集 Rail，对接 JiuwenSwarm） |
 | [AgentSSAS_03_AgentSSASCore功能设计文档.md](AgentSSAS_03_AgentSSASCore功能设计文档.md) | AgentSSASCore 子系统功能设计（通用威胁检测引擎） |
+| [AgentSSAS_04_AgentMoss功能设计文档.md](AgentSSAS_04_AgentMoss功能设计文档.md) | AgentMoss 检测模块功能设计（事件适配、规则、行为链与 Agent行为图） |
 
 ## 阅读顺序
 
 1. 先读 01 整体架构设计文档，建立对两个子系统、跨仓接口（`AgentSSASBackendProtocol`、raw_event 三层结构）的全局认知。
-2. 再按关注点选读：对接 JiuwenSwarm 读 02，检测引擎内部机制读 03。
+2. 再按关注点选读：对接 JiuwenSwarm 读 02，检测引擎内部机制读 03，AgentMoss 模块详细设计读 04。
 
 ## test-reports/
 

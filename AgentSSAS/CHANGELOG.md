@@ -19,7 +19,7 @@
 - **事件采集**：6 个生命周期事件 + 1 个安全检测衍生事件，三层消息结构（common / payload / metadata），支持子 Agent 会话（subsession_id）
 - **插件化检测引擎**：框架 + 插件架构，检测模块以"建模插件 + 分析插件"对形式注册，通过 `module.yaml` 声明式配置
 - **3 个检测模块**：
-  - `agent_moss`：Agent 行为态势感知（规则 + 行为链 + PDG 三种分析方法）
+  - `agent_moss`：Agent 行为态势感知（规则 + 行为链 + Agent行为图（Agent Behavior Graph，ABG）三种分析方法）
   - `security_rail_detection`：其他安全 Rail 检测结果衍生分析
   - `test_detection`：链路验证用模块（默认关闭）
 - **notify / auth 双订阅模式**：notify 只观察不干预；auth 参与决策，支持超时兜底策略（allow / deny / default）

@@ -72,8 +72,9 @@ flowchart TB
 1. **数据建模**：`module.modeler.build_model(event_desc)`。event_desc 是 UnifiedEvent 序列化的事件描述（含 `event_node`、`aux_ids`、`trace`、`event_id`）。建模插件把它转换为自己领域的数据模型，如 `AgentMossModeler` 把 SSAS 事件映射为 AgentMoss 运行时事件。建模异常则跳过该模块（返回 None）。
 2. **威胁分析**：`module.analyzer.analyze(model_data)`。分析插件消费建模数据，输出威胁分析报告 dict。插件间通过 `model_type` / `expected_model_type` 配对（如 agent_moss 的两侧都是 `"agent_behavior_model"`）。分析异常同样跳过该模块。
 3. **报告丰富**：流水线向报告注入 `aux_ids`、`event_node`、`module_name`（插件未提供时）、`recommended_actions`（默认空列表）、`analytic_type_id`（module.yaml 顶层声明，供 OCSF 构建使用）。这些注入让"最小实现的分析插件"产出的报告也能正确溯源和呈现。
-4. **存储**：报告写入该模块的 `modules/<name>/result.db`。失败只记日志——存储是结果留档，不是检测的前置条件。
-5. **呈现**：`AgentSSASThreatLog.render(report)` 构建完整的 OCSF Detection Finding 格式报告，落盘为 `<storage_path>/reports/threat_log/threat_{trace_id}_{module_name}_{YYYYMMDD_HHMMSS_mmm}.json`（本地时区可读时间，含毫秒防同秒覆盖）。失败同样不阻断。
+4. **输出策略**：模块可在 `module.yaml` 声明 `report_only_risks: true`。此时分析和会话历史更新仍然执行，但 `has_risk=false` 的报告不进入后续存储和呈现。默认为 `false`，AgentMoss 开启了该选项。
+5. **存储**：通过输出策略的报告写入该模块的 `modules/<name>/result.db`。失败只记日志——存储是结果留档，不是检测的前置条件。
+6. **呈现**：`AgentSSASThreatLog.render(report)` 为通过输出策略的报告构建完整的 OCSF Detection Finding 格式，落盘为 `<storage_path>/reports/threat_log/threat_{trace_id}_{module_name}_{YYYYMMDD_HHMMSS_mmm}.json`（本地时区可读时间，含毫秒防同秒覆盖）。失败同样不阻断。
 
 模块内每一步的异常都被局部捕获：**单个模块的任何故障只影响它自己**，不会波及其他模块，更不会影响主流程返回。
 

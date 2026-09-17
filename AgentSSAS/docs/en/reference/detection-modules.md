@@ -31,6 +31,7 @@ subscribed_events:                   # Optional; default ["*"]
   - "permission_interrupt_tool:auth" #   the :auth suffix declares auth mode
 analytic_type_id: 1                  # Optional; analytic type ID (OCSF mapping: 1=Rule, 2=Behavior); default 0
 auth_timeout_policy: allow           # Optional; default policy when an auth subscriber times out; default "allow"
+report_only_risks: false             # Optional; persist and render only reports with has_risk=true
 
 plugins:                             # Required; must contain both plugin types below
   - type: data_modeling              # data modeling plugin
@@ -54,6 +55,7 @@ Field descriptions:
 | `subscribed_events` | no | List of subscribed events; default `["*"]` |
 | `analytic_type_id` | no | Analytic type ID, used for the `analytic.type` mapping in OCSF reports: 1=Rule, 2=Behavior; default 0 |
 | `auth_timeout_policy` | no | Default policy when an auth-mode subscriber times out; default `allow` |
+| `report_only_risks` | no | When `true`, all events are still analyzed, but only reports with `has_risk=true` are written to the module result store and rendered as OCSF logs; default `false` |
 | `plugins` | yes | Plugin list; must contain one `data_modeling` and one `threat_analysis` plugin |
 
 Plugin types:
@@ -87,11 +89,11 @@ All 3 built-in modules currently subscribe in notify mode.
 
 ### agent_moss
 
-AgentMoss behavior chain and PDG detection module, enabled by default. Complete `module.yaml` (`src/agent_ssas/core/detection_modules/agent_moss/module.yaml`):
+AgentMoss behavior-chain and Agent Behavior Graph (ABG) detection module, enabled by default. Complete `module.yaml` (`src/agent_ssas/core/detection_modules/agent_moss/module.yaml`):
 
 ```yaml
 name: agent_moss
-display_name: "AgentMoss 行为链与 PDG 检测模块"
+display_name: "AgentMoss 行为链与 Agent行为图检测模块"
 enabled: true
 event_version: "1.0"
 subscribed_events:
@@ -102,6 +104,7 @@ subscribed_events:
   - "tool_output"
   - "invoke_end"
 analytic_type_id: 2
+report_only_risks: true
 
 plugins:
   - type: data_modeling
@@ -111,10 +114,10 @@ plugins:
     name: AgentMossAnalyzer
     expected_model_type: agent_behavior_model
     config:
-      analysis_methods: [rule, behavior_chain, pdg]
+      analysis_methods: [rule, behavior_chain, agent_behavior_graph]
       risk_threshold: low
       max_history_events: 200
-      include_pdg_graph: true
+      include_agent_behavior_graph: true
       policy:
         default_decision: allow
         # AgentSSAS subscribes in notify mode. Decisions are reported as
@@ -124,11 +127,11 @@ plugins:
         block_threshold: 80
         enforce_behavior_chain: true
         analyze_behavior_chain: true
-        analyze_pdg_data_leakage: true
-        enforce_pdg_data_leakage: true
-        pdg_max_events: 80
-        pdg_trusted_egress_patterns: []
-        pdg_egress_tool_patterns: []
+        analyze_agent_behavior_graph: true
+        enforce_agent_behavior_graph: true
+        agent_behavior_graph_max_events: 80
+        agent_behavior_graph_trusted_egress_patterns: []
+        agent_behavior_graph_egress_tool_patterns: []
         analyze_destructive_shell: true
         analyze_sensitive_path_access: true
         analyze_data_exfiltration: true
@@ -140,17 +143,17 @@ plugins:
 Behavior notes:
 
 - Subscribes to all 6 lifecycle events (notify mode) and converts them into AgentMoss events through the structure adaptation layer (invoke_start→chat_request, llm_input→model_call, llm_output/invoke_end→model_output, tool_input→tool_call, tool_output→tool_result), preserving trace_id, session_id, all sequence numbers, and tool_call_id.
-- `analysis_methods` declares three analysis methods: `rule` (deterministic rules), `behavior_chain` (behavior chain analysis), and `pdg` (program dependency graph data leakage analysis).
+- `analysis_methods` declares three analysis methods: `rule` (deterministic rules), `behavior_chain` (behavior chain analysis), and `agent_behavior_graph` (Agent Behavior Graph data leakage analysis).
 - The `policy` section holds the runtime parameters of the AgentMoss analysis engine; the key entries:
   - `default_decision`: the default decision when no risk is found.
   - `ask_threshold` / `block_threshold`: when the risk score reaches these thresholds, an ask (ask the user) or block recommendation is produced, respectively.
   - `enforcement_scope`: the analysis scope subject to enforcement (behavior_chain).
-  - The `analyze_*` series: switches for each detection dimension (behavior chain, PDG data leakage, destructive shell, sensitive path access, data exfiltration, privileged account operations, persistence operations, obfuscated execution).
-  - `enforce_behavior_chain` / `enforce_pdg_data_leakage`: enforcement switches for the corresponding dimensions.
-  - `pdg_max_events`: maximum number of history events for PDG analysis.
-  - `pdg_trusted_egress_patterns` / `pdg_egress_tool_patterns`: whitelists of trusted egress patterns and egress tool patterns.
+  - The `analyze_*` series: switches for each detection dimension (behavior chain, ABG data leakage, destructive shell, sensitive path access, data exfiltration, privileged account operations, persistence operations, obfuscated execution).
+  - `enforce_behavior_chain` / `enforce_agent_behavior_graph`: enforcement switches for the corresponding dimensions.
+  - `agent_behavior_graph_max_events`: maximum number of history events for ABG analysis.
+  - `agent_behavior_graph_trusted_egress_patterns` / `agent_behavior_graph_egress_tool_patterns`: whitelists of trusted egress patterns and egress tool patterns.
   - `max_history_events`: bounded history cap maintained per session.
-- The module runs in notify mode: risk results, recommended actions, and sanitized PDG evidence are written to `modules/agent_moss/result.db` and the threat logs; decisions are reported as recommendations (`advisory_notify`) and do not directly block JiuwenSwarm.
+- The module runs in notify mode: every event is still analyzed and added to session history. Because `report_only_risks: true`, only risk results, recommended actions, and sanitized ABG evidence are written to `modules/agent_moss/result.db` and the threat logs; no-risk results are not reported. Decisions are reported as recommendations (`advisory_notify`) and do not directly block JiuwenSwarm.
 - `analytic_type_id: 2` maps to `analytic.type = "Behavior"` in OCSF reports.
 
 ### security_rail_detection

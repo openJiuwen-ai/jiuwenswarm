@@ -56,7 +56,7 @@ AgentSSAS 自带 3 个检测模块：
 
 | 模块 | 默认状态 | 订阅事件 | 说明 |
 | ---- | -------- | -------- | ---- |
-| `agent_moss` | `enabled: true` | 6 个生命周期事件 | 内置 AgentMoss 分析引擎，提供 rule（确定性规则）、behavior_chain（行为链）、pdg（数据泄露分析）三种分析方法 |
+| `agent_moss` | `enabled: true` | 6 个生命周期事件 | 内置 AgentMoss 分析引擎，提供 rule（确定性规则）、behavior_chain（行为链）、agent_behavior_graph（数据泄露分析）三种分析方法 |
 | `security_rail_detection` | `enabled: true` | `permission_interrupt_tool` | 识别并上报其他安全 Rail 的拦截决策，只做上报与呈现 |
 | `test_detection` | `enabled: false` | `*`（全部事件） | 空白插件透传所有事件，用于验证流水线是否跑通 |
 

@@ -121,7 +121,7 @@ One important engineering detail in this design: the session cache is managed wi
 
 ## How AgentMoss consumes events incrementally
 
-The `agent_moss` module is the event model's most important consumer. It subscribes to all 6 lifecycle events (all in notify mode), maps the events into AgentMoss engine runtime events, and then runs three-way analysis (rule / behavior_chain / pdg):
+The `agent_moss` module is the event model's most important consumer. It subscribes to all 6 lifecycle events (all in notify mode), maps the events into AgentMoss engine runtime events, and then runs three-way analysis (rule / behavior_chain / agent_behavior_graph):
 
 ### Event mapping
 
@@ -138,7 +138,7 @@ The mapping is done by `event_adapter.py`, and it is **deliberately structural**
 
 ### Maintaining bounded history per session
 
-AgentMoss's behavior chains and PDG rules are **stateful** - judging "is this tool call abnormal?" requires knowing what happened before. The analyzer maintains history per session:
+AgentMoss's behavior chains and Agent Behavior Graph (ABG) rules are **stateful** - judging "is this tool call abnormal?" requires knowing what happened before. The analyzer maintains history per session:
 
 - The history key is `session:{session_id}` (falling back to `request:{trace_id}` when missing, and further to `uncorrelated:{event_id}` - this last fallback ensures that **when correlation fields are missing, events from different Agents are never mixed into the same history**);
 - When analyzing each event, predecessors that precede the current event in time are first filtered out of the history; after evaluation, the current event is appended to the history;
@@ -147,14 +147,15 @@ AgentMoss's behavior chains and PDG rules are **stateful** - judging "is this to
 
 ### The conservative principle for dependency evidence
 
-This is the event model's most critical constraint on the detection side: AgentMoss treats **only the following** as evidence of PDG data dependencies:
+This is the event model's most critical constraint on the detection side: AgentMoss treats **only the following** as evidence of Agent Behavior Graph (ABG) data dependencies:
 
 - exact fingerprints (exact matches of sensitive values such as API keys and private keys in content);
 - resource identifiers (exact matches of sensitive resource paths such as `.env` and `.ssh/id_rsa`);
-- tool call IDs (explicit pairing of tool_calls);
-- explicit event ordering (timestamps and event_id ordering within the same history).
+- tool call IDs (explicit pairing of tool_calls).
 
-**Implicit semantic flows that cannot be proven are never promoted to PDG data dependencies**. For example, semantic-level inference such as "a model output mentions a file name, and the same file name then shows up in tool arguments" is rejected by the engine - because "similarity" at the content level may be pure coincidence, and solidifying coincidence into dependency edges produces false positives. Prefer false negatives (conservative) over false positives (noise); this is dictated by the positioning of a situational-awareness system.
+Explicit event ordering (timestamps and `event_id` ordering within the same history) is used only to construct control flow, control dependencies, and evidence-chain order. Event order alone is not promoted to a data dependency.
+
+**Implicit semantic flows that cannot be proven are never promoted to ABG data dependencies**. For example, semantic-level inference such as "a model output mentions a file name, and the same file name then shows up in tool arguments" is rejected by the engine - because "similarity" at the content level may be pure coincidence, and solidifying coincidence into dependency edges produces false positives. Prefer false negatives (conservative) over false positives (noise); this is dictated by the positioning of a situational-awareness system.
 
 ## Summary
 

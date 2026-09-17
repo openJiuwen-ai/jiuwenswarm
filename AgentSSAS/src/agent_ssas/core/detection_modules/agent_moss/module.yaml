@@ -1,5 +1,5 @@
 name: agent_moss
-display_name: "AgentMoss 行为链与 PDG 检测模块"
+display_name: "AgentMoss 行为链与 Agent行为图检测模块"
 enabled: true
 event_version: "1.0"
 subscribed_events:
@@ -10,6 +10,9 @@ subscribed_events:
   - "tool_output"
   - "invoke_end"
 analytic_type_id: 2
+# 仍分析所有订阅事件,但只将 has_risk=true 的报告写入 AgentSSAS
+# 模块结果库和 OCSF 威胁日志。
+report_only_risks: true
 
 plugins:
   - type: data_modeling
@@ -19,10 +22,10 @@ plugins:
     name: AgentMossAnalyzer
     expected_model_type: agent_behavior_model
     config:
-      analysis_methods: [rule, behavior_chain, pdg]
+      analysis_methods: [rule, behavior_chain, agent_behavior_graph]
       risk_threshold: low
       max_history_events: 200
-      include_pdg_graph: true
+      include_agent_behavior_graph: true
       policy:
         default_decision: allow
         # AgentSSAS subscribes in notify mode. Decisions are reported as
@@ -32,11 +35,11 @@ plugins:
         block_threshold: 80
         enforce_behavior_chain: true
         analyze_behavior_chain: true
-        analyze_pdg_data_leakage: true
-        enforce_pdg_data_leakage: true
-        pdg_max_events: 80
-        pdg_trusted_egress_patterns: []
-        pdg_egress_tool_patterns: []
+        analyze_agent_behavior_graph: true
+        enforce_agent_behavior_graph: true
+        agent_behavior_graph_max_events: 80
+        agent_behavior_graph_trusted_egress_patterns: []
+        agent_behavior_graph_egress_tool_patterns: []
         analyze_destructive_shell: true
         analyze_sensitive_path_access: true
         analyze_data_exfiltration: true

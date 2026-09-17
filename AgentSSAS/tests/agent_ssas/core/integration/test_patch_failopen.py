@@ -73,6 +73,28 @@ def _restore(snap, injected):
     sys.modules.update(snap)
 
 
+def _force_logger_propagation(names):
+    """临时强制指定 logger 开启 propagate, 记录原值供恢复。
+
+    宿主 jiuwenswarm 运行时可能配置自身 logger 为 propagate=False
+    (自带文件/流 handler), 导致 warning 不再向 root 传播,
+    caplog(挂在 root)捕获不到。测试期间强制开启传播,
+    保证断言不依赖宿主日志配置。
+    """
+    saved = {}
+    for name in names:
+        lg = logging.getLogger(name)
+        saved[name] = lg.propagate
+        lg.propagate = True
+    return saved
+
+
+def _restore_logger_propagation(saved):
+    """恢复 logger 的 propagate 原值。"""
+    for name, propagate in saved.items():
+        logging.getLogger(name).propagate = propagate
+
+
 def _assert_failopen_degraded(module, caplog):
     """断言 interface_deep 在导入失败后正确降级(fail-open)。"""
     assert module._SSAS_AVAILABLE is False  # pylint: disable=protected-access
@@ -97,6 +119,7 @@ class TestPatchFailopenRuntime:
         """场景一: agent-ssas 整体不可用时, 导入不崩溃且正确降级。"""
         _import_patched_interface_deep()
         snap = _snapshot_and_remove(_agent_ssas_module_names())
+        saved_prop = _force_logger_propagation(["jiuwenswarm"])
         # None 哨兵使 import agent_ssas 直接抛 ImportError
         sys.modules["agent_ssas"] = None
         try:
@@ -104,6 +127,7 @@ class TestPatchFailopenRuntime:
                 module = importlib.import_module(INTERFACE_DEEP)
             _assert_failopen_degraded(module, caplog)
         finally:
+            _restore_logger_propagation(saved_prop)
             _restore(snap, injected=["agent_ssas", INTERFACE_DEEP])
 
     @staticmethod
@@ -111,6 +135,7 @@ class TestPatchFailopenRuntime:
         """场景二: 符号缺失(版本不匹配, 即线上实际触发的场景)时, 导入不崩溃且正确降级。"""
         _import_patched_interface_deep()
         snap = _snapshot_and_remove([INTERFACE_DEEP, SETTINGS_MODULE])
+        saved_prop = _force_logger_propagation(["jiuwenswarm"])
         # 用空模块替换 settings, 模拟旧版 agent-ssas 缺少新符号
         sys.modules[SETTINGS_MODULE] = types.ModuleType(SETTINGS_MODULE)
         try:
@@ -118,6 +143,7 @@ class TestPatchFailopenRuntime:
                 module = importlib.import_module(INTERFACE_DEEP)
             _assert_failopen_degraded(module, caplog)
         finally:
+            _restore_logger_propagation(saved_prop)
             _restore(snap, injected=[SETTINGS_MODULE, INTERFACE_DEEP])
 
 
