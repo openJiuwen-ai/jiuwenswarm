@@ -34,13 +34,13 @@ import {
   agentManagementReducer,
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
-  findFirstPreviewableFile,
   initialAgentManagementState,
   isPreviewableFile,
   mergeAgentDetailWithCatalog,
   mergeAgentGroupDetailWithCatalog,
 } from '../../features/agentManagement';
 import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
+import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
 import { CategoryTabs, PageHeader, PageToolbarSearch, Tabs } from '../ui';
@@ -537,8 +537,8 @@ export function AgentManagementPanel({
     setDetailTab(tab);
     if (tab === 'files' && selectedId && state.filesStatus === 'idle') {
       void loadFiles(selectedId).then((files) => {
-        const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
-        if (firstPreviewableFile) void handleSelectFile(firstPreviewableFile);
+        const defaultFile = files ? findDefaultDefinitionFile(files) : null;
+        if (defaultFile) void handleSelectFile(defaultFile);
       });
     }
   };
@@ -626,8 +626,8 @@ export function AgentManagementPanel({
     setGroupDetailTab(tab);
     if (tab === 'files' && groupSelectedId && groupFilesStatus === 'idle') {
       void loadGroupFiles(groupSelectedId).then(files => {
-        const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
-        if (firstPreviewableFile) void handleSelectGroupFile(firstPreviewableFile);
+        const defaultFile = files ? findDefaultDefinitionFile(files) : null;
+        if (defaultFile) void handleSelectGroupFile(defaultFile);
       });
     }
   };
@@ -1292,8 +1292,8 @@ export function AgentManagementPanel({
             selectedId &&
             (state.detail?.source === 'local' || state.detail?.installed === true) &&
             void loadFiles(selectedId).then(files => {
-              const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
-              if (firstPreviewableFile) void handleSelectFile(firstPreviewableFile);
+              const defaultFile = files ? findDefaultDefinitionFile(files) : null;
+              if (defaultFile) void handleSelectFile(defaultFile);
             })
           }
           onSelectFile={handleSelectFile}
@@ -1350,7 +1350,7 @@ export function AgentManagementPanel({
           onBack={goBackToGroupCatalog}
           onRetry={() => groupSelectedId && void openGroupDetail(groupSelectedId)}
           onTabChange={handleGroupTabChange}
-          onRetryFiles={() => groupSelectedId && void loadGroupFiles(groupSelectedId).then(files => { const first = files ? findFirstPreviewableFile(files) : null; if (first) void handleSelectGroupFile(first); })}
+          onRetryFiles={() => groupSelectedId && void loadGroupFiles(groupSelectedId).then(files => { const defaultFile = files ? findDefaultDefinitionFile(files) : null; if (defaultFile) void handleSelectGroupFile(defaultFile); })}
           onSelectFile={handleSelectGroupFile}
           onUse={handleUseGroup}
           onUsePrompt={handleUseGroupPrompt}

@@ -3072,6 +3072,26 @@ class JiuWenSwarm:
 
         return result
 
+    async def deliver_session_input(
+        self, request: AgentRequest
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """Submit new text to this Session, independently of question answers."""
+        from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
+
+        if is_interrupt_resume_payload(request.params) or resolve_session_input_mode(request.params) is None:
+            raise ValueError("supplemental input requires an explicit input mode")
+        validate_session_input(request.params)
+        adapter = self._adapter
+        deliver = getattr(adapter, "deliver_session_input_impl", None)
+        if not callable(deliver):
+            raise RuntimeError("active agent does not support supplemental input")
+        session_id = self._session_manager.get_session_id(request.session_id)
+        restore_chat_send_equipment_params(session_id, request.params)
+        inputs, _memory_mode, _user_turn = self._build_inputs(request)
+        async with aclosing(deliver(request, inputs)) as stream:
+            async for chunk in stream:
+                yield chunk
+
     async def deliver_control_input(
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:

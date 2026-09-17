@@ -50,6 +50,31 @@ function findExpandedDirectories(nodes: FilePreviewTreeNode[]): Set<string> {
   return expanded;
 }
 
+/**
+ * 默认预览文件：按展示顺序取第一个目录（含嵌套子目录）下的第一个可预览文件；
+ * 没有任何目录时退回第一个可预览文件。visible=false 与 previewable=false 的节点跳过。
+ */
+export function findDefaultPreviewFile(nodes: FilePreviewTreeNode[]): FilePreviewTreeNode | null {
+  const firstFile = (items: FilePreviewTreeNode[]): FilePreviewTreeNode | null => {
+    for (const item of items) {
+      if (item.visible === false) continue;
+      if (item.kind === 'file') {
+        if (item.previewable !== false) return item;
+        continue;
+      }
+      const nested = firstFile(item.children || []);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  for (const node of nodes) {
+    if (node.visible === false || node.kind !== 'directory') continue;
+    const found = firstFile(node.children || []);
+    if (found) return found;
+  }
+  return firstFile(nodes);
+}
+
 function TreeEntry({
   entry,
   depth,

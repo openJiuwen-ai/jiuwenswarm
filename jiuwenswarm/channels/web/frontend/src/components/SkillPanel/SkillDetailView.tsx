@@ -418,7 +418,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
                 const ver = e.target.value;
                 if (ver) onFetchSkillDetail(selectedSkill.name, ver);
               }}
-              className="appearance-none rounded-[6px] border border-border bg-panel text-sm text-text outline-none focus:outline-none focus:ring-0 focus:border-border"
+              className="appearance-none rounded-[6px] border border-border bg-panel text-xs text-text outline-none focus:outline-none focus:ring-0 focus:border-border"
               style={{ width: '360px', height: '28px', paddingLeft: '12px', paddingRight: '12px' }}
               data-testid="skill-panel-my-detail-versions-select"
             >
@@ -426,7 +426,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
                 defaultSuffix: ` (${t('skills.detail.defaultVersion')})`,
                 unavailableSuffix: ` (${t('skills.detail.unavailableVersion')})`,
               }).map((option) => (
-                <option key={option.version} value={option.version} disabled={option.disabled}>
+                <option key={option.version} value={option.version} disabled={option.disabled} className="text-xs">
                   {option.label}
                 </option>
               ))}

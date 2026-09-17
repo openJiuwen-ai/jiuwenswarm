@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { requestLogin } from '../../stores/authStore';
 import { useFreeModelsCampaign } from '../../features/free-models/campaign';
 import { useSessionStore } from '../../stores/sessionStore';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { ModelProviderIcon } from '../ModelProviderIcon';
 
 interface ModelPickerProps {
@@ -30,6 +31,7 @@ export default function ModelPicker({
   const { t } = useTranslation();
   const models = useSessionStore((state) => state.chatAvailableModels);
   const campaignActive = useFreeModelsCampaign();
+  const { tooltip, handlers } = useAdaptiveTooltip();
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -113,11 +115,12 @@ export default function ModelPicker({
       <button
         type="button"
         className="chat-mode-select__trigger"
-        title={t('chat.modelSelector.tooltip')}
         onClick={handleTriggerClick}
         disabled={disabled}
         aria-haspopup="menu"
         aria-expanded={open && !disabled}
+        data-tooltip={t('chat.modelSelector.tooltip')}
+        {...handlers}
         data-testid={`${testIdPrefix}-trigger`}
       >
         <span className="chat-mode-select__value">
@@ -143,6 +146,7 @@ export default function ModelPicker({
           </svg>
         )}
       </button>
+      {tooltip}
 
       {open &&
         !disabled &&

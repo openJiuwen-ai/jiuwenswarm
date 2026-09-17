@@ -37,16 +37,16 @@ export function DocToSkillModal({ onCreateFromKnowledge, onClose }: DocToSkillMo
           style={{ width: '550px' }}
         >
           {/* 头部 */}
-          <div className="flex items-center justify-between gap-3 px-5 pt-3 pb-0 bg-panel">
+          <div className="flex items-center justify-between gap-3 px-6 pt-6 bg-panel">
             <span className="text-lg font-semibold text-text-strong">{t('skills.docToSkillModal.title')}</span>
             <ModalCloseButton onClick={onClose} label={t('skills.docToSkillModal.cancel')} />
           </div>
           {/* 副标题 */}
-          <div className="px-5">
+          <div className="px-6">
             <span className="text-xs text-text-muted">{t('skills.docToSkillModal.subtitle')}</span>
           </div>
           {/* 来源 */}
-          <div className="px-5 pt-4">
+          <div className="px-6 pt-4">
             <span className="block text-sm font-medium text-text mb-2">{t('skills.docToSkillModal.sourceLabel')}</span>
             <div className="flex items-center gap-4">
               <label className="flex items-center gap-1.5 cursor-pointer">
@@ -71,7 +71,7 @@ export function DocToSkillModal({ onCreateFromKnowledge, onClose }: DocToSkillMo
           </div>
           {/* 本地上传 */}
           {docToSkillSource === 'local' && (
-            <div className="px-5 pt-3">
+            <div className="px-6 pt-3">
               <label
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -107,7 +107,7 @@ export function DocToSkillModal({ onCreateFromKnowledge, onClose }: DocToSkillMo
           )}
           {/* 链接 */}
           {docToSkillSource === 'link' && (
-            <div className="px-5 pt-3">
+            <div className="px-6 pt-3">
               <div className="flex items-center gap-1.5 mb-2">
                 <span className="text-sm font-medium text-text">{t('skills.docToSkillModal.linkLabel')}</span>
                 <span
@@ -132,7 +132,7 @@ export function DocToSkillModal({ onCreateFromKnowledge, onClose }: DocToSkillMo
             </div>
           )}
           {/* 技能描述 */}
-          <div className="px-5 pt-4">
+          <div className="px-6 pt-4">
             <span className="block text-sm font-medium text-text mb-1.5">{t('skills.docToSkillModal.descLabel')}</span>
             <input
               type="text"
@@ -144,7 +144,7 @@ export function DocToSkillModal({ onCreateFromKnowledge, onClose }: DocToSkillMo
             />
           </div>
           {/* 底部按钮 */}
-          <div className="flex items-center justify-end gap-3 px-5 pt-4 pb-4 bg-panel">
+          <div className="flex items-center justify-end gap-3 px-6 pt-4 pb-4 bg-panel">
             <button
               type="button"
               onClick={onClose}

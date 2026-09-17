@@ -1017,7 +1017,7 @@ export function SkillPanel({
                           }
                     }
                     disabled={isDisabled}
-                    className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="flex items-center w-full px-3 py-2 text-xs text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                     data-testid="skill-panel-my-skill-card-menu-edit"
                   >
                     {t('skills.actions.edit')}
@@ -1034,7 +1034,7 @@ export function SkillPanel({
                         }
                   }
                   disabled={isUninstalling}
-                  className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="flex items-center w-full px-3 py-2 text-xs text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                   data-testid="skill-panel-my-skill-card-menu-uninstall"
                 >
                   {t(isUninstalling ? 'skills.actions.uninstalling' : 'skills.actions.uninstall')}

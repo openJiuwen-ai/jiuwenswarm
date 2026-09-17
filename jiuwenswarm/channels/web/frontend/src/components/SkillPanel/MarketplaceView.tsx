@@ -63,9 +63,7 @@ export function MarketplaceView({
           className="detail-back"
           onClick={onBackFromMore}
           data-testid={
-            marketplaceSubView === 'team'
-              ? 'skill-panel-team-skills-back-btn'
-              : 'skill-panel-featured-skills-back-btn'
+            marketplaceSubView === 'team' ? 'skill-panel-team-skills-back-btn' : 'skill-panel-featured-skills-back-btn'
           }
         >
           <BackIcon aria-hidden="true" />

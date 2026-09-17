@@ -134,6 +134,12 @@ export interface Message {
    */
   isGoalObjectiveMessage?: boolean;
   isCommandOutput?: boolean;
+  /**
+   * 该用户消息被 before_chat_request 钩子改写（如敏感内容替换），由
+   * chat.message_updated 事件原地替换内容时置位（issue #2792）。气泡可据此
+   * 渲染「已按安全策略改写」之类的角标；刷新后从历史加载的消息无此标记。
+   */
+  hookRewritten?: boolean;
   /** 斜杠命令结果的结构化元数据；避免渲染层依赖 content 的换行分隔。 */
   commandName?: string;
   commandInput?: string;

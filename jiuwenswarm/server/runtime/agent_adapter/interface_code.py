@@ -50,9 +50,6 @@ from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
 from openjiuwen.harness.tools import WebFetchWebpageTool, WebPaidSearchTool, is_paid_search_enabled
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
-    AUTHORIZATION_EXECUTION_CONTEXTS,
-)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _ContextEngineModelState,
     JiuWenSwarmDeepAdapter,
@@ -411,7 +408,6 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "skill_toolkit": "_build_skill_toolkit",
     "skill_retrieval": "_build_skill_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
-    "request_a4p_intent_authorization": "_build_a4p_tools",
 }
 
 
@@ -477,7 +473,6 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "enter_plan_mode",
     "exit_plan_mode",
     "ask_user",
-    "request_a4p_intent_authorization",
     "task_tool",
     "subagent_spawn",
     "subagent_wait",
@@ -2223,28 +2218,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         resolved_language = self._resolve_runtime_language()
         resolved_channel = str(runtime_config.channel_id or
                                self._resolve_prompt_channel(runtime_config.session_id) or "web").strip() or "web"
-        self._sync_a4p_tools_for_runtime(
-            get_config(),
-            resolved_channel,
-            runtime_config.session_id,
-        )
         if self._runtime_prompt_rail:
-            execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(
-                runtime_config.session_id
-            )
             # Language section (response language) must follow the user's
             # preferred language, not the code-mode "en" which only governs
             # system-prompt scaffolding (time/runtime/env sections).
             self._runtime_prompt_rail.set_language(self._resolve_output_language())
             self._runtime_prompt_rail.set_force_english(self._force_english_runtime_prompt)
             self._runtime_prompt_rail.set_channel(resolved_channel)
-            self._runtime_prompt_rail.set_a4p_authorizer_available(
-                bool(
-                    execution_context is not None
-                    and execution_context.is_interactive_web
-                )
-            )
-            self._runtime_prompt_rail.set_request_metadata(runtime_config.request_metadata)
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
             self._runtime_prompt_rail.set_trusted_dirs(runtime_config.trusted_dirs)
@@ -2534,14 +2514,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     ) -> SkillRetrievalPromptRail | None:
         """Build prompt guidance from the active Code Spec snapshot."""
         return super()._build_skill_retrieval_prompt_rail()
-
-    def _build_a4p_tools(self, agent_id: str) -> list[Any]:
-        """Build session-bound A4P authorization tools."""
-        from jiuwenswarm.agents.harness.common.tools.a4p_tools import get_tools
-
-        self._a4p_tools = list(get_tools(session_id=self._parent_session_id))
-        self._a4p_tools_registered = bool(self._a4p_tools)
-        return self._a4p_tools
 
     def _build_skill_retrieval_toolkit(self, agent_id: str) -> list[Any] | None:
         """构建 SkillRetrievalToolkit 工具（不注册到 Runner，由 _get_tool_cards 统一注册）."""

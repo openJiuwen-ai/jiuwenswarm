@@ -48,6 +48,7 @@ export default {
           strong: color('--color-text-strong'),
           muted: color('--color-text-secondary'),
           meta: color('--color-text-meta'),
+          disabled: color('--color-text-disabled'),
           inverse: color('--color-text-inverse'),
           link: color('--color-text-link'),
           divider: color('--color-text-divider'),

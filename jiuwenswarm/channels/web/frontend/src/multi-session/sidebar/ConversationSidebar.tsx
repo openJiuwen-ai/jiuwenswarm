@@ -399,7 +399,7 @@ function ProjectEntityRow({
   const mainRef = useRef<HTMLButtonElement>(null);
   const tooltipId = useId();
   const [menuOpen, setMenuOpen] = useState(false);
-  const { tooltip: rowTooltip, handlers: rowTooltipHandlers } = useAdaptiveTooltip();
+  const { tooltip: rowTooltip, handlers: rowTooltipHandlers } = useAdaptiveTooltip({ align: 'left' });
   const [tooltipPos, setTooltipPos] = useState<{ left: number; top: number } | null>(null);
   // 分别跟踪 hover 与 focus 状态：任一活跃即保持 tooltip，避免 mouseleave/blur 互相误清
   const hoverRef = useRef(false);
@@ -462,7 +462,6 @@ function ProjectEntityRow({
           <span className="conversation-list-item__status-dot" aria-hidden="true" data-testid="multi-session-project-row-cron-unread" />
         ) : null}
         {isExpanded ? <CollapseIcon className="conversation-entity-row__chevron" aria-hidden /> : <ArrowRightIcon className="conversation-entity-row__chevron" aria-hidden />}
-        {isPinned ? <PinIcon className="conversation-entity-row__pin" aria-hidden /> : null}
       </button>
       <button
         type="button"
@@ -857,6 +856,7 @@ export function ConversationSidebar({
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
   const { tooltip: conversationsTooltip, handlers: conversationsTooltipHandlers } = useAdaptiveTooltip();
+  const { tooltip: newProjectTooltip, handlers: newProjectTooltipHandlers } = useAdaptiveTooltip({ align: 'left' });
   const runtimes = useChatStore((state) => state.runtimes);
   const [relativeTimeNow, setRelativeTimeNow] = useState(Date.now);
   const [unreadSessions, setUnreadSessions] = useState(loadUnreadSessions);
@@ -1651,11 +1651,12 @@ export function ConversationSidebar({
               onClick={() => {
                 setProjectAddMenuOpen((open) => !open);
               }}
-              title={t('multiSession.project.newProject')}
               aria-label={t('multiSession.project.newProject')}
               aria-haspopup="menu"
               aria-expanded={projectAddMenuOpen}
+              data-tooltip={t('multiSession.project.newProject')}
               data-testid="multi-session-new-project-button"
+              {...newProjectTooltipHandlers}
             >
               <PlusIcon aria-hidden />
             </button>
@@ -1756,6 +1757,7 @@ export function ConversationSidebar({
         />
       ) : null}
       {conversationsTooltip}
+      {newProjectTooltip}
     </aside>
     </>
   );

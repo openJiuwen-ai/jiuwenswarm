@@ -125,7 +125,6 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
     get_permissions_config_req_methods,
 )
-from jiuwenswarm.agents.harness.common.a4p_rpc import get_a4p_req_methods
 from jiuwenswarm.common.config import (
     DEFAULT_SANDBOX_POLICY_FILE,
     DEFAULT_SANDBOX_STARTUP_MODE,
@@ -177,7 +176,7 @@ from jiuwenswarm.runtime.request import (
     resolve_request_runtime_mode,
     sync_chat_request_metadata as _sync_chat_request_metadata,
 )
-from jiuwenswarm.runtime.events import RuntimeEvent
+from jiuwenswarm.runtime.events import RuntimeEvent, TERMINAL_ERROR_EVENT_TYPES
 from jiuwenswarm.runtime.host_services import (
     install_runtime_push_handler,
     restore_runtime_push_handler,
@@ -554,12 +553,7 @@ class _TurnOutcomeTracker:
             self.saw_runtime_accepted = True
         elif event_type == "chat.ask_user_question":
             self.waiting_user = True
-        if not event.ok or event_type in {
-            "chat.error",
-            "runtime.error",
-            "execution.error",
-            "error",
-        }:
+        if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
             self.fail(self._event_error(event))
 
     def fail(self, error: str) -> None:
@@ -915,7 +909,6 @@ def _payload_to_request(data: dict[str, Any]) -> AgentRequest:
         timestamp=data.get("timestamp", 0.0),
         metadata=metadata,
         user_id=str(data.get("user_id") or "").strip(),
-        agent_ref=data.get("agent_ref"),
     )
 
 
@@ -2392,9 +2385,6 @@ class AgentWebSocketServer:
             if request.req_method in get_permissions_config_req_methods():
                 await self._handle_permissions_config(ws, request, send_lock)
                 return
-            if request.req_method in get_a4p_req_methods():
-                await self._handle_a4p_request(ws, request, send_lock)
-                return
             if request.req_method == ReqMethod.HISTORY_GET:
                 if request.is_stream:
                     await self._handle_history_get_stream(ws, request, send_lock)
@@ -3467,10 +3457,25 @@ class AgentWebSocketServer:
                     if isinstance(event.payload, dict)
                     else event.payload
                 )
-                if not event.ok:
+                event_type = (
+                    str(payload.get("event_type") or "")
+                    if isinstance(payload, dict)
+                    else ""
+                )
+                # 模型/Agent 级失败会以 chat.error / execution.error / team.error
+                # 等事件类型送达，且 ok 默认 True（RuntimeEvent.from_agent_message）。
+                # 仅靠 event.ok 会漏判这类终端失败，导致心跳本轮被误记为
+                # succeeded（界面显示「上次运行成功」）。与
+                # execute_internal_session_message / cron scheduler 对齐，按
+                # event_type 识别终端错误。
+                if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
                     payload = dict(payload or {})
                     payload["event_type"] = "chat.error"
-                    payload.setdefault("error", "Runtime execution failed")
+                    payload["error"] = str(
+                        payload.get("error")
+                        or payload.get("message")
+                        or "Runtime execution failed"
+                    )
                 is_processing_start = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
@@ -3500,7 +3505,7 @@ class AgentWebSocketServer:
                 )
                 if finishes_processing and pushed:
                     processing_finished = True
-                if not event.ok:
+                if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
                     error_value = (
                         payload.get("error")
                         if isinstance(payload, dict)
@@ -3691,12 +3696,7 @@ class AgentWebSocketServer:
                     else ""
                 )
                 outcome_tracker.observe(event)
-                if not event.ok or event_type in {
-                    "chat.error",
-                    "runtime.error",
-                    "execution.error",
-                    "error",
-                }:
+                if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
                     error_payload = dict(payload or {})
                     error_payload["event_type"] = "chat.error"
                     error_payload["error"] = str(
@@ -5297,7 +5297,7 @@ class AgentWebSocketServer:
         ok = True
         try:
             if method == "session.archived.list":
-                payload = service.list_sessions(params)
+                payload = await asyncio.to_thread(service.list_sessions, params)
             elif method == "cron.sessions.delete":
                 payload = await service.delete_cron_sessions(
                     params.get("cron_id"), request.channel_id or ""
@@ -5307,7 +5307,8 @@ class AgentWebSocketServer:
                     params.get("project_id"), method.rsplit(".", 1)[1], request.channel_id or ""
                 )
             elif method == "project.lifecycle" and params.get("events"):
-                payload = {"events": lc.event_snapshots()}
+                # Full-directory scan of lifecycle state: keep it off the loop.
+                payload = {"events": await asyncio.to_thread(lc.event_snapshots)}
             elif method == "project.lifecycle" and params.get("inventory"):
                 from jiuwenswarm.server.runtime.session.project_store import list_projects
                 payload = {"projects": [dict(project_id=p.project_id,
@@ -5763,20 +5764,6 @@ class AgentWebSocketServer:
             # Preserve develop's capture time and outer request error handling.
             self._agent_manager.schedule_permissions_reload(get_config())
 
-        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
-        async with send_lock:
-            await send_wire_payload(ws, wire)
-
-    async def _handle_a4p_request(
-        self,
-        ws: Any,
-        request: AgentRequest,
-        send_lock: asyncio.Lock,
-    ) -> None:
-        """Handle a4p.* requests forwarded from the Web User Authorizer."""
-        from jiuwenswarm.agents.harness.common.a4p_rpc import dispatch_a4p_request
-
-        resp = await dispatch_a4p_request(request)
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
@@ -10374,13 +10361,6 @@ class AgentWebSocketServer:
                 reload_kwargs["target_session_id"] = target_session_id
             if reload_scopes:
                 reload_kwargs["reload_scopes"] = reload_scopes
-            if isinstance(config_payload, dict) and "a4p" in config_payload:
-                from jiuwenswarm.agents.harness.common.a4p_runtime import (
-                    get_a4p_config,
-                )
-
-                # Gateway snapshots may predate an AgentServer-owned config RPC.
-                config_payload = {**config_payload, "a4p": get_a4p_config()}
             agent_reload_scopes = {
                 "model",
                 "multimodal",

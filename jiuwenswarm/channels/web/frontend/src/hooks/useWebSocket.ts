@@ -4211,6 +4211,33 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           timestamp: new Date().toISOString(),
         });
       }),
+      webClient.on('chat.message_updated', ({ payload }) => {
+        // before_chat_request 钩子改写 query/model_name 后的实时回推（issue #2792）。
+        // 事件在请求进入 Agent 前发出，最后一条用户消息即本次发送的气泡；
+        // 改写结果与刷新后从历史拉到的内容一致，原地替换避免闪烁。
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+
+        const updates = payload.updates;
+        if (!isRecord(updates)) return;
+
+        if (typeof updates.query === 'string') {
+          const messages = useChatStore.getState().getRuntime(sessionId)?.messages ?? [];
+          for (let i = messages.length - 1; i >= 0; i -= 1) {
+            if (messages[i].role === 'user') {
+              useChatStore.getState().updateMessage(sessionId, messages[i].id, {
+                content: updates.query,
+                hookRewritten: true,
+              });
+              break;
+            }
+          }
+        }
+
+        if (typeof updates.model_name === 'string' && updates.model_name) {
+          useSessionStore.getState().setSelectedModelName(sessionId, updates.model_name);
+        }
+      }),
       webClient.on('security.alert', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -4504,58 +4531,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           });
         }
         useChatStore.getState().enqueuePendingQuestion(sessionId, normalizedPayload);
-      }),
-      webClient.on('a4p.authorization_request', ({ payload }) => {
-        const requestPayload = payload as Record<string, unknown>;
-        const sessionId = resolveEventSessionId(requestPayload);
-        if (!sessionId) return;
-        const requestId =
-          typeof requestPayload.requestId === 'string'
-            ? requestPayload.requestId
-            : typeof requestPayload.request_id === 'string'
-              ? requestPayload.request_id
-              : '';
-        const mandate = requestPayload.mandate;
-        const signingOptions = requestPayload.signingOptions;
-        if (
-          !requestId
-          || !mandate
-          || typeof mandate !== 'object'
-          || Array.isArray(mandate)
-          || !signingOptions
-          || typeof signingOptions !== 'object'
-          || Array.isArray(signingOptions)
-        ) {
-          return;
-        }
-        const uiContext =
-          requestPayload.uiContext && typeof requestPayload.uiContext === 'object'
-            ? requestPayload.uiContext as Record<string, unknown>
-            : {};
-        useChatStore.getState().setPendingA4PAuthorization(sessionId, {
-          requestId,
-          kind: typeof requestPayload.kind === 'string' ? requestPayload.kind : 'intent',
-          mandate: mandate as Record<string, unknown>,
-          signingOptions: signingOptions as Record<string, unknown>,
-          uiContext,
-          sessionId: getPayloadSessionId(requestPayload),
-        });
-      }),
-      webClient.on('a4p.authorization_terminated', ({ payload }) => {
-        const requestPayload = payload as Record<string, unknown>;
-        const sessionId = resolveEventSessionId(requestPayload);
-        if (!sessionId) return;
-        const requestId =
-          typeof requestPayload.requestId === 'string'
-            ? requestPayload.requestId
-            : typeof requestPayload.request_id === 'string'
-              ? requestPayload.request_id
-              : '';
-        const pending = useChatStore.getState()
-          .runtimes[sessionId]?.pendingA4PAuthorization;
-        if (!requestId || pending?.requestId === requestId) {
-          useChatStore.getState().setPendingA4PAuthorization(sessionId, null);
-        }
       }),
       // 同时监听 session_result 事件，以处理后端可能发送的不同格式
       webClient.on('session_result', ({ payload }) => {

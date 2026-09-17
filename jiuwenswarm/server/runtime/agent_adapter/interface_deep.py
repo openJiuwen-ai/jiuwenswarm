@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
     from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
     from jiuwenswarm.common.auth.login_credentials import LoginAuth
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import SessionInputGuard
 
 import yaml
 from pydantic import ValidationError
@@ -411,10 +412,6 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     TOOL_PERMISSION_CHANNEL_ID,
     TOOL_PERMISSION_REQUEST_ID,
-)
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
-    AUTHORIZATION_EXECUTION_CONTEXTS,
-    build_authorization_execution_context,
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
@@ -1829,6 +1826,7 @@ class JiuWenSwarmDeepAdapter:
         apply_task_tool_event_patch()
         self._instance: DeepAgent | None = None
         self._interaction_output_handoff: OutputHandoff | None = None
+        self._session_input_guard: SessionInputGuard | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._permission_workspace_root: Path | None = None
@@ -1992,8 +1990,6 @@ class JiuWenSwarmDeepAdapter:
         self._paid_search_tool: WebPaidSearchTool | None = None
         self._symphony_tools: list[Any] = []
         self._symphony_tools_registered: bool = False
-        self._a4p_tools: list[Any] = []
-        self._a4p_tools_registered: bool = False
         self._symphony_orchestration_rail = None
         self._skill_retrieval_tools_registered: bool = False
         self._skill_retrieval_tools: list[Any] = []
@@ -6064,30 +6060,6 @@ class JiuWenSwarmDeepAdapter:
             enabled=enabled,
             create_fn=lambda: mark_stateless(SymphonyToolkit().get_tools(config_base)),
             warn_label="symphony tools",
-        )
-
-    def _sync_a4p_tools_for_runtime(
-        self,
-        config_base: dict[str, Any],
-        channel: str,
-        session_id: str | None,
-    ) -> None:
-        """Expose A4P only when this session has an interactive Web authorizer."""
-        from jiuwenswarm.agents.harness.common.a4p_runtime import is_a4p_enabled
-        from jiuwenswarm.agents.harness.common.tools.a4p_tools import get_tools
-
-        execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
-        authorizer_available = bool(
-            channel == "web"
-            and execution_context is not None
-            and execution_context.is_interactive_web
-        )
-        self._a4p_tools, self._a4p_tools_registered = self._sync_tool_group(
-            current_tools=self._a4p_tools,
-            registered=self._a4p_tools_registered,
-            enabled=is_a4p_enabled(config_base) and authorizer_available,
-            create_fn=lambda: get_tools(session_id=session_id),
-            warn_label="A4P intent authorization tool",
         )
 
     @staticmethod
@@ -10884,6 +10856,7 @@ class JiuWenSwarmDeepAdapter:
         # ensure_initialized(), so we live-register it here — same pattern
         # memory / task_planning / ask_user / context_* / skill_evolution use.
         await self._ensure_permission_rail_live_registered()
+        await self.install_session_input_guard(reload=True)
         self._sync_active_evolution_review_agent_after_reload()
 
         await self._sync_mcp_servers_for_runtime(config_base, tag="agent.reload")
@@ -11869,27 +11842,9 @@ class JiuWenSwarmDeepAdapter:
         )
         stage_timer.mark("cwd_seed")
 
-        self._sync_a4p_tools_for_runtime(
-            get_config(),
-            resolved_channel,
-            runtime_config.session_id,
-        )
-
         if self._runtime_prompt_rail:
-            execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(
-                runtime_config.session_id
-            )
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
-            self._runtime_prompt_rail.set_a4p_authorizer_available(
-                bool(
-                    execution_context is not None
-                    and execution_context.is_interactive_web
-                )
-            )
-            self._runtime_prompt_rail.set_request_metadata(
-                runtime_config.request_metadata if bind_request else None
-            )
             self._runtime_prompt_rail.set_trusted_dirs(
                 runtime_config.trusted_dirs if bind_request else None
             )
@@ -12097,6 +12052,7 @@ class JiuWenSwarmDeepAdapter:
             kv_cache_runtime=get_kv_cache_runtime(),
         )
         await session.pre_run(inputs={})
+        await self.install_session_input_guard()
         await self._instance.start(session=session)
         if getattr(self._instance, "_interaction_started", True) is not True:
             raise RuntimeError(f"DeepAgent interaction did not become ready: {session_id}")
@@ -12672,16 +12628,9 @@ class JiuWenSwarmDeepAdapter:
         Missing or unknown values keep pre-Goal Gateway replace semantics
         (``None`` → OpenJiuwen default FOLLOW_UP boundary when idle).
         """
-        if not isinstance(params, dict):
-            return None
-        input_mode = str(
-            params.get("input_mode") or params.get("runtime_mode") or ""
-        ).strip().lower()
-        if input_mode == "follow_up":
-            return InputDispatchMode.FOLLOW_UP
-        if input_mode == "steer":
-            return InputDispatchMode.STEER
-        return None
+        from jiuwenswarm.server.runtime.agent_adapter.session_input import sdk_input_mode
+
+        return sdk_input_mode(params)
 
     @staticmethod
     def _wants_attach_goal(params: Any) -> bool:
@@ -12977,11 +12926,14 @@ class JiuWenSwarmDeepAdapter:
                     )
             raise
 
-    async def _send_input_with_permission_resume_guard(self, request: SendInputRequest) -> bool:
+    async def _send_input_with_permission_resume_guard(
+        self, request: SendInputRequest, *, send: Any = None,
+    ) -> bool:
+        sender = send if send is not None else self._instance.send_input
         if not self._enable_auto_permission:
-            await self._instance.send_input(request)
+            await sender(request)
             return False
-        return await self._permission_dispatch.send(request, self._instance.send_input)
+        return await self._permission_dispatch.send(request, sender)
 
 
     def _permission_context_messages(
@@ -15010,11 +14962,6 @@ class JiuWenSwarmDeepAdapter:
         if equipment_error is not None:
             return equipment_error
 
-        authorization_context = build_authorization_execution_context(
-            request,
-            agent_id=self._agent_name,
-            mode=mode,
-        )
         cron_context_tokens = self._bind_runtime_cron_context(
             channel_id=request.channel_id,
             session_id=request.session_id,
@@ -15064,7 +15011,6 @@ class JiuWenSwarmDeepAdapter:
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
-        AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
         try:
             await self._update_runtime_config(
                 self._RuntimeConfig(
@@ -15273,10 +15219,6 @@ class JiuWenSwarmDeepAdapter:
             cleanup_permission_context(token_perm)
             self._reset_runtime_cron_context(cron_context_tokens)
             reset_session_messaging_route(session_message_context_token)
-            AUTHORIZATION_EXECUTION_CONTEXTS.release(
-                authorization_context.session_id,
-                authorization_context.request_id,
-            )
             self._unmark_session_active(session_id)
 
         content = "".join(collected_content) if collected_content else ""
@@ -15302,6 +15244,160 @@ class JiuWenSwarmDeepAdapter:
             payload={"content": content},
             metadata=request.metadata,
         )
+
+    async def install_session_input_guard(self, *, reload: bool = False) -> None:
+        """Register the input guard on this Adapter's current SDK instance."""
+        from jiuwenswarm.server.runtime.agent_adapter.session_input import (
+            SessionInputGuard,
+        )
+
+        instance = self._instance
+        register = getattr(instance, "register_rail", None)
+        if not callable(register):
+            return
+        guard = self._session_input_guard
+        if guard is None or guard.owner is not instance:
+            guard = SessionInputGuard(instance)
+        elif not reload:
+            return
+        else:
+            await instance.unregister_rail(guard)
+        await instance.ensure_initialized()
+        await register(guard)
+        self._session_input_guard = guard
+
+    async def deliver_active_session_input(
+        self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> bool:
+        """Send through the existing permission transaction and output owner.
+
+        Return False only before sending, when a new output owner is needed.
+        Literal '/...' supplements remain text rather than slash commands.
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.session_input import (
+            SessionInputDeliveryUnknown,
+            sdk_input_mode,
+        )
+
+        instance = self._instance
+        if instance is None or instance.active_round is None:
+            return False
+        if not instance.has_output_stream():
+            return False
+        if self._stream_completion_state(had_interaction=False) == "suspended":
+            raise RuntimeError(
+                "session is waiting for an interaction answer; "
+                "supplemental input was not sent"
+            )
+        mode = sdk_input_mode(request.params)
+
+        def require_open_input() -> None:
+            if mode is InputDispatchMode.STEER:
+                guard = self._session_input_guard
+                if guard is None or guard.owner is not instance:
+                    accepting = False
+                else:
+                    accepting = guard.accepting
+                if not accepting:
+                    raise RuntimeError(
+                        "session is finishing or changing execution state; "
+                        "supplemental input was not sent, "
+                        "retry after it settles"
+                    )
+
+        require_open_input()
+        prepared = await self._prepare_root_input_dispatch(request, inputs)
+        try:
+            if instance.active_round is None or not instance.has_output_stream():
+                return False
+
+            async def send(sdk_request: SendInputRequest) -> None:
+                require_open_input()
+                target_round = instance.active_round
+                await instance.send_input(sdk_request)
+                # A closing boundary during SDK admission makes delivery
+                # uncertain. Preserve that receipt; never retry automatically.
+                if mode is InputDispatchMode.STEER and (
+                    not self._session_input_guard.accepting
+                    or instance.active_round is not target_round
+                ):
+                    raise SessionInputDeliveryUnknown(
+                        "session changed while sending; "
+                        "supplemental delivery is unknown, "
+                        "do not retry automatically"
+                    )
+
+            await self._send_input_with_permission_resume_guard(
+                SendInputRequest(
+                    request_id=request.request_id,
+                    inputs=self._permission_inputs_for_dispatch(
+                        request, prepared, mode
+                    ),
+                    mode=mode,
+                ),
+                send=send,
+            )
+            return True
+        finally:
+            self._permission_dispatch.finalize(prepared)
+
+    async def deliver_session_input_impl(
+        self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """Deliver to the cached owner without resetting its active run state."""
+        session_id = self._session_adapter_key(request.session_id)
+        if not self._is_session_scoped_adapter:
+            adapter = self._get_cached_session_adapter(session_id)
+            if adapter is None:
+                raise RuntimeError("session has no active adapter")
+            async with aclosing(adapter.deliver_session_input_impl(request, inputs)) as stream:
+                async for chunk in stream:
+                    yield chunk
+            return
+        if session_id != self._session_adapter_key(self._parent_session_id):
+            raise ValueError("supplemental input targets another Session")
+        self._register_session_agent_task(session_id)
+        try:
+            async with self._permission_request_admission(request, inputs):
+                self.validate_auto_permission_workspace_request(request)
+                with self._bind_permission_request_context(request):
+                    token_perm = setup_permission_context(request)
+                    try:
+                        accepted = await self.deliver_active_session_input(request, inputs)
+                    finally:
+                        cleanup_permission_context(token_perm)
+            if accepted:
+                yield AgentResponseChunk(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    payload={"event_type": "runtime.accepted", "request_id": request.request_id},
+                    is_complete=False,
+                )
+                yield AgentResponseChunk(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    payload=None, is_complete=True,
+                )
+                return
+            # The original execution can finish between Runtime routing and
+            # SDK admission. Reuse normal output ownership for the idle case.
+            if self._instance is not None and self._instance.has_output_stream():
+                raise RuntimeError(
+                    "session output is finishing; supplemental input was not "
+                    "sent, retry after it settles"
+                )
+            if not request.is_stream:
+                response = await self.process_message_impl(request, inputs)
+                if not response.ok:
+                    raise RuntimeError(str(response.payload))
+                yield AgentResponseChunk(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    payload=response.payload, metadata=response.metadata, is_complete=True,
+                )
+                return
+            async with aclosing(self.process_message_stream_impl(request, inputs)) as stream:
+                async for chunk in stream:
+                    yield chunk
+        finally:
+            self._unregister_session_agent_task(session_id)
 
     async def process_message_stream_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -15374,11 +15470,6 @@ class JiuWenSwarmDeepAdapter:
                 reset_team_heartbeat_service,
             )
 
-            authorization_context = build_authorization_execution_context(
-                request,
-                agent_id=self._agent_name,
-                mode=mode,
-            )
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(
                 resolved_model,
@@ -15447,11 +15538,6 @@ class JiuWenSwarmDeepAdapter:
                 self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
                 self._runtime_prompt_rail.set_mode(mode)
                 self._runtime_prompt_rail.set_session_id(session_id)
-                self._runtime_prompt_rail.set_channel(resolved_channel)
-                self._runtime_prompt_rail.set_a4p_authorizer_available(
-                    authorization_context.is_interactive_web
-                )
-                self._runtime_prompt_rail.set_request_metadata(request.metadata)
             self._write_runtime_state(
                 mode=mode,
                 language=resolved_language,
@@ -15466,7 +15552,6 @@ class JiuWenSwarmDeepAdapter:
             token_heartbeat_service = bind_team_heartbeat_service(
                 getattr(self, "_heartbeat_service", None)
             )
-            AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
             try:
                 team_stream = process_team_message_stream(request, inputs, self._instance)
                 async with aclosing(team_stream):
@@ -15480,10 +15565,6 @@ class JiuWenSwarmDeepAdapter:
                 reset_current_multimodal_image_files(image_files_token)
                 reset_team_heartbeat_service(token_heartbeat_service)
                 cleanup_permission_context(token_perm)
-                AUTHORIZATION_EXECUTION_CONTEXTS.release(
-                    authorization_context.session_id,
-                    authorization_context.request_id,
-                )
             return
 
         # Auto-Harness 模式处理
@@ -15764,11 +15845,6 @@ class JiuWenSwarmDeepAdapter:
             )
             return
 
-        authorization_context = build_authorization_execution_context(
-            request,
-            agent_id=self._agent_name,
-            mode=mode,
-        )
         cron_context_tokens = self._bind_runtime_cron_context(
             channel_id=request.channel_id,
             session_id=request.session_id,
@@ -15818,7 +15894,6 @@ class JiuWenSwarmDeepAdapter:
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
-        AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
         try:
             await self._update_runtime_config(
                 self._RuntimeConfig(
@@ -16674,10 +16749,6 @@ class JiuWenSwarmDeepAdapter:
             self._permission_dispatch.finalize(inputs)
             self._unregister_session_agent_task(session_id)
             cleanup_permission_context(token_perm)
-            AUTHORIZATION_EXECUTION_CONTEXTS.release(
-                authorization_context.session_id,
-                authorization_context.request_id,
-            )
             if not stream_consumer_cancelled:
                 self._reset_runtime_cron_context(cron_context_tokens)
                 reset_session_messaging_route(session_message_context_token)

@@ -2572,7 +2572,7 @@ body.workspace-resize-active iframe {
   padding: 7px 16px;
   border-radius: 6px;
   background: var(--color-surface-popover);
-  box-shadow: var(--effect-shadow-lg);
+  box-shadow: var(--effect-chat-tooltip-shadow);
   color: var(--color-text-primary);
   font-size: 12px;
   line-height: 18px;

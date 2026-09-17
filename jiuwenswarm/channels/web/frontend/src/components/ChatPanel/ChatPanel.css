@@ -176,7 +176,7 @@
   border: 0;
   border-radius: 24px;
   background: var(--color-action-secondary);
-  box-shadow: var(--effect-shadow-md);
+  box-shadow: var(--effect-chat-composer-shadow);
   padding: 4px 4px 0;
   overflow: visible;
 }
@@ -185,8 +185,9 @@
   border: 1px solid var(--color-border-default);
   border-radius: 20px;
   background: var(--color-surface-card);
-  box-shadow: none;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.06);
   overflow: hidden;
+  z-index: 2;
 }
 
 .chat-input-container--work-home .chat-input-editor {
@@ -902,7 +903,6 @@
   margin: 0 2px;
   padding: 0 8px 0 6px;
   border-radius: 6px;
-  border: 1px solid var(--color-border-default);
   background: var(--color-chat-accent-subtle);
   color: var(--color-chat-accent);
   font-size: 12px;
@@ -972,8 +972,14 @@
 }
 
 .chat-input-chip-inline__remove svg {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
+}
+
+/* close.svg 资源自带硬编码灰色 fill（其他调用处依赖该颜色），此处覆盖为 currentColor，
+   保持 chip 删除图标跟随按钮主题色（--color-chat-accent / --color-action-primary）不变 */
+.chat-input-chip-inline__remove svg path {
+  fill: currentColor;
 }
 
 /* Member/role chips have no leading icon container. Keep their remove action
@@ -1163,8 +1169,8 @@
 
 .chat-composer-suggestion--slash .chat-composer-suggestion__list {
   max-height: 300px;
-  margin: 10px 0;
-  padding: 0 8px;
+  margin: 10px 2px;
+  padding: 0 6px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -1182,14 +1188,13 @@
 
 .chat-composer-suggestion__section-title:not(:first-child) {
   margin-top: 8px;
-  border-top: 1px solid var(--color-border-default);
   padding-top: 8px;
   height: 39px;
 }
 
 .chat-composer-suggestion--slash .chat-composer-suggestion__item {
-  height: 48px;
-  border-radius: 10px;
+  height: 30px;
+  border-radius: 8px;
 }
 
 .chat-composer-suggestion--slash .chat-composer-suggestion__item:hover,
@@ -1228,13 +1233,13 @@
 .chat-composer-suggestion--slash .chat-composer-suggestion__label {
   max-width: 42%;
   flex: 0 0 auto;
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .chat-composer-suggestion--slash .chat-composer-suggestion__meta {
   min-width: 0;
   flex: 1 1 auto;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 20px;
 }
 
@@ -1498,7 +1503,7 @@
 .chat-mode-select__trigger {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   max-width: 100%;
   min-width: 0;
   min-height: 34px;
@@ -1785,7 +1790,7 @@
   flex-direction: column;
   padding: 24px 8px 8px;
   border: 1px solid var(--color-border-default);
-  border-radius: 14px;
+  border-radius: 8px;
   background: var(--color-surface-card);
   box-shadow: var(--effect-shadow-lg);
   box-sizing: border-box;
@@ -1861,7 +1866,7 @@
 .chat-extension-picker {
   position: absolute;
   top: 0;
-  left: calc(100% + 11px);
+  left: calc(100% + 12px);
   z-index: 1;
 }
 
@@ -2008,6 +2013,34 @@
 .chat-picker-panel__search input:focus-visible {
   box-shadow: none;
   outline: 0;
+}
+
+/* 搜索清除按钮：统一对齐 PageToolbarSearch（agent-management-search-input 等）的清除按钮规格
+   ——16×16 命中区、14×14 X 图标，默认 --color-text-secondary、hover --color-text-primary；
+   仅输入框有值时由 PickerSearchInput 渲染，取代 type="search" 的原生清除按钮 */
+.chat-picker-panel__search-clear {
+  display: flex;
+  flex: 0 0 auto;
+  align-self: center;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.chat-picker-panel__search-clear:hover {
+  color: var(--color-text-primary);
+}
+
+.chat-picker-panel__search-clear svg {
+  width: 14px;
+  height: 14px;
+  margin-top: 0;
 }
 
 .chat-agent-picker__state {
@@ -2298,11 +2331,10 @@
 .chat-work-context-row {
   position: relative;
   display: flex;
-  min-height: 44px;
+  height: 42px;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
-  padding: 4px 12px 0;
+  padding: 0 4px;
   border-radius: 0 0 24px 24px;
   background: var(--color-action-secondary);
 }
@@ -2319,7 +2351,7 @@
   max-width: 160px;
   height: 26px;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 0 12px;
   border: 0;
   border-radius: 8px;
@@ -2611,37 +2643,17 @@
   transition: opacity 0.15s ease;
 }
 
-.chat-work-select__clear[data-tooltip]:hover::after,
-.chat-work-select__clear[data-tooltip]:focus-visible::after {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  z-index: 120;
-  display: block;
-  box-sizing: border-box;
-  width: max-content;
-  padding: 8px 10px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 8px;
-  background: var(--color-surface-popover);
-  box-shadow: var(--effect-shadow-lg);
-  color: var(--color-text-primary);
-  content: attr(data-tooltip);
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 16px;
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-.chat-work-select__clear .chat-work-icon,
-.chat-work-dialog__close .chat-work-icon {
+.chat-work-select__clear .chat-work-icon {
   width: 10px;
   height: 10px;
 }
 
+.chat-work-dialog__close .chat-work-icon {
+  width: 20px;
+  height: 20px;
+}
+
 .chat-work-select__clear:hover {
-  background: var(--color-feedback-danger-subtle);
   color: var(--color-feedback-danger);
 }
 
@@ -2659,12 +2671,11 @@
 
 .chat-work-select__option:hover:not(:disabled),
 .chat-work-select__option.is-active {
-  background: var(--color-action-secondary);
+  background: var(--color-icon-btn-hover-surface);
 }
 
 .chat-work-select__check {
   margin-left: auto;
-  color: var(--color-text-secondary);
   flex: 0 0 auto;
 }
 
@@ -2765,7 +2776,7 @@
   width: 84px;
   height: 28px;
   padding: 0;
-  border: 1px solid var(--color-border-default);
+  border: 1px solid var(--color-control-emphasis);
   border-radius: 999px;
   background: var(--color-surface-card);
   color: var(--color-text-primary);
@@ -2776,8 +2787,16 @@
 
 .chat-work-dialog__actions button[type="submit"] {
   border-color: var(--color-action-primary);
-  background: var(--color-action-primary);
+  background: var(--color-control-emphasis);
   color: var(--color-action-primary-text);
+}
+
+/* 确认按钮置灰态（输入为空等）：与上传技能弹窗导入按钮禁用样式一致（#dbdbdb/#f0f0f0/#c2c2c2） */
+.chat-work-dialog__actions button[type="submit"]:disabled {
+  border-color: var(--color-text-divider);
+  background: var(--color-surface-muted);
+  color: var(--color-text-disabled);
+  opacity: 1;
 }
 
 .chat-work-dialog__actions button:disabled {
@@ -2788,6 +2807,18 @@
 /* Permission selector - wider menu */
 .perm-select__menu {
   min-width: 340px;
+}
+
+/* 权限选择菜单(chat-panel-permission-selector-menu)hover 统一 #f5f5f5,
+   排除禁用项,避免覆盖 :disabled / --disabled 的"hover 无背景"约定 */
+.perm-select__menu .chat-mode-select__option:hover:not(:disabled):not(.chat-mode-select__option--disabled),
+.perm-select__menu .chat-mode-select__option:focus-visible:not(:disabled):not(.chat-mode-select__option--disabled) {
+  background: var(--color-icon-btn-hover-surface);
+}
+
+/* 权限选择菜单(chat-panel-permission-selector-menu)选中项默认不带背景色,仅 hover/focus 时显示 */
+.perm-select__menu .chat-mode-select__option--active {
+  background: transparent;
 }
 
 /* Permission options - icon centered against the name+desc block */
@@ -2948,6 +2979,15 @@
   max-width: 320px;
   max-height: 300px;
   overflow-y: auto;
+}
+
+/* 模型选择菜单(chat-panel-model-selector-menu)hover 统一 #f5f5f5，与权限/模式菜单约定一致；
+   RSI 实验弹窗复用 .model-select__menu 但不在本次范围，用 :not 排除 */
+.model-select__menu:not(.rsi-model-select__menu) .chat-mode-select__option:hover:not(:disabled),
+.model-select__menu:not(.rsi-model-select__menu) .chat-mode-select__option:focus-visible:not(:disabled) {
+  background: var(--color-icon-btn-hover-surface);
+  color: var(--color-text-primary);
+  outline: none;
 }
 
 .model-select__section-header {
@@ -3880,7 +3920,7 @@
 }
 
 .chat-input-btn:hover:not(:disabled) {
-  background: rgba(var(--color-action-primary-rgb), 0.1);
+  background: var(--color-button-hover);
   color: var(--color-text-primary);
 }
 

@@ -68,11 +68,6 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
-from jiuwenswarm.agents.harness.common.a4p_execution_context import (
-    AUTHORIZATION_EXECUTION_CONTEXTS,
-    AuthorizationExecutionContext,
-    AuthorizerRoute,
-)
 from jiuwenswarm.agents.swarm import (
     SwarmBuildContext,
     enrich_team_spec_for_swarm,
@@ -603,56 +598,14 @@ def test_build_member_capability_specs_rail_names(
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
 def test_build_member_capability_specs_tool_names(role: str) -> None:
-    """Only the leader declares A4P on top of the common tool set."""
+    """Both roles declare the common tool set (base / cron / send_file)."""
     config = {"agents": {"leader": {"skills": []}, "teammate": {"skills": []}}}
 
     _, tool_specs = build_member_capability_specs(config, "team", role)
     tool_names = {spec.type for spec in tool_specs}
 
-    expected = set(_COMMON_TOOL_NAMES)
-    if role == "leader":
-        expected.add(registry.A4P_INTENT_AUTHORIZATION)
-    assert tool_names == expected
+    assert tool_names == _COMMON_TOOL_NAMES
     assert all(isinstance(spec, BuiltinToolSpec) for spec in tool_specs)
-
-
-def test_a4p_intent_authorization_provider_is_interactive_web_leader_only() -> None:
-    enabled = SwarmBuildContext(
-        role="leader",
-        session_id="session-1",
-        config={"a4p": {"enabled": True}},
-    )
-    teammate = SwarmBuildContext(
-        role="teammate",
-        session_id="session-1",
-        config={"a4p": {"enabled": True}},
-    )
-
-    AUTHORIZATION_EXECUTION_CONTEXTS.clear()
-    assert tools.build_a4p_intent_authorization({}, enabled) == []
-    AUTHORIZATION_EXECUTION_CONTEXTS.activate(
-        AuthorizationExecutionContext(
-            request_id="request-1",
-            session_id="session-1",
-            channel_id="web",
-            agent_id="main_agent",
-            metadata={},
-            authorizer_route=AuthorizerRoute(
-                session_id="session-1",
-                app_id="default",
-                agent_ref_mode="team",
-                agent_ref_id="default",
-            ),
-        )
-    )
-    try:
-        built = tools.build_a4p_intent_authorization({}, enabled)
-        assert [tool.card.name for tool in built] == [
-            "request_a4p_intent_authorization"
-        ]
-        assert tools.build_a4p_intent_authorization({}, teammate) == []
-    finally:
-        AUTHORIZATION_EXECUTION_CONTEXTS.clear()
 
 
 def test_role_skills_seed_only_the_team_skill_rail() -> None:
@@ -2270,7 +2223,6 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.VISUAL_GEN,
         registry.XIAOYI_PHONE,
         registry.SYMPHONY_TOOLKIT,
-        registry.A4P_INTENT_AUTHORIZATION,
         registry.CODE_EXTRA_TOOLS,
         registry.CRON_TOOLS,
         registry.SEND_FILE,

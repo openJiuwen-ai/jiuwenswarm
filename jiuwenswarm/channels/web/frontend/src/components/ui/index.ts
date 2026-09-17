@@ -29,6 +29,7 @@ export { Tabs, type TabsItem, type TabsProps } from './Tabs/Tabs';
 export { FilePreviewPanel, type FilePreviewPanelProps } from './FilePreviewPanel/FilePreviewPanel';
 export {
   FilePreviewTree,
+  findDefaultPreviewFile,
   type FilePreviewTreeNode,
   type FilePreviewTreeLabels,
   type FilePreviewTreeProps,
