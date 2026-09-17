@@ -30,6 +30,8 @@ export type SkillItem = {
   is_builtin?: boolean;
   /** 是否为内置技能的来源（源码中存在内置版本） */
   is_builtin_source?: boolean;
+  /** 是否自研（内置技能且在后端 _proprietary_skills.json 名单内；缺省视为三方） */
+  proprietary?: boolean;
   /** 本地技能目录是否存在 evolutions.json */
   has_evolutions?: boolean;
   /** 是否启用 */
