@@ -1740,6 +1740,7 @@ async def test_config_get_returns_canonical_permission_profile(
     "params",
     [
         {"permissions_profile": "invalid"},
+        {"permissions_profile": "automatic"},
         {"permissions_mode": "auto"},
         {"permissions_profile": "automatic", "permissions_enabled": "true"},
     ],
@@ -1756,13 +1757,31 @@ async def test_config_set_rejects_invalid_permission_facade(monkeypatch, params)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["config.set", "config.save_all"])
+async def test_unsupported_profile_is_rejected_before_writes(monkeypatch, method):
+    channel = FakeWebChannel()
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
+    for name in ("update_permissions_profile_in_config", "update_default_models_in_config"):
+        monkeypatch.setattr(app_web_handlers, name, lambda *a, **kw: pytest.fail("unexpected config write"))
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    params = {"permissions_profile": "automatic", "model_provider": "OpenAI"}
+    if method == "config.save_all":
+        params = {"config": params}
+
+    await channel.methods[method](object(), "unsupported-profile", params, "session")
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("params", "saved_profile", "canonical"),
     [
         (
-            {"permissions_profile": "automatic"},
-            "automatic",
-            {"permissions_profile": "automatic", "permissions_enabled": "true"},
+            {"permissions_profile": "default"},
+            "default",
+            {"permissions_profile": "default", "permissions_enabled": "true"},
         ),
         (
             {"permissions_enabled": "false"},
@@ -1878,7 +1897,7 @@ async def test_permission_profile_write_failure_returns_no_canonical_success(
     await channel.methods["config.set"](
         object(),
         "req-profile-write-failure",
-        {"permissions_profile": "automatic"},
+        {"permissions_profile": "default"},
         "sess-profile",
     )
 
@@ -1933,7 +1952,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
         object(),
         "req-save-all-invalid-kvc",
         {
-            "config": {"permissions_profile": "automatic"},
+            "config": {"permissions_profile": "default"},
             "models": [
                 {
                     "model_name": "model-one",
@@ -2503,18 +2522,18 @@ async def test_config_set_starts_codex_dependency_install_without_saving_codex(m
         {
             "external_cli_agent_codex_enabled": "true",
             "external_cli_agent_codex_use_builtin": "true",
-            "permissions_profile": "automatic",
+            "permissions_profile": "default",
         },
         "sess-codex-installing",
     )
 
     assert updates == [([], "ws://127.0.0.1:19000/ws")]
-    assert saved_profiles == ["automatic"]
+    assert saved_profiles == ["default"]
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["codex_dependency_install"]["status"] == "running"
     assert channel.responses[-1]["payload"]["external_cli_dependency_installs"]["codex"]["status"] == "running"
     assert channel.responses[-1]["payload"]["canonical_config"] == {
-        "permissions_profile": "automatic",
+        "permissions_profile": "default",
         "permissions_enabled": "true",
     }
 

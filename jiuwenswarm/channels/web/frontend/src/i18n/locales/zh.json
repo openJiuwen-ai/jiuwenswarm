@@ -914,8 +914,6 @@
       "permission": {
         "default": "默认权限",
         "defaultDesc": "编辑外部文件和使用互联网时始终询问",
-        "automatic": "智能审批",
-        "automaticDesc": "结合当前任务和权限规则，帮你处理每次工具审批；不确定时仍会询问你",
         "fullAccess": "完全访问权限",
         "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件",
         "fullAccessWarning": {
