@@ -8,12 +8,8 @@ import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialog
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { ModelNameField } from '../models/ModelNameField';
 import { ModelProviderSelect } from '../models/ModelProviderSelect';
-import {
-  CONTEXT_WINDOW_1M_FIELD,
-  formatContextWindowTokens,
-  ONE_MILLION_CONTEXT_WINDOW_TOKENS,
-  parseContextWindowTokens,
-} from '../models/contextWindow';
+import { ContextWindowField } from '../models/ContextWindowField';
+import { parseContextWindowTokens } from '../models/contextWindow';
 import {
   CUSTOM_VENDOR_SELECTION,
   findVendorPreset,
@@ -93,7 +89,7 @@ function validateMediaModelDraft(
   if (!modelName) errors.model_name = t('config.modelList.modelNameRequired');
   else if (modelName.length > 100) errors.model_name = t('config.modelList.modelNameTooLong');
 
-  if (!value[CONTEXT_WINDOW_1M_FIELD] && parseContextWindowTokens(value.context_window_tokens) === null) {
+  if (parseContextWindowTokens(value.context_window_tokens) === null) {
     errors.context_window_tokens = t('settingsPanel.models.validation.contextWindowInvalid');
   }
 
@@ -320,7 +316,6 @@ export function MediaModelConfigDialog({
   };
 
   const errors = validateMediaModelDraft(values, catalog, t);
-  const contextWindow1mEnabled = Boolean(values[CONTEXT_WINDOW_1M_FIELD]);
   const formItems: FormItem<MediaModelDraft>[] = [
     {
       name: 'vendor_selection',
@@ -414,28 +409,21 @@ export function MediaModelConfigDialog({
   formItems.push({
     name: 'context_window_tokens',
     label: t('settingsPanel.models.contextWindow'),
-    component: 'input',
-    type: 'text',
+    component: 'custom',
     required: true,
-    disabled: contextWindow1mEnabled,
-    placeholder: t('settingsPanel.models.contextWindowPlaceholder'),
     helpTips: t('settingsPanel.models.contextWindowHint'),
-  });
-  formItems.push({
-    name: CONTEXT_WINDOW_1M_FIELD,
-    label: t('settingsPanel.models.contextWindow1m'),
-    component: 'switch',
-    switchLabel: t('settingsPanel.models.contextWindow1m'),
-    helpTips: t('settingsPanel.models.contextWindow1mHint'),
-    description: t('settingsPanel.models.contextWindow1mWarning'),
-    onChange: (enabled) => {
-      if (enabled) {
-        form.setFieldValue(
-          'context_window_tokens',
-          formatContextWindowTokens(ONE_MILLION_CONTEXT_WINDOW_TOKENS),
-        );
-      }
-    },
+    render: ({ id, value, error, disabled, onChange, onBlur }) => (
+      <ContextWindowField
+        id={id}
+        value={value}
+        error={error}
+        disabled={disabled}
+        placeholder={t('settingsPanel.models.contextWindowPlaceholder')}
+        presetLabel={t('settingsPanel.models.contextWindowPresets')}
+        onChange={onChange}
+        onBlur={onBlur}
+      />
+    ),
   });
 
   const confirm = async () => {

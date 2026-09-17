@@ -17,13 +17,11 @@ import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialog
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useSettingsSource } from '../../services/SettingsSourceProvider';
 import {
-  CONTEXT_WINDOW_1M_FIELD,
-  formatContextWindowTokens,
   normalizeContextWindowTokens,
-  ONE_MILLION_CONTEXT_WINDOW_TOKENS,
   parseContextWindowTokens,
   resolveDraftContextWindowTokens,
 } from '../models/contextWindow';
+import { ContextWindowField } from '../models/ContextWindowField';
 import {
   isMediaCapabilityConfigured,
   mediaCapabilityEnabledField,
@@ -75,20 +73,10 @@ function AgentConfigDialog({
   const form = useForm({
     initialValues: Object.fromEntries([
       ...fields.map((name) => [name, String(config[name] ?? '')]),
-      ...(contextWindowField
-        ? [
-            [contextWindowField, normalizeContextWindowTokens(config[contextWindowField])],
-            [
-              CONTEXT_WINDOW_1M_FIELD,
-              parseContextWindowTokens(config[contextWindowField]) === ONE_MILLION_CONTEXT_WINDOW_TOKENS,
-            ],
-          ]
-        : []),
+      ...(contextWindowField ? [[contextWindowField, normalizeContextWindowTokens(config[contextWindowField])]] : []),
     ]),
   });
   useFormState(form);
-  const values = form.getValues();
-  const contextWindow1mEnabled = contextWindowField ? Boolean(values[CONTEXT_WINDOW_1M_FIELD]) : false;
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState('');
   const closeBlocked = submitting;
@@ -117,63 +105,51 @@ function AgentConfigDialog({
       nextItems.push({
         name: contextWindowField,
         label: t('settingsPanel.models.contextWindow'),
-        component: 'input' as const,
-        type: 'text' as const,
+        component: 'custom' as const,
         required: true,
-        disabled: contextWindow1mEnabled,
-        placeholder: t('settingsPanel.models.contextWindowPlaceholder'),
         helpTips: t('settingsPanel.models.contextWindowHint'),
-      });
-      nextItems.push({
-        name: CONTEXT_WINDOW_1M_FIELD,
-        label: t('settingsPanel.models.contextWindow1m'),
-        component: 'switch' as const,
-        switchLabel: t('settingsPanel.models.contextWindow1m'),
-        helpTips: t('settingsPanel.models.contextWindow1mHint'),
-        description: t('settingsPanel.models.contextWindow1mWarning'),
-        onChange: (enabled) => {
-          if (enabled) {
-            form.setFieldValue(
-              contextWindowField,
-              formatContextWindowTokens(ONE_MILLION_CONTEXT_WINDOW_TOKENS),
-            );
-          }
-        },
+        render: ({ id, value, error, disabled, onChange, onBlur }) => (
+          <ContextWindowField
+            id={id}
+            value={value}
+            error={error}
+            disabled={disabled}
+            placeholder={t('settingsPanel.models.contextWindowPlaceholder')}
+            presetLabel={t('settingsPanel.models.contextWindowPresets')}
+            onChange={onChange}
+            onBlur={onBlur}
+          />
+        ),
       });
     }
     return nextItems;
-  }, [contextWindow1mEnabled, contextWindowField, fields, form, t]);
-  const rules = useMemo(
-    () => {
-      const nextRules: FormRules<Record<string, unknown>> = Object.fromEntries(
-        fields.map((name) => [
-          name,
-          [
-            {
-              trigger: 'blur' as const,
-              validator: (value: unknown) =>
-                typeof value === 'string' && value.trim().length > 0
-                  ? undefined
-                  : t('settingsPanel.validation.required'),
-            },
-          ],
-        ]),
-      );
-      if (contextWindowField) {
-        nextRules[contextWindowField] = [
+  }, [contextWindowField, fields, form, t]);
+  const rules = useMemo(() => {
+    const nextRules: FormRules<Record<string, unknown>> = Object.fromEntries(
+      fields.map((name) => [
+        name,
+        [
           {
-            trigger: ['change', 'blur'] as const,
-            validator: (value: unknown, currentValues: Readonly<Record<string, unknown>>) =>
-              currentValues[CONTEXT_WINDOW_1M_FIELD] || parseContextWindowTokens(value) !== null
-                ? undefined
-                : t('settingsPanel.models.validation.contextWindowInvalid'),
+            trigger: 'blur' as const,
+            validator: (value: unknown) =>
+              typeof value === 'string' && value.trim().length > 0 ? undefined : t('settingsPanel.validation.required'),
           },
-        ];
-      }
-      return nextRules;
-    },
-    [contextWindowField, fields, t],
-  );
+        ],
+      ]),
+    );
+    if (contextWindowField) {
+      nextRules[contextWindowField] = [
+        {
+          trigger: ['change', 'blur'] as const,
+          validator: (value: unknown) =>
+            parseContextWindowTokens(value) !== null
+              ? undefined
+              : t('settingsPanel.models.validation.contextWindowInvalid'),
+        },
+      ];
+    }
+    return nextRules;
+  }, [contextWindowField, fields, t]);
   const confirm = async () => {
     const result = form.validate();
     if (!result.valid) return;
@@ -184,17 +160,7 @@ function AgentConfigDialog({
         Object.fromEntries([
           ...fields.map((name) => [name, String(result.values[name] ?? '').trim()]),
           ...(contextWindowField
-            ? [
-                [
-                  contextWindowField,
-                  String(
-                    resolveDraftContextWindowTokens(
-                      result.values[contextWindowField],
-                      result.values[CONTEXT_WINDOW_1M_FIELD],
-                    ),
-                  ),
-                ],
-              ]
+            ? [[contextWindowField, String(resolveDraftContextWindowTokens(result.values[contextWindowField]))]]
             : []),
         ]),
         titleKey,
