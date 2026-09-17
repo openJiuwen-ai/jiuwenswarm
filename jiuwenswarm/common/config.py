@@ -2769,6 +2769,55 @@ def get_sandbox_runtime() -> dict[str, Any]:
     return _ensure_sandbox_runtime_shape(raw)
 
 
+
+# =====================================================================
+# Agent 内部读文件后端：local（本机 FS） / sandbox（跟 agent sysop）
+#
+# ``AGENT_FILE_READ_BACKEND``:
+#   - ``local``（默认）: 读人设/上下文等 rail 强制挂本地 sysop；动手工具仍跟
+#     deep_config / agent 原 sysop（开沙箱时为沙箱）。并在 ensure_initialized
+#     前于宿主机初始化工作区，避免沙箱逐个 upload ``.workspace``。
+#   - ``sandbox``: 关闭上述分流与本机 workspace init，全部跟 agent sysop /
+#     上游沙箱 DirectoryBuilder。
+# 非法值回落 ``local`` 并打 warning。
+# =====================================================================
+
+_AGENT_FILE_READ_BACKEND_ENV: str = "AGENT_FILE_READ_BACKEND"
+_AGENT_FILE_READ_BACKEND_LOCAL: str = "local"
+_AGENT_FILE_READ_BACKEND_SANDBOX: str = "sandbox"
+_VALID_AGENT_FILE_READ_BACKENDS: frozenset[str] = frozenset(
+    {_AGENT_FILE_READ_BACKEND_LOCAL, _AGENT_FILE_READ_BACKEND_SANDBOX}
+)
+
+
+def get_agent_file_read_backend() -> str:
+    """返回 agent 内部读文件走本地还是沙箱。
+
+    Returns:
+        ``"local"`` 或 ``"sandbox"``；缺省 / 非法均为 ``"local"``。
+    """
+    raw = get_local_config(_AGENT_FILE_READ_BACKEND_ENV)
+    if raw is None:
+        return _AGENT_FILE_READ_BACKEND_LOCAL
+    text = str(raw).strip().lower()
+    if not text:
+        return _AGENT_FILE_READ_BACKEND_LOCAL
+    if text not in _VALID_AGENT_FILE_READ_BACKENDS:
+        logger.warning(
+            "[config] invalid %s=%r, fallback to %s",
+            _AGENT_FILE_READ_BACKEND_ENV,
+            raw,
+            _AGENT_FILE_READ_BACKEND_LOCAL,
+        )
+        return _AGENT_FILE_READ_BACKEND_LOCAL
+    return text
+
+
+def agent_file_read_backend_is_local() -> bool:
+    """``AGENT_FILE_READ_BACKEND`` 是否为本地直连（默认 True）。"""
+    return get_agent_file_read_backend() == _AGENT_FILE_READ_BACKEND_LOCAL
+
+
 # ``preserve_file_sharing_mode`` 当前合法取值集合 = ``{"mount"}``; 空值表示
 # "未配置, 按默认走"。
 _VALID_PRESERVE_FILE_SHARING_MODES = ("mount",)
