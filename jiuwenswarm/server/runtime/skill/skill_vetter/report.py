@@ -16,7 +16,7 @@ def _severity_order(value: str) -> int:
 def grade_from_findings(findings: list[Finding]) -> str:
     if not findings:
         return "unvetted"
-    worst = max(findings, key=lambda f: f.severity._order)
+    worst = max(findings, key=lambda f: _severity_order(f.severity.value))
     return worst.severity.value
 
 
