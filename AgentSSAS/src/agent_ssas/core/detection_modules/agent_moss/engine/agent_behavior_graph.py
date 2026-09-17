@@ -17,7 +17,8 @@ _INTEGRITY_RANK = {"low": 0, "medium": 1, "high": 2}
 _DEFAULT_SENSITIVE_PATTERNS = (
     (
         "api_key",
-        r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*[\"']?[A-Za-z0-9_\-./+=]{12,}",
+        r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b"
+        r"\s*[:=]\s*[\"']?[A-Za-z0-9_\-./+=]{12,}",
     ),
     ("private_key", r"-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----"),
     ("credit_card", r"\b(?:\d[ -]*?){13,19}\b"),
@@ -149,7 +150,9 @@ class AgentBehaviorGraphDetector:
         self.sensitive_patterns = self._compile_sensitive_patterns(cfg.get("sensitive_patterns"))
         trusted = cfg.get("agent_behavior_graph_trusted_egress_patterns")
         self.trusted_egress_patterns = self._compile_regex_list(trusted)
-        self.egress_tool_patterns = self._compile_regex_list(cfg.get("agent_behavior_graph_egress_tool_patterns"))
+        self.egress_tool_patterns = self._compile_regex_list(
+            cfg.get("agent_behavior_graph_egress_tool_patterns")
+        )
 
     def inspect(
         self,
@@ -184,30 +187,45 @@ class AgentBehaviorGraphDetector:
         evidence_ids = tuple(sorted({action_id, *upstream_ids}))
 
         has_staging = any(
-            node.node_type == "tool_action" and node.action_class == "write" and node.event_id != "candidate"
+            node.node_type == "tool_action"
+            and node.action_class == "write"
+            and node.event_id != "candidate"
             for node in upstream
         )
-        has_sensitive_resource = any("sensitive_resource" in node.label.sensitive_kinds for node in upstream)
+        has_sensitive_resource = any(
+            "sensitive_resource" in node.label.sensitive_kinds for node in upstream
+        )
         has_low_integrity_source = any(
-            node.event_id != "candidate" and _INTEGRITY_RANK.get(node.label.integrity, 1) < _INTEGRITY_RANK["medium"]
+            node.event_id != "candidate"
+            and _INTEGRITY_RANK.get(node.label.integrity, 1) < _INTEGRITY_RANK["medium"]
             for node in upstream
         )
 
         if has_staging:
             rule_id = "agent-behavior-graph-sensitive-data-staging-to-public-egress"
-            finding = "agent_behavior_graph:data-leak: staged high-confidentiality data reaches public egress"
+            finding = (
+                "agent_behavior_graph:data-leak: "
+                "staged high-confidentiality data reaches public egress"
+            )
             risk_score = 96
         elif has_sensitive_resource:
             rule_id = "agent-behavior-graph-sensitive-resource-to-public-egress"
-            finding = "agent_behavior_graph:data-leak: sensitive resource reaches public egress"
+            finding = (
+                "agent_behavior_graph:data-leak: sensitive resource reaches public egress"
+            )
             risk_score = 95
         elif has_low_integrity_source:
             rule_id = "agent-behavior-graph-low-integrity-confidential-egress"
-            finding = "agent_behavior_graph:data-leak: low-integrity source controls confidential public egress"
+            finding = (
+                "agent_behavior_graph:data-leak: "
+                "low-integrity source controls confidential public egress"
+            )
             risk_score = 95
         else:
             rule_id = "agent-behavior-graph-high-confidentiality-to-public-egress"
-            finding = "agent_behavior_graph:data-leak: high-confidentiality data reaches public egress"
+            finding = (
+                "agent_behavior_graph:data-leak: high-confidentiality data reaches public egress"
+            )
             risk_score = 95
 
         violation = AgentBehaviorGraphViolation(
@@ -222,7 +240,8 @@ class AgentBehaviorGraphDetector:
             findings=[
                 finding,
                 f"agent_behavior_graph:rule:{rule_id}",
-                f"agent_behavior_graph:evidence: {len(evidence_ids)} graph nodes linked to {subject or 'tool'}",
+                f"agent_behavior_graph:evidence: {len(evidence_ids)} graph nodes "
+                f"linked to {subject or 'tool'}",
             ],
             violations=[violation],
             graph=graph,
@@ -370,7 +389,9 @@ class AgentBehaviorGraphDetector:
                 self._add_edge(
                     graph,
                     edge_keys,
-                    AgentBehaviorGraphEdge(source.node_id, target.node_id, "data_dependency", reason),
+                    AgentBehaviorGraphEdge(
+                        source.node_id, target.node_id, "data_dependency", reason
+                    ),
                 )
                 if source.label.integrity == "low":
                     target_action = nodes_by_id.get(_node_id(target.event_id, "tool_action"))
@@ -572,7 +593,9 @@ class AgentBehaviorGraphDetector:
 
     def _sensitive_kinds(self, text: str, findings: Iterable[str]) -> list[str]:
         kinds = {
-            finding.split(":", 1)[1] for finding in findings if finding.startswith("sensitive:") and ":" in finding
+            finding.split(":", 1)[1]
+            for finding in findings
+            if finding.startswith("sensitive:") and ":" in finding
         }
         for name, pattern in self.sensitive_patterns:
             if pattern.search(text):
@@ -692,7 +715,9 @@ class AgentBehaviorGraphDetector:
 
 
 def _join_confidentiality(left: str, right: str) -> str:
-    return left if _CONFIDENTIALITY_RANK.get(left, 0) >= _CONFIDENTIALITY_RANK.get(right, 0) else right
+    if _CONFIDENTIALITY_RANK.get(left, 0) >= _CONFIDENTIALITY_RANK.get(right, 0):
+        return left
+    return right
 
 
 def _join_integrity(left: str, right: str) -> str:
@@ -840,7 +865,8 @@ def _classify_action(
         return "write"
     if any(marker in name for marker in ("read", "cat", "grep", "search", "glob", "list_file")):
         return "read"
-    if any(marker in name for marker in ("bash", "shell", "terminal", "python", "execute", "run_command")):
+    compute_markers = ("bash", "shell", "terminal", "python", "execute", "run_command")
+    if any(marker in name for marker in compute_markers):
         return "compute"
     return "other"
 
@@ -850,7 +876,8 @@ def _resource_ids(value: Any) -> set[str]:
     resources: set[str] = set()
     patterns = (
         r"(?<![A-Za-z0-9:])@?((?:/|\./|\.\./)[A-Za-z0-9_./~+\-]+)",
-        r"(?i)(?<![A-Za-z0-9_.-])((?:\.env(?:\.[A-Za-z0-9_-]+)?|credentials(?:\.json)?|secrets?\.ya?ml))(?![A-Za-z0-9_.-])",
+        r"(?i)(?<![A-Za-z0-9_.-])((?:\.env(?:\.[A-Za-z0-9_-]+)?"
+        r"|credentials(?:\.json)?|secrets?\.ya?ml))(?![A-Za-z0-9_.-])",
     )
     for pattern in patterns:
         for match in re.finditer(pattern, text):

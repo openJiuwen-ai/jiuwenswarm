@@ -46,7 +46,9 @@ class AgentMossAnalyzer:
             policy_config = {}
         self._policy = PolicyEngine(policy_config)
         self._max_history_events = max(5, int(self._config.get("max_history_events", 200)))
-        self._include_agent_behavior_graph = _config_bool(self._config, "include_agent_behavior_graph", True)
+        self._include_agent_behavior_graph = _config_bool(
+            self._config, "include_agent_behavior_graph", True
+        )
         self._history: dict[str, list[EventRecord]] = {}
         self._report_cache: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
@@ -87,7 +89,11 @@ class AgentMossAnalyzer:
             history_key = self._history_key(event)
             complete_history = list(self._history.get(history_key, []))
             timestamp = _float(event.get("timestamp"))
-            history = [item for item in complete_history if (item.timestamp, item.event_id) < (timestamp, event_id)]
+            history = [
+                item
+                for item in complete_history
+                if (item.timestamp, item.event_id) < (timestamp, event_id)
+            ]
             payload = event.get("payload", {})
             if not isinstance(payload, dict):
                 payload = {"value": payload}
@@ -172,7 +178,8 @@ class AgentMossAnalyzer:
 
         if decision.findings:
             description = (
-                f"AgentMoss detected {len(decision.findings)} behavior signal(s); decision={decision.decision}"
+                f"AgentMoss detected {len(decision.findings)} behavior signal(s); "
+                f"decision={decision.decision}"
             )
         else:
             description = "AgentMoss found no behavior risk"

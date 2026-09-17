@@ -12,7 +12,8 @@ from .agent_behavior_graph import AgentBehaviorGraphDetector
 
 _DANGEROUS_SHELL_PATTERNS = [
     (
-        r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\s+/(?:\s|$)",
+        r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*"
+        r"|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\s+/(?:\s|$)",
         "recursive force remove at filesystem root",
         95,
     ),
@@ -46,13 +47,16 @@ _NETWORK_TRANSFER_PATTERNS = [
 
 _EXFILTRATION_PATTERNS = [
     (
-        r"(?is)\bcurl\b(?=.*\b(?:-d|--data|--data-binary|--data-urlencode|--upload-file|-T|--form|-F)\b)",
+        r"(?is)\bcurl\b"
+        r"(?=.*\b(?:-d|--data|--data-binary|--data-urlencode|--upload-file|-T|--form|-F)\b)",
         "curl data upload",
         85,
     ),
     (r"(?is)\bwget\b(?=.*\b(?:--post-data|--post-file|--method=POST)\b)", "wget data upload", 85),
     (
-        r"(?is)\b(?:curl|wget|scp|rsync)\b(?=.*(?:/etc/shadow|/etc/passwd|/etc/sudoers|\.ssh/id_|api[_-]?key|secret|token|password))",
+        r"(?is)\b(?:curl|wget|scp|rsync)\b"
+        r"(?=.*(?:/etc/shadow|/etc/passwd|/etc/sudoers"
+        r"|\.ssh/id_|api[_-]?key|secret|token|password))",
         "sensitive data exfiltration command",
         90,
     ),
@@ -62,7 +66,8 @@ _EXFILTRATION_PATTERNS = [
 
 _SENSITIVE_PATH_PATTERNS = [
     (
-        r"(?i)(?:^|[\s\"'=:@])/(?:etc/(?:shadow|sudoers)|dev/mem|var/run/docker\.sock)(?:[\s\"':/]|$)",
+        r"(?i)(?:^|[\s\"'=:@])/(?:etc/(?:shadow|sudoers)|dev/mem|var/run/docker\.sock)"
+        r"(?:[\s\"':/]|$)",
         "sensitive path access: critical credential or control file",
         92,
     ),
@@ -72,17 +77,20 @@ _SENSITIVE_PATH_PATTERNS = [
         88,
     ),
     (
-        r"(?i)(?:^|[\s\"'=:@])(?:~|/[^\s\"']*)?/?\.ssh/(?:id_rsa|id_ed25519|id_ecdsa)(?:\b|[\s\"'])",
+        r"(?i)(?:^|[\s\"'=:@])(?:~|/[^\s\"']*)?/?\.ssh/"
+        r"(?:id_rsa|id_ed25519|id_ecdsa)(?:\b|[\s\"'])",
         "sensitive path access: ssh private key",
         92,
     ),
     (
-        r"(?i)(?:^|[\s\"'=:@])/(?:etc/passwd|etc/ssh/sshd_config|etc/crontab|etc/systemd/)(?:[\s\"':/]|$)",
+        r"(?i)(?:^|[\s\"'=:@])/"
+        r"(?:etc/passwd|etc/ssh/sshd_config|etc/crontab|etc/systemd/)(?:[\s\"':/]|$)",
         "sensitive path access: system configuration",
         78,
     ),
     (
-        r"(?i)(?:^|[\s\"'=:@])(?:[^\s\"']*/)?(?:\.env|credentials(?:\.json)?|secrets?\.ya?ml|llm_secrets\.json)(?:[\s\"']|$)",
+        r"(?i)(?:^|[\s\"'=:@])(?:[^\s\"']*/)?"
+        r"(?:\.env|credentials(?:\.json)?|secrets?\.ya?ml|llm_secrets\.json)(?:[\s\"']|$)",
         "sensitive path access: credential file",
         82,
     ),
@@ -92,7 +100,11 @@ _ACCOUNT_MANAGEMENT_PATTERNS = [
     (r"(?i)\|\s*passwd\b", "non-interactive password modification", 88),
     (r"(?i)\bpasswd\s+(?:--stdin|-[^\s;|&]*[dl][^\s;|&]*)\b", "password state modification", 88),
     (r"(?i)\b(?:chpasswd|newusers|lpasswd)\b", "batch account credential modification", 88),
-    (r"(?i)\b(?:useradd|usermod|groupmod)\b[^\n;|&]*\s-p\s+\S+", "account password hash injection", 88),
+    (
+        r"(?i)\b(?:useradd|usermod|groupmod)\b[^\n;|&]*\s-p\s+\S+",
+        "account password hash injection",
+        88,
+    ),
     (r"(?i)\b(?:userdel|deluser)\b", "system user deletion", 86),
     (r"(?i)\bgpasswd\b(?!\s+-(?:a|d|A)\b)", "group password management", 82),
 ]
@@ -104,19 +116,28 @@ _PERSISTENCE_PATTERNS = [
         "cron persistence modification",
         88,
     ),
-    (r"(?i)(?:>>?|tee\s+-?a?)\s+(?:~|/[^\s\"']*)?/?\.ssh/authorized_keys\b", "ssh authorized_keys persistence", 88),
+    (
+        r"(?i)(?:>>?|tee\s+-?a?)\s+(?:~|/[^\s\"']*)?/?\.ssh/authorized_keys\b",
+        "ssh authorized_keys persistence",
+        88,
+    ),
     (
         r"(?i)(?:>>?|tee\s+-?a?|chmod\s+\+x|chmod\s+[0-7]{3,4})\s+[^\n;|&]*\.git/hooks/",
         "git hook persistence modification",
         84,
     ),
-    (r"(?i)(?:>>?|tee\s+-?a?)\s+/etc/systemd/system/[^\s\"']+\.service", "systemd service persistence file write", 88),
+    (
+        r"(?i)(?:>>?|tee\s+-?a?)\s+/etc/systemd/system/[^\s\"']+\.service",
+        "systemd service persistence file write",
+        88,
+    ),
     (r"(?i)\bsystemctl\s+enable\b", "systemd service persistence enable", 82),
 ]
 
 _OBFUSCATED_EXECUTION_PATTERNS = [
     (
-        r"(?i)\bbase64\b[^\n;|&]*(?:-d|--decode)[^\n;|&]*(?:\|\s*(?:sh|bash|zsh|python|python3)\b|\b(?:sh|bash|zsh|python|python3)\s+-c\b)",
+        r"(?i)\bbase64\b[^\n;|&]*(?:-d|--decode)[^\n;|&]*"
+        r"(?:\|\s*(?:sh|bash|zsh|python|python3)\b|\b(?:sh|bash|zsh|python|python3)\s+-c\b)",
         "base64 decoded execution",
         88,
     ),
@@ -124,12 +145,24 @@ _OBFUSCATED_EXECUTION_PATTERNS = [
 ]
 
 _PROMPT_INJECTION_PATTERNS = [
-    (r"(?i)ignore (?:all )?(?:previous|prior|above) instructions", "instruction override attempt", 60),
+    (
+        r"(?i)ignore (?:all )?(?:previous|prior|above) instructions",
+        "instruction override attempt",
+        60,
+    ),
     (r"忽略(?:之前|以上|上面)的(?:所有)?指令", "instruction override attempt", 60),
     (r"(?i)reveal (?:the )?(?:system|developer) prompt", "prompt exfiltration attempt", 65),
     (r"(?:泄露|输出|展示|打印)(?:系统|开发者)提示", "prompt exfiltration attempt", 65),
-    (r"(?i)disable (?:safety|guardrails|tools? restrictions|monitoring)", "safety bypass attempt", 70),
-    (r"(?i)(?:bypass|skip|disable).{0,32}(?:audit|security|guard|monitor)", "security monitor bypass attempt", 80),
+    (
+        r"(?i)disable (?:safety|guardrails|tools? restrictions|monitoring)",
+        "safety bypass attempt",
+        70,
+    ),
+    (
+        r"(?i)(?:bypass|skip|disable).{0,32}(?:audit|security|guard|monitor)",
+        "security monitor bypass attempt",
+        80,
+    ),
     (r"(?:绕过|跳过|禁用|关闭).{0,16}(?:审计|安全检查|防护|监控)", "security monitor bypass attempt", 80),
     (r"(?i)you are now (?:in|under) developer mode", "role hijack attempt", 55),
     (r"(?i)\b(?:developer mode|DAN mode|jailbreak)\b", "jailbreak attempt", 70),
@@ -138,7 +171,10 @@ _PROMPT_INJECTION_PATTERNS = [
 ]
 
 _DEFAULT_SENSITIVE_PATTERNS = [
-    ("api_key", r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*[\"']?[A-Za-z0-9_\-]{12,}"),
+    (
+        "api_key",
+        r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*[\"']?[A-Za-z0-9_\-]{12,}",
+    ),
     ("private_key", r"-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----"),
     ("credit_card", r"\b(?:\d[ -]*?){13,19}\b"),
 ]
@@ -177,7 +213,9 @@ class PolicyEngine:
         self.ask_threshold = int(cfg.get("ask_threshold", 45))
         self.block_threshold = int(cfg.get("block_threshold", 80))
         self.default_decision = str(cfg.get("default_decision", "allow"))
-        self.enforcement_scope = _normalize_enforcement_scope(str(cfg.get("enforcement_scope", "behavior_chain")))
+        self.enforcement_scope = _normalize_enforcement_scope(
+            str(cfg.get("enforcement_scope", "behavior_chain"))
+        )
         self.enforce_behavior_chain = _config_bool(
             cfg,
             "enforce_behavior_chain",
@@ -260,7 +298,9 @@ class PolicyEngine:
                     chain_score = max(chain_score, graph_inspection.risk_score)
 
         score = max(signal_score, chain_score)
-        decision = self._decision_for(self._enforced_score(signal_score=signal_score, chain_score=chain_score))
+        decision = self._decision_for(
+            self._enforced_score(signal_score=signal_score, chain_score=chain_score)
+        )
         reason = "; ".join(findings[:4])
         return PolicyDecision(decision=decision, risk_score=score, findings=findings, reason=reason)
 
@@ -268,19 +308,26 @@ class PolicyEngine:
         score = 0
         lower_subject = subject.lower()
         shell_like = any(
-            name in lower_subject for name in ("bash", "shell", "terminal", "run_command", "execute", "cmd")
+            name in lower_subject
+            for name in ("bash", "shell", "terminal", "run_command", "execute", "cmd")
         )
         if shell_like:
             if self.analyze_destructive_shell:
                 score = max(score, self._match_patterns(text, _DANGEROUS_SHELL_PATTERNS, findings))
             if self.analyze_privileged_account_ops:
-                score = max(score, self._match_patterns(text, _ACCOUNT_MANAGEMENT_PATTERNS, findings))
+                score = max(
+                    score, self._match_patterns(text, _ACCOUNT_MANAGEMENT_PATTERNS, findings)
+                )
             if self.analyze_persistence_ops:
                 score = max(score, self._match_patterns(text, _PERSISTENCE_PATTERNS, findings))
             if self.analyze_obfuscated_execution:
-                score = max(score, self._match_patterns(text, _OBFUSCATED_EXECUTION_PATTERNS, findings))
+                score = max(
+                    score, self._match_patterns(text, _OBFUSCATED_EXECUTION_PATTERNS, findings)
+                )
 
-        if self.analyze_sensitive_path_access and (shell_like or self._is_file_access_tool(lower_subject)):
+        if self.analyze_sensitive_path_access and (
+            shell_like or self._is_file_access_tool(lower_subject)
+        ):
             score = max(score, self._match_patterns(text, _SENSITIVE_PATH_PATTERNS, findings))
 
         if self.analyze_data_exfiltration:
@@ -306,7 +353,9 @@ class PolicyEngine:
             findings.append("behavior chain: sensitive data followed by outbound transfer")
             return 90
         if saw_prompt_injection and outbound:
-            findings.append("behavior chain: prompt-injection context followed by outbound transfer")
+            findings.append(
+                "behavior chain: prompt-injection context followed by outbound transfer"
+            )
             return 70
         return 0
 

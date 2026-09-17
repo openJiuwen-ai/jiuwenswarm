@@ -166,7 +166,9 @@ class TestAgentMossAnalyzer:
     @pytest.mark.unit
     @pytest.mark.level0
     async def test_dangerous_shell_operation_is_reported() -> None:
-        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "rm -rf /tmp/demo"}'))
+        model = await AgentMossModeler().build_model(
+            _make_event_desc(input_content='{"command": "rm -rf /tmp/demo"}')
+        )
         report = await AgentMossAnalyzer().analyze(model)
 
         assert report["has_risk"] is True
@@ -273,7 +275,9 @@ class TestAgentMossSecurityRules:
     @pytest.mark.level0
     async def test_sensitive_path_etc_shadow_is_reported() -> None:
         """读取 /etc/shadow 触发敏感路径检测(critical credential file,92 分)。"""
-        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "cat /etc/shadow"}'))
+        model = await AgentMossModeler().build_model(
+            _make_event_desc(input_content='{"command": "cat /etc/shadow"}')
+        )
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
         assert report["risk_level"] == "critical"
@@ -285,7 +289,9 @@ class TestAgentMossSecurityRules:
     @pytest.mark.level0
     async def test_sensitive_path_ssh_private_key_is_reported() -> None:
         """读取 ~/.ssh/id_rsa 触发敏感路径检测(ssh private key,92 分)。"""
-        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "cat ~/.ssh/id_rsa"}'))
+        model = await AgentMossModeler().build_model(
+            _make_event_desc(input_content='{"command": "cat ~/.ssh/id_rsa"}')
+        )
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
         assert "sensitive_resource_access" in report["detected_threats"]
@@ -296,7 +302,9 @@ class TestAgentMossSecurityRules:
     @pytest.mark.level0
     async def test_sensitive_path_env_file_is_reported() -> None:
         """访问 .env 文件触发敏感路径检测(credential file,82 分)。"""
-        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "cat /app/.env"}'))
+        model = await AgentMossModeler().build_model(
+            _make_event_desc(input_content='{"command": "cat /app/.env"}')
+        )
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
         assert "sensitive_resource_access" in report["detected_threats"]
@@ -308,7 +316,9 @@ class TestAgentMossSecurityRules:
     async def test_persistence_authorized_keys_is_reported() -> None:
         """追加 authorized_keys 触发持久化检测(ssh persistence,88 分)。"""
         model = await AgentMossModeler().build_model(
-            _make_event_desc(input_content=('{"command": "echo ssh-rsa AAAA... >> ~/.ssh/authorized_keys"}'))
+            _make_event_desc(
+                input_content=('{"command": "echo ssh-rsa AAAA... >> ~/.ssh/authorized_keys"}')
+            )
         )
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
@@ -320,7 +330,9 @@ class TestAgentMossSecurityRules:
     @pytest.mark.level0
     async def test_persistence_crontab_is_reported() -> None:
         """crontab -e 触发持久化检测(cron table modification,82 分)。"""
-        model = await AgentMossModeler().build_model(_make_event_desc(input_content='{"command": "crontab -e"}'))
+        model = await AgentMossModeler().build_model(
+            _make_event_desc(input_content='{"command": "crontab -e"}')
+        )
         report = await AgentMossAnalyzer().analyze(model)
         assert report["has_risk"] is True
         assert "persistence" in report["detected_threats"]
@@ -334,7 +346,10 @@ class TestAgentMossSecurityRules:
         """写 systemd service 文件触发持久化检测(88 分)。"""
         model = await AgentMossModeler().build_model(
             _make_event_desc(
-                input_content=('{"command": "echo \'[Unit]\\n[Service]\' >> /etc/systemd/system/backdoor.service"}')
+                input_content=(
+                    '{"command": "echo \'[Unit]\\n[Service]\' '
+                    '>> /etc/systemd/system/backdoor.service"}'
+                )
             )
         )
         report = await AgentMossAnalyzer().analyze(model)
@@ -382,6 +397,8 @@ class TestAgentMossSecurityRules:
     @pytest.mark.unit
     @pytest.mark.level1
     def test_analyzer_accepts_config() -> None:
-        analyzer = AgentMossAnalyzer({"analysis_methods": ["rule", "agent_behavior_graph"], "risk_threshold": "high"})
+        analyzer = AgentMossAnalyzer(
+            {"analysis_methods": ["rule", "agent_behavior_graph"], "risk_threshold": "high"}
+        )
         assert analyzer._analysis_methods == ["rule", "agent_behavior_graph"]  # noqa: SLF001
         assert analyzer._risk_threshold == "high"  # noqa: SLF001
