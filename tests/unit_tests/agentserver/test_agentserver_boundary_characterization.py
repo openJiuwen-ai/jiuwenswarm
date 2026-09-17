@@ -215,9 +215,21 @@ class PortableRuntime:
         self.create_calls: list[tuple[str, str | None]] = []
         self.fork_inputs: list[Any] = []
         self.fork_error: ValueError | None = None
+        self._pending_chat_requests: dict[str, set[str]] = {}
 
     async def start(self) -> None:
         self.trace.append("runtime.start")
+
+    def begin_chat_request(self, session_id: str, request_id: str) -> None:
+        self._pending_chat_requests.setdefault(session_id, set()).add(request_id)
+
+    def end_chat_request(self, session_id: str, request_id: str) -> None:
+        requests = self._pending_chat_requests.get(session_id)
+        if requests is None:
+            return
+        requests.discard(request_id)
+        if not requests:
+            self._pending_chat_requests.pop(session_id, None)
 
     async def create_or_resume_session(
         self,

@@ -56,7 +56,7 @@ interface WorkspaceState {
   createProject: (name: string, projectDir: string) => Promise<ProjectInfo>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   pinProject: (projectId: string, pinned: boolean) => Promise<void>;
-  removeProject: (projectId: string) => Promise<void>;
+  removeProject: (projectId: string) => Promise<{ deleted: boolean; deleted_conversation_sessions: number; deleted_cron_jobs: number; skipped_running_session_ids?: string[] }>;
   removeSessions: (sessionIds: string[]) => void;
   archiveSession: (sessionId: string) => Promise<void>;
   /** 归档成功后同步从侧边栏移除会话，供 toast 与列表同帧更新。 */
@@ -406,9 +406,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjects();
   },
 
-  // 删除项目：后端直接级联物理删除项目记录、两区全部会话与 cron 任务（保留工作目录）。
+  // 删除项目：后端先删除 cron 与已停止会话；运行中的普通会话会保留。
   removeProject: async (projectId) => {
-    await projectRegistryClient.remove(projectId);
+    const result = await projectRegistryClient.remove(projectId);
     const sessionState = useSessionStore.getState();
     const ids = new Set([
       ...(get().projectSessions[projectId] || []).map((session) => session.session_id),
@@ -416,8 +416,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       ...sessionState.sessions.filter((session) => session.project_id === projectId).map((session) => session.session_id),
     ]);
     if (sessionState.currentSession?.project_id === projectId) ids.add(sessionState.currentSession.session_id);
-    get().removeSessions([...ids]);
+    const retained = new Set(result.skipped_running_session_ids || []);
+    get().removeSessions([...ids].filter((id) => !retained.has(id)));
     await get().refreshWorkspaceData();
+    return result;
   },
 
   archiveSession: async (sessionId) => {

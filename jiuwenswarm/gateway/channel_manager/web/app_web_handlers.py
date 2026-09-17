@@ -45,6 +45,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
     OpenAIAccountModelListError,
 )
 
+from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
@@ -52,6 +53,7 @@ from jiuwenswarm.common.config import (
     SWARMFLOW_ENABLED_CONFIG_PATH,
     get_config,
     get_config_raw,
+    get_available_models,
     get_default_models,
     replace_teams_in_config,
     update_default_models_in_config,
@@ -3520,7 +3522,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         return True
 
     def _build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]:
-        if not isinstance(raw_models, list) or not raw_models:
+        if not isinstance(raw_models, list):
+            raise _ConfigBadRequest("models must be a non-empty list")
+        # 登录送的模型是运行时叠加的，前端回传时要去掉，不能写进 config.yaml：
+        # 它们的凭据会过期，换账号后模型也该跟着变。
+        raw_models = [item for item in raw_models if not is_login_model(item)]
+        if not raw_models:
             raise _ConfigBadRequest("models must be a non-empty list")
 
         available_model_providers = [p.value for p in ProviderType]
@@ -3890,10 +3897,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         每条带 ``origin_index`` 指向 ``models.defaults`` 中的位置，配合 replace_all
         在保存时识别"未编辑字段"并保留原 YAML 占位符（如 ``${API_KEY}``）。
+
+        **登录会话 id 必须从这条连接上取。** 免费模型是「这个登录用户」的模型，
+        不传的话 ``get_available_models`` 只能退回「当前唯一登录会话」的假设——
+        一旦机器上存在两个活跃会话（换个浏览器再登一次就够了），那个假设会拒绝
+        猜是谁，于是登录了却一个免费模型都列不出来。
         """
         try:
             config = get_config()
-            models = get_default_models(config)
+            auth_session = getattr(ws, "_jiuwen_auth_session", "") or None
+            # 放到线程池里跑：目录缓存过期或凭据要续期时这里会同步请求 APIG（超时 10～15 秒），
+            # 在事件循环上跑会让整个 Gateway 的连接陪着等。
+            models = await asyncio.to_thread(get_available_models, config, auth_session)
             result = []
             active_model = ""
             for idx, entry in enumerate(models):
@@ -3904,7 +3919,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 result_entry = {
                     "model_name": model_name,
                     "api_base": mcc.get("api_base", ""),
-                    "api_key": mcc.get("api_key", ""),
+                    # 凭据绝不能随列表下发到浏览器
+                    "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
                     "temperature": mco.get("temperature"),
                     "reasoning_level": _reasoning_level_display(mco.get("reasoning_level")),
@@ -3913,6 +3929,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     # 注入。前端据此区分 defaults / agentos，置灰只读展示 agentos、
                     # 并让 agentos 进 ModelSelector 下拉（is_default!==false || is_agentos）
                     "is_agentos": bool(mco.get("_source") == "agentos"),
+                    # 免费模型标记：前端据此归进「免费模型」分组、并从设置页的模型配置里滤掉。
+                    # 下面追加 Zen 模型那段设的是同一个字段，**两处必须一致**。
+                    "is_free": bool(entry.get("is_free")),
                     "alias": entry.get("alias", ""),
                     "origin_index": idx,
                     "vendor_key": mcc.get("vendor_key") or entry.get("vendor_key") or "",
@@ -3927,6 +3946,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         parse_positive_int(mco.get("context_window"))
                         or DEFAULT_CONTEXT_WINDOW_TOKENS
                     )
+                if is_login_model(entry):
+                    # 登录送的模型：前端据此置灰编辑
+                    result_entry.update(source=entry.get("source"), read_only=True)
                 result.append(result_entry)
             # Zen 免费模型仅存在于进程内缓存，不能写回 models.defaults；但需要
             # 与普通模型一同出现在会话选择器中。is_default 保持 None（而不是
@@ -6614,7 +6636,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST",
             )
             return
-        deleted = await cc.delete_job(job_id)
+        try:
+            deleted = await cc.delete_job(job_id)
+        except Exception as exc:
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code="DELETE_FAILED"
+            )
+            return
         if not deleted:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -7333,6 +7361,105 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("permissions.approval_overrides.get", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_GET)
     _register_perm("permissions.approval_overrides.delete", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_DELETE)
 
+    async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method):
+        """Forward an A4P User Authorizer RPC over the session's logical Web route."""
+        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        if not isinstance(req_method, ReqMethod):
+            await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
+            return
+        ac = _resolve(agent_client)
+        if ac is None or not getattr(ac, "server_ready", False):
+            await channel.send_response(
+                ws, req_id, ok=False, error="Agent server is not ready", code="AGENT_NOT_READY"
+            )
+            return
+
+        route_metadata: dict[str, Any] = {
+            "ws_id": str(getattr(ws, "_jiuwen_ws_id", "") or ""),
+        }
+        route = None
+        try:
+            routes = await channel.routing_keys_for_ws(ws)
+            route = next(
+                (item for item in reversed(routes) if item.session_id == session_id),
+                None,
+            )
+            if route is not None:
+                route_metadata["app_id"] = route.app_id
+                route_metadata["agent_ref"] = {
+                    "mode": route.agent_ref.mode,
+                    "id": route.agent_ref.id,
+                }
+        except Exception:
+            logger.warning("[a4p] failed to resolve Web authorizer route", exc_info=True)
+        if route is None:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="No Web authorizer route is registered for this session",
+                code="A4P_WEB_SESSION_REQUIRED",
+            )
+            return
+
+        env = e2a_from_agent_fields(
+            request_id=str(req_id) if req_id else "",
+            channel_id="web",
+            session_id=session_id,
+            req_method=req_method,
+            params=dict(params) if isinstance(params, dict) else {},
+            metadata=route_metadata,
+        )
+        try:
+            resp = await ac.send_request(env)
+        except Exception as exc:
+            logger.exception("[a4p] forward to agent failed: %s", exc)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+            return
+        if not resp.ok:
+            payload = resp.payload if isinstance(resp.payload, dict) else {}
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error=str(payload.get("error") or "request failed"),
+                code=str(payload.get("code") or "BAD_REQUEST"),
+            )
+            return
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload=resp.payload if isinstance(resp.payload, dict) else {},
+        )
+
+    from jiuwenswarm.common.schema.message import ReqMethod as _A4PReq
+
+    def _register_a4p(method_name: str, req_method: Any) -> None:
+        async def _handler(ws, req_id, params, session_id):
+            await _forward_a4p_to_agent(
+                ws, req_id, params, session_id, req_method=req_method
+            )
+
+        channel.register_method(method_name, _handler)
+
+    _register_a4p("a4p.config.get", _A4PReq.A4P_CONFIG_GET)
+    _register_a4p("a4p.config.update", _A4PReq.A4P_CONFIG_UPDATE)
+    _register_a4p("a4p.authorization.complete", _A4PReq.A4P_AUTHORIZATION_COMPLETE)
+    _register_a4p("a4p.authorization.reject", _A4PReq.A4P_AUTHORIZATION_REJECT)
+    _register_a4p("a4p.authorization.pending", _A4PReq.A4P_AUTHORIZATION_PENDING)
+    _register_a4p("a4p.webauthn.credentials.get", _A4PReq.A4P_WEBAUTHN_CREDENTIALS_GET)
+    _register_a4p(
+        "a4p.webauthn.registration.options",
+        _A4PReq.A4P_WEBAUTHN_REGISTRATION_OPTIONS,
+    )
+    _register_a4p(
+        "a4p.webauthn.registration.verify",
+        _A4PReq.A4P_WEBAUTHN_REGISTRATION_VERIFY,
+    )
+
     async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
         from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request
         from jiuwenswarm.common.schema.message import ReqMethod
@@ -7511,7 +7638,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("harness.export", _harness_export_handler)
 
     real_agent_client = _resolve(agent_client)
-    # Container file transfer is HTTP on the WebChannel port (dual_protocol),
+    # Container file transfer is HTTP on the WebChannel port, not WS JSON-RPC.
     # not WS JSON-RPC. Bind any client that already exposes the container-file
     # methods so build_web_channel_app can mount /file-api/* at channel.start().
     # Do not import AgentOSRouterClient here: this module must not depend on extensions.

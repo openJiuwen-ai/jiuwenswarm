@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:a4p-settings": "node --test tests/a4pSettings.test.mjs",
     "test:rsi-presentation": "esbuild src/features/rsi/rsiPresentation.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/rsi-presentation/rsiPresentation.mjs && node --test tests/rsiPresentation.test.mjs",
     "test:rsi-stage-tree": "esbuild src/features/rsi/rsiStore.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/rsi-stage/rsiStore.mjs --define:import.meta.env.DEV=false && node --test tests/rsiStageTree.test.mjs",
     "predev": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
@@ -14,6 +15,10 @@
     "test:joyai-workflow": "esbuild ../../../extensions/video_duplex/frontend/VideoLivePanel/joyaiVoice.ts src/utils/speechDetection/speechGate.ts --bundle --platform=node --format=esm --entry-names=[name] --outdir=node_modules/.cache/joyai-voice && node --test ../../../extensions/video_duplex/tests/frontend/joyaiVoice.test.mjs ../../../extensions/video_duplex/tests/frontend/joyaiProvider.test.mjs",
     "test:task-full-duplex": "node --test tests/taskFullDuplex.test.mjs tests/taskDuplexLifecycle.test.mjs tests/applicationTaskControls.test.mjs",
     "test:qwen-barge-in": "esbuild ../../../extensions/video_duplex/frontend/VideoLivePanel/qwenOmniSession.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/realtime-duplex/realtimeDuplex.mjs --define:import.meta.env.DEV=false && esbuild src/utils/speechDetection/speechGate.ts src/utils/speechDetection/sileroVad.ts --bundle --platform=node --format=esm --outdir=node_modules/.cache/realtime-duplex --out-extension:.js=.mjs && node --test ../../../extensions/video_duplex/tests/frontend/realtimeDuplex.test.mjs ../../../extensions/video_duplex/tests/frontend/speechDetection.test.mjs",
+    "test:i18n-locales": "node --test tests/i18nLocales.test.mjs",
+    "test:auth-store": "node --test tests/authStore.test.mjs",
+    "test:chat-error": "node --test tests/chatError.test.mjs",
+    "test:quota-reset": "node --test tests/quotaReset.test.mjs",
     "test:frontend-platform": "tsc src/utils/frontendPlatform.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/frontend-platform --skipLibCheck --noEmitOnError && node --test tests/frontendPlatform.test.mjs",
     "test:ime-composition": "tsc src/components/ChatPanel/imeComposition.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/ime-composition --skipLibCheck --noEmitOnError && node --test tests/imeComposition.test.mjs",
     "test:code-turn-diff-binding": "tsc src/features/code-mode/codeTurnDiffBinding.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/code-turn-diff-binding --skipLibCheck --noEmitOnError && node --test tests/codeTurnDiffBinding.test.mjs",

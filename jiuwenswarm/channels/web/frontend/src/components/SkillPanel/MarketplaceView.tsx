@@ -146,7 +146,7 @@ export function MarketplaceView({
             {t('skills.noMatches')}
           </div>
         ) : (
-          <div className="page-scroll mt-4 flex-1 min-h-0 overflow-y-auto">
+          <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
             <div className="card-grid-auto">
               {hubSkills.map((skill) => (
                 <HubSkillCard
@@ -164,7 +164,7 @@ export function MarketplaceView({
           {t('skills.noMatches')}
         </div>
       ) : (
-        <div className="page-scroll mt-4 flex-1 min-h-0 overflow-y-auto">
+        <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
           {teamSkills.length > 0 && (
             <>
               <div className="flex items-center justify-between mb-3">

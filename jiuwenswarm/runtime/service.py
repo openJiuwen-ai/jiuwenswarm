@@ -339,6 +339,9 @@ class AgentRuntime:
         )
         self._resource_lease = resource_lease
         self._session_coordinator = session_coordinator or RuntimeSessionCoordinator()
+        # Covers chat admission and preparation before the Team adapter creates
+        # its own in-flight marker (including first-run Team construction).
+        self._pending_chat_requests: dict[str, set[str]] = {}
         self._stateless_agents: dict[str, Any] = {}
         # A one-shot command may pause for one or more interactions before it
         # exits. Keep the declared root Agent pinned to that active Session so
@@ -2187,8 +2190,21 @@ class AgentRuntime:
             self._plan_controller.reset_session(session_id)
         return cleaned
 
+    def begin_chat_request(self, session_id: str, request_id: str) -> None:
+        self._pending_chat_requests.setdefault(session_id, set()).add(request_id)
+
+    def end_chat_request(self, session_id: str, request_id: str) -> None:
+        requests = self._pending_chat_requests.get(session_id)
+        if requests is None:
+            return
+        requests.discard(request_id)
+        if not requests:
+            self._pending_chat_requests.pop(session_id, None)
+
     def is_session_running(self, session_id: str) -> bool:
         """Read current execution state without cancelling work or fencing admission."""
+        if getattr(self, "_pending_chat_requests", {}).get(session_id):
+            return True
         snapshot = self._session_coordinator.snapshot_session(session_id)
         if snapshot and any(
             not execution.state.terminal for execution in snapshot.executions

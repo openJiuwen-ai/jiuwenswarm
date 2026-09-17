@@ -36,6 +36,7 @@ import {
   type SettingsModuleTarget,
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
+import { LoginDialog } from './components/LoginDialog';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -68,6 +69,7 @@ import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webRequest } from './services/webClient';
+import { getArchiveErrorCode } from './features/workspace/archivedTaskClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
@@ -413,6 +415,7 @@ function AppContent({
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
   const [proactiveToastVisible, setProactiveToastVisible] = useState(false);
+  const [authToastVisible, setAuthToastVisible] = useState(false);
   const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
@@ -520,6 +523,7 @@ function AppContent({
   const restartAutoCloseTimerRef = useRef<number | null>(null);
   const saveToastTimerRef = useRef<number | null>(null);
   const proactiveToastTimerRef = useRef<number | null>(null);
+  const authToastTimerRef = useRef<number | null>(null);
   const settingsHasChangesRef = useRef(false);
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
   const [historyPrepending, setHistoryPrepending] = useState(false);
@@ -1839,6 +1843,24 @@ function AppContent({
       console.warn('Failed to refresh models list:', error);
     }
   }, [request, setAvailableModels]);
+
+  useEffect(() => {
+    const onAuthChanged = (event: Event) => {
+      void handleModelsRefresh();
+      if (!(event as CustomEvent<{ islogin?: boolean }>).detail?.islogin) return;
+      setAuthToastVisible(true);
+      if (authToastTimerRef.current != null) window.clearTimeout(authToastTimerRef.current);
+      authToastTimerRef.current = window.setTimeout(() => {
+        setAuthToastVisible(false);
+        authToastTimerRef.current = null;
+      }, 3000);
+    };
+    window.addEventListener('jiuwen:auth-changed', onAuthChanged);
+    return () => {
+      window.removeEventListener('jiuwen:auth-changed', onAuthChanged);
+      if (authToastTimerRef.current != null) window.clearTimeout(authToastTimerRef.current);
+    };
+  }, [handleModelsRefresh]);
 
   const detectExternalCli = useCallback(async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
     return request<{
@@ -3446,7 +3468,9 @@ function AppContent({
       await deleteSideConversation(side.session.session_id);
     } catch (error) {
       console.error('Failed to close side conversation:', error);
-      window.alert(t('multiSession.errors.delete'));
+      window.alert(t(getArchiveErrorCode(error) === 'SESSION_BUSY'
+        ? 'multiSession.project.errors.deleteSessionBusy'
+        : 'multiSession.errors.delete'));
     }
   }, [deleteSideConversation, t]);
 
@@ -4069,6 +4093,14 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         </div>
       )}
 
+      {authToastVisible && (
+        <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-auth-toast">
+          <div className="app-session-toast animate-rise" data-testid="app-auth-toast-message">
+            {t('auth.huawei.loginSuccessToast')}
+          </div>
+        </div>
+      )}
+
       {proactiveToastVisible && proactiveToastMessage && (
         <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-proactive-notification-toast">
           <div
@@ -4165,6 +4197,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         onStatusChange={updateExternalCliInstallStatus}
       />
 
+      {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
+      <LoginDialog />
     </div>
   );
 }

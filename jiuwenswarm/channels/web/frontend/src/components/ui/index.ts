@@ -56,9 +56,11 @@ export {
   EntityHeader,
   type EntityHeaderProps,
   type EntityHeaderAvatar,
+  type EntityImageAvatar,
   type EntityHeaderTag,
   type EntityHeaderTagItem,
 } from './EntityHeader/EntityHeader';
 export { DetailSection, type DetailSectionProps } from './DetailSection/DetailSection';
+export { EntityAvatar, type EntityAvatarProps } from './EntityAvatar/EntityAvatar';
 export { DetailPromptChip, type DetailPromptChipProps } from './DetailPromptChip/DetailPromptChip';
 export { PageCard, type PageCardProps, type PageCardActionProps } from './PageCard/PageCard';

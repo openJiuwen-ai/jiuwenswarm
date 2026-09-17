@@ -7,6 +7,7 @@ export function Dialog({
   className,
   closeDisabled = false,
   onCancel,
+  onBackdropClick,
   children,
 }: {
   open: boolean;
@@ -14,9 +15,11 @@ export function Dialog({
   className?: string;
   closeDisabled?: boolean;
   onCancel: () => void;
+  onBackdropClick?: () => void;
   children: ReactNode;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const pressedOnBackdrop = useRef(false);
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
@@ -31,6 +34,14 @@ export function Dialog({
       onCancel={(event) => {
         event.preventDefault();
         if (!closeDisabled) onCancel();
+      }}
+      onPointerDown={(event) => {
+        pressedOnBackdrop.current = event.target === event.currentTarget;
+      }}
+      onClick={(event) => {
+        const onBackdrop = pressedOnBackdrop.current && event.target === event.currentTarget;
+        pressedOnBackdrop.current = false;
+        if (onBackdrop && !closeDisabled) onBackdropClick?.();
       }}
     >
       {children}

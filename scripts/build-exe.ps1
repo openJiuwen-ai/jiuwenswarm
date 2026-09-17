@@ -90,6 +90,17 @@ if ($VerifyProcess.ExitCode -ne 0) {
     throw "Frozen A2UI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
+$RsiVerifier = Join-Path $ProjectRoot "scripts\verify_rsi_bundle.py"
+$RsiVerifyProcess = Start-Process `
+    -FilePath $FrozenExe `
+    -ArgumentList @($RsiVerifier) `
+    -Wait `
+    -PassThru `
+    -NoNewWindow
+if ($RsiVerifyProcess.ExitCode -ne 0) {
+    throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+}
+
 $GitCodeVerifier = Join-Path $ProjectRoot "scripts\verify_gitcode_cli_bundle.py"
 $GitCodeVerifyProcess = Start-Process `
     -FilePath $FrozenExe `

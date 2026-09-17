@@ -1210,10 +1210,15 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   }
 });
 
-test('model settings no longer expose or persist the free-model switch', () => {
-  assert.doesNotMatch(source('src/features/settings/services/settingsContract.ts'), /enable_free_models/);
-  assert.doesNotMatch(source('src/features/settings/modules/models/definition.ts'), /free-models|enable_free_models/);
-  assert.doesNotMatch(source('src/App.tsx'), /enable_free_models|handleSettingsConfigSaved/);
+test('free-model Opencode Zen switch is removed; login models refresh via auth-changed', () => {
+  const modelsDefinition = source('src/features/settings/modules/models/definition.ts');
+  const settingsContract = source('src/features/settings/services/settingsContract.ts');
+  const app = source('src/App.tsx');
+  assert.doesNotMatch(modelsDefinition, /id: 'free-models'|enable_free_models|enable-free-models/);
+  assert.doesNotMatch(settingsContract, /enable_free_models/);
+  assert.doesNotMatch(app, /enable_free_models|handleSettingsConfigSaved/);
+  assert.match(app, /jiuwen:auth-changed/);
+  assert.match(app, /handleModelsRefresh/);
 });
 
 test('Settings form dialogs share the same dirty-close contract without disabling save', () => {
@@ -1608,7 +1613,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   );
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
-  assert.doesNotMatch(modelsDefinition, /id: 'free-models'/);
+  assert.doesNotMatch(modelsDefinition, /id: 'free-models'|enable_free_models/);
   assert.match(channelsDefinition, /id: 'channels',[\s\S]{0,80}separatedRows: true/);
   assert.match(modelsSettings, /<SettingsSection[\s\S]{0,120}separatedRows/);
   assert.match(channelList, /<SettingsSection separatedRows>/);
@@ -1987,4 +1992,15 @@ test('legacy page translations and Harness package state are removed without del
     harnessStore,
     /\b(?:CachedFileTreeEntry|packages|nativeVersion|activePackageIds|selectedPackageId|loadingPackages|activatingPackage|deactivatingPackage|extensionFileTreeCache|fileTreeLoadingPaths|setPackages|isPackageActive|setSelectedPackageId|setLoadingPackages|setActivatingPackage|setDeactivatingPackage|setFileTreeCache|getFileTreeCache|clearFileTreeCache|setFileTreeLoading|isFileTreeLoading)\s*:/,
   );
+});
+
+test('A4P settings use dedicated RPCs and are absent from generic persistence', () => {
+  assert.equal(SETTINGS_CONFIG_FIELDS.some((field) => field.key.startsWith('a4p_')), false);
+  for (const key of ['a4p_enabled', 'a4p_require_user_signature']) {
+    assert.throws(() => normalizeSettingsConfigUpdates({ [key]: true }));
+  }
+  const a4pSettings = source('src/features/settings/modules/experimental/A4PSettings.tsx');
+  assert.match(a4pSettings, /'a4p.config.get'/);
+  assert.match(a4pSettings, /'a4p.config.update'/);
+  assert.doesNotMatch(a4pSettings, /source\.save|useSettingsSource/);
 });

@@ -56,6 +56,8 @@ import {
   pendingQuestionIdentity,
   shouldClearPermissionQuestionsForLifecycleEvent,
 } from '../stores/pendingQuestionQueue';
+import { requestLogin } from '../stores/authStore';
+import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
@@ -4162,11 +4164,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // 而非结束帧，若不清 isLoadingHistory 会永久吞掉后续
         // chat.processing_status(is_processing=false)，表现为「一直加载中」。
         useChatStore.getState().setLoadingHistory(sessionId, false);
-        const errorMsg =
+        const rawErrorMsg =
           typeof payload.error === 'string' ? payload.error : t('network.unknownError');
+        const errorMsg = describeChatError(payload, rawErrorMsg, t);
         // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
-        if (errorMsg.includes('invalid page_idx or session history not found')) {
+        if (rawErrorMsg.includes('invalid page_idx or session history not found')) {
           return;
+        }
+        // 选了免费模型但没登录 / 登录已过期（后端预检 interface_deep._model_config_error，
+        // 或推理时被 APIG 认证器拒绝）：直接把登录框顶到用户面前，错误文案照常进对话。
+        if (payload.code === 'login_required') {
+          requestLogin('login_required');
         }
         // §8 步骤4：Heartbeat 轮的 chat.error 按 run_id 去重（id=heartbeat-error-<run_id>），
         // 并关掉该 run 的 assistant streaming，避免光标永久闪烁。
@@ -4493,6 +4501,58 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           });
         }
         useChatStore.getState().enqueuePendingQuestion(sessionId, normalizedPayload);
+      }),
+      webClient.on('a4p.authorization_request', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        const mandate = requestPayload.mandate;
+        const signingOptions = requestPayload.signingOptions;
+        if (
+          !requestId
+          || !mandate
+          || typeof mandate !== 'object'
+          || Array.isArray(mandate)
+          || !signingOptions
+          || typeof signingOptions !== 'object'
+          || Array.isArray(signingOptions)
+        ) {
+          return;
+        }
+        const uiContext =
+          requestPayload.uiContext && typeof requestPayload.uiContext === 'object'
+            ? requestPayload.uiContext as Record<string, unknown>
+            : {};
+        useChatStore.getState().setPendingA4PAuthorization(sessionId, {
+          requestId,
+          kind: typeof requestPayload.kind === 'string' ? requestPayload.kind : 'intent',
+          mandate: mandate as Record<string, unknown>,
+          signingOptions: signingOptions as Record<string, unknown>,
+          uiContext,
+          sessionId: getPayloadSessionId(requestPayload),
+        });
+      }),
+      webClient.on('a4p.authorization_terminated', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        const pending = useChatStore.getState()
+          .runtimes[sessionId]?.pendingA4PAuthorization;
+        if (!requestId || pending?.requestId === requestId) {
+          useChatStore.getState().setPendingA4PAuthorization(sessionId, null);
+        }
       }),
       // 同时监听 session_result 事件，以处理后端可能发送的不同格式
       webClient.on('session_result', ({ payload }) => {

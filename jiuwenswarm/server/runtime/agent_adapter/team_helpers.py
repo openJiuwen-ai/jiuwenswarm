@@ -2271,17 +2271,30 @@ async def process_team_message_stream(
 ) -> AsyncIterator[AgentResponseChunk]:
     """Hold the session startup lock until registration, never while streaming."""
     team_manager = get_team_manager(request.channel_id)
-    startup_lock = team_manager.get_startup_lock(request.session_id or "default")
-    async with AsyncExitStack() as startup:
-        await startup.enter_async_context(startup_lock)
-        async with aclosing(_process_team_message_stream(
-            request, inputs, deep_agent, team_manager=team_manager, startup=startup,
-        )) as stream:
-            async for chunk in stream:
-                # Early replies (validation errors, slash commands) also end
-                # startup ownership before handing control to the caller.
-                await startup.aclose()
-                yield chunk
+    session_id = request.session_id or "default"
+    request_id = str(request.request_id or "")
+    # 归档闸门：Team 回合从进入适配器起即算「运行中」，直到本轮 round 终止
+    # （round 之前的 spec 组装 / 运行时激活等准备阶段也要覆盖）。
+    begin_request = getattr(team_manager, "begin_request", None)
+    end_request = getattr(team_manager, "end_request", None)
+    if callable(begin_request):
+        begin_request(session_id, request_id)
+    try:
+        startup_lock = team_manager.get_startup_lock(session_id)
+        async with AsyncExitStack() as startup:
+            await startup.enter_async_context(startup_lock)
+            async with aclosing(_process_team_message_stream(
+                request, inputs, deep_agent, team_manager=team_manager, startup=startup,
+            )) as stream:
+                async for chunk in stream:
+                    # Early replies (validation errors, slash commands) also end
+                    # startup ownership before handing control to the caller.
+                    await startup.aclose()
+                    yield chunk
+    finally:
+        # 兜底：提前返回（校验失败/斜杠命令）也要解除运行中标记。
+        if callable(end_request):
+            end_request(session_id, request_id)
 
 
 async def _process_team_message_stream(
@@ -2532,6 +2545,14 @@ async def _process_team_message_stream(
             if isinstance(params_obj, dict)
             else ""
         ) or None
+        # 选的是登录送的免费模型时，按 Gateway 随请求带下来的凭据造条目（api_key 是占位值，
+        # 真 token 发请求时才换上）。不传的话集群按名字查不到它，会静默用配置里的第一个模型。
+        from jiuwenswarm.common.auth.login_credentials import build_login_model_entry
+
+        login_model_entry = build_login_model_entry(
+            params_obj if isinstance(params_obj, dict) else None,
+            requested_model_name or "",
+        )
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
         # 会话级 swarmflow 配置：请求 params > metadata > config.yaml
@@ -2552,6 +2573,7 @@ async def _process_team_message_stream(
             channel_id=channel_id,
             request_metadata=request_metadata,
             requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
             agent_group_name=agent_group_name,
             swarmflow_config=swarmflow_config,
         )

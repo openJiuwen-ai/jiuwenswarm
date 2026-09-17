@@ -9,7 +9,6 @@ import { Unlink2, Trash2, Plus, Wrench, Terminal, Loader2, AlertCircle, Info, Ex
 // 用在"删除"上不对，见下方按钮渲染处的 icon 条件。
 import { useConnectorStore } from '../../stores/connectorStore';
 import { NewConversationIcon } from './icons';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
@@ -149,7 +148,6 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
 
   const connectorId = connector.id;
   const connectorInstalled = connector.installed;
-  const avatar = getSkillAvatar(connector.displayName);
   // 自定义 MCP 一旦断联（已经解绑过一次），右上角那个按钮的语义从"解绑"变成"卸载"（彻底删除，
   // mcp.delete_custom）——用普通变量而不是每处都重新读 connector.source/!linked，也顺便避开
   // 闭包里 TS 认不出 `connector` 已经非空narrow 的问题（handleUnbind/handleDelete 定义在下面，
@@ -239,7 +237,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
         <PublicationDetailStatus kind="mcp" localId={runtimeName} />
         <EntityHeader
           testId="connector-market-mcp-detail-header"
-          avatar={connector.icon ? <img src={connector.icon} alt="" /> : avatar}
+          avatar={{ name: connector.displayName, iconUrl: connector.icon, testId: 'connector-market-mcp-detail-avatar' }}
           title={connector.displayName}
           titleTestId="connector-market-mcp-detail-name"
           tags={[
@@ -479,8 +477,8 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             titleTestId="connector-market-mcp-detail-skills-title"
             title={t('connectorMarket.detail.sections.skills')}
           >
-            {/* 技能卡片同样复用 ui/PageCard（字母头像走 getSkillAvatar，PageCard 标准形态）；
-              testid/variant 沿用原 CapabilityGrid 卡片（connector-market-mcp-detail-skill） */}
+            {/* 技能卡片同样复用 ui/PageCard（字母头像走 EntityHeader 内置 EntityAvatar，
+                PageCard 标准形态）；testid/variant 沿用原 CapabilityGrid 卡片（connector-market-mcp-detail-skill） */}
             <div
               className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
               data-testid="connector-market-mcp-detail-skills"
@@ -488,7 +486,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
               {skills.map((skill) => (
                 <PageCard
                   key={skill.name}
-                  avatar={getSkillAvatar(skill.name)}
+                  avatar={{ name: skill.name }}
                   title={skill.name}
                   description={skill.description}
                   testId="connector-market-mcp-detail-skill"

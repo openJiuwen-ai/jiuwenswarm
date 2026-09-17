@@ -9,6 +9,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     AgentCreatingTimeout,
     AgentDeleted,
     AgentManager,
+    AgentRuntime,
     normalize_agent_key_fields,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
@@ -211,6 +212,27 @@ async def test_get_or_create_after_delete_during_creation_can_retry() -> None:
     assert recreated.info.status is AgentStatus.READY
     assert recreated.info.sandbox_id == "sandbox-2"
     assert create_calls == 2
+
+
+def test_normalize_agent_type_keeps_registry_case() -> None:
+    assert AgentRuntime.normalize_agent_type("Claude-Code") == "Claude-Code"
+    assert AgentRuntime.normalize_agent_type("  claude-code  ") == "claude-code"
+    assert AgentRuntime.normalize_agent_type("JiuwenSwarm") == "jiuwenswarm"
+    assert AgentRuntime.normalize_agent_type("JIUWENSWARM") == "jiuwenswarm"
+    assert AgentRuntime.normalize_agent_type("") == "jiuwenswarm"
+    assert AgentRuntime.normalize_agent_type(None) == "jiuwenswarm"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_reuses_builtin_ignoring_case() -> None:
+    agent_manager = AgentManager()
+    first = await agent_manager.get_or_create_agent("u1", "JiuwenSwarm")
+    second = await agent_manager.get_or_create_agent("u1", "jiuwenswarm")
+    mixed = await agent_manager.get_or_create_agent("u1", "Claude-Code")
+    assert first.key == second.key == ("u1", "jiuwenswarm")
+    assert first.info.agent_type == "jiuwenswarm"
+    assert mixed.key == ("u1", "Claude-Code")
+    assert mixed.info.agent_type == "Claude-Code"
 
 
 def test_normalize_agent_key_fields_defaults_and_aliases() -> None:

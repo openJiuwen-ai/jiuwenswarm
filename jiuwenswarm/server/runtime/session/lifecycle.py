@@ -322,33 +322,54 @@ def raw_metadata(session_id: str) -> dict:
     return read_json(path / "metadata.json")
 
 
-def project_id_for(meta: dict) -> str:
+def build_project_lookup() -> tuple[
+    dict[str, list[tuple[str, str]]], dict[str, str]
+]:
+    """Build the legacy project-directory lookup once for a batch operation.
+
+    Session inventories can contain many old metadata files without a
+    ``project_id``.  Rebuilding this mapping per session turns that compatible
+    fallback into an N+1 read of ``projects.json``.  Callers that enumerate
+    sessions should build it lazily and pass it to :func:`project_id_for`.
+    """
+    from jiuwenswarm.server.runtime.session.project_store import (
+        list_projects,
+        _normalize_path_for_match,
+    )
+
+    projects = list_projects(include_hidden=True, cache_bust=True)
+    by_directory: dict[str, list[tuple[str, str]]] = {}
+    for project in projects:
+        if project.project_dir:
+            by_directory.setdefault(
+                _normalize_path_for_match(project.project_dir), []
+            ).append((project.project_id, project.work_mode))
+    return (
+        by_directory,
+        {project.project_id: project.work_mode for project in projects},
+    )
+
+
+def project_id_for(
+    meta: dict,
+    *,
+    project_lookup: tuple[dict[str, list[tuple[str, str]]], dict[str, str]]
+    | None = None,
+) -> str:
     if not meta.get("project_id") and meta.get("project_dir"):
         # Legacy list queries infer this association without writing it back.
         # Archive checks and cascade inventories must use the same association.
         from jiuwenswarm.server.runtime.session.session_metadata import (
             _apply_metadata_defaults_with_inference,
         )
-        from jiuwenswarm.server.runtime.session.project_store import (
-            list_projects,
-            _normalize_path_for_match,
-        )
 
-        projects = list_projects(include_hidden=True, cache_bust=True)
-        by_directory: dict[str, list[tuple[str, str]]] = {}
-        for project in projects:
-            if project.project_dir:
-                by_directory.setdefault(
-                    _normalize_path_for_match(project.project_dir), []
-                ).append((project.project_id, project.work_mode))
+        by_directory, id_to_work_mode = project_lookup or build_project_lookup()
         meta = _apply_metadata_defaults_with_inference(
             str(meta.get("session_id") or ""),
             dict(meta),
             enable_writeback=False,
             dir_to_projects=by_directory,
-            id_to_work_mode={
-                project.project_id: project.work_mode for project in projects
-            },
+            id_to_work_mode=id_to_work_mode,
         )
     return str(
         meta.get("project_id")
