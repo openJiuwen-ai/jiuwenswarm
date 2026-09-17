@@ -328,6 +328,7 @@
       "rsi": "RSI · Recursive self-improvement",
       "trajectoryUi": "Trajectory UI",
       "kvCacheAffinity": "Compute affinity",
+      "skillPack": "Skill Packs",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
@@ -374,6 +375,10 @@
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",
         "description": "Control automatic evolution and retention of local skills."
+      },
+      "symphony_evolution_enabled": {
+        "title": "Skill Pack Discovery",
+        "description": "Distill skill combinations from execution experience after tasks finish and discover skill packs automatically."
       },
       "skill_retrieval_enabled": {
         "title": "Automatic Skill Retrieval",

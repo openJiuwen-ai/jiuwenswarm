@@ -328,6 +328,7 @@
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹界面",
       "kvCacheAffinity": "算力亲和",
+      "skillPack": "技能包",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
@@ -372,6 +373,10 @@
         "placeholder": "例如：FunAudioLLM/SenseVoiceSmall"
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
+      "symphony_evolution_enabled": {
+        "title": "发现技能包",
+        "description": "任务结束后从执行经验中沉淀技能组合，自动发现技能包"
+      },
       "skill_retrieval_enabled": { "title": "技能自动检索", "description": "基于已安装技能数量，动态选择智能体的技能发现策略" },
       "skill_retrieval_index_enabled": {
         "title": "技能索引",
