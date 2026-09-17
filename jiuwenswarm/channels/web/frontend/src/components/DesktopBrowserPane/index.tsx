@@ -12,7 +12,14 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const addressFocusedRef = useRef(false);
   const [address, setAddress] = useState(DEFAULT_BROWSER_URL);
+  const [panels, setPanels] = useState<ElectronBrowserState[]>([]);
+  const [selectedPanel, setSelectedPanel] = useState({ sessionId, panelId: sessionId });
+  const panelId = selectedPanel.sessionId === sessionId ? selectedPanel.panelId : sessionId;
   const [browserState, setBrowserState] = useState<ElectronBrowserState>({
+    panelId: '',
+    memberId: '',
+    label: '',
+    busy: false,
     sessionId: '',
     url: '',
     title: '',
@@ -31,8 +38,33 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
         width: rect.width,
         height: rect.height,
       },
-      sessionId,
+      panelId,
     );
+  }, [desktop, panelId]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    let active = true;
+    const update = (allPanels: ElectronBrowserState[]) => {
+      if (!active) return;
+      const current = allPanels.filter((panel) => panel.sessionId === sessionId);
+      setPanels(current);
+      setSelectedPanel((selected) => {
+        if (selected.sessionId === sessionId && current.some((panel) => panel.panelId === selected.panelId)) {
+          return selected;
+        }
+        return {
+          sessionId,
+          panelId: current.find((panel) => !panel.memberId)?.panelId ?? current[0]?.panelId ?? sessionId,
+        };
+      });
+    };
+    const unsubscribe = desktop.browser.onPanelsChanged(update);
+    void desktop.browser.listPanels(sessionId).then(update);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, [desktop, sessionId]);
 
   useEffect(() => {
@@ -43,24 +75,24 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     if (!desktop) return;
-    void desktop.browser.setVisible(true, sessionId);
+    void desktop.browser.setVisible(true, panelId);
     window.requestAnimationFrame(syncBounds);
     return () => {
-      void desktop.browser.setVisible(false, sessionId);
+      void desktop.browser.setVisible(false, panelId);
     };
-  }, [desktop, sessionId, syncBounds]);
+  }, [desktop, panelId, syncBounds]);
 
   useEffect(() => {
     if (!desktop) return;
     let active = true;
-    void desktop.browser.getState(sessionId).then((state) => {
+    setAddress(DEFAULT_BROWSER_URL);
+    void desktop.browser.getState(panelId).then((state) => {
       if (!active) return;
       setBrowserState(state);
       if (state.url) setAddress(state.url);
     });
     const unsubscribe = desktop.browser.onStateChanged((state) => {
-      // 主进程广播所有会话视图的状态；只响应当前会话的。
-      if (state.sessionId !== sessionId) return;
+      if (state.panelId !== panelId) return;
       setBrowserState(state);
       if (!addressFocusedRef.current && state.url) setAddress(state.url);
     });
@@ -68,7 +100,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
       active = false;
       unsubscribe();
     };
-  }, [desktop, sessionId]);
+  }, [desktop, panelId]);
 
   useEffect(() => {
     if (!desktop || !viewportRef.current) return;
@@ -118,31 +150,61 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (!desktop) return;
     if (modalOverlayOpen) {
-      void desktop.browser.setVisible(false, sessionId);
+      void desktop.browser.setVisible(false, panelId);
       return;
     }
     // focus=false：弹窗关闭后的恢复显示不抢主窗口焦点。
-    void desktop.browser.setVisible(true, sessionId, false);
+    void desktop.browser.setVisible(true, panelId, false);
     window.requestAnimationFrame(syncBounds);
-  }, [desktop, modalOverlayOpen, sessionId, syncBounds]);
+  }, [desktop, modalOverlayOpen, panelId, syncBounds]);
 
   if (!desktop) return null;
 
   const navigate = (event: FormEvent) => {
     event.preventDefault();
     // 非法 URL（如不支持的协议）会被主进程拒绝；恢复地址栏为当前页面，避免无效输入滞留。
-    desktop.browser.navigate(address, sessionId).catch(() => {
+    desktop.browser.navigate(address, panelId).catch(() => {
       if (browserState.url) setAddress(browserState.url);
     });
   };
 
   return (
-    <div className="desktop-browser-pane-inline">
-      <div className="desktop-browser-toolbar">
+    <div className="desktop-browser-pane-inline" data-testid="desktop-browser-pane">
+      <div
+        className="desktop-browser-tabs"
+        role="tablist"
+        aria-label={t('browser.pane.panels')}
+        data-testid="desktop-browser-tabs"
+      >
+        {panels
+          .filter((panel) => panel.sessionId === sessionId)
+          .map((panel) => (
+            <button
+              key={panel.panelId}
+              type="button"
+              role="tab"
+              aria-selected={panel.panelId === panelId}
+              className="desktop-browser-tab"
+              data-testid="desktop-browser-tab"
+              data-variant={panel.panelId}
+              title={panel.label || t('browser.pane.mainPanel')}
+              onClick={() => setSelectedPanel({ sessionId, panelId: panel.panelId })}
+            >
+              {panel.busy ? (
+                <LoaderCircle aria-hidden size={14} className="desktop-browser-loading" />
+              ) : (
+                <Globe2 aria-hidden size={14} />
+              )}
+              <span>{panel.label || t('browser.pane.mainPanel')}</span>
+            </button>
+          ))}
+      </div>
+      <div className="desktop-browser-toolbar" data-testid="desktop-browser-toolbar">
         <button
           type="button"
           className="desktop-browser-tool-button"
-          onClick={() => void desktop.browser.goBack(sessionId)}
+          onClick={() => void desktop.browser.goBack(panelId)}
+          data-testid="desktop-browser-back"
           disabled={!browserState.canGoBack}
           title={t('browser.pane.back')}
           aria-label={t('browser.pane.back')}
@@ -152,7 +214,8 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
         <button
           type="button"
           className="desktop-browser-tool-button"
-          onClick={() => void desktop.browser.goForward(sessionId)}
+          onClick={() => void desktop.browser.goForward(panelId)}
+          data-testid="desktop-browser-forward"
           disabled={!browserState.canGoForward}
           title={t('browser.pane.forward')}
           aria-label={t('browser.pane.forward')}
@@ -162,15 +225,14 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
         <button
           type="button"
           className="desktop-browser-tool-button"
-          onClick={() =>
-            void (browserState.loading ? desktop.browser.stop(sessionId) : desktop.browser.reload(sessionId))
-          }
+          onClick={() => void (browserState.loading ? desktop.browser.stop(panelId) : desktop.browser.reload(panelId))}
+          data-testid="desktop-browser-reload"
           title={browserState.loading ? t('browser.pane.stop') : t('browser.pane.reload')}
           aria-label={browserState.loading ? t('browser.pane.stop') : t('browser.pane.reload')}
         >
           {browserState.loading ? <X aria-hidden size={17} /> : <RefreshCw aria-hidden size={16} />}
         </button>
-        <form className="desktop-browser-address-form" onSubmit={navigate}>
+        <form className="desktop-browser-address-form" onSubmit={navigate} data-testid="desktop-browser-address-form">
           {browserState.loading ? (
             <LoaderCircle className="desktop-browser-address-icon desktop-browser-loading" aria-hidden size={15} />
           ) : browserState.url.startsWith('https://') ? (
@@ -180,6 +242,8 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
           )}
           <input
             className="desktop-browser-address"
+            data-testid="desktop-browser-address"
+            aria-label={t('browser.pane.addressPlaceholder')}
             value={address}
             onChange={(event) => setAddress(event.target.value)}
             onFocus={(event) => {
@@ -194,8 +258,10 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
           />
         </form>
       </div>
-      <div ref={viewportRef} className="desktop-browser-viewport">
-        <span className="desktop-browser-placeholder">{t('browser.pane.unavailable')}</span>
+      <div ref={viewportRef} className="desktop-browser-viewport" data-testid="desktop-browser-viewport">
+        <span className="desktop-browser-placeholder" data-testid="desktop-browser-placeholder">
+          {t('browser.pane.unavailable')}
+        </span>
       </div>
     </div>
   );

@@ -201,6 +201,7 @@ mkdir -p "$APP_DIR"
 # Copy the mature Electron desktop shell (main.cjs, preload.cjs, target_mcp_wrapper.cjs)
 echo "  Copying Electron desktop shell..."
 cp "$DESKTOP_DIR/main.cjs" "$APP_DIR/"
+cp "$DESKTOP_DIR/browser_panels.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/preload.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/target_mcp_wrapper.cjs" "$APP_DIR/"
 

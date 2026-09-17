@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 
 const BACKEND_HOST = '127.0.0.1';
 const FRONTEND_HOST = '127.0.0.1';
@@ -44,6 +45,8 @@ const MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991;
 // 仅注入 web 静态服务子进程; 首导航 URL 携带 ?dt=<token> 换取 HttpOnly Cookie,
 // 本机浏览器直开对话页时返回 403。
 const desktopLockToken = randomBytes(32).toString('base64url');
+const browserResolverToken = randomBytes(32).toString('base64url');
+const forceManagedBrowser = /^(1|true|yes|on)$/i.test(process.env.JIUWENSWARM_BROWSER_FORCE_MANAGED || '');
 const VITE_DEV_MODE = process.argv.includes('--vite-dev');
 const ELECTRON_CDP_PORT = Number.parseInt(process.env.JIUWENSWARM_ELECTRON_CDP_PORT || '', 10);
 let cdpPort = Number.isInteger(ELECTRON_CDP_PORT) && ELECTRON_CDP_PORT >= 1 && ELECTRON_CDP_PORT <= 65535
@@ -170,9 +173,9 @@ if (app.isPackaged) {
 installMainConsoleTee();
 
 let mainWindow = null;
-// 每会话一个隔离的浏览上下文：惰性创建、独立 partition（cookie/存储互不可见）。
-// 同一时刻只显示当前会话的视图；Browser Agent 经 target resolver 绑定本会话视图。
+// Pages are isolated by conversation/member; their persistent login profile is shared.
 const browserViews = new Map();
+const browserPanelIdentities = new Map();
 const MAX_BROWSER_SESSION_VIEWS = 8;
 // 每会话最后浏览的页面 URL：视图被 LRU 回收后重建时还原用。持久化到
 // userData/browser-session-urls.json，重启后同样还原（防抖 2s 落盘 + 退出冲刷）。
@@ -270,7 +273,7 @@ function spawnService(name, ports, extraArgs = []) {
     JIUWENSWARM_DESKTOP: '1',
     JIUWENSWARM_ELECTRON: '1',
   };
-  if (browserTargetResolver) {
+  if (browserTargetResolver && !forceManagedBrowser) {
     const targetMcpDiagnosticLog = path.join(
       app.getPath('home'),
       '.jiuwenswarm',
@@ -291,6 +294,7 @@ function spawnService(name, ports, extraArgs = []) {
     env.PLAYWRIGHT_MCP_ENV_JSON = JSON.stringify({
       PLAYWRIGHT_MCP_CDP_ENDPOINT: env.PLAYWRIGHT_MCP_CDP_ENDPOINT,
       PLAYWRIGHT_MCP_TARGET_RESOLVER: env.PLAYWRIGHT_MCP_TARGET_RESOLVER,
+      PLAYWRIGHT_MCP_TARGET_RESOLVER_TOKEN: browserResolverToken,
       PLAYWRIGHT_MCP_DIAGNOSTIC_LOG: targetMcpDiagnosticLog,
       // 打包版 MCP 子进程即本应用 exe 以 Node 模式运行 wrapper，需要经由
       // openjiuwen 的 env 白名单转发该开关。
@@ -317,6 +321,7 @@ function spawnService(name, ports, extraArgs = []) {
       ]);
     }
   }
+  if (forceManagedBrowser) env.BROWSER_DRIVER = 'managed';
   // Mirror the Python desktop child env contract (desktop_app._build_child_env):
   // inject the full session port group so agent/gateway/web agree, and let the
   // children skip workspace preparation because the launcher did it once.
@@ -902,11 +907,18 @@ setInterval(showTip,3500);
 }
 
 function currentBrowserState(entry) {
+  const identity = {
+    panelId: entry?.panelId ?? '',
+    sessionId: entry?.sessionId ?? '',
+    memberId: entry?.memberId ?? '',
+    label: entry?.label ?? '',
+    busy: entry?.leases ? hasLiveLease(entry) : false,
+  };
   const view = entry?.view;
   if (!view || view.webContents.isDestroyed()) {
     return {
-      sessionId: entry?.sessionId ?? '',
-      url: '',
+      ...identity,
+      url: sessionLastUrls.get(entry?.panelId) || '',
       title: '',
       loading: false,
       canGoBack: false,
@@ -915,7 +927,7 @@ function currentBrowserState(entry) {
   }
   const history = view.webContents.navigationHistory;
   return {
-    sessionId: entry.sessionId,
+    ...identity,
     url: view.webContents.getURL(),
     title: view.webContents.getTitle(),
     loading: view.webContents.isLoading(),
@@ -928,6 +940,17 @@ function emitBrowserState(entry) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('browser:state-changed', currentBrowserState(entry));
   }
+}
+
+function emitBrowserPanels() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('browser:panels-changed', allBrowserPanels());
+  }
+}
+
+function allBrowserPanels() {
+  return [...browserPanelIdentities.values()].map(identity =>
+    currentBrowserState(browserViews.get(identity.panelId) || identity));
 }
 
 function emitLayoutInvalidated() {
@@ -979,12 +1002,6 @@ function normalizeBrowserSessionId(rawValue) {
   return normalized || 'default';
 }
 
-function browserPartitionToken(sessionId) {
-  // partition 名只保留 id 安全字符；异常 session id 折叠为 '_'，最长 64。
-  const token = String(sessionId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
-  return token || 'default';
-}
-
 function browserSessionUrlsPath() {
   return path.join(app.getPath('userData'), BROWSER_SESSION_URLS_FILENAME);
 }
@@ -1034,12 +1051,12 @@ function evictIdleBrowserViews(preserveSessionId) {
   // 被回收视图的最后页面 URL 已由 recordLastUrl 记入 sessionLastUrls，
   // 该会话再次打开时 ensureBrowserView 会还原页面（cookie/登录态随 partition 保留）。
   while (browserViews.size >= MAX_BROWSER_SESSION_VIEWS) {
-    const candidates = [...browserViews.entries()]
-      .filter(([sid, entry]) => sid !== preserveSessionId && sid !== activePaneSessionId && !entry.visible)
-      .sort(([, a], [, b]) => a.lastActive - b.lastActive);
+    const candidates = evictionCandidates(browserViews, preserveSessionId, activePaneSessionId);
+    // The limit is soft: live MCP owners are never evicted, even while hidden.
     if (candidates.length === 0) return;
     const [victimId, victim] = candidates[0];
     browserViews.delete(victimId);
+    emitBrowserPanels();
     try {
       mainWindow?.contentView?.removeChildView(victim.view);
       victim.view.webContents.close();
@@ -1049,18 +1066,22 @@ function evictIdleBrowserViews(preserveSessionId) {
   }
 }
 
-async function ensureBrowserView(sessionId) {
+async function ensureBrowserView(sessionId, lease = null) {
   if (!hasCdp || !mainWindow || mainWindow.isDestroyed()) return null;
-  const key = normalizeBrowserSessionId(sessionId);
+  const identity = typeof sessionId === 'object' ? sessionId
+    : browserPanelIdentities.get(normalizeBrowserSessionId(sessionId)) || panelIdentity(sessionId);
+  const key = identity.panelId;
+  browserPanelIdentities.set(key, identity);
   const existing = browserViews.get(key);
   if (existing && !existing.view.webContents.isDestroyed()) {
     existing.lastActive = Date.now();
-    return existing;
+    if (lease) existing.leases.set(lease.leaseId, lease.ownerPid);
+    return existing.ready;
   }
   if (existing) browserViews.delete(key);
   evictIdleBrowserViews(key);
 
-  const partition = `persist:jiuwenswarm-browser-${browserPartitionToken(key)}`;
+  const partition = SHARED_BROWSER_PARTITION;
   const partitionSession = session.fromPartition(partition);
   partitionSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   const view = new WebContentsView({
@@ -1069,13 +1090,48 @@ async function ensureBrowserView(sessionId) {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      backgroundThrottling: false,
       partition,
     },
   });
   mainWindow.contentView.addChildView(view);
+  const entry = {
+    ...identity, view, targetId: '', crashCount: 0, lastActive: Date.now(), visible: false,
+    creating: true, leases: new Map(), ready: null,
+  };
+  // Initialize before clipping to the window: a minimized window or stale pane
+  // rectangle may be empty, but a newly created background page must not be.
+  const contentBounds = mainWindow.getContentBounds();
+  const zoomFactor = mainWindow.webContents.getZoomFactor();
+  const initialWidth = Math.round((Number(lastBrowserBounds?.width) || 0) * zoomFactor);
+  const initialHeight = Math.round((Number(lastBrowserBounds?.height) || 0) * zoomFactor);
+  entry.viewportSize = {
+    width: initialWidth > 0 ? initialWidth : Math.max(contentBounds.width, 1024),
+    height: initialHeight > 0 ? initialHeight : Math.max(contentBounds.height, 768),
+  };
+  view.setBounds({ x: 0, y: 0, ...entry.viewportSize });
   view.setVisible(false);
-  const entry = { sessionId: key, view, targetId: '', crashCount: 0, lastActive: Date.now(), visible: false };
+  applyBrowserBounds(entry, lastBrowserBounds?.width > 0 && lastBrowserBounds?.height > 0
+    ? lastBrowserBounds : { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height });
+  if (lease) entry.leases.set(lease.leaseId, lease.ownerPid);
   browserViews.set(key, entry);
+  entry.ready = initializeBrowserView(entry).catch(error => {
+    if (browserViews.get(key) === entry) browserViews.delete(key);
+    mainWindow?.contentView?.removeChildView(view);
+    if (!view.webContents.isDestroyed()) view.webContents.close();
+    emitBrowserPanels();
+    throw error;
+  }).finally(() => { entry.creating = false; });
+  emitBrowserPanels();
+  return entry.ready;
+}
+
+async function initializeBrowserView(entry) {
+  const { view, panelId: key } = entry;
+  view.webContents.on('did-finish-load', () => {
+    entry.loaded = true;
+    syncBrowserViewport(entry);
+  });
 
   for (const eventName of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) {
     view.webContents.on(eventName, () => emitBrowserState(entry));
@@ -1101,6 +1157,7 @@ async function ensureBrowserView(sessionId) {
     return { action: 'deny' };
   });
   view.webContents.on('render-process-gone', (_event, details) => {
+    entry.loaded = false;
     if (shuttingDown) return;
     // 连续崩溃（如显卡/站点问题）时放弃无限 reload，避免 crash loop。
     entry.crashCount += 1;
@@ -1142,6 +1199,7 @@ async function ensureBrowserView(sessionId) {
 
 function applyBrowserBounds(entry, bounds) {
   if (!entry?.view || !mainWindow || mainWindow.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
+  if (!(Number(bounds?.width) > 0 && Number(bounds?.height) > 0)) return entry.view.getBounds();
   const contentBounds = mainWindow.getContentBounds();
   // Renderer rectangles are expressed in CSS pixels. Electron View bounds
   // use device-independent pixels, which only match CSS pixels at 100% zoom.
@@ -1152,9 +1210,26 @@ function applyBrowserBounds(entry, bounds) {
   const y = Math.max(0, Math.min(scaledY, contentBounds.height));
   const width = Math.max(0, Math.min(Math.round((Number(bounds?.width) || 0) * zoomFactor), contentBounds.width - x));
   const height = Math.max(0, Math.min(Math.round((Number(bounds?.height) || 0) * zoomFactor), contentBounds.height - y));
+  if (width === 0 || height === 0) return entry.view.getBounds();
   entry.view.setBounds({ x, y, width, height });
-  if (entry.visible) entry.view.setVisible(true);
+  // Native hidden views can have a zero layout viewport on Windows. Keep the
+  // renderer's desktop viewport in sync with the pane even when not displayed.
+  entry.viewportSize = { width, height };
+  syncBrowserViewport(entry);
+  entry.view.setVisible(entry.visible);
   return { x, y, width, height };
+}
+
+function syncBrowserViewport(entry) {
+  if (!entry.loaded || !entry.viewportSize || entry.view.webContents.isDestroyed()) return;
+  entry.view.webContents.enableDeviceEmulation({
+    screenPosition: 'desktop', viewSize: entry.viewportSize, deviceScaleFactor: 0, scale: 1,
+  });
+}
+
+function hideBrowserView(entry) {
+  entry.visible = false;
+  entry.view.setVisible(false);
 }
 
 function setBrowserPaneVisible(sessionId, visible, focus = true) {
@@ -1162,8 +1237,7 @@ function setBrowserPaneVisible(sessionId, visible, focus = true) {
   if (!visible) {
     const entry = browserViews.get(key);
     if (entry) {
-      entry.visible = false;
-      entry.view.setVisible(false);
+      hideBrowserView(entry);
     }
     if (activePaneSessionId === key) activePaneSessionId = '';
     return false;
@@ -1172,8 +1246,7 @@ function setBrowserPaneVisible(sessionId, visible, focus = true) {
   // 同屏只允许一个会话的视图：激活前先隐藏其它会话视图。
   for (const [sid, entry] of browserViews) {
     if (sid !== key) {
-      entry.visible = false;
-      entry.view.setVisible(false);
+      hideBrowserView(entry);
     }
   }
   // 视图可能尚未创建（首次切到 browser 页签）：创建完成后兜底应用边界与可见性。
@@ -1194,15 +1267,15 @@ function setBrowserPaneVisible(sessionId, visible, focus = true) {
 // ─── 浏览器端点发现文件（跨进程交接）──────────────────────────────────────
 // Electron 的 CDP 端口与 target resolver 端口每次启动随机分配，且只在
 // spawnService 里注入给亲自拉起的后端。FrontendOnly 场景后端由外部启动，
-// 因此把端点心跳写入 ~/.jiuwenswarm/runtime_state/ 下的发现文件；后端在
-// env 缺失时读取该文件即可绑定到本机存活的 Electron 壳，让
-// npm run dev / 仅前端包 / 完整包 三种形态的内置浏览器效果收敛。
+// 因此把端点心跳写入用户数据目录的 runtime_state/ 下；外部后端必须设置
+// JIUWENSWARM_ELECTRON_BROWSER=1 才能读取，不能覆盖已有 managed 配置。
 const BROWSER_ENDPOINTS_FILE_NAME = 'electron-browser-endpoints.json';
 const BROWSER_ENDPOINTS_HEARTBEAT_MS = 10_000;
 let browserEndpointsTimer = null;
 
 function browserEndpointsFilePath() {
-  return path.join(app.getPath('home'), '.jiuwenswarm', 'runtime_state', BROWSER_ENDPOINTS_FILE_NAME);
+  const dataDir = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
+  return path.join(dataDir, 'runtime_state', BROWSER_ENDPOINTS_FILE_NAME);
 }
 
 function buildBrowserEndpointsPayload() {
@@ -1211,6 +1284,7 @@ function buildBrowserEndpointsPayload() {
   const envJson = {
     PLAYWRIGHT_MCP_CDP_ENDPOINT: cdpEndpoint,
     PLAYWRIGHT_MCP_TARGET_RESOLVER: targetResolver,
+    PLAYWRIGHT_MCP_TARGET_RESOLVER_TOKEN: browserResolverToken,
     // 打包版 wrapper 以本应用 exe 的 Node 模式运行；该开关需经
     // PLAYWRIGHT_MCP_ENV_JSON 白名单转发进 MCP 子进程。
     ...(app.isPackaged ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
@@ -1264,37 +1338,13 @@ function stopBrowserEndpointsPublisher() {
 }
 
 function startBrowserTargetResolver() {
-  // Browser Agent 的 target 绑定入口：GET /<sessionId> → 惰性创建该会话视图并
-  // 返回其 CDP TargetID。仅绑定 127.0.0.1，与 CDP 调试端口同一信任边界。
   return new Promise((resolve, reject) => {
-    const server = nodeHttp.createServer((req, res) => {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      try {
-        const url = new URL(req.url || '/', `http://${BACKEND_HOST}`);
-        const sessionId = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
-        if (!sessionId) {
-          res.statusCode = 404;
-          res.end(JSON.stringify({ error: 'session id path segment required' }));
-          return;
-        }
-        ensureBrowserView(sessionId)
-          .then(entry => {
-            if (!entry) {
-              res.statusCode = 503;
-              res.end(JSON.stringify({ error: 'browser sideview disabled' }));
-              return;
-            }
-            res.end(JSON.stringify({ sessionId: entry.sessionId, targetId: entry.targetId }));
-          })
-          .catch(error => {
-            res.statusCode = 500;
-            res.end(JSON.stringify({ error: String(error?.message || error) }));
-          });
-      } catch (error) {
-        res.statusCode = 400;
-        res.end(JSON.stringify({ error: String(error?.message || error) }));
-      }
-    });
+    const server = nodeHttp.createServer(createTargetHandler({
+      token: browserResolverToken,
+      ensureView: ensureBrowserView,
+      getView: id => browserViews.get(id),
+      changed: emitBrowserPanels,
+    }));
     server.once('error', reject);
     server.listen({ host: BACKEND_HOST, port: 0 }, () => {
       const address = server.address();
@@ -2312,6 +2362,10 @@ function registerIpcHandlers() {
     const entry = browserViews.get(normalizeBrowserSessionId(sessionId));
     return currentBrowserState(entry);
   });
+  registerHandler('browser:list-panels', sessionId => {
+    const sid = normalizeBrowserSessionId(sessionId);
+    return allBrowserPanels().filter(entry => entry.sessionId === sid);
+  });
   registerHandler('browser:set-visible', (visible, sessionId, focus) => {
     return setBrowserPaneVisible(sessionId, Boolean(visible), focus !== false);
   });
@@ -2461,7 +2515,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
-    // 每会话 partition 的 permission handler 在 ensureBrowserView 内按需注册。
+    // 共享浏览器 partition 的 permission handler 在 ensureBrowserView 内按需注册。
     // 先读回上次运行保存的会话页面 URL（重启还原），再进入启动流程。
     loadSessionLastUrls();
     if (cdpPortPending) {

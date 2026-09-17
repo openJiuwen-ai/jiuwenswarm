@@ -4313,33 +4313,21 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         """Synchronize browser launch settings before browser runtimes are built."""
         runtime_on = runtime_enabled if runtime_enabled is not None else self._browser_runtime_enabled()
-        if runtime_on:
-            # FrontendOnly 等外部启动的后端：env 未经 Electron spawn 注入时，
-            # 经发现文件绑定到本机存活的 Electron 壳（三种运行形态效果收敛）。
-            # 必须先于下方 electron env 检测执行，使 Electron 分支正确生效。
-            from jiuwenswarm.agents.harness.common.electron_sideview import (
-                apply_electron_discovery_browser_env,
-            )
+        from jiuwenswarm.agents.harness.common.electron_sideview import electron_browser_selected
 
-            apply_electron_discovery_browser_env()
+        # Discovery is opt-in and restores its own stale overrides before launch resolution.
+        electron_selected = electron_browser_selected()
         headless = self._resolve_headless_from_config(config_base)
-        electron_target_id = (os.getenv("PLAYWRIGHT_MCP_TARGET_ID") or "").strip()
-        electron_target_resolver = (os.getenv("PLAYWRIGHT_MCP_TARGET_RESOLVER") or "").strip()
-        if electron_target_id or electron_target_resolver:
+        if electron_selected:
             # Electron 内置浏览器必需，不可还原：Electron 传入 JSON argv 数组以
             # 启动 target-aware 适配器（target_mcp_wrapper.cjs），且 sideview 由
             # Electron 自持可见窗口，managed-browser 的 headless 参数既无意义也
             # 不能追加到该命令，否则浏览器 Agent 会脱离 Electron 的精确 target。
             # TARGET_ID 为静态绑定（旧契约）；TARGET_RESOLVER 为每会话隔离模式，
-            # 由 browser subagent 构建时按会话注入 TargetID。
+            # 由 MCP wrapper 启动时按会话及成员解析 TargetID。
             os.environ.pop("BROWSER_MANAGED_ARGS", None)
         else:
-            browser_runtime_enabled = (
-                self._browser_runtime_enabled()
-                if runtime_enabled is None
-                else runtime_enabled
-            )
-            if browser_runtime_enabled:
+            if runtime_on:
                 launch = resolve_playwright_mcp_launch()
                 mcp_args = [arg for arg in launch.args if arg != "--headless"]
                 if headless:

@@ -1668,6 +1668,8 @@
       "loadPath": "Failed to load browser settings"
     },
     "pane": {
+      "panels": "Browser panels",
+      "mainPanel": "Main browser",
       "tabLabel": "Browser",
       "closeTab": "Close browser",
       "back": "Back",

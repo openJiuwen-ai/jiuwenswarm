@@ -56,24 +56,54 @@ validated.
 ## Browser-agent boundary
 
 Electron enables a loopback-only CDP endpoint on a launcher-selected ephemeral
-port before `app.ready`. After constructing the right-hand `WebContentsView`,
-it passes that view's exact DevTools TargetID and the endpoint to the Python
-services. BrowserAgent then runs in `remote` mode against the same persistent
-Electron session used by the visible pane.
+port before `app.ready`. Python services receive the endpoint and authenticated
+target resolver. When each MCP process starts, the resolver creates or reuses
+its panel's `WebContentsView` and returns its exact DevTools TargetID.
+BrowserAgent runs in `remote` mode against the persistent Electron session
+used by the visible panes.
 
-The target-aware Playwright MCP adapter exposes only that TargetID. The trusted
-Jiuwen renderer remains present on Electron's raw CDP endpoint, so bypassing
-the adapter or selecting a page by list order/URL is forbidden. The adapter
-also turns page/context close and new-tab operations into no-ops. Electron
-redirects page popups into the owned sideview, and BrowserAgent serializes all
-logical sessions because they share one visible pane. Non-Electron processes
-continue to use the existing managed Chrome behavior.
+The target-aware Playwright MCP adapter routes normal page operations to one
+TargetID. Every conversation/member pair gets an independent page and MCP
+registration, including single-agent conversations. The browser pane has member
+tabs; switching or hiding a tab does not stop background automation. Popups are
+still redirected into their owning page; this is not a full Chrome tab manager.
+
+All browser panels use `persist:jiuwenswarm-browser`, separate from the trusted
+UI's session. Cookies and origin-scoped local storage are shared across members
+and conversations and survive restarts. Page navigation and sessionStorage are
+independent. Signing out or switching accounts therefore affects other panels
+on that site. Existing per-conversation profile directories are preserved but
+not merged automatically: log in once in the new shared profile. External
+Chrome profiles are not imported.
+
+`browser_run_code_unsafe` is available as in the upstream SDK, and
+`browser_run_code` is a compatibility alias with the same unsafe semantics.
+This restores SDK metadata/probe/batch RPCs. Both execute arbitrary JavaScript
+in the MCP process and are RCE-equivalent: the page proxy is routing protection,
+not a sandbox for malicious code. Do not use this mode for untrusted agents or
+scripts. Shell-owned close/install/tab-list tools remain unavailable.
+
+The MCP wrapper acquires a page lease on startup and releases it on exit.
+Hidden pages with live MCP owners, and pages still being created, cannot be
+evicted. Eight pages is a soft cache limit; concurrent owners may exceed it.
+Dead-process leases are pruned during eviction. Reconnecting resolves a fresh
+TargetID instead of reusing a stale ID cached in an agent spec.
+
+Ordinary CLI/pywebview backends do not auto-attach to a discovered Electron.
+For an externally started backend used with a frontend-only Electron build,
+explicitly set `JIUWENSWARM_ELECTRON_BROWSER=1` and `BROWSER_DRIVER=remote` in
+that backend's launch environment. An explicit managed/extension driver wins.
+On the next browser configuration refresh, discovery restores only its own
+overrides if the heartbeat expired or the shell exited, without overwriting
+later user configuration.
+Set `JIUWENSWARM_BROWSER_FORCE_MANAGED=1` in the Electron launch environment to
+keep BrowserAgent on external managed Chrome instead of the built-in panels.
 
 The CDP endpoint is loopback-only but unauthenticated: any local process could
 connect to it and drive any exposed WebContents, including the trusted
 renderer. This is an accepted risk of the current design — the Playwright
-adapter needs an HTTP endpoint, and the exact-target wrapper is the
-enforcement boundary for the agent path, not the endpoint itself. Revisit if a
+adapter needs an HTTP endpoint. The resolver requires a per-launch bearer token,
+but neither it nor the page proxy isolates arbitrary unsafe code. Revisit if a
 per-session authenticated transport becomes available.
 
 Packaged builds bundle the pinned `@playwright/mcp` runtime (and its
@@ -92,8 +122,8 @@ Before release, validate these flows against a development build:
   direction and verify the toolbar state follows agent navigation.
 - Sign in manually, restart BrowserAgent tasks, and confirm cookies/storage
   remain in `persist:jiuwenswarm-browser` without appearing in managed Chrome.
-- Run simultaneous tasks from two logical sessions and verify that their
-  actions execute serially in the one visible pane.
+- Run simultaneous tasks from different members and conversations; verify
+  independent pages, shared login, and member-tab switching without interference.
 - Exercise `window.open`, target-blank links, downloads, and file save flows;
   no detached page may appear and downloads must complete through Electron.
 - Crash the sideview renderer and the MCP subprocess independently; the view
@@ -102,3 +132,10 @@ Before release, validate these flows against a development build:
   port/TargetID binding.
 - Quit during an active task and confirm MCP, Python service trees, and the CDP
   listener all terminate while the Electron-owned view is never closed by MCP.
+
+Automated browser checks: `npm run test:browser`. For the real Electron/MCP
+integration test, set `SWARM_TEST_MODULES` to a `node_modules` directory containing
+the pinned `@playwright/mcp@0.0.78`, then run `npm run test:browser:integration`.
+Install frontend dependencies and the repository `.venv` first. The test uses a
+temporary Electron profile, synthetic cookies and local pages only; it covers
+the actual SDK probe scripts, IPC tabs, busy-page eviction and restart persistence.

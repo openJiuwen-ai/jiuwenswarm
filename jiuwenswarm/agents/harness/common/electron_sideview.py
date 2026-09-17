@@ -1,59 +1,70 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Electron sideview target binding for per-session browser isolation.
+"""Opt-in Electron binding: independent pages, shared persistent login state.
 
-Electron 主进程为每个会话维护独立 BrowserView（独立 partition），并暴露
-target resolver（PLAYWRIGHT_MCP_TARGET_RESOLVER）：GET /<sessionId> 返回该
-会话视图的 CDP TargetID。Electron 的静态 spawn env 不再携带全局
-PLAYWRIGHT_MCP_TARGET_ID——browser subagent 构建时按会话解析 target 并注入
-该会话 MCP 配置的 env，使 @playwright/mcp wrapper 精确绑定本会话视图。
-
-Electron（dev / 完整包 / FrontendOnly）会把随机端口的 CDP endpoint 与
-resolver 心跳写入发现文件（runtime_state/electron-browser-endpoints.json）。
-未被 Electron 亲自 spawn 的后端（如 FrontendOnly 场景外部启动的服务）在
-env 缺失时可经由该文件发现 Electron 壳，获得与 spawn 注入一致的浏览器
-绑定，从而让三种运行形态（npm run dev / 仅前端包 / 完整包）效果收敛。
+Resolve targets when the MCP subprocess starts, not when an agent spec is
+built. A spec may outlive an evicted page or an Electron restart.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-import logging
 import os
 import sys
+import threading
 import time
-import urllib.request
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
 
 if TYPE_CHECKING:
     from openjiuwen.harness.tools.browser_move.playwright_runtime.config import RuntimeSettings
 
-logger = logging.getLogger(__name__)
-
-TARGET_RESOLVER_TIMEOUT_S = 15.0
-
 # 发现文件由 Electron 每 10s 心跳刷新；超过该窗口视为陈旧（崩溃残留）。
 DISCOVERY_FILE_NAME = "electron-browser-endpoints.json"
 DISCOVERY_MAX_AGE_S = 30.0
-# 逃生开关：Electron 壳在跑但强制使用本机 managed 浏览器时在 .env 配置为 1。
+# Set in the launcher environment to keep the external managed browser.
 FORCE_MANAGED_ENV = "JIUWENSWARM_BROWSER_FORCE_MANAGED"
+DISCOVERY_OPT_IN_ENV = "JIUWENSWARM_ELECTRON_BROWSER"
+_discovery_lock = threading.RLock()
+_discovery_original: dict[str, str | None] = {}
+_discovery_applied: dict[str, str] = {}
+
+
+def _enabled(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _restore_discovery_env() -> None:
+    # Do not overwrite configuration changed by the user since injection.
+    for key, injected in _discovery_applied.items():
+        if os.environ.get(key) != injected:
+            continue
+        original = _discovery_original.get(key)
+        if original is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = original
+    _discovery_applied.clear()
+    _discovery_original.clear()
 
 
 def electron_target_resolver_base() -> str:
-    """Return the Electron target resolver base URL, or '' when absent.
-
-    优先级：Electron spawn 注入的 env > 发现文件（新鲜且 pid 存活）> 空。
-    """
+    """Refresh owned discovery values before returning a resolver URL."""
+    apply_electron_discovery_browser_env()
+    if _enabled(FORCE_MANAGED_ENV) or os.getenv("BROWSER_DRIVER", "").strip().lower() not in {"", "remote"}:
+        return ""
     env_base = (os.getenv("PLAYWRIGHT_MCP_TARGET_RESOLVER") or "").strip().rstrip("/")
-    if env_base:
-        return env_base
-    endpoints = load_electron_browser_endpoints()
-    if endpoints is not None:
-        return str(endpoints.get("target_resolver") or "").strip().rstrip("/")
-    return ""
+    return env_base
+
+
+def electron_browser_selected() -> bool:
+    """Whether an explicit Electron runtime currently owns browser launch."""
+    resolver = electron_target_resolver_base()
+    if _enabled(FORCE_MANAGED_ENV) or os.getenv("BROWSER_DRIVER", "").strip().lower() not in {"", "remote"}:
+        return False
+    return bool(resolver or (os.getenv("PLAYWRIGHT_MCP_TARGET_ID") or "").strip())
 
 
 def electron_discovery_file_path() -> Path:
@@ -69,15 +80,20 @@ def _pid_alive(pid: int) -> bool:
     try:
         if sys.platform == "win32":
             import ctypes
+            from ctypes import wintypes
 
             process_query_limited_information = 0x1000
             still_active = 259
             kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
             handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
             if not handle:
                 return False
             try:
-                exit_code = ctypes.c_ulong()
+                exit_code = wintypes.DWORD()
                 if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                     return exit_code.value == still_active
                 return True
@@ -106,7 +122,9 @@ def load_electron_browser_endpoints(
     """
     if (os.getenv("JIUWENSWARM_ELECTRON") or "").strip() == "1":
         return None
-    if (os.getenv(FORCE_MANAGED_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}:
+    if not _enabled(DISCOVERY_OPT_IN_ENV) or _enabled(FORCE_MANAGED_ENV):
+        return None
+    if os.getenv("BROWSER_DRIVER", "").strip().lower() not in {"", "remote"}:
         return None
     try:
         # utf-8-sig：容忍编辑器/工具链写入的 BOM 头。
@@ -138,12 +156,20 @@ def load_electron_browser_endpoints(
 
 
 def apply_electron_discovery_browser_env() -> bool:
-    """Apply discovered Electron browser endpoints into os.environ.
+    """Apply explicit discovery, restoring only our own overrides when stale."""
+    with _discovery_lock:
+        # Spawned and explicitly configured remote runtimes are authoritative.
+        explicit_resolver = os.environ.get("PLAYWRIGHT_MCP_TARGET_RESOLVER")
+        if explicit_resolver and explicit_resolver != _discovery_applied.get("PLAYWRIGHT_MCP_TARGET_RESOLVER"):
+            _restore_discovery_env()
+            return False
+        if _apply_discovered_env():
+            return True
+        _restore_discovery_env()
+        return False
 
-    仅当 env 未经 Electron spawn 注入且发现文件有效时生效；等价于
-    Electron spawnService 的浏览器 env 契约（remote driver + CDP endpoint +
-    resolver + target wrapper 启动参数）。返回是否实际应用。
-    """
+
+def _apply_discovered_env() -> bool:
     endpoints = load_electron_browser_endpoints()
     if endpoints is None:
         return False
@@ -152,73 +178,64 @@ def apply_electron_discovery_browser_env() -> bool:
     if not cdp_endpoint or not target_resolver:
         return False
 
-    os.environ["BROWSER_DRIVER"] = "remote"
-    os.environ["PLAYWRIGHT_MCP_CDP_ENDPOINT"] = cdp_endpoint
-    os.environ["PLAYWRIGHT_MCP_TARGET_RESOLVER"] = target_resolver
-
     command = str(endpoints.get("mcp_command") or "").strip()
     raw_args = endpoints.get("mcp_args")
-    if command and isinstance(raw_args, list) and raw_args:
-        os.environ["PLAYWRIGHT_MCP_COMMAND"] = command
-        os.environ["PLAYWRIGHT_MCP_ARGS"] = json.dumps([str(arg) for arg in raw_args])
-
-    raw_env_json = endpoints.get("env_json")
-    if isinstance(raw_env_json, dict) and raw_env_json:
-        merged = {str(key): str(value) for key, value in raw_env_json.items()}
-        merged.setdefault("PLAYWRIGHT_MCP_CDP_ENDPOINT", cdp_endpoint)
-        merged.setdefault("PLAYWRIGHT_MCP_TARGET_RESOLVER", target_resolver)
-        os.environ["PLAYWRIGHT_MCP_ENV_JSON"] = json.dumps(merged)
-
-    logger.info(
-        "[electron.sideview] discovered Electron shell; browser runtime bound: "
-        "cdp=%s resolver=%s pid=%s",
-        cdp_endpoint,
-        target_resolver,
-        endpoints.get("pid"),
-    )
+    if not command or not isinstance(raw_args, list) or not raw_args:
+        return False
+    raw_env = endpoints.get("env_json")
+    if not isinstance(raw_env, dict):
+        return False
+    merged = {str(key): str(value) for key, value in raw_env.items()}
+    merged.update(PLAYWRIGHT_MCP_CDP_ENDPOINT=cdp_endpoint, PLAYWRIGHT_MCP_TARGET_RESOLVER=target_resolver)
+    values = {
+        "BROWSER_DRIVER": "remote",
+        "BROWSER_SHARED_CONTROL": "1",
+        "PLAYWRIGHT_MCP_CDP_ENDPOINT": cdp_endpoint,
+        "PLAYWRIGHT_MCP_TARGET_RESOLVER": target_resolver,
+        "PLAYWRIGHT_MCP_COMMAND": command,
+        "PLAYWRIGHT_MCP_ARGS": json.dumps([str(arg) for arg in raw_args]),
+        "PLAYWRIGHT_MCP_ENV_JSON": json.dumps(merged),
+    }
+    for key, value in values.items():
+        _discovery_original.setdefault(key, os.environ.get(key))
+        _discovery_applied[key] = value
+        os.environ[key] = value
     return True
 
 
-def resolve_session_sideview_target(session_id: str) -> str | None:
-    """Ask Electron for the session sideview's CDP TargetID.
+def apply_session_sideview_target(
+    settings: "RuntimeSettings", session_id: str, *, member_id: str = "", label: str = ""
+) -> "RuntimeSettings":
+    """Bind MCP identity to a panel; its wrapper resolves and leases the live page.
 
-    失败返回 None（不抛出）：调用方按"无注入"处理，browser subagent 保留
-    openjiuwen 默认行为；诊断信息走日志。
+    A separate server_id is essential even for single-agent conversations:
+    the SDK otherwise reuses the first registered MCP process across sessions.
     """
-    base = electron_target_resolver_base()
-    normalized = (session_id or "").strip()
-    if not base or not normalized:
-        return None
-    url = f"{base}/{quote(normalized, safe='')}"
-    try:
-        with urllib.request.urlopen(url, timeout=TARGET_RESOLVER_TIMEOUT_S) as response:  # noqa: S310
-            payload = json.loads(response.read().decode("utf-8"))
-    except Exception:
-        logger.exception("[electron.sideview] target resolve failed: session=%s", normalized)
-        return None
-    target_id = str(payload.get("targetId") or "").strip()
-    if not target_id:
-        logger.warning("[electron.sideview] resolver returned no targetId: session=%s", normalized)
-        return None
-    return target_id
-
-
-def apply_session_sideview_target(settings: "RuntimeSettings", session_id: str) -> "RuntimeSettings":
-    """Inject the session sideview TargetID into the browser agent's MCP env.
-
-    ``settings.mcp_cfg.params.env`` 里的 ``PLAYWRIGHT_MCP_TARGET_ID`` 决定
-    target_mcp_wrapper 绑定的 CDP target。RuntimeSettings 是 frozen dataclass，
-    返回替换 mcp_cfg 后的副本；解析失败时原样返回。
-    """
-    target_id = resolve_session_sideview_target(session_id)
-    if target_id is None:
+    resolver = electron_target_resolver_base()
+    session_id = session_id.strip()
+    if not resolver or not session_id:
         return settings
     mcp_cfg = settings.mcp_cfg
     params: dict[str, Any] = dict(getattr(mcp_cfg, "params", {}) or {})
     env_map: dict[str, str] = dict(params.get("env") or {})
-    env_map["PLAYWRIGHT_MCP_TARGET_ID"] = target_id
+    env_map.pop("PLAYWRIGHT_MCP_TARGET_ID", None)
+    member_id = member_id.strip()
+    env_map.update({
+        "PLAYWRIGHT_MCP_TARGET_RESOLVER": resolver,
+        "PLAYWRIGHT_MCP_SESSION_ID": session_id,
+        "PLAYWRIGHT_MCP_MEMBER_ID": member_id,
+        "PLAYWRIGHT_MCP_PANEL_LABEL": label.strip() or member_id,
+    })
     params["env"] = env_map
-    new_cfg = mcp_cfg.model_copy(update={"params": params})
+    identity = json.dumps([session_id, member_id], ensure_ascii=False, separators=(",", ":"))
+    key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    new_cfg = mcp_cfg.model_copy(update={
+        "params": params,
+        "server_id": f"playwright_electron_{key}",
+        # Registry ownership is by server_id. Preserve the SDK model-facing
+        # namespace and permission classification, without overlong tool names.
+        "server_name": "playwright-official",
+    })
     return replace(settings, mcp_cfg=new_cfg)
 
 
@@ -226,7 +243,7 @@ __all__ = [
     "apply_electron_discovery_browser_env",
     "apply_session_sideview_target",
     "electron_discovery_file_path",
+    "electron_browser_selected",
     "electron_target_resolver_base",
     "load_electron_browser_endpoints",
-    "resolve_session_sideview_target",
 ]

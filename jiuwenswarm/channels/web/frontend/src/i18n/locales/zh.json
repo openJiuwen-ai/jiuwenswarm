@@ -1659,6 +1659,8 @@
       "loadPath": "加载浏览器配置失败"
     },
     "pane": {
+      "panels": "浏览器面板",
+      "mainPanel": "主浏览器",
       "tabLabel": "浏览器",
       "closeTab": "关闭浏览器",
       "back": "后退",

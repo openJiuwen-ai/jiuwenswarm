@@ -35,7 +35,7 @@ const desktopApi = Object.freeze({
     return () => ipcRenderer.removeListener('desktop:layout-invalidated', listener);
   },
   browser: Object.freeze({
-    // 所有调用都携带 sessionId：主进程为每个会话维护独立的浏览上下文。
+    // Operations target a panel ID; listing is scoped to the conversation ID.
     navigate: (url, sessionId) => invoke('browser:navigate', url, sessionId),
     goBack: sessionId => invoke('browser:go-back', sessionId),
     goForward: sessionId => invoke('browser:go-forward', sessionId),
@@ -44,6 +44,12 @@ const desktopApi = Object.freeze({
     setBounds: (bounds, sessionId) => invoke('browser:set-bounds', bounds, sessionId),
     setVisible: (visible, sessionId, focus) => invoke('browser:set-visible', visible, sessionId, focus !== false),
     getState: sessionId => invoke('browser:get-state', sessionId),
+    listPanels: sessionId => invoke('browser:list-panels', sessionId),
+    onPanelsChanged: callback => {
+      const listener = (_event, panels) => callback(panels);
+      ipcRenderer.on('browser:panels-changed', listener);
+      return () => ipcRenderer.removeListener('browser:panels-changed', listener);
+    },
     onStateChanged: callback => {
       const listener = (_event, state) => callback(state);
       ipcRenderer.on('browser:state-changed', listener);
