@@ -1,0 +1,64 @@
+name: 💬 Request for comments (RFC)
+description: Solicit feedback on major architectural changes or design proposals
+title: "[RFC]: "
+labels: ["RFC"]
+type: "RFC"
+
+body:
+- type: textarea
+  attributes:
+    label: Background and Goal Description
+    description: |
+      The motivation for initiating this RFC.
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Proposed Solution
+    description: |
+      The content of the changes proposed by this RFC.
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Involved Public APIs
+    description: |
+      Describe whether this feature will lead to the addition or modification of public APIs, and the potential impact of such changes on related modules.
+- type: textarea
+  attributes:
+    label: Test Verification
+    description: |
+      Describe in detail how to conduct test verification for this solution to ensure that the corresponding capabilities are fully validated after the feature is merged, including but not limited to functionality, performance, reliability, security, etc.
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Expected Feedback Deadline
+    description: |
+      The feedback collection period for this RFC (usually no less than one week).
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: CC List
+    description: |
+      List of personnel you wish to copy on this RFC.
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Additional Supplementary Information
+    description: |
+      Other content that needs to be supplemented and explained.
+  validations:
+    required: false
+- type: markdown
+  attributes:
+    value: |
+      Thanks for your contribution🎉! The openJiuwen core team holds an RFC review meeting every week. Although most RFCs can be discussed online, you can also voluntarily sign up to reserve a time slot to participate in the online RFC seminar.
+- type: checkboxes
+  attributes:
+    label: Before submitting a new issue
+    options:
+      - label: Please confirm that you have searched the previous RFC documents
+        required: true

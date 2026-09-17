@@ -1,0 +1,8 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path
+    d="M12 0C13.1046 0 14 0.89543 14 2L14 10C14 11.1046 13.1046 12 12 12L2 12C0.89543 12 0 11.1046 0 10L0 2C0 0.89543 0.89543 0 2 0L12 0ZM9 1L5 1L5 11L9 11L9 1ZM10 11L10 1L12 1C12.5523 1 13 1.44772 13 2L13 10C13 10.5523 12.5523 11 12 11L10 11ZM2 1L4 1L4 11L2 11C1.44772 11 1 10.5523 1 10L1 2C1 1.44772 1.44772 1 2 1Z"
+    transform="matrix(1,0,0,-1,1,14)"
+    fill="currentColor"
+    fill-rule="evenodd"
+  />
+</svg>

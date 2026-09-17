@@ -1,0 +1,1 @@
+{"calls":[{"tool_name":"collaboration.followup_task","raw_input":{"target":"/root/reaudit_ws_key","symbol_id":"AgentWebSocketServer.reset_instance","assignment":"Re-audit exactly one symbol against current source."}},{"tool_name":"collaboration.wait_agent","raw_input":{"target":"/root/reaudit_ws_key","symbol_id":"AgentWebSocketServer.reset_instance","completed":true}}]}

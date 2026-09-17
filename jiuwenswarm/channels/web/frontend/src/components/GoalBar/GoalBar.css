@@ -1,0 +1,163 @@
+/* ===========================================================
+   GoalBar — 输入框正上方的持续目标吸附条
+   视觉公式照抄 InteractionSlot.css `.interaction-slot--attached` /
+   ChatPanel.css `.chat-active-team-group .team-event-group`（同一套"贴合输入框"的
+   吸附条实现，变量全部复用，不新增 token）。
+   =========================================================== */
+
+.goal-bar-attached {
+  width: calc(100% - 48px);
+  margin: 0 auto -1px;
+  position: relative;
+  z-index: 1;
+}
+
+.goal-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 9px 18px;
+  border: 1px solid var(--color-chat-active-group-border);
+  border-radius: 18px 18px 0 0;
+  background-color: var(--color-surface-page);
+  background-image: linear-gradient(
+    rgba(var(--color-chat-composer-surface-rgb), 0.96),
+    rgba(var(--color-chat-composer-surface-rgb), 0.96)
+  );
+  box-shadow: var(--effect-chat-active-group-highlight);
+}
+
+/* GoalBar 上方如果还贴着消息队列（.chat-active-team-group）或审批卡片
+   （.interaction-slot--attached），说明 GoalBar 不是这摞吸附条的最上面一个，
+   顶部就不该再单独画圆角——否则两个各自独立画圆角的卡片贴合处会露出方形缺口。 */
+.chat-active-team-group ~ .goal-bar-attached .goal-bar,
+.interaction-slot--attached ~ .goal-bar-attached .goal-bar {
+  border-radius: 0;
+}
+
+.goal-bar__icon {
+  flex: 0 0 auto;
+  /* 参照消息队列行图标（.team-event-group-row__avatar）的中性色调，不用强调蓝，
+     避免堆叠在一起时显得突兀——目标是否 active 已经由下面的状态文字颜色表达。 */
+  color: var(--color-text-secondary);
+}
+
+.goal-bar__main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.goal-bar__status {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.goal-bar__status--active { color: var(--color-feedback-info); }
+.goal-bar__status--paused { color: var(--color-feedback-warning); }
+.goal-bar__status--completed { color: var(--color-feedback-success); }
+.goal-bar__status--blocked { color: var(--color-feedback-danger); }
+/* disconnected/unknown 是前端专属展示态（真实环境联调方案），用中性色区分于 blocked 的
+   danger 色——断联/查询失败不是"目标出错了"，不该带上出错的观感。 */
+.goal-bar__status--disconnected { color: var(--color-text-secondary); }
+.goal-bar__status--unknown { color: var(--color-text-secondary); }
+
+.goal-bar__objective {
+  min-width: 0;
+  font-size: 13px;
+  /* 字重/颜色对齐消息队列行文字（.team-event-group-row__member：font-weight 600 +
+     --color-text-strong），两行堆叠在一起时文字观感统一，不再一行粗一行细。 */
+  font-weight: 600;
+  color: var(--color-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-bar__elapsed {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.goal-bar__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  /* 对齐消息队列行操作按钮组的间距（发送/编辑/删除三个 .chat-input-task-action 之间是 4px） */
+  gap: 4px;
+}
+
+.goal-bar__action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 尺寸对齐消息队列行的 .chat-input-task-action（20x20），此前 28x28 明显比队列行的
+     图标按钮大一圈，两行堆叠时右侧按钮组大小不一致、显得割裂。 */
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.goal-bar__action-btn:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.goal-bar__action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.goal-bar__action-btn--danger:hover:not(:disabled) {
+  color: var(--color-feedback-danger);
+}
+
+/* ===========================
+   目标完成回显卡 GoalCompletedCard
+   结构照抄 InteractionSlot.css 的 .qa-summary，头部改用 success 色系跟 GoalBar 的
+   completed 状态色（--color-feedback-success）呼应，跟普通回复气泡明显区分开。
+   =========================== */
+
+.goal-completed-card {
+  width: 100%;
+  max-width: 640px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--color-surface-card);
+  overflow: hidden;
+}
+
+.goal-completed-card__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border-default);
+  background-color: rgba(var(--color-feedback-success-rgb), 0.1);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-feedback-success);
+}
+
+.goal-completed-card__head-icon {
+  color: var(--color-feedback-success);
+}
+
+.goal-completed-card__body {
+  padding: 12px 14px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+  white-space: pre-wrap;
+}

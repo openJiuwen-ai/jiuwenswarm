@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jiuwenswarm.local/schemas/ppt-evidence-plan.schema.json",
+  "title": "PPT evidence plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "asset_root", "analysis_root", "items"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "asset_root": { "type": "string", "minLength": 1 },
+    "analysis_root": { "type": "string", "minLength": 1 },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/item" }
+    }
+  },
+  "$defs": {
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "page", "claim", "purpose", "kind", "acquire_via",
+        "required", "placement_role", "status", "path", "source_path",
+        "source_url", "source", "license", "reference", "query",
+        "crop_policy", "review", "fallback"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "page": { "type": "string", "pattern": "^P[0-9]{2,3}$" },
+        "claim": { "type": "string", "minLength": 1 },
+        "purpose": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": [
+            "user-material", "paper-figure", "paper-table", "product-screenshot",
+            "code-screenshot", "official-logo", "data-chart", "web-image",
+            "ai-illustration", "formula", "native-diagram", "other"
+          ]
+        },
+        "acquire_via": {
+          "enum": [
+            "user", "source-extracted", "paper-figure", "product-screenshot",
+            "code-screenshot", "official-logo", "native-chart", "web",
+            "ai-illustration", "formula", "native-drawing", "manual"
+          ]
+        },
+        "required": { "type": "boolean" },
+        "placement_role": { "enum": ["hero", "evidence", "support", "background", "inline"] },
+        "status": { "enum": ["planned", "acquiring", "ready", "used", "needs-manual", "skipped"] },
+        "path": { "type": ["string", "null"] },
+        "source_path": { "type": ["string", "null"] },
+        "source_url": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] },
+        "license": { "type": ["string", "null"] },
+        "reference": { "type": "string", "minLength": 1 },
+        "query": { "type": ["string", "null"] },
+        "crop_policy": { "enum": ["contain", "crop", "no-crop"] },
+        "paper_selector": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "label": { "type": ["string", "null"] },
+            "caption_keywords": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "include_caption": { "type": "boolean" },
+            "min_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "notes"],
+          "properties": {
+            "status": { "enum": ["pending", "approved", "rejected", "not-required"] },
+            "notes": { "type": ["string", "null"] }
+          }
+        },
+        "result": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "fallback": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,3662 @@
+{
+  "schema": "project-maintainer.source-symbol-inventory.v1",
+  "generated_at": "2026-07-14T03:26:20.479983+00:00",
+  "repo_root": "E:\\Projects\\jiuwenswarm",
+  "listing_source": "git ls-files",
+  "available_extractors": {
+    "ctags": false,
+    "heuristic": true,
+    "python_ast": true
+  },
+  "extractor_priority": [
+    "python_ast",
+    "ctags",
+    "heuristic"
+  ],
+  "summary": {
+    "audit_scopes": {
+      "default_health_audit": 853,
+      "repository_coverage_only": 422
+    },
+    "class_methods": 7020,
+    "classes": 1547,
+    "default_health_audit_source_files": 853,
+    "default_health_audit_symbols": 9040,
+    "extractors": {
+      "heuristic": 252,
+      "python_ast": 1023
+    },
+    "missing_actual_role": 0,
+    "missing_entry_docs": 15453,
+    "missing_file_docs": 1273,
+    "missing_health": 0,
+    "repository_coverage_only_source_files": 422,
+    "repository_coverage_only_symbols": 6544,
+    "requires_review_files": 252,
+    "source_files": 1275,
+    "source_roles": {
+      "library_source": 505,
+      "package_metadata": 1,
+      "runtime_source": 348,
+      "script": 62,
+      "test_source": 236,
+      "tooling": 123
+    },
+    "symbols": 15584,
+    "top_level_functions": 7017
+  },
+  "directory_summary_totals": {
+    "excluded_directories": [
+      {
+        "directory": ".doc_project_maintainer",
+        "files": 3,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 3
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/audit-queues",
+        "files": 1,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 1
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/audit-signatures",
+        "files": 69,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 69
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/code/jiuwenswarm/server/agent_ws_server.py",
+        "files": 1,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 1
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer",
+        "files": 70,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 70
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/code/jiuwenswarm/server/app_agentserver.py",
+        "files": 3,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 3
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/directories/jiuwenswarm__gateway__routing",
+        "files": 1,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 1
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/directories/jiuwenswarm__server",
+        "files": 4,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 4
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/directories/tests__unit_tests__agentserver",
+        "files": 1,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 1
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/ledger-archive",
+        "files": 3,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 3
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/modules/agent-harness",
+        "files": 1,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 1
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/modules/agentserver-runtime",
+        "files": 5,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 5
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/modules/gateway-and-channels",
+        "files": 1,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 1
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/modules/project-packaging",
+        "files": 1,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 1
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/project",
+        "files": 9,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 9
+        }
+      },
+      {
+        "directory": ".doc_project_maintainer/project/flows",
+        "files": 3,
+        "reasons": {
+          "excluded path component: .doc_project_maintainer": 3
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src",
+        "files": 1,
+        "reasons": {
+          "type declaration file": 1
+        }
+      }
+    ],
+    "listing_source": "git ls-files",
+    "notes": [
+      "recorded_directories are stable source directories included in source-symbol-inventory.json.",
+      "excluded_directories are omitted before language extraction because they match generated, vendored, build, dependency, or local-state exclusion rules.",
+      "skipped_non_source_directories contain tracked files that did not match supported source extensions."
+    ],
+    "recorded_directories": [
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "deploy/observability",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenbox/src/jiuwenbox",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenbox/src/jiuwenbox/cli",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenbox/src/jiuwenbox/models",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenbox/src/jiuwenbox/proxy",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenbox/src/jiuwenbox/server",
+        "source_files": 9,
+        "source_roles": {
+          "runtime_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenbox/src/jiuwenbox/server/routes",
+        "source_files": 5,
+        "source_roles": {
+          "runtime_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenbox/src/jiuwenbox/server/runtime",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenbox/src/jiuwenbox/supervisor",
+        "source_files": 9,
+        "source_roles": {
+          "library_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenbox/tests",
+        "source_files": 2,
+        "source_roles": {
+          "test_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 7
+        },
+        "directory": "jiuwenbox/tests/integration",
+        "source_files": 7,
+        "source_roles": {
+          "test_source": 7
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenbox/tests/performance",
+        "source_files": 2,
+        "source_roles": {
+          "test_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 14
+        },
+        "directory": "jiuwenbox/tests/system_tests",
+        "source_files": 14,
+        "source_roles": {
+          "test_source": 14
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm",
+        "source_files": 6,
+        "source_roles": {
+          "library_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/acp",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/agents",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/agents/harness",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/claw",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/code",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/agents/harness/code/prompt",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/agents/harness/code/rails",
+        "source_files": 6,
+        "source_roles": {
+          "library_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/code/tools",
+        "source_files": 2,
+        "source_roles": {
+          "tooling": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/agents/harness/common",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 7
+        },
+        "directory": "jiuwenswarm/agents/harness/common/auto_harness",
+        "source_files": 7,
+        "source_roles": {
+          "library_source": 7
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenswarm/agents/harness/common/auto_harness/issue_fix",
+        "source_files": 9,
+        "source_roles": {
+          "library_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/auto_harness/repo_auth",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/agents/harness/common/auto_memory",
+        "source_files": 5,
+        "source_roles": {
+          "library_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenswarm/agents/harness/common/memory",
+        "source_files": 9,
+        "source_roles": {
+          "library_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/memory/dreaming",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/plugins",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/agents/harness/common/prompt",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 10
+        },
+        "directory": "jiuwenswarm/agents/harness/common/rails",
+        "source_files": 10,
+        "source_roles": {
+          "library_source": 10
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/rails/execution_guard",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/rails/interrupt",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/agents/harness/common/rails/permissions",
+        "source_files": 5,
+        "source_roles": {
+          "library_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/agents/harness/common/rails/project_memory",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 7
+        },
+        "directory": "jiuwenswarm/agents/harness/common/recommendation",
+        "source_files": 7,
+        "source_roles": {
+          "library_source": 7
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 27
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools",
+        "source_files": 27,
+        "source_roles": {
+          "tooling": 27
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/acp_chat",
+        "source_files": 2,
+        "source_roles": {
+          "tooling": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src",
+        "source_files": 2,
+        "source_roles": {
+          "test_source": 1,
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/agent_evolving/optimizer/tool",
+        "source_files": 2,
+        "source_roles": {
+          "tooling": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 14
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/agent_evolving/optimizer/tool/utils",
+        "source_files": 14,
+        "source_roles": {
+          "tooling": 14
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/application/llm_agent",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/application/workflow_agent",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/common/logging/default",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/controller/legacy",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/controller/legacy/reasoner",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/controller/modules",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/controller/schema",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/foundation/llm",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/foundation/llm/schema",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/foundation/tool",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/foundation/tool/mcp/client",
+        "source_files": 3,
+        "source_roles": {
+          "tooling": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/retrieval/embedding",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/runner/resources_manager",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/session/checkpointer",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/single_agent",
+        "source_files": 1,
+        "source_roles": {
+          "tooling": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/single_agent/agents",
+        "source_files": 2,
+        "source_roles": {
+          "tooling": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/single_agent/legacy",
+        "source_files": 2,
+        "source_roles": {
+          "tooling": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/openjiuwen_patch_sources/openjiuwen/core/workflow/components/llm",
+        "source_files": 3,
+        "source_roles": {
+          "tooling": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 8
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime",
+        "source_files": 8,
+        "source_roles": {
+          "tooling": 8
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/clients",
+        "source_files": 3,
+        "source_roles": {
+          "tooling": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/controllers",
+        "source_files": 3,
+        "source_roles": {
+          "tooling": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/browser-move/src/playwright_runtime/drivers",
+        "source_files": 2,
+        "source_roles": {
+          "tooling": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/cron",
+        "source_files": 3,
+        "source_roles": {
+          "tooling": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 19
+        },
+        "directory": "jiuwenswarm/agents/harness/common/tools/xiaoyi_phone_tools",
+        "source_files": 19,
+        "source_roles": {
+          "tooling": 19
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 10
+        },
+        "directory": "jiuwenswarm/agents/harness/team",
+        "source_files": 10,
+        "source_roles": {
+          "library_source": 10
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/agents/harness/team/a2x",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 8
+        },
+        "directory": "jiuwenswarm/agents/harness/team/a2x/client",
+        "source_files": 8,
+        "source_roles": {
+          "runtime_source": 8
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/agents/harness/team/handlers",
+        "source_files": 5,
+        "source_roles": {
+          "runtime_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/agents/harness/team/rails",
+        "source_files": 6,
+        "source_roles": {
+          "library_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/agents/swarm",
+        "source_files": 5,
+        "source_roles": {
+          "library_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenswarm/agents/swarm/providers",
+        "source_files": 9,
+        "source_roles": {
+          "library_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/channels/acp",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/channels/desktop",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/tui",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src",
+        "source_files": 2,
+        "source_roles": {
+          "runtime_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 16
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/core",
+        "source_files": 16,
+        "source_roles": {
+          "runtime_source": 16
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/core/commands",
+        "source_files": 5,
+        "source_roles": {
+          "runtime_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 58
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/core/commands/builtins",
+        "source_files": 58,
+        "source_roles": {
+          "runtime_source": 58
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 7
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/core/keybindings",
+        "source_files": 7,
+        "source_roles": {
+          "runtime_source": 7
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/core/utils",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 8
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/ui",
+        "source_files": 8,
+        "source_roles": {
+          "runtime_source": 8
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 7
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/ui/components",
+        "source_files": 7,
+        "source_roles": {
+          "runtime_source": 7
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 11
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/ui/components/messages",
+        "source_files": 11,
+        "source_roles": {
+          "runtime_source": 11
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 13
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/ui/components/tools",
+        "source_files": 13,
+        "source_roles": {
+          "tooling": 13
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/src/ui/rendering",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/channels/tui/frontend/tests",
+        "source_files": 1,
+        "source_roles": {
+          "test_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/channels/web",
+        "source_files": 2,
+        "source_roles": {
+          "runtime_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/channels/web/frontend",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/scripts",
+        "source_files": 3,
+        "source_roles": {
+          "script": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/AgentPanel",
+        "source_files": 2,
+        "source_roles": {
+          "runtime_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/BrowserPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ChannelsPanel",
+        "source_files": 5,
+        "source_roles": {
+          "runtime_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 17
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ChatPanel",
+        "source_files": 17,
+        "source_roles": {
+          "runtime_source": 17
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ConfigPanel",
+        "source_files": 2,
+        "source_roles": {
+          "runtime_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/CronPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ExtensionsHubPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ExtensionsPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/HarnessPackagePanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/HeartbeatPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/LogsPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/MarkdownRenderer",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/MemberTaskDrawer",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/SessionSidebar",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/SessionsPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/SkillGraphPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/SkillPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/Switch",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/TeamMemberAvatar",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/TeamPanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/TodoList",
+        "source_files": 2,
+        "source_roles": {
+          "runtime_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ToolPanel",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/UpdatePanel",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/teamArea",
+        "source_files": 5,
+        "source_roles": {
+          "runtime_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features",
+        "source_files": 6,
+        "source_roles": {
+          "runtime_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/ClawHubSearchModal",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/HeartbeatMessageModal",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/SkillEvolutionModal",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/SkillNetSearchModal",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/SourceManagerModal",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/TeamSkillsHubModal",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/UserQuestionModal",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 15
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/a2ui",
+        "source_files": 15,
+        "source_roles": {
+          "runtime_source": 15
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/tool-events",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/hooks",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/i18n",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/services",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/stores",
+        "source_files": 5,
+        "source_roles": {
+          "runtime_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/types",
+        "source_files": 5,
+        "source_roles": {
+          "runtime_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 10
+        },
+        "directory": "jiuwenswarm/channels/web/frontend/src/utils",
+        "source_files": 10,
+        "source_roles": {
+          "runtime_source": 10
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 7
+        },
+        "directory": "jiuwenswarm/cli",
+        "source_files": 7,
+        "source_roles": {
+          "library_source": 7
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 20
+        },
+        "directory": "jiuwenswarm/common",
+        "source_files": 20,
+        "source_roles": {
+          "library_source": 20
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 7
+        },
+        "directory": "jiuwenswarm/common/e2a",
+        "source_files": 7,
+        "source_roles": {
+          "library_source": 7
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/common/e2a/acp",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/common/schema",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/common/security",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 10
+        },
+        "directory": "jiuwenswarm/extensions",
+        "source_files": 10,
+        "source_roles": {
+          "library_source": 10
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/extensions/agent_client",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/extensions/sdk",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/extensions/symphony",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/gateway",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/dingtalk",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/discord",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/feishu",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/platform_adapter",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/telegram",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/wechat",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/wecom",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/whatsapp",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/xiaoyi",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/im_platforms/xiaoyi/xiaoyi_utils",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/protocol",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/protocol/a2a",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/protocol/acp",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/tui",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/gateway/channel_manager/web",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 8
+        },
+        "directory": "jiuwenswarm/gateway/cron",
+        "source_files": 8,
+        "source_roles": {
+          "library_source": 8
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/heartbeat",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/hooks",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/gateway/im_pipeline",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/gateway/message_handler",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/gateway/message_handler/command_parser",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/gateway/message_handler/prompts",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenswarm/gateway/routing",
+        "source_files": 9,
+        "source_roles": {
+          "library_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/instance_manager",
+        "source_files": 6,
+        "source_roles": {
+          "library_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/advanced-daily-report",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/advanced-daily-report/analyzers",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/advanced-daily-report/collectors",
+        "source_files": 6,
+        "source_roles": {
+          "library_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/advanced-daily-report/generators",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 12
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts",
+        "source_files": 12,
+        "source_roles": {
+          "script": 12
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/ascend-moe-optimizer-trace-analyzer",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 8
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/analyzers",
+        "source_files": 8,
+        "source_roles": {
+          "library_source": 8
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/cross-channel-history-retrieval/scripts",
+        "source_files": 1,
+        "source_roles": {
+          "script": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/delayed-restart-app",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/financial-document-parser",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/gitcode-api/scripts",
+        "source_files": 2,
+        "source_roles": {
+          "script": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 5
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/openJiuwen-DeepSearch/scripts",
+        "source_files": 5,
+        "source_roles": {
+          "script": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 4
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/project-maintainer/scripts",
+        "source_files": 4,
+        "source_roles": {
+          "script": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-creator/eval-viewer",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 9
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-creator/scripts",
+        "source_files": 9,
+        "source_roles": {
+          "script": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-gen-4-enterprise-doc/scripts",
+        "source_files": 1,
+        "source_roles": {
+          "script": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 6
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen",
+        "source_files": 6,
+        "source_roles": {
+          "script": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 6
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-gen-4-enterprise-doc/scripts/skill_gen/url_ingest",
+        "source_files": 6,
+        "source_roles": {
+          "script": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 6
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-omni-creation/scripts",
+        "source_files": 6,
+        "source_roles": {
+          "script": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/swarmskill-creator/scripts",
+        "source_files": 1,
+        "source_roles": {
+          "script": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "jiuwenswarm/scripts",
+        "source_files": 3,
+        "source_roles": {
+          "script": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/server",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/server/gateway_push",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/server/hooks",
+        "source_files": 3,
+        "source_roles": {
+          "runtime_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/server/runtime",
+        "source_files": 6,
+        "source_roles": {
+          "runtime_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 11
+        },
+        "directory": "jiuwenswarm/server/runtime/a2ui",
+        "source_files": 11,
+        "source_roles": {
+          "runtime_source": 11
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/server/runtime/a2ui/protocols",
+        "source_files": 1,
+        "source_roles": {
+          "runtime_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/server/runtime/a2ui/runtime",
+        "source_files": 6,
+        "source_roles": {
+          "runtime_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 12
+        },
+        "directory": "jiuwenswarm/server/runtime/agent_adapter",
+        "source_files": 12,
+        "source_roles": {
+          "runtime_source": 12
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/server/runtime/session",
+        "source_files": 5,
+        "source_roles": {
+          "runtime_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/server/runtime/skill",
+        "source_files": 2,
+        "source_roles": {
+          "runtime_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenswarm/server/runtime/skill/skilldev",
+        "source_files": 9,
+        "source_roles": {
+          "runtime_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 10,
+          "repository_coverage_only": 2
+        },
+        "directory": "jiuwenswarm/server/runtime/skill/skilldev/stages",
+        "source_files": 12,
+        "source_roles": {
+          "runtime_source": 10,
+          "test_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/server/sandbox",
+        "source_files": 2,
+        "source_roles": {
+          "runtime_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/server/utils",
+        "source_files": 4,
+        "source_roles": {
+          "runtime_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/symphony",
+        "source_files": 6,
+        "source_roles": {
+          "library_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/symphony/agent",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenswarm/symphony/experience",
+        "source_files": 9,
+        "source_roles": {
+          "library_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/symphony/experience/trace",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenswarm/symphony/fingerprint",
+        "source_files": 9,
+        "source_roles": {
+          "library_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/fingerprint/extract",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 11
+        },
+        "directory": "jiuwenswarm/symphony/fingerprint/normalize",
+        "source_files": 11,
+        "source_roles": {
+          "library_source": 11
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 7
+        },
+        "directory": "jiuwenswarm/symphony/graph",
+        "source_files": 7,
+        "source_roles": {
+          "library_source": 7
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/graph/candidates",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 8
+        },
+        "directory": "jiuwenswarm/symphony/graph/matcher",
+        "source_files": 8,
+        "source_roles": {
+          "library_source": 8
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/indexing",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/indexing/catalog",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/symphony/indexing/io",
+        "source_files": 6,
+        "source_roles": {
+          "library_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/symphony/indexing/scanners",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 13
+        },
+        "directory": "jiuwenswarm/symphony/indexing/tree",
+        "source_files": 13,
+        "source_roles": {
+          "library_source": 13
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/symphony/indexing/workflows",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "jiuwenswarm/symphony/models",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4,
+          "repository_coverage_only": 1
+        },
+        "directory": "jiuwenswarm/symphony/models/cid",
+        "source_files": 5,
+        "source_roles": {
+          "library_source": 4,
+          "test_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/symphony/models/retrieval",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/symphony/orchestration",
+        "source_files": 5,
+        "source_roles": {
+          "library_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/symphony/orchestration/planning",
+        "source_files": 6,
+        "source_roles": {
+          "library_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/orchestration/utils",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/retrieval",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/io",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/llm",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 6
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/llm/base",
+        "source_files": 6,
+        "source_roles": {
+          "library_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/llm/openai_api",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/llm/transformers_logit_selection",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 5
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/llm/transformers_prefix_cached_generation",
+        "source_files": 5,
+        "source_roles": {
+          "library_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/llm/vllm",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/merge",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/protocols",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/service",
+        "source_files": 4,
+        "source_roles": {
+          "runtime_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 9
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/tree",
+        "source_files": 9,
+        "source_roles": {
+          "library_source": 9
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/tree/render",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/tree/select",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 3
+        },
+        "directory": "jiuwenswarm/symphony/retrieval/tree/subtree",
+        "source_files": 3,
+        "source_roles": {
+          "library_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 4
+        },
+        "directory": "jiuwenswarm/symphony/shared",
+        "source_files": 4,
+        "source_roles": {
+          "library_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 12
+        },
+        "directory": "jiuwenswarm/symphony/skill_retrieval",
+        "source_files": 12,
+        "source_roles": {
+          "library_source": 12
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "packages/jiuwenswarm-tui",
+        "source_files": 1,
+        "source_roles": {
+          "package_metadata": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 2
+        },
+        "directory": "packages/jiuwenswarm-tui/jiuwenswarm_tui",
+        "source_files": 2,
+        "source_roles": {
+          "library_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "default_health_audit": 1
+        },
+        "directory": "packages/jiuwenswarm-tui/jiuwenswarm_tui/resources",
+        "source_files": 1,
+        "source_roles": {
+          "library_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "scripts",
+        "source_files": 3,
+        "source_roles": {
+          "script": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "tests",
+        "source_files": 2,
+        "source_roles": {
+          "test_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "tests/agents",
+        "source_files": 1,
+        "source_roles": {
+          "test_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 4
+        },
+        "directory": "tests/agents/swarm",
+        "source_files": 4,
+        "source_roles": {
+          "test_source": 4
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "tests/integration",
+        "source_files": 2,
+        "source_roles": {
+          "test_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 6
+        },
+        "directory": "tests/symphony",
+        "source_files": 6,
+        "source_roles": {
+          "test_source": 6
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 18
+        },
+        "directory": "tests/system_tests",
+        "source_files": 18,
+        "source_roles": {
+          "test_source": 18
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 5
+        },
+        "directory": "tests/ui_e2e",
+        "source_files": 5,
+        "source_roles": {
+          "test_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "tests/unit/agentserver",
+        "source_files": 3,
+        "source_roles": {
+          "test_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "tests/unit/channel",
+        "source_files": 3,
+        "source_roles": {
+          "test_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "tests/unit/deep_agent",
+        "source_files": 1,
+        "source_roles": {
+          "test_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 19
+        },
+        "directory": "tests/unit_tests",
+        "source_files": 19,
+        "source_roles": {
+          "test_source": 19
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 10
+        },
+        "directory": "tests/unit_tests/a2ui",
+        "source_files": 10,
+        "source_roles": {
+          "test_source": 10
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "tests/unit_tests/acp",
+        "source_files": 2,
+        "source_roles": {
+          "test_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "tests/unit_tests/agents",
+        "source_files": 3,
+        "source_roles": {
+          "test_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "tests/unit_tests/agents/harness/code",
+        "source_files": 2,
+        "source_roles": {
+          "test_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 54
+        },
+        "directory": "tests/unit_tests/agentserver",
+        "source_files": 54,
+        "source_roles": {
+          "test_source": 54
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 11
+        },
+        "directory": "tests/unit_tests/agentserver/memory",
+        "source_files": 11,
+        "source_roles": {
+          "test_source": 11
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 2
+        },
+        "directory": "tests/unit_tests/agentserver/rails",
+        "source_files": 2,
+        "source_roles": {
+          "test_source": 2
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 1
+        },
+        "directory": "tests/unit_tests/auto_harness",
+        "source_files": 1,
+        "source_roles": {
+          "test_source": 1
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 5
+        },
+        "directory": "tests/unit_tests/channel",
+        "source_files": 5,
+        "source_roles": {
+          "test_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 5
+        },
+        "directory": "tests/unit_tests/cli",
+        "source_files": 5,
+        "source_roles": {
+          "test_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 5
+        },
+        "directory": "tests/unit_tests/common",
+        "source_files": 5,
+        "source_roles": {
+          "test_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 5
+        },
+        "directory": "tests/unit_tests/e2a",
+        "source_files": 5,
+        "source_roles": {
+          "test_source": 5
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "tests/unit_tests/evolution",
+        "source_files": 3,
+        "source_roles": {
+          "test_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 17
+        },
+        "directory": "tests/unit_tests/gateway",
+        "source_files": 17,
+        "source_roles": {
+          "test_source": 17
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "tests/unit_tests/server",
+        "source_files": 3,
+        "source_roles": {
+          "test_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 3
+        },
+        "directory": "tests/unit_tests/server/hooks",
+        "source_files": 3,
+        "source_roles": {
+          "test_source": 3
+        }
+      },
+      {
+        "audit_scopes": {
+          "repository_coverage_only": 11
+        },
+        "directory": "tests/unit_tests/symphony",
+        "source_files": 11,
+        "source_roles": {
+          "test_source": 11
+        }
+      }
+    ],
+    "skipped_non_source_directories": [
+      {
+        "directory": "(root)",
+        "files": 12,
+        "reasons": {
+          "unsupported source extension": 12
+        }
+      },
+      {
+        "directory": "deploy/observability",
+        "files": 3,
+        "reasons": {
+          "unsupported source extension": 3
+        }
+      },
+      {
+        "directory": "deploy/yuanrong",
+        "files": 12,
+        "reasons": {
+          "unsupported source extension": 12
+        }
+      },
+      {
+        "directory": "deploy/yuanrong/conf",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "docker",
+        "files": 3,
+        "reasons": {
+          "unsupported source extension": 3
+        }
+      },
+      {
+        "directory": "docs",
+        "files": 3,
+        "reasons": {
+          "unsupported source extension": 3
+        }
+      },
+      {
+        "directory": "docs/assets/images",
+        "files": 150,
+        "reasons": {
+          "unsupported source extension": 150
+        }
+      },
+      {
+        "directory": "docs/assets/images/conversation",
+        "files": 12,
+        "reasons": {
+          "unsupported source extension": 12
+        }
+      },
+      {
+        "directory": "docs/assets/images/cron",
+        "files": 6,
+        "reasons": {
+          "unsupported source extension": 6
+        }
+      },
+      {
+        "directory": "docs/assets/images/discord",
+        "files": 5,
+        "reasons": {
+          "unsupported source extension": 5
+        }
+      },
+      {
+        "directory": "docs/assets/images/session",
+        "files": 7,
+        "reasons": {
+          "unsupported source extension": 7
+        }
+      },
+      {
+        "directory": "docs/assets/images/wecom",
+        "files": 15,
+        "reasons": {
+          "unsupported source extension": 15
+        }
+      },
+      {
+        "directory": "docs/assets/videos",
+        "files": 5,
+        "reasons": {
+          "unsupported source extension": 5
+        }
+      },
+      {
+        "directory": "docs/en",
+        "files": 51,
+        "reasons": {
+          "unsupported source extension": 51
+        }
+      },
+      {
+        "directory": "docs/en/development-practices",
+        "files": 3,
+        "reasons": {
+          "unsupported source extension": 3
+        }
+      },
+      {
+        "directory": "docs/zh",
+        "files": 53,
+        "reasons": {
+          "unsupported source extension": 53
+        }
+      },
+      {
+        "directory": "docs/zh/assets",
+        "files": 5,
+        "reasons": {
+          "unsupported source extension": 5
+        }
+      },
+      {
+        "directory": "docs/zh/开发实践",
+        "files": 3,
+        "reasons": {
+          "unsupported source extension": 3
+        }
+      },
+      {
+        "directory": "jiuwenbox",
+        "files": 4,
+        "reasons": {
+          "unsupported source extension": 4
+        }
+      },
+      {
+        "directory": "jiuwenbox/docker",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenbox/docs",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenbox/scripts",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenbox/src/jiuwenbox/configs",
+        "files": 4,
+        "reasons": {
+          "unsupported source extension": 4
+        }
+      },
+      {
+        "directory": "jiuwenbox/tests",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenbox/tests/system_tests",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/agents/harness/common/auto_harness/issue_fix",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/agents/harness/team/a2x/client",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/agents/swarm",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/tui/frontend",
+        "files": 5,
+        "reasons": {
+          "unsupported source extension": 5
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend",
+        "files": 7,
+        "reasons": {
+          "unsupported source extension": 7
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/public",
+        "files": 13,
+        "reasons": {
+          "unsupported source extension": 13
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/assets",
+        "files": 13,
+        "reasons": {
+          "unsupported source extension": 13
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/assets/sidebar",
+        "files": 19,
+        "reasons": {
+          "unsupported source extension": 19
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ChannelsPanel",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ChatPanel",
+        "files": 3,
+        "reasons": {
+          "unsupported source extension": 3
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ExtensionsHubPanel",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ExtensionsPanel",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/HarnessPackagePanel",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/MarkdownRenderer",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/SessionSidebar",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/SkillGraphPanel",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/TeamMemberAvatar",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/components/ToolPanel",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/features",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/features/a2ui",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/channels/web/frontend/src/i18n/locales",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/extensions/agent_client",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/extensions/symphony",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/extensions/symphony/skills/symphony-assistant",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources",
+        "files": 6,
+        "reasons": {
+          "unsupported source extension": 6
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace",
+        "files": 9,
+        "reasons": {
+          "unsupported source extension": 9
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/memory",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/advanced-daily-report",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/akg-agents",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/ascend-moe-optimizer-auto-trace",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/ascend-moe-optimizer-auto-trace/scripts",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/ascend-moe-optimizer-trace-analyzer",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/ascend-moe-optimizer-trace-analyzer/config",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/cross-channel-history-retrieval",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/deepep-to-cam-converter",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/deepep-to-cam-converter/references",
+        "files": 5,
+        "reasons": {
+          "unsupported source extension": 5
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/delayed-restart-app",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/doc-update",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/financial-document-parser",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/gitcode-api",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/gitcode-api/references",
+        "files": 5,
+        "reasons": {
+          "unsupported source extension": 5
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/gitcode-api/tasks",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/llm-wiki",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/openJiuwen-DeepSearch",
+        "files": 3,
+        "reasons": {
+          "unsupported source extension": 3
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/project-maintainer",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/project-maintainer/agents",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/project-maintainer/references",
+        "files": 3,
+        "reasons": {
+          "unsupported source extension": 3
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-creator",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-creator/agents",
+        "files": 3,
+        "reasons": {
+          "unsupported source extension": 3
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-creator/assets",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-creator/eval-viewer",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-creator/references",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-gen-4-enterprise-doc",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-gen-4-enterprise-doc/reference",
+        "files": 4,
+        "reasons": {
+          "unsupported source extension": 4
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skill-omni-creation",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skvm-general",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/skvm-jit",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/swarmskill-creator",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/swarmskill-creator/reference",
+        "files": 5,
+        "reasons": {
+          "unsupported source extension": 5
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/swarmskill-creator/templates",
+        "files": 5,
+        "reasons": {
+          "unsupported source extension": 5
+        }
+      },
+      {
+        "directory": "jiuwenswarm/resources/agent/workspace/skills/swarmskill-creator/templates/scripts",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/server/runtime/skill/skilldev",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/symphony",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/symphony/fingerprint/normalize",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/symphony/indexing",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "jiuwenswarm/symphony/retrieval",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "jiuwenswarm/symphony/retrieval/tree/render",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "packages/jiuwenswarm-tui",
+        "files": 2,
+        "reasons": {
+          "unsupported source extension": 2
+        }
+      },
+      {
+        "directory": "scripts",
+        "files": 10,
+        "reasons": {
+          "unsupported source extension": 10
+        }
+      },
+      {
+        "directory": "scripts/nfs",
+        "files": 5,
+        "reasons": {
+          "unsupported source extension": 5
+        }
+      },
+      {
+        "directory": "tests",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      },
+      {
+        "directory": "tests/ui_e2e",
+        "files": 1,
+        "reasons": {
+          "unsupported source extension": 1
+        }
+      }
+    ],
+    "totals": {
+      "excluded_directories": 17,
+      "excluded_files": 177,
+      "recorded_directories": 277,
+      "recorded_source_files": 1275,
+      "skipped_non_source_directories": 99,
+      "skipped_non_source_files": 557
+    }
+  },
+  "archived_full_json_gzip": "ledger-archive/source-symbol-inventory.full.json.gz",
+  "notes": [
+    "Compact summary; complete per-file and per-symbol inventory is in the gzip archive.",
+    "Python symbol fingerprints use normalized AST semantic hashes."
+  ]
+}

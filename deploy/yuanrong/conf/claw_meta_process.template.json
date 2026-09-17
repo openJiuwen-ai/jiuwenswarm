@@ -1,0 +1,36 @@
+{
+  "name": "<<FUNC_SVC_NAME>>",
+  "runtime": "python<<YR_PYTHON_VERSION>>",
+  "description": "jiuwen swarm",
+  "handler": "clawee.handler",
+  "kind": "faas",
+  "cpu": <<MGR_CPU>>,
+  "memory": <<MGR_MEMORY>>,
+  "timeout": 600,
+  "customResources": {},
+  "environment": {
+    "MODEL_PROVIDER": "<<MODEL_PROVIDER>>",
+    "MODEL_NAME": "<<MODEL_NAME>>",
+    "API_BASE": "<<API_BASE>>",
+    "API_KEY": "<<API_KEY>>",
+    "EMBED_API_KEY": "<<EMBED_API_KEY>>",
+    "EMBED_API_BASE": "<<EMBED_API_BASE>>",
+    "EMBED_MODEL": "<<EMBED_MODEL>>"
+  },
+  "extendedHandler": {
+    "initializer": "clawee.init",
+    "pre_stop": "clawee.pre_stop"
+  },
+  "extendedTimeout": {
+    "initializer": 600,
+    "pre_stop": 10
+  },
+  "minInstance": "<<MGR_MIN_INSTANCE>>",
+  "maxInstance": "<<MGR_MAX_INSTANCE>>",
+  "concurrentNum": "<<MGR_CONCURRENT_NUM>>",
+  "storageType": "local",
+  "codePath": "<<YR_FUNC_CODE_DIR>>",
+  "s3CodePath": {},
+  "enableSessionCtx": true,
+  "sandboxType": "<<SANDBOX_TYPE>>"
+}

@@ -1,0 +1,135 @@
+.app-section {
+  display: flex;
+  flex: 1 1 0%;
+  gap: 1rem;
+  overflow: hidden;
+}
+
+.app-section.is-hidden {
+  display: none;
+}
+
+.chat-layout {
+  background: var(--color-surface-shell);
+}
+
+.chat-workspace {
+  overflow: hidden;
+  background: var(--color-surface-card);
+}
+
+.chat-layout__surface {
+  background: var(--color-surface-card);
+}
+
+.app-toast-wrapper {
+  position: fixed;
+  left: 50%;
+  z-index: 50;
+  transform: translateX(-50%);
+}
+
+.app-toast-wrapper--bottom {
+  bottom: 5rem;
+}
+
+.app-toast-wrapper--top {
+  top: 4rem;
+}
+
+.app-toast-wrapper--top-center {
+  top: 4rem;
+  left: 0;
+  right: 0;
+  transform: none;
+  display: flex;
+  justify-content: center;
+}
+
+.app-connection-toast {
+  border-radius: 0.5rem;
+  background: var(--color-feedback-danger);
+  padding: 0.5rem 1rem;
+  color: var(--color-text-inverse);
+  box-shadow: var(--effect-shadow-lg);
+}
+
+.app-session-toast {
+  border-radius: 0.5rem;
+  background: var(--color-feedback-info);
+  padding: 0.5rem 1rem;
+  color: var(--color-text-inverse);
+  box-shadow: var(--effect-shadow-lg);
+}
+
+.app-security-alert {
+  width: min(88vw, 420px);
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.75rem;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-xl);
+}
+
+.app-security-alert__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border-default);
+  padding: 0.5rem 0.875rem;
+}
+
+.app-security-alert__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.app-security-alert__close {
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  padding: 0.125rem;
+}
+
+.app-security-alert__close:hover {
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+}
+
+.app-security-alert__content {
+  padding: 0.625rem 0.875rem;
+  color: var(--color-text-secondary);
+}
+
+.app-restart-modal {
+  position: fixed;
+  inset: 0;
+  /* 需高于所有浮层（含 .icon-rail-more-panel z-index:1200、.advanced-config-panel z-index:1300、
+     全局最高的 2000），否则模态的毛玻璃遮罩会被这些不带 backdrop-filter 的浮层盖住。 */
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.app-restart-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--color-backdrop);
+  backdrop-filter: blur(4px);
+}
+
+.app-restart-modal__panel {
+  position: relative;
+  width: 100%;
+  max-width: 24rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.75rem;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-xl);
+  padding: 1.5rem;
+}

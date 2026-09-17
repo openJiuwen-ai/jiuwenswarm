@@ -1,0 +1,83 @@
+name: 🚀 功能提案
+description: |
+  提交关于 openJiuwen 新功能的提案 / 需求
+title: "[Feature]: "
+labels: ["feature"]
+type: "Feature"
+body:
+  - type: dropdown
+    id: module_select
+    attributes:
+      label: 模块选择
+      options:
+        - Agent Core harness
+        - AutoHarness
+        - 集群模式
+        - 同session联机
+        - Gateway
+        - 单Agent模式
+        - 定时
+        - 多session
+        - 记忆
+        - 数字分身
+        - 浏览器
+        - 文件系统
+        - TUI
+        - A2UI
+        - Sandbox
+        - LLM wiki
+        - skillnet
+        - 前端
+        - channel-小艺
+        - channel-钉钉
+        - channel-web
+        - channel-飞书
+        - channel-微信
+        - channel-企业微信
+        - channel-WharsApp
+        - 自演进
+        - 未知
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: | 
+        🚀 背景描述
+      description: |
+        请清晰、简洁地描述该功能提案的内容。请阐述提出此提案的动机。你的功能需求是否与某个具体问题相关？例如：“我在开发功能 X，希望能实现 Y 这个功能”。如果此需求与 GitCode 上的其他 Issue 相关，也请在此附上链接:
+      required: true
+  - type: textarea
+    attributes:
+      label: 设计思路
+      description: |
+        如曾考虑过其他替代方案或功能，请予以说明。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 涉及到的对外API
+      description: |
+        描述该特性是否会有对外API的增加与变更情况的发生，以及变更可能会造成的周边影响。
+  - type: textarea
+    attributes:
+      label:
+        与其他模块的相关性描述
+      description: |
+        描述与其他模块存在的可能关联性，以方便补充对应的场景验证。
+  - type: textarea
+    attributes:
+      label: 测试设计与测试计划
+      description: |
+        详细描述如何开展测试验证，以保证该特性的能力得到充分的验证，包括到不限于功能、性能、可靠性、安全等。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label:
+        其他信息
+      description: |
+        添加例如辅助信息、场景等内容。
+  - type: markdown
+    attributes:
+      value: |
+        感谢您的贡献 🎉!

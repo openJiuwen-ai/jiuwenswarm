@@ -88,7 +88,7 @@ You may add Your own copyright statement to Your modifications and may provide a
 
 ### License: MIT License
 
-**Software:** json_repair, rapidfuzz, markdown-it-py, beautifulsoup4, python-docx, fastapi, pydantic, pydantic-settings, sqlalchemy, pytest, pytest-cov, pytest-mock, PyYAML, charset-normalizer, exceptiongroup, h11, httpx-sse, iniconfig, jsonschema, mdurl, more-itertools, platformdirs, pluggy, pydantic-core, redis, referencing, rich, typing-inspection, urllib3, zipp, aioitertools, attrs, beartype, cacheout, cachetools, cffi, docstring-parser, filelock, greenlet, humanfriendly, jaraco.classes, jaraco.context, jaraco.functools, jiter, keyring, langchain-core, langgraph, langsmith, pysbd, pytz, rpds-py, shellingham, six, tomli, typer, typer-slim, watchfiles, wsproto
+**Software:** json_repair, rapidfuzz, markdown-it-py, beautifulsoup4, python-docx, fastapi, pydantic, pydantic-settings, sqlalchemy, pytest, pytest-cov, pytest-mock, PyYAML, charset-normalizer, exceptiongroup, h11, httpx-sse, iniconfig, jsonschema, mdurl, more-itertools, platformdirs, pluggy, pydantic-core, redis, referencing, rich, typing-inspection, urllib3, zipp, aioitertools, attrs, beartype, cacheout, cachetools, cffi, docstring-parser, filelock, greenlet, humanfriendly, jaraco.classes, jaraco.context, jaraco.functools, jiter, keyring, langchain-core, langgraph, langsmith, pysbd, pytz, rpds-py, shellingham, six, slack-bolt, slack-sdk, tomli, typer, typer-slim, watchfiles, wsproto
 
 **The MIT License**
 
@@ -126,4 +126,4 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ---
 
-*This notice is generated for the JiuwenBot project. The list of software and versions may vary with the actual installation. You may regenerate the dependency list using `pip install pip-licenses; pip-licenses` from the project environment.*
+*This notice is generated for the JiuwenSwarm project. The list of software and versions may vary with the actual installation. You may regenerate the dependency list using `pip install pip-licenses; pip-licenses` from the project environment.*

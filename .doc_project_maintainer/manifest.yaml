@@ -1,0 +1,486 @@
+version: 0.0.1
+artifact_root: .doc_project_maintainer
+last_updated: '2026-08-03'
+sync:
+  status: partial
+  last_scanned_commit: 10afedf222bcd6db98b24347a28f75e4613b3c87
+  last_synced_commit: 10afedf222bcd6db98b24347a28f75e4613b3c87
+  coverage_closure:
+    status: partial
+    source: git ls-files plus git status --short via inventory_symbols.py
+    last_audited: '2026-07-15'
+    tracked_paths: pending
+    untracked_paths: classified
+    flow_traces: partial
+    code_symbols: partial
+    symbol_audits: pending
+    notes: The 2026-07-15 normalized-AST scan at 10afedf2 found 0 expired audits among the 128 existing AgentWebSocketServer method reviews. No method card, audit signature, or previously unaudited symbol was added or promoted. Six newly observed unaudited server methods remain outside the frozen queue. Current integrity verification trusts 59 records and flags 69 non-source-expired entry-document hash mismatches; project-wide symbol docs, broader flows, and audits remain pending.
+  pending:
+  - id: SYNC-20260707-001
+    reason: Full repository coverage is incomplete after initial AgentServer-focused slice.
+    paths:
+    - jiuwenswarm
+    - jiuwenbox
+    - packages
+    - tests
+    modules:
+    - agentserver-runtime
+    - gateway-and-channels
+    - agent-harness
+    - project-packaging
+    flows: []
+    code_symbols:
+    - jiuwenswarm/server/agent_ws_server.py
+    - jiuwenswarm/server/runtime/agent_warm_pool.py
+    - jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+    created: '2026-07-07'
+project:
+  name: JiuwenSwarm
+  summary: Multi-agent collaboration runtime with AgentServer, Gateway, channels, team orchestration, skills, memory, and
+    sandbox services.
+  docs:
+    overview: project/overview.md
+    architecture: project/architecture.md
+    glossary: project/glossary.md
+    build_plan: project/build-plan.md
+    source_symbol_inventory: project/source-symbol-inventory.json
+    coverage_map: project/coverage-map.json
+    symbol_audit_map: project/symbol-audit-map.json
+    open_questions: project/open-questions.md
+    flows_dir: project/flows
+    code_dir: code
+modules:
+- id: agentserver-runtime
+  name: AgentServer Runtime
+  summary: Standalone AgentServer process, WebSocket E2A/legacy dispatch, sessions, commands, server push, scheduler, sandbox,
+    ACP, and runtime services.
+  confidence: confirmed
+  docs:
+    readme: modules/agentserver-runtime/README.md
+    design: modules/agentserver-runtime/design.md
+    directories: modules/agentserver-runtime/directories.md
+    changes: modules/agentserver-runtime/changes.md
+    git_history: modules/agentserver-runtime/git-history.md
+  directories:
+  - jiuwenswarm/server
+  - jiuwenswarm/server/runtime
+  - jiuwenswarm/server/gateway_push
+  - tests/unit_tests/agentserver
+  related_flows:
+  - gateway-agentserver-e2a-chat
+  - agentserver-session-lifecycle
+  - agentserver-server-push
+  - agentserver-command-mcp
+  - agentserver-sandbox-runtime
+  - agentserver-plan-mode-exit
+  - agentserver-schedule-auto-harness
+  - agentserver-history-stream
+  - session-prewarm-allocation
+  coverage:
+    status: partial
+    last_scanned: '2026-07-13'
+- id: gateway-and-channels
+  name: Gateway And Channels
+  summary: Gateway clients, channel adapters, and frontend/TUI surfaces that send E2A requests to AgentServer.
+  confidence: inferred
+  docs:
+    readme: modules/gateway-and-channels/README.md
+  directories:
+  - jiuwenswarm/gateway
+  - jiuwenswarm/channels
+  related_flows:
+  - gateway-agentserver-e2a-chat
+  - agentserver-server-push
+  - agentserver-command-mcp
+  - agentserver-sandbox-runtime
+  - agentserver-plan-mode-exit
+  - agentserver-schedule-auto-harness
+  - agentserver-history-stream
+  - session-prewarm-allocation
+  coverage:
+    status: planned
+    last_scanned: '2026-07-07'
+- id: agent-harness
+  name: Agent Harness
+  summary: Agent adapters, rails, tools, memory, skill, team, and AutoHarness execution surfaces behind AgentServer.
+  confidence: inferred
+  docs:
+    readme: modules/agent-harness/README.md
+  directories:
+  - jiuwenswarm/agents
+  - jiuwenswarm/server/runtime/agent_adapter
+  related_flows:
+  - agentserver-command-mcp
+  - agentserver-sandbox-runtime
+  - agentserver-plan-mode-exit
+  - agentserver-schedule-auto-harness
+  - session-prewarm-allocation
+  coverage:
+    status: planned
+    last_scanned: '2026-07-07'
+- id: project-packaging
+  name: Project Packaging
+  summary: Packaging, deploy, build, installer, and package metadata.
+  confidence: inferred
+  docs:
+    readme: modules/project-packaging/README.md
+  directories:
+  - scripts
+  - deploy
+  - docker
+  - packages
+  coverage:
+    status: planned
+    last_scanned: '2026-07-07'
+directories:
+- path: jiuwenswarm/server
+  encoded: jiuwenswarm__server
+  summary: AgentServer entrypoints and runtime services.
+  modules:
+  - agentserver-runtime
+  doc: directories/jiuwenswarm__server/README.md
+  related_flows:
+  - gateway-agentserver-e2a-chat
+  - agentserver-session-lifecycle
+  - agentserver-server-push
+  - agentserver-command-mcp
+  - agentserver-sandbox-runtime
+  - agentserver-plan-mode-exit
+  - agentserver-schedule-auto-harness
+  - agentserver-history-stream
+  coverage:
+    status: partial
+    last_scanned: '2026-07-07'
+- path: jiuwenswarm/gateway/routing
+  encoded: jiuwenswarm__gateway__routing
+  summary: Gateway AgentServer client and routing helpers.
+  modules:
+  - gateway-and-channels
+  doc: directories/jiuwenswarm__gateway__routing/README.md
+  related_flows:
+  - gateway-agentserver-e2a-chat
+  - agentserver-server-push
+  coverage:
+    status: partial
+    last_scanned: '2026-07-07'
+- path: tests/unit_tests/agentserver
+  encoded: tests__unit_tests__agentserver
+  summary: Unit tests for AgentServer modes, ACP, commands, team, skills, memory, and runtime rails.
+  modules:
+  - agentserver-runtime
+  doc: directories/tests__unit_tests__agentserver/README.md
+  coverage:
+    status: partial
+    last_scanned: '2026-07-07'
+flows:
+- id: gateway-agentserver-e2a-chat
+  name: Gateway AgentServer E2A Chat
+  summary: Gateway sends E2A envelopes over WebSocket; AgentServer dispatches to agents and returns unary or streaming E2A
+    responses.
+  confidence: confirmed
+  doc: project/flows/gateway-agentserver-e2a-chat.md
+  modules:
+  - agentserver-runtime
+  - gateway-and-channels
+  - agent-harness
+  directories:
+  - jiuwenswarm/server
+  - jiuwenswarm/gateway/routing
+  code_symbols:
+  - AgentWebSocketServer._handle_message
+  - AgentWebSocketServer._handle_stream
+  - AgentWebSocketServer._handle_unary
+- id: agentserver-session-lifecycle
+  name: AgentServer Session Lifecycle
+  summary: AgentServer creates, lists, switches, forks, rewinds, deletes, and pages session state across metadata, history,
+    checkpointer, and runtime managers.
+  confidence: confirmed
+  doc: project/flows/agentserver-session-lifecycle.md
+  modules:
+  - agentserver-runtime
+  - agent-harness
+  directories:
+  - jiuwenswarm/server
+- id: agentserver-server-push
+  name: AgentServer Server Push
+  summary: Agent-originated events are encoded as server-push E2A wire frames and delivered to Gateway outside request queues.
+  confidence: confirmed
+  doc: project/flows/agentserver-server-push.md
+  modules:
+  - agentserver-runtime
+  - gateway-and-channels
+  directories:
+  - jiuwenswarm/server
+  - jiuwenswarm/gateway/routing
+- id: agentserver-command-mcp
+  name: AgentServer MCP Command Lifecycle
+  summary: TUI and Gateway MCP requests read or mutate config.yaml, discover tools, reload cached agents, and reconcile runtime MCP resources.
+  confidence: confirmed
+  doc: project/flows/agentserver-command-mcp.md
+  modules:
+  - agentserver-runtime
+  - gateway-and-channels
+  - agent-harness
+  directories:
+  - jiuwenswarm/server
+  - jiuwenswarm/gateway
+  code_symbols:
+  - AgentWebSocketServer._handle_command_mcp
+  - AgentWebSocketServer._normalize_mcp_payload
+- id: agentserver-sandbox-runtime
+  name: AgentServer Sandbox Runtime
+  summary: Sandbox commands mutate persisted policy, control JiuwenBox, recreate or hot-patch agents, and report effective files and Landlock status.
+  confidence: confirmed
+  doc: project/flows/agentserver-sandbox-runtime.md
+  modules:
+  - agentserver-runtime
+  - gateway-and-channels
+  - agent-harness
+  directories:
+  - jiuwenswarm/server
+  - jiuwenswarm/gateway
+  code_symbols:
+  - AgentWebSocketServer._handle_command_sandbox
+  - AgentWebSocketServer._handle_sandbox_enable
+  - AgentWebSocketServer._apply_sandbox_runtime_patch
+- id: agentserver-plan-mode-exit
+  name: AgentServer Plan Mode Exit
+  summary: Approval restores code mode in the session checkpoint, blocks stale plan re-entry, and pushes plan.mode_exited to clients.
+  confidence: confirmed
+  doc: project/flows/agentserver-plan-mode-exit.md
+  modules:
+  - agentserver-runtime
+  - gateway-and-channels
+  - agent-harness
+  directories:
+  - jiuwenswarm/server
+  - jiuwenswarm/agents/harness/code
+  code_symbols:
+  - AgentWebSocketServer._ensure_code_mode_state
+  - AgentWebSocketServer._check_post_process_plan_exit
+  - AgentWebSocketServer._push_plan_mode_exited
+- id: agentserver-schedule-auto-harness
+  name: AgentServer Scheduled Auto-Harness
+  summary: Schedule RPCs lazily start AutoHarnessService, persist tasks, execute autonomous jobs, and expose state and logs.
+  confidence: confirmed
+  doc: project/flows/agentserver-schedule-auto-harness.md
+  modules:
+  - agentserver-runtime
+  - gateway-and-channels
+  - agent-harness
+  directories:
+  - jiuwenswarm/server
+  - jiuwenswarm/agents/harness/common/auto_harness
+  code_symbols:
+  - AgentWebSocketServer._handle_schedule_request
+  - AgentWebSocketServer._resolve_model
+  - AgentWebSocketServer._build_model_cache
+- id: agentserver-history-stream
+  name: AgentServer History Stream
+  summary: History requests read persisted records, filter and sanitize pages, stream correlated events, and reconstruct frontend state.
+  confidence: confirmed
+  doc: project/flows/agentserver-history-stream.md
+  modules:
+  - agentserver-runtime
+  - gateway-and-channels
+  directories:
+  - jiuwenswarm/server
+  - jiuwenswarm/gateway
+  - jiuwenswarm/channels
+  code_symbols:
+  - AgentWebSocketServer.get_conversation_history
+  - AgentWebSocketServer._handle_history_get_stream
+- id: session-prewarm-allocation
+  name: Session Prewarm And Allocation
+  summary: Gateway syncs live channels; AgentServer prepares, claims, and replenishes session-bound single-Agent runtimes. Prewarming itself is on unless JIUWENSWARM_AGENT_PREWARM opts out.
+  confidence: confirmed
+  doc: project/flows/session-prewarm-allocation.md
+  modules:
+  - agentserver-runtime
+  - gateway-and-channels
+  - agent-harness
+  directories:
+  - jiuwenswarm/server
+  - jiuwenswarm/gateway
+  - jiuwenswarm/channels
+  code_symbols:
+  - AgentWarmPool
+  - AgentWarmPool.sync
+  - AgentWarmPool.claim
+  - AgentWarmPool.begin_foreground
+  - AgentWarmPool.end_foreground
+  - AgentWebSocketServer._handle_session_create
+  - AgentWebSocketServer._handle_stream
+  - AgentWebSocketServer._handle_unary
+  - resolve_agent_request_mode
+  - JiuWenSwarmDeepAdapter.prepare_session
+  - JiuWenSwarmDeepAdapter.configure_session_runtime
+  - JiuWenSwarmDeepAdapter._schedule_runtime_state_write
+code_symbols:
+- symbol: AgentWebSocketServer._handle_session_create
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._handle_session_create.md
+- symbol: resolve_agent_request_mode
+  kind: function
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/resolve_agent_request_mode.md
+- symbol: _run
+  kind: function
+  source: jiuwenswarm/server/app_agentserver.py
+  doc: code/jiuwenswarm/server/app_agentserver.py/_run.md
+- symbol: AgentWebSocketServer._handle_command_mcp
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._handle_command_mcp.md
+- symbol: AgentWebSocketServer._normalize_mcp_payload
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._normalize_mcp_payload.md
+- symbol: AgentWebSocketServer._normalize_mcp_add_payload
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._normalize_mcp_add_payload.md
+- symbol: AgentWebSocketServer._normalize_mcp_update_payload
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._normalize_mcp_update_payload.md
+- symbol: AgentWebSocketServer._handle_command_sandbox
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._handle_command_sandbox.md
+- symbol: AgentWebSocketServer._handle_sandbox_enable
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._handle_sandbox_enable.md
+- symbol: AgentWarmPool
+  kind: class
+  source: jiuwenswarm/server/runtime/agent_warm_pool.py
+  doc: code/jiuwenswarm/server/runtime/agent_warm_pool.py/Class AgentWarmPool/Class AgentWarmPool.md
+- symbol: AgentWarmPool.sync
+  kind: method
+  source: jiuwenswarm/server/runtime/agent_warm_pool.py
+  doc: code/jiuwenswarm/server/runtime/agent_warm_pool.py/Class AgentWarmPool/AgentWarmPool.sync.md
+- symbol: AgentWarmPool.claim
+  kind: method
+  source: jiuwenswarm/server/runtime/agent_warm_pool.py
+  doc: code/jiuwenswarm/server/runtime/agent_warm_pool.py/Class AgentWarmPool/AgentWarmPool.claim.md
+- symbol: AgentWarmPool.begin_foreground
+  kind: method
+  source: jiuwenswarm/server/runtime/agent_warm_pool.py
+  doc: code/jiuwenswarm/server/runtime/agent_warm_pool.py/Class AgentWarmPool/AgentWarmPool.begin_foreground.md
+- symbol: AgentWarmPool.end_foreground
+  kind: method
+  source: jiuwenswarm/server/runtime/agent_warm_pool.py
+  doc: code/jiuwenswarm/server/runtime/agent_warm_pool.py/Class AgentWarmPool/AgentWarmPool.end_foreground.md
+- symbol: JiuWenSwarmDeepAdapter.prepare_session
+  kind: method
+  source: jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+  doc: code/jiuwenswarm/server/runtime/agent_adapter/interface_deep.py/JiuWenSwarmDeepAdapter.prepare_session.md
+- symbol: JiuWenSwarmDeepAdapter.configure_session_runtime
+  kind: method
+  source: jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+  doc: code/jiuwenswarm/server/runtime/agent_adapter/interface_deep.py/JiuWenSwarmDeepAdapter.configure_session_runtime.md
+- symbol: JiuWenSwarmDeepAdapter._schedule_runtime_state_write
+  kind: method
+  source: jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+  doc: code/jiuwenswarm/server/runtime/agent_adapter/interface_deep.py/JiuWenSwarmDeepAdapter._schedule_runtime_state_write.md
+- symbol: JiuWenSwarmDeepAdapter._schedule_memory_reindex
+  kind: method
+  source: jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+  doc: code/jiuwenswarm/server/runtime/agent_adapter/interface_deep.py/JiuWenSwarmDeepAdapter._schedule_memory_reindex.md
+- symbol: JiuWenSwarmDeepAdapter._handle_memory_rail_by_config
+  kind: method
+  source: jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+  doc: code/jiuwenswarm/server/runtime/agent_adapter/interface_deep.py/JiuWenSwarmDeepAdapter._handle_memory_rail_by_config.md
+- symbol: AgentWebSocketServer._handle_stream_impl
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._handle_stream_impl.md
+- symbol: AgentWebSocketServer._handle_unary_impl
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._handle_unary_impl.md
+- symbol: AgentWebSocketServer._handle_stream
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._handle_stream.md
+- symbol: AgentWebSocketServer._handle_unary
+  kind: method
+  source: jiuwenswarm/server/agent_ws_server.py
+  doc: code/jiuwenswarm/server/agent_ws_server.py/Class AgentWebSocketServer/AgentWebSocketServer._handle_unary.md
+decisions:
+- id: ADR-0001
+  title: AgentServer Owns Prewarmed Session Identity
+  doc: decisions/ADR-0001-agentserver-owned-prewarmed-sessions.md
+changes:
+- id: CHG-20260731-001
+  title: Add AgentServer-owned session allocation and DeepAgent prewarming
+  doc: changes/records/CHG-20260731-001-session-prewarm-allocation.md
+- id: CHG-20260801-001
+  title: Prioritize foreground chat over background prewarming
+  doc: changes/records/CHG-20260801-001-prewarm-foreground-priority.md
+- id: CHG-20260801-005
+  title: Switch background session prewarming off by default
+  doc: changes/records/CHG-20260801-005-disable-session-prewarm.md
+- id: CHG-20260803-001
+  title: Switch background session prewarming back on by default
+  doc: changes/records/CHG-20260803-001-enable-session-prewarm-by-default.md
+- id: CHG-20260803-002
+  title: Route TUI startup session creation through AgentServer
+  doc: changes/records/CHG-20260803-002-tui-external-session-create.md
+code_symbol_inventory:
+  generated_by: scripts/inventory_symbols.py
+  source_symbol_inventory: project/source-symbol-inventory.json
+  coverage_map: project/coverage-map.json
+  symbol_audit_map: project/symbol-audit-map.json
+  source_files:
+    total: 1275
+    documented: 1
+    pending: 1022
+    pending_review: 252
+  required_symbols:
+    total: 15584
+    documented: 131
+    pending: 15453
+  default_health_audit_symbols: 9040
+  repository_coverage_only_symbols: 6544
+  directory_summary:
+    recorded_directories: 277
+    excluded_directories: 17
+    skipped_non_source_directories: 99
+  recommended_mode: multi-agent
+coverage_map:
+  path: project/coverage-map.json
+  recommended_mode: multi-agent
+  pending_files: 1022
+  documented_files: 1
+  documented_required_symbols: 131
+  pending_review_files: 252
+  suggested_slices: 298
+  suggested_audit_slices: 167
+symbol_audit_map:
+  path: project/symbol-audit-map.json
+  audit_statuses:
+    unaudited: 15456
+    script_assessed: 0
+    agent_audited: 128
+    human_audited: 0
+    audit_expired: 0
+    out_of_scope: 0
+  health_audit_summary:
+    unaudited: 8912
+    script_assessed: 0
+    agent_audited: 128
+    human_audited: 0
+    audit_expired: 0
+    out_of_scope: 0
+  audit_integrity_summary:
+    scope: default_health_audit
+    trusted_agent_audit: 59
+    suspicious_agent_audit: 0
+    invalid_agent_audit: 69
+    closure_eligible: 59
+    pending: 8981
+    unique_signature_batch_hashes: 128
+  open_issues: 492

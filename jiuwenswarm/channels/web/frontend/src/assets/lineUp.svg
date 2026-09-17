@@ -1,0 +1,7 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="16.000000" height="16.000000" fill="none">
+	<rect id="排队" width="16.000000" height="16.000000" x="0.000000" y="0.000000" />
+	<path id="直线 76" d="M5 3.5L13 3.5" stroke="rgb(25,25,25)" stroke-linecap="round" stroke-width="1.000000" />
+	<path id="直线 77" d="M5 8L10 8" stroke="rgb(25,25,25)" stroke-linecap="round" stroke-width="1.000000" />
+	<path id="直线 78" d="M2 3L2 10C2 11.1046 2.89543 12 4 12L13.9998 12" stroke="rgb(25,25,25)" stroke-linecap="round" stroke-width="1.000000" />
+	<path id="直线 79" d="M0 2.00034L1.50062 0L2.99929 2" stroke="rgb(25,25,25)" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.000000" transform="matrix(0,1,-1,0,14,10.5)" />
+</svg>

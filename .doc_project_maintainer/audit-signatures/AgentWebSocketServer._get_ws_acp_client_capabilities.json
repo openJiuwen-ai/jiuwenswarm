@@ -1,0 +1,6 @@
+{
+  "calls": [
+    {"tool_name": "collaboration.followup_task", "raw_input": {"target": "/root/reaudit_ws_key", "symbol_id": "AgentWebSocketServer._get_ws_acp_client_capabilities", "assignment": "Re-audit exactly one symbol against current source."}},
+    {"tool_name": "collaboration.wait_agent", "raw_input": {"target": "/root/reaudit_ws_key", "symbol_id": "AgentWebSocketServer._get_ws_acp_client_capabilities", "completed": true}}
+  ]
+}

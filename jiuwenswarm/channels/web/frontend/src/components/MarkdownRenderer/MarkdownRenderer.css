@@ -1,0 +1,306 @@
+@import 'katex/dist/katex.min.css';
+
+/* ===========================================
+   MarkdownRenderer Component Styles
+   =========================================== */
+
+.chat-bubble-wrapper:has(.chat-markdown-table-wrap) {
+  max-width: min(100%, 52rem);
+}
+
+/* Toolbar button */
+.markdown-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.markdown-toolbar-btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-surface-hover);
+  border-color: var(--color-border-default);
+}
+
+.markdown-toolbar-btn:active {
+  background: var(--color-action-secondary);
+}
+
+/* Toggle pill */
+.markdown-toggle-pill {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid transparent;
+  color: var(--color-text-secondary);
+}
+
+.markdown-toggle-pill:hover {
+  color: var(--color-text-primary);
+}
+
+.markdown-toggle-pill:disabled,
+.markdown-toggle-pill:disabled:hover {
+  color: var(--color-text-placeholder);
+  cursor: not-allowed;
+}
+
+.markdown-toggle-pill--active {
+  background: var(--color-surface-elevated);
+  color: var(--color-text-primary);
+  box-shadow: var(--effect-shadow-sm);
+  border-color: var(--color-border-default);
+}
+
+/* Shared diagram container */
+.diagram-container {
+  container-type: inline-size;
+  margin-block: 16px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-surface-elevated);
+  overflow: hidden;
+}
+
+.diagram-container__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 41px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-border-default);
+  background: var(--color-surface-page-accent);
+}
+
+/* Expand the chat bubble to its maximum width when it contains a diagram,
+   matching the behavior of regular code blocks. */
+.chat-bubble-wrapper:has([data-markdown-block='wide']) {
+  width: 100%;
+  max-width: 100%;
+}
+
+.chat-bubble-wrapper:has([data-markdown-block='wide']) [data-markdown-block='wide'] {
+  width: 100%;
+}
+
+/* Shared diagram toolbar controls */
+.diagram-toolbar-start {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.diagram-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border-radius: var(--radius-lg);
+  background: var(--color-action-secondary);
+  padding: 2px;
+  border: 1px solid var(--color-border-default);
+}
+
+.diagram-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.diagram-toolbar-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--color-border-default);
+  margin-inline: 2px;
+}
+
+.diagram-toolbar-status {
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagram-toolbar-status--error {
+  color: var(--color-feedback-danger);
+}
+
+.diagram-toolbar-status--warning {
+  color: var(--color-feedback-warning);
+}
+
+.diagram-more {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.diagram-container:has(.diagram-menu) {
+  position: relative;
+  z-index: 1;
+  overflow: visible;
+}
+
+.diagram-container:has(.diagram-menu) .diagram-container__toolbar {
+  border-radius: calc(var(--radius-xl) - 1px) calc(var(--radius-xl) - 1px) 0 0;
+}
+
+.diagram-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  right: 0;
+  display: flex;
+  width: 210px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-popover);
+  box-shadow: var(--effect-chat-popover-shadow);
+}
+
+.diagram-menu__item {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+  text-align: start;
+}
+
+.diagram-menu__item:hover,
+.diagram-menu__item:focus-visible {
+  background: var(--color-surface-hover);
+}
+
+.diagram-menu__item:disabled {
+  color: var(--color-text-placeholder);
+  cursor: not-allowed;
+}
+
+.diagram-menu__item:disabled:hover {
+  background: transparent;
+}
+
+/* Canvas */
+.mermaid-canvas {
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  cursor: grab;
+}
+
+.mermaid-canvas--dragging {
+  cursor: grabbing;
+}
+
+/* SVG wrapper */
+.mermaid-svg-wrapper {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+}
+
+/* Prevent Mermaid from squeezing wide diagrams into the container width. */
+.mermaid-svg-wrapper svg {
+  max-width: none !important;
+}
+
+/* Code view */
+.mermaid-code-view {
+  position: relative;
+  overflow: auto;
+  padding-inline: 16px;
+}
+
+.mermaid-code-view pre {
+  font-size: 14px;
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+}
+
+/* SVG diagram */
+.svg-diagram__canvas {
+  width: 100%;
+  overflow-x: hidden;
+  box-sizing: border-box;
+  padding: 24px;
+  background: var(--color-surface-elevated);
+}
+
+.svg-diagram__frame {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 0;
+  background: transparent;
+}
+
+.svg-diagram__code-view {
+  max-height: 600px;
+  overflow: auto;
+  padding-inline: 16px;
+}
+
+.svg-diagram__code-view pre {
+  font-size: 14px;
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+}
+
+/* Responsive container queries */
+@container (max-width: 260px) {
+  .diagram-container__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 6px;
+  }
+
+  .diagram-view-toggle {
+    width: max-content;
+    max-width: 100%;
+  }
+
+  .diagram-toolbar-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+.chat-markdown .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.125rem;
+}
+
+.chat-markdown .katex-display > .katex {
+  min-width: max-content;
+}

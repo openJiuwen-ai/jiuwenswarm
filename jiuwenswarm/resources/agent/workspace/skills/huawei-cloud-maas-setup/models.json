@@ -1,0 +1,23 @@
+{
+  "_comment": "模型列表单一配置入口。修改此文件即可调整开通和写入的模型，无需改脚本或 SKILL.md。字段说明: display_name=控制台显示名称(用于开通), api_name=API调用标识(用于config.yaml), alias=jiuwenswarm别名, description=描述(用于完成提示)。注意: 开通模型使用 display_name，api_name 仅在 config_writer 写入配置时使用，如个别模型在 MaaS 控制台的 API 标识与此不同请以此处为准调整。",
+  "models": [
+    {
+      "display_name": "GLM-5.2",
+      "api_name": "glm-5.2",
+      "alias": "",
+      "description": "备选对话模型"
+    },
+    {
+      "display_name": "Kimi-K2.6",
+      "api_name": "kimi-k2.6",
+      "alias": "",
+      "description": "长上下文推理模型"
+    },
+    {
+      "display_name": "DeepSeek-V4-Flash",
+      "api_name": "deepseek-v4-flash",
+      "alias": "",
+      "description": "快速推理模型"
+    }
+  ]
+}

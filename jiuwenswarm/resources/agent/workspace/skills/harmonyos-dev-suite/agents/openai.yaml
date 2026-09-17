@@ -1,0 +1,4 @@
+interface:
+  display_name: "HarmonyOS Dev Suite"
+  short_description: "Unified HarmonyOS development entry skill"
+  default_prompt: "Help me develop, debug, build, test, or adapt a HarmonyOS app."

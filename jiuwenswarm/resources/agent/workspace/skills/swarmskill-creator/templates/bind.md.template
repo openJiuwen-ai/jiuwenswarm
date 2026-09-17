@@ -1,0 +1,79 @@
+# Execution Guardrails
+
+## Resource Constraints
+
+| Item | Limit | Reason |
+|---|---|---|
+| `max_parallel_teammates` | <e.g., 3> | <e.g., matches the parallel fan-out in workflow.md mermaid> |
+| `total_wall_clock_budget` | <e.g., 10 min> | <e.g., upper bound for one full run including all sequential stages> |
+| `total_token_budget` | <e.g., 200k tokens> | <e.g., budget across all roles; prevents one teammate from exhausting context> |
+| `<per_role_token_budget>` (optional) | <e.g., 60k per role> | <only if asymmetric — e.g., the curator role gets more than analysts> |
+| `<per_role_wall_clock>` (optional) | <e.g., 3 min per role> | <only if asymmetric> |
+| `debate_rounds` (Debate pattern only) | <e.g., 1–2> | Cross-exam round count; each round ≈ linear token growth |
+
+## Behavioral Constraints
+
+<Team-level rules — distinct from per-role Boundary which constrains a single role.
+Behavioral Constraints govern what Leader and the team-as-a-whole must / must not do.>
+
+- **Leader-as-orchestrator only**: the Leader dispatches teammates and integrates outputs.
+  The Leader does NOT write findings, run analyses, or substitute any role's work.
+- <Pattern-specific isolation rule:
+  A-pattern: "Teammates MUST NOT see each other's output during their work — isolation is the value of adversarial review."
+  C-pattern: "Each stage MUST NOT modify upstream stage outputs — only enhance / annotate."
+  B-pattern: "Each parallel role works on its assigned slice ONLY — slices are dispatch-time fixed, not negotiated."
+  Debate-pattern: "Round 1 teammates are isolated (no cross-visibility). Round 2+ teammates receive prior-round outputs from all other roles (mutual visibility). The Swarm Skill declares who sees whose output at which phase; how it is delivered is a framework-level choice with recommended preference: (1) direct peer-to-peer exchange; (2) shared blackboard; (3) Leader-relay as fallback.">
+- **Contradiction handling**: when roles disagree, Leader surfaces contradictions verbatim
+  in the Final Report. Leader NEVER mediates / picks a winner / averages opinions.
+  Resolution is the human user's call.
+- <Domain-specific behavioral rule, e.g., "no live-system testing without authorization"
+  for security-audit-swarm, "blameless language only" for incident-response-swarm, etc.>
+
+## Failure Handling
+
+### (a) Teammate failure
+
+| Failure mode | Response |
+|---|---|
+| Teammate timeout | Retry once (single retry only). On 2nd timeout, mark role's section in the Final Report as `[ROLE MISSING — teammate timed out]` and proceed with the remaining roles' outputs. |
+| Malformed teammate output (does not match Output Schema) | Re-dispatch with the schema explicitly inlined and a "your previous output was malformed" preamble. Max 1 retry. On 2nd malformed output, mark as `[ROLE MISSING — malformed output]` and proceed. |
+| Teammate refuses (e.g., claims it cannot find anything for an A-pattern adversarial role) | Re-dispatch with the role's `Boundary > Mandatory` rule restated. If it still refuses, mark as `[ROLE INCONCLUSIVE]` and surface verbatim in the report. |
+
+### (b) Input over-scale degradation
+
+| Trigger condition | Degraded mode |
+|---|---|
+| <e.g., diff > 2000 LOC> | <e.g., fall back to single-role mode using only the most critical role; warn the user before starting> |
+| <e.g., topic too narrow for B-pattern decomposition> | <e.g., reduce to 1 role; warn user that the team's value is reduced> |
+| <e.g., critical dependency missing per pre-flight> | <e.g., user already chose to proceed in Step 0 — record the missing dep in the Final Report> |
+
+### Escalation rules
+
+- If 50%+ of roles return `[ROLE MISSING]`, the run is **FAILED** — emit a partial report with explicit "FAILED: insufficient role coverage" header and surface to user.
+- If `total_wall_clock_budget` is exceeded, halt all in-flight teammates, emit whatever partial outputs exist, and tag the report `INCOMPLETE: budget exceeded`.
+- If `total_token_budget` is exceeded mid-run, halt new dispatches, allow in-flight to complete, emit partial report tagged `INCOMPLETE: token budget exceeded`.
+
+<!--
+TEMPLATE NOTES (delete before publishing):
+
+1. Resource Constraints MUST contain at least:
+   - max_parallel_teammates  (matches workflow.md fan-out)
+   - total_wall_clock_budget (upper bound for one run)
+   - total_token_budget      (across all roles)
+   Add per-role limits ONLY if asymmetric (most teams are symmetric — keep it simple).
+
+2. Behavioral Constraints govern THE TEAM as a whole.
+   Per-role rules belong in roles/<id>.md `## Boundary`.
+   Heuristic: if the rule mentions the Leader or "all teammates", it goes here.
+
+3. Failure Handling MUST cover BOTH (a) teammate failure AND (b) input overscale.
+   Most authoring errors omit (b). Add concrete numeric triggers for (b).
+
+4. The "Escalation rules" subsection is optional but useful — it covers what happens
+   when multiple failures stack on top of each other.
+
+5. Heuristic for what goes in bind.md vs workflow.md:
+   - Numbers (budgets, retry counts, thresholds) → bind.md
+   - Exception paths and degraded modes → bind.md
+   - Main flow steps → workflow.md
+-->

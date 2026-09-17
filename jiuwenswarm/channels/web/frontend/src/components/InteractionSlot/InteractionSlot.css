@@ -1,0 +1,547 @@
+/* ===========================================================
+   InteractionSlot — 输入框正上方的交互吸附槽
+   （授权条 AuthorizationPrompt / 交互卡 InteractionPrompt）
+   =========================================================== */
+
+.interaction-slot {
+  width: 100%;
+  margin: 0 0 8px;
+  animation: interaction-slot-rise 0.2s var(--ease-out) both;
+}
+
+@keyframes interaction-slot-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 授权条：页签式吸附输入框顶部（对齐「当前无进行中的活动」的连体样式） */
+.interaction-slot--attached {
+  width: calc(100% - 48px);
+  margin: 0 auto -1px;
+  position: relative;
+  z-index: 2;
+}
+
+/* ===========================
+   授权条 AuthorizationPrompt
+   =========================== */
+
+.auth-prompt {
+  border: 1px solid var(--color-border-default);
+  border-radius: 14px;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-interaction-shadow);
+  /* 不裁剪：hover 气泡已 portal 到 body；圆角靠子元素自身处理 */
+}
+
+/* 吸附模式：只圆上两角，底边与输入框贴合；去浮卡投影，改接缝高光；
+   底色用浅灰 token，与纯白输入框拉开一档层次 */
+.interaction-slot--attached .auth-prompt {
+  border-radius: 18px 18px 0 0;
+  border-color: var(--color-chat-composer-border, var(--color-border-default));
+  /* 比输入框正文稍深一档，保持吸附区域层次。 */
+  background-color: var(--color-action-secondary);
+  background-image: linear-gradient(
+    rgba(var(--color-surface-card-rgb), 0.5),
+    rgba(var(--color-surface-card-rgb), 0.5)
+  );
+  box-shadow: var(--effect-interaction-attached-highlight);
+  padding-bottom: 1px;
+}
+
+/* 顶部行：标题（左）+ 动作按钮（右）；整行可点击展开/收起 */
+.auth-prompt__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px 8px;
+  cursor: pointer;
+  outline: none;
+}
+
+.auth-prompt__bar:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(var(--color-action-primary-rgb), 0.3);
+  border-radius: 12px;
+}
+
+.auth-prompt__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--color-text-strong);
+}
+
+.auth-prompt__icon {
+  color: var(--color-action-primary);
+  flex: 0 0 auto;
+}
+
+.auth-prompt__title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-prompt__count {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  flex: 0 0 auto;
+}
+
+.auth-prompt__chevron {
+  color: var(--color-text-secondary);
+  flex: 0 0 auto;
+}
+
+.auth-prompt__chevron--open {
+  transform: rotate(180deg);
+}
+
+.auth-prompt__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.auth-prompt__action-wrap {
+  display: inline-flex;
+}
+
+.auth-prompt__btn {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.auth-prompt__btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 跳过（拒绝）：ghost 文本 */
+.auth-prompt__btn--reject {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-secondary);
+  padding: 0 8px;
+}
+
+.auth-prompt__btn--reject:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: rgba(var(--color-text-primary-rgb), 0.06);
+}
+
+/* 总是允许 / 会话内记住 / 授权单次 / 其它：主按钮（深色填充） */
+.auth-prompt__btn--allow-always,
+.auth-prompt__btn--session-allow,
+.auth-prompt__btn--allow-once,
+.auth-prompt__btn--other {
+  background: var(--color-text-strong);
+  border-color: var(--color-text-strong);
+  color: var(--color-surface-card);
+}
+
+.auth-prompt__btn--allow-always:hover:not(:disabled),
+.auth-prompt__btn--session-allow:hover:not(:disabled),
+.auth-prompt__btn--allow-once:hover:not(:disabled),
+.auth-prompt__btn--other:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+/* 正文：markdown 渲染（展开态用 Tailwind prose）；收起态只显示渲染后的首行 */
+.auth-prompt__body {
+  padding: 0 16px 12px;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  line-height: 1.6;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.auth-prompt__body-item + .auth-prompt__body-item {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-default);
+}
+
+.auth-prompt__body-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  margin-bottom: 4px;
+}
+
+.auth-prompt__body--collapsed {
+  overflow: hidden;
+}
+
+.auth-prompt__body--collapsed p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* hover 说明气泡：portal 到 body，fixed 定位，最上层 */
+.auth-tip-portal {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  z-index: 2000;
+  width: max-content;
+  max-width: 260px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--color-surface-card);
+  border: 1px solid var(--color-border-default);
+  box-shadow: var(--effect-shadow-lg);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--color-text-primary);
+  white-space: normal;
+  text-align: left;
+  pointer-events: none;
+  animation: auth-tip-fade 0.12s var(--ease-out) both;
+}
+
+@keyframes auth-tip-fade {
+  from { opacity: 0; transform: translate(-50%, calc(-100% + 4px)); }
+  to { opacity: 1; transform: translate(-50%, -100%); }
+}
+
+/* ===========================
+   交互卡 InteractionPrompt
+   =========================== */
+
+.ix-prompt {
+  border: 1px solid var(--color-border-default);
+  border-radius: 14px;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-interaction-shadow);
+  overflow: hidden;
+}
+
+.ix-prompt__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px;
+  /* 与授权条 .auth-prompt 吸附态一致，并与正文区拉开一档层次。 */
+  background-color: var(--color-action-secondary);
+  background-image: linear-gradient(
+    rgba(var(--color-surface-card-rgb), 0.5),
+    rgba(var(--color-surface-card-rgb), 0.5)
+  );
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.ix-prompt__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-strong);
+  min-width: 0;
+}
+
+.ix-prompt__title-icon {
+  color: var(--color-text-tertiary);
+  flex: 0 0 auto;
+}
+
+.ix-prompt__pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.ix-prompt__pager-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.ix-prompt__pager-btn:hover:not(:disabled) {
+  background: rgba(var(--color-text-primary-rgb), 0.08);
+  color: var(--color-text-primary);
+}
+
+.ix-prompt__pager-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ix-prompt__pager-label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  min-width: 30px;
+  text-align: center;
+}
+
+.ix-prompt__body {
+  padding: 14px 16px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.ix-prompt__question {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-strong);
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.ix-prompt__group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ix-prompt__group--multi {
+  padding: 2px 0;
+}
+
+.ix-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ix-option:hover:not(:disabled) {
+  background: rgba(var(--color-text-primary-rgb), 0.05);
+}
+
+.ix-option--selected {
+  background: var(--color-action-primary-subtle);
+}
+
+.ix-prompt__group--multi .ix-option {
+  padding: 6px 4px;
+}
+
+.ix-option__mark {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--color-border-strong);
+  background: transparent;
+}
+
+.ix-option__mark--radio {
+  border-radius: 999px;
+}
+
+.ix-option__mark--check {
+  border-radius: 5px;
+}
+
+.ix-option--selected .ix-option__mark {
+  border-color: var(--color-action-primary);
+  background:
+    var(--color-action-primary)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='white'%3E%3Cpath fill-rule='evenodd' d='M16.7 5.3a1 1 0 010 1.4l-8 8a1 1 0 01-1.4 0l-4-4a1 1 0 011.4-1.4L8 12.6l7.3-7.3a1 1 0 011.4 0z' clip-rule='evenodd'/%3E%3C/svg%3E")
+    center / 13px no-repeat;
+}
+
+.ix-option__mark--radio.ix-option__mark {
+  position: relative;
+}
+
+.ix-option--selected .ix-option__mark--radio {
+  background:
+    radial-gradient(circle at center, var(--color-text-inverse) 0 3px, transparent 4px),
+    var(--color-action-primary);
+}
+
+.ix-option__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ix-option__label {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ix-option__desc {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.ix-prompt__custom {
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 9px;
+  background: var(--color-surface-elevated);
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+}
+
+.ix-prompt__custom:focus,
+.ix-prompt__custom:focus-visible {
+  border-color: var(--color-action-primary);
+  outline: none;
+  box-shadow: none;
+}
+
+.ix-prompt__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--color-border-default);
+  background: var(--color-surface-panel-strong);
+}
+
+.ix-btn {
+  height: 32px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ix-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ix-btn--ghost {
+  background: transparent;
+  border-color: rgba(var(--color-text-primary-rgb), 0.22);
+  color: var(--color-text-primary);
+}
+
+.ix-btn--ghost:hover:not(:disabled) {
+  border-color: rgba(var(--color-text-primary-rgb), 0.4);
+  background: rgba(var(--color-text-primary-rgb), 0.05);
+}
+
+.ix-btn--primary {
+  background: var(--color-text-strong);
+  border-color: var(--color-text-strong);
+  color: var(--color-surface-card);
+}
+
+.ix-btn--primary:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+/* ===========================
+   问题澄清回显 QaSummaryCard
+   =========================== */
+
+.qa-summary {
+  width: 100%;
+  max-width: 640px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--color-surface-card);
+  overflow: hidden;
+}
+
+.qa-summary__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border-default);
+  background-color: var(--color-action-secondary);
+  background-image: linear-gradient(
+    rgba(var(--color-surface-card-rgb), 0.5),
+    rgba(var(--color-surface-card-rgb), 0.5)
+  );
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+
+.qa-summary__head-icon {
+  color: var(--color-text-tertiary);
+}
+
+.qa-summary__list {
+  display: flex;
+  flex-direction: column;
+}
+
+.qa-summary__item {
+  padding: 12px 14px;
+}
+
+.qa-summary__item + .qa-summary__item {
+  border-top: 1px solid var(--color-border-default);
+}
+
+.qa-summary__q {
+  display: flex;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-strong);
+  line-height: 1.55;
+  margin-bottom: 6px;
+}
+
+.qa-summary__q-index {
+  color: var(--color-text-secondary);
+  flex: 0 0 auto;
+}
+
+.qa-summary__answers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.qa-summary__a {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+  padding-left: 16px;
+}
+
+.qa-summary__a--empty {
+  opacity: 0.6;
+}

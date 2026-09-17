@@ -1,0 +1,6 @@
+{
+  "calls": [
+    {"tool_name": "collaboration.followup_task", "raw_input": {"target": "/root/reaudit_ws_key", "symbol_id": "AgentWebSocketServer._get_stateless_agent", "assignment": "Audit exactly one previously unaudited symbol against current source and create its entry doc."}},
+    {"tool_name": "collaboration.wait_agent", "raw_input": {"target": "/root/reaudit_ws_key", "symbol_id": "AgentWebSocketServer._get_stateless_agent", "completed": true}}
+  ]
+}

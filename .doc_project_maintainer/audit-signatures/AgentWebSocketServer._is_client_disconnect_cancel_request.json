@@ -1,0 +1,20 @@
+{
+  "calls": [
+    {
+      "tool_name": "collaboration.followup_task",
+      "raw_input": {
+        "target": "/root/reaudit_proactive",
+        "symbol_id": "AgentWebSocketServer._is_client_disconnect_cancel_request",
+        "assignment": "Audit exactly one previously unaudited symbol against current source and create its entry doc."
+      }
+    },
+    {
+      "tool_name": "collaboration.wait_agent",
+      "raw_input": {
+        "target": "/root/reaudit_proactive",
+        "symbol_id": "AgentWebSocketServer._is_client_disconnect_cancel_request",
+        "completed": true
+      }
+    }
+  ]
+}

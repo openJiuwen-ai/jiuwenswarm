@@ -1,0 +1,211 @@
+# Java-ready sandbox policy.
+#
+# Predecessor of code-agent-policy but tuned for running OpenJDK 17 inside the
+# sandbox: exposes the image-installed JDK (read-only via /usr), gives Java a
+# writable /tmp (class output, hsperfdata) and /home (sources/jars/classes),
+# injects JAVA_HOME/PATH, and applies conservative per-sandbox cgroup limits.
+#
+# Path model (jiuwenbox has NO /workspace; SANDBOX_WORKSPACE is host-side
+# backing storage only). Conventional writable layout under /home:
+#   /home/src      Java source files (uploaded or written via exec stdin)
+#   /home/jars     uploaded dependency jars
+#   /home/classes  javac -d output
+# These sub-directories are created at runtime (mkdir -p); the policy only
+# declares the writable roots /home and /tmp.
+#
+# Network is isolated with deny-by-default egress/ingress (no outbound): Java
+# code cannot download dependencies or phone home. Validation emits a warning
+# ("no outbound connectivity") which is intentional.
+#
+# Pair with the JDK-enabled image (Dockerfile installs java-17-openjdk-headless
+# + java-17-openjdk-devel, JAVA_HOME=/usr/lib/jvm/java-17-openjdk).
+
+version: 1
+
+name: "java"
+
+# Injected into every process inside the sandbox. JAVA_HOME points at the
+# stable version-independent symlink; PATH prepends $JAVA_HOME/bin so
+# java/javac/jar resolve to the JDK (alternatives symlinks in /usr/bin also
+# work, but this makes the JDK authoritative).
+environment:
+  JAVA_HOME: "/usr/lib/jvm/java-17-openjdk"
+  PATH: "/usr/lib/jvm/java-17-openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+filesystem_policy:
+  # Writable roots. /tmp 1777 for class output + JVM hsperfdata; /home 0777
+  # for sources/jars/classes. Both are server-managed backing dirs bind-mounted
+  # rw (they override any read-only view of the same paths).
+  directories:
+    - path: "/home"
+      permissions: "0777"
+    - path: "/tmp"
+      permissions: "1777"
+  files: []
+
+  read_only:
+    - "/"
+    - "/bin"
+    - "/sbin"
+    - "/usr"
+    - "/lib"
+    - "/lib64"
+    - "/etc"
+    - "/opt"
+
+  read_write:
+    - "/home"
+    - "/tmp"
+
+  # Mount every immediate child of host_root "/" read-only. This exposes the
+  # image's /usr (JDK at /usr/lib/jvm/java-17-openjdk), /bin, /lib, /lib64,
+  # /etc (incl. /etc/alternatives — required because JAVA_HOME and
+  # /usr/bin/{java,javac,jar} are alternatives symlinks that chain through
+  # /etc/alternatives to the versioned JDK dir; without /etc/alternatives the
+  # symlinks break and `java` is "command not found"), /etc/java-17-openjdk
+  # (JVM security/config), /opt, etc. — all read-only.
+  #
+  # /home and /tmp declared above are re-bound rw on top of this ro view
+  # (bwrap applies rw binds after ro binds, so the rw override wins). /proc and
+  # /dev are bwrap-managed tmpfs (bind_root_entries skips /proc, /dev targets).
+  bind_mounts: []
+  bind_root_entries:
+    - host_root: "/"
+      sandbox_path: "/"
+      mode: "ro"
+
+  device:
+    - host_path: "/dev/null"
+      sandbox_path: "/dev/null"
+    - host_path: "/dev/random"
+      sandbox_path: "/dev/random"
+    - host_path: "/dev/urandom"
+      sandbox_path: "/dev/urandom"
+
+process:
+  # 'sandbox' user does not exist in the openEuler image; bwrap falls back to
+  # uid/gid 65534 (nobody). The writable backing dirs are chown'd to that uid.
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+namespace:
+  user: true
+  pid: true
+  ipc: true
+  cgroup: true
+  uts: true
+
+capabilities:
+  add: []
+  drop: []
+
+landlock:
+  compatibility: best_effort
+
+# Seccomp hardening: the same blocked list as default-policy.yaml (verified
+# 2026-07-03 on 205 — JDK 17 e2e A-E all PASS under this list; seccomp filter
+# confirmed active via EPERM on ptrace/perf_event_open/io_uring_setup, see
+# docs/jiuwenbox-java-test-plan.md T5.4 / design §6.3). JDK 17 does not use
+# io_uring; ptrace/perf_event_open blocking only disables jstack/JVMTI attach
+# and JFR perf counters, which P0 does not require. clone/clone3 (thread
+# creation) are NOT blocked.
+syscall:
+  x86_64:
+    blocked:
+      - "kexec_load"
+      - "kexec_file_load"
+      - "reboot"
+      - "pivot_root"
+      - "swapon"
+      - "swapoff"
+      - "nfsservctl"
+      - "lookup_dcookie"
+      - "ptrace"
+      - "mount"
+      - "umount2"
+      - "unshare"
+      - "setns"
+      - "userfaultfd"
+      - "perf_event_open"
+      - "bpf"
+      - "add_key"
+      - "request_key"
+      - "keyctl"
+      - "io_uring_setup"
+      - "io_uring_enter"
+      - "io_uring_register"
+      - "open_by_handle_at"
+      - "name_to_handle_at"
+      - "init_module"
+      - "finit_module"
+      - "delete_module"
+      - "acct"
+  arm64:
+    blocked:
+      - "kexec_load"
+      - "kexec_file_load"
+      - "reboot"
+      - "pivot_root"
+      - "swapon"
+      - "swapoff"
+      - "nfsservctl"
+      - "lookup_dcookie"
+      - "ptrace"
+      - "mount"
+      - "umount2"
+      - "unshare"
+      - "setns"
+      - "userfaultfd"
+      - "perf_event_open"
+      - "bpf"
+      - "add_key"
+      - "request_key"
+      - "keyctl"
+      - "io_uring_setup"
+      - "io_uring_enter"
+      - "io_uring_register"
+      - "open_by_handle_at"
+      - "name_to_handle_at"
+      - "init_module"
+      - "finit_module"
+      - "delete_module"
+      - "acct"
+
+# Isolated network namespace with deny-by-default egress + ingress: Java code
+# has no outbound connectivity (no dependency download, no network egress).
+# uplink is configured (veth + NAT) so the netns is well-formed, but egress
+# deny-all blocks all OUTPUT. Validation warns about no outbound — intentional.
+network:
+  mode: isolated
+  uplink:
+    nat: true
+    interface: ""
+  egress:
+    default: deny
+    allowed_domains: []
+    blocked_domains: []
+    allowed_ips: []
+    blocked_ips: []
+    allowed_ports: []
+    blocked_ports: []
+  ingress:
+    default: deny
+    allowed_domains: []
+    blocked_domains: []
+    allowed_ips: []
+    blocked_ips: []
+    allowed_ports: []
+    blocked_ports: []
+
+# Conservative per-sandbox cgroup defaults. memory_max is the hard process-group
+# cap (covers JVM non-heap: metaspace, thread stacks, JIT, direct memory); JVM
+# -Xmx is NOT set here, so the JVM picks a heap based on the cgroup limit.
+# cpu_max = 1 core, pids_max = 128 (caps thread/fork storms). All three are
+# enforced by supervisor/cgroup.py (v2 preferred, v1 fallback).
+cgroup:
+  memory_max: "512M"
+  cpu_max: 1.0
+  pids_max: 128
+
+# Idle reaping left at defaults (disabled).
+timeout: {}

@@ -1,0 +1,20 @@
+{
+  "calls": [
+    {
+      "tool_name": "collaboration.followup_task",
+      "raw_input": {
+        "target": "/root/reaudit_init",
+        "symbol_id": "AgentWebSocketServer._handle_command_compact",
+        "assignment": "Re-audit exactly one expired symbol against current source at HEAD 39feee89."
+      }
+    },
+    {
+      "tool_name": "collaboration.wait_agent",
+      "raw_input": {
+        "target": "/root/reaudit_init",
+        "symbol_id": "AgentWebSocketServer._handle_command_compact",
+        "completed": true
+      }
+    }
+  ]
+}

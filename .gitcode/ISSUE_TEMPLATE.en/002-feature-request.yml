@@ -1,0 +1,47 @@
+name: 🚀 Feature request
+description: Submit a proposal/request for new features of openJiuwen
+title: "[Feature]: "
+labels: ["feature"]
+type: "Feature"
+body:
+- type: textarea
+  attributes:
+    label: | 
+      🚀 Background Description
+    description: |
+      Please clearly and concisely describe the content of this feature proposal. Explain the motivation for proposing it. Is your feature request related to a specific problem? For example: "I am developing feature X and hope to implement feature Y". If this request is related to other Issues on GitCode, please attach the links here:
+    required: true
+- type: textarea
+  attributes:
+    label: Design Ideas
+    description: |
+      If you have considered other alternative solutions or features, please explain them.
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Involved Public APIs
+    description: |
+      Describe whether this feature will cause the addition or modification of public APIs, and the potential impact of the changes on related modules.
+- type: textarea
+  attributes:
+    label: Description of Relevance to Other Modules
+    description: |
+      Describe possible correlations with other modules to facilitate supplementary scenario verification.
+- type: textarea
+  attributes:
+    label: Test Design and Test Plan
+    description: |
+      Describe in detail how to conduct test verification to ensure that the capabilities of this feature are fully validated, including but not limited to functionality, performance, reliability, security, etc.
+
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Additional Information
+    description:
+      Add content such as auxiliary information and scenarios.
+- type: markdown
+  attributes:
+    value: |
+      Thanks for your contribution 🎉!

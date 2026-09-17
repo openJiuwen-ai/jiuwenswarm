@@ -1,0 +1,34 @@
+{
+  "name": "jiuwenswarm-tui",
+  "version": "0.1.0",
+  "description": "Terminal CLI for JiuwenSwarm",
+  "bin": {
+    "jiuwenswarm-tui": "dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "dev": "tsc && node dist/index.js",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "build:bun": "npm run clean && bun build src/index.ts --target=node --outdir dist --format=esm --sourcemap && tsc --emitDeclarationOnly",
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/run-tests.mjs && node tests/editor-handoff.test.mjs && node tests/supervised-env.test.mjs && node tests/handoff-port.test.mjs && node tests/task-lifecycle-port.test.mjs && node tests/reauth-port.test.mjs && node tests/switch-command.test.mjs && node tests/session-registration.test.mjs && node tests/memory-view-permissions.test.mjs && node tests/evolution-command-gate.test.mjs && node ../../../../tests/unit_tests/tui/frontend/statusline-command.test.mjs && node ../../../../tests/unit_tests/tui/frontend/statusline-runner.test.mjs",
+    "lint": "oxlint --deny-warnings src",
+    "format": "oxfmt --write src package.json tsconfig.json",
+    "format:check": "oxfmt --check src package.json tsconfig.json",
+    "check": "npm run typecheck && npm run lint && npm run format:check"
+  },
+  "dependencies": {
+    "@mariozechner/pi-tui": "^0.65.2",
+    "chalk": "^5.5.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.0",
+    "oxfmt": "^0.44.0",
+    "oxlint": "^1.59.0",
+    "typescript": "^5.8.0"
+  }
+}

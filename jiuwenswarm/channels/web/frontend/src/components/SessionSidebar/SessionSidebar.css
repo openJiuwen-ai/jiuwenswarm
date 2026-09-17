@@ -1,0 +1,316 @@
+/* ===========================================
+   SessionSidebar Styles - JiuwenSwarm Redesign
+   Based on design spec v5.0 (2026-05-14)
+   =========================================== */
+
+/* Sidebar Container */
+.sidebar {
+  grid-area: nav;
+  width: 100%;
+  height: 100vh;
+  border-right: 1px solid var(--color-border-default);
+  background: var(--color-sidebar-surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+/* ============================================
+   Advanced Config Panel
+   ============================================ */
+.advanced-config-panel {
+  position: fixed;
+  bottom: 60px;
+  left: 16px;
+  width: 216px;
+  background: var(--color-surface-popover);
+  border: 1px solid var(--color-border-default);
+  border-radius: 20px;
+  box-shadow: var(--effect-shadow-lg);
+  padding: 20px;
+  z-index: 1300;
+  animation: panelSlideUp 0.2s ease-out;
+}
+
+@keyframes panelSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ============================================
+   Config Row
+   ============================================ */
+.config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.config-row:last-child {
+  margin-bottom: 0;
+}
+
+.config-row__label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.config-row__value {
+  min-width: 0;
+  max-width: 118px;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================
+   Connection Status
+   ============================================ */
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.connection-status__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.connection-status--connected .connection-status__dot {
+  background: var(--color-feedback-success);
+}
+
+.connection-status--disconnected .connection-status__dot {
+  background: var(--color-feedback-danger);
+}
+
+.connection-status__text {
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+
+/* ============================================
+   Segmented Control
+   ============================================ */
+.segmented-control {
+  display: flex;
+  width: 100px;
+  height: 32px;
+  background: var(--color-action-secondary);
+  border-radius: 16px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented-control__btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+}
+
+.segmented-control__btn:hover {
+  color: var(--color-text-primary);
+}
+
+.segmented-control__btn--active {
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  box-shadow: var(--effect-shadow-sm);
+}
+
+/* ============================================
+   Icon Rail (64px sidebar)
+   Based on Pixso high-fidelity design
+   ============================================ */
+
+.sidebar--icon-rail {
+  width: 64px;
+  max-width: 64px;
+  min-width: 64px;
+  flex-shrink: 0;
+  align-items: center;
+  padding: 0;
+  position: relative;
+  overflow: visible;
+}
+
+/* Logo in icon rail — SVG handles gradient + mark */
+.icon-rail-logo {
+  width: 28px;
+  height: 68px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.icon-rail-logo img {
+  display: block;
+}
+
+/* Nav items in icon rail */
+.icon-rail-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 48px;
+  min-height: 48px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.icon-rail-nav-item__icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-rail-nav-item__icon img,
+.icon-rail-nav-item__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.icon-rail-nav-item__label {
+  max-width: 44px;
+  overflow: hidden;
+  color: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.15;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-rail-nav-item {
+  color: var(--color-text-primary);
+}
+
+.icon-rail-nav-item:hover {
+  background: var(--color-sidebar-nav-hover);
+}
+
+.icon-rail-nav-item--active {
+  background: var(--color-sidebar-nav-active);
+}
+
+.icon-rail-nav-item--active:hover {
+  background: var(--color-sidebar-nav-active-hover);
+}
+
+.icon-rail-more-panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 64px;
+  z-index: 1200;
+  width: 240px;
+  padding: 24px 8px;
+  background: var(--color-sidebar-surface);
+}
+
+.icon-rail-more-panel__title {
+  height: 28px;
+  margin: 0 8px 24px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 28px;
+}
+
+.icon-rail-more-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.icon-rail-more-panel__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.icon-rail-more-panel__item:hover,
+.icon-rail-more-panel__item--active {
+  background: var(--color-sidebar-more-item-hover);
+}
+
+.icon-rail-more-panel__item--active {
+  font-weight: 700;
+}
+
+.icon-rail-more-panel__icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.icon-rail-more-panel__icon img,
+.icon-rail-more-panel__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.icon-rail-more-panel__text {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Spacer pushes bottom items down */
+.icon-rail-spacer {
+  flex: 1 1;
+  min-height: 8px;
+}
+
+.icon-rail-settings-button {
+  margin-bottom: 12px;
+}

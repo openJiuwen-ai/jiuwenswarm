@@ -1,0 +1,493 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jiuwenswarm.local/schemas/ppt-execution-lock.schema.json",
+  "title": "PPT execution lock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "template",
+    "brand",
+    "deck",
+    "pages"
+  ],
+  "anyOf": [
+    {
+      "properties": {
+        "version": {
+          "const": 1
+        }
+      },
+      "required": [
+        "assets"
+      ]
+    },
+    {
+      "properties": {
+        "version": {
+          "const": 2
+        }
+      },
+      "required": [
+        "evidence_plan"
+      ]
+    }
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "enum": [
+        1,
+        2
+      ]
+    },
+    "evidence_plan": {
+      "type": "string",
+      "minLength": 1
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "canvas_mode",
+        "authoring_canvas",
+        "merge_mode",
+        "content_layout",
+        "content_shell",
+        "footer_mode"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canvas_mode": {
+          "enum": [
+            "template-master",
+            "10x5.625-compatible"
+          ]
+        },
+        "authoring_canvas": {
+          "enum": [
+            "10x5.625-scaled",
+            "template-size"
+          ]
+        },
+        "merge_mode": {
+          "enum": [
+            "template-layout",
+            "source-layout"
+          ]
+        },
+        "content_layout": {
+          "type": "string",
+          "pattern": "^slideLayout[0-9]+\\.xml$"
+        },
+        "content_shell": {
+          "const": "blank-content"
+        },
+        "footer_mode": {
+          "enum": [
+            "master",
+            "drawn"
+          ]
+        }
+      }
+    },
+    "brand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "colors",
+        "typography",
+        "footer",
+        "summary_banner"
+      ],
+      "properties": {
+        "colors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primary",
+            "secondary",
+            "text",
+            "secondary_text",
+            "background"
+          ],
+          "properties": {
+            "primary": {
+              "const": "4472C4"
+            },
+            "secondary": {
+              "const": "8FAADC"
+            },
+            "text": {
+              "const": "1D1D1A"
+            },
+            "secondary_text": {
+              "const": "666666"
+            },
+            "background": {
+              "const": "FFFFFF"
+            }
+          }
+        },
+        "typography": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cjk",
+            "latin"
+          ],
+          "properties": {
+            "cjk": {
+              "const": "Microsoft YaHei"
+            },
+            "latin": {
+              "const": "Arial"
+            }
+          }
+        },
+        "footer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required_on"
+          ],
+          "properties": {
+            "required_on": {
+              "const": "standard-content"
+            },
+            "classification": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "summary_banner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required_on",
+            "fill",
+            "text_color",
+            "position"
+          ],
+          "properties": {
+            "required_on": {
+              "const": "standard-content"
+            },
+            "fill": {
+              "const": "4472C4"
+            },
+            "text_color": {
+              "const": "FFFFFF"
+            },
+            "position": {
+              "const": "above-footer"
+            }
+          }
+        }
+      }
+    },
+    "deck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "narrative_mode",
+        "typography_policy",
+        "image_treatment"
+      ],
+      "properties": {
+        "narrative_mode": {
+          "enum": [
+            "executive-report",
+            "technical-explainer",
+            "research-review",
+            "showcase",
+            "briefing"
+          ]
+        },
+        "typography_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title_min_pt",
+            "body_min_pt",
+            "absolute_min_pt"
+          ],
+          "properties": {
+            "title_min_pt": {
+              "type": "number",
+              "minimum": 20
+            },
+            "body_min_pt": {
+              "type": "number",
+              "minimum": 9
+            },
+            "absolute_min_pt": {
+              "type": "number",
+              "minimum": 7
+            }
+          }
+        },
+        "icons": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "library"
+          ],
+          "properties": {
+            "library": {
+              "const": "none"
+            },
+            "stroke_width": {
+              "type": "null"
+            },
+            "inventory": {
+              "type": "array",
+              "maxItems": 0
+            }
+          }
+        },
+        "image_treatment": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/page"
+      }
+    },
+    "assets": {
+      "type": "array",
+      "description": "Deprecated v1 compatibility projection. Version 2 uses evidence_plan.",
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    }
+  },
+  "$defs": {
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "role",
+        "rhythm",
+        "core_message",
+        "summary",
+        "visual_strategy",
+        "component_policy",
+        "composition",
+        "evidence_visual",
+        "reference_ids",
+        "reference_waiver"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^P[0-9]{2,3}$"
+        },
+        "role": {
+          "enum": [
+            "fixed-cover",
+            "toc",
+            "standard-content",
+            "section",
+            "fixed-closing"
+          ]
+        },
+        "rhythm": {
+          "enum": [
+            "anchor",
+            "navigation",
+            "dense"
+          ]
+        },
+        "core_message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "visual_strategy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primary",
+            "fallback"
+          ],
+          "properties": {
+            "primary": {
+              "enum": [
+                "template",
+                "user-material",
+                "paper",
+                "web",
+                "native-drawing",
+                "component",
+                "svg",
+                "hybrid",
+                "none"
+              ]
+            },
+            "fallback": {
+              "enum": [
+                "template",
+                "user-material",
+                "paper",
+                "web",
+                "native-drawing",
+                "component",
+                "svg",
+                "none"
+              ]
+            }
+          }
+        },
+        "component_policy": {
+          "enum": [
+            "optional",
+            "preferred",
+            "avoid"
+          ]
+        },
+        "composition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_visual": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "asset_ids"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "template",
+                "user-material",
+                "paper",
+                "product-screenshot",
+                "code-screenshot",
+                "official-diagram",
+                "data-chart",
+                "native-diagram",
+                "none"
+              ]
+            },
+            "asset_ids": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "reference_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reference_waiver": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "page",
+        "kind",
+        "required",
+        "status",
+        "path",
+        "source",
+        "license",
+        "fallback"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page": {
+          "type": "string",
+          "pattern": "^P[0-9]{2,3}$"
+        },
+        "kind": {
+          "enum": [
+            "user",
+            "paper",
+            "web",
+            "ai",
+            "icon",
+            "diagram",
+            "screenshot",
+            "code",
+            "logo",
+            "other"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "planned",
+            "acquiring",
+            "ready",
+            "used",
+            "needs-manual",
+            "skipped"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "license": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fallback": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

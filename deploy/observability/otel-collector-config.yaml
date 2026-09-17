@@ -1,0 +1,53 @@
+# OpenTelemetry Collector configuration for jiuwenswarm / agent_teams observability.
+#
+# Pipeline:  application(otlp/grpc) -> memory_limiter -> batch
+#                                   -> transform/limit_strings
+#                                   -> langfuse / debug
+#
+# - The transform processor caps any string attribute at 16 KiB so that
+#   accidentally enormous prompts cannot OOM the backend.
+# - "debug" exporter prints a one-line span summary; remove from the
+#   pipeline once production traffic stabilises.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 2s
+    limit_mib: 1024
+    spike_limit_mib: 256
+
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+  transform/limit_strings:
+    trace_statements:
+      - context: span
+        statements:
+          - truncate_all(attributes, 16384)
+
+exporters:
+  otlphttp/langfuse:
+    endpoint: http://langfuse-web:3000/api/public/otel
+    tls:
+      insecure: true
+    headers:
+      Authorization: "Basic cGstbGYtaml1d2VuOnNrLWxmLWppdXdlbg=="
+
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, transform/limit_strings]
+      exporters: [otlphttp/langfuse, debug]

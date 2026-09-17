@@ -1,0 +1,64 @@
+name: 💬设计方案反馈
+description: 就重大架构变更或设计方案征集反馈意见。
+title: "[RFC]: "
+labels: ["RFC"]
+type: "RFC"
+
+body:
+- type: textarea
+  attributes:
+    label: 背景与目标描述
+    description: |
+      该 RFC 的立项动机。
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: 建议的方案
+    description: |
+      该 RFC 提议的变更内容。
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: 涉及到的对外API
+    description: |
+      描述该特性是否会有对外API的增加与变更情况的发生，以及变更可能会造成的周边影响。
+- type: textarea
+  attributes:
+    label: 测试验证
+    description: |
+      详细描述针对该方案，如何开展测试验证，以保证该特性的合入后对应的能力得到充分验证，包括到不限于功能、性能、可靠性、安全等。
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: 期望的反馈时间
+    description: |
+      该 RFC 的意见征集期（通常不少于一周）。
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: 抄送的人员名单
+    description: |
+      你希望抄送的人员名单。
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: 其他补充信息
+    description: |
+      其他需要补充说明的内容。
+  validations:
+    required: false
+- type: markdown
+  attributes:
+    value: |
+      感谢你的贡献🎉！openJiuwen 核心团队每周举办一次 RFC 评审会，虽然大部分 RFC 都可在线上进行讨论，但你也可以自愿报名预约时段，参与 RFC 的线上研讨。
+- type: checkboxes
+  attributes:
+    label: 在你提交新issue之前
+    options:
+      - label: 请确认你已检索过过往的 RFC 文档。
+        required: true

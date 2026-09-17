@@ -1,0 +1,20 @@
+{
+  "calls": [
+    {
+      "tool_name": "collaboration.spawn_agent",
+      "raw_input": {
+        "target": "/root/reaudit_proactive",
+        "symbol_id": "AgentWebSocketServer.set_proactive_engine",
+        "assignment": "Re-audit exactly one symbol against the current source and update only its entry doc."
+      }
+    },
+    {
+      "tool_name": "collaboration.wait_agent",
+      "raw_input": {
+        "target": "/root/reaudit_proactive",
+        "symbol_id": "AgentWebSocketServer.set_proactive_engine",
+        "completed": true
+      }
+    }
+  ]
+}
