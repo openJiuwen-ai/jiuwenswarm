@@ -1,13 +1,12 @@
 import type { AgentMode, Permission } from '../types';
 
-const NON_AGENT_PERMISSION_OPTIONS: Permission[] = ['default', 'full_access'];
-const AGENT_PERMISSION_OPTIONS: Permission[] = ['default', 'automatic', 'full_access'];
+const PERMISSION_OPTIONS: Permission[] = ['default', 'full_access'];
 
-export function permissionOptionsForMode(mode: AgentMode): Permission[] {
-  return mode === 'agent' ? AGENT_PERMISSION_OPTIONS : NON_AGENT_PERMISSION_OPTIONS;
+export function permissionOptionsForMode(_mode: AgentMode): Permission[] {
+  return PERMISSION_OPTIONS;
 }
 
-export function effectivePermissionProfile(persistedProfile: Permission, mode: AgentMode): Permission {
-  if (persistedProfile === 'automatic' && mode !== 'agent') return 'default';
+export function effectivePermissionProfile(persistedProfile: Permission, _mode: AgentMode): Permission {
+  if (persistedProfile === 'automatic') return 'default';
   return persistedProfile;
 }

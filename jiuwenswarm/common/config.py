@@ -57,11 +57,12 @@ if str(_CONFIG_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(_CONFIG_MODULE_DIR))
 
 
-def resolve_env_vars(value: Any) -> Any:
+def resolve_env_vars(value: Any, *, env: dict[str, str] | None = None) -> Any:
     """递归解析配置中的环境变量替换语法 ${VAR:-default}.
 
     Args:
         value: 配置值，可能是字符串、字典或列表
+        env: 可选的环境变量快照，不修改进程环境。
 
     Returns:
         解析后的值
@@ -73,7 +74,7 @@ def resolve_env_vars(value: Any) -> Any:
         def replace_env(match):
             var_name = match.group(1)
             default = match.group(2)
-            current = os.getenv(var_name)
+            current = os.getenv(var_name) if env is None else env.get(var_name)
             is_need_decrypt = ("api_key" in var_name.lower() or "token" in var_name.lower()) and current
             reg_mod = sys.modules.get("jiuwenswarm.extensions.registry")
             if reg_mod is not None and hasattr(reg_mod, "ExtensionRegistry"):
@@ -115,14 +116,24 @@ def resolve_env_vars(value: Any) -> Any:
         ) or "server_id_scope" in value
         if is_mcp_server_entry:
             return {
-                k: (v if k in mcp_credential_keys else resolve_env_vars(v))
+                k: (v if k in mcp_credential_keys else resolve_env_vars(v, env=env))
                 for k, v in value.items()
             }
-        return {k: resolve_env_vars(v) for k, v in value.items()}
+        return {k: resolve_env_vars(v, env=env) for k, v in value.items()}
     elif isinstance(value, list):
-        return [resolve_env_vars(item) for item in value]
+        return [resolve_env_vars(item, env=env) for item in value]
     else:
         return value
+
+
+def validate_permissions_mode(config: Any, *, env: dict[str, str] | None = None) -> None:
+    """Reject unsupported permission modes at product configuration entry points."""
+    permissions = config.get("permissions") if isinstance(config, dict) else None
+    if not isinstance(permissions, dict):
+        return
+    mode = resolve_env_vars(permissions.get("mode"), env=env)
+    if str(mode or "").strip().lower() == "auto":
+        raise ValueError("Unsupported permissions.mode; expected manual")
 
 
 def _normalize_config(config: dict[str, Any] | None) -> None:
@@ -133,6 +144,7 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
     """
     if config is None:
         return
+    validate_permissions_mode(config)
     models = config.get("models", {})
     if isinstance(models, dict):
         for entry in models.values():
@@ -879,7 +891,6 @@ def update_permissions_profile_in_config(profile: str) -> None:
     """Atomically persist the Web permission profile to runtime fields."""
     runtime_values = {
         "default": (True, "manual"),
-        "automatic": (True, "auto"),
         "full_access": (False, "manual"),
     }
     try:

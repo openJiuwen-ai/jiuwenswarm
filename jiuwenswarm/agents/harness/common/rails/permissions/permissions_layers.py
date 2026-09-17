@@ -190,6 +190,7 @@ def read_permission_layers_locked(session_id: str | None = None) -> tuple[dict[s
     from jiuwenswarm.common import config
 
     global_data = _load_yaml_dict(config.CONFIG_YAML_PATH, strict=True)
+    config.validate_permissions_mode(global_data)
     global_perms = global_data.get("permissions")
     if not isinstance(global_perms, dict):
         raise ValueError("Global permissions must contain a mapping")

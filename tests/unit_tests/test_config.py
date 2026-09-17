@@ -668,7 +668,6 @@ class TestConfigFunctions:
         ("profile", "enabled", "mode"),
         [
             ("default", True, "manual"),
-            ("automatic", True, "auto"),
             ("full_access", False, "manual"),
         ],
     )
@@ -689,15 +688,17 @@ class TestConfigFunctions:
         assert raw["channels"]["web"]["enabled"] is True
 
     @staticmethod
+    @pytest.mark.parametrize("profile", ["future", "automatic"])
     def test_invalid_permission_profile_does_not_modify_config(
         monkeypatch: pytest.MonkeyPatch,
         temp_config_file: Path,
+        profile: str,
     ) -> None:
         monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", temp_config_file)
         original = temp_config_file.read_bytes()
 
         with pytest.raises(ValueError, match="invalid permissions_profile"):
-            update_permissions_profile_in_config("future")
+            update_permissions_profile_in_config(profile)
 
         assert temp_config_file.read_bytes() == original
 
