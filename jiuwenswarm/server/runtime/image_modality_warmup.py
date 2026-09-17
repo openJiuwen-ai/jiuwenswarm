@@ -37,6 +37,7 @@ from openjiuwen.harness.image_modality_probe import (
     probe_cache_key,
     probe_image_support,
     reset_image_support_cache,
+    set_cached_image_support,
 )
 
 from jiuwenswarm.common.config import (
@@ -60,6 +61,10 @@ def _build_probe_models(config_base: dict[str, Any]) -> list[Model]:
     The probe verdict is cached by ``(api_base, model_name)``, so entries that
     collapse onto the same key (an alias of an already-listed model, a repeated
     entry) are probed once.
+
+    Entries that declare ``supports_vision`` explicitly in
+    ``model_client_config`` are not probed: the declared verdict is
+    pre-populated into the cache instead.
 
     Args:
         config_base: The resolved ``config.yaml`` mapping.
@@ -95,6 +100,18 @@ def _build_probe_models(config_base: dict[str, Any]) -> list[Model]:
         if key is None or key in seen_keys:
             continue
         seen_keys.add(key)
+
+        # Per-model declaration: skip probing and pre-populate the cache.
+        supports_vision = model_client_config.get("supports_vision")
+        if isinstance(supports_vision, bool):
+            set_cached_image_support(key, supports_vision)
+            logger.info(
+                "[ImageModalityWarmup] %s image_input=%s (declared via supports_vision)",
+                key,
+                supports_vision,
+            )
+            continue
+
         models.append(model)
     return models
 

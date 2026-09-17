@@ -2592,3 +2592,376 @@ async def test_agent_manager_uses_project_dir_in_cache_identity(monkeypatch, tmp
     assert first is first_again
     assert first is not second
     assert len(created) == 2
+
+def _fake_ttse_agent_instance():
+    class FakeAbilityManager:
+        @staticmethod
+        def list():
+            return []
+
+    class FakeInstance:
+        def __init__(self):
+            self.registered = []
+            self.unregistered = []
+            self.ability_manager = FakeAbilityManager()
+
+        async def register_rail(self, rail):
+            self.registered.append(rail)
+
+        async def unregister_rail(self, rail):
+            self.unregistered.append(rail)
+
+    return FakeInstance()
+
+
+def test_ttse_consult_eager_helper_inserts_when_enabled():
+    tools = ["tools_search", "invoke_tool", "skill_acceleration_exec"]
+    out = interface_deep_module._ensure_ttse_consult_eager_tool(
+        list(tools),
+        {"ttse": {"enabled": True, "inject_enabled": True}},
+    )
+    assert out.index("ttse_consult") < out.index("skill_acceleration_exec")
+
+
+def test_ttse_consult_eager_helper_strips_when_disabled():
+    tools = ["tools_search", "ttse_consult", "invoke_tool"]
+    out = interface_deep_module._ensure_ttse_consult_eager_tool(
+        list(tools),
+        {"ttse": {"enabled": False, "inject_enabled": True}},
+    )
+    assert "ttse_consult" not in out
+
+
+def test_ttse_consult_should_be_eager_requires_inject(monkeypatch):
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    assert (
+        interface_deep_module._ttse_consult_should_be_eager(
+            {"ttse": {"enabled": True, "inject_enabled": False}}
+        )
+        is False
+    )
+    assert (
+        interface_deep_module._ttse_consult_should_be_eager(
+            {"ttse": {"enabled": True, "inject_enabled": True}}
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_registers_ttse_rail_when_enabled(monkeypatch):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_ttse_agent_instance()
+    adapter._config_cache = {
+        "ttse": {"enabled": True},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._config_base_cache = {"react": {"evolution": {"skill_evolution": False}}}
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    ttse_rail = object()
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", _noop)
+    monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
+    monkeypatch.setattr(adapter, "_mark_ttse_consult_direct_exposure", lambda: None)
+    monkeypatch.setattr(
+        interface_deep_module, "_build_context_processor_rail", lambda _config: None
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True}}},
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_skill_evolution_enabled",
+        lambda _config=None: False,
+    )
+
+    await adapter._update_agent_rails()
+
+    assert adapter._ttse_rail is ttse_rail
+    assert adapter._instance.registered.count(ttse_rail) == 1
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_skips_ttse_rail_when_disabled(monkeypatch):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_ttse_agent_instance()
+    adapter._config_cache = {
+        "ttse": {"enabled": False},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._config_base_cache = {"react": {"evolution": {"skill_evolution": False}}}
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    built = []
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", _noop)
+    monkeypatch.setattr(
+        adapter,
+        "_build_ttse_rail",
+        lambda _config: built.append("built") or object(),
+    )
+    monkeypatch.setattr(
+        interface_deep_module, "_build_context_processor_rail", lambda _config: None
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": False}}},
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_skill_evolution_enabled",
+        lambda _config=None: False,
+    )
+
+    await adapter._update_agent_rails()
+
+    assert adapter._ttse_rail is None
+    assert built == []
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_unregisters_ttse_rail_when_disabled(monkeypatch):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_ttse_agent_instance()
+    adapter._config_cache = {"ttse": {"enabled": True}}
+    adapter._config_base_cache = {"react": {"evolution": {"skill_evolution": False}}}
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+    adapter._context_processor_rail = None
+
+    ttse_rail = object()
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", _noop)
+    monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
+    monkeypatch.setattr(adapter, "_mark_ttse_consult_direct_exposure", lambda: None)
+    monkeypatch.setattr(
+        interface_deep_module, "_build_context_processor_rail", lambda _config: None
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True}}},
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_skill_evolution_enabled",
+        lambda _config=None: False,
+    )
+
+    await adapter._update_agent_rails()
+    assert adapter._ttse_rail is ttse_rail
+
+    adapter._config_cache["ttse"] = {"enabled": False}
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": False}}},
+    )
+    await adapter._update_agent_rails()
+
+    assert adapter._ttse_rail is None
+    assert adapter._instance.unregistered == [ttse_rail]
+
+
+def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    fake_processor = object()
+    tenant_ws = tmp_path / "tenant_ws"
+    tenant_ws.mkdir()
+    shared_ws = tmp_path / "shared_default"
+    shared_ws.mkdir()
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: shared_ws)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
+        lambda: fake_processor,
+    )
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tenant_ws)
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail(
+        {
+            "ttse": {
+                "evolve_enabled": False,
+                "dream_enabled": False,
+                # yaml dream knobs must be ignored
+                "dream_interval": 5,
+                "dream_min_hours": 12,
+                "dream_ttl_days": 30,
+            }
+        }
+    )
+
+    assert isinstance(rail, FakeTTSERail)
+    assert captured["config"]["store_path"] == str(tenant_ws / ".ttse" / "bank.json")
+    assert captured["config"]["store_path"] != str(shared_ws / ".ttse" / "bank.json")
+    assert captured["config"]["evolve_enabled"] is False
+    assert captured["config"]["inject_enabled"] is True
+    assert "trajectory_export_enabled" not in captured["config"]
+    assert captured["config"]["embedding"] is None
+    assert captured["config"]["dream_enabled"] is False
+    assert captured["config"]["dream_interval"] == 50
+    assert captured["config"]["dream_min_hours"] == 24.0
+    assert captured["config"]["dream_ttl_days"] == 90
+    assert captured["rail"]["model"] == "test-model"
+    assert captured["rail"]["trajectory_span_processor"] is fake_processor
+
+
+def test_build_ttse_rail_skips_when_trajectory_processor_unavailable(monkeypatch, tmp_path):
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            pass
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            raise AssertionError("should not build")
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
+        lambda: None,
+    )
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    assert adapter._build_ttse_rail({"ttse": {"enabled": True}}) is None
+
+
+def test_sync_ttse_rail_config_does_not_pass_trajectory_export(monkeypatch, tmp_path):
+    applied = {}
+
+    class FakeCfg:
+        dream_enabled = True
+        dream_interval = 0
+        dream_min_hours = 0.0
+        dream_ttl_days = 0
+
+    class FakeRail:
+        def __init__(self):
+            self._ttse_config = FakeCfg()
+
+        def apply_runtime_config(self, **kwargs):
+            applied.update(kwargs)
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._ttse_rail = FakeRail()
+    adapter._config_cache = {
+        "ttse": {
+            "evolve_enabled": False,
+            "inject_enabled": True,
+            "dream_enabled": False,
+            "trajectory_export_enabled": True,
+        }
+    }
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+
+    adapter._sync_ttse_rail_config()
+
+    assert set(applied) == {"store_path", "evolve_enabled", "inject_enabled"}
+    assert applied["evolve_enabled"] is False
+    assert applied["inject_enabled"] is True
+    assert adapter._ttse_rail._ttse_config.dream_interval == 50
+    assert adapter._ttse_rail._ttse_config.dream_min_hours == 24.0
+    assert adapter._ttse_rail._ttse_config.dream_ttl_days == 90
+    assert adapter._ttse_rail._ttse_config.dream_enabled is False
+
+
+def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    fake_processor = object()
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    class FakeEmbedding:
+        def __init__(self, **kwargs):
+            captured["embedding"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
+        lambda: fake_processor,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.memory.embeddings.OpenAICompatibleEmbeddingProvider",
+        FakeEmbedding,
+    )
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail(
+        {
+            "ttse": {
+                "embedding": {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                }
+            }
+        }
+    )
+
+    assert isinstance(rail, FakeTTSERail)
+    assert isinstance(captured["config"]["embedding"], FakeEmbedding)
+    assert captured["embedding"] == {
+        "api_key": "k",
+        "base_url": "https://example.invalid/v1",
+        "model": "m",
+    }

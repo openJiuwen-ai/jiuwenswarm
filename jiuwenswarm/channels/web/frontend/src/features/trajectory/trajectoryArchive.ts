@@ -1,6 +1,13 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-/** Versioned browser-side archive contract for offline trajectory replay. */
+/**
+ * Versioned browser-side archive contract for offline trajectory replay.
+ *
+ * Version 2 has one shape: records state their long attributes by reference,
+ * and the archive carries the dictionaries that resolve them, so a file is
+ * self-contained without restating every conversation prefix. Version 1 files
+ * predate the current span contract and are refused rather than half-read.
+ */
 
 import type { WebConnectionState } from '../../types';
 import type { OtlpExportTraceServiceRequest } from './shared/otlp';
@@ -19,7 +26,7 @@ import {
 } from './trajectoryWindow';
 
 export const TRAJECTORY_ARCHIVE_FORMAT = 'openjiuwen.trajectory.archive';
-export const TRAJECTORY_ARCHIVE_VERSION = 1;
+export const TRAJECTORY_ARCHIVE_VERSION = 2;
 export const MAX_TRAJECTORY_ARCHIVE_RECORDS = 200_000;
 
 export type TrajectoryArchiveRecord = Omit<TrajectoryDetailRecord, 'ingest_seq' | 'change_seq'> & {
@@ -41,6 +48,9 @@ export interface TrajectoryArchive {
   store_epoch: string;
   revision: string;
   exported_at: string;
+  content_addressed: true;
+  sequences: Record<string, string[]>;
+  blobs: Record<string, string>;
   records: TrajectoryArchiveRecord[];
 }
 
@@ -118,9 +128,21 @@ export function parseTrajectoryArchive(text: string): TrajectoryArchive {
   } catch {
     throw new Error('Trajectory archive is not valid JSON');
   }
+  if (object(value)
+    && value.format === TRAJECTORY_ARCHIVE_FORMAT
+    && typeof value.archive_version === 'number'
+    && value.archive_version !== TRAJECTORY_ARCHIVE_VERSION) {
+    throw new Error(
+      `Trajectory archive version ${value.archive_version} is no longer supported; `
+      + 'export the session again to replay it',
+    );
+  }
   if (!object(value)
     || value.format !== TRAJECTORY_ARCHIVE_FORMAT
     || value.archive_version !== TRAJECTORY_ARCHIVE_VERSION
+    || value.content_addressed !== true
+    || !object(value.sequences)
+    || !object(value.blobs)
     || typeof value.session_id !== 'string'
     || value.session_id.length === 0
     || typeof value.store_epoch !== 'string'
@@ -137,20 +159,13 @@ export function parseTrajectoryArchive(text: string): TrajectoryArchive {
   if (new Set(records.map(record => record.record_id)).size !== records.length) {
     throw new Error('Trajectory archive contains duplicate record identities');
   }
-  // An addressed archive states its records by reference and carries the
-  // dictionaries that resolve them. It is self-contained either way; the
-  // difference is only whether the content sits inside each record or once
-  // beside all of them.
-  if (value.content_addressed === true) {
-    const cache = createSequenceCache();
-    absorbSequencePage(cache, {
-      sequences: object(value.sequences) ? value.sequences as Record<string, string[]> : {},
-      blobs: object(value.blobs) ? value.blobs as Record<string, string> : {},
-    });
-    const rebuilt = records.map(record => rebuildArchiveRecord(record, cache));
-    return { ...value, records: rebuilt } as unknown as TrajectoryArchive;
-  }
-  return { ...value, records } as unknown as TrajectoryArchive;
+  const cache = createSequenceCache();
+  absorbSequencePage(cache, {
+    sequences: value.sequences as Record<string, string[]>,
+    blobs: value.blobs as Record<string, string>,
+  });
+  const rebuilt = records.map(record => rebuildArchiveRecord(record, cache));
+  return { ...value, records: rebuilt } as unknown as TrajectoryArchive;
 }
 
 /** Put a referenced archive record back together from the archive's own dictionaries. */
@@ -170,7 +185,15 @@ function rebuildArchiveRecord(
     cache,
   );
   if (detail.otlp === record.otlp) return record;
-  return { ...record, otlp: detail.otlp } as TrajectoryArchiveRecord;
+  // A reference the archive's own dictionaries do not resolve is content the
+  // file does not hold; keep saying so rather than showing the span as silent.
+  return {
+    ...record,
+    otlp: detail.otlp,
+    ...(detail.incomplete_sequences === undefined
+      ? {}
+      : { incomplete_sequences: detail.incomplete_sequences }),
+  } as TrajectoryArchiveRecord;
 }
 
 function decodeRawJson(record: TrajectoryArchiveRecord): unknown {

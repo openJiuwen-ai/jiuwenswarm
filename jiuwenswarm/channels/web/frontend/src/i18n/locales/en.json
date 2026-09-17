@@ -2673,7 +2673,12 @@
       "createByUpload": "Create from file",
       "uploading": "Uploading…",
       "createViaChatPrompt": "Help me create an xxx Expert who is good at xxx",
-      "back": "Back"
+      "back": "Back",
+      "edit": "Edit",
+      "updating": "Saving…"
+    },
+    "confirm": {
+      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone."
     },
     "card": {
       "open": "Open {{name}} details",
@@ -2747,6 +2752,7 @@
     },
     "form": {
       "title": "Create manually",
+      "editTitle": "Edit Expert",
       "subtitle": "Create a reusable Expert definition",
       "createOnly": "Create only",
       "createTabsLabel": "Creation type",
@@ -2835,7 +2841,7 @@
         "createFirst": "Create manually",
         "createByChat": "Create via chat",
         "createByUpload": "Create from file",
-        "createViaChatPrompt": "Help me create an XXX Expert Team, skilled at XXXXX. My experience is: [please add your industry background and relevant experience]",
+        "createViaChatPrompt": "Help me create an xxx Expert Team, skilled at xxx",
         "install": "Install",
         "installing": "Installing…",
         "use": "Use",

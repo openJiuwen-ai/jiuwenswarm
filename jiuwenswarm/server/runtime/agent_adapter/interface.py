@@ -975,6 +975,8 @@ _PACKAGE_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.AGENT_TEMPLATES_FILE_LIST: "list_agent_template_files",
     ReqMethod.AGENT_TEMPLATES_FILE_READ: "read_agent_template_file",
     ReqMethod.AGENT_TEMPLATES_CREATE: "create_agent_template",
+    ReqMethod.AGENT_TEMPLATES_UPDATE: "update_agent_template",
+    ReqMethod.AGENT_TEMPLATES_DELETE: "delete_agent_template",
     ReqMethod.AGENT_TEMPLATES_IMPORT_LOCAL: "import_agent_template",
     ReqMethod.AGENT_TEMPLATES_INSTALL: "install_agent_template",
     ReqMethod.AGENT_TEMPLATES_UNINSTALL: "uninstall_agent_template",
@@ -2528,6 +2530,27 @@ class JiuWenSwarm:
                 )
             elif method == ReqMethod.AGENT_TEMPLATES_IMPORT_LOCAL:
                 payload = package_manager.import_agent_template(params)
+            elif method == ReqMethod.AGENT_TEMPLATES_UPDATE:
+                # 先卸载已加载到运行会话的模板，使本次更新对当前会话立即生效；
+                # 否则 _load_agent_template_for_request 的版本比对会命中旧 record
+                # （本地包 manifest 不写 version 键，恒 ""==""→True）而不重载。
+                unload_live = getattr(self, "_unload_live_equipment", None)
+                if unload_live is not None:
+                    runtime_name = package_manager.resolve_equipment_runtime_id(
+                        "agent_templates", name
+                    )
+                    await unload_live("agent_templates", runtime_name)
+                getattr(package_manager, _PACKAGE_ROUTES[method])(params)
+                payload = {}
+            elif method == ReqMethod.AGENT_TEMPLATES_DELETE:
+                unload_live = getattr(self, "_unload_live_equipment", None)
+                if unload_live is not None:
+                    runtime_name = package_manager.resolve_equipment_runtime_id(
+                        "agent_templates", name
+                    )
+                    await unload_live("agent_templates", runtime_name)
+                package_manager.delete_agent_template(params)
+                payload = {}
             elif method == ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL:
                 payload = package_manager.import_plugin_package(params)
             else:

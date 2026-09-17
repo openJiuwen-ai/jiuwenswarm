@@ -422,6 +422,12 @@
   flex: 1 1 auto;
 }
 
+/* Expert and Expert Team cards share PageCard; allow unbroken names/descriptions
+   to use the same two-line clamp as naturally wrapping text. */
+.agent-management-page-card .page-card__body {
+  overflow-wrap: anywhere;
+}
+
 .agent-management-page-card .agent-management-card__actions {
   position: absolute;
   top: 36px;
@@ -2084,6 +2090,58 @@
 .agent-management-selection-card.is-disabled:focus-visible {
   border-color: var(--color-border-default);
   outline: 0;
+}
+
+/* Leader/member pickers use the same PageCard → EntityHeader → body structure
+   as the Expert cards in My Experts. Only the picker card's dimensions and
+   selection affordance differ for the dialog grid. */
+.agent-management-selection-card.page-card {
+  min-width: 0;
+  height: 160px;
+  min-height: 0;
+  gap: 18px;
+  padding: 24px;
+}
+
+.agent-management-selection-card.page-card:hover,
+.agent-management-selection-card.page-card:focus-within,
+.agent-management-selection-card.page-card.is-selected {
+  box-shadow: inset 0 0 0 1px var(--color-action-primary);
+}
+
+.agent-management-selection-card.page-card.page-card--disabled,
+.agent-management-selection-card.page-card.is-disabled {
+  background: var(--color-action-secondary);
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-management-selection-card.page-card .entity-header__actions {
+  align-self: flex-start;
+}
+
+.agent-management-selection-card.page-card .entity-header {
+  width: 100%;
+  min-width: 0;
+}
+
+.agent-management-selection-card.page-card .entity-header__identity,
+.agent-management-selection-card.page-card .entity-header__text,
+.agent-management-selection-card.page-card .entity-header__title {
+  min-width: 0;
+}
+
+.agent-management-selection-card.page-card .entity-header__identity {
+  flex: 1 1 auto;
+}
+
+.agent-management-selection-card.page-card .page-card__body {
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.agent-management-selection-card.page-card .agent-management-selection-card__action {
+  margin-top: 0;
 }
 
 .agent-management-inline-action {

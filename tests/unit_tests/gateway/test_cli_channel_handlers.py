@@ -879,6 +879,54 @@ async def test_config_validate_model_handler_uses_local_probe(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_failure", ["exception", "empty"])
+async def test_config_validate_model_retries_failed_probe_with_more_tokens(
+    monkeypatch, first_failure
+):
+    server = FakeGatewayServer()
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=None,
+            message_handler=None,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+    max_tokens_calls = []
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def invoke(self, *args, **kwargs):
+            max_tokens_calls.append(kwargs["max_tokens"])
+            if len(max_tokens_calls) == 1:
+                if first_failure == "exception":
+                    raise RuntimeError("token budget too small")
+                return {"content": "", "reasoning_content": ""}
+            return {"content": "hello"}
+
+    monkeypatch.setattr(tui_connect_module, "Model", FakeModel)
+
+    await server.local_handlers["/tui"]["config.validate_model"](
+        object(),
+        "req-validate-retry",
+        {
+            "model_provider": "openai",
+            "model": "gpt-4.1",
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "secret",
+        },
+        "sess-1",
+    )
+
+    assert max_tokens_calls == [3, 16]
+    assert server.responses[-1]["ok"] is True
+    assert server.responses[-1]["payload"]["response"] == "hello"
+
+
+@pytest.mark.asyncio
 async def test_command_model_switch_sends_scoped_agent_reload(monkeypatch):
     server = FakeGatewayServer()
     sent_envs = []

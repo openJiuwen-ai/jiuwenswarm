@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 from __future__ import annotations
 
 import copy
@@ -1195,7 +1196,7 @@ def _build_context_messages_from_history(
         chat.usage_metadata         → end-of-call marker (skip)
         EITHER:
           chat.tool_call (1..N)     → AssistantMessage(reasoning + tool_calls)
-          chat.tool_result (per tc) → ToolMessage
+          chat.tool_result (per tc) → ToolMessage (rendered_result, else legacy result)
         OR:
           chat.delta (N chunks)     → skip (fragments of chat.final)
           chat.final                → AssistantMessage(reasoning + content)
@@ -1344,7 +1345,14 @@ def _build_context_messages_from_history(
 
         elif event_type == "chat.tool_result":
             tc_id = record.get("tool_call_id", "")
-            result_content = str(record.get("result", ""))
+            # The model read ``rendered_result``; records written before that
+            # field existed only carry the compatibility ``result`` string.
+            rendered_result = record.get("rendered_result")
+            result_content = (
+                rendered_result
+                if isinstance(rendered_result, str)
+                else str(record.get("result", ""))
+            )
             if not tc_id:
                 skipped += 1
                 continue

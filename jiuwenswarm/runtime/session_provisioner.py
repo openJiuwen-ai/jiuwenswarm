@@ -1532,15 +1532,15 @@ class RuntimeSessionProvisioner:
         lifecycle_prepared = False
         destructive_started = False
         try:
-            if not is_team_session:
-                from jiuwenswarm.observability.session_delete import (
-                    begin_trajectory_session_delete,
-                )
+            from jiuwenswarm.observability.session_delete import (
+                begin_trajectory_session_delete,
+            )
 
-                # Drains the ingress and joins that session's writer threads,
-                # so it must not run on the event loop.
-                await asyncio.to_thread(begin_trajectory_session_delete, target)
-                trajectory_prepared = True
+            # Team and single-agent sessions both own a trajectory database.
+            # Draining the ingress joins that session's writer threads, so it
+            # must not run on the event loop.
+            await asyncio.to_thread(begin_trajectory_session_delete, target)
+            trajectory_prepared = True
             if delete_lifecycle is not None:
                 await delete_lifecycle.begin_session_delete(target)
                 lifecycle_prepared = True

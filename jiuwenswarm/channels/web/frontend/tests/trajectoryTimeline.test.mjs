@@ -207,6 +207,19 @@ test('token cost wins over the recorded-duration and complete-time switches', ()
   );
 });
 
+test('complete-time projections keep the idle gap that duration projection compresses', () => {
+  const turns = [turn(1, [
+    cell(0, 'message', { startedAt: 0, timeSeconds: 1 }),
+    cell(1, 'tool', { startedAt: 10_000, timeSeconds: 1 }),
+  ])];
+  const ranges = mode => deriveTrajectoryTimeline(turns, mode).spans
+    .map(span => [span.start, span.end]);
+
+  assert.deepEqual(ranges('duration'), [[0, 1_000], [1_000, 2_000]]);
+  assert.deepEqual(ranges('actual'), [[0, 1_000], [10_000, 11_000]]);
+  assert.deepEqual(ranges('time'), [[0, 0], [10_000, 10_000]]);
+});
+
 test('zoom keeps the pointed timeline time anchored and respects the minimum width', () => {
   const next = zoomTrajectoryTimelineViewport(
     { start: 0, end: 1_000 },

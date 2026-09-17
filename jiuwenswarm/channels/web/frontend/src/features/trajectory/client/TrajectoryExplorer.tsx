@@ -55,18 +55,8 @@ export interface TrajectoryExplorerProps {
   requests?: readonly TrajectoryRequest[]
   /** Whether the initial tail has not reached the browser yet. */
   loading?: boolean
-  /** Whether one older page request is pending. */
-  loadingEarlier?: boolean
-  /** Whether an earlier page exists. */
-  hasEarlier?: boolean
-  /** Prepend one earlier page. */
-  loadEarlier?: () => Promise<boolean>
   /** Retryable store or transport failure shown without hiding loaded records. */
   error?: string | null
-  /** Optional inspector handoff using the projected tool call id. */
-  inspectCallId?: string | null
-  /** Called after an inspect handoff is consumed or cannot be resolved. */
-  onInspectApplied?: () => void
   /** Override individual toolbar labels. */
   messages?: Partial<Record<TrajectoryKey, string>>
   /** Full custom translator; takes precedence over `messages`. */
@@ -90,24 +80,19 @@ export interface TrajectoryExplorerProps {
   className?: string
 }
 
-function firstSourceSeq(turns: readonly TrajectoryTurnModel[]): number | undefined {
-  for (const turn of turns) {
-    for (const group of turn.groups) {
-      for (const cell of group.cells) {
-        if (cell.sourceSeq !== undefined) return cell.sourceSeq
-      }
-    }
-  }
-  return undefined
-}
-
 function searchIndexes(
   index: TrajectorySearchIndex,
-  turns: readonly TrajectoryTurnModel[],
+  layouts: readonly (readonly TrajectoryTurnModel[])[],
   query: string,
 ): ReadonlySet<number> | null {
-  index.update([turns])
+  // Without a query nothing is filtered, so the index is left to catch up on
+  // the first keystroke instead of reindexing every published window.
+  if (query.trim() === '') return null
+  // `layouts` is memoized on `turns`, which lets the index skip the walk when
+  // only the query changed.
+  index.update(layouts)
   const ids = index.search(query)
+  const turns = layouts[0] ?? []
   if (ids === null) return null
   const matches = new Set<number>()
   for (const turn of turns) {
@@ -127,12 +112,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   turns: staticTurns = [],
   requests: staticRequests,
   loading = false,
-  loadingEarlier = false,
-  hasEarlier = false,
-  loadEarlier,
   error = null,
-  inspectCallId = null,
-  onInspectApplied,
   messages,
   translate,
   bottomInset = 0,
@@ -147,7 +127,6 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
 }: TrajectoryExplorerProps) {
   const turns = snapshot?.turns ?? staticTurns
   const requests = snapshot?.requests ?? staticRequests
-  const streamingCells = snapshot?.streamingCells
   const hasRunningCells = useMemo(() => turns.some(turn => (
     turn.groups.some(group => group.cells.some(cell => cell.status === 'running'))
   )), [turns])
@@ -174,6 +153,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
     useState<ReadonlySet<string>>(EMPTY_RECORD_IDS)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchIndex] = useState(() => new TrajectorySearchIndex())
+  const searchLayouts = useMemo(() => [turns], [turns])
   const [timelineRange, setTimelineRange] = useState<TrajectoryTimeRange | null>(null)
   const [selectedTimelineIndex, setSelectedTimelineIndex] = useState<number | null>(null)
   const [recordSelection, setRecordSelection] = useState<{ readonly index: number } | null>(null)
@@ -206,8 +186,8 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
     setTimelineRange(null)
   }, [timelineMode])
   const searchMatchIndexes = useMemo(
-    () => searchIndexes(searchIndex, turns, searchQuery),
-    [searchIndex, searchQuery, turns],
+    () => searchIndexes(searchIndex, searchLayouts, searchQuery),
+    [searchIndex, searchLayouts, searchQuery],
   )
   const timelineFocusIndexes = useMemo(
     () => timelineRange === null
@@ -335,9 +315,6 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             turns={turns}
             mode={timelineMode}
             range={timelineRange}
-            olderHistoryLoading={loadingEarlier}
-            hasEarlierRecords={hasEarlier}
-            {...(loadEarlier === undefined ? {} : { onLoadEarlier: loadEarlier })}
             selectedIndex={selectedTimelineIndex}
             searchMatchIndexes={searchMatchIndexes}
             onRangeChange={setTimelineRange}
@@ -363,7 +340,6 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
           turns={turns}
           scrollToEndSignal={scrollToEndSignal}
           {...(requests === undefined ? {} : { requestNumbers: requests })}
-          {...(streamingCells === undefined ? {} : { streamingCells })}
           timelineFocusIndexes={timelineFocusIndexes}
           searchMatchIndexes={searchMatchIndexes}
           onSelectedIndexChange={setSelectedTimelineIndex}
@@ -375,18 +351,12 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
           recordSelection={recordSelection}
           recordFocus={recordFocus}
           historyLoading={loading}
-          olderHistoryLoading={loadingEarlier}
-          historyStartSeq={firstSourceSeq(turns)}
-          hasOlderRecords={hasEarlier}
-          {...(loadEarlier === undefined ? {} : { onLoadOlder: loadEarlier })}
           onClearSelection={() => { setTimelineRange(null) }}
           collapsedTurns={displayedCollapsedTurns}
           onToggleTurn={toggleTurn}
           collapsedAssistants={displayedCollapsedAssistants}
           onToggleAssistant={toggleAssistant}
-          inspectCallId={inspectCallId}
           nowMilliseconds={liveNowMilliseconds}
-          {...(onInspectApplied === undefined ? {} : { onInspectApplied })}
         />
       </div> : null}
       </div>

@@ -2307,9 +2307,7 @@ class AgentWebSocketServer:
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
                 "session.stop",
             }
-            if guarded_method not in unguarded_methods and not guarded_method.startswith(
-                "trajectory."
-            ):
+            if guarded_method not in unguarded_methods:
                 try:
                     guard(
                         str(guarded_params.get("session_id") or request.session_id or ""),
@@ -6943,10 +6941,20 @@ class AgentWebSocketServer:
             # No turn id: manual /compact runs outside any ReAct loop, so it
             # belongs to no turn. Claiming one (the request id used to stand in
             # for it) split the session's turn numbering with a span that is
-            # not a turn at all.
+            # not a turn at all. The viewer places a run that names no turn
+            # between the turns it happened between.
+            #
+            # The run span's mode must be the canonical three-segment value
+            # (``agent.work.normal`` ...), the same the chat path stamps. The
+            # trajectory store only serves traces whose ``agent_mode`` is
+            # canonical, so a legacy ``agent`` / ``agent.plan`` here hid the
+            # whole compaction trace from the viewer: its compaction.completed
+            # event vanished, and the next context commit was reported as a
+            # sequence gap.
+            _trajectory_mode = deprecate_mode(canonical_mode)
             _run_span = open_agent_run_span(
                 session_id=session_id,
-                mode=params.get("mode", "agent"),
+                mode=_trajectory_mode,
                 request_id=request.request_id,
                 run_id=request.request_id,
                 execution_subject=execution_subject,

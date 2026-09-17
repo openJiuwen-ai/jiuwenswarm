@@ -128,9 +128,7 @@ export function CatalogPage({
 
                 const labelTags: string[] | undefined = item.tags.length > 0
                   ? item.tags.map(tg => tg.label)
-                  : (scope === 'mine'
-                    ? [t(`agentManagement.categories.${item.category}`, { defaultValue: item.category || t('agentManagement.categoryOther') })]
-                    : undefined);
+                  : undefined;
 
                 let actionContent: ReactNode = null;
                 if (item.installed) {
@@ -184,7 +182,7 @@ export function CatalogPage({
                   />
                 );
               })}
-             </div>
+            </div>
             {totalPages > 1 ? (
               <div
                 className="agent-management-pagination"

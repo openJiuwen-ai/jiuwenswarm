@@ -1,0 +1,314 @@
+{
+  "name": "model_free_compaction_output",
+  "derived_from": "jiuwenswarm/channels/web/frontend/tests/trajectoryProjector.test.mjs: a model-free compaction commits its output window without any model request",
+  "records": [
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000004",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "4000000",
+      "endTimeUnixNano": "4000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-after-model-free-output"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "4"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "4000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-next-trim\", \"base_window_id\": \"window-after-trim\", \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"message-trimmed-user\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"long tool output trimmed\"}]}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-4"
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000003",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "3000000",
+      "endTimeUnixNano": "3000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-model-free-output"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "3"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "3000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-after-trim\", \"base_window_id\": \"window-before-trim\", \"complete\": true, \"delta\": [{\"op\": \"replace\", \"message_id\": \"message-trimmed-user\", \"index\": 0, \"message\": {\"message_id\": \"message-trimmed-user\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"long tool output trimmed\"}}], \"request_purpose\": \"compaction\", \"messages\": [{\"message_id\": \"message-trimmed-user\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"long tool output trimmed\"}], \"transition_kind\": \"compaction\", \"caused_by_operation_id\": \"operation-model-free-output\", \"input_window_id\": \"window-before-trim\", \"output_window_id\": \"window-after-trim\", \"model_requests\": []}"
+          }
+        }
+      ],
+      "parentSpanId": "agent-run-span"
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000002",
+      "name": "compaction.completed",
+      "startTimeUnixNano": "2000000",
+      "endTimeUnixNano": "2000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-model-free-compaction-with-output"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "compaction.completed"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "2000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"operation_id\": \"operation-model-free-output\", \"status\": \"completed\", \"processor\": \"ToolResultWindowProcessor\", \"model\": \"\", \"model_requests\": [], \"summary\": \"Compressed 1 -> 1 messages, saved 5.9k tokens\", \"compact_summary\": \"\"}"
+          }
+        }
+      ]
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000001",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "1000000",
+      "endTimeUnixNano": "1000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-before-model-free-output"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "1"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "1000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-before-trim\", \"base_window_id\": null, \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"message-trimmed-user\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"long tool output follows\"}], \"transition_kind\": \"epoch_baseline\", \"baseline_reason\": \"runtime_epoch_start\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-1"
+    }
+  ],
+  "expected": {
+    "windows": {
+      "main": {
+        "window-before-trim": [
+          "message-trimmed-user"
+        ],
+        "window-after-trim": [
+          "message-trimmed-user"
+        ],
+        "window-next-trim": [
+          "message-trimmed-user"
+        ]
+      }
+    },
+    "by_inference": {
+      "inference-1": [
+        "message-trimmed-user"
+      ],
+      "inference-4": [
+        "message-trimmed-user"
+      ]
+    },
+    "issue_codes": [],
+    "window_contents": {
+      "window-after-trim": [
+        "long tool output trimmed"
+      ]
+    }
+  }
+}

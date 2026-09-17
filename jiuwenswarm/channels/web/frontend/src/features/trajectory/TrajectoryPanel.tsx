@@ -38,6 +38,7 @@ import {
 } from './trajectoryClient';
 import {
   applyStreamFrames,
+  forgetStreamFrames,
   withStreamFrames,
 } from './trajectoryFrames';
 import {
@@ -55,6 +56,7 @@ import {
   type TrajectoryArchive,
 } from './trajectoryArchive';
 import {
+  changedTrajectoryUsageTraceIds,
   collectSubjectRefreshWindow,
   createTrajectoryOperationCoordinator,
   createTrajectoryTraceHintCoordinator,
@@ -64,10 +66,12 @@ import {
   sameTrajectoryUsageMap,
   selectSummariesNeedingLoad,
   shouldCatchUpAfterTrajectoryTerminalEvent,
+  shouldCatchUpStreamFrames,
   spansOf,
   stageTrajectoryChainPages,
   trajectoryContentMode,
   type StagedTrajectoryChain,
+  type StreamFrameRefresh,
   type TrajectoryTerminalEventName,
 } from './trajectoryWindow';
 import {
@@ -101,7 +105,7 @@ interface TraceUpdatedPayload {
   session_id?: unknown;
   trace_id?: unknown;
   revision?: unknown;
-  change_seq?: unknown;
+  frame_seq?: unknown;
   store_epoch?: unknown;
   lifecycle?: unknown;
 }
@@ -189,6 +193,11 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
   const teamMode = mode === 'team';
+  // The panel is not remounted when the session or its mode changes, so the
+  // stable callbacks below read the mode through a ref instead of closing
+  // over the value they were first created with.
+  const teamModeRef = useRef(teamMode);
+  teamModeRef.current = teamMode;
   const windowStateRef = useRef(createTrajectoryWindowState());
   const operationCoordinatorRef = useRef(createTrajectoryOperationCoordinator());
   const loadedSessionRef = useRef<string | null>(null);
@@ -217,6 +226,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   );
   const trajectoryV2ReducerRef = useRef(createTrajectoryV2Reducer());
   const sessionCumulativeUsageRef = useRef(new Map<string, TrajectoryUsage>());
+  // Highest frame watermark any trace hint has stated for this session.
+  const hintedFrameSeqRef = useRef(0);
   const [publishedWindow, setPublishedWindow] = useState<PublishedTrajectoryWindow>(
     EMPTY_PUBLISHED_WINDOW,
   );
@@ -229,6 +240,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const [initialLoadProgress, setInitialLoadProgress] = useState<InitialLoadProgress | null>(null);
   const [exporting, setExporting] = useState(false);
   const [replayArchive, setReplayArchive] = useState<TrajectoryArchive | null>(null);
+  // The file as imported. Exporting a replay saves these bytes: the parsed
+  // archive has its references resolved, and restating them would undo what
+  // makes the addressed file small.
+  const replayArchiveTextRef = useRef<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [archiveNotice, setArchiveNotice] = useState<string | null>(null);
   const [invalidRecordSeen, setInvalidRecordSeen] = useState(false);
@@ -387,8 +402,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       [`${item.trace_id}\u0000${item.inference_id}`, item.cumulative_usage]
     )));
     if (sameTrajectoryUsageMap(sessionCumulativeUsageRef.current, nextUsage)) return;
+    const changedTraceIds = changedTrajectoryUsageTraceIds(
+      sessionCumulativeUsageRef.current,
+      nextUsage,
+    );
     sessionCumulativeUsageRef.current = nextUsage;
-    subjectViewCacheRef.current.clear();
+    // The view cache does not compare usage, so it would keep a stale figure;
+    // only subjects with a record in a changed trace need projecting again.
+    subjectViewCacheRef.current.invalidate(group => group.records.some(record => (
+      spansOf(record).some(span => changedTraceIds.has(span.traceId))
+    )));
     publish(generation);
   }, [publish, sessionId]);
 
@@ -420,7 +443,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       if (!page.has_more) break;
     }
     if (!changed) return;
-    subjectViewCacheRef.current.clear();
+    // No cache reset: overlaying frames replaces only the records of spans
+    // that have them, and the view cache compares records by identity, so it
+    // re-projects just the subjects that are streaming.
     publish(generation);
   }, [publish, sessionId]);
 
@@ -430,10 +455,11 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     subjectViewCacheRef.current.clear();
     trajectoryV2ReducerRef.current.clear();
     sessionCumulativeUsageRef.current.clear();
+    hintedFrameSeqRef.current = 0;
     setPublishedWindow(EMPTY_PUBLISHED_WINDOW);
     initialLoadProgressRef.current = null;
     setInitialLoadProgress(null);
-    setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+    setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setInvalidRecordSeen(false);
     setError(null);
     setRawSelection('');
@@ -479,6 +505,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     if (current !== undefined && current.revision >= targetRevision) return;
     const publishPage = (staged: StagedTrajectoryChain) => {
       if (signal.aborted || !operationCoordinatorRef.current.isCurrent(generation)) return;
+      // A finished span is final whichever page carries it, so its frames go
+      // even when a newer concurrent page already holds the bucket.
+      windowStateRef.current.frames = forgetStreamFrames(
+        windowStateRef.current.frames,
+        staged.finishedSpanKeys,
+      );
       const latest = windowStateRef.current.buckets.get(subjectId);
       // A consumed revision uniquely identifies the trace state visible to
       // this coalesced detail feed. Equal or older concurrent pages cannot add
@@ -561,7 +593,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const rebuildFromHead = useCallback((signal: AbortSignal): Promise<boolean> => {
     if (rebuildPromiseRef.current !== null) return rebuildPromiseRef.current;
     const coordinator = operationCoordinatorRef.current;
-    const generation = coordinator.invalidate(() => {});
+    const generation = coordinator.invalidate();
     clearPublishedWindow();
     setLoading(true);
     const operation = (async () => {
@@ -577,7 +609,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         windowState.storeEpoch = page.store_epoch;
         windowState.watermark = page.watermark;
         windowState.listWindowInitialized = true;
-        await refreshSessionUsage(signal, generation);
+        // Resetting the window zeroed the frame cursor, so a page opened while
+        // an answer streams must page the frames too, or its running spans wait
+        // for the next hint before showing any text.
+        await Promise.all([
+          refreshSessionUsage(signal, generation),
+          catchUpStreamFrames(signal, generation),
+        ]);
         if (signal.aborted || !coordinator.isCurrent(generation)) return false;
         setError(null);
         return true;
@@ -599,9 +637,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       if (rebuildPromiseRef.current === operation) rebuildPromiseRef.current = null;
     });
     return operation;
-  }, [chinese, clearPublishedWindow, loadSummaries, refreshSessionUsage, sessionId]);
+  }, [
+    catchUpStreamFrames,
+    chinese,
+    clearPublishedWindow,
+    loadSummaries,
+    refreshSessionUsage,
+    sessionId,
+  ]);
 
-  const refreshLatest = useCallback(async () => {
+  const refreshLatest = useCallback(async (frames: StreamFrameRefresh = 'always') => {
     if (sessionId === 'new' || requestControllerRef.current?.signal.aborted) return;
     if (refreshPromiseRef.current !== null) return refreshPromiseRef.current;
     const signal = requestControllerRef.current?.signal;
@@ -610,8 +655,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       try {
         const coordinator = operationCoordinatorRef.current;
         const generation = coordinator.currentGeneration();
-        const earlier = coordinator.pendingLoadEarlier(generation);
-        if (earlier !== null) await earlier;
         if (signal.aborted || !coordinator.isCurrent(generation)) return;
         const expectedStoreEpoch = windowStateRef.current.storeEpoch;
         if (expectedStoreEpoch === null) {
@@ -661,7 +704,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
             windowStateRef.current.watermark = subjectWindow.watermark;
           })(),
           refreshSessionUsage(signal, generation),
-          catchUpStreamFrames(signal, generation),
+          shouldCatchUpStreamFrames(
+            frames,
+            windowStateRef.current.frames.frameSeq,
+            hintedFrameSeqRef.current,
+          )
+            ? catchUpStreamFrames(signal, generation)
+            : undefined,
         ]);
         if (signal.aborted || !coordinator.isCurrent(generation)) return;
         setError(null);
@@ -677,7 +726,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         refreshPromiseRef.current = null;
       }
     }
-  }, [chinese, loadSummaries, rebuildFromHead, refreshSessionUsage, sessionId]);
+  }, [
+    catchUpStreamFrames,
+    chinese,
+    loadSummaries,
+    rebuildFromHead,
+    refreshSessionUsage,
+    sessionId,
+  ]);
 
   const catchUpAfterTerminalEvent = useCallback((): Promise<void> => {
     terminalCatchUpAgainRef.current = true;
@@ -704,18 +760,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const flushTraceHints = useCallback(async () => {
     const signal = requestControllerRef.current?.signal;
     if (signal === undefined || signal.aborted) return;
-    const coordinator = operationCoordinatorRef.current;
-    const generation = coordinator.currentGeneration();
     await hintCoordinatorRef.current.drain(async () => {
       // A hint names a trace, which no longer maps onto one chain: a trace can
       // carry records for several subjects. It is enough as a signal that
-      // something advanced - the listing decides which chains to reload.
-      await refreshLatest();
-      await refreshSessionUsage(signal, generation);
+      // something advanced - the listing decides which chains to reload. The
+      // refresh already pulls usage; frames only when a hint is ahead of them.
+      await refreshLatest('ifBehind');
     }, () => new Promise<void>((resolve) => {
       window.setTimeout(resolve, LIVE_HINT_PULL_INTERVAL_MS);
     }));
-  }, [refreshLatest, refreshSessionUsage]);
+  }, [refreshLatest]);
 
   useEffect(() => {
     requestControllerRef.current?.abort();
@@ -727,7 +781,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       terminalSettleTimerRef.current = null;
     }
     rebuildPromiseRef.current = null;
-    operationCoordinatorRef.current.invalidate(() => {});
+    operationCoordinatorRef.current.invalidate();
     const controller = new AbortController();
     requestControllerRef.current = controller;
     setRawLoading(false);
@@ -737,6 +791,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     if (sessionChanged) {
       loadedSessionRef.current = sessionId;
       clearPublishedWindow();
+      // Content hashes stay valid across epochs of one session, but another
+      // session's content is only memory this reader will not use again.
+      sequenceCacheRef.current = createSequenceCache();
     }
     if (sessionId === 'new') {
       setLoading(false);
@@ -760,7 +817,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const unsubscribe = webClient.on<TraceUpdatedPayload>('trace.updated', (event) => {
       if (event.payload.session_id !== sessionId) return;
       const traceId = event.payload.trace_id;
-      const revisionValue = event.payload.revision ?? event.payload.change_seq;
+      const frameSeq = event.payload.frame_seq;
+      if (typeof frameSeq === 'number'
+        && Number.isSafeInteger(frameSeq)
+        && frameSeq > hintedFrameSeqRef.current) {
+        hintedFrameSeqRef.current = frameSeq;
+      }
+      const revisionValue = event.payload.revision;
       const revision = typeof revisionValue === 'number'
         ? revisionValue
         : typeof revisionValue === 'string' && /^\d+$/.test(revisionValue)
@@ -895,6 +958,17 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setRawSelection(rawSelectionBySubjectRef.current.get(subjectId) ?? '');
   }, [rawSelection, selectedSubjectId]);
 
+  // A session's mode can resolve after the panel opened it ('agent' until the
+  // runtime reports 'team'). The single-agent default selection is 'main',
+  // which is also a valid Team leader lane id, so the repair below would keep
+  // it; reset to the mode's own default instead.
+  const selectionModeRef = useRef(teamMode);
+  useEffect(() => {
+    if (selectionModeRef.current === teamMode) return;
+    selectionModeRef.current = teamMode;
+    setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+  }, [teamMode]);
+
   useEffect(() => {
     if (!teamMode) {
       if (!subjectGroups.byId.has(selectedSubjectId ?? '')) {
@@ -988,11 +1062,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setArchiveError(null);
     setArchiveNotice(null);
     try {
-      const archive = replayArchive ?? parseTrajectoryArchive(
-        await getTrajectoryArchive(sessionId, { signal }),
-      );
+      const text = replayArchive !== null && replayArchiveTextRef.current !== null
+        ? replayArchiveTextRef.current
+        : await getTrajectoryArchive(sessionId, { signal });
+      // Parse before saving so a file this viewer cannot replay is never written.
+      const archive = replayArchive ?? parseTrajectoryArchive(text);
       const safeSession = archive.session_id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80) || 'session';
-      const blob = new Blob([`${JSON.stringify(archive, null, 2)}\n`], {
+      const blob = new Blob([text], {
         type: 'application/json;charset=utf-8',
       });
       const result = await saveBlobWithResult(
@@ -1024,9 +1100,11 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setArchiveNotice(null);
     try {
       if (file.size > MAX_ARCHIVE_BYTES) throw new Error(copy.archiveTooLarge);
-      const archive = parseTrajectoryArchive(await file.text());
+      const text = await file.text();
+      const archive = parseTrajectoryArchive(text);
+      replayArchiveTextRef.current = text;
       setReplayArchive(archive);
-      setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+      setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
       setRawSelection('');
       setFetchedRaw(null);
       setRawError(null);
@@ -1037,8 +1115,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
 
   const exitReplay = useCallback(() => {
     const transition = exitTrajectoryReplay(replayArchive);
+    replayArchiveTextRef.current = null;
     setReplayArchive(transition.archive);
-    setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+    setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setArchiveError(null);
     setArchiveNotice(null);
     setRawSelection('');

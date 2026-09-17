@@ -126,7 +126,7 @@ export async function getTrajectoryArchive(
   options: { signal?: AbortSignal } = {},
 ): Promise<string> {
   const response = await fetch(trajectoryUrl(
-    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/archive`,
+    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/archive?format=addressed`,
   ), {
     cache: 'no-store',
     signal: options.signal,

@@ -163,6 +163,47 @@ class _FakeModelsResponse:
         }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_failure", ["exception", "empty"])
+async def test_config_validate_model_retries_failed_probe_with_more_tokens(
+    monkeypatch, first_failure
+):
+    channel = FakeWebChannel()
+    max_tokens_calls = []
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def invoke(self, *args, **kwargs):
+            max_tokens_calls.append(kwargs["max_tokens"])
+            if len(max_tokens_calls) == 1:
+                if first_failure == "exception":
+                    raise RuntimeError("token budget too small")
+                return {"content": "", "reasoning_content": ""}
+            return {"content": "hello"}
+
+    monkeypatch.setattr(app_web_handlers, "Model", FakeModel)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(app_web_handlers, "get_default_models", lambda _config: [])
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.validate_model"](
+        object(),
+        "req-validate-retry",
+        {
+            "model_provider": "openai",
+            "model": "gpt-4.1",
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "secret",
+        },
+        "sess-1",
+    )
+
+    assert max_tokens_calls == [3, 16]
+    assert channel.responses[-1]["ok"] is True
+
+
 class _CapturingSessionListAgentClient:
     """捕获 E2A 信封并返回标准 session.list 响应（供 Web 转发断言）。"""
 

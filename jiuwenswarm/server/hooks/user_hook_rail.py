@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """UserHookRail —— 将用户配置的 hooks 以 Rail 形态注册到 DeepAgent，拦截工具调用和 Agent 生命周期."""
 
@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 
+from openjiuwen.core.single_agent.ability_manager import resolve_tool_message
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 
@@ -16,10 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 class UserHookRail(DeepAgentRail):
-    """用户配置的 hooks 执行引擎.
+    """Execution engine for user-configured hooks.
 
-    Priority=60: 在 SecurityRail (80) 之后，JiuSwarmStreamEventRail (50) 之前。
-    确保安全检查先于用户 hook，用户 hook 先于流式事件发送。
+    Priority 60 runs after the security rails. ``JiuSwarmStreamEventRail``
+    projects a tool call only after every rail that rewrites its result, so
+    PostToolUse context added here is part of the streamed ``rendered_result``.
     """
 
     priority = 60
@@ -110,8 +112,24 @@ class UserHookRail(DeepAgentRail):
                     tool_name, r.error,
                 )
             if r.additional_context:
-                current = ctx.inputs.tool_result or ""
-                ctx.inputs.tool_result = current + "\n[Hook 发现]: " + r.additional_context
+                self._append_model_context(ctx, r.additional_context)
+
+    @staticmethod
+    def _append_model_context(ctx: AgentCallbackContext, additional_context: str) -> None:
+        """Append PostToolUse context to the tool message the model reads.
+
+        The model reads the tool message, not ``tool_result``, and the
+        structured result stays untouched for program consumers. A call that
+        raised carries its message on the execution error.
+        """
+        message = resolve_tool_message(ctx.inputs, ctx.exception)
+        if message is None or not isinstance(message.content, str):
+            logger.warning(
+                "UserHookRail: no tool message to attach PostToolUse context to, tool=%s",
+                ctx.inputs.tool_name,
+            )
+            return
+        message.content = message.content + "\n[Hook 发现]: " + additional_context
 
     # ---- PostToolUseFailure: ON_TOOL_EXCEPTION ----
 

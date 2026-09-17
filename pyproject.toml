@@ -18,7 +18,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@c0491a4dc222021b866d06b6261ee31d42c0190a",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@d0bd83352f5ef4070baf44d37e788ba692a95b37",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -72,7 +72,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@c0491a4dc222021b866d06b6261ee31d42c0190a",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@d0bd83352f5ef4070baf44d37e788ba692a95b37",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "aiosqlite>=0.22.1",
@@ -191,7 +191,7 @@ default-groups = ['dev']
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
 a4p = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", subdirectory = "A4P", rev = "agent-protocol-V0.2.0" }
-openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "c0491a4dc222021b866d06b6261ee31d42c0190a" }
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "d0bd83352f5ef4070baf44d37e788ba692a95b37" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)

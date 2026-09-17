@@ -536,18 +536,21 @@ async def test_team_skill_library_reload_rail_ignores_writes_outside_library(
     assert reloaded == []
 
 
-def test_unknown_swarm_rail_type_warns_and_skips(caplog: pytest.LogCaptureFixture) -> None:
-    """Unknown persisted rail types are skipped with a warning by the SDK."""
+def test_unknown_swarm_rail_type_is_skipped() -> None:
+    """An unregistered ``swarm.*`` rail type builds to ``None`` so the rest still build.
+
+    A spec persisted by an older release may reference a rail that no longer
+    exists; openjiuwen logs a warning and skips it instead of failing the build.
+    """
     register_swarm_providers()
     fake_ctx = SwarmBuildContext(language="cn", channel="web")
 
-    with caplog.at_level("WARNING"):
-        rail = RailSpec(type="swarm.__does_not_exist__").build(
-            language="cn",
-            context=fake_ctx,
-        )
+    rail = RailSpec(type="swarm.__does_not_exist__").build(
+        language="cn",
+        context=fake_ctx,
+    )
+
     assert rail is None
-    assert "swarm.__does_not_exist__" in caplog.text
 
 
 @pytest.mark.parametrize(

@@ -54,6 +54,7 @@ export {
 export { MarkdownPane, type MarkdownPaneProps } from './MarkdownPane/MarkdownPane';
 export {
   EntityHeader,
+  EntityTagList,
   type EntityHeaderProps,
   type EntityHeaderAvatar,
   type EntityImageAvatar,

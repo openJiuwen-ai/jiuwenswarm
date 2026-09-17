@@ -144,6 +144,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Skill iteration, self-optimization, and capability accumulation mechanisms.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>TTSE Dual-Track Self-Evolution</strong></td>
+      <td width="28%"><a href="en/TTSE.md">TTSE</a></td>
+      <td width="50%">FACT/TIP dual-track induction and consult, independent of Skill-body evolution.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Tool Permissions and Security</strong></td>
       <td width="28%"><a href="en/ToolPermissionsSecurity.md">Tool Permissions and Security</a></td>
       <td width="50%">Security interception and permission control for system commands, file operations, and tool calls.</td>
