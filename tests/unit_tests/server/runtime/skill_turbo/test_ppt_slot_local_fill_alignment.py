@@ -213,3 +213,79 @@ def test_structural_seed_slot_merge_duplicate_title_and_empty_optional_slot():
     assert "{{PAGE_TITLE}}" not in merged
     assert "{{STRUCTURAL_IMAGE_PATH}}" not in merged
     assert "正文区" in merged
+
+
+def test_structural_seed_slot_merge_survives_img_attr_reorder():
+    """属性槽：LLM 把 img 属性换序时仍须 merge 成功（DOM fallback，非整页写盘）。"""
+    seed = """<!DOCTYPE html>
+<html><head><title>{{PAGE_TITLE}}</title>
+<script>tailwind.config={theme:{extend:{colors:{brand:'#c00'}}}}</script>
+<style>@layer utilities{.ppt-slide{width:1280px}}</style>
+</head>
+<body>
+<div class="ppt-slide w-[1280px] h-[720px]">
+  <h1>{{PAGE_TITLE}}</h1>
+  <div class="body">{{PAGE_CONTENT}}</div>
+  <img data-pptx-role="structural-background" src="{{STRUCTURAL_IMAGE_PATH}}" alt="{{STRUCTURAL_IMAGE_ALT}}"/>
+</div>
+</body></html>
+"""
+    filled = """<!DOCTYPE html>
+<html><head><title>封面标题</title>
+<script>tailwind.config={theme:{extend:{colors:{brand:'#c00'}}}}</script>
+<style>@layer utilities{.ppt-slide{width:1280px}}</style>
+</head>
+<body>
+<div class="ppt-slide w-[1280px] h-[720px]">
+  <h1>封面标题</h1>
+  <div class="body"><p>封面导语</p></div>
+  <img alt="封面背景" data-pptx-role="structural-background" src="assets/cover-bg.png"/>
+</div>
+</body></html>
+"""
+    merged = _repair_structural_template_slots(seed, filled)
+    assert merged is not None
+    assert 'src="assets/cover-bg.png"' in merged
+    assert 'alt="封面背景"' in merged
+    assert "封面标题" in merged
+    assert "{{STRUCTURAL_IMAGE_PATH}}" not in merged
+    assert "{{STRUCTURAL_IMAGE_ALT}}" not in merged
+
+
+def test_structural_seed_slot_merge_survives_img_reindent():
+    """属性槽：LLM 对 img 标签重缩进时邻接锚点失效，须仍能抽 PATH/ALT。"""
+    seed = """<!DOCTYPE html>
+<html><head><title>{{PAGE_TITLE}}</title>
+<script>tailwind.config={theme:{extend:{colors:{brand:'#c00'}}}}</script>
+<style>@layer utilities{.ppt-slide{width:1280px}}</style>
+</head>
+<body>
+<div class="ppt-slide w-[1280px] h-[720px]">
+  <h1>{{PAGE_TITLE}}</h1>
+  <div class="body">{{PAGE_CONTENT}}</div>
+  <img data-pptx-role="structural-background" src="{{STRUCTURAL_IMAGE_PATH}}" alt="{{STRUCTURAL_IMAGE_ALT}}"/>
+</div>
+</body></html>
+"""
+    filled = """<!DOCTYPE html>
+<html><head><title>重缩进封面</title>
+<script>tailwind.config={theme:{extend:{colors:{brand:'#c00'}}}}</script>
+<style>@layer utilities{.ppt-slide{width:1280px}}</style>
+</head>
+<body>
+<div class="ppt-slide w-[1280px] h-[720px]">
+  <h1>重缩进封面</h1>
+  <div class="body"><p>导语</p></div>
+  <img
+    data-pptx-role="structural-background"
+    src="assets/reindent.png"
+    alt="重缩进背景"
+  />
+</div>
+</body></html>
+"""
+    merged = _repair_structural_template_slots(seed, filled)
+    assert merged is not None
+    assert 'src="assets/reindent.png"' in merged
+    assert 'alt="重缩进背景"' in merged
+    assert "{{STRUCTURAL_IMAGE" not in merged

@@ -928,29 +928,102 @@ def _filled_chart_scaffold_is_progressed(filled_html: str) -> bool:
     return False
 
 
-def _extract_chart_scaffold_region(filled_html: str) -> str | None:
-    for match in _COMMENTED_CHART_SCAFFOLD_BLOCK_RE.finditer(filled_html):
+def _collect_activated_chart_scaffolds(filled_html: str) -> list[tuple[str, str]]:
+    """Collect activated chart scaffolds as (target_id, replacement) pairs.
+
+    Path A: commented CHART_SCAFFOLD blocks with populated option (body only).
+    Path B: live scripts after </main> (full <script> tag); only for ids not
+    already taken by path A. Empty-id path-B scripts are kept only when path A
+    found nothing (legacy single-scaffold unwrap).
+    """
+    activated: list[tuple[str, str]] = []
+    seen_ids: set[str] = set()
+
+    for match in _COMMENTED_CHART_SCAFFOLD_BLOCK_RE.finditer(filled_html or ""):
         body = match.group(2) or ""
-        if _chart_scaffold_option_populated(body):
-            return body.strip()
-    html_no_comments = _HTML_COMMENT_RE.sub("", filled_html)
+        if not _chart_scaffold_option_populated(body):
+            continue
+        target_id = _chart_scaffold_target_id(body)
+        if target_id and target_id in seen_ids:
+            continue
+        if target_id:
+            seen_ids.add(target_id)
+        activated.append((target_id, body.strip()))
+
+    html_no_comments = _HTML_COMMENT_RE.sub("", filled_html or "")
     scaffold_region = _html_chart_scaffold_script_region(html_no_comments)
-    for match in reversed(list(_SCRIPT_BODY_RE.finditer(scaffold_region))):
+    for match in _SCRIPT_BODY_RE.finditer(scaffold_region):
         body = match.group(1) or ""
-        if "echarts.init" in body.lower() and _chart_scaffold_option_populated(body):
-            return match.group(0).strip()
-    return None
+        if "echarts.init" not in body.lower():
+            continue
+        if not _chart_scaffold_option_populated(body):
+            continue
+        target_id = _chart_scaffold_target_id(body)
+        if target_id:
+            if target_id in seen_ids:
+                continue
+            seen_ids.add(target_id)
+            activated.append((target_id, match.group(0).strip()))
+            continue
+        # Anonymous path-B: only when no commented activations were found.
+        if not activated:
+            activated.append(("", match.group(0).strip()))
+            break
+    return activated
+
+
+def _extract_chart_scaffold_region(filled_html: str) -> str | None:
+    activated = _collect_activated_chart_scaffolds(filled_html)
+    if not activated:
+        return None
+    return activated[0][1]
 
 
 def _merge_chart_scaffold_from_filled(seed_html: str, filled_html: str) -> str:
+    """Merge activated chart scaffolds from filled into seed comment blocks.
+
+    Match by ``_chart_scaffold_target_id`` one-to-one; unmatched seed blocks stay
+    dormant. Preserves legacy single-block / empty-id unwrap behavior.
+    """
     if not _filled_chart_scaffold_is_progressed(filled_html):
         return seed_html
-    filled_scaffold = _extract_chart_scaffold_region(filled_html)
-    if not filled_scaffold:
+    activated = _collect_activated_chart_scaffolds(filled_html)
+    if not activated:
         return seed_html
-    match = _COMMENTED_CHART_SCAFFOLD_BLOCK_RE.search(seed_html)
-    if match:
-        return seed_html[:match.start()] + filled_scaffold + seed_html[match.end():]
+
+    by_id = {tid: snippet for tid, snippet in activated if tid}
+    unused_anon = [snippet for tid, snippet in activated if not tid]
+    seed_blocks = list(_COMMENTED_CHART_SCAFFOLD_BLOCK_RE.finditer(seed_html or ""))
+
+    if seed_blocks:
+        pieces: list[str] = []
+        last = 0
+        for match in seed_blocks:
+            pieces.append(seed_html[last:match.start()])
+            body = match.group(2) or ""
+            target_id = _chart_scaffold_target_id(body)
+            replacement: str | None = None
+            if target_id and target_id in by_id:
+                replacement = by_id.pop(target_id)
+            elif not target_id and unused_anon:
+                replacement = unused_anon.pop(0)
+            elif (
+                not target_id
+                and len(seed_blocks) == 1
+                and len(by_id) == 1
+            ):
+                # Legacy: seed dormants without getElementById; filled has one id.
+                replacement = next(iter(by_id.values()))
+                by_id.clear()
+            if replacement is not None:
+                pieces.append(replacement)
+            else:
+                pieces.append(match.group(0))
+            last = match.end()
+        pieces.append(seed_html[last:])
+        return "".join(pieces)
+
+    filled_scaffold = activated[0][1]
     body_close = seed_html.lower().rfind("</body>")
     if body_close == -1:
         return seed_html
@@ -964,15 +1037,6 @@ def _merge_chart_scaffold_from_filled(seed_html: str, filled_html: str) -> str:
                 + seed_html[script_match.end():]
             )
     return seed_html[:body_close] + filled_scaffold + seed_html[body_close:]
-
-
-_REPAIRABLE_CONTENT_TEMPLATE_REASONS = frozenset({
-    "content_template_chrome_changed",
-    "head_chrome_changed",
-    "header_chrome_changed",
-    "footer_chrome_changed",
-    "main_tag_changed",
-})
 
 
 def _repair_content_template_chrome(seed_html: str, filled_html: str) -> str | None:
@@ -1065,6 +1129,14 @@ def _slice_between_anchors(
     return text[start:end], end
 
 
+_IMG_OPEN_TAG_RE = re.compile(r"<img\b[^>]*", re.IGNORECASE)
+
+
+def _strip_open_tag_attrs(anchor: str) -> str:
+    """Drop <img ...> attributes in anchors; attr reorder/reindent must not break slice."""
+    return _IMG_OPEN_TAG_RE.sub("<img", anchor or "")
+
+
 def _structural_slot_dom_fallback(name: str, filled_html: str) -> str | None:
     """DOM-based fallback for common structural slots when neighbor slice fails."""
     if name == "PAGE_TITLE":
@@ -1085,6 +1157,26 @@ def _structural_slot_dom_fallback(name: str, filled_html: str) -> str | None:
         if plain and _has_placeholder_slop(plain):
             return None
         return footer_inner
+    # Review: attribute slots (PATH/ALT) need DOM fallback; adjacency is brittle.
+    if name in ("STRUCTURAL_IMAGE_PATH", "STRUCTURAL_IMAGE_ALT"):
+        match = re.search(
+            r"<img\b[^>]*(?:"
+            r"\bdata-pptx-role\s*=\s*[\"']structural-background[\"']|"
+            r"\bclass\s*=\s*[\"'][^\"']*\babsolute\b[^\"']*\binset-0\b"
+            r")[^>]*>",
+            filled_html or "",
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        tag = match.group(0)
+        attr = "src" if name == "STRUCTURAL_IMAGE_PATH" else "alt"
+        attr_m = re.search(
+            rf"\b{attr}\s*=\s*([\"'])(.*?)\1",
+            tag,
+            re.IGNORECASE | re.DOTALL,
+        )
+        return None if attr_m is None else attr_m.group(2)
     return None
 
 
@@ -1157,6 +1249,9 @@ def _repair_structural_template_slots(seed_html: str, filled_html: str) -> str |
         right = after[: next_m.start()] if next_m else after[:64]
         left_anchor = left if len(left) <= 96 else left[-96:]
         right_anchor = right if len(right) <= 96 else right[:96]
+        # Open-tag attributes are unstable under LLM rewrite; keep tag names only.
+        left_anchor = _strip_open_tag_attrs(left_anchor)
+        right_anchor = _strip_open_tag_attrs(right_anchor)
 
         sliced = _slice_between_anchors(
             filled_html, left_anchor, right_anchor, search_from=search_from

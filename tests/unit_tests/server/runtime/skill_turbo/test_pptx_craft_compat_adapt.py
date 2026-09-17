@@ -14,6 +14,7 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import 
     _build_page_prompt,
     _build_content_template_fill_prompt,
     _build_content_template_fill_system_prompt,
+    _chart_activation_incomplete,
     _extract_chart_scaffold_region,
     _extract_designer_section,
     _filled_chart_scaffold_is_progressed,
@@ -375,6 +376,54 @@ def test_merge_chart_scaffold_active_script_without_comment():
     merged = _merge_chart_scaffold_from_filled(seed, filled)
     assert "CHART_SCAFFOLD_BEGIN" not in merged
     assert 'const option = {"series"' in merged
+
+
+def test_merge_chart_scaffold_dual_charts_all_activated_by_target_id():
+    """双 CHART_SCAFFOLD 全部激活时须按 target_id 一对一合回，不得只保留一块。"""
+    seed = (
+        "<html><body>"
+        '<main>'
+        '<div id="chart-1"></div><div id="chart-2"></div>'
+        "</main>"
+        '<div class="flex-shrink-0"><p>f</p></div>'
+        "<!-- CHART_SCAFFOLD_1_BEGIN\n"
+        "<script>\n"
+        "const option = null;\n"
+        'echarts.init(document.getElementById("chart-1"));\n'
+        "</script>\n"
+        "CHART_SCAFFOLD_1_END -->"
+        "<!-- CHART_SCAFFOLD_2_BEGIN\n"
+        "<script>\n"
+        "const option = null;\n"
+        'echarts.init(document.getElementById("chart-2"));\n'
+        "</script>\n"
+        "CHART_SCAFFOLD_2_END -->"
+        "</body></html>"
+    )
+    filled = (
+        seed.replace(
+            "const option = null;\n"
+            'echarts.init(document.getElementById("chart-1"));',
+            'const option = {"series":[{"type":"bar","data":[1,2]}]};\n'
+            'echarts.init(document.getElementById("chart-1"));',
+            1,
+        ).replace(
+            "const option = null;\n"
+            'echarts.init(document.getElementById("chart-2"));',
+            'const option = {"series":[{"type":"line","data":[3,4]}]};\n'
+            'echarts.init(document.getElementById("chart-2"));',
+            1,
+        )
+    )
+
+    merged = _merge_chart_scaffold_from_filled(seed, filled)
+
+    assert "CHART_SCAFFOLD" not in merged
+    assert 'getElementById("chart-1")' in merged
+    assert 'getElementById("chart-2")' in merged
+    assert '"data":[1,2]' in merged
+    assert '"data":[3,4]' in merged
+    assert _chart_activation_incomplete(merged) is False
 
 
 def test_chart_scaffold_path_b_ignores_main_inline_echarts_init():

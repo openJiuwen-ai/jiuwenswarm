@@ -65,6 +65,7 @@ _DOM_BROKEN_FILL_REASONS = frozenset({
     "header_chrome_changed",
     "footer_chrome_changed",
     "no_placeholders",
+    "layout_patch_slot_merge_failed",
 })
 
 
@@ -466,6 +467,12 @@ class SlideDesignerWorker:
             "footer_chrome_changed": "禁止改动 footer 结构；仅替换 PAGE_FOOTER",
             "custom_page_content_blocks": "PAGE_CONTENT 至少 2 个直接子块",
             "seed_not_modified": "必须填入真实内容，不能与预铺模板逐字相同",
+            "slot_merge_failed": (
+                "骨架须逐字保留，只替换 seed 中已有 {{PLACEHOLDER}}，勿重写整页 HTML"
+            ),
+            "structural_fill_failed": (
+                "骨架须逐字保留，只替换 seed 中已有 {{PLACEHOLDER}}，勿重写整页 HTML"
+            ),
             "chart_scaffold_not_activated": (
                 "本页已有 chart 容器：必须成对删除 CHART_SCAFFOLD_* 定界符，"
                 "并将 const option = null 替换为配置对象 const option = {…}；"
