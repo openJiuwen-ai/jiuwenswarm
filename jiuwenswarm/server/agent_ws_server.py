@@ -5299,7 +5299,7 @@ class AgentWebSocketServer:
         ok = True
         try:
             if method == "session.archived.list":
-                payload = service.list_sessions(params)
+                payload = await asyncio.to_thread(service.list_sessions, params)
             elif method == "cron.sessions.delete":
                 payload = await service.delete_cron_sessions(
                     params.get("cron_id"), request.channel_id or ""
@@ -5309,7 +5309,8 @@ class AgentWebSocketServer:
                     params.get("project_id"), method.rsplit(".", 1)[1], request.channel_id or ""
                 )
             elif method == "project.lifecycle" and params.get("events"):
-                payload = {"events": lc.event_snapshots()}
+                # Full-directory scan of lifecycle state: keep it off the loop.
+                payload = {"events": await asyncio.to_thread(lc.event_snapshots)}
             elif method == "project.lifecycle" and params.get("inventory"):
                 from jiuwenswarm.server.runtime.session.project_store import list_projects
                 payload = {"projects": [dict(project_id=p.project_id,

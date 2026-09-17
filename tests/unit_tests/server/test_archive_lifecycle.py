@@ -1,6 +1,7 @@
 """Disk-backed lifecycle scenarios; runtime calls are isolated from LLMs."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -619,6 +620,48 @@ async def test_project_delete_skips_running_ordinary_session_and_keeps_project(a
 
 
 @pytest.mark.asyncio
+async def test_project_delete_reuses_inventory_metadata(archive, monkeypatch):
+    import shutil
+
+    service, create, root, runtime = archive
+    project = project_store.create_project("reuse", str(root / "work"))
+    for sid in ("sess_1", "sess_2", "sess_3"):
+        directory = create(sid)
+        meta = lc.raw_metadata(sid)
+        meta["project_id"] = project.project_id
+        lc.atomic_json(directory / "metadata.json", meta)
+
+    async def delete_session(*, channel_id, session_id):
+        shutil.rmtree(lc.resolve_session(session_id))
+        return SimpleNamespace(ok=True)
+
+    runtime.delete_session.side_effect = delete_session
+
+    original = lc.raw_metadata
+    calls = []
+
+    def counting_raw_metadata(session_id):
+        calls.append(session_id)
+        return original(session_id)
+
+    monkeypatch.setattr(lc, "raw_metadata", counting_raw_metadata)
+    token = await service.project(
+        project.project_id, "delete", "web", {"_lifecycle_stage": "prepare"}
+    )
+    calls.clear()
+    result = await service.project(
+        project.project_id,
+        "delete",
+        "web",
+        {**token, "_lifecycle_stage": "finish"},
+    )
+    assert result["deleted"] is True
+    # Exactly one metadata read per session (the inventory scan); the delete
+    # loop and _session must consume the snapshot instead of re-reading.
+    assert sorted(calls) == ["sess_1", "sess_2", "sess_3"]
+
+
+@pytest.mark.asyncio
 async def test_delete_cron_sessions_removes_running_and_idle_children(archive):
     import shutil
 
@@ -639,6 +682,30 @@ async def test_delete_cron_sessions_removes_running_and_idle_children(archive):
     assert result["succeeded_count"] == 2
     assert result["failed_count"] == 0
     assert service.cron_sessions("job_a") == []
+
+
+@pytest.mark.asyncio
+async def test_delete_cron_sessions_locks_each_project_once(archive, monkeypatch):
+    service, create, _, _ = archive
+    create("cron_job_a")  # matched by naming convention
+    create("cron_child", cron_id="job_a")  # matched by metadata
+
+    locked = []
+    original = service.lock
+
+    @asynccontextmanager
+    async def counting_lock(kind, resource_id):
+        if kind == "project":
+            locked.append(resource_id)
+        async with original(kind, resource_id):
+            yield
+
+    monkeypatch.setattr(service, "lock", counting_lock)
+    result = await service.delete_cron_sessions("job_a", "web")
+    assert result["succeeded_count"] == 2
+    assert result["failed_count"] == 0
+    # One project execution lock for the whole group, not one per session.
+    assert locked == ["default"]
 
 
 @pytest.mark.asyncio
@@ -751,6 +818,50 @@ async def test_project_batch_reindexes_pins_once_only_when_required(
     assert result["succeeded_count"] == 2
     reindex.assert_called_once_with()
     assert all("_pins_reindex_required" not in item for item in result["results"])
+
+
+@pytest.mark.asyncio
+async def test_single_session_archive_reindexes_only_pinned_sessions(
+    archive, monkeypatch
+):
+    service, create, _, _ = archive
+    create("plain")
+    reindex = Mock()
+    monkeypatch.setattr(service, "reindex_pins", reindex)
+    await service.session("plain", "archive", "web")
+    # Archiving an unpinned session cannot change the pinned ordering.
+    reindex.assert_not_called()
+
+    create("pinned", pinned=True, pin_order=1)
+    await service.session("pinned", "archive", "web")
+    reindex.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_archive_retry_preserves_pin_reindex_requirement(archive, monkeypatch):
+    service, create, _, runtime = archive
+    create("first", pinned=True, pin_order=1)
+    create("second", pinned=True, pin_order=2)
+    monkeypatch.setattr(
+        service, "reindex_pins", Mock(side_effect=OSError("temporary reindex failure"))
+    )
+
+    with pytest.raises(lc.LifecycleError, match="temporary reindex failure"):
+        await service.session("first", "archive", "web")
+
+    assert lc.raw_metadata("first")["pinned"] is False
+    assert lc.raw_metadata("second")["pin_order"] == 2
+    operation = lc.state("session", "first")["operation"]
+    assert operation["status"] == "failed"
+    assert operation["pin_reindex_required"] is True
+
+    # A fresh service must recover the requirement from disk, not memory.
+    restarted = SessionArchiveService(runtime)
+    result = await restarted.session("first", "archive", "web")
+    assert result["ok"] is True
+    assert lc.raw_metadata("second")["pin_order"] == 1
+    operation = lc.state("session", "first")["operation"]
+    assert operation["status"] == "completed"
 
 
 def test_migrate_project_archives_preserves_session_and_delete_fences(archive):
