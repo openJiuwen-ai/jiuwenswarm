@@ -68,6 +68,29 @@ def _make_agent(agent_id: str):
     )
 
 
+def _make_fake_third_agent_tools():
+    return [
+        _FakeSkillToolkit._make_tool("install_third_agent"),
+        _FakeSkillToolkit._make_tool("list_third_agents"),
+        _FakeSkillToolkit._make_tool("uninstall_third_agent"),
+    ]
+
+
+def _make_fake_model_registry_tools():
+    return [
+        _FakeSkillToolkit._make_tool("register_model"),
+        _FakeSkillToolkit._make_tool("unregister_model"),
+    ]
+
+
+def _make_fake_user_tools():
+    return [
+        _FakeSkillToolkit._make_tool("create_user"),
+        _FakeSkillToolkit._make_tool("list_users"),
+        _FakeSkillToolkit._make_tool("delete_user"),
+    ]
+
+
 def test_team_member_skill_toolkit_rail_init_registers_member_scoped_tools(monkeypatch, tmp_path):
     """Rail init should replace inherited global cards with member-scoped tool ids."""
     resource_mgr = _FakeResourceManager()
@@ -76,6 +99,9 @@ def test_team_member_skill_toolkit_rail_init_registers_member_scoped_tools(monke
     monkeypatch.setattr("openjiuwen.core.runner.Runner.resource_mgr", resource_mgr, raising=False)
     monkeypatch.setattr(f"{rail_module}.SkillManager", _FakeSkillManager)
     monkeypatch.setattr(f"{rail_module}.SkillToolkit", _FakeSkillToolkit)
+    monkeypatch.setattr(f"{rail_module}.get_third_agent_tools", _make_fake_third_agent_tools)
+    monkeypatch.setattr(f"{rail_module}.get_model_registry_tools", _make_fake_model_registry_tools)
+    monkeypatch.setattr(f"{rail_module}.get_user_tools", _make_fake_user_tools)
 
     agent = _make_agent("member-agent-1")
     rail = MemberSkillToolkitRail(workspace_dir=str(tmp_path))
@@ -86,9 +112,17 @@ def test_team_member_skill_toolkit_rail_init_registers_member_scoped_tools(monke
     assert install_card is not None
     assert install_card.id == "install_skill_member-agent-1"
     assert sorted(resource_mgr.tools) == [
+        "create_user_member-agent-1",
+        "delete_user_member-agent-1",
         "install_skill_member-agent-1",
+        "install_third_agent_member-agent-1",
+        "list_third_agents_member-agent-1",
+        "list_users_member-agent-1",
+        "register_model_member-agent-1",
         "search_skill_member-agent-1",
         "uninstall_skill_member-agent-1",
+        "uninstall_third_agent_member-agent-1",
+        "unregister_model_member-agent-1",
     ]
 
 
@@ -100,6 +134,9 @@ def test_team_member_skill_toolkit_rail_uninit_cleans_up_registered_tools(monkey
     monkeypatch.setattr("openjiuwen.core.runner.Runner.resource_mgr", resource_mgr, raising=False)
     monkeypatch.setattr(f"{rail_module}.SkillManager", _FakeSkillManager)
     monkeypatch.setattr(f"{rail_module}.SkillToolkit", _FakeSkillToolkit)
+    monkeypatch.setattr(f"{rail_module}.get_third_agent_tools", _make_fake_third_agent_tools)
+    monkeypatch.setattr(f"{rail_module}.get_model_registry_tools", _make_fake_model_registry_tools)
+    monkeypatch.setattr(f"{rail_module}.get_user_tools", _make_fake_user_tools)
 
     agent = _make_agent("member-agent-2")
     rail = MemberSkillToolkitRail(workspace_dir=str(tmp_path))
@@ -110,11 +147,22 @@ def test_team_member_skill_toolkit_rail_uninit_cleans_up_registered_tools(monkey
     assert agent.ability_manager.get("search_skill") is None
     assert agent.ability_manager.get("install_skill") is None
     assert agent.ability_manager.get("uninstall_skill") is None
+    assert agent.ability_manager.get("install_third_agent") is None
+    assert agent.ability_manager.get("list_third_agents") is None
+    assert agent.ability_manager.get("uninstall_third_agent") is None
     assert resource_mgr.tools == {}
     assert resource_mgr.removed == [
         "search_skill_member-agent-2",
         "install_skill_member-agent-2",
         "uninstall_skill_member-agent-2",
+        "install_third_agent_member-agent-2",
+        "list_third_agents_member-agent-2",
+        "uninstall_third_agent_member-agent-2",
+        "register_model_member-agent-2",
+        "unregister_model_member-agent-2",
+        "create_user_member-agent-2",
+        "list_users_member-agent-2",
+        "delete_user_member-agent-2",
     ]
 
 

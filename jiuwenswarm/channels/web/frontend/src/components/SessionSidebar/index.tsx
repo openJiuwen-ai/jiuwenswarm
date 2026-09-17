@@ -21,7 +21,7 @@ import AgentDesignIcon from '../../assets/智能体.svg?react';
 import MoreDesignIcon from '../../assets/更多.svg?react';
 import { webRequest } from '../../services/webClient';
 
-type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'browserpanel' | 'updatepanel';
+type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'thirdagents' | 'hardware' | 'modelmgmt' | 'users' | 'sessions' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'browserpanel' | 'updatepanel';
 
 interface SessionSidebarProps {
   activeNav: MainNavKey;
@@ -46,8 +46,48 @@ const teamNavIcon = (
   </svg>
 );
 
+// 三方 Agent 管理入口图标：机器人（天线 + 方头 + 双眼 + 嘴），内联风格同 teamNavIcon。
+const thirdAgentNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 7V4.5" />
+    <circle cx="12" cy="3.5" r="1" />
+    <rect x="4.75" y="7" width="14.5" height="11.5" rx="2.25" />
+    <path strokeLinecap="round" strokeWidth={2} d="M9.5 12h.01M14.5 12h.01" />
+    <path strokeLinecap="round" d="M10 15.25h4" />
+  </svg>
+);
+
+// 硬件管理入口图标：芯片（外框 + 内核 + 四向引脚），内联风格同上。
+const hardwareNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <rect x="7" y="7" width="10" height="10" rx="1.5" />
+    <rect x="10.25" y="10.25" width="3.5" height="3.5" rx="0.5" />
+    <path strokeLinecap="round" d="M9.5 4v3M14.5 4v3M9.5 17v3M14.5 17v3M4 9.5h3M4 14.5h3M17 9.5h3M17 14.5h3" />
+  </svg>
+);
+
+// 模型管理入口图标：立方体（顶面 + 左右棱线），内联风格同上。
+const modelNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 3.75l8 4.5v7.5l-8 4.5-8-4.5v-7.5l8-4.5z" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 12l8-3.75M12 12v8.25M12 12L4 8.25" />
+  </svg>
+);
+
+// 用户管理入口图标：人像（头 + 肩），内联风格同上。
+const userNavIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 7.5a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 20.25a7.5 7.5 0 0115 0" />
+  </svg>
+);
+
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
+  { key: 'thirdagents', labelKey: 'nav.thirdAgents', icon: thirdAgentNavIcon },
+  { key: 'hardware', labelKey: 'nav.hardware', icon: hardwareNavIcon },
+  { key: 'modelmgmt', labelKey: 'nav.modelmgmt', icon: modelNavIcon },
+  { key: 'users', labelKey: 'nav.users', icon: userNavIcon },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
   { key: 'channels', labelKey: 'nav.channels', icon: <ChannelIcon aria-hidden /> },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
