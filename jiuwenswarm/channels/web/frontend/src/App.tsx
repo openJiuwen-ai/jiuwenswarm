@@ -418,6 +418,10 @@ function AppContent({
   const [externalCliInstallDialogOpen, setExternalCliInstallDialogOpen] = useState(false);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedAgents, setHasVisitedAgents] = useState(false);
+  const [agentManagementNavigationRequest, setAgentManagementNavigationRequest] = useState<{
+    target: 'agent' | 'group';
+    requestId: number;
+  } | null>(null);
   // Deferred CLI agent choices held here (not inside Settings) so they survive
   // leaving/returning to Settings and a full page refresh while an install runs.
   const [externalCliPendingChoices, setExternalCliPendingChoices] =
@@ -3460,6 +3464,17 @@ function AppContent({
     [activeNav, isMobile, modelSetupGuideStep, setSingleAgentPanelExpanded, setHasVisitedPersonalContext, setRequestedSettingsModuleId, setTeamAreaExpanded, setToolPanelHidden, t],
   );
 
+  const handleNavigateToAgentManagement = useCallback(
+    (target: 'agent' | 'group' = 'agent') => {
+      setAgentManagementNavigationRequest((current) => ({
+        target,
+        requestId: (current?.requestId ?? 0) + 1,
+      }));
+      handleNavigate('agents');
+    },
+    [handleNavigate],
+  );
+
   const skipModelSetupGuide = useCallback(() => {
     setModelSetupGuideStep(null);
 
@@ -3718,7 +3733,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         teamAreaExpanded={toolPanelHidden ? null : isTeamAreaExpanded}
                         autoFocusKey={composerFocusKey}
                         onNavigateToSkills={() => handleNavigate('skills')}
-                        onNavigateToAgents={() => handleNavigate('agents')}
+                        onNavigateToAgents={handleNavigateToAgentManagement}
                         onToggleTeamArea={handleToggleDetailPanel}
                         onOpenCodeReview={handleOpenCodeReview}
                         permissionProfile={
@@ -3852,9 +3867,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onCreateGroupViaChat={() => requestSessionNavigation('new', {
                 initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
                 initialSelectedSkills: ['agent-group-creator'],
-                forceMode: 'team',
-                welcomeVariant: 'group-create',
+                forceMode: 'agent',
               })}
+              navigationRequest={agentManagementNavigationRequest}
             />
           </div>
         )}

@@ -64,7 +64,7 @@ function renderAvatarInner(avatar: EntityHeaderAvatar): ReactNode {
 
 /* 标签行：卡片/详情统一渲染结构——单行 nowrap，超出容器宽度时截断并显示溢出指示器。
    条目支持纯字符串或结构化 EntityHeaderTagItem（隐藏测量区只渲染内容本体，不带 tooltip） */
-function EntityTagList({ tags }: { tags: EntityHeaderTag[] }) {
+export function EntityTagList({ tags }: { tags: EntityHeaderTag[] }) {
   const items = tags.map(normalizeTag);
   const tagsRef = useRef<HTMLSpanElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);

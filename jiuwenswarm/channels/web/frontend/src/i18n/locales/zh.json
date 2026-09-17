@@ -2782,7 +2782,7 @@
         "createFirst": "手动创建",
         "createByChat": "通过聊天创建",
         "createByUpload": "上传文件创建",
-        "createViaChatPrompt": "帮我创建一个 XXX 专家团，擅长 XXXXX。我的经验是：[请补充你的行业背景、相关经验]",
+        "createViaChatPrompt": "帮我创建一个xxx专家团，擅长xxx",
         "install": "安装",
         "installing": "安装中…",
         "use": "使用",

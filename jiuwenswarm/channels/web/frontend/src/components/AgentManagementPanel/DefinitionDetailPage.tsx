@@ -106,6 +106,12 @@ export function DefinitionDetailPage({
   const canUse = detail.installed && detail.connectionState === 'connected' && detail.enabled !== false;
   const needsConnection = detail.installed && detail.connectionState !== 'connected';
   const canDelete = detail.source === 'local' && !detail.installed;
+  const category = detail.category?.trim() || '';
+  const categoryLabel = category
+    ? t(`agentManagement.categories.${category}`, {
+        defaultValue: category,
+      })
+    : null;
   const capabilityGroups = [
     { title: t('agentManagement.detail.tags'), items: detail.tags.map((tag) => ({ id: tag.id, name: tag.label })) },
     { title: t('agentManagement.detail.skills'), items: detail.skills },
@@ -127,9 +133,7 @@ export function DefinitionDetailPage({
           title={detail.displayName}
           titleTestId="agent-management-detail-name"
           tags={[
-            t(`agentManagement.categories.${detail.category}`, {
-              defaultValue: detail.category || t('agentManagement.categoryOther'),
-            }),
+            ...(categoryLabel ? [categoryLabel] : []),
             t('agentManagement.detail.sourcePrefix', {
               source: t(`agentManagement.source.${detail.source}`),
             }),
