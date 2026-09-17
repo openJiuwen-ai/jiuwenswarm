@@ -2532,6 +2532,14 @@ async def _process_team_message_stream(
             if isinstance(params_obj, dict)
             else ""
         ) or None
+        # 选的是登录送的免费模型时，按 Gateway 随请求带下来的凭据造条目（api_key 是占位值，
+        # 真 token 发请求时才换上）。不传的话集群按名字查不到它，会静默用配置里的第一个模型。
+        from jiuwenswarm.common.auth.login_credentials import build_login_model_entry
+
+        login_model_entry = build_login_model_entry(
+            params_obj if isinstance(params_obj, dict) else None,
+            requested_model_name or "",
+        )
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
         # 会话级 swarmflow 配置：请求 params > metadata > config.yaml
@@ -2552,6 +2560,7 @@ async def _process_team_message_stream(
             channel_id=channel_id,
             request_metadata=request_metadata,
             requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
             agent_group_name=agent_group_name,
             swarmflow_config=swarmflow_config,
         )

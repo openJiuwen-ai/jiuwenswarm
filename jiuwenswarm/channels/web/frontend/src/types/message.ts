@@ -79,6 +79,8 @@ export interface Message {
   renderKey?: string;
   /** 仅用于大历史渐进发布；实时消息没有该标记。 */
   historyBatchSeq?: number;
+  /** Fork 后从直接父会话继承的历史消息；用于定位分支开始边界。 */
+  forkedFromSessionId?: string;
   audioBase64?: string;
   audioMime?: string;
   mediaItems?: MediaItem[];
@@ -123,6 +125,13 @@ export interface Message {
   automation?: HeartbeatAutomationMetadata;
   /** 来自同一用户其他会话中 Agent 的后台请求。 */
   crossSession?: CrossSessionMessageMetadata;
+}
+
+export interface MessageForkPoint {
+  messageId: string;
+  role: MessageRole;
+  content: string;
+  timestamp: string;
 }
 
 export interface ToolCall {

@@ -45,6 +45,37 @@ logger = logging.getLogger(__name__)
 
 _WEB_CONNECTION_USER_ID_ATTR = "_web_connection_user_id"
 
+
+def _resolve_ws_auth_session(ws: Any) -> str:
+    """从 WS 握手里取登录会话 id：``X-Auth-Session`` 头优先，其次 cookie。
+
+    两种来源对应两类客户端：浏览器靠 cookie（``jiuwenswarm_auth``，登录回调时
+    种下、path=/，同源握手会自动带上），TUI / CLI 这类没有 cookie jar 的客户端
+    用请求头。和 ``/api/v1/auth/*`` 的双通道是同一套约定。
+
+    取不到返回空串——这不是错误，只是"这条连接没有登录身份"。
+
+    **只在握手时读一次，之后这条连接就一直用这份值。** 而登录走的是 HTTP、发生在
+    握手之后，所以「WS 已连上再去登录」时这里拿到的是登录前那份（空串或已被顶掉的
+    旧会话 id），凭据会挂不上。前端因此在登录态变化后主动重连一次
+    """
+    headers = getattr(ws, "request_headers", None)
+    if headers is None:
+        return ""
+    try:
+        header_value = headers.get("x-auth-session") or headers.get("X-Auth-Session")
+        if header_value and str(header_value).strip():
+            return str(header_value).strip()
+        raw_cookie = headers.get("cookie") or headers.get("Cookie") or ""
+    except Exception:  # noqa: BLE001 — 握手头拿不到不该让连接建不起来
+        logger.debug("[WebChannel] 读取登录会话失败", exc_info=True)
+        return ""
+    for part in str(raw_cookie).split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "jiuwenswarm_auth" and value.strip():
+            return value.strip()
+    return ""
+
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 _LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
 
@@ -76,6 +107,8 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.subagent_activity",
         "chat.symphony_status",
         "chat.notice",
+        "a4p.authorization_request",
+        "a4p.authorization_terminated",
         "history.message",
         "chat.session_result",
         "chat.usage_metadata",
@@ -849,6 +882,7 @@ class WebChannel(BaseWsChannel):
     def _should_preserve_full_payload(event_name: str) -> bool:
         return (
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
+            or event_name.startswith("a4p.")
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
             or event_name.startswith("personal_context.context.")
@@ -1324,6 +1358,9 @@ class WebChannel(BaseWsChannel):
         # 否则 send() 按 session_id 反查会落空导致 ACK 丢弃。
         # 注：此 sid 仅为传输层占位，首条 chat.send 携带真实 session_id 时会 re-register 覆盖。
         setattr(ws, "_jiuwen_initial_sid", _initial_sid)
+        # 握手时把调用方的**登录会话**认出来，供后续每条请求判定"这次是谁"。
+        # 只能在这里做：登录凭据在握手的 cookie / 头里，之后的每条 WS 消息都没有它。
+        setattr(ws, "_jiuwen_auth_session", _resolve_ws_auth_session(ws))
 
         # 上报连接事件
         self.report_connect(ws)
@@ -1588,6 +1625,9 @@ class WebChannel(BaseWsChannel):
                 # V2: 注入 ws_id 供 MessageHandler 构造 WebDeliveryTarget(ws_id=真值)。
                 "ws_id": getattr(ws, "_jiuwen_ws_id", ""),
                 "user_id": req_user_id,
+                # 登录会话id（握手时认的)。Gateway据此
+                # 给登录模型挂上**这个用户**的凭据，见 common/auth/passthrough.py。
+                "auth_session": getattr(ws, "_jiuwen_auth_session", "") or "",
             },
         )
 

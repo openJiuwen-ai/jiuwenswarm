@@ -22,6 +22,7 @@ try {
     vite.ssrLoadModule('/src/components/ChatPanel/ChatModelSelector.tsx'),
     vite.ssrLoadModule('/src/components/CronPanel/CronTaskDrawer.tsx'),
     vite.ssrLoadModule('/src/stores/sessionStore.ts'),
+    vite.ssrLoadModule('/src/stores/authStore.ts'),
     vite.ssrLoadModule('/src/stores/chatStore.ts'),
     vite.ssrLoadModule('/src/components/CronPanel/index.tsx'),
     vite.ssrLoadModule('/src/services/webClient.ts'),
@@ -34,6 +35,7 @@ const [
   { default: ChatModelSelector },
   { default: CronTaskDrawer },
   { useSessionStore },
+  { useAuthStore },
   { useChatStore },
   { default: CronPanel },
   { webClient },
@@ -46,9 +48,10 @@ const resources = Object.fromEntries(
   ]),
 );
 const catalog = [
+  { model_name: 'free-model', alias: 'Free Alias', is_free: true },
   { model_name: 'configured-a', alias: 'Configured A', is_default: true },
   { model_name: 'configured-a', alias: 'Secondary connection', is_default: false },
-  { model_name: 'configured-b', alias: 'Configured B' },
+  { model_name: 'configured-b', alias: 'Configured B', is_free: false },
 ];
 const sessionId = 'shared-model-picker-test';
 const initialForm = {
@@ -76,6 +79,9 @@ async function withFixture(run, language = 'en') {
     window: dom.window,
     document: dom.window.document,
     localStorage: dom.window.localStorage,
+    // 组件里会 new CustomEvent（如 requestLogin 派发的 jiuwen:auth-required），
+    // 不挂到全局的话那句直接 ReferenceError
+    CustomEvent: dom.window.CustomEvent,
     IS_REACT_ACT_ENVIRONMENT: true,
   })) {
     previousGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -83,6 +89,11 @@ async function withFixture(run, language = 'en') {
   }
   const previousSession = useSessionStore.getState();
   const previousChat = useChatStore.getState();
+  const previousAuth = useAuthStore.getState();
+  // 预置成「状态已查过、活动没开」：否则组件挂载时会真的去查登录状态，测试环境里
+  // 没有后端，查询失败会起一条最长 60 秒的退避重试，整个测试文件被拖到一分半钟。
+  // 需要活动开着的用例在 run 里自己改。
+  useAuthStore.setState({ initialized: true, enabled: false, islogin: false });
   const i18n = i18next.createInstance();
   await i18n.init({ lng: language, resources, initImmediate: false, showSupportNotice: false });
   const root = createRoot(document.getElementById('root'));
@@ -108,6 +119,7 @@ async function withFixture(run, language = 'en') {
     await act(async () => root.unmount());
     useSessionStore.setState(previousSession, true);
     useChatStore.setState(previousChat, true);
+    useAuthStore.setState(previousAuth, true);
     for (const [name, descriptor] of previousGlobals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
       else delete globalThis[name];
@@ -128,7 +140,7 @@ function cronDrawer(overrides = {}) {
   });
 }
 
-test('chat and scheduled tasks show configured models without secondary connections', async () => {
+test('chat and scheduled tasks show identical grouped options, excluding secondary connections', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     await mount(createElement(ChatModelSelector), cronDrawer());
     for (const prefix of ['chat-panel-model-selector', 'cron-model-picker']) {
@@ -136,15 +148,70 @@ test('chat and scheduled tasks show configured models without secondary connecti
       const menu = byId(`${prefix}-menu`);
       assert.deepEqual(
         [...menu.querySelectorAll('.model-select__section-header')].map((node) => node.textContent),
-        ['Configured Models'],
+        ['Configured Models', 'Limited-time Free Models'],
       );
       assert.deepEqual(
         [...menu.querySelectorAll('[role="menuitemradio"]')].map((node) => node.textContent),
-        ['Configured A', 'Configured B'],
+        ['Configured A', 'Configured B', 'Free Alias'],
       );
       assert.equal(menu.querySelector('[aria-checked="true"]').dataset.variant, 'configured-a');
       await click(document.body);
     }
+  });
+});
+
+test('限时免费模型：没登录拿到之前，这一栏只放一个「获取」入口', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    // 活动在跑但还没登录：免费模型一个都没有
+    useAuthStore.setState({ enabled: true, initialized: true, islogin: false });
+    useSessionStore.getState().setAvailableModels(
+      catalog.filter((model) => model.is_free !== true),
+      'configured-a',
+    );
+    await mount(createElement(ChatModelSelector));
+    await click(byId('chat-panel-model-selector-trigger'));
+    const menu = byId('chat-panel-model-selector-menu');
+
+    // 分组标题还在——用户得先知道有这回事，再点进去拿
+    assert.deepEqual(
+      [...menu.querySelectorAll('.model-select__section-header')].map((node) => node.textContent),
+      ['Configured Models', 'Limited-time Free Models'],
+    );
+    const cta = byId('chat-panel-model-selector-free-cta');
+    assert.ok(cta, '未登录时应出现「获取限时免费模型」入口');
+    // 它不是可选项：选中态和模型条目不能混在一起
+    assert.equal(cta.getAttribute('role'), null);
+    assert.deepEqual(
+      [...menu.querySelectorAll('[role="menuitemradio"]')].map((node) => node.textContent),
+      ['Configured A', 'Configured B'],
+    );
+
+    // 点它派发登录事件（LoginDialog 监听），并收起下拉
+    let requested = 0;
+    const onRequest = () => { requested += 1; };
+    window.addEventListener('jiuwen:auth-required', onRequest);
+    await click(cta);
+    window.removeEventListener('jiuwen:auth-required', onRequest);
+    assert.equal(requested, 1);
+    assert.equal(byId('chat-panel-model-selector-menu'), null);
+  });
+});
+
+test('限时免费模型：活动没在跑时，这一栏整个不出现', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    useAuthStore.setState({ enabled: false, initialized: true, islogin: false });
+    useSessionStore.getState().setAvailableModels(
+      catalog.filter((model) => model.is_free !== true),
+      'configured-a',
+    );
+    await mount(createElement(ChatModelSelector));
+    await click(byId('chat-panel-model-selector-trigger'));
+    const menu = byId('chat-panel-model-selector-menu');
+    assert.deepEqual(
+      [...menu.querySelectorAll('.model-select__section-header')].map((node) => node.textContent),
+      ['Configured Models'],
+    );
+    assert.equal(byId('chat-panel-model-selector-free-cta'), null);
   });
 });
 
@@ -309,11 +376,16 @@ for (const language of ['zh', 'en']) {
       assert.equal(document.querySelectorAll('.model-select__section-header').length, 0);
       assert.deepEqual(useSessionStore.getState().availableModels, []);
       assert.equal(useSessionStore.getState().defaultModelName, null);
-      await act(async () => useSessionStore.getState().setAvailableModels([catalog[0]]));
-      const headings = [...document.querySelectorAll('.model-select__section-header')];
-      assert.equal(headings.length, 1);
-      assert.equal(headings[0].textContent, resources[language].translation.chat.modelSelector.configured);
-      assert.equal(byId('model-picker-empty'), null);
+      for (const model of [catalog[0], catalog[1]]) {
+        await act(async () => useSessionStore.getState().setAvailableModels([model]));
+        const headings = [...document.querySelectorAll('.model-select__section-header')];
+        assert.equal(headings.length, 1);
+        assert.equal(
+          headings[0].textContent,
+          resources[language].translation.chat.modelSelector[model.is_free ? 'free' : 'configured'],
+        );
+        assert.equal(byId('model-picker-empty'), null);
+      }
     }, language);
   });
 }

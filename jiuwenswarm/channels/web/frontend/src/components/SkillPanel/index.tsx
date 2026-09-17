@@ -21,7 +21,6 @@ import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
 import { ClawHubSearchModal } from '../../features/ClawHubSearchModal';
 import { TeamSkillsHubModal } from '../../features/TeamSkillsHubModal';
 import { normalizeSkillNetUrl } from '../../utils/skillNetUrl';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { computeMySkills, filterEnabledMySkills } from '../../utils/mySkills';
 import { Switch } from '../Switch';
 import {
@@ -944,7 +943,6 @@ export function SkillPanel({
   );
 
   const renderMySkillCard = (skill: SkillItem) => {
-    const avatar = getSkillAvatar(skill.name);
     const displayName = skill.display_name || skill.name;
     const isDisabled = skill.enabled === false;
     const isToggling = actionTarget === `toggle:${skill.name}`;
@@ -1060,7 +1058,7 @@ export function SkillPanel({
         onClick={() => handleOpenSkill(skill.name)}
         testId="skill-panel-my-skill-card"
         variant={listKey}
-        avatar={avatar}
+        avatar={{ name: displayName, testId: 'skill-panel-my-skill-card-avatar' }}
         title={displayName}
         titleEnd={titleEndContent}
         label={labelTags}
@@ -1454,7 +1452,7 @@ export function SkillPanel({
             <div className="page-shell mt-4 text-sm text-text-muted">{t(MY_SKILLS_EMPTY_KEY[mySkillsSubTab])}</div>
           ) : null}
           {listState !== 'success' || mySkillsFiltered.length > 0 ? (
-            <div className="page-scroll pt-4 flex-1 min-h-0 overflow-y-auto">
+            <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
               {listState === 'loading' && (
                 <div className="text-sm text-text-muted" data-testid="skill-panel-my-list-loading">
                   {t('common.loading')}

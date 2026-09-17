@@ -250,3 +250,41 @@ class TestCronTeamCompletionSignals:
             },
         )
         assert not cron_team_round_should_end(state)
+
+    @staticmethod
+    def test_team_error_records_reason_and_clears_round():
+        """team.error 与 chat.error 同为终端失败信号。
+
+        team.error 由团队运行时直接抛出，不保证经 gateway 归一化成 chat.error。
+        漏认会让轮次状态里不留任何错误痕迹，cron 只能兜底成无细节的
+        「定时任务未产生有效报告」，后端真实报错因此丢失。
+        """
+        state = new_cron_team_round_state()
+        apply_cron_team_round_event(
+            state,
+            {
+                "event_type": "team.task",
+                "event": {"type": "task.created", "task_id": "t-1"},
+            },
+        )
+        assert state["open_team_tasks"]
+
+        apply_cron_team_round_event(
+            state,
+            {"event_type": "team.error", "error": "模型调用失败: 429 rate limited"},
+        )
+        assert state["leader_text"] == "模型调用失败: 429 rate limited"
+        assert state["leader_final_seen"] is True
+        assert state["open_team_tasks"] == {}
+        assert state["active_team_members"] == {}
+
+    @staticmethod
+    def test_team_error_accepts_message_field():
+        """team.error 的报错文本可能只在 message 字段（与 CLI handle_error 一致）。"""
+        state = new_cron_team_round_state()
+        apply_cron_team_round_event(
+            state,
+            {"event_type": "team.error", "message": "round aborted"},
+        )
+        assert state["leader_text"] == "round aborted"
+        assert state["leader_final_seen"] is True

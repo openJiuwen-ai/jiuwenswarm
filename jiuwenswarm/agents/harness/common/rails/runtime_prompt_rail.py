@@ -8,6 +8,7 @@ Request date/time remains in the real user message's JSON envelope.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -72,6 +73,8 @@ class RuntimePromptRail(DeepAgentRail):
         self._mode: str = ""
         self._session_id: str | None = None
         self._force_english: bool = False
+        self._request_metadata: dict[str, Any] = {}
+        self._a4p_authorizer_available: bool = False
 
     def init(self, agent) -> None:
         """从 agent 获取 system_prompt_builder 引用。"""
@@ -107,6 +110,10 @@ class RuntimePromptRail(DeepAgentRail):
     def set_channel(self, channel: str) -> None:
         """per-request 更新频道。"""
         self._channel = channel
+
+    def set_a4p_authorizer_available(self, available: bool) -> None:
+        """Record whether this request has an interactive Web authorizer route."""
+        self._a4p_authorizer_available = bool(available)
 
     def set_trusted_dirs(self, trusted_dirs: list[str] | None) -> None:
         """per-request 更新可信目录。"""
@@ -201,6 +208,10 @@ class RuntimePromptRail(DeepAgentRail):
             if isinstance(session_id, str) and session_id.strip()
             else None
         )
+
+    def set_request_metadata(self, metadata: dict[str, Any] | None) -> None:
+        """Store request metadata used by channel-specific attachments."""
+        self._request_metadata = dict(metadata or {})
 
     def set_force_english(self, force: bool) -> None:
         """Force English for runtime scaffolding in code mode."""
@@ -669,8 +680,220 @@ class RuntimePromptRail(DeepAgentRail):
             kind=PromptAttachmentKind.RUNTIME,
             priority=95,
         )
+        await self._sync_a4p_intent_authorization_attachment(ctx)
+        await self._sync_a4p_cron_authorization_scope_attachment(ctx)
 
         return runtime_state
+
+    async def _sync_a4p_intent_authorization_attachment(
+        self,
+        ctx: AgentCallbackContext,
+    ) -> None:
+        section = "a4p.intent_authorization"
+        if self._channel != "web" or not self._a4p_authorizer_available:
+            await self._clear_prompt_attachment(ctx, section=section)
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.a4p_runtime import is_a4p_enabled
+            from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
+                get_a4p_supported_action_names,
+            )
+            from jiuwenswarm.common.config import get_config
+
+            enabled = is_a4p_enabled(get_config())
+            action_names = get_a4p_supported_action_names()
+        except Exception as exc:
+            logger.warning("Failed to resolve A4P intent authorization prompt: %s", exc)
+            enabled = False
+            action_names = []
+        if not enabled:
+            await self._clear_prompt_attachment(ctx, section=section)
+            return
+
+        actions = "、".join(f"`{name}`" for name in action_names)
+        if self._force_english or self._language != "cn":
+            actions = ", ".join(f"`{name}`" for name in action_names)
+            content = (
+                "# A4P Intent Authorization\n\n"
+                "## Authorization boundaries\n"
+                f"- Web: when using {actions}, call `request_a4p_intent_authorization` before the first protected tool "
+                "call. Every protected call must match a valid approved scope, including read-only operations. "
+                "Authorization permits execution; it does not execute actions.\n"
+                "- Unprotected tools may be used first to read necessary information, discover tool capabilities, and "
+                "determine parameters. One authorization may include multiple `actions` covering currently known "
+                "scopes. Use real tool names and security-critical parameters; ordinary parameters not used for "
+                "authorization matching need not be known in advance.\n"
+                "- For Shell tools, authorize each complete exact command by default. Use a narrowly scoped wildcard "
+                "only when one dynamic argument cannot be known in advance and the wildcard cannot absorb whitespace, "
+                "Shell operators, redirections, or extra arguments.\n"
+                "- For file tools, use a concrete file path or a filename glob under a fixed directory. Never use a "
+                "bare `*` or substitute a directory path for a file scope. Use dedicated file tools for file writes.\n"
+                "\n"
+                "## Planning and convergence\n"
+                "- Choose a feasible plan that satisfies the user request and has explicit authorization scopes. "
+                "Do not "
+                "search for an optimal plan or prove that equivalent alternatives are worse.\n"
+                "- Plan once: identify necessary operations and dependencies; determine tools and scopes for protected "
+                "operations; check requirement coverage, parameter dependencies, and authorization scopes. Once these "
+                "checks pass, immediately make the next tool call.\n"
+                "- Without new information, do not reconsider selected tools, operation grouping, data sources, or "
+                "execution order. Do not restructure a feasible plan to reduce the number of actions.\n"
+                "- Revise only affected steps and their dependencies when requirements change, new facts appear, a "
+                "tool "
+                "returns an error, or a concrete requirement or authorization violation is discovered. Hypothetical "
+                "concerns alone do not justify restarting planning.\n"
+                "\n"
+                "## Unknown information and dynamic parameters\n"
+                "- Use facts already established by context and tool documentation without repeatedly verifying them. "
+                "If missing information affects execution or authorization, obtain it through appropriate tools rather "
+                "than repeatedly guessing tool behavior.\n"
+                "- For values produced at runtime, specify how they will be obtained and used in later parameters; "
+                "their actual values need not be known in advance.\n"
+                "- Plans may describe variables and substitution rules. Authorization requests must use valid concrete "
+                "scopes or supported patterns; actual tool calls must use resolved values, never unresolved "
+                "placeholders.\n"
+                "- Only unknowns affecting feasibility, authorization scope, or correct execution block progress. For "
+                "other implementation choices, select a reasonable option and proceed. If necessary information cannot "
+                "be obtained and no feasible plan with explicit scopes exists, report the specific missing "
+                "information; "
+                "do not guess parameters or broaden authorization to compensate.\n"
+                "\n"
+                "## Interactive sessions and Cron\n"
+                "- Interactive sessions may use staged authorization: authorize and execute a known stage, then "
+                "request "
+                "another authorization only if the later stage is not covered by an approved scope. A runtime value "
+                "becoming known does not itself require another authorization.\n"
+                "- Cron authorization cannot be staged or depend on interactive approval during execution. Runtime "
+                "values may vary, but their construction and allowed scopes must be expressible in advance; otherwise, "
+                "do not enable the job.\n"
+                "- When the user only requests creating a scheduled job, put task execution and necessary preparation "
+                "in the future plan. Execute operations in the current session only if creation or authorization "
+                "actually depends on their results, or the user explicitly requests immediate execution. Otherwise, do "
+                "not trial-run the task or request additional session-level authorization.\n"
+                "- Generate the job `description` and authorization `actions` from the same execution plan. The "
+                "description records execution steps, selected call parameters, and dynamic parameter resolution; "
+                "actions cover corresponding protected calls. Future execution must follow that plan without selecting "
+                "equivalent implementations again.\n"
+                "- Use the system-designated default Cron creation tool. Execute in order: create disabled -> "
+                "authorize "
+                "the complete future scope using the returned `cronJobId` -> enable after `ok=true`. When the "
+                "preceding "
+                "step succeeds, proceed directly to the next step. If authorization fails, is denied, or is "
+                "insufficient, keep the job disabled and handle the actual result; do not repeatedly submit the same "
+                "request.\n"
+            )
+        else:
+            content = (
+                "# A4P 意图授权\n\n"
+                "## 授权边界\n"
+                f"- Web：涉及 {actions} 时，在第一个受保护的工具调用前，调用 `request_a4p_intent_authorization` "
+                "获取授权。每个受保护调用必须匹配有效的已批准范围，只读操作也不例外。授权只允许执行，不代表操作已经完成。\n"
+                "- 可先使用受保护列表外的工具读取必要信息、发现工具能力和确定参数。一次授权可通过多个 `actions` 覆盖当前已确定的范围。使用真实工具名及其安全关键参数；无需提前确定不参与授权匹配的普通参数。\n"
+                "- 对 Shell 工具，默认分别授权完整精确命令。只有单个动态参数无法提前确定，且通配不会覆盖空白、Shell 运算符、重定向或额外参数时，才使用窄范围通配。\n"
+                "- 对文件工具，使用具体文件路径，或固定目录下的文件名 glob。不得使用裸 * 或以目录路径代替文件范围。使用专用文件工具完成文件写入。\n"
+                "\n"
+                "## 规划与收敛\n"
+                "- 选择满足用户需求、权限范围明确且能够执行的方案。无需寻找最优方案，也无需证明其他等价方案更差。\n"
+                "- 完成一次规划：确定必要操作和依赖；确定受保护操作的工具和授权范围；检查需求覆盖、参数依赖和权限范围。三项检查通过后，立即进入下一步工具调用。\n"
+                "- 没有新增信息时，不重新比较已经选定的工具、操作拆分、数据来源或执行顺序。不要为了减少 actions 数量重组已经可行的方案。\n"
+                "- 只有用户需求变化、新获得的事实、工具返回错误，或发现具体的需求或授权约束不满足时，才修改受影响的步骤及其依赖。假设性问题本身不构成重新规划的理由。\n"
+                "\n"
+                "## 未知信息与动态参数\n"
+                "- 直接使用上下文和工具说明中已明确的事实，不重复验证。缺失信息若影响执行或授权，使用必要的信息获取工具确认，不反复猜测工具行为。\n"
+                "- 对运行时产生的信息，在计划中说明获取方式及其如何构成后续参数；无需提前取得实际值。\n"
+                "- 计划可以描述变量和替换关系；提交授权时必须使用有效的具体范围或受支持的模式；实际调用时必须使用已解析的真实参数，不得提交未解析的占位符。\n"
+                "- 只有影响任务可行性、授权范围或正确执行的未知信息需要阻塞下一步。"
+                "其他实现选择选定一种合理方案后继续。"
+                "若必要信息无法获取，且不存在权限范围明确、能够执行的方案，说明具体缺失信息；"
+                "不得以扩大授权或猜测参数代替解决问题。"
+                "\n"
+                "\n"
+                "## 当前会话与定时任务\n"
+                "- 当前交互会话允许分阶段授权：先授权并执行参数已明确的阶段；仅当后续阶段不在已批准范围内时再申请授权。运行时值变为已知，本身不意味着需要再次授权。\n"
+                "- Cron 授权不能分阶段，也不能依赖触发时的交互审批。运行时参数值可以变化，但其构成方式及允许范围必须能够预先表达；无法表达时，不启用任务。\n"
+                "- 用户只要求创建定时任务时，将任务执行及其必要准备操作纳入未来执行计划。"
+                "只有创建或授权本身确实依赖当前操作的结果，或用户明确要求立即执行时，才在当前会话执行相应操作；"
+                "否则不试运行任务或申请额外的会话级授权。"
+                "\n"
+                "- 从同一份执行计划生成任务 description 和授权 actions：description 记录执行步骤、已确定的调用参数及动态参数解析关系；actions "
+                "表达对应的受保护调用范围。未来执行应遵循该计划，不重新选择等价实现。\n"
+                "- 使用系统指定的默认 Cron 创建工具，顺序执行：create disabled -> 使用返回的 cronJobId 一次性授权完整未来范围 -> ok=true 后 "
+                "enable。前一步成功时直接进入下一步。授权失败、被拒绝或范围不足时保持任务禁用，并根据实际结果处理，不反复提交相同请求。\n"
+            )
+        await self._upsert_prompt_attachment(
+            ctx,
+            section=section,
+            content=content,
+            kind=PromptAttachmentKind.RUNTIME,
+            priority=94,
+        )
+
+    async def _sync_a4p_cron_authorization_scope_attachment(
+        self,
+        ctx: AgentCallbackContext,
+    ) -> None:
+        section = "a4p.cron_authorization_scope"
+        cron = self._request_metadata.get("cron")
+        cron = cron if isinstance(cron, dict) else {}
+        job_id = str(cron.get("job_id") or cron.get("jobId") or "").strip()
+        if self._channel not in {"cron", "__cron__"} or not job_id:
+            await self._clear_prompt_attachment(ctx, section=section)
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                get_a4p_runtime,
+                is_a4p_enabled,
+            )
+            from jiuwenswarm.common.config import get_config
+
+            summary = (
+                get_a4p_runtime().cron_intent_authorization_summary(job_id)
+                if is_a4p_enabled(get_config())
+                else None
+            )
+        except Exception as exc:
+            logger.warning("Failed to resolve A4P cron authorization scope: %s", exc)
+            summary = None
+
+        english = self._force_english or self._language != "cn"
+        if summary is None:
+            content = (
+                f"# A4P Cron Authorization Scope\n\n- Current cron job: `{job_id}`.\n"
+                "- No active A4P intent authorization is available. Protected calls fail closed because cron "
+                "cannot approve interactively."
+                if english
+                else f"# A4P 定时任务授权范围\n\n- 当前定时任务：`{job_id}`。\n"
+                "- 当前任务没有可用的 A4P intent 授权。定时执行无法交互审批，受保护调用将 fail-closed。"
+            )
+        else:
+            display_actions = [
+                {key: value for key, value in action.items() if key != "allowExtraParams"}
+                for action in summary.get("actions") or []
+                if isinstance(action, dict)
+            ]
+            actions_json = json.dumps(display_actions, ensure_ascii=False, indent=2, sort_keys=True)
+            if english:
+                content = (
+                    f"# A4P Cron Authorization Scope\n\n- Current cron job: `{job_id}`.\n"
+                    f"- Expires at: `{summary.get('expireAt') or 'unknown'}`.\n"
+                    f"- Authorized actions:\n```json\n{actions_json}\n```\n"
+                    "Only invoke protected tools inside this scope; out-of-scope, expired, or identity-mismatched "
+                    "calls fail closed."
+                )
+            else:
+                content = (
+                    f"# A4P 定时任务授权范围\n\n- 当前定时任务：`{job_id}`。\n"
+                    f"- 到期时间：`{summary.get('expireAt') or 'unknown'}`。\n"
+                    f"- 已授权 actions：\n```json\n{actions_json}\n```\n"
+                    "仅调用 scope 内的受保护工具；scope 外、过期或 identity 不匹配时 fail-closed。"
+                )
+        await self._upsert_prompt_attachment(
+            ctx,
+            section=section,
+            content=content,
+            kind=PromptAttachmentKind.RUNTIME,
+            priority=94,
+        )
 
     async def _sync_git_system_context(
         self,

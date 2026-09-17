@@ -26,7 +26,6 @@ import {
   type FilePreviewTreeNode,
 } from '../ui';
 import { Switch } from '../Switch';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { buildSkillVersionOptions } from './skillVersionOptions';
 import type {
   EvolutionEntry,
@@ -177,10 +176,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     const { hubSkill, hubDetail, installedSkillMap, actionTarget, onInstallHubSkill, onGoToChat } = props;
     const isInstalled = installedSkillMap.has(hubSkill.name);
     const installing = actionTarget === `install:${hubSkill.identifier || hubSkill.asset_id}`;
-    const hubAvatar = getSkillAvatar(hubSkill.name);
     return renderShell(
       {
-        avatar: hubAvatar,
+        avatar: { name: hubSkill.display_name || hubSkill.name, iconUrl: hubSkill.icon_uri, testId: 'skill-panel-hub-avatar' },
         title: hubSkill.display_name || hubSkill.name,
       },
       /* 下载/去试试按钮 */
@@ -264,13 +262,13 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     onToggleSkillDisabled,
     onGoToChat,
   } = props;
-  const skillAvatar = getSkillAvatar(selectedSkill.name);
+  const skillDisplayName = selectedSkill.display_name || selectedSkill.name;
   const uninstallPluginName = installedSkillMap.get(selectedSkill.name)?.plugin_name || selectedSkill.name;
   const uninstalling = actionTarget === `uninstall:${uninstallPluginName}`;
   return renderShell(
     {
-      avatar: skillAvatar,
-      title: selectedSkill.display_name || selectedSkill.name,
+      avatar: { name: skillDisplayName, testId: 'skill-panel-my-detail-avatar' },
+      title: skillDisplayName,
       titleEnd: selectedSkill.has_evolutions ? (
         <button
           onClick={(e) => {

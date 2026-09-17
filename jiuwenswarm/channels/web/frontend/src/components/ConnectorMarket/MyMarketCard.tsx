@@ -1,5 +1,4 @@
 import { MarketCard } from './MarketCard';
-import type { AvatarStyle } from '../../utils/skillAvatar';
 import type { McpCardState } from './mcpState';
 import type { McpBusyKind } from '../../types/connector';
 
@@ -7,7 +6,6 @@ interface MyMarketCardProps {
   title: string;
   tags?: string[];
   description: string;
-  avatar: AvatarStyle;
   iconUrl?: string;
   state: McpCardState;
   busyKind?: McpBusyKind;
@@ -23,7 +21,6 @@ export function MyMarketCard({
   title,
   tags = [],
   description,
-  avatar,
   iconUrl,
   state,
   busyKind,
@@ -34,5 +31,5 @@ export function MyMarketCard({
   quickAction = 'install',
   actionDisabled,
 }: MyMarketCardProps) {
-  return <MarketCard title={title} tags={tags} description={description} avatar={avatar} iconUrl={iconUrl} state={state} busyKind={busyKind} canOpenDetail={canOpenDetail} onOpenDetail={onOpenDetail} onUse={onUse} onQuickAdd={() => onQuickInstall?.()} quickAction={quickAction} actionDisabled={actionDisabled} />;
+  return <MarketCard title={title} tags={tags} description={description} iconUrl={iconUrl} state={state} busyKind={busyKind} canOpenDetail={canOpenDetail} onOpenDetail={onOpenDetail} onUse={onUse} onQuickAdd={() => onQuickInstall?.()} quickAction={quickAction} actionDisabled={actionDisabled} />;
 }

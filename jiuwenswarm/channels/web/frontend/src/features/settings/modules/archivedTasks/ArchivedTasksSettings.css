@@ -1,0 +1,262 @@
+/* 已归档的任务设置页：项目名作为独立分组标题（列表外），
+   每个项目下的任务各自组成列表卡片。复用 settings 页 token；
+   行高、操作列宽度固定，长标题单行省略，避免布局跳动。 */
+
+.archived-tasks {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.archived-tasks__description {
+  margin: 0 0 16px;
+  color: var(--color-settings-text-secondary);
+  font-size: var(--font-size-sm, 14px);
+  line-height: 20px;
+}
+
+.archived-tasks__search {
+  width: min(360px, 100%);
+  margin-bottom: 16px;
+}
+
+/* 分组容器：项目标题在列表外，项目的会话各自成卡片 */
+.archived-tasks__groups {
+  display: flex;
+  flex-direction: column;
+}
+
+.archived-tasks__group {
+  margin-bottom: 20px;
+}
+
+.archived-tasks__group:last-child {
+  margin-bottom: 0;
+}
+
+/* 项目分组标题：独立于会话列表之外，仅展示归属信息与项目级操作 */
+.archived-tasks__group-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 2px 4px 4px;
+}
+
+.archived-tasks__row-icon {
+  flex-shrink: 0;
+  color: var(--color-settings-text-secondary);
+}
+
+.archived-tasks__group-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-tasks__group-count {
+  flex-shrink: 0;
+  color: var(--color-settings-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.archived-tasks__stop-pending {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-full, 999px);
+  color: var(--color-settings-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+/* 项目下的任务列表卡片 */
+.archived-tasks__session-list {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+}
+
+/* 任务行之间的分隔线两端内缩，不紧贴卡片边缘 */
+.archived-tasks__session-list > li + li {
+  position: relative;
+}
+
+.archived-tasks__session-list > li + li::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 16px;
+  left: 16px;
+  border-top: 1px solid var(--color-settings-border);
+}
+
+/* 任务行：标题在上、归档时间在标题下方，操作按钮垂直居中于右侧 */
+.archived-tasks__row--session {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 12px 16px;
+}
+
+.archived-tasks__session-main {
+  display: flex;
+  flex: 1 1 120px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.archived-tasks__session-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.archived-tasks__row-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-tasks__row-time {
+  color: var(--color-settings-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.archived-tasks__row-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+/* 危险图标按钮沿用 danger 文本 token，语义由 aria-label/title 提供 */
+.archived-tasks__delete-button.ui-button--quiet {
+  color: var(--color-feedback-danger);
+}
+
+.archived-tasks__more {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+/* 初次加载：固定最小高度，响应到达前页面不跳动 */
+.archived-tasks__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 132px;
+  color: var(--color-settings-text-secondary);
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  font-size: 13px;
+}
+
+.archived-tasks__loading-icon {
+  animation: archived-tasks-spin 1s linear infinite;
+}
+
+@keyframes archived-tasks-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.archived-tasks__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  color: var(--color-feedback-danger);
+  border: 1px solid var(--color-border-danger);
+  border-radius: var(--radius-lg);
+  background: var(--color-feedback-danger-subtle);
+  font-size: 13px;
+}
+
+.archived-tasks__error-icon {
+  flex-shrink: 0;
+}
+
+.archived-tasks__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 48px 16px;
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-size: 14px;
+  text-align: center;
+}
+
+.archived-tasks__empty-icon {
+  color: var(--color-settings-text-secondary);
+}
+
+.archived-tasks__empty-hint {
+  margin: 0;
+  color: var(--color-settings-text-secondary);
+  font-size: 13px;
+}
+
+.archived-tasks__dialog-line {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.archived-tasks__dialog-line--danger {
+  color: var(--color-feedback-danger);
+}
+
+@media (max-width: 720px) {
+  .archived-tasks__search {
+    width: 100%;
+  }
+
+  /* 小屏：分隔线内缩与内边距同步收窄 */
+  .archived-tasks__session-list > li + li::before {
+    right: 12px;
+    left: 12px;
+  }
+
+  .archived-tasks__row--session {
+    padding: 10px 12px;
+  }
+
+  /* 小屏：时间列变窄，标题换行省略，不与操作区重叠 */
+  .archived-tasks__row-time {
+    font-size: 11px;
+  }
+}

@@ -314,6 +314,19 @@ icon_path = os.path.join(
 import sysconfig as _sysconfig
 _bundled_binaries = []
 
+# RSI is initialized lazily from AgentWebSocketServer. Collect the complete
+# service trees so PyInstaller keeps their nested modules and package data,
+# including the native harness_config.yaml fallback used by clean workspaces.
+_rsi_datas, _rsi_binaries, _rsi_hidden = collect_all(
+    "jiuwenswarm.agents.harness.common.rsi"
+)
+_server_rsi_datas, _server_rsi_binaries, _server_rsi_hidden = collect_all(
+    "jiuwenswarm.server.rsi"
+)
+datas += _rsi_datas + _server_rsi_datas
+hiddenimports += _rsi_hidden + _server_rsi_hidden
+_bundled_binaries += _rsi_binaries + _server_rsi_binaries
+
 # 论文 reporting 阶段会动态生成 PDF 结果图。显式收集 matplotlib，避免
 # PyInstaller 因延迟导入或 backend/font 数据遗漏导致冻结包运行失败。
 _matplotlib_datas, _matplotlib_binaries, _matplotlib_hidden = collect_all("matplotlib")

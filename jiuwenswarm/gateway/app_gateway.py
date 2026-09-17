@@ -225,6 +225,30 @@ def _build_event_frame(msg) -> dict[str, Any]:
     return {"type": "event", "event": event_name, "payload": payload}
 
 
+def _auth_session_id(msg) -> str | None:
+    """从入站消息里取调用方的**登录会话** id（不是对话 session_id）。
+
+    浏览器在 HTTP 上用 cookie，但对话走的是 WebSocket，cookie 不会出现在每条
+    消息里，所以前端把登录会话 id 放进 ``metadata.auth_session``。它就是
+    ``X-Auth-Session`` 头里的那个值——同一个凭据换了条通道，不构成新的信任假设。
+    """
+    metadata = getattr(msg, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    value = str(metadata.get("auth_session") or "").strip()
+    return value or None
+
+
+def _normalize_model_auth(params: dict[str, Any], msg) -> None:
+    """给登录模型挂上本次调用方的凭据。失败不阻断转发。"""
+    try:
+        from jiuwenswarm.common.auth.passthrough import normalize_model_auth
+
+        normalize_model_auth(params, _auth_session_id(msg))
+    except Exception:  # noqa: BLE001 — 凭据注入失败不该让整条消息发不出去
+        logger.debug("[App] 模型凭据注入失败", exc_info=True)
+
+
 def _normalize_gateway_message(msg):
 
     req_method = getattr(msg, "req_method", None) or ReqMethod.CHAT_SEND
@@ -240,6 +264,9 @@ def _normalize_gateway_message(msg):
         msg.is_stream
         or method_val in (ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value)
     )
+
+    # 登录模型的凭据在这里挂上，随请求带给AgentServer
+    _normalize_model_auth(params, msg)
 
     return Message(
         id=msg.id,

@@ -2,7 +2,7 @@ import type { ComponentType, ElementType } from 'react';
 
 export type I18nKey = string;
 export type SettingsModuleId =
-  'general' | 'models' | 'agent' | 'browser' | 'channels' | 'security' | 'experimental' | (string & {});
+  'general' | 'models' | 'agent' | 'browser' | 'channels' | 'personalContext' | 'archivedTasks' | 'security' | 'experimental' | (string & {});
 export type SettingsAccessLevel = 'hidden' | 'readOnly' | 'editable';
 export type SettingsCompositionMode = 'base' | 'extended';
 export type SettingsSource = 'config' | 'browser' | 'locale';

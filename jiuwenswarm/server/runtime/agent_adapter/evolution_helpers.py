@@ -16,6 +16,7 @@ from typing import Any, Callable
 import yaml
 
 from jiuwenswarm.server.runtime.skill import filter_visible_skill_names
+from jiuwenswarm.server.runtime.skill.skillpack import is_skillpack
 
 logger = logging.getLogger(__name__)
 
@@ -220,11 +221,14 @@ def validate_evolution_skill(
     if not _skill_exists(store, skill_name):
         return f"未找到 Skill '{skill_name}'。当前可用：{_available_skill_names(store)}"
 
+    skill_dir = _resolve_skill_dir(store, skill_name)
+    if is_skillpack(skill_dir):
+        return "SKILL_OPERATION_UNSUPPORTED: SkillPack 不支持演进操作。"
+
     if require_skill_md:
         if not _skill_definition_exists(store, skill_name):
             return f"Skill '{skill_name}' 缺少 SKILL.md，无法执行演进生成。"
 
-        skill_dir = _resolve_skill_dir(store, skill_name)
         if skill_dir is not None:
             skill_md = skill_dir / "SKILL.md"
             if skill_md.exists() and not os.access(skill_md, os.W_OK):

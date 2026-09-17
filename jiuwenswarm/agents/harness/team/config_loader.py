@@ -13,6 +13,7 @@ from typing import Any
 
 from openjiuwen.agent_teams.paths import get_agent_teams_home
 
+from jiuwenswarm.common.auth.login_credentials import bare_model_name
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.opencode_zen import get_zen_free_model_entries
@@ -209,10 +210,20 @@ def resolve_team_sqlite_db_path(config_base: dict[str, Any] | None = None) -> Pa
     return get_agent_teams_home() / conn_str
 
 
+def _entry_model_name(entry: dict[str, Any] | None) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    mcc = entry.get("model_client_config") or {}
+    if not isinstance(mcc, dict):
+        return ""
+    return str(mcc.get("model_name") or "").strip()
+
+
 def _select_default_model_config(
     configured_entries: list[dict[str, Any]],
     *,
     requested_model_name: str | None = None,
+    login_model_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     requested = (requested_model_name or "").strip()
     if requested:
@@ -221,17 +232,23 @@ def _select_default_model_config(
         # team members without an explicit ``modes.team.agents.*.model`` fall
         # back to the page-selected model instead of the first list item.
         for item in configured_entries:
-            mcc = item.get("model_client_config") or {}
-            if isinstance(mcc, dict) and mcc.get("model_name") == requested:
+            if _entry_model_name(item) == requested:
                 return item
+
+        # Login-granted models are request-scoped and never written into
+        # ``models.defaults``. Match the forwarded entry by name so a
+        # page-selected login model still drives the team's fallback, without
+        # overriding a same-named user-configured model above.
+        # The login entry is built from the bare name (``#<index>`` stripped), so compare bare names.
+        if login_model_entry is not None and _entry_model_name(login_model_entry) == bare_model_name(requested):
+            return login_model_entry
 
         # The selected model may be a Zen free model that is appended to
         # ``models.list`` at runtime but never written into ``models.defaults``
         # (see ``opencode_zen``). Match it from the in-memory Zen cache so a
         # page-selected free model still drives the whole team's fallback model.
         for item in get_zen_free_model_entries():
-            mcc = item.get("model_client_config") or {}
-            if isinstance(mcc, dict) and mcc.get("model_name") == requested:
+            if _entry_model_name(item) == requested:
                 return item
 
     if configured_entries:
@@ -244,11 +261,13 @@ def _resolve_default_model_config(
     config_base: dict[str, Any],
     *,
     requested_model_name: str | None = None,
+    login_model_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve the selected model from normalized executable entries."""
     return _select_default_model_config(
         get_default_models(config_base),
         requested_model_name=requested_model_name,
+        login_model_entry=login_model_entry,
     )
 
 
@@ -327,12 +346,14 @@ def get_effective_team_model_entries(
     config_base: dict[str, Any],
     *,
     requested_model_name: str | None = None,
+    login_model_entry: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Return configured models plus the effective page-selected model."""
     configured_entries = get_default_models(config_base)
     selected_entry = _select_default_model_config(
         configured_entries,
         requested_model_name=requested_model_name,
+        login_model_entry=login_model_entry,
     )
     return _merge_effective_model_entries(
         configured_entries,
@@ -344,10 +365,12 @@ def _build_default_model_dict(
     config_base: dict[str, Any],
     *,
     requested_model_name: str | None = None,
+    login_model_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     model_config = _resolve_default_model_config(
         config_base,
         requested_model_name=requested_model_name,
+        login_model_entry=login_model_entry,
     )
     model_client_config = dict(model_config.get("model_client_config", {}))
     model_name = model_client_config.get("model_name", "")
@@ -417,10 +440,12 @@ def _build_agents_config(
     config_base: dict[str, Any],
     *,
     requested_model_name: str | None = None,
+    login_model_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     default_model = _build_default_model_dict(
         config_base,
         requested_model_name=requested_model_name,
+        login_model_entry=login_model_entry,
     )
     default_workspace, max_iterations, completion_timeout = _build_agent_defaults()
 
@@ -600,6 +625,7 @@ def load_team_spec_dict(
     config_base: dict[str, Any] | None = None,
     *,
     requested_model_name: str | None = None,
+    login_model_entry: dict[str, Any] | None = None,
     template_id: str | None = None,
     template_snapshot: dict[str, Any] | None = None,
     strict_template: bool = False,
@@ -609,7 +635,8 @@ def load_team_spec_dict(
     When ``requested_model_name`` is provided (e.g. from the chat page model
     selector), team members without an explicit ``modes.team.agents.*.model``
     fall back to the matching entry in ``models.defaults`` instead of the
-    first list item.
+    first list item. ``login_model_entry`` fills that gap when the selected
+    name is a request-scoped login model (not in ``models.defaults``).
     """
     if config_base is None:
         config_base = get_config()
@@ -636,6 +663,7 @@ def load_team_spec_dict(
         team_raw,
         config_base,
         requested_model_name=requested_model_name,
+        login_model_entry=login_model_entry,
     )
     spec_dict = deepcopy(team_raw)
     spec_dict.pop("enable_team_plan", None)

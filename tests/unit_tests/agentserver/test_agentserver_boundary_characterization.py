@@ -242,6 +242,7 @@ class PortableRuntime:
                 session_id=target_session_id,
                 source_session_id=provision_input.source_session_id,
                 title=provision_input.title,
+                ephemeral=provision_input.side_conversation,
             )
         )
 

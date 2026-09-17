@@ -45,6 +45,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
     OpenAIAccountModelListError,
 )
 
+from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
@@ -52,6 +53,7 @@ from jiuwenswarm.common.config import (
     SWARMFLOW_ENABLED_CONFIG_PATH,
     get_config,
     get_config_raw,
+    get_available_models,
     get_default_models,
     replace_teams_in_config,
     update_default_models_in_config,
@@ -105,7 +107,10 @@ from jiuwenswarm.common.reasoning_injector import (
     build_reasoning_model_request_kwargs,
     core_has_context_window_field,
 )
-from jiuwenswarm.common.context_window import resolve_context_window_tokens
+from jiuwenswarm.common.context_window import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    parse_positive_int,
+)
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_env_file,
@@ -148,16 +153,19 @@ _MULTIMODAL_RELOAD_ENV_KEYS = {
     "VIDEO_API_BASE",
     "VIDEO_API_KEY",
     "VIDEO_ENDPOINT_PROFILE",
+    "VIDEO_CONTEXT_WINDOW_TOKENS",
     "AUDIO_PROVIDER",
     "AUDIO_MODEL_NAME",
     "AUDIO_API_BASE",
     "AUDIO_API_KEY",
     "AUDIO_ENDPOINT_PROFILE",
+    "AUDIO_CONTEXT_WINDOW_TOKENS",
     "VISION_PROVIDER",
     "VISION_MODEL_NAME",
     "VISION_API_BASE",
     "VISION_API_KEY",
     "VISION_ENDPOINT_PROFILE",
+    "VISION_CONTEXT_WINDOW_TOKENS",
     "VISION_ENABLED",
     "AUDIO_ENABLED",
     "VIDEO_ENABLED",
@@ -167,12 +175,14 @@ _MULTIMODAL_RELOAD_ENV_KEYS = {
     "VIDEO_GEN_MODEL_NAME",
     "VIDEO_GEN_PROVIDER",
     "VIDEO_GEN_PROTOCOL",
+    "VIDEO_GEN_CONTEXT_WINDOW_TOKENS",
     "VISUAL_GEN_ENABLED",
     "VISUAL_GEN_API_BASE",
     "VISUAL_GEN_API_KEY",
     "VISUAL_GEN_MODEL_NAME",
     "VISUAL_GEN_PROVIDER",
     "VISUAL_GEN_PROTOCOL",
+    "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
 }
 _ASR_ENV_KEYS = {
     "ASR_API_BASE",
@@ -630,6 +640,8 @@ def _merge_models_for_replace_all(
                     new_mco["reasoning_level"] = _serialize_reasoning_level(reasoning_level)
                 else:
                     new_mco.pop("reasoning_level", None)
+            if item.get("context_window_tokens_provided"):
+                new_mco["context_window"] = item["context_window_tokens"]
             if not _values_match(item["timeout"], resolved_mcc.get("timeout")):
                 new_mcc["timeout"] = item["timeout"]
             if not _values_match(item["alias"], (resolved_entry or {}).get("alias")):
@@ -677,6 +689,11 @@ def _merge_models_for_replace_all(
                     **({"endpoint_profile": item["endpoint_profile"]} if item.get("endpoint_profile") else {}),
                 },
                 "model_config_obj": {
+                    "context_window": (
+                        item["context_window_tokens"]
+                        if item.get("context_window_tokens_provided")
+                        else DEFAULT_CONTEXT_WINDOW_TOKENS
+                    ),
                     **({"temperature": item["temperature"]} if item["temperature"] is not None else {}),
                     **({"reasoning_level": _serialize_reasoning_level(item.get("reasoning_level"))}
                        if item.get("reasoning_level") else {}),
@@ -705,6 +722,7 @@ class _DummyBus:
 _FORWARD_REQ_METHODS = frozenset({
     "initialize",
     "session.switch",
+    "session.fork",
     "acp.tool_response",
     "team.delete",
     "command.goal",
@@ -776,6 +794,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.graph.status",
     "skills.graph.get",
     "skills.graph.cancel",
+    "skills.experience.list",
+    "skills.experience.request",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -882,6 +902,7 @@ _FORWARD_REQ_METHODS = frozenset({
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "initialize",
     "session.switch",
+    "session.fork",
     "acp.tool_response",
     "team.templates.list",
     "team.bindings.list",
@@ -954,6 +975,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.graph.status",
     "skills.graph.get",
     "skills.graph.cancel",
+    "skills.experience.list",
+    "skills.experience.request",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -1052,6 +1075,7 @@ _CONFIG_SET_ENV_MAP = {
     "video_endpoint_profile": "VIDEO_ENDPOINT_PROFILE",
     "video_vendor_key": "VIDEO_VENDOR_KEY",
     "video_plan": "VIDEO_PLAN",
+    "video_context_window_tokens": "VIDEO_CONTEXT_WINDOW_TOKENS",
     "video_enabled": "VIDEO_ENABLED",
     # video processing (generation) - dedicated slot, separate from the
     # video-understanding fields above.
@@ -1060,6 +1084,7 @@ _CONFIG_SET_ENV_MAP = {
     "video_gen_model": "VIDEO_GEN_MODEL_NAME",
     "video_gen_provider": "VIDEO_GEN_PROVIDER",
     "video_gen_protocol": "VIDEO_GEN_PROTOCOL",
+    "video_gen_context_window_tokens": "VIDEO_GEN_CONTEXT_WINDOW_TOKENS",
     "video_gen_enabled": "VIDEO_GEN_ENABLED",
     # visual processing (image generation) - dedicated slot, independent of
     # both visual_question_answering's VISION_* slot and image_tools.py's
@@ -1069,6 +1094,7 @@ _CONFIG_SET_ENV_MAP = {
     "visual_gen_model": "VISUAL_GEN_MODEL_NAME",
     "visual_gen_provider": "VISUAL_GEN_PROVIDER",
     "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
+    "visual_gen_context_window_tokens": "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
     "visual_gen_enabled": "VISUAL_GEN_ENABLED",
     # audio 模型
     "audio_api_base": "AUDIO_API_BASE",
@@ -1078,6 +1104,7 @@ _CONFIG_SET_ENV_MAP = {
     "audio_endpoint_profile": "AUDIO_ENDPOINT_PROFILE",
     "audio_vendor_key": "AUDIO_VENDOR_KEY",
     "audio_plan": "AUDIO_PLAN",
+    "audio_context_window_tokens": "AUDIO_CONTEXT_WINDOW_TOKENS",
     "audio_enabled": "AUDIO_ENABLED",
     # vision 模型
     "vision_api_base": "VISION_API_BASE",
@@ -1087,6 +1114,7 @@ _CONFIG_SET_ENV_MAP = {
     "vision_endpoint_profile": "VISION_ENDPOINT_PROFILE",
     "vision_vendor_key": "VISION_VENDOR_KEY",
     "vision_plan": "VISION_PLAN",
+    "vision_context_window_tokens": "VISION_CONTEXT_WINDOW_TOKENS",
     "vision_enabled": "VISION_ENABLED",
     # 其他
     "email_address": "EMAIL_ADDRESS",
@@ -3169,6 +3197,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         encrypted = dict(params)
         for key, val in list(encrypted.items()):
             from jiuwenswarm.extensions.registry import ExtensionRegistry
+            if key.endswith("_context_window_tokens"):
+                continue
             if (("api_key" in key.lower() or "token" in key.lower())
                     and ExtensionRegistry.get_instance().get_crypto_provider()):
                 encrypted[key] = ExtensionRegistry.get_instance().get_crypto_provider().encrypt(val)
@@ -3239,6 +3269,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if param_key not in params:
                 continue
             val = params[param_key]
+            if param_key.endswith("_context_window_tokens") and val not in (None, ""):
+                parsed_context_window = parse_positive_int(val)
+                if parsed_context_window is None:
+                    raise _ConfigBadRequest(
+                        f"{param_key} must be a positive integer or a value such as 256K or 1M"
+                    )
+                val = str(parsed_context_window)
             if param_key.endswith("_provider") and val and val not in available_model_providers:
                 raise _ConfigBadRequest(f"Model provider must in: {available_model_providers} ")
             if val is None:
@@ -3423,7 +3460,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         return True
 
     def _build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]:
-        if not isinstance(raw_models, list) or not raw_models:
+        if not isinstance(raw_models, list):
+            raise _ConfigBadRequest("models must be a non-empty list")
+        # 登录送的模型是运行时叠加的，前端回传时要去掉，不能写进 config.yaml：
+        # 它们的凭据会过期，换账号后模型也该跟着变。
+        raw_models = [item for item in raw_models if not is_login_model(item)]
+        if not raw_models:
             raise _ConfigBadRequest("models must be a non-empty list")
 
         available_model_providers = [p.value for p in ProviderType]
@@ -3477,6 +3519,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 原样透传给共享校验函数：不要用 `or ""` 压平，否则布尔 False
             # （legacy YAML 裸 off / 非前端客户端传的 JSON false）会被当成清空。
             raw_reasoning_level = item.get("reasoning_level")
+            context_window_tokens_provided = "context_window_tokens" in item
+            context_window_tokens = None
+            if context_window_tokens_provided:
+                context_window_tokens = parse_positive_int(item.get("context_window_tokens"))
+                if context_window_tokens is None:
+                    raise _ConfigBadRequest(
+                        f"models[{idx}].context_window_tokens must be a positive integer or a value such as 256K or 1M"
+                    )
             vendor_key = str(item.get("vendor_key") or "").strip() or None
             plan = str(item.get("plan") or "").strip() or None
             if plan:
@@ -3519,6 +3569,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "verify_ssl": verify_ssl,
                 "alias": alias,
                 "reasoning_level": reasoning_level or "",
+                "context_window_tokens": context_window_tokens,
+                "context_window_tokens_provided": context_window_tokens_provided,
                 "origin_index": origin_index,
                 # vendor_key is an opaque hint
                 # selector; not validated (the selector only ever emits keys
@@ -3780,34 +3832,30 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         每条带 ``origin_index`` 指向 ``models.defaults`` 中的位置，配合 replace_all
         在保存时识别"未编辑字段"并保留原 YAML 占位符（如 ``${API_KEY}``）。
+
+        **登录会话 id 必须从这条连接上取。** 免费模型是「这个登录用户」的模型，
+        不传的话 ``get_available_models`` 只能退回「当前唯一登录会话」的假设——
+        一旦机器上存在两个活跃会话（换个浏览器再登一次就够了），那个假设会拒绝
+        猜是谁，于是登录了却一个免费模型都列不出来。
         """
         try:
             config = get_config()
-            models = get_default_models(config)
+            auth_session = getattr(ws, "_jiuwen_auth_session", "") or None
+            # 放到线程池里跑：目录缓存过期或凭据要续期时这里会同步请求 APIG（超时 10～15 秒），
+            # 在事件循环上跑会让整个 Gateway 的连接陪着等。
+            models = await asyncio.to_thread(get_available_models, config, auth_session)
             result = []
             active_model = ""
             for idx, entry in enumerate(models):
                 mcc = entry.get("model_client_config", {})
                 mco = entry.get("model_config_obj", {})
                 is_default = entry.get("is_default", False)
-                model_name = mcc.get("model_name", "")
-                try:
-                    context_window_tokens = resolve_context_window_tokens(
-                        model_name=model_name,
-                        context_engine_config=(config.get("react", {}) or {}),
-                        model_config_obj=mco,
-                    )
-                except Exception:
-                    context_window_tokens = 0
-                    logger.debug(
-                        "Failed to resolve context_window_tokens for model %s",
-                        model_name,
-                        exc_info=True,
-                    )
-                result.append({
+                model_name = str(mcc.get("model_name", "") or "").strip()
+                result_entry = {
                     "model_name": model_name,
                     "api_base": mcc.get("api_base", ""),
-                    "api_key": mcc.get("api_key", ""),
+                    # 凭据绝不能随列表下发到浏览器
+                    "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
                     "temperature": mco.get("temperature"),
                     "reasoning_level": _reasoning_level_display(mco.get("reasoning_level")),
@@ -3816,13 +3864,27 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     # 注入。前端据此区分 defaults / agentos，置灰只读展示 agentos、
                     # 并让 agentos 进 ModelSelector 下拉（is_default!==false || is_agentos）
                     "is_agentos": bool(mco.get("_source") == "agentos"),
+                    # 免费模型标记：前端据此归进「免费模型」分组、并从设置页的模型配置里滤掉。
+                    # 下面追加 Zen 模型那段设的是同一个字段，**两处必须一致**。
+                    "is_free": bool(entry.get("is_free")),
                     "alias": entry.get("alias", ""),
                     "origin_index": idx,
-                    "context_window_tokens": context_window_tokens,
                     "vendor_key": mcc.get("vendor_key") or entry.get("vendor_key") or "",
                     "plan": mcc.get("plan") or entry.get("plan") or "",
                     "endpoint_profile": mcc.get("endpoint_profile") or "",
-                })
+                }
+                # An empty template entry is not a configured model yet; do
+                # not surface a synthetic context window until the user saves
+                # the model configuration.
+                if model_name:
+                    result_entry["context_window_tokens"] = (
+                        parse_positive_int(mco.get("context_window"))
+                        or DEFAULT_CONTEXT_WINDOW_TOKENS
+                    )
+                if is_login_model(entry):
+                    # 登录送的模型：前端据此置灰编辑
+                    result_entry.update(source=entry.get("source"), read_only=True)
+                result.append(result_entry)
             # Zen 免费模型仅存在于进程内缓存，不能写回 models.defaults；但需要
             # 与普通模型一同出现在会话选择器中。is_default 保持 None（而不是
             # False），使前端把它视为可选模型，同时不会改变首个配置模型作为
@@ -3850,7 +3912,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "is_agentos": False,
                         "is_free": True,
                         "alias": entry.get("alias", ""),
-                        "context_window_tokens": entry.get("context_window_tokens", 0),
+                        # Zen model metadata is intentionally not used for
+                        # context-window resolution; free models use the same
+                        # fixed default as every other unconfigured model.
+                        "context_window_tokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
                     })
                     existing_names.add(model_name)
             except Exception:
@@ -7221,6 +7286,105 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("permissions.rules.delete", _PermReq.PERMISSIONS_RULES_DELETE)
     _register_perm("permissions.approval_overrides.get", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_GET)
     _register_perm("permissions.approval_overrides.delete", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_DELETE)
+
+    async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method):
+        """Forward an A4P User Authorizer RPC over the session's logical Web route."""
+        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        if not isinstance(req_method, ReqMethod):
+            await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
+            return
+        ac = _resolve(agent_client)
+        if ac is None or not getattr(ac, "server_ready", False):
+            await channel.send_response(
+                ws, req_id, ok=False, error="Agent server is not ready", code="AGENT_NOT_READY"
+            )
+            return
+
+        route_metadata: dict[str, Any] = {
+            "ws_id": str(getattr(ws, "_jiuwen_ws_id", "") or ""),
+        }
+        route = None
+        try:
+            routes = await channel.routing_keys_for_ws(ws)
+            route = next(
+                (item for item in reversed(routes) if item.session_id == session_id),
+                None,
+            )
+            if route is not None:
+                route_metadata["app_id"] = route.app_id
+                route_metadata["agent_ref"] = {
+                    "mode": route.agent_ref.mode,
+                    "id": route.agent_ref.id,
+                }
+        except Exception:
+            logger.warning("[a4p] failed to resolve Web authorizer route", exc_info=True)
+        if route is None:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="No Web authorizer route is registered for this session",
+                code="A4P_WEB_SESSION_REQUIRED",
+            )
+            return
+
+        env = e2a_from_agent_fields(
+            request_id=str(req_id) if req_id else "",
+            channel_id="web",
+            session_id=session_id,
+            req_method=req_method,
+            params=dict(params) if isinstance(params, dict) else {},
+            metadata=route_metadata,
+        )
+        try:
+            resp = await ac.send_request(env)
+        except Exception as exc:
+            logger.exception("[a4p] forward to agent failed: %s", exc)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+            return
+        if not resp.ok:
+            payload = resp.payload if isinstance(resp.payload, dict) else {}
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error=str(payload.get("error") or "request failed"),
+                code=str(payload.get("code") or "BAD_REQUEST"),
+            )
+            return
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload=resp.payload if isinstance(resp.payload, dict) else {},
+        )
+
+    from jiuwenswarm.common.schema.message import ReqMethod as _A4PReq
+
+    def _register_a4p(method_name: str, req_method: Any) -> None:
+        async def _handler(ws, req_id, params, session_id):
+            await _forward_a4p_to_agent(
+                ws, req_id, params, session_id, req_method=req_method
+            )
+
+        channel.register_method(method_name, _handler)
+
+    _register_a4p("a4p.config.get", _A4PReq.A4P_CONFIG_GET)
+    _register_a4p("a4p.config.update", _A4PReq.A4P_CONFIG_UPDATE)
+    _register_a4p("a4p.authorization.complete", _A4PReq.A4P_AUTHORIZATION_COMPLETE)
+    _register_a4p("a4p.authorization.reject", _A4PReq.A4P_AUTHORIZATION_REJECT)
+    _register_a4p("a4p.authorization.pending", _A4PReq.A4P_AUTHORIZATION_PENDING)
+    _register_a4p("a4p.webauthn.credentials.get", _A4PReq.A4P_WEBAUTHN_CREDENTIALS_GET)
+    _register_a4p(
+        "a4p.webauthn.registration.options",
+        _A4PReq.A4P_WEBAUTHN_REGISTRATION_OPTIONS,
+    )
+    _register_a4p(
+        "a4p.webauthn.registration.verify",
+        _A4PReq.A4P_WEBAUTHN_REGISTRATION_VERIFY,
+    )
 
     async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
         from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request
