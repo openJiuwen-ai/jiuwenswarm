@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import pytest
@@ -140,3 +141,101 @@ async def test_web_channel_splits_chat_final_and_leaves_others_unsplit(monkeypat
     final.sort(key=lambda f: f["payload"]["message"]["_part"]["part_idx"])
     reassembled = "".join(f["payload"]["message"]["content"] for f in final)
     assert reassembled.encode("utf-8") == ("α" * 200_000).encode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch):
+    server = agent_ws_server_module.AgentWebSocketServer.__new__(
+        agent_ws_server_module.AgentWebSocketServer
+    )
+    monkeypatch.setattr(
+        server,
+        "get_conversation_history_cursor",
+        lambda session_id, cursor, **_kwargs: {
+            "messages": [{"id": "m-2", "role": "user", "content": "two"}],
+            "next_cursor": "cursor-2",
+            "has_more": True,
+            "snapshot_id": "snapshot-a",
+            "snapshot_end": 50_000_000,
+        },
+    )
+    ws = FakeWebSocket()
+    request = AgentRequest(
+        request_id="req-web-cursor",
+        channel_id="web",
+        req_method=ReqMethod.HISTORY_GET,
+        params={"session_id": "sess-web", "cursor": None, "limit": 50},
+    )
+
+    await server._handle_history_get_stream(ws, request, asyncio.Lock())
+
+    history_payloads = [
+        frame["payload"]
+        for frame in ws.sent
+        if frame["payload"].get("event_type") == "history.message"
+    ]
+    assert history_payloads
+    assert all(payload["cursor"] is None for payload in history_payloads)
+    assert all(payload["next_cursor"] == "cursor-2" for payload in history_payloads)
+    assert all(payload["has_more"] is True for payload in history_payloads)
+    assert all(payload["snapshot_id"] == "snapshot-a" for payload in history_payloads)
+    assert history_payloads[-1]["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_web_cursor_read_does_not_block_event_loop(monkeypatch):
+    server = agent_ws_server_module.AgentWebSocketServer.__new__(
+        agent_ws_server_module.AgentWebSocketServer
+    )
+
+    def _slow_cursor_read(*_args, **_kwargs):
+        time.sleep(0.15)
+        return {
+            "messages": [],
+            "next_cursor": None,
+            "has_more": False,
+            "snapshot_id": "snapshot-a",
+            "snapshot_end": 1,
+        }
+
+    monkeypatch.setattr(server, "get_conversation_history_cursor", _slow_cursor_read)
+    ws = FakeWebSocket()
+    request = AgentRequest(
+        request_id="req-web-off-thread",
+        channel_id="web",
+        req_method=ReqMethod.HISTORY_GET,
+        params={"session_id": "sess-web", "cursor": None, "limit": 50},
+    )
+
+    handler = asyncio.create_task(
+        server._handle_history_get_stream(ws, request, asyncio.Lock())
+    )
+    await asyncio.sleep(0.02)
+    assert handler.done() is False
+    await handler
+
+
+@pytest.mark.asyncio
+async def test_web_cursor_stream_reports_snapshot_rewrite(monkeypatch):
+    server = agent_ws_server_module.AgentWebSocketServer.__new__(
+        agent_ws_server_module.AgentWebSocketServer
+    )
+
+    def _changed(*_args, **_kwargs):
+        raise agent_ws_server_module.HistorySnapshotChanged("rewritten")
+
+    monkeypatch.setattr(server, "get_conversation_history_cursor", _changed)
+    ws = FakeWebSocket()
+    request = AgentRequest(
+        request_id="req-web-invalidated",
+        channel_id="web",
+        req_method=ReqMethod.HISTORY_GET,
+        params={"session_id": "sess-web", "cursor": "cursor-1", "limit": 50},
+    )
+
+    await server._handle_history_get_stream(ws, request, asyncio.Lock())
+
+    assert len(ws.sent) == 1
+    assert ws.sent[0]["payload"]["event_type"] == "history.message"
+    assert ws.sent[0]["payload"]["status"] == "error"
+    assert ws.sent[0]["payload"]["code"] == "HISTORY_SNAPSHOT_CHANGED"

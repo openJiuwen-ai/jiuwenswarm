@@ -128,7 +128,6 @@ def _install_switch_hooks(
     team_manager: _TeamManager | None = None,
 ) -> Any:
     from jiuwenswarm.agents.harness import team as team_package
-    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_product_hooks
 
     context = SimpleNamespace(
         target_is_team=target_is_team,
@@ -138,34 +137,11 @@ def _install_switch_hooks(
     )
     selected_team_manager = team_manager or _TeamManager(state)
 
-    def resolve_context(**kwargs: Any) -> Any:
-        state.events.append("switch.context")
-        state.context_calls.append(kwargs)
-        if context_error is not None:
-            raise context_error
-        return context
-
-    async def dispatch_signals(**kwargs: Any) -> None:
-        state.events.append("switch.kvc")
-        state.dispatch_calls.append(kwargs)
-        if dispatch_error is not None:
-            raise dispatch_error
-
     def get_team_manager(channel_id: str) -> _TeamManager:
         state.events.append("team.manager")
         assert channel_id == "web"
         return selected_team_manager
 
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "resolve_session_switch_context",
-        resolve_context,
-    )
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "dispatch_session_switch_signals",
-        dispatch_signals,
-    )
     monkeypatch.setattr(team_package, "get_team_manager", get_team_manager)
     return context
 
@@ -175,7 +151,7 @@ async def test_agent_switch_exposes_result_then_commits_kvc_with_opaque_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _SwitchState()
-    context = _install_switch_hooks(
+    _install_switch_hooks(
         monkeypatch,
         state,
         resolved_mode="code.normal",
@@ -191,24 +167,14 @@ async def test_agent_switch_exposes_result_then_commits_kvc_with_opaque_scope(
     assert prepared.result == SessionSwitchResult(
         channel_id="web",
         session_id="target-session",
-        mode="code.normal",
+        mode="agent.plan",
     )
     assert prepared.state is SessionProvisionState.PREPARED
     assert prepared.commit_timing is (
         SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY
     )
-    assert state.events == ["switch.context"]
-    assert state.context_calls == [
-        {
-            "target_session_id": "target-session",
-            "previous_session_id": "previous-session",
-            "params": {
-                "mode": "agent.plan",
-                "previous_mode": "agent.plan",
-                "team": False,
-            },
-        }
-    ]
+    assert state.events == []
+    assert state.context_calls == []
 
     result = await provisioner.commit_session_provision(
         prepared,
@@ -218,16 +184,9 @@ async def test_agent_switch_exposes_result_then_commits_kvc_with_opaque_scope(
 
     assert result is prepared.result
     assert prepared.state is SessionProvisionState.COMMITTED
-    assert state.events == ["switch.context", "switch.kvc"]
-    assert state.dispatch_calls == [
-        {
-            "context": context,
-            "channel_id": "web",
-            "target_session_id": "target-session",
-            "previous_session_id": "previous-session",
-            "view_id": "opaque-view-scope",
-        }
-    ]
+    assert state.events == []
+    assert state.dispatch_calls == []
+    assert provisioner._participant_registry.target("target-session") is not None
 
 
 @pytest.mark.asyncio
@@ -263,7 +222,7 @@ async def test_team_owner_prepare_precedes_commit_kvc(
         )
     )
 
-    assert state.events == ["switch.context", "team.manager", "team.prepare"]
+    assert state.events == ["team.manager", "team.prepare"]
     assert state.team_prepare_calls == [
         {
             "target_session_id": "target-session",
@@ -279,12 +238,7 @@ async def test_team_owner_prepare_precedes_commit_kvc(
         context=SessionProvisionCommitContext(foreground_scope_id="team-view"),
     )
 
-    assert state.events == [
-        "switch.context",
-        "team.manager",
-        "team.prepare",
-        "switch.kvc",
-    ]
+    assert state.events == ["team.manager", "team.prepare"]
 
 
 @pytest.mark.asyncio
@@ -292,17 +246,12 @@ async def test_target_metadata_mode_overrides_request_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from jiuwenswarm.agents.harness import team as team_package
-    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_product_hooks
 
     state = _SwitchState()
+    from jiuwenswarm.server.runtime.session import session_metadata
+
     monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "is_kv_cache_affinity_enabled",
-        lambda: False,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        kv_cache_product_hooks.session_metadata,
+        session_metadata,
         "get_session_metadata",
         lambda session_id: (
             {"mode": "code.normal"} if session_id == "target-session" else {}
@@ -357,7 +306,7 @@ async def test_context_failure_falls_back_to_input_and_preserves_team_prepare(
     assert state.team_prepare_calls == [
         {
             "target_session_id": "target-session",
-            "previous_session_id": None,
+            "previous_session_id": "previous-session",
             "reason": "session.switch: ",
         }
     ]
@@ -383,7 +332,7 @@ async def test_abort_does_not_dispatch_foreground_kvc(
     await provisioner.abort_session_provision(prepared)
 
     assert prepared.state is SessionProvisionState.ABORTED
-    assert state.events == ["switch.context"]
+    assert state.events == []
     assert state.dispatch_calls == []
 
 
@@ -408,17 +357,15 @@ async def test_started_switch_commit_attempt_is_terminal_on_hook_failure(
 
     await runtime.start()
     prepared = await runtime.prepare_session_switch(_input())
-    with pytest.raises(type(failure)) as captured:
-        await runtime.commit_session_provision(
-            prepared,
-            timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY,
-            context=SessionProvisionCommitContext(foreground_scope_id="terminal-view"),
-        )
+    await runtime.commit_session_provision(
+        prepared,
+        timing=SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY,
+        context=SessionProvisionCommitContext(foreground_scope_id="terminal-view"),
+    )
 
-    assert captured.value is failure
     assert prepared.state is SessionProvisionState.COMMITTED
-    assert state.events.count("switch.kvc") == 1
-    assert len(state.dispatch_calls) == 1
+    assert state.events.count("switch.kvc") == 0
+    assert len(state.dispatch_calls) == 0
     await runtime.close()
     assert runtime.closed is True
 

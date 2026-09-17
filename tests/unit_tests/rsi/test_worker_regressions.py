@@ -3,7 +3,8 @@
 
 覆盖：F1 enqueue 运行中入队、F4 QUEUED 幂等、F2 _run_loop 容错、
 F3 merge_results 锁内落盘、F5 async send_push 调度、F7 derive_progress 404、
-F9 树拓扑 parent 解析、F10 畸形载荷防御、F11 rmtree 失败传播、F12 公开回调 setter。
+F9 树拓扑 parent 解析、F10 畸形载荷防御、F11 任务索引优先删除与物理清理容错、
+F12 公开回调 setter。
 """
 import asyncio
 import contextlib
@@ -487,8 +488,28 @@ class TestProjectorContract:
 
 
 class TestDeleteFailures:
-    def test_delete_propagates_rmtree_failure(self, ctx, monkeypatch):
-        """F11：rmtree 失败不再静默吞掉（PR !5798 #11）。"""
+    def test_delete_hides_task_when_rmtree_fails(self, ctx, monkeypatch):
+        """任务索引先删除；物理目录清理失败不影响删除结果。"""
+        ctx.bind_task_service(harness_refs_provider=lambda: None)
+        t = _create(ctx)
+        import jiuwenswarm.agents.harness.common.rsi.task_store as ts
+
+        task_dir = ctx.store.task_dir(ctx.store.tasks_root, t)
+        task_file = task_dir / "task.json"
+
+        def _boom(*args, **kwargs):
+            raise PermissionError("locked")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ts.shutil, "rmtree", _boom)
+            assert ctx.task_service.delete({"task_id": t}) == {"ok": True}
+
+        assert not task_file.exists()
+        assert ctx.task_service.list({}) == []
+        assert task_dir.is_dir()
+
+    def test_delete_suppresses_cleanup_exception_without_logging(self, ctx, monkeypatch):
+        """物理目录清理异常直接忽略，不产生日志。"""
         ctx.bind_task_service(harness_refs_provider=lambda: None)
         t = _create(ctx)
         import jiuwenswarm.agents.harness.common.rsi.task_store as ts
@@ -496,13 +517,39 @@ class TestDeleteFailures:
         def _boom(*args, **kwargs):
             raise PermissionError("locked")
 
+        def _unexpected_warning(*args, **kwargs):
+            raise AssertionError("cleanup failures must not be logged")
+
         with monkeypatch.context() as patch:
             patch.setattr(ts.shutil, "rmtree", _boom)
-            with pytest.raises(PermissionError):
+            patch.setattr(ts, "logger", SimpleNamespace(warning=_unexpected_warning), raising=False)
+            assert ctx.task_service.delete({"task_id": t}) == {"ok": True}
+
+    def test_delete_propagates_task_index_failure(self, ctx, monkeypatch):
+        """任务索引删除失败时必须保留错误，避免列表与删除结果不一致。"""
+        ctx.bind_task_service(harness_refs_provider=lambda: None)
+        t = _create(ctx)
+        import jiuwenswarm.agents.harness.common.rsi.task_store as ts
+
+        task_dir = ctx.store.task_dir(ctx.store.tasks_root, t)
+        task_file = task_dir / "task.json"
+        real_unlink = ts.Path.unlink
+
+        def _boom(path, *args, **kwargs):
+            if path == task_file:
+                raise PermissionError("index locked")
+            return real_unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ts.Path, "unlink", _boom)
+            with pytest.raises(PermissionError, match="index locked"):
                 ctx.task_service.delete({"task_id": t})
 
+        assert task_file.exists()
+        assert [item["task_id"] for item in ctx.task_service.list({})] == [t]
+
     def test_delete_idempotent_when_dir_already_gone(self, ctx):
-        """目录已消失视作幂等成功（guard 通过后 rmtree 抛 FileNotFoundError 不误报）。"""
+        """物理目录清理按 best-effort 处理，正常删除路径保持幂等成功。"""
         ctx.bind_task_service(harness_refs_provider=lambda: None)
         t = _create(ctx)
         ctx.store.mark_active_ref_released(t)

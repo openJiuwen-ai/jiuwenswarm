@@ -17,10 +17,13 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
 )
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
 
 _MEMORY_WRITE_TOOLS = frozenset({"write_memory", "edit_memory"})
 
-_AVATAR_PROMPT_PRIORITY = 110
+_AVATAR_PROMPT_PRIORITY = SystemPromptPriority.AVATAR_IDENTITY
 
 
 class AvatarPromptRail(DeepAgentRail):

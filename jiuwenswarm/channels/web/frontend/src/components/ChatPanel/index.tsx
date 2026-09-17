@@ -12,17 +12,32 @@ import {
   CheckCircle2,
   ClipboardList,
   Copy,
+  Code2,
+  FileText,
+  GitFork,
+  Image as ImageIcon,
   Info,
   LoaderCircle,
+  Presentation,
   Share2,
   Sparkles,
+  Table2,
   X,
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
-import { AgentMode, MediaItem, Message, UserAnswer, type ProjectInfo } from '../../types';
+import {
+  AgentMode,
+  MediaItem,
+  Message,
+  UserAnswer,
+  type MessageForkPoint,
+  type Permission,
+  type ProjectInfo,
+} from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
+import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { InputArea, type InputAreaHandle } from './InputArea';
@@ -31,6 +46,7 @@ import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
 import beeFlyingIcon from '../../assets/bee-flying.webp';
 import beeStaticIcon from '../../assets/bee-static.png';
+import homeBanner from '../../assets/home-banner.svg';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import loadSendIcon from '../../assets/load-send.svg';
 import editIcon from '../../assets/edit.svg';
@@ -51,7 +67,11 @@ import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
 import { turnDiffKey } from '../../features/code-mode/turnChangeState';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
-import { canLoadOlderHistory, shouldShowHistoryRetry } from '../../features/historyPagination';
+import {
+  canLoadOlderHistory,
+  resolveHistoryPrependScrollTop,
+  shouldShowHistoryRetry,
+} from '../../features/historyPagination';
 import {
   DESKTOP_FILE_DRAG_EVENT,
   DESKTOP_LOCAL_FILES_EVENT,
@@ -66,8 +86,9 @@ import { ApplicationPluginTaskRuntimes } from '../../applicationPlugins/Applicat
 import { generateUuidV4 } from '../../utils/uuid';
 
 export interface ChatHistoryPagerProps {
-  loadedPages: number;
-  totalPages: number;
+  loadedBatchSeq: number;
+  publishedBatchSeq: number;
+  hasMore: boolean;
   loadingMore: boolean;
   prepending?: boolean;
   retryAvailable?: boolean;
@@ -77,6 +98,14 @@ export interface ChatHistoryPagerProps {
 interface ChatPanelProps {
   onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
+  onNewSession: () => void;
+  onForkSession: (
+    sourceSessionId: string,
+    forkPoint?: MessageForkPoint,
+  ) => Promise<void>;
+  onStartSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
+  continuedFromSessionId?: string | null;
+  onOpenContinuedFromSession?: (sourceSessionId: string) => void;
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (
     content: string,
@@ -126,19 +155,22 @@ interface ChatPanelProps {
   onToggleTeamArea?: (expanded: boolean | null) => void;
   /** 打开右侧面板并切换到代码审核 Tab */
   onOpenCodeReview?: (target: CodeReviewTarget) => void;
-  permissionsEnabled: boolean;
   /** 心跳面板展开状态：由 App.tsx 统一管理，跟团队/代码审核面板一样占用右侧工作区一栏 */
   heartbeatPanelOpen?: boolean;
   /** 切换心跳面板展开状态 */
   onToggleHeartbeatPanel?: () => void;
+  permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** Goal（持续目标）控制，见 GoalBar 组件 */
-  onSetGoal?: (sessionId: string, objective: string) => void;
-  onPauseGoal?: (sessionId: string) => void;
-  onResumeGoal?: (sessionId: string) => void;
-  onClearGoal?: (sessionId: string) => void;
+  onSetGoal?: (sessionId: string, objective: string) => void | Promise<void>;
+  onPauseGoal?: (sessionId: string) => void | Promise<void>;
+  onResumeGoal?: (sessionId: string) => void | Promise<void>;
+  onRefreshGoal?: (sessionId: string) => void | Promise<void>;
+  onClearGoal?: (sessionId: string) => void | Promise<void>;
   /** 目标 active 但当前无处理中任务时，消息入队后主动排空一次，见 InputArea.tsx 对应调用点 */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
+  /** 专家团「通过聊天创建」入口的 4.9 高保真欢迎态。 */
+  welcomeVariant?: 'group-create' | null;
 }
 
 // 邀请指令只对 human_agent 成员存在（见 upsertHumanShareCommandFromEvent 的
@@ -578,6 +610,17 @@ function WelcomeHeading() {
   );
 }
 
+function GroupCreateWelcomeHeading() {
+  const { t } = useTranslation();
+
+  return (
+    <>
+      <span className="chat-welcome__heading-highlight">{t('chat.groupCreateWelcomeBrand')}</span>
+      <span>{t('chat.groupCreateWelcomeSuffix')}</span>
+    </>
+  );
+}
+
 function getShareExportTitle(t: TFunction, isExportingShare: boolean, canExportShare: boolean): string {
   if (isExportingShare) {
     return t('share.exporting');
@@ -862,8 +905,19 @@ function scrollToBottom(el: HTMLDivElement): void {
 }
 
 const BEE_ANIMATION_DURATION = 4536;
+const WELCOME_BUBBLE_HIDE_DELAY = 3000;
 
-function BeeBanner({ className, altText, onTrigger }: { className: string; altText: string; onTrigger: () => void }) {
+function BeeBanner({
+  className,
+  altText,
+  onTrigger,
+  onLeave,
+}: {
+  className: string;
+  altText: string;
+  onTrigger: () => void;
+  onLeave: () => void;
+}) {
   const [isPlaying, setIsPlaying] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -892,6 +946,7 @@ function BeeBanner({ className, altText, onTrigger }: { className: string; altTe
       alt={altText}
       data-testid="chat-panel-welcome-banner"
       onMouseEnter={handleMouseEnter}
+      onMouseLeave={onLeave}
     />
   );
 }
@@ -904,6 +959,11 @@ function BeeBanner({ className, altText, onTrigger }: { className: string; altTe
 export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
   onEnsureSession,
+  onNewSession,
+  onForkSession,
+  onStartSideConversation,
+  continuedFromSessionId = null,
+  onOpenContinuedFromSession,
   onInputIntent,
   onPersistMedia,
   onPersistDocuments,
@@ -928,13 +988,15 @@ export const ChatPanel = React.memo(function ChatPanel({
   onOpenCodeReview,
   heartbeatPanelOpen = false,
   onToggleHeartbeatPanel,
-  permissionsEnabled,
+  permissionProfile,
   onSavePermission,
   onSetGoal,
   onPauseGoal,
   onResumeGoal,
+  onRefreshGoal,
   onClearGoal,
   onDrainTaskQueueIfIdle,
+  welcomeVariant = null,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -944,6 +1006,10 @@ export const ChatPanel = React.memo(function ChatPanel({
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const [teamGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  useEffect(() => {
+    setTeamGroupIdentity(null);
+  }, [activeSessionId]);
   const hasHarnessProgress = useHarnessStore(
     (s) => mode === 'auto_harness' && (s.runtimes[activeSessionId ?? '']?.stageResults.length ?? 0) > 0,
   );
@@ -958,7 +1024,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const lastConsumedDesktopDropIdRef = useRef<string | null>(null);
   const historyLayoutSnapshotRef = useRef<{
     sessionId: string;
-    loadedPages: number;
+    publishedBatchSeq: number;
     scrollHeight: number;
     scrollTop: number;
   } | null>(null);
@@ -968,16 +1034,19 @@ export const ChatPanel = React.memo(function ChatPanel({
   const isDesktopAttachmentDropEnabled = useDesktopLocalFilePickerReady();
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
   const hasConversation = Boolean(isHistoryRestoring || historyPager || hasTimelineContent);
-  const historyLoadedPages = historyPager?.loadedPages ?? 0;
-  const historyTotalPages = historyPager?.totalPages ?? 0;
+  const isGroupCreateWelcome = welcomeVariant === 'group-create';
+  const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
+  const historyPublishedBatchSeq = historyPager?.publishedBatchSeq ?? 0;
+  const historyHasMore = historyPager?.hasMore ?? false;
   const historyLoadingMore = historyPager?.loadingMore ?? false;
   const historyPrepending = historyPager?.prepending ?? false;
   const historyRetryAvailable = historyPager?.retryAvailable ?? false;
   const historyOnLoadMore = historyPager?.onLoadMore;
   const hasHistoryPager = Boolean(historyPager);
   const historyLoadMoreState = {
-    loadedPages: historyLoadedPages,
-    totalPages: historyTotalPages,
+    loadedBatchSeq: historyLoadedBatchSeq,
+    publishedBatchSeq: historyPublishedBatchSeq,
+    hasMore: historyHasMore,
     loadingMore: historyLoadingMore,
     prepending: historyPrepending,
   };
@@ -999,6 +1068,31 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const [bubbleVisible, setBubbleVisible] = useState(false);
+  const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleBubbleShow = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+      bubbleHideTimerRef.current = null;
+    }
+    setBubbleVisible(true);
+  }, []);
+  const handleBubbleLeave = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+    }
+    bubbleHideTimerRef.current = setTimeout(() => {
+      bubbleHideTimerRef.current = null;
+      setBubbleVisible(false);
+    }, WELCOME_BUBBLE_HIDE_DELAY);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (bubbleHideTimerRef.current) {
+        clearTimeout(bubbleHideTimerRef.current);
+        bubbleHideTimerRef.current = null;
+      }
+    };
+  }, []);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
   const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const handlePluginConversationItem = useCallback((sid: string, role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => {
@@ -1090,6 +1184,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, []);
   const {
     turnsByMessageId: codeTurnsByMessageId,
+    turnCardAnchors: codeTurnCardAnchors,
     loading: codeTurnHistoryLoading,
     reload: reloadCodeTurnHistory,
     latestTurnKey: latestCodeTurnKey,
@@ -1108,6 +1203,9 @@ export const ChatPanel = React.memo(function ChatPanel({
     (message: Message) => {
       const turns = codeTurnsByMessageId.get(message.id);
       if (!turns?.length) return null;
+      // 同一轮的多条消息共享同一个 id（后端每个 chat.final 一条记录、同一个
+      // `<request_id>:assistant`），只在锚点消息上出卡片，避免重复渲染多张。
+      if (!codeTurnCardAnchors.has(message)) return null;
       return turns.map((turn) => {
         const turnKey = turnDiffKey(turn);
         const isLatest = turnKey === latestCodeTurnKey;
@@ -1129,6 +1227,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       });
     },
     [
+      codeTurnCardAnchors,
       codeTurnHistoryLoading,
       codeTurnsByMessageId,
       discardLatestTurn,
@@ -1140,6 +1239,72 @@ export const ChatPanel = React.memo(function ChatPanel({
       turnChangeError,
       turnChangeOperation,
     ],
+  );
+
+  const forkBoundaryMessageKey = useMemo(() => {
+    if (!continuedFromSessionId) return null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.forkedFromSessionId === continuedFromSessionId) {
+        return message.renderKey ?? message.id;
+      }
+    }
+    return null;
+  }, [continuedFromSessionId, messages]);
+
+  const renderAfterMessage = useCallback(
+    (message: Message) => {
+      const codeChanges = renderCodeChangesAfterMessage(message);
+      const messageKey = message.renderKey ?? message.id;
+      if (
+        !forkBoundaryMessageKey ||
+        messageKey !== forkBoundaryMessageKey ||
+        !continuedFromSessionId ||
+        !onOpenContinuedFromSession
+      ) {
+        return codeChanges;
+      }
+      return (
+        <>
+          {codeChanges}
+          <button
+            type="button"
+            className="chat-fork-origin"
+            data-testid="chat-panel-continued-from-chat"
+            title={t('chat.openSourceChat')}
+            aria-label={t('chat.openSourceChat')}
+            onClick={() => onOpenContinuedFromSession(continuedFromSessionId)}
+          >
+            <span className="chat-fork-origin__label" data-testid="chat-panel-continued-from-chat-label">
+              <GitFork size={14} strokeWidth={1.75} aria-hidden="true" />
+              {t('chat.continuedFromChat')}
+            </span>
+          </button>
+        </>
+      );
+    },
+    [
+      continuedFromSessionId,
+      forkBoundaryMessageKey,
+      onOpenContinuedFromSession,
+      renderCodeChangesAfterMessage,
+      t,
+    ],
+  );
+
+  const handleForkFromMessage = useCallback(
+    (message: Message) => {
+      if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) {
+        return Promise.reject(new Error('A persisted session is required to fork'));
+      }
+      return onForkSession(activeSessionId, {
+        messageId: message.id,
+        role: message.role,
+        content: message.content,
+        timestamp: message.completedAt ?? message.timestamp,
+      });
+    },
+    [activeSessionId, onForkSession],
   );
 
   // 跟踪用户是否正在查看历史消息（不在底部）
@@ -1161,12 +1326,12 @@ export const ChatPanel = React.memo(function ChatPanel({
     (sessionId: string, el: HTMLDivElement) => {
       historyLayoutSnapshotRef.current = {
         sessionId,
-        loadedPages: historyLoadedPages,
+        publishedBatchSeq: historyPublishedBatchSeq,
         scrollHeight: el.scrollHeight,
         scrollTop: el.scrollTop,
       };
     },
-    [historyLoadedPages],
+    [historyPublishedBatchSeq],
   );
 
   const restoreSessionScrollTop = useCallback(
@@ -1199,12 +1364,27 @@ export const ChatPanel = React.memo(function ChatPanel({
 
     const currentSessionId = activeSessionId ?? '';
     rememberSessionScrollTop(currentSessionId, el);
+    updateHistoryLayoutSnapshot(currentSessionId, el);
 
     // 当滚动到顶部且有更多历史消息时，加载更多
-    if (el.scrollTop <= LOAD_OLDER_THRESHOLD_PX && canRequestOlderHistory && historyOnLoadMore) {
+    const hasTimelineAdmissionBoundary = Boolean(
+      el.querySelector('[data-testid="chat-panel-timeline-history-sentinel"]')
+    );
+    if (
+      el.scrollTop <= LOAD_OLDER_THRESHOLD_PX
+      && !hasTimelineAdmissionBoundary
+      && canRequestOlderHistory
+      && historyOnLoadMore
+    ) {
       void historyOnLoadMore();
     }
-  }, [activeSessionId, canRequestOlderHistory, historyOnLoadMore, rememberSessionScrollTop]);
+  }, [
+    activeSessionId,
+    canRequestOlderHistory,
+    historyOnLoadMore,
+    rememberSessionScrollTop,
+    updateHistoryLayoutSnapshot,
+  ]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -1237,13 +1417,19 @@ export const ChatPanel = React.memo(function ChatPanel({
     (e: React.WheelEvent<HTMLDivElement>) => {
       // 只有向上滚动时才触发
       if (e.deltaY < 0) {
+        userScrolledUpRef.current = true;
         stickToBottomUntilStableRef.current = false;
       }
       if (e.deltaY < 0 && canRequestOlderHistory && historyOnLoadMore) {
         // 检查是否已经在顶部（没有滚动条时 scrollTop 始终为 0）
         const el = scrollContainerRef.current;
         if (el && el.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
-          void historyOnLoadMore();
+          const hasTimelineAdmissionBoundary = Boolean(
+            el.querySelector('[data-testid="chat-panel-timeline-history-sentinel"]'),
+          );
+          if (!hasTimelineAdmissionBoundary) {
+            void historyOnLoadMore();
+          }
         }
       }
     },
@@ -1278,17 +1464,34 @@ export const ChatPanel = React.memo(function ChatPanel({
     const snapshot = historyLayoutSnapshotRef.current;
     const currentSessionId = activeSessionId ?? '';
 
+    // 以真实布局为准补偿可能被主线程繁忙延迟的 scroll 事件：内容高度未变、
+    // scrollTop 却已变化时，按当前真实位置更新阅读意图，再处理新页。
+    if (
+      snapshot?.sessionId === currentSessionId &&
+      snapshot.scrollHeight === el.scrollHeight &&
+      snapshot.scrollTop !== el.scrollTop
+    ) {
+      const atBottom = isScrollAtBottom(el);
+      userScrolledUpRef.current = !atBottom;
+      if (!atBottom) {
+        stickToBottomUntilStableRef.current = false;
+      }
+    }
+
     if (
       lastSessionIdRef.current === currentSessionId &&
       hasHistoryPager &&
-      snapshot &&
-      snapshot.sessionId === currentSessionId &&
-      snapshot.loadedPages > 0 &&
-      historyLoadedPages > snapshot.loadedPages
+      snapshot?.sessionId === currentSessionId
     ) {
-      const delta = el.scrollHeight - snapshot.scrollHeight;
-      if (delta !== 0) {
-        el.scrollTop = snapshot.scrollTop + delta;
+      const nextScrollTop = resolveHistoryPrependScrollTop({
+        previousPublishedBatchSeq: snapshot.publishedBatchSeq,
+        publishedBatchSeq: historyPublishedBatchSeq,
+        previousScrollHeight: snapshot.scrollHeight,
+        scrollHeight: el.scrollHeight,
+        previousScrollTop: snapshot.scrollTop,
+      });
+      if (nextScrollTop !== null) {
+        el.scrollTop = nextScrollTop;
         suppressNextScrollToEndRef.current = true;
       }
     }
@@ -1297,7 +1500,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, [
     activeSessionId,
     hasHistoryPager,
-    historyLoadedPages,
+    historyPublishedBatchSeq,
     messages.length,
     toolExecutionOrder.length,
     updateHistoryLayoutSnapshot,
@@ -1353,7 +1556,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     isThinking,
     contextCompressionRuntime,
     contextCompressionSummary,
-    historyLoadedPages,
+    historyPublishedBatchSeq,
     historyLoadingMore,
     historyPrepending,
     teamHumanShareCommands.length,
@@ -1652,7 +1855,14 @@ export const ChatPanel = React.memo(function ChatPanel({
               )}
               {hasTimelineContent ? (
                 <>
-                  <MessageList messages={messages} renderAfterMessage={renderCodeChangesAfterMessage} />
+                  <MessageList
+                    messages={messages}
+                    renderAfterMessage={renderAfterMessage}
+                    canLoadOlderHistory={canRequestOlderHistory}
+                    onLoadOlderHistory={historyOnLoadMore}
+                    teamGroupIdentityOverride={teamGroupIdentity}
+                    onForkFromMessage={handleForkFromMessage}
+                  />
                   {shouldShowHumanShare && (
                     <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
                   )}
@@ -1672,23 +1882,40 @@ export const ChatPanel = React.memo(function ChatPanel({
               ) : null}
             </>
           ) : (
-            <div className="chat-welcome" data-testid="chat-panel-welcome">
+            <div
+              className={`chat-welcome${isGroupCreateWelcome ? ' chat-welcome--group-create' : ''}`}
+              data-testid="chat-panel-welcome"
+              data-variant={isGroupCreateWelcome ? 'group-create' : 'default'}
+            >
+              {isGroupCreateWelcome && (
+                <img
+                  className="chat-welcome__group-create-banner"
+                  src={homeBanner}
+                  alt={t('chat.groupCreateBannerAlt')}
+                  data-testid="chat-panel-welcome-group-banner"
+                />
+              )}
               <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading">
-                <WelcomeHeading />
+                {isGroupCreateWelcome ? <GroupCreateWelcomeHeading /> : <WelcomeHeading />}
               </h2>
               <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
-                <div
-                  ref={bubbleRef}
-                  className={`chat-welcome__banner chat-welcome__banner--bubble${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
-                  data-testid="chat-panel-welcome-banner-bubble"
-                >
-                  {t('chat.welcomeBubbleText')}
-                </div>
-                <BeeBanner
-                  className="chat-welcome__banner chat-welcome__banner--bee"
-                  altText={t('chat.welcomeLogoAlt')}
-                  onTrigger={() => setBubbleVisible(true)}
-                />
+                {!isGroupCreateWelcome && (
+                  <>
+                    <div
+                      ref={bubbleRef}
+                      className={`chat-welcome__banner chat-welcome__banner--bubble${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
+                      data-testid="chat-panel-welcome-banner-bubble"
+                    >
+                      {t('chat.welcomeBubbleText')}
+                    </div>
+                    <BeeBanner
+                      className="chat-welcome__banner chat-welcome__banner--bee"
+                      altText={t('chat.welcomeLogoAlt')}
+                      onTrigger={handleBubbleShow}
+                      onLeave={handleBubbleLeave}
+                    />
+                  </>
+                )}
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
                 <InterruptResultBubble />
@@ -1697,6 +1924,9 @@ export const ChatPanel = React.memo(function ChatPanel({
                   ref={inputAreaRef}
                   onSubmit={handleSendMessage}
                   onEnsureSession={onEnsureSession}
+                  onNewSession={onNewSession}
+                  onForkSession={onForkSession}
+                  onStartSideConversation={onStartSideConversation}
                   onInputIntent={onInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
@@ -1707,12 +1937,40 @@ export const ChatPanel = React.memo(function ChatPanel({
                   autoFocusKey={autoFocusKey}
                   onNavigateToSkills={onNavigateToSkills}
                   onNavigateToAgents={onNavigateToAgents}
-                  permissionsEnabled={permissionsEnabled}
+                  onAgentGroupIdentityChange={setTeamGroupIdentity}
+                  permissionProfile={permissionProfile}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
+                  onPauseGoal={onPauseGoal}
+                  onResumeGoal={onResumeGoal}
+                  onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
               </div>
+              {isGroupCreateWelcome && (
+                <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">
+                  <span className="chat-welcome__capability">
+                    <Code2 aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.web')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <FileText aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.document')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <Presentation aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.slides')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <Table2 aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.spreadsheet')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <ImageIcon aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.imageGeneration')}
+                  </span>
+                </div>
+              )}
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {suggestions.map((text) => (
                   <SuggestionCard key={text} text={text} onClick={() => handleSuggestion(text)} />
@@ -1742,6 +2000,9 @@ export const ChatPanel = React.memo(function ChatPanel({
             ref={inputAreaRef}
             onSubmit={handleSendMessage}
             onEnsureSession={onEnsureSession}
+            onNewSession={onNewSession}
+            onForkSession={onForkSession}
+            onStartSideConversation={onStartSideConversation}
             onInputIntent={onInputIntent}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}
@@ -1752,9 +2013,13 @@ export const ChatPanel = React.memo(function ChatPanel({
             autoFocusKey={autoFocusKey}
             onNavigateToSkills={onNavigateToSkills}
             onNavigateToAgents={onNavigateToAgents}
-            permissionsEnabled={permissionsEnabled}
+            onAgentGroupIdentityChange={setTeamGroupIdentity}
+            permissionProfile={permissionProfile}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}
+            onPauseGoal={onPauseGoal}
+            onResumeGoal={onResumeGoal}
+            onRefreshGoal={onRefreshGoal}
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />

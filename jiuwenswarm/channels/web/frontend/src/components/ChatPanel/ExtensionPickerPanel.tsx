@@ -58,6 +58,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   const clearInstallPending = usePluginPackageStore((s) => s.clearInstallPending);
   const pluginLoading = usePluginPackageStore((s) => s.isLoading);
   const pluginBusyId = usePluginPackageStore((s) => s.busyId);
+  const pluginInstallingIds = usePluginPackageStore((s) => s.installingIds);
   const loadPluginList = usePluginPackageStore((s) => s.loadList);
   const loadPluginDetail = usePluginPackageStore((s) => s.loadDetail);
   const installPlugin = usePluginPackageStore((s) => s.install);
@@ -304,7 +305,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
             const isConnectingThis =
               connectingPluginIdRef.current === marketplaceId &&
               (pluginInstallFlow.active || pluginReconnectFlow.active);
-            const busy = pluginBusyId === marketplaceId || isConnectingThis;
+            const busy = pluginBusyId === marketplaceId || !!pluginInstallingIds[marketplaceId] || isConnectingThis;
             return (
               <div
                 key={marketplaceId}
@@ -312,9 +313,11 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
                 data-testid="chat-panel-extension-picker-item"
                 data-variant={marketplaceId}
               >
-                <div className="chat-skill-select__avatar" style={avatar.style}>
-                  {avatar.firstChar}
-                </div>
+                <EntityAvatar
+                  iconUrl={pkg.avatar || undefined}
+                  avatar={avatar}
+                  className="chat-skill-select__avatar"
+                />
                 <ItemDescCell text={desc} handlers={tooltipHandlers}>
                   <div className="chat-skill-select__item-name">{label}</div>
                 </ItemDescCell>

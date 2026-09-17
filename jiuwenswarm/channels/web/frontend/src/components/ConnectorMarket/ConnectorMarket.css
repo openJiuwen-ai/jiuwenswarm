@@ -1,3 +1,31 @@
 .connector-market-icon-btn {
   position: relative;
 }
+
+/* Match the expert catalog's pill-shaped text action. */
+.connector-market-card-install {
+  min-width: 56px;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--color-text-strong);
+  border-radius: var(--radius-full);
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+  font-size: 14px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.page-card:hover .connector-market-card-install,
+.page-card:focus-within .connector-market-card-install {
+  opacity: 1;
+}
+.connector-market-card-install:hover {
+  border-color: var(--color-text-primary);
+  background: var(--color-text-primary);
+}
+@media (hover: none) {
+  .connector-market-card-install { opacity: 1; }
+}
+
+.connector-market-card-install:disabled { cursor: not-allowed; opacity: 0.5; }

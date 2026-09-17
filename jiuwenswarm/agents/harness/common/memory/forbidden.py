@@ -204,14 +204,14 @@ def get_disabled_memory_filter_prompt(language: str) -> str:
         return ""
     if language in ("cn", "zh"):
         return (
-            "### 记忆敏感信息过滤状态\n\n"
+            "# 记忆敏感信息过滤状态\n\n"
             "当前敏感信息记忆过滤开关已关闭。用户明确要求将密码、API 密钥、Token 等敏感信息"
             "写入记忆时，允许保存其原始内容，并应正常调用可用的记忆写入工具；不要仅以内容敏感"
             "为由拒绝，也不要自行脱敏或替用户改变决定。此授权仅适用于记忆写入，不代表可以将"
             "敏感信息写入源码、日志或版本控制；其他工具权限和安全规则保持不变。\n"
         )
     return (
-        "### Sensitive-memory filter status\n\n"
+        "# Sensitive-memory filter status\n\n"
         "The sensitive-memory filter is currently disabled. When the user explicitly asks to write a "
         "password, API key, token, or other sensitive value to memory, storing the original value is "
         "allowed: use the available memory-write tools instead of refusing, redacting, or overriding "

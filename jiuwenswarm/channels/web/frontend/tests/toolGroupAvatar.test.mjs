@@ -43,3 +43,27 @@ test('team tool groups keep the team leader avatar', () => {
 
   assert.equal(markup.includes('team_leader avatar'), true);
 });
+
+test('expert Team tool groups use the frozen leader identity override', () => {
+  const markup = renderToStaticMarkup(
+    createElement(ToolGroupDisplay, {
+      executions: [
+        {
+          toolCallId: 'tool-3',
+          toolCall: { id: 'tool-3', name: 'bash', arguments: {} },
+          status: 'pending',
+          startedAt: new Date(1_700_000_000_000).toISOString(),
+          updatedAt: new Date(1_700_000_000_000).toISOString(),
+        },
+      ],
+      teamLayout: true,
+      teamLeaderIdentity: {
+        agentTemplateId: 'leader-template',
+        displayName: '专家团负责人',
+      },
+    }),
+  );
+
+  assert.match(markup, /专家团负责人/);
+  assert.equal(markup.includes('team_leader avatar'), false);
+});

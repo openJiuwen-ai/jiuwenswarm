@@ -21,6 +21,10 @@ export type AgentCatalogItem = {
   tags: Array<{ id: string; label: string }>;
   avatarUrl: string | null;
   version?: string;
+  teamCompatible?: {
+    leader: boolean;
+    member: boolean;
+  };
 };
 
 export type AgentCapability = {
@@ -39,6 +43,72 @@ export type AgentDetail = AgentCatalogItem & {
   suggestedPrompts: string[];
   pendingConnectors: string[];
 };
+
+export type AgentGroupSource = 'builtin' | 'local';
+
+export type AgentGroupMember = {
+  id: string;
+  agentTemplateId: string;
+  displayName: string;
+  description: string;
+  role: 'leader' | 'member';
+  avatarUrl: string | null;
+};
+
+export type AgentGroupCapabilities = {
+  canUse: boolean;
+  canInstall: boolean;
+  canUninstall: boolean;
+  canPreviewFiles: boolean;
+  canEdit: boolean;
+  canPublish: boolean;
+};
+
+export type AgentGroupCatalogItem = {
+  id: string;
+  name: string;
+  displayName: string;
+  description: string;
+  category: string;
+  source: AgentGroupSource;
+  installed: boolean;
+  memberCount: number;
+  members: AgentGroupMember[];
+  skills: AgentCapability[];
+  tags: Array<{ id: string; label: string }>;
+  avatarUrl: string | null;
+  capabilities: AgentGroupCapabilities;
+};
+
+export type AgentGroupIdentity = Pick<AgentGroupCatalogItem, 'id' | 'displayName' | 'avatarUrl'>;
+
+export type AgentGroupDetail = AgentGroupCatalogItem & {
+  version: string;
+  updatedAt: string;
+  details: string;
+  persona: string;
+  leaderId: string;
+  quickInputs: string[];
+};
+
+export type AgentGroupDraft = {
+  id: string;
+  name: string;
+  description: string;
+  persona: string;
+  category: string;
+  tagIds: string[];
+  customTags: string[];
+  leaderId: string;
+  memberIds: string[];
+  skillRefs: string[];
+  suggestedPrompts: string[];
+};
+
+export type AgentGroupSelectionIntent =
+  | { kind: 'keep' }
+  | { kind: 'clear' }
+  | { kind: 'select'; id: string };
 
 export type DefinitionFileEntry = {
   relativePath: string;

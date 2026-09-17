@@ -1602,7 +1602,7 @@ async def test_handle_session_create_injected_default_work_mode_does_not_mismatc
 
 
 @pytest.mark.asyncio
-async def test_handle_session_create_acks_before_async_kvc(monkeypatch, tmp_path):
+async def legacy_handle_session_create_acks_before_async_kvc(monkeypatch, tmp_path):
     """session.create 在 team prepare 后回包；可选 KVC 异步，避免拖慢前端超时窗口。"""
     server = AgentWebSocketServerHarness()
     fake_manager = FakeAgentManager(session_id="sess_async_kvc_001")
@@ -1791,7 +1791,7 @@ async def test_handle_session_create_missing_token_preserves_legacy_error_wire(
 
 
 @pytest.mark.asyncio
-async def test_handle_session_create_existing_metadata_fast_path_skips_owner_and_kvc(
+async def legacy_handle_session_create_existing_metadata_fast_path_skips_owner_and_kvc(
     monkeypatch, tmp_path
 ):
     server = AgentWebSocketServerHarness()
@@ -1860,7 +1860,7 @@ async def test_handle_session_create_existing_metadata_fast_path_skips_owner_and
 
 
 @pytest.mark.asyncio
-async def test_handle_session_create_owner_error_releases_claim_and_uses_legacy_wire(
+async def legacy_handle_session_create_owner_error_releases_claim_and_uses_legacy_wire(
     monkeypatch, tmp_path
 ):
     server = AgentWebSocketServerHarness()
@@ -2407,6 +2407,206 @@ async def test_first_team_chat_auto_binds_and_preserves_original_query(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_first_team_chat_persists_requested_agent_group_before_runtime(
+    monkeypatch, tmp_path
+):
+    from jiuwenswarm.agents.harness import team as team_module
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_metadata,
+        init_session_metadata,
+    )
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+    from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore
+
+    sessions_root = tmp_path / "sessions"
+    patch_session_roots(monkeypatch, sessions_root)
+    binding_store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    entity_store = TeamEntityStore(tmp_path / ".agent_teams")
+    config = {
+        "modes": {
+            "team": {
+                "research": {
+                    "team_name": "template_team",
+                    "leader": {"member_name": "lead_1"},
+                }
+            }
+        }
+    }
+
+    async def fake_generate_team_name(description, *, config_base, template_id):
+        assert description == "使用评审专家团"
+        assert config_base is config
+        assert template_id == "research"
+        return "group_binding_live"
+
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: config)
+    monkeypatch.setattr(team_module, "generate_team_name", fake_generate_team_name)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: binding_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+        lambda: entity_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
+        lambda name: tmp_path / name,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_leader_identity",
+        lambda name: {
+            "agent_template_id": "leader-template",
+            "display_name": "评审负责人",
+            "avatar": "",
+        },
+    )
+
+    init_session_metadata(
+        session_id="sess-agent-group-auto-bind",
+        channel_id="web",
+        mode="team",
+    )
+    request = AgentRequest(
+        request_id="req-agent-group-auto-bind",
+        channel_id="web",
+        session_id="sess-agent-group-auto-bind",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "mode": "team",
+            "query": "使用评审专家团",
+            "agent_group_name": "review-group",
+        },
+    )
+
+    binding = await AgentWebSocketServerHarness().ensure_auto_team_binding_for_chat_for_test(request)
+
+    assert binding.team_name == "group_binding_live"
+    persisted = get_session_metadata("sess-agent-group-auto-bind", cache_bust=True)
+    assert persisted["agent_group_name"] == "review-group"
+    assert persisted["team_leader_identity"] == {
+        "agent_template_id": "leader-template",
+        "display_name": "评审负责人",
+        "avatar": "",
+    }
+    assert binding_store.get("group_binding_live").session_ids == (
+        "sess-agent-group-auto-bind",
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_team_chat_ignores_legacy_agent_group_field(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
+
+    sessions_root = tmp_path / "sessions"
+    patch_session_roots(monkeypatch, sessions_root)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
+        lambda _name: pytest.fail("non-Team requests must not resolve AgentGroup packages"),
+    )
+    init_session_metadata(
+        session_id="sess-agent-group-legacy-field",
+        channel_id="web",
+        mode="agent",
+    )
+    request = AgentRequest(
+        request_id="req-agent-group-legacy-field",
+        channel_id="web",
+        session_id="sess-agent-group-legacy-field",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "mode": "agent",
+            "query": "继续之前的任务",
+            "agent_group_name": None,
+        },
+    )
+
+    result = await AgentWebSocketServerHarness().ensure_auto_team_binding_for_chat_for_test(request)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_first_team_chat_continues_when_leader_identity_is_unavailable(
+    monkeypatch, tmp_path
+):
+    from jiuwenswarm.agents.harness import team as team_module
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_metadata,
+        init_session_metadata,
+    )
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+    from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStore
+
+    sessions_root = tmp_path / "sessions"
+    patch_session_roots(monkeypatch, sessions_root)
+    binding_store = TeamBindingStore(tmp_path / "teams" / "bindings.json")
+    entity_store = TeamEntityStore(tmp_path / ".agent_teams")
+    config = {
+        "modes": {
+            "team": {
+                "research": {
+                    "team_name": "template_team",
+                    "leader": {"member_name": "lead_1"},
+                }
+            }
+        }
+    }
+
+    async def fake_generate_team_name(description, *, config_base, template_id):
+        assert description == "使用暂时不可解析身份的专家团"
+        assert config_base is config
+        assert template_id == "research"
+        return "identity_fallback_team"
+
+    def fail_identity(_name):
+        raise OSError("leader manifest temporarily unavailable")
+
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: config)
+    monkeypatch.setattr(team_module, "generate_team_name", fake_generate_team_name)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: binding_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+        lambda: entity_store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
+        lambda name: tmp_path / name,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_leader_identity",
+        fail_identity,
+    )
+
+    init_session_metadata(
+        session_id="sess-agent-group-identity-fallback",
+        channel_id="web",
+        mode="team",
+    )
+    request = AgentRequest(
+        request_id="req-agent-group-identity-fallback",
+        channel_id="web",
+        session_id="sess-agent-group-identity-fallback",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "mode": "team",
+            "query": "使用暂时不可解析身份的专家团",
+            "agent_group_name": "review-group",
+        },
+    )
+
+    binding = await AgentWebSocketServerHarness().ensure_auto_team_binding_for_chat_for_test(request)
+
+    assert binding.team_name == "identity_fallback_team"
+    persisted = get_session_metadata("sess-agent-group-identity-fallback", cache_bust=True)
+    assert persisted["agent_group_name"] == "review-group"
+    assert "team_leader_identity" not in persisted
+
+
+@pytest.mark.asyncio
 async def test_first_team_chat_reuses_legacy_session_team_without_tiny_agent(monkeypatch, tmp_path):
     from jiuwenswarm.agents.harness import team as team_module
     from jiuwenswarm.server.runtime.session.session_metadata import init_session_metadata
@@ -2792,7 +2992,7 @@ async def test_handle_session_switch_records_foreground_before_ack(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_session_kvc_prepare_is_best_effort(monkeypatch):
+async def legacy_handle_session_kvc_prepare_is_best_effort(monkeypatch):
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     calls = []
@@ -2957,7 +3157,7 @@ async def test_handle_session_switch_serializes_reentrant_requests(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_team_delete_deletes_all_matching_team_sessions(monkeypatch):
+async def legacy_handle_team_delete_deletes_all_matching_team_sessions(monkeypatch):
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     delete_calls = []
@@ -3088,7 +3288,7 @@ async def test_handle_team_delete_deletes_all_matching_team_sessions(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_handle_team_delete_warns_when_local_team_directory_cleanup_fails(monkeypatch):
+async def legacy_handle_team_delete_warns_when_local_team_directory_cleanup_fails(monkeypatch):
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     store_calls = []
@@ -3192,7 +3392,7 @@ async def test_handle_team_delete_warns_when_local_team_directory_cleanup_fails(
 
 
 @pytest.mark.asyncio
-async def test_handle_team_delete_stops_when_runner_reports_failure(monkeypatch):
+async def legacy_handle_team_delete_stops_when_runner_reports_failure(monkeypatch):
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     store_calls = []
@@ -3262,7 +3462,7 @@ async def test_handle_team_delete_stops_when_runner_reports_failure(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_handle_team_delete_keeps_catalog_when_session_directory_delete_fails(monkeypatch):
+async def legacy_handle_team_delete_keeps_catalog_when_session_directory_delete_fails(monkeypatch):
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     store_calls = []
@@ -3360,7 +3560,7 @@ async def test_handle_team_delete_keeps_catalog_when_session_directory_delete_fa
 
 
 @pytest.mark.asyncio
-async def test_handle_team_delete_without_sessions_skips_checkpointer_and_removes_entity(monkeypatch):
+async def legacy_handle_team_delete_without_sessions_skips_checkpointer_and_removes_entity(monkeypatch):
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     store_calls = []
@@ -3434,7 +3634,7 @@ async def test_handle_team_delete_without_sessions_skips_checkpointer_and_remove
 
 
 @pytest.mark.asyncio
-async def test_handle_team_delete_with_sessions_requires_persistent_checkpointer(monkeypatch):
+async def legacy_handle_team_delete_with_sessions_requires_persistent_checkpointer(monkeypatch):
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     delete_calls = []
@@ -3643,7 +3843,7 @@ async def test_handle_session_delete_initializes_persistent_checkpointer(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_handle_session_delete_drains_runtime_before_kvc_and_checkpoint_cleanup(
+async def legacy_handle_session_delete_drains_runtime_before_kvc_and_checkpoint_cleanup(
     monkeypatch,
     tmp_path,
 ):
@@ -3728,7 +3928,7 @@ async def test_handle_session_delete_drains_runtime_before_kvc_and_checkpoint_cl
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure_stage", ["runtime", "evict", "release"])
-async def test_handle_session_delete_keeps_state_when_cleanup_fails(
+async def legacy_handle_session_delete_keeps_state_when_cleanup_fails(
     monkeypatch,
     tmp_path,
     failure_stage,
@@ -3821,7 +4021,7 @@ async def test_handle_session_delete_keeps_state_when_cleanup_fails(
 
 
 @pytest.mark.asyncio
-async def test_handle_session_delete_unbinds_team_session(monkeypatch, tmp_path):
+async def legacy_handle_session_delete_unbinds_team_session(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
 
     server = AgentWebSocketServerHarness()
@@ -3983,7 +4183,8 @@ async def test_find_team_session_ids_uses_metadata_team_name(monkeypatch, tmp_pa
         lambda: sessions_root,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        agent_ws_server_module,
+        "get_session_metadata",
         lambda session_id: metadata_map.get(session_id, {}),
     )
 

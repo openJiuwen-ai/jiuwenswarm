@@ -131,7 +131,7 @@ function OverflowMenu({ items }: { items: MediaItem[] }) {
                 {showThumb ? (
                   <img src={src} alt="" className="chat-msg-file-more__thumb" />
                 ) : (
-                  <FileIcon fileName={filename} size={20} />
+                  <FileIcon fileName={filename} size={14} />
                 )}
                 <span className="chat-msg-file-more__name" title={filename}>
                   {filename}
@@ -155,7 +155,13 @@ function OverflowMenu({ items }: { items: MediaItem[] }) {
               );
             }
             return (
-              <div key={`${filename}-${index}`} className="chat-msg-file-more__item" data-testid="chat-panel-msg-file-more-item" data-variant={filename} role="menuitem">
+              <div
+                key={`${filename}-${index}`}
+                className="chat-msg-file-more__item"
+                data-testid="chat-panel-msg-file-more-item"
+                data-variant={filename}
+                role="menuitem"
+              >
                 {content}
               </div>
             );
@@ -166,13 +172,7 @@ function OverflowMenu({ items }: { items: MediaItem[] }) {
   );
 }
 
-function FileAttachmentBar({
-  items,
-  align = 'end',
-}: {
-  items: MediaItem[];
-  align?: 'start' | 'end';
-}) {
+function FileAttachmentBar({ items, align = 'end' }: { items: MediaItem[]; align?: 'start' | 'end' }) {
   if (!items.length) return null;
   const visible = items.slice(0, VISIBLE_FILE_COUNT);
   const overflow = items.slice(VISIBLE_FILE_COUNT);
@@ -222,7 +222,10 @@ export function MediaRenderer({ items, align = 'end', variant = 'inline' }: Medi
   const richItems = items.filter((item) => !isCardItem(item));
 
   return (
-    <div className={variant === 'above' ? 'chat-msg-attachments chat-msg-attachments--above' : 'chat-msg-attachments'} data-testid="chat-panel-msg-attachments">
+    <div
+      className={variant === 'above' ? 'chat-msg-attachments chat-msg-attachments--above' : 'chat-msg-attachments'}
+      data-testid="chat-panel-msg-attachments"
+    >
       {cardItems.length > 0 && <FileAttachmentBar items={cardItems} align={align} />}
       {richItems.length > 0 && (
         <div className={`chat-msg-media-rich chat-msg-media-rich--${align}`} data-testid="chat-panel-msg-media-rich">

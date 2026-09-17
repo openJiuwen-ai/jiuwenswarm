@@ -10,7 +10,6 @@ import { ChevronRight } from 'lucide-react';
 import NewConversationIcon from '../../assets/new_conversation.svg?react';
 import ExpandIcon from '../../assets/work-mode/expand.svg?react';
 import { PageCard, type PageCardActionProps } from '../ui';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { MarketplacePluginItem } from './types';
 
@@ -154,7 +153,6 @@ export function HubSkillCard({
   action: PageCardActionProps;
 }) {
   const { t } = useTranslation();
-  const avatar = getSkillAvatar(skill.name);
   const displayName = skill.display_name || skill.name;
   const tags = skill.tags && skill.tags.length > 0 ? skill.tags : undefined;
 
@@ -163,7 +161,7 @@ export function HubSkillCard({
       onClick={onSelect}
       testId="skill-panel-hub-card"
       variant={skill.asset_id}
-      avatar={avatar}
+      avatar={{ name: displayName, iconUrl: skill.icon_uri, testId: 'skill-panel-hub-avatar' }}
       title={displayName}
       label={tags}
       action={action}

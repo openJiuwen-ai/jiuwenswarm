@@ -22,6 +22,7 @@ from jiuwenswarm.common.config import (
     get_evolution_review_feedback_min_confidence,
     get_sandbox_runtime,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
     migrate_config_from_template,
     replace_teams_in_config,
     reset_external_cli_agents_in_config,
@@ -34,6 +35,99 @@ from jiuwenswarm.common.config import (
     update_setup_guide_enabled_in_config,
     update_xiaoyi_runtime_in_config,
 )
+from jiuwenswarm.symphony import config as symphony_config_module
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("evolution_enabled", [False, True])
+def test_symphony_evolution_requires_both_switches(
+    enabled: bool,
+    evolution_enabled: bool,
+) -> None:
+    config = {
+        "symphony": {"enabled": enabled, "evolution": {"enabled": evolution_enabled}}
+    }
+    assert get_symphony_evolution_enabled(config) is (enabled and evolution_enabled)
+
+
+@pytest.mark.parametrize("switch", ["symphony", "evolution"])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (1, True),
+        (0, False),
+        (2, False),
+        (1.0, False),
+        ("1", True),
+        (" true ", True),
+        ("YES", True),
+        ("On", True),
+        ("0", False),
+        ("false", False),
+        ("NO", False),
+        (" off ", False),
+        ("enabled", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_symphony_evolution_switch_matches_full_parser(
+    switch: str,
+    value: Any,
+    expected: bool,
+) -> None:
+    raw: dict[str, Any] = {"enabled": True, "evolution": {"enabled": True}}
+    target = raw if switch == "symphony" else raw["evolution"]
+    target["enabled"] = value
+    parsed = symphony_config_module.symphony_config_from_dict(raw)
+    assert get_symphony_evolution_enabled({"symphony": raw}) is expected
+    assert expected is (parsed.enabled and parsed.evolution.enabled)
+
+
+@pytest.mark.parametrize("value", [None, {}, [], "invalid", True, 1])
+@pytest.mark.parametrize("level", ["config", "symphony", "evolution"])
+def test_symphony_evolution_missing_or_malformed_mapping_is_disabled(
+    level: str,
+    value: Any,
+) -> None:
+    config = value
+    if level == "symphony":
+        config = {"symphony": value}
+    elif level == "evolution":
+        config = {"symphony": {"enabled": True, "evolution": value}}
+    assert get_symphony_evolution_enabled(config) is False
+
+
+def test_symphony_evolution_getter_reads_only_passed_switches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Unexpected global config, full parser, or path lookup")
+
+    monkeypatch.setattr(config_module, "get_config", fail)
+    for name in (
+        "load_symphony_config",
+        "symphony_config_from_dict",
+        "get_agent_workspace_dir",
+        "_resolve_path",
+    ):
+        monkeypatch.setattr(symphony_config_module, name, fail)
+    assert get_symphony_evolution_enabled(None) is False
+    assert get_symphony_evolution_enabled({}) is False
+    evolution_only = {"symphony": {"evolution": {"enabled": True}}}
+    assert get_symphony_evolution_enabled(evolution_only) is False
+    assert get_symphony_evolution_enabled({"symphony": {"enabled": True}}) is False
+    enabled_config = {
+        "symphony": {
+            "enabled": True,
+            "evolution": {"enabled": True},
+            "paths": "invalid",
+            "orchestration": {"mode": "invalid"},
+        },
+    }
+    assert get_symphony_evolution_enabled(enabled_config) is True
 
 
 def test_configured_read_image_multimodal_preserves_explicit_value() -> None:

@@ -110,6 +110,7 @@ class HeartbeatRailRuntime:
             server,
             self.admission,
             execution_timeout_seconds=execution_timeout_seconds,
+            cancel_timeout_seconds=user_preemption_timeout_seconds,
         )
         self.store = HeartbeatJobStore(path=get_heartbeat_jobs_path())
         self.scheduler = HeartbeatSchedulerService(
@@ -153,6 +154,7 @@ class HeartbeatRailRuntime:
 
     async def stop(self) -> None:
         self._available = False
+        self.execution.begin_stop()
         await self.scheduler.stop()
         await self.execution.stop()
         for agent in list(self._pinned_agents.values()):

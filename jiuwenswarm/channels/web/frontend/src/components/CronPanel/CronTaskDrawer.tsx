@@ -294,13 +294,13 @@ export default function CronTaskDrawer({
       onClick={onClose}
     >
       <div
-        className="relative flex h-full w-[560px] flex-col overflow-y-auto bg-card p-6 shadow-xl animate-slide-in-right"
+        className="relative flex h-full w-[560px] flex-col bg-card p-6 shadow-xl animate-slide-in-right"
         data-testid="cron-drawer"
         data-variant={mode}
         onClick={(e) => e.stopPropagation()}
       >
         {/* ── Header ──────────────────────────────────────────── */}
-        <div className="mb-8 flex items-center justify-between">
+        <div className="mb-8 flex shrink-0 items-center justify-between">
           <h3 className="text-lg font-bold text-text-strong" data-testid="cron-drawer-title" data-variant={mode}>
             {title}
           </h3>
@@ -331,159 +331,161 @@ export default function CronTaskDrawer({
           </div>
         </div>
 
-        {/* ── Form body ───────────────────────────────────────── */}
-        <div className="flex flex-col gap-5">
-          {proactiveLocked && (
-            <p
-              className="rounded-md bg-bg-muted px-3 py-2 text-xs text-text-muted"
-              data-testid="cron-drawer-locked-hint"
-            >
-              {t('cron.autoManagedHint')}
-            </p>
-          )}
-
-          {/* Name */}
-          <FormTextField
-            label={t('cron.drawer.fieldName')}
-            labelTestId="cron-drawer-name-label"
-            currentLength={form.name.length}
-            maxLength={CRON_NAME_MAX_LENGTH}
-            maxLengthHint={t('cron.drawer.maxLengthReachedHint', { max: CRON_NAME_MAX_LENGTH })}
-            headerContent={
-              <span
-                data-testid="cron-drawer-name-counter"
-                className={`shrink-0 text-xs ${form.name.length >= CRON_NAME_MAX_LENGTH ? 'text-danger' : 'text-text-muted'}`}
+        <div className="flex-1 overflow-y-auto">
+          {/* ── Form body ───────────────────────────────────────── */}
+          <div className="flex flex-col gap-5">
+            {proactiveLocked && (
+              <p
+                className="rounded-md bg-bg-muted px-3 py-2 text-xs text-text-muted"
+                data-testid="cron-drawer-locked-hint"
               >
-                {t('cron.drawer.charCount', { count: form.name.length, max: CRON_NAME_MAX_LENGTH })}
-              </span>
-            }
-            renderInput={() => (
-              <input
-                type="text"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder={t('cron.drawer.placeholderInput') ?? undefined}
-                maxLength={CRON_NAME_MAX_LENGTH}
-                disabled={proactiveLocked}
-                title={lockedTitle}
-                data-testid="cron-drawer-name-input"
-                className={fieldClass}
-              />
+                {t('cron.autoManagedHint')}
+              </p>
             )}
-          />
 
-          {/* Select fields: project (create/template), channel, timezone */}
-          {selectFields
-            .filter((f) => f.condition !== false)
-            .map((field) => (
-              <div key={field.testId} data-testid={field.testId}>
-                <label className="mb-2 form-label" data-testid={field.labelTestId}>
-                  {field.label}
-                </label>
-                <SimpleSelect
-                  value={field.value}
-                  onChange={field.onChange}
-                  options={field.options}
-                  placeholder={field.placeholder}
-                  disabled={field.disabled}
-                />
-              </div>
-            ))}
-
-          {/* Description */}
-          <FormTextField
-            label={t('cron.drawer.fieldDescription')}
-            labelTestId="cron-drawer-description-label"
-            currentLength={form.description.length}
-            maxLength={CRON_DESCRIPTION_MAX_LENGTH}
-            maxLengthHint={t('cron.drawer.maxLengthReachedHint', { max: CRON_DESCRIPTION_MAX_LENGTH })}
-            headerContent={
-              <span
-                data-testid="cron-drawer-description-counter"
-                className={`shrink-0 text-xs ${form.description.length >= CRON_DESCRIPTION_MAX_LENGTH ? 'text-danger' : 'text-text-muted'}`}
-              >
-                {t('cron.drawer.charCount', { count: form.description.length, max: CRON_DESCRIPTION_MAX_LENGTH })}
-              </span>
-            }
-            renderInput={() => (
-              <div className={`${fieldClass} flex flex-col gap-2 p-0`} data-testid="cron-drawer-description-field">
-                <textarea
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+            {/* Name */}
+            <FormTextField
+              label={t('cron.drawer.fieldName')}
+              labelTestId="cron-drawer-name-label"
+              currentLength={form.name.length}
+              maxLength={CRON_NAME_MAX_LENGTH}
+              maxLengthHint={t('cron.drawer.maxLengthReachedHint', { max: CRON_NAME_MAX_LENGTH })}
+              headerContent={
+                <span
+                  data-testid="cron-drawer-name-counter"
+                  className={`shrink-0 text-xs ${form.name.length >= CRON_NAME_MAX_LENGTH ? 'text-danger' : 'text-text-muted'}`}
+                >
+                  {t('cron.drawer.charCount', { count: form.name.length, max: CRON_NAME_MAX_LENGTH })}
+                </span>
+              }
+              renderInput={() => (
+                <input
+                  type="text"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder={t('cron.drawer.placeholderInput') ?? undefined}
-                  rows={4}
-                  maxLength={CRON_DESCRIPTION_MAX_LENGTH}
+                  maxLength={CRON_NAME_MAX_LENGTH}
                   disabled={proactiveLocked}
                   title={lockedTitle}
-                  data-testid="cron-drawer-description-input"
-                  className="w-full resize-none border-0 bg-transparent px-3 py-1.5 text-sm text-text outline-none placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  data-testid="cron-drawer-name-input"
+                  className={fieldClass}
                 />
-                <div
-                  className="cron-drawer-mode-model-row flex items-center gap-1.5 border-t border-border/60 px-1 py-1"
-                  data-testid="cron-drawer-mode-model-row"
-                >
-                  <ModeSelector value={form.mode} onChange={handleModeChange} disabled={proactiveLocked} />
-                  <ModelPicker
-                    testIdPrefix="cron-model-picker"
-                    value={form.modelName}
-                    onChange={(modelName) => setForm({ ...form, modelName })}
-                    disabled={proactiveLocked}
+              )}
+            />
+
+            {/* Select fields: project (create/template), channel, timezone */}
+            {selectFields
+              .filter((f) => f.condition !== false)
+              .map((field) => (
+                <div key={field.testId} data-testid={field.testId}>
+                  <label className="mb-2 form-label" data-testid={field.labelTestId}>
+                    {field.label}
+                  </label>
+                  <SimpleSelect
+                    value={field.value}
+                    onChange={field.onChange}
+                    options={field.options}
+                    placeholder={field.placeholder}
+                    disabled={field.disabled}
                   />
                 </div>
+              ))}
+
+            {/* Description */}
+            <FormTextField
+              label={t('cron.drawer.fieldDescription')}
+              labelTestId="cron-drawer-description-label"
+              currentLength={form.description.length}
+              maxLength={CRON_DESCRIPTION_MAX_LENGTH}
+              maxLengthHint={t('cron.drawer.maxLengthReachedHint', { max: CRON_DESCRIPTION_MAX_LENGTH })}
+              headerContent={
+                <span
+                  data-testid="cron-drawer-description-counter"
+                  className={`shrink-0 text-xs ${form.description.length >= CRON_DESCRIPTION_MAX_LENGTH ? 'text-danger' : 'text-text-muted'}`}
+                >
+                  {t('cron.drawer.charCount', { count: form.description.length, max: CRON_DESCRIPTION_MAX_LENGTH })}
+                </span>
+              }
+              renderInput={() => (
+                <div className={`${fieldClass} flex flex-col gap-2 p-0`} data-testid="cron-drawer-description-field">
+                  <textarea
+                    value={form.description}
+                    onChange={(e) => setForm({ ...form, description: e.target.value })}
+                    placeholder={t('cron.drawer.placeholderInput') ?? undefined}
+                    rows={4}
+                    maxLength={CRON_DESCRIPTION_MAX_LENGTH}
+                    disabled={proactiveLocked}
+                    title={lockedTitle}
+                    data-testid="cron-drawer-description-input"
+                    className="w-full resize-none border-0 bg-transparent py-1.5 text-sm text-text outline-none placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                  <div
+                    className="cron-drawer-mode-model-row flex items-center gap-4 border-border/60"
+                    data-testid="cron-drawer-mode-model-row"
+                  >
+                    <ModeSelector value={form.mode} onChange={handleModeChange} disabled={proactiveLocked} />
+                    <ModelPicker
+                      testIdPrefix="cron-model-picker"
+                      value={form.modelName}
+                      onChange={(modelName) => setForm({ ...form, modelName })}
+                      disabled={proactiveLocked}
+                    />
+                  </div>
+                </div>
+              )}
+            />
+
+            {/* Schedule */}
+            <ScheduleEditor
+              value={form.cronExpr}
+              onChange={(cronExpr) => setForm({ ...form, cronExpr })}
+              timezone={form.timezone}
+              wakeOffsetSeconds={form.wakeOffsetSeconds}
+              onWakeOffsetSecondsChange={(wakeOffsetSeconds) => setForm({ ...form, wakeOffsetSeconds })}
+              wakeOffsetDisabled={proactiveLocked}
+            />
+
+            {/* Effective date (currently hidden, see CRON_EFFECTIVE_DATE_UI_ENABLED) */}
+            {CRON_EFFECTIVE_DATE_UI_ENABLED && (
+              <div data-testid="cron-date-picker-1">
+                <label className="mb-2 form-label">{t('cron.drawer.fieldEffectiveDate')}</label>
+                <DatePicker
+                  value={form.effectiveDate ?? ''}
+                  onChange={(v) => setForm({ ...form, effectiveDate: v || null })}
+                  placeholder={t('cron.drawer.placeholderEffectiveDate') ?? undefined}
+                />
+                <p className="mt-1 text-xs text-text-muted">{t('cron.drawer.effectiveDateComingSoon')}</p>
               </div>
             )}
-          />
 
-          {/* Schedule */}
-          <ScheduleEditor
-            value={form.cronExpr}
-            onChange={(cronExpr) => setForm({ ...form, cronExpr })}
-            timezone={form.timezone}
-            wakeOffsetSeconds={form.wakeOffsetSeconds}
-            onWakeOffsetSecondsChange={(wakeOffsetSeconds) => setForm({ ...form, wakeOffsetSeconds })}
-            wakeOffsetDisabled={proactiveLocked}
-          />
-
-          {/* Effective date (currently hidden, see CRON_EFFECTIVE_DATE_UI_ENABLED) */}
-          {CRON_EFFECTIVE_DATE_UI_ENABLED && (
-            <div data-testid="cron-date-picker-1">
-              <label className="mb-2 form-label">{t('cron.drawer.fieldEffectiveDate')}</label>
-              <DatePicker
-                value={form.effectiveDate ?? ''}
-                onChange={(v) => setForm({ ...form, effectiveDate: v || null })}
-                placeholder={t('cron.drawer.placeholderEffectiveDate') ?? undefined}
-              />
-              <p className="mt-1 text-xs text-text-muted">{t('cron.drawer.effectiveDateComingSoon')}</p>
-            </div>
-          )}
-
-          {/* Enabled toggle */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={proactiveLocked}
-              title={lockedTitle}
-              onClick={() => setForm({ ...form, enabled: !form.enabled })}
-              data-testid="cron-drawer-enabled-toggle"
-              data-variant={form.enabled ? 'enabled' : 'disabled'}
-              className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${form.enabled ? 'bg-accent' : 'bg-border-strong'}`}
-            >
+            {/* Enabled toggle */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={proactiveLocked}
+                title={lockedTitle}
+                onClick={() => setForm({ ...form, enabled: !form.enabled })}
+                data-testid="cron-drawer-enabled-toggle"
+                data-variant={form.enabled ? 'enabled' : 'disabled'}
+                className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${form.enabled ? 'bg-accent' : 'bg-border-strong'}`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-card transition-transform ${form.enabled ? 'translate-x-6' : 'translate-x-1'}`}
+                />
+              </button>
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-card transition-transform ${form.enabled ? 'translate-x-6' : 'translate-x-1'}`}
-              />
-            </button>
-            <span
-              className="text-sm text-text"
-              data-testid="cron-drawer-enabled-label"
-              data-variant={form.enabled ? 'enabled' : 'disabled'}
-            >
-              {form.enabled ? t('cron.status.enabled') : t('cron.status.disabled')}
-            </span>
+                className="text-sm text-text"
+                data-testid="cron-drawer-enabled-label"
+                data-variant={form.enabled ? 'enabled' : 'disabled'}
+              >
+                {form.enabled ? t('cron.status.enabled') : t('cron.status.disabled')}
+              </span>
+            </div>
           </div>
         </div>
 
         {/* ── Footer: actions ─────────────────────────────────── */}
-        <div className="mt-8 flex flex-col items-end gap-2 flex-1 justify-end">
+        <div className="mt-4 flex shrink-0 flex-col items-end gap-2">
           <div className="flex justify-center gap-3">
             {/* title 挂在按钮外层这个非 disabled 的 span 上，而不是挂在 disabled 的 <button> 本身——
                 主流浏览器（Chromium/Firefox）对 disabled 的原生表单控件不派发 hover 事件，title

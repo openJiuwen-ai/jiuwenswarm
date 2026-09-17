@@ -2,13 +2,28 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { settingsActionIcons } from '../../../../assets/settings';
 import { Button, Switch } from '../../../../components/ui';
-import { Form, FormDialog, useForm } from '../../../../components/form';
+import {
+  Form,
+  FormDialog,
+  useForm,
+  useFormState,
+  type FormItem,
+  type FormRules,
+} from '../../../../components/form';
 import { SettingRow, SettingsConfirmDialog } from '../../components';
 import type { SettingsCustomItemProps } from '../../registry/types';
 import { parseConfigBoolean, toConfigBoolean } from '../../services/settingsContract';
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useSettingsSource } from '../../services/SettingsSourceProvider';
+import {
+  CONTEXT_WINDOW_1M_FIELD,
+  formatContextWindowTokens,
+  normalizeContextWindowTokens,
+  ONE_MILLION_CONTEXT_WINDOW_TOKENS,
+  parseContextWindowTokens,
+  resolveDraftContextWindowTokens,
+} from '../models/contextWindow';
 import {
   isMediaCapabilityConfigured,
   mediaCapabilityEnabledField,
@@ -28,6 +43,7 @@ const videoGenFields = [
   'video_gen_api_key',
   'video_gen_model',
 ] as const;
+const videoGenContextWindowField = 'video_gen_context_window_tokens';
 const visualGenFields = [
   'visual_gen_provider',
   'visual_gen_protocol',
@@ -35,6 +51,7 @@ const visualGenFields = [
   'visual_gen_api_key',
   'visual_gen_model',
 ] as const;
+const visualGenContextWindowField = 'visual_gen_context_window_tokens';
 
 type SaveConfig = (updates: Record<string, string>, operation: string) => Promise<unknown>;
 
@@ -44,18 +61,34 @@ function AgentConfigDialog({
   config,
   save,
   onClose,
+  contextWindowField,
 }: {
   titleKey: string;
   fields: readonly string[];
   config: Record<string, unknown>;
   save: SaveConfig;
   onClose: () => void;
+  contextWindowField?: string;
 }) {
   const { t } = useTranslation();
   const { isConnected } = useSettingsServices();
   const form = useForm({
-    initialValues: Object.fromEntries(fields.map((name) => [name, String(config[name] ?? '')])),
+    initialValues: Object.fromEntries([
+      ...fields.map((name) => [name, String(config[name] ?? '')]),
+      ...(contextWindowField
+        ? [
+            [contextWindowField, normalizeContextWindowTokens(config[contextWindowField])],
+            [
+              CONTEXT_WINDOW_1M_FIELD,
+              parseContextWindowTokens(config[contextWindowField]) === ONE_MILLION_CONTEXT_WINDOW_TOKENS,
+            ],
+          ]
+        : []),
+    ]),
   });
+  useFormState(form);
+  const values = form.getValues();
+  const contextWindow1mEnabled = contextWindowField ? Boolean(values[CONTEXT_WINDOW_1M_FIELD]) : false;
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState('');
   const closeBlocked = submitting;
@@ -65,27 +98,54 @@ function AgentConfigDialog({
     closeBlocked,
     onClose,
   });
-  const items = useMemo(
-    () =>
-      fields.map((name) => {
-        const key = name.includes('key');
-        return {
-          name,
-          label: t(`settingsPanel.fields.${name}.title`),
-          component: 'input' as const,
-          type: key ? ('password' as const) : ('text' as const),
-          required: true,
-          passwordVisibilityLabels: key
-            ? { show: t('settingsPanel.common.showValue'), hide: t('settingsPanel.common.hideValue') }
-            : undefined,
-          placeholder: t('config.enterValue'),
-        };
-      }),
-    [fields, t],
-  );
+  const items = useMemo(() => {
+    const nextItems: FormItem<Record<string, unknown>>[] = fields.map((name) => {
+      const key = name.includes('key');
+      return {
+        name,
+        label: t(`settingsPanel.fields.${name}.title`),
+        component: 'input' as const,
+        type: key ? ('password' as const) : ('text' as const),
+        required: true,
+        passwordVisibilityLabels: key
+          ? { show: t('settingsPanel.common.showValue'), hide: t('settingsPanel.common.hideValue') }
+          : undefined,
+        placeholder: t('config.enterValue'),
+      };
+    });
+    if (contextWindowField) {
+      nextItems.push({
+        name: contextWindowField,
+        label: t('settingsPanel.models.contextWindow'),
+        component: 'input' as const,
+        type: 'text' as const,
+        required: true,
+        disabled: contextWindow1mEnabled,
+        placeholder: t('settingsPanel.models.contextWindowPlaceholder'),
+        helpTips: t('settingsPanel.models.contextWindowHint'),
+      });
+      nextItems.push({
+        name: CONTEXT_WINDOW_1M_FIELD,
+        label: t('settingsPanel.models.contextWindow1m'),
+        component: 'switch' as const,
+        switchLabel: t('settingsPanel.models.contextWindow1m'),
+        helpTips: t('settingsPanel.models.contextWindow1mHint'),
+        description: t('settingsPanel.models.contextWindow1mWarning'),
+        onChange: (enabled) => {
+          if (enabled) {
+            form.setFieldValue(
+              contextWindowField,
+              formatContextWindowTokens(ONE_MILLION_CONTEXT_WINDOW_TOKENS),
+            );
+          }
+        },
+      });
+    }
+    return nextItems;
+  }, [contextWindow1mEnabled, contextWindowField, fields, form, t]);
   const rules = useMemo(
-    () =>
-      Object.fromEntries(
+    () => {
+      const nextRules: FormRules<Record<string, unknown>> = Object.fromEntries(
         fields.map((name) => [
           name,
           [
@@ -98,8 +158,21 @@ function AgentConfigDialog({
             },
           ],
         ]),
-      ),
-    [fields, t],
+      );
+      if (contextWindowField) {
+        nextRules[contextWindowField] = [
+          {
+            trigger: ['change', 'blur'] as const,
+            validator: (value: unknown, currentValues: Readonly<Record<string, unknown>>) =>
+              currentValues[CONTEXT_WINDOW_1M_FIELD] || parseContextWindowTokens(value) !== null
+                ? undefined
+                : t('settingsPanel.models.validation.contextWindowInvalid'),
+          },
+        ];
+      }
+      return nextRules;
+    },
+    [contextWindowField, fields, t],
   );
   const confirm = async () => {
     const result = form.validate();
@@ -108,7 +181,22 @@ function AgentConfigDialog({
     setSaveError('');
     try {
       await save(
-        Object.fromEntries(fields.map((name) => [name, String(result.values[name] ?? '').trim()])),
+        Object.fromEntries([
+          ...fields.map((name) => [name, String(result.values[name] ?? '').trim()]),
+          ...(contextWindowField
+            ? [
+                [
+                  contextWindowField,
+                  String(
+                    resolveDraftContextWindowTokens(
+                      result.values[contextWindowField],
+                      result.values[CONTEXT_WINDOW_1M_FIELD],
+                    ),
+                  ),
+                ],
+              ]
+            : []),
+        ]),
         titleKey,
       );
       onClose();
@@ -385,7 +473,7 @@ export function VideoGenSettings({ disabled }: SettingsCustomItemProps) {
 
   const configured = videoGenFields.every((name) => String(values[name] ?? '').trim());
   const enabled = configured && parseConfigBoolean(values.video_gen_enabled);
-  const busy = [...videoGenFields, 'video_gen_enabled'].some((field) => savingKeys.has(field));
+  const busy = [...videoGenFields, videoGenContextWindowField, 'video_gen_enabled'].some((field) => savingKeys.has(field));
   const name = t('settingsPanel.fields.video_gen_enabled.title');
 
   const toggle = async (nextEnabled: boolean) => {
@@ -401,7 +489,10 @@ export function VideoGenSettings({ disabled }: SettingsCustomItemProps) {
   };
 
   const confirmDelete = async () => {
-    const updates: Record<string, string> = Object.fromEntries(videoGenFields.map((field) => [field, '']));
+    const updates: Record<string, string> = Object.fromEntries([
+      ...videoGenFields.map((field) => [field, '']),
+      [videoGenContextWindowField, ''],
+    ]);
     if (parseConfigBoolean(values.video_gen_enabled)) {
       updates.video_gen_enabled = toConfigBoolean(false);
     }
@@ -465,6 +556,7 @@ export function VideoGenSettings({ disabled }: SettingsCustomItemProps) {
         <AgentConfigDialog
           titleKey="settingsPanel.agent.videoGenConfigTitle"
           fields={videoGenFields}
+          contextWindowField={videoGenContextWindowField}
           config={values}
           save={
             dialog.enableOnSave
@@ -501,7 +593,7 @@ export function VisualGenSettings({ disabled }: SettingsCustomItemProps) {
 
   const configured = visualGenFields.every((name) => String(values[name] ?? '').trim());
   const enabled = configured && parseConfigBoolean(values.visual_gen_enabled);
-  const busy = [...visualGenFields, 'visual_gen_enabled'].some((field) => savingKeys.has(field));
+  const busy = [...visualGenFields, visualGenContextWindowField, 'visual_gen_enabled'].some((field) => savingKeys.has(field));
   const name = t('settingsPanel.fields.visual_gen_enabled.title');
 
   const toggle = async (nextEnabled: boolean) => {
@@ -517,7 +609,10 @@ export function VisualGenSettings({ disabled }: SettingsCustomItemProps) {
   };
 
   const confirmDelete = async () => {
-    const updates: Record<string, string> = Object.fromEntries(visualGenFields.map((field) => [field, '']));
+    const updates: Record<string, string> = Object.fromEntries([
+      ...visualGenFields.map((field) => [field, '']),
+      [visualGenContextWindowField, ''],
+    ]);
     if (parseConfigBoolean(values.visual_gen_enabled)) {
       updates.visual_gen_enabled = toConfigBoolean(false);
     }
@@ -581,6 +676,7 @@ export function VisualGenSettings({ disabled }: SettingsCustomItemProps) {
         <AgentConfigDialog
           titleKey="settingsPanel.agent.visualGenConfigTitle"
           fields={visualGenFields}
+          contextWindowField={visualGenContextWindowField}
           config={values}
           save={
             dialog.enableOnSave

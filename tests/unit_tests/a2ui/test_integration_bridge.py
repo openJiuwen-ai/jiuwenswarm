@@ -405,11 +405,6 @@ async def test_team_a2ui_repair_does_not_block_other_member(monkeypatch):
     monkeypatch.setattr(interface_module, "get_config", lambda: {})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
     monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        interface_module,
-        "_schedule_symphony_session_feedback",
-        lambda *_args, terminal_status="success": None,
-    )
     monkeypatch.setattr(interface_module, "finalize_assistant_response_if_a2ui", fake_finalize)
     monkeypatch.setattr(
         interface_module.JiuWenSwarm,

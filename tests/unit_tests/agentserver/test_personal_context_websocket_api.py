@@ -179,10 +179,12 @@ class _FakeHost:
         self,
         provider: str,
         credentials: dict[str, object] | None = None,
+        *,
+        reauthorize: bool = False,
     ) -> dict[str, object]:
         return self._record(
             "authorize_provider",
-            (provider, credentials),
+            (provider, credentials, reauthorize),
             {
                 "provider": provider,
                 "state": "authorized",
@@ -442,7 +444,20 @@ PERSONAL_CONTEXT_HOST_CALLS = [
         ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
         {"provider": "feishu"},
         "authorize_provider",
-        ("feishu", None),
+        ("feishu", None, False),
+        {
+            "provider": "feishu",
+            "state": "authorized",
+            "verification_url": None,
+            "expires_at": None,
+            "error": None,
+        },
+    ),
+    (
+        ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
+        {"provider": "feishu", "reauthorize": True},
+        "authorize_provider",
+        ("feishu", None, True),
         {
             "provider": "feishu",
             "state": "authorized",
@@ -455,7 +470,7 @@ PERSONAL_CONTEXT_HOST_CALLS = [
         ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
         {"provider": "github", "credentials": {"token": "github-canary"}},
         "authorize_provider",
-        ("github", {"token": "github-canary"}),
+        ("github", {"token": "github-canary"}, False),
         {
             "provider": "github",
             "state": "authorized",
@@ -643,7 +658,13 @@ async def test_runtime_switch_callback_failure_is_fail_open(
             ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
             {"provider": "github", "credentials": "not-an-object"},
             {"provider": "github", "credentials": {"token": "github-canary"}},
-            ("authorize_provider", ("github", {"token": "github-canary"})),
+            ("authorize_provider", ("github", {"token": "github-canary"}, False)),
+        ),
+        (
+            ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
+            {"provider": "feishu", "reauthorize": "true"},
+            {"provider": "feishu", "reauthorize": True},
+            ("authorize_provider", ("feishu", None, True)),
         ),
     ],
 )

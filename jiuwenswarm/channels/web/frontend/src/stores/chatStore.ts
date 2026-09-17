@@ -13,6 +13,7 @@ import {
   ToolResult,
   ToolExecution,
   ToolExecutionStatus,
+  AutoReviewerMetadata,
   InterruptResultPayload,
   AskUserQuestionPayload,
   EvolutionStatusPayload,
@@ -24,6 +25,7 @@ import {
 } from '../types';
 import { useTodoStore } from './todoStore';
 import {
+  mergeReviewerProgress,
   mergeToolResultProgress,
   shouldDropToolResult,
 } from './toolResultLifecycle';
@@ -70,9 +72,23 @@ interface TaskItem {
   mediaItems?: MediaItem[];
 }
 
+export interface A4PAuthorizationRequest {
+  requestId: string;
+  kind: string;
+  mandate: Record<string, unknown>;
+  signingOptions: Record<string, unknown>;
+  uiContext?: Record<string, unknown>;
+  sessionId?: string;
+}
+
 export interface HistoryPagerMeta {
-  loadedPages: number;
-  totalPages: number;
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotId: string | null;
+  snapshotEnd: number;
+  loadedBatchSeq: number;
+  publishedBatchSeq: number;
+  historyComplete: boolean;
 }
 
 /**
@@ -90,6 +106,8 @@ export interface ReasoningSegment {
   updatedAt?: number;
   /** 收尾时刻；用于延迟折进 streak。历史可省略。 */
   closedAt?: number;
+  /** 仅用于大历史渐进发布；实时思考没有该标记。 */
+  historyBatchSeq?: number;
 }
 
 export interface ChatRuntime {
@@ -128,6 +146,7 @@ export interface ChatRuntime {
   taskQueue: TaskItem[];
   queuePaused: boolean;
   pendingQuestions: AskUserQuestionPayload[];
+  pendingA4PAuthorization: A4PAuthorizationRequest | null;
   /**
    * 忙碌时设目标：用户气泡暂存在此（界面不立刻显示）；
    * 空 chat.final / processing 结束再正式入 messages。
@@ -174,6 +193,7 @@ function createEmptyRuntime(): ChatRuntime {
     taskQueue: [],
     queuePaused: false,
     pendingQuestions: [],
+    pendingA4PAuthorization: null,
     pendingGoalObjectiveBubble: null as ChatRuntime['pendingGoalObjectiveBubble'],
     inputValue: '',
     evolutionStatusClearTimer: null,
@@ -225,7 +245,13 @@ interface ChatState {
   closeReasoning: (sessionId: string, options?: { atMs?: number }) => void;
   restoreReasoningSegments: (
     sessionId: string,
-    items: { at: string; text: string; agentTemplateName?: string; updatedAt?: number }[],
+    items: {
+      at: string;
+      text: string;
+      agentTemplateName?: string;
+      updatedAt?: number;
+      historyBatchSeq?: number;
+    }[],
   ) => void;
   startStreaming: (sessionId: string, messageId: string, streamKey?: string) => void;
   stopStreaming: (sessionId: string, streamKey?: string) => void;
@@ -257,9 +283,15 @@ interface ChatState {
   addToolCall: (
     sessionId: string,
     toolCall: ToolCall,
-    options?: { startedAt?: string; requestId?: string; agentTemplateName?: string },
+    options?: {
+      startedAt?: string;
+      requestId?: string;
+      agentTemplateName?: string;
+      historyBatchSeq?: number;
+    },
   ) => void;
   updateToolProgress: (sessionId: string, toolCallId: string, progress: Partial<ToolResult>) => void;
+  updateToolReviewer: (sessionId: string, toolCallId: string, reviewer: AutoReviewerMetadata) => void;
   addToolResult: (sessionId: string, toolResult: ToolResult, options?: { updatedAt?: string }) => void;
   markTimedOutExecutions: (sessionId: string) => void;
   /** 历史回放常只有 tool_call、无 tool_result：把仍 pending 的工具按 startedAt 结算，避免超时巡检用 now 污染耗时 */
@@ -274,6 +306,10 @@ interface ChatState {
   enqueuePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
   consumePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
   clearPendingQuestions: (sessionId: string) => void;
+  setPendingA4PAuthorization: (
+    sessionId: string,
+    request: A4PAuthorizationRequest | null,
+  ) => void;
   setPendingGoalObjectiveBubble: (sessionId: string, content: string | null) => void;
   flushPendingGoalObjectiveBubble: (sessionId: string) => void;
   queueOrAddGoalObjectiveMessage: (sessionId: string, content: string) => void;
@@ -405,6 +441,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             },
             taskQueue: [],
             pendingQuestions: [],
+            pendingA4PAuthorization: null,
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -559,6 +596,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           // 历史已结束：closedAt 用 startedAt，立刻 settled，且比魔法 0 更可解释。
           closedAt: startedAt,
           updatedAt,
+          historyBatchSeq: item.historyBatchSeq,
         });
       });
       segments.sort((a, b) => a.startedAt - b.startedAt);
@@ -1044,6 +1082,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         timeoutAt,
         requestId: options?.requestId,
         agentTemplateName: options?.agentTemplateName,
+        historyBatchSeq: options?.historyBatchSeq,
       });
 
       const nextOrder = [...runtime.toolExecutionOrder, toolCall.id];
@@ -1224,6 +1263,29 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
+  updateToolReviewer: (sessionId, toolCallId, reviewer) => {
+    if (!toolCallId) return;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const execution = runtime.toolExecutions.get(toolCallId);
+      if (!execution) return state;
+      const nextReviewer = mergeReviewerProgress(execution.toolCall.reviewer, reviewer);
+      if (nextReviewer === execution.toolCall.reviewer) return state;
+      const nextExecutions = new Map(runtime.toolExecutions);
+      nextExecutions.set(toolCallId, {
+        ...execution,
+        toolCall: { ...execution.toolCall, reviewer: nextReviewer },
+      });
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, toolExecutions: nextExecutions },
+        },
+      };
+    });
+  },
+
   markTimedOutExecutions: (sessionId) => {
     const now = Date.now();
     set((state) => {
@@ -1330,6 +1392,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               orphanResults: new Map(),
               interruptResult: null,
               pendingQuestions: [],
+              pendingA4PAuthorization: null,
               toolMetrics: {
                 toolCallDedupDropped: 0,
                 toolResultDedupDropped: 0,
@@ -1348,6 +1411,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             orphanResults: new Map(),
             interruptResult: null,
             pendingQuestions: [],
+            pendingA4PAuthorization: null,
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -1411,6 +1475,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             },
             taskQueue: [],
             pendingQuestions: [],
+            pendingA4PAuthorization: null,
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -1532,6 +1597,19 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, pendingQuestions: [] },
+        },
+      };
+    });
+  },
+
+  setPendingA4PAuthorization: (sessionId, request) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, pendingA4PAuthorization: request },
         },
       };
     });

@@ -24,6 +24,11 @@ from openjiuwen.symphony.discovery import SkillPromptBranch, SkillPromptSnapshot
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+    AUTHORIZATION_EXECUTION_CONTEXTS,
+    AuthorizationExecutionContext,
+    AuthorizerRoute,
+)
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
 )
@@ -1007,6 +1012,249 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "## Browser Capability Routing Rules" not in prompt
 
 
+@pytest.mark.parametrize(
+    ("language", "heading", "required", "forbidden"),
+    [
+        (
+            "en",
+            "# A4P Intent Authorization",
+            (
+                "call `request_a4p_intent_authorization`",
+                "including read-only operations",
+                "Unprotected tools may be used first",
+                "may include multiple `actions`",
+                "ordinary parameters not used for authorization matching need not be known in advance",
+                "authorize each complete exact command by default",
+                "cannot absorb whitespace, Shell operators, redirections, or extra arguments",
+                "a filename glob under a fixed directory",
+                "Never use a bare `*`",
+                "Use dedicated file tools for file writes",
+                "Once these checks pass, immediately make the next tool call",
+                "Without new information, do not reconsider",
+                "Revise only affected steps and their dependencies",
+                "Plans may describe variables and substitution rules",
+                "actual tool calls must use resolved values",
+                "do not guess parameters or broaden authorization to compensate",
+                "request another authorization only if the later stage is not covered by an approved scope",
+                "Cron authorization cannot be staged",
+                "otherwise, do not enable the job",
+                "put task execution and necessary preparation in the future plan",
+                "Generate the job `description` and authorization `actions` from the same execution plan",
+                "Use the system-designated default Cron creation tool",
+                "create disabled",
+                "authorize the complete future scope using the returned `cronJobId`",
+                "enable after `ok=true`",
+                "keep the job disabled",
+                "do not repeatedly submit the same request",
+            ),
+            (
+                "determine and freeze the most direct future call list",
+                "use only one clearly defined read-only source for the same dynamic value",
+                "Never guess or use placeholders",
+                "ad hoc protected operation may use normal permission approval",
+                "estimate the total calls",
+                "maxExecutions",
+                "uptime",
+                "df -h",
+                "mkdir -p",
+                "系统巡检报告",
+            ),
+        ),
+        (
+            "cn",
+            "# A4P 意图授权",
+            (
+                "调用 `request_a4p_intent_authorization`",
+                "只读操作也不例外",
+                "受保护列表外的工具",
+                "可通过多个 `actions` 覆盖当前已确定的范围",
+                "无需提前确定不参与授权匹配的普通参数",
+                "默认分别授权完整精确命令",
+                "通配不会覆盖空白、Shell 运算符、重定向或额外参数",
+                "固定目录下的文件名 glob",
+                "不得使用裸 *",
+                "使用专用文件工具完成文件写入",
+                "三项检查通过后，立即进入下一步工具调用",
+                "没有新增信息时，不重新比较",
+                "才修改受影响的步骤及其依赖",
+                "计划可以描述变量和替换关系",
+                "实际调用时必须使用已解析的真实参数",
+                "不得以扩大授权或猜测参数代替解决问题",
+                "仅当后续阶段不在已批准范围内时再申请授权",
+                "Cron 授权不能分阶段",
+                "无法表达时，不启用任务",
+                "将任务执行及其必要准备操作纳入未来执行计划",
+                "从同一份执行计划生成任务 description 和授权 actions",
+                "使用系统指定的默认 Cron 创建工具",
+                "create disabled",
+                "使用返回的 cronJobId 一次性授权完整未来范围",
+                "ok=true 后 enable",
+                "保持任务禁用",
+                "不反复提交相同请求",
+            ),
+            (
+                "确定并冻结一份最直接的未来调用清单",
+                "同一动态值只使用一个明确的只读来源",
+                "不得猜测或使用占位符",
+                "临时、非工作流型的受保护操作可使用普通权限审批",
+                "调用工具前先估计",
+                "maxExecutions",
+                "uptime",
+                "df -h",
+                "mkdir -p",
+                "系统巡检报告",
+            ),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a4p_guidance_is_a_runtime_attachment_not_cached_system_prompt(
+    monkeypatch,
+    language,
+    heading,
+    required,
+    forbidden,
+):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"a4p": {"enabled": True}},
+    )
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    rail = RuntimePromptRail(language=language, channel="web")
+    rail.init(agent)
+    rail.set_a4p_authorizer_available(True)
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+
+    await rail._sync_a4p_intent_authorization_attachment(ctx)
+
+    assert "A4P Intent Authorization" not in builder.build()
+    rendered = agent.prompt_attachment_manager.render(
+        await agent.prompt_attachment_manager.collect_for_session("sess1")
+    )
+    assert heading in rendered
+    for text in required:
+        assert text in rendered
+    for text in forbidden:
+        assert text not in rendered
+
+
+@pytest.mark.asyncio
+async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"a4p": {"enabled": True}},
+    )
+    builder = SystemPromptBuilder(language="en")
+    agent = _FakeAgent(builder)
+    rail = RuntimePromptRail(language="en", channel="web")
+    rail.init(agent)
+    rail.set_a4p_authorizer_available(True)
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+    await rail._sync_a4p_intent_authorization_attachment(ctx)
+
+    rail.set_a4p_authorizer_available(False)
+    await rail._sync_a4p_intent_authorization_attachment(ctx)
+
+    rendered = agent.prompt_attachment_manager.render(
+        await agent.prompt_attachment_manager.collect_for_session("sess1")
+    )
+    assert "A4P Intent Authorization" not in rendered
+
+
+def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch):
+    fake_resource = _FakeResourceManager()
+    fake_instance = _FakeRuntimeInstance()
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = fake_instance
+    adapter._tool_cards = []
+    adapter._a4p_tools = []
+    adapter._a4p_tools_registered = False
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = "session-1"
+    monkeypatch.setattr(interface_module.Runner, "resource_mgr", fake_resource)
+    AUTHORIZATION_EXECUTION_CONTEXTS.clear()
+    AUTHORIZATION_EXECUTION_CONTEXTS.activate(
+        AuthorizationExecutionContext(
+            request_id="request-1",
+            session_id="session-1",
+            channel_id="web",
+            agent_id="main_agent",
+            metadata={},
+            authorizer_route=AuthorizerRoute(
+                session_id="session-1",
+                app_id="default",
+                agent_ref_mode="agent",
+                agent_ref_id="default",
+            ),
+        )
+    )
+    try:
+        adapter._sync_a4p_tools_for_runtime(
+            {"a4p": {"enabled": True}},
+            "web",
+            "session-1",
+        )
+        assert adapter._a4p_tools_registered is True
+        assert [card.name for card in adapter._tool_cards] == [
+            "request_a4p_intent_authorization"
+        ]
+
+        adapter._sync_a4p_tools_for_runtime(
+            {"a4p": {"enabled": True}},
+            "tui",
+            "session-1",
+        )
+        assert adapter._a4p_tools == []
+        assert adapter._a4p_tools_registered is False
+        assert adapter._tool_cards == []
+    finally:
+        AUTHORIZATION_EXECUTION_CONTEXTS.clear()
+
+
+@pytest.mark.asyncio
+async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch):
+    class _Runtime:
+        @staticmethod
+        def cron_intent_authorization_summary(job_id):
+            assert job_id == "job-1"
+            return {
+                "cronJobId": job_id,
+                "actions": [
+                    {
+                        "name": "write_file",
+                        "params": {"file_path": "/workspace/reports/*.md"},
+                    }
+                ],
+                "expireAt": "2099-01-01T00:00:00Z",
+            }
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"a4p": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.a4p_runtime.get_a4p_runtime",
+        lambda: _Runtime(),
+    )
+    builder = SystemPromptBuilder(language="en")
+    agent = _FakeAgent(builder)
+    rail = RuntimePromptRail(language="en", channel="__cron__")
+    rail.init(agent)
+    rail.set_request_metadata({"cron": {"job_id": "job-1"}})
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+
+    await rail._sync_a4p_cron_authorization_scope_attachment(ctx)
+
+    assert "A4P Cron Authorization Scope" not in builder.build()
+    rendered = agent.prompt_attachment_manager.render(
+        await agent.prompt_attachment_manager.collect_for_session("sess1")
+    )
+    assert "# A4P Cron Authorization Scope" in rendered
+    assert '"name": "write_file"' in rendered
+    assert "/workspace/reports/*.md" in rendered
+
+
 @pytest.mark.asyncio
 async def test_runtime_attachment_request_mode_wins_over_localized_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
@@ -1255,7 +1503,8 @@ async def test_runtime_git_status_is_stable_system_context_for_one_invoke(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monkeypatch):
+@pytest.mark.parametrize("channel", ["tui", "process_cli"])
+async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monkeypatch, channel):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
     stale_dir = tmp_path / "missing-worktree"
@@ -1275,7 +1524,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="en", channel="tui")
+    runtime_rail = RuntimePromptRail(language="en", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_trusted_dirs([str(stale_dir), str(current_dir), str(extra_dir)])
     runtime_rail.set_runtime_paths(cwd=str(current_dir), project_dir=str(project_dir))
@@ -1312,8 +1561,9 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["tui", "process_cli"])
 async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, channel
 ):
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -1332,7 +1582,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="cn", channel="tui")
+    runtime_rail = RuntimePromptRail(language="cn", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=str(current_dir), project_dir=str(project_dir))
     ctx = AgentCallbackContext(
@@ -1356,8 +1606,9 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
 async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, channel
 ):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
@@ -1374,7 +1625,7 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="en", channel="web")
+    runtime_rail = RuntimePromptRail(language="en", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=str(project_dir), project_dir=str(project_dir))
     ctx = AgentCallbackContext(
@@ -1394,7 +1645,8 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, monkeypatch):
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
+async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, monkeypatch, channel):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
     agent_data_dir = tmp_path / "agent-data"
@@ -1410,7 +1662,7 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="en", channel="web")
+    runtime_rail = RuntimePromptRail(language="en", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=str(task_dir), project_dir=None)
     ctx = AgentCallbackContext(
@@ -1430,7 +1682,8 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkeypatch):
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
+async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkeypatch, channel):
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
     agent_data_dir = tmp_path / "agent-data"
@@ -1444,7 +1697,7 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="cn", channel="web")
+    runtime_rail = RuntimePromptRail(language="cn", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=None, project_dir=None)
     ctx = AgentCallbackContext(
@@ -1463,9 +1716,55 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "cn"])
+@pytest.mark.parametrize("mode", ["agent.code.normal", "agent.code.plan", "agent.work.normal", "agent.work.plan"])
+async def test_process_cli_directory_prompt_refreshes_across_requests(
+    tmp_path, monkeypatch, language, mode
+):
+    import jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail as runtime_module
+
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    internal = tmp_path / "agent-data"
+    first = tmp_path / "first-project"
+    second = tmp_path / "second-project"
+    current = tmp_path / "task-cwd"
+    for directory in (internal, first, second, current):
+        directory.mkdir()
+    monkeypatch.setattr(runtime_module, "get_agent_workspace_dir", lambda: internal)
+    monkeypatch.setattr(runtime_module, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime_module, "get_runtime_state_path", lambda _: tmp_path / "absent.yaml")
+    monkeypatch.setattr(RuntimePromptRail, "_configured_model_names", staticmethod(lambda: []))
+    rail = RuntimePromptRail(language=language, channel="process_cli")
+    rail.init(agent)
+    rail.set_mode(mode)
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+
+    for previous, project in ((None, first), (first, second)):
+        rail.set_runtime_paths(cwd=str(current), project_dir=str(project), workspace_dir=str(internal))
+        await rail.before_model_call(ctx)
+        prompt = builder.build()
+        assert str(project) in prompt
+        assert str(current) in prompt
+        assert str(internal) in prompt
+        if previous is not None:
+            assert str(previous) not in prompt
+        rule = (
+            "不要把普通任务产物写入智能体内部目录或启动配置目录"
+            if language == "cn"
+            else "Do not write ordinary task artifacts to the Agent internal data"
+        )
+        assert rule in prompt
+        assert rail._cwd == str(current)
+        assert rail._project_dir == str(project)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
 async def test_runtime_prompt_clears_directory_boundaries_outside_web_and_tui(
     tmp_path,
     monkeypatch,
+    channel,
 ):
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -1476,7 +1775,7 @@ async def test_runtime_prompt_clears_directory_boundaries_outside_web_and_tui(
         lambda: agent_data_dir,
     )
 
-    runtime_rail = RuntimePromptRail(language="cn", channel="web")
+    runtime_rail = RuntimePromptRail(language="cn", channel=channel)
     runtime_rail.init(agent)
     ctx = AgentCallbackContext(
         agent=agent,

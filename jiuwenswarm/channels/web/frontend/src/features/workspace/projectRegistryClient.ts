@@ -2,6 +2,13 @@ import { webRequest } from '../../services/webClient';
 import type { Session } from '../../types';
 import type { ProjectInfo, WorkMode } from './projectTypes';
 
+export interface ProjectSessionBatchResult {
+  project_id: string;
+  succeeded_count: number;
+  failed_count: number;
+  results: { session_id: string; ok: boolean; code?: string; error?: string }[];
+}
+
 export const projectRegistryClient = {
   list: (filter: 'all' | 'pinned' | 'unpinned' = 'all', workMode?: WorkMode) =>
     webRequest<{ projects: ProjectInfo[] }>('project.list', {
@@ -29,8 +36,9 @@ export const projectRegistryClient = {
     }>('project.create', { name, project_dir: projectDir, work_mode: workMode }),
   rename: (projectId: string, name: string) => webRequest<Record<string, never>>('project.rename', { project_id: projectId, name }),
   pin: (projectId: string, pinned: boolean) => webRequest<{ pinned: boolean; pin_order: number }>('project.pin', { project_id: projectId, pinned }),
-  remove: (projectId: string) => webRequest<{ affected_sessions: number }>('project.archive', { project_id: projectId }, { timeoutMs: 120000 }),
-  unarchive: (projectId: string) => webRequest<{ project_id: string; restored: boolean }>('project.unarchive', { project_id: projectId }),
+  remove: (projectId: string) => webRequest<{ project_id: string; deleted_sessions: number; deleted_cron_jobs: number }>('project.delete', { project_id: projectId }, { timeoutMs: 120000 }),
+  archiveSessions: (projectId: string) => webRequest<ProjectSessionBatchResult>('project.sessions.archive', { project_id: projectId }, { timeoutMs: 120000 }),
+  deleteArchivedSessions: (projectId: string) => webRequest<ProjectSessionBatchResult>('project.sessions.delete_archived', { project_id: projectId }, { timeoutMs: 120000 }),
   pinnedSessions: () => webRequest<{ sessions: Session[] }>('project.pinned_sessions'),
   getSessionMetadata: (sessionId: string) => webRequest<Session>('session.get_metadata', { session_id: sessionId }),
   pinSession: (sessionId: string, pinned: boolean) => webRequest<{ pinned: boolean; pin_order: number }>('session.pin', { session_id: sessionId, pinned }),

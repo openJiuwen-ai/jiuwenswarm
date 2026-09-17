@@ -1429,9 +1429,13 @@ class PersonalContextHostAPI:
         self,
         provider: str,
         credentials: dict[str, object] | None = None,
+        *,
+        reauthorize: bool = False,
     ) -> dict[str, object]:
         """Check or begin user authorization for a configured provider."""
 
+        if not isinstance(reauthorize, bool):
+            _raise_host_error("reauthorize must be a boolean")
         async with self._operation_lock:
             if not isinstance(provider, str) or not provider.strip():
                 _raise_host_error("provider must be a non-empty string")
@@ -1462,10 +1466,48 @@ class PersonalContextHostAPI:
                 )
                 provider_credentials[normalized_provider] = {field: normalized_secret}
                 stored["provider_credentials"] = provider_credentials
+                matching_service_ids: set[str] = set()
+                if reauthorize:
+                    services = cast(list[dict[str, object]], stored["fetch_services"])
+                    for service in services:
+                        if service.get("provider") == normalized_provider:
+                            service["credentials"] = {field: normalized_secret}
+                            service_id = service.get("service_id")
+                            if isinstance(service_id, str):
+                                matching_service_ids.add(service_id)
                 stored, candidate = _prepare_stored_config(stored)
                 payload = _serialize_config(stored)
                 if self._stored_config is None:
                     await self._apply_configuration_locked(candidate, stored, payload)
+                elif reauthorize and matching_service_ids:
+                    current = self._config
+                    if current is None:
+                        _raise_host_error("PersonalContext is not configured")
+                    previous_services = tuple(
+                        item
+                        for item in current.fetch_services
+                        if item.service_id in matching_service_ids
+                    )
+                    candidate_services = tuple(
+                        item
+                        for item in candidate.fetch_services
+                        if item.service_id in matching_service_ids
+                    )
+                    await self._apply_live_update_locked(
+                        candidate,
+                        stored,
+                        payload,
+                        apply=lambda: (
+                            self._personal_context._replace_fetch_service_credentials(  # pylint: disable=protected-access
+                                candidate_services
+                            )
+                        ),
+                        rollback=lambda: (
+                            self._personal_context._replace_fetch_service_credentials(  # pylint: disable=protected-access
+                                previous_services
+                            )
+                        ),
+                    )
                 else:
                     try:
                         _publish_yaml(self._config_path, payload)
@@ -1491,7 +1533,8 @@ class PersonalContextHostAPI:
                 )
             try:
                 return await self._personal_context.authorize_provider(
-                    normalized_provider
+                    normalized_provider,
+                    reauthorize=reauthorize,
                 )
             except asyncio.CancelledError:
                 raise
