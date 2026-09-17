@@ -122,6 +122,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     headerRight: ReactNode,
     basicInfoText: ReactNode,
     body: ReactNode,
+    notice?: ReactNode,
   ) => (
     <>
       {props.detailState === 'loading' ? (
@@ -162,6 +163,15 @@ export function SkillDetailView(props: SkillDetailViewProps) {
 
             {/* 基本信息（skill/agent 详情共享区块组件） */}
             <DetailSection testId={`${tid}-basic-info`} title={t('skills.detail.basicInfo')}>
+              {/* 基本信息内的灰色来源提示（如"非自研"说明）：info 图标 + 弱化文本，无边框卡片 */}
+              {notice ? (
+                <div
+                  className="flex items-center gap-1.5 text-sm text-text-muted mb-1.5"
+                  data-testid={`${tid}-notice`}
+                >
+                  {notice}
+                </div>
+              ) : null}
               {basicInfoText}
             </DetailSection>
 
@@ -632,5 +642,19 @@ export function SkillDetailView(props: SkillDetailViewProps) {
         )}
       </div>
     </>,
+    /* 基本信息下方灰色提示条：内置技能且不在自研名单（proprietary 为 false 或缺失）时显示"非自研" */
+    (selectedSkill.is_builtin || selectedSkill.is_builtin_source || selectedSkill.source === 'builtin') &&
+    !selectedSkill.proprietary ? (
+      <>
+        <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+          />
+        </svg>
+        <span>{t('skills.proprietaryLabels.thirdPartyHint')}</span>
+      </>
+    ) : undefined,
   );
 }

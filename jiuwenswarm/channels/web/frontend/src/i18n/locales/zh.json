@@ -1973,6 +1973,10 @@
       "team": "团队技能",
       "multimodal": "多模态"
     },
+    "proprietaryLabels": {
+      "thirdParty": "非自研",
+      "thirdPartyHint": "该技能由第三方提供，非官方自研"
+    },
     "marketplaceCategories": {
       "all": "全部",
       "software-development": "软件开发",

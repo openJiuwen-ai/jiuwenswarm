@@ -1992,6 +1992,10 @@
       "team": "Team Skills",
       "multimodal": "Multimodal"
     },
+    "proprietaryLabels": {
+      "thirdParty": "Third-party",
+      "thirdPartyHint": "Provided by a third party, not built in-house"
+    },
     "marketplaceCategories": {
       "all": "All",
       "software-development": "Software Development",
