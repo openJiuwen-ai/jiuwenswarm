@@ -60,7 +60,7 @@ async def _dispatch_config(request: AgentRequest) -> AgentResponse:
     if request.req_method == ReqMethod.A4P_CONFIG_UPDATE:
         if not updates or updates.keys() - _CONFIG_FIELDS:
             return _err(request, "Provide enabled and/or require_user_signature only")
-        if any(type(value) is not bool for value in updates.values()):
+        if any(not isinstance(value, bool) for value in updates.values()):
             return _err(request, "A4P config values must be booleans")
     elif updates:
         return _err(request, "a4p.config.get accepts no config fields")

@@ -228,6 +228,22 @@ class _CronToolsCronBackend(CronToolBackend):
             return None
         return self._to_backend_job(job)
 
+    async def get_authoritative_job(
+        self, job_id: str, *, user_id: str, request_id: str = "", session_id: str = "",
+    ) -> dict[str, Any] | None:
+        """Query with explicit trusted ownership, independent of bound tool contexts."""
+        route = CronToolRoute(user_id=user_id, request_id=request_id, session_id=session_id, channel_id="")
+        route_token = self._cron_tools.push_cron_route(route)
+        try:
+            job = await self._cron_tools.get_authoritative_job(job_id)
+        finally:
+            self._cron_tools.reset_cron_route(route_token)
+        if job is None:
+            return None
+        if str(job.get("user_id") or "").strip() != user_id:
+            raise RuntimeError("authoritative cron job owner mismatch")
+        return self._to_backend_job(job)
+
     async def create_job(
         self,
         params: dict[str, Any],
@@ -838,14 +854,6 @@ async def query_authoritative_cron_job(
 ) -> dict[str, Any] | None:
     """Query with explicit trusted ownership, independent of bound tool contexts."""
     backend = _CronToolsCronBackend(CronTools())
-    route = CronToolRoute(user_id=user_id, request_id=request_id, session_id=session_id, channel_id="")
-    route_token = backend._cron_tools.push_cron_route(route)
-    try:
-        job = await backend._cron_tools.get_authoritative_job(job_id)
-    finally:
-        backend._cron_tools.reset_cron_route(route_token)
-    if job is None:
-        return None
-    if str(job.get("user_id") or "").strip() != user_id:
-        raise RuntimeError("authoritative cron job owner mismatch")
-    return backend._to_backend_job(job)
+    return await backend.get_authoritative_job(
+        job_id, user_id=user_id, request_id=request_id, session_id=session_id,
+    )
