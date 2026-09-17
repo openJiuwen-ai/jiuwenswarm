@@ -1194,6 +1194,7 @@ class TestComputeNextRunMissedTriggerWindow:
         assert push_dt == datetime(2026, 7, 24, 18, 25, 31, tzinfo=ZoneInfo("Asia/Shanghai"))
         assert wake_dt == push_dt
         assert run_id.startswith("one-shot:")
+
     def test_missed_trigger_beyond_window_raises(self) -> None:
         svc = _TestableScheduler.__new__(_TestableScheduler)
 

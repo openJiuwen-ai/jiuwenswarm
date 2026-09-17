@@ -103,8 +103,6 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.subagent_activity",
         "chat.symphony_status",
         "chat.notice",
-        "a4p.authorization_request",
-        "a4p.authorization_terminated",
         "history.message",
         "chat.session_result",
         "chat.usage_metadata",
@@ -786,7 +784,6 @@ class WebChannel(BaseWsChannel):
     def _should_preserve_full_payload(event_name: str) -> bool:
         return (
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
-            or event_name.startswith("a4p.")
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
             or event_name.startswith("personal_context.context.")

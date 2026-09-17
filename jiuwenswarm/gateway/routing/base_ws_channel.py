@@ -174,15 +174,6 @@ class BaseWsChannel(BaseWebChannel):
             )
         return affected
 
-    async def routing_keys_for_ws(self, ws: Any) -> list[RoutingKey]:
-        """Return the logical routes currently associated with a WebSocket."""
-        async with self._lock:
-            return [
-                routing_key
-                for routing_key, sockets in self._clients_by_key.items()
-                if ws in sockets
-            ]
-
     # ── 出站 ──
 
     def _broadcast_fallback_enabled(self) -> bool:

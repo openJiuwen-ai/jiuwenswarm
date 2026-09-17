@@ -556,15 +556,6 @@ class ChannelManager(ABC):
                 if channel:
                     try:
                         await channel.send(msg)
-                        payload = msg.payload if isinstance(msg.payload, dict) else {}
-                        event_type = str(payload.get("event_type") or "").strip()
-                        if event_type.startswith("a4p."):
-                            logger.info(
-                                "[ChannelManager] A4P robot_message delivered: channel_id=%s id=%s event_type=%s",
-                                msg.channel_id,
-                                msg.id,
-                                event_type,
-                            )
                     except Exception as e:
                         logger.error("send to channel %s: %s", msg.channel_id, e, exc_info=True)
                         if msg.id and msg.id.startswith("cron-push-"):
