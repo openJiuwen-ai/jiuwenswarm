@@ -184,7 +184,7 @@ export function CatalogPage({
                   />
                 );
               })}
-             </div>
+            </div>
             {totalPages > 1 ? (
               <div
                 className="agent-management-pagination"

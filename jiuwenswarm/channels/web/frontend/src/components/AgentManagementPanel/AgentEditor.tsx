@@ -14,6 +14,7 @@ import { AgentTagPicker } from './AgentTagPicker';
 
 type AgentEditorProps = {
   draft: AgentDraft;
+  mode?: 'create' | 'edit';
   skillOptions: SkillOption[];
   skillsStatus: RequestStatus;
   mcpOptions: McpOption[];
@@ -37,6 +38,7 @@ const MCP_TYPE_OPTIONS = [
 
 export function AgentEditor({
   draft,
+  mode = 'create',
   skillOptions,
   skillsStatus,
   mcpOptions,
@@ -195,7 +197,7 @@ export function AgentEditor({
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
         <div className="agent-management-editor__inner">
           <header className="agent-management-editor__header">
-            <h1>{t('agentManagement.form.title')}</h1>
+            <h1>{mode === 'edit' ? t('agentManagement.form.editTitle') : t('agentManagement.form.title')}</h1>
             <div
               className="agent-management-editor__tabs"
               role="tablist"
@@ -509,7 +511,7 @@ export function AgentEditor({
               className="agent-management-button agent-management-button--primary"
               disabled={saving}
             >
-              {saving ? t('common.saving') : t('common.confirm')}
+              {saving ? (mode === 'edit' ? t('agentManagement.actions.updating') : t('common.saving')) : t('common.confirm')}
             </button>
           </footer>
 

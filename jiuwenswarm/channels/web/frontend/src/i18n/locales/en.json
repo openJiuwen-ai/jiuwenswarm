@@ -2643,7 +2643,12 @@
       "createByUpload": "Create from file",
       "uploading": "Uploading…",
       "createViaChatPrompt": "Help me create an xxx Expert who is good at xxx",
-      "back": "Back"
+      "back": "Back",
+      "edit": "Edit",
+      "updating": "Saving…"
+    },
+    "confirm": {
+      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone."
     },
     "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}", "moreTagsTooltip": "More tags: {{tags}}" },
     "states": {
@@ -2713,6 +2718,7 @@
     },
     "form": {
       "title": "Create manually",
+      "editTitle": "Edit Expert",
       "subtitle": "Create a reusable Expert definition",
       "createOnly": "Create only",
       "createTabsLabel": "Creation type",

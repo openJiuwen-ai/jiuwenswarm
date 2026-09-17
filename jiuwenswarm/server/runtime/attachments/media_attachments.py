@@ -115,7 +115,9 @@ def _store_image_item(item: dict[str, Any], *, session_id: str | None, index: in
         return None
     data: bytes | None = None
     with suppress(binascii.Error):
-        data = base64.b64decode(raw_base64, validate=True)
+        # 剥离 data:...;base64, 前缀（react-dropzone/readAsDataURL 等会带）。
+        payload = raw_base64.split(",", 1)[-1] if raw_base64.startswith("data:") else raw_base64
+        data = base64.b64decode(payload, validate=True)
     if not data or len(data) > _MAX_IMAGE_BYTES:
         return None
 
