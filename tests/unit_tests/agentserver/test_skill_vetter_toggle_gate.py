@@ -29,6 +29,7 @@ def _make_mgr(
         json.dumps(mgr._state, ensure_ascii=False), encoding="utf-8"
     )
     mgr._resolve_local_skill_dir = lambda name: skill_dir
+    mgr._skills_dir = skill_dir.parent
     mgr._get_installed_plugins = lambda: []
     if not use_real_builtin_check:
         # Real 3-arg arity so an arity mismatch cannot hide behind a stub.
