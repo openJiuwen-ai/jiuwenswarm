@@ -1387,12 +1387,21 @@ def test_collect_command_intents_passes_extra_body_to_llm_stream():
     assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
-def _make_chunk(*, content: str = "", reasoning_content: str | None = None):
+def _make_chunk(
+        *,
+        content: str = "",
+        reasoning_content: str | None = None,
+        usage_metadata: Any = None,
+):
     """构造 ``AssistantMessageChunk`` 形状的最小对象，仅覆盖被 ``_invoke_llm_streaming``
     读到的字段。``content=""`` 是 openjiuwen 的实际默认值（``getattr(delta, "content", None) or ""``），
     所以这里也用空串而不是 ``None`` 来还原真实 chunk。
     """
-    return SimpleNamespace(content=content, reasoning_content=reasoning_content)
+    return SimpleNamespace(
+        content=content,
+        reasoning_content=reasoning_content,
+        usage_metadata=usage_metadata,
+    )
 
 
 class _FakeStreamingLLM:
@@ -1435,6 +1444,99 @@ def test_invoke_llm_streaming_drives_async_generator_correctly_for_normal_conten
     # 调用参数透传正确
     assert len(llm.calls) == 1
     assert llm.calls[0]["model"] == "ep-fake"
+
+
+def test_invoke_llm_streaming_forwards_usage_from_final_chunk_once():
+    """L3-Cmd 绕过主 Agent model hooks 时，也必须把最终 chunk 的 usage 交给调用方计费。"""
+    from jiuwenclaw.agentserver.permissions import command_intent as ci_mod
+
+    usage = {
+        "input_tokens": 541,
+        "output_tokens": 2,
+        "total_tokens": 543,
+    }
+    chunks = [
+        _make_chunk(content='{"intents":'),
+        _make_chunk(content='[{"action":"read","paths":["/tmp/x"]}]'),
+        _make_chunk(content="}", usage_metadata=usage),
+    ]
+    llm = _FakeStreamingLLM(lambda: list(chunks))
+    captured: list[Any] = []
+
+    async def _capture_usage(value: Any) -> None:
+        captured.append(value)
+
+    result = asyncio.run(ci_mod.invoke_llm(
+        llm,
+        "ep-fake",
+        prompt="hello",
+        timeout=5.0,
+        tool_name="bash",
+        command_preview="cat /tmp/x",
+        usage_callback=_capture_usage,
+    ))
+
+    assert result == '{"intents":[{"action":"read","paths":["/tmp/x"]}]}'
+    assert captured == [usage]
+
+
+def test_emit_llm_usage_to_session_uses_standard_usage_stream_shape():
+    """页面聚合器只消费标准 ``llm_usage`` 事件，权限辅助调用必须复用该协议。"""
+    from jiuwenclaw.agentserver import llm_usage as usage_mod
+
+    class _Session:
+        def __init__(self):
+            self.events: list[Any] = []
+
+        async def write_stream(self, event: Any) -> None:
+            self.events.append(event)
+
+    session = _Session()
+    usage = SimpleNamespace(
+        input_tokens=564,
+        output_tokens=53,
+        total_tokens=617,
+    )
+
+    asyncio.run(usage_mod.emit_llm_usage_to_session(session, usage))
+
+    assert len(session.events) == 1
+    event = session.events[0]
+    assert event.type == "llm_usage"
+    assert event.payload == {
+        "usage_metadata": {
+            "input_tokens": 564,
+            "output_tokens": 53,
+            "total_tokens": 617,
+        }
+    }
+
+
+def test_emit_llm_usage_prefers_request_sink_when_session_stream_is_closed():
+    """after_invoke 辅助调用完成时，内层 session stream 可能已关闭。"""
+    from jiuwenclaw.agentserver import llm_usage as usage_mod
+
+    class _ClosedSession:
+        async def write_stream(self, _event: Any) -> None:
+            raise RuntimeError("stream emitter already closed")
+
+    captured: list[Any] = []
+
+    async def _capture(value: Any) -> None:
+        captured.append(value)
+
+    usage = SimpleNamespace(
+        input_tokens=2679,
+        output_tokens=8615,
+        total_tokens=11294,
+    )
+    token = usage_mod.bind_aux_llm_usage_sink(_capture)
+    try:
+        asyncio.run(usage_mod.emit_llm_usage_to_session(_ClosedSession(), usage))
+    finally:
+        usage_mod.reset_aux_llm_usage_sink(token)
+
+    assert captured == [usage]
 
 
 def _attach_capture_handler(logger):

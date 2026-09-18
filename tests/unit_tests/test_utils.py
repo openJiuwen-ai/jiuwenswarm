@@ -88,6 +88,14 @@ class TestLoggerSetup:
         assert logger.level == 10  # DEBUG level
 
     @staticmethod
+    def test_setup_logger_uses_jiuwenclaw_log_level_for_file_logs():
+        """Process-level trace switch must enable DEBUG on the Jiuwen root logger."""
+        with patch.dict(os.environ, {"JIUWENCLAW_LOG_LEVEL": "DEBUG"}, clear=False):
+            logger = utils.setup_logger()
+
+        assert logger.level == logging.DEBUG
+
+    @staticmethod
     def test_setup_logger_error():
         """Test logger setup with ERROR level."""
         logger = utils.setup_logger("ERROR")

@@ -28,6 +28,10 @@ from jiuwenclaw.agentserver.deep_agent.plan_pause_helpers import (
 from jiuwenclaw.agentserver.deep_agent.rails.qa_block_assembly_rail import (
     clear_assembly_committed_qa_id,
 )
+from jiuwenclaw.agentserver.llm_usage import (
+    AuxiliaryUsageReportingModel,
+    emit_llm_usage_to_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +113,40 @@ class JiuClawQABlockFreezeRail(DeepAgentRail):
         model_client_config: Any,
     ) -> None:
         self._freezer.bind_summarizer_model_defaults(model_config, model_client_config)
+
+    def _prepare_freeze_usage_reporting(
+        self,
+        session: Any,
+        persist_mode: Literal["async", "sync"],
+        summarizer_model: Any | None,
+    ) -> tuple[Any | None, dict[str, Any]]:
+        """Bridge usage reporting across AgentCore freezer API versions."""
+        if persist_mode != "sync":
+            return summarizer_model, {}
+
+        async def report_usage(usage_metadata: Any) -> None:
+            await emit_llm_usage_to_session(session, usage_metadata)
+
+        try:
+            parameters = inspect.signature(self._freezer.freeze).parameters.values()
+        except (TypeError, ValueError):
+            parameters = ()
+        accepts_usage_callback = any(
+            parameter.name == "llm_usage_callback"
+            or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        if accepts_usage_callback:
+            return summarizer_model, {"llm_usage_callback": report_usage}
+
+        if not callable(getattr(summarizer_model, "stream", None)):
+            return summarizer_model, {}
+
+        logger.info(
+            "[QABlockFreezeRail] legacy AgentCore freezer lacks llm_usage_callback; "
+            "wrapping the summarizer model"
+        )
+        return AuxiliaryUsageReportingModel(summarizer_model, report_usage), {}
 
     async def _schedule_freeze_artifact_produce_async(
         self,
@@ -237,7 +275,11 @@ class JiuClawQABlockFreezeRail(DeepAgentRail):
     async def after_invoke(self, ctx: AgentCallbackContext) -> None:
         if not self._config.enabled:
             return
-        await self._freeze_session(ctx, persist_mode="async")
+        # Keep the request stream alive until the L1 summarizer reports its
+        # usage. The answer chunk has already been emitted, but an async
+        # freeze would finish after Runner closes the stream and its tokens
+        # could no longer reach the adapter's usage accumulator.
+        await self._freeze_session(ctx, persist_mode="sync")
 
     async def freeze_current_qa_sync(
         self,
@@ -288,15 +330,24 @@ class JiuClawQABlockFreezeRail(DeepAgentRail):
 
         await self._maybe_await_overview_before_freeze(actual_session)
         summarizer_model = resolve_summarizer_model(agent)
+        summarizer_model, usage_reporting_kwargs = self._prepare_freeze_usage_reporting(
+            actual_session,
+            persist_mode,
+            summarizer_model,
+        )
+        freeze_kwargs = {
+            "status": status,
+            "persist_mode": persist_mode,
+            "summarizer_model": summarizer_model,
+            "post_commit": lambda commit, s=actual_session, c=context: self._on_freeze_commit(s, c, commit),
+        }
+        freeze_kwargs.update(usage_reporting_kwargs)
         entry = await self._freezer.freeze(
             actual_session,
             context,
             history,
             store,
-            status=status,
-            persist_mode=persist_mode,
-            summarizer_model=summarizer_model,
-            post_commit=lambda commit, s=actual_session, c=context: self._on_freeze_commit(s, c, commit),
+            **freeze_kwargs,
         )
         if entry is not None:
             clear_assembly_committed_qa_id(actual_session)
@@ -398,16 +449,25 @@ class JiuClawQABlockFreezeRail(DeepAgentRail):
         preloaded = ctx.extra.get(_PRELOADED_QA_IDS_KEY)
         await self._maybe_await_overview_before_freeze(session)
         summarizer_model = resolve_summarizer_model(agent)
+        summarizer_model, usage_reporting_kwargs = self._prepare_freeze_usage_reporting(
+            session,
+            persist_mode,
+            summarizer_model,
+        )
+        freeze_kwargs = {
+            "status": freeze_status,
+            "persist_mode": persist_mode,
+            "preloaded_qa_ids": preloaded if isinstance(preloaded, list) else None,
+            "summarizer_model": summarizer_model,
+            "post_commit": lambda commit, s=session, c=context: self._on_freeze_commit(s, c, commit),
+        }
+        freeze_kwargs.update(usage_reporting_kwargs)
         entry = await self._freezer.freeze(
             session,
             context,
             history,
             store,
-            status=freeze_status,
-            persist_mode=persist_mode,
-            preloaded_qa_ids=preloaded if isinstance(preloaded, list) else None,
-            summarizer_model=summarizer_model,
-            post_commit=lambda commit, s=session, c=context: self._on_freeze_commit(s, c, commit),
+            **freeze_kwargs,
         )
         if entry is None:
             await self._clear_empty_current_qa_after_failed_freeze(

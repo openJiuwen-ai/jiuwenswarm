@@ -131,6 +131,7 @@ async def check_tool_permissions(
         - denied_results: [(tool_call, denial_message), ...] 被拒绝的调用
     """
     from jiuwenclaw.agentserver.permissions.core import get_permission_engine
+    from jiuwenclaw.agentserver.llm_usage import emit_llm_usage_to_session
     engine = get_permission_engine()
     if not engine.enabled:
         return list(tool_calls), []
@@ -166,6 +167,7 @@ async def check_tool_permissions(
             tool_args=tool_args,
             channel_id=normalized_channel_id,
             session_id=session_id,
+            usage_callback=lambda usage: emit_llm_usage_to_session(session, usage),
         )
 
         if result.is_allowed:

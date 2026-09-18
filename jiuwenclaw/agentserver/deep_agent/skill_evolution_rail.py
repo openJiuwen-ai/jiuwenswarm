@@ -12,6 +12,7 @@ from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.llm import Model
 from openjiuwen.harness.rails import SkillEvolutionRail
 
+from jiuwenclaw.agentserver.llm_usage import AuxiliaryUsageReportingModel
 from jiuwenclaw.utils import is_bootstrap_builtin_skill, prime_bootstrap_skill_roots
 
 
@@ -30,11 +31,15 @@ class JiuClawSkillEvolutionRail(SkillEvolutionRail):
         prime_bootstrap_skill_roots(skills_dir)
         super().__init__(
             skills_dir,
-            llm=llm,
+            llm=AuxiliaryUsageReportingModel(llm),
             model=model,
             auto_save=auto_save,
             **kwargs,
         )
+
+    def update_llm(self, llm: Model, model: str) -> None:
+        """Keep evolution accounting active after a runtime model reload."""
+        super().update_llm(AuxiliaryUsageReportingModel(llm), model)
 
     @staticmethod
     def parse_messages(messages: list[Any]) -> list[dict]:
