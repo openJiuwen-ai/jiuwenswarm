@@ -135,6 +135,7 @@ function filterNonDefaultProjects(projects: ProjectInfo[]): ProjectInfo[] {
 
 export default function CronTaskDrawer({ mode, initial, projects, targetOptions, proactiveLocked = false, onClose, onSubmit, onSwitchToManual, onSwitchToTemplate }: CronTaskDrawerProps) {
   const { t } = useTranslation();
+  const enterpriseMode = isEnterprise();
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
 
   const title = mode === 'edit' ? t('cron.drawer.titleEdit') : mode === 'template' ? t('cron.drawer.titleTemplate') : t('cron.drawer.titleCreate');
@@ -289,12 +290,18 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
 
           <div>
             <label className="mb-1.5 block text-sm font-bold text-text-strong">{t('cron.drawer.fieldChannel')}</label>
-            <SimpleSelect
-              value={form.targets}
-              onChange={(v) => setForm({ ...form, targets: v })}
-              options={targetOptions}
-              disabled={proactiveLocked}
-            />
+            {enterpriseMode ? (
+              <div className="flex h-9 items-center rounded-lg border border-border bg-secondary/30 px-3 text-sm text-text">
+                {t('cron.targets.web')}
+              </div>
+            ) : (
+              <SimpleSelect
+                value={form.targets}
+                onChange={(v) => setForm({ ...form, targets: v })}
+                options={targetOptions}
+                disabled={proactiveLocked}
+              />
+            )}
           </div>
 
           <ScheduleEditor

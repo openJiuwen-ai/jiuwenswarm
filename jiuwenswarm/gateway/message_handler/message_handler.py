@@ -5201,6 +5201,7 @@ class MessageHandler(FileTransferMixin, ABC):
             payload={
                 "event_type": "chat.processing_status",
                 "session_id": session_id,
+                "request_id": request_id,
                 "is_processing": is_processing,
                 "is_complete": not is_processing
             },
