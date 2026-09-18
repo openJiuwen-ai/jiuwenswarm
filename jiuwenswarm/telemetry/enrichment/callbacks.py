@@ -110,6 +110,11 @@ NAMESPACE = "jiuwenswarm.telemetry.enrichment"
 CORE_NAMESPACE = "extensions.observability"
 INPUT_PRIORITY = -100
 OUTPUT_PRIORITY = 100
+# Span 私有标记：我们在 priority=100 先算好 output.messages，AgentCore(0) 关闭
+# span 前会再写一遍结构化 JSON；用 wrap 在它写入之后盖回我们的版本。
+_OUTPUT_MESSAGES_OVERRIDE_ATTR = "_jiuwenswarm_gen_ai_output_messages"
+_OUTPUT_MESSAGES_CLEAR = object()
+_AGENTCORE_OUTPUT_WRAP_ATTR = "_jiuwenswarm_output_override_wrapped"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -392,17 +397,6 @@ class RichTelemetryCallbacks:
         pairs = (
             (LLMCallEvents.LLM_INVOKE_INPUT, self._on_llm_invoke_input, INPUT_PRIORITY),
             (LLMCallEvents.LLM_STREAM_INPUT, self._on_llm_stream_input, INPUT_PRIORITY),
-            # AgentCore(priority=0) 可能在我们之后写入明文 messages；用更高优先级再落实策略。
-            (
-                LLMCallEvents.LLM_INVOKE_INPUT,
-                self._on_llm_input_message_policy,
-                OUTPUT_PRIORITY,
-            ),
-            (
-                LLMCallEvents.LLM_STREAM_INPUT,
-                self._on_llm_input_message_policy,
-                OUTPUT_PRIORITY,
-            ),
             (
                 LLMCallEvents.LLM_STREAM_OUTPUT,
                 self._on_llm_stream_output,
@@ -431,6 +425,7 @@ class RichTelemetryCallbacks:
                 OUTPUT_PRIORITY,
             ),
         )
+        self._install_agentcore_output_override()
         try:
             for event, callback, priority in pairs:
                 await framework.register(
@@ -508,15 +503,6 @@ class RichTelemetryCallbacks:
                 for item in callbacks
             ):
                 return False
-            # LLM 输入另有 OUTPUT_PRIORITY 的 message-policy 回调，覆盖 AgentCore 明文。
-            if event in (
-                LLMCallEvents.LLM_INVOKE_INPUT,
-                LLMCallEvents.LLM_STREAM_INPUT,
-            ) and not any(
-                item["namespace"] == NAMESPACE and item["priority"] == OUTPUT_PRIORITY
-                for item in callbacks
-            ):
-                return False
         return True
 
     async def _on_llm_invoke_input(self, *args: Any, **kwargs: Any) -> None:
@@ -530,62 +516,6 @@ class RichTelemetryCallbacks:
             self._llm_input_payload(args, kwargs),
             streaming=True,
         )
-
-    async def _on_llm_input_message_policy(self, *args: Any, **kwargs: Any) -> None:
-        """AgentCore 写入后再次落实 log_messages / redact_prompts 策略。"""
-        await self._enforce_llm_input_message_policy(
-            self._llm_input_payload(args, kwargs)
-        )
-
-    async def _enforce_llm_input_message_policy(self, kwargs: dict[str, Any]) -> None:
-        warning = "LLM telemetry input message policy failed"
-        span = self._best_effort(warning, get_current_llm_span)
-        if span is None or not span.is_recording():
-            return
-        messages = kwargs.get("messages") or []
-        message_items = self._best_effort(
-            warning,
-            lambda: list(messages),
-            default=[],
-        )
-        if not self._config.log_messages:
-            self._best_effort(
-                warning,
-                lambda: self._clear_attribute(span, GEN_AI_INPUT_MESSAGES),
-            )
-            return
-        serializable_messages: list[Any] | None = message_items
-        if self._config.redact_prompts:
-            serializable_messages = self._best_effort(
-                warning,
-                lambda: [
-                    {"role": message_role(message), "content": "[REDACTED]"}
-                    for message in message_items
-                ],
-            )
-        if serializable_messages is None:
-            return
-        serialized_messages = self._best_effort(
-            warning,
-            lambda: serialize_input_messages(
-                serializable_messages,
-                max_chars=self._config.attribute_value_max_length,
-            ),
-        )
-        if serialized_messages is not None:
-            self._best_effort(
-                warning,
-                lambda: self._set_attribute(
-                    span,
-                    GEN_AI_INPUT_MESSAGES,
-                    serialized_messages,
-                ),
-            )
-        else:
-            self._best_effort(
-                warning,
-                lambda: self._clear_attribute(span, GEN_AI_INPUT_MESSAGES),
-            )
 
     async def _on_llm_stream_output(self, *args: Any, **kwargs: Any) -> Any:
         del args
@@ -790,6 +720,14 @@ class RichTelemetryCallbacks:
                 )
                 self._best_effort(
                     warning,
+                    lambda: setattr(
+                        span,
+                        _OUTPUT_MESSAGES_OVERRIDE_ATTR,
+                        serialized_output,
+                    ),
+                )
+                self._best_effort(
+                    warning,
                     lambda: span.add_event(
                         "gen_ai.assistant.message",
                         {"content": serialized_output},
@@ -801,10 +739,26 @@ class RichTelemetryCallbacks:
                     warning,
                     lambda: self._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES),
                 )
+                self._best_effort(
+                    warning,
+                    lambda: setattr(
+                        span,
+                        _OUTPUT_MESSAGES_OVERRIDE_ATTR,
+                        _OUTPUT_MESSAGES_CLEAR,
+                    ),
+                )
         else:
             self._best_effort(
                 warning,
                 lambda: self._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES),
+            )
+            self._best_effort(
+                warning,
+                lambda: setattr(
+                    span,
+                    _OUTPUT_MESSAGES_OVERRIDE_ATTR,
+                    _OUTPUT_MESSAGES_CLEAR,
+                ),
             )
         finish_reason = self._best_effort(
             warning,
@@ -2030,6 +1984,38 @@ class RichTelemetryCallbacks:
             for key, value in attributes.items()
             if value is not None and value != ""
         }
+
+    @staticmethod
+    def _install_agentcore_output_override() -> None:
+        """在 AgentCore 写入 structured output 之后盖回我们的 messages。
+
+        回调优先级越高越先跑：我们 OUTPUT_PRIORITY=100 先于 AgentCore=0，
+        但 tip AgentCore 在关闭 llm span 时会再次写入 gen_ai.output.messages。
+        只能在它的 ``_record_structured_output`` 末尾再覆盖一次。
+        """
+        try:
+            from openjiuwen.extensions.observability.callback_handler import (
+                OtelCallbackHandler,
+            )
+        except ImportError:
+            return
+        original = getattr(OtelCallbackHandler, "_record_structured_output", None)
+        if original is None or getattr(original, _AGENTCORE_OUTPUT_WRAP_ATTR, False):
+            return
+
+        def _wrapped(self: Any, span: Span, response: Any, *, fallback_text: str = "") -> None:
+            original(self, span, response, fallback_text=fallback_text)
+            override = getattr(span, _OUTPUT_MESSAGES_OVERRIDE_ATTR, None)
+            if override is _OUTPUT_MESSAGES_CLEAR:
+                RichTelemetryCallbacks._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES)
+            elif isinstance(override, str):
+                try:
+                    span.set_attribute(GEN_AI_OUTPUT_MESSAGES, override)
+                except (TypeError, ValueError):
+                    return
+
+        setattr(_wrapped, _AGENTCORE_OUTPUT_WRAP_ATTR, True)
+        OtelCallbackHandler._record_structured_output = _wrapped  # type: ignore[method-assign]
 
     @staticmethod
     def _set_attribute(span: Span, key: str, value: Any) -> None:
