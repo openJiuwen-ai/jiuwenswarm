@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlencode, urljoin, urlparse
 
 from jiuwenswarm.common.auth.net import requests_request
-from jiuwenswarm.common.auth.remote_config import RemoteConfig
+from jiuwenswarm.common.auth.remote_config import RemoteConfig, config_url
 from jiuwenswarm.common.auth.remote_config import get_config as get_remote_config
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,10 @@ LOGIN_SECTION = "huaweiaccount_login"
 DEFAULT_CLIENT_ID = "118944053"
 #: 回调落**本机 Gateway** 时的地址。必须和AGC里登记的逐字一致
 DEFAULT_REDIRECT_URI = "http://localhost:19000/api/v1/auth/callback"
+#: 华为账号中心的个人页面。换账号时界面把用户领到这里退出——华为没有登出端点，浏览器里的
+#: 登录态只能用户自己清。用这个地址是因为它直接落在个人页面（退出入口在那里），省掉先点登录那一步；
+#: 华为按区域有 id1/id7 等多个站点，换区域或改版时由配置的 account_center_url 覆盖，不用发版
+DEFAULT_ACCOUNT_CENTER_URL = "https://id1.cloud.huawei.com/AMW/portal/userCenter/index.html"
 _CLAIM_FINGERPRINT_SALT = "jiuwen-account-kit-claim:"
 _CLAIM_FINGERPRINT_LEN = 32
 #: 回调落ECS鉴权服务时，发起方每隔这么久去认领一次，直到拿到结果或state过期
@@ -95,6 +99,15 @@ def login_enabled() -> bool:
     return config is not None and config.is_effective
 
 
+def campaign_state() -> str:
+    if not config_url():
+        return "off"
+    config = get_remote_config()
+    if config is None:
+        return "unavailable"
+    return "active" if config.is_effective else "ended"
+
+
 @dataclass(frozen=True)
 class OAuthConfig:
     client_id: str
@@ -104,6 +117,8 @@ class OAuthConfig:
     callback_url: str = ""
     claim_url: str = ""
     authorize_url: str = AUTHORIZE_URL
+    #: 换账号时让用户去退出华为账号的地址
+    account_center_url: str = DEFAULT_ACCOUNT_CENTER_URL
 
     @property
     def effective_redirect_uri(self) -> str:
@@ -132,6 +147,7 @@ class OAuthConfig:
             exchange_url=login.value("exchange_url"),
             callback_url=login.value("callback_url"),
             claim_url=login.value("claim_url"),
+            account_center_url=login.value("account_center_url", DEFAULT_ACCOUNT_CENTER_URL),
         )
 
 

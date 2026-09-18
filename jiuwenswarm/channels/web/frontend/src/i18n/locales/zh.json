@@ -71,7 +71,9 @@
       "quotaTitle": "免费积分",
       "quotaLoggedOut": "登录后查看",
       "signedIn": "已登录",
-      "loggedInDescription": "限时免费模型已可在对话的模型下拉中选用"
+      "loggedInDescription": "限时免费模型已可在对话的模型下拉中选用",
+      "endedTitle": "活动已结束",
+      "endedDescription": "本期限时免费模型活动已结束，感谢参与"
     },
     "categories": {
       "general": "常规",
@@ -3749,6 +3751,10 @@
       "login": "登录",
       "loggingIn": "登录中…",
       "logout": "退出登录",
+      "switchAccount": "切换账号",
+      "switchSignOutHint": "华为账号在浏览器中仍处于登录状态，请先退出后再回到这里继续登录",
+      "switchContinue": "已退出，继续登录",
+      "switchSameAccount": "仍然是原来的账号。请先在浏览器中退出华为账号，再回来重新切换。",
       "cancel": "取消",
       "close": "关闭",
       "done": "完成",

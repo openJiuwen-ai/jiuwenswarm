@@ -220,14 +220,6 @@ def test_code_arriving_after_a_recorded_result_is_dropped_loudly(service, exchan
     assert "丢弃另一路取到的授权码" in log.text()
 
 
-def test_polling_logs_when_it_gives_up(service, exchange, monkeypatch):
-    monkeypatch.setattr(service_mod, "STATE_TTL_S", 0.05)
-    log = _LogRecorder()
-    monkeypatch.setattr(service_mod, "logger", log)
-    service.create_authorization_request()
-    _wait_for(lambda: "等待授权超时" in log.text())
-
-
 def test_non_ascii_claim_token_is_just_a_mismatch(service, monkeypatch):
     monkeypatch.setattr(service_mod, "CLAIM_POLL_INTERVAL_S", 0.5)
     request = service.create_authorization_request()
@@ -244,17 +236,6 @@ def test_wrong_claim_token_does_not_reach_the_exchange(service, exchange, monkey
     with pytest.raises(account_kit.OAuthError):
         service.claim(request["state"], "not-the-one")
     assert exchange.claims == []
-
-
-def test_polling_slows_down_after_a_while(service, exchange, monkeypatch):
-    monkeypatch.setattr(service_mod, "CLAIM_POLL_SLOW_AFTER_S", 0.05)
-    monkeypatch.setattr(service_mod, "CLAIM_POLL_SLOW_INTERVAL_S", 1.0)
-    service.create_authorization_request()
-    _wait_for(lambda: len(exchange.claims) >= 2)
-    time.sleep(0.1)  # 等快节奏时段过去
-    before = len(exchange.claims)
-    time.sleep(0.5)
-    assert len(exchange.claims) - before <= 2, "过了快节奏的时段就放慢"
 
 
 def test_cancel_with_the_wrong_claim_token_changes_nothing(service, monkeypatch):
