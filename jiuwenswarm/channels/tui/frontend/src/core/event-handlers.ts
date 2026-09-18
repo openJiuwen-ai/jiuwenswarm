@@ -1360,6 +1360,10 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
       delegate.setEvolutionStatus(payload.status === "start" ? "running" : "idle");
       return true;
 
+    case "chat.evolution_generated":
+    case "chat.evolution_published":
+      return true;
+
     case "todo.updated":
       return handleTodoUpdated(delegate, payload);
 

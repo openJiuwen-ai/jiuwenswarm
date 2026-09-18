@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter import evolution_version as evolution_version_ctl
+from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import auto_rebuild_job
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_manager import _DISK_ONLY_EVOLUTION_METHODS
 
@@ -322,27 +323,29 @@ def test_queue_auto_rebuild_respects_skill_evolution_action(monkeypatch):
         lambda skill_name, **_kwargs: "suggest",
     )
     adapter._queue_auto_rebuild_skill("demo-skill")  # pylint: disable=protected-access
-    assert adapter._pending_auto_rebuild_skills == []  # pylint: disable=protected-access
+    assert adapter._pending_auto_rebuild_jobs == {}  # pylint: disable=protected-access
 
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.resolve_skill_evolution_action",
         lambda skill_name, **_kwargs: "auto",
     )
     adapter._queue_auto_rebuild_skill("demo-skill")  # pylint: disable=protected-access
-    assert adapter._pending_auto_rebuild_skills == ["demo-skill"]  # pylint: disable=protected-access
+    assert list(adapter._pending_auto_rebuild_jobs) == ["demo-skill"]  # pylint: disable=protected-access
 
-    adapter._pending_auto_rebuild_skills.clear()  # pylint: disable=protected-access
+    adapter._pending_auto_rebuild_jobs.clear()  # pylint: disable=protected-access
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.resolve_skill_evolution_action",
         lambda skill_name, **_kwargs: "off",
     )
     adapter._queue_auto_rebuild_skill("demo-skill")  # pylint: disable=protected-access
-    assert adapter._pending_auto_rebuild_skills == []  # pylint: disable=protected-access
+    assert adapter._pending_auto_rebuild_jobs == {}  # pylint: disable=protected-access
 
 
 def _adapter_for_auto_rebuild(monkeypatch, *, entries: list[Any]) -> JiuWenSwarmDeepAdapter:
     adapter = JiuWenSwarmDeepAdapter()
-    adapter._pending_auto_rebuild_skills = ["demo-skill"]  # pylint: disable=protected-access
+    adapter._pending_auto_rebuild_jobs = {  # pylint: disable=protected-access
+        "demo-skill": auto_rebuild_job("demo-skill", source="auto_watcher"),
+    }
     store = SimpleNamespace(
         load_full_evolution_log=AsyncMock(return_value=SimpleNamespace(entries=entries)),
     )
@@ -365,7 +368,7 @@ async def test_run_auto_rebuild_skips_when_no_live_records(monkeypatch):
     await adapter._run_auto_rebuild_skills_detached(request_id="rid")  # pylint: disable=protected-access
 
     assert merge_calls == []
-    assert adapter._pending_auto_rebuild_skills == []  # pylint: disable=protected-access
+    assert adapter._pending_auto_rebuild_jobs == {}  # pylint: disable=protected-access
 
 
 @pytest.mark.anyio
@@ -382,7 +385,7 @@ async def test_run_auto_rebuild_proceeds_when_live_records_exist(monkeypatch):
     await adapter._run_auto_rebuild_skills_detached(request_id="rid")  # pylint: disable=protected-access
 
     assert merge_calls == ["demo-skill"]
-    assert adapter._pending_auto_rebuild_skills == []  # pylint: disable=protected-access
+    assert adapter._pending_auto_rebuild_jobs == {}  # pylint: disable=protected-access
 
 
 @pytest.mark.anyio
