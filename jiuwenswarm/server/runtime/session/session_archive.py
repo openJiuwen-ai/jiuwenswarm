@@ -238,12 +238,23 @@ class SessionArchiveService:
         return service if service is not None else None
 
     def _session_is_busy_for_action(
-        self, session_id: str, action: str, active: Path, is_cron_session: bool
+        self,
+        session_id: str,
+        action: str,
+        active: Path,
+        is_cron_session: bool,
+        *,
+        parked_team_streams: bool = False,
     ) -> bool:
         """Whether this lifecycle action must wait for an active session to stop."""
         if action not in {"archive", "delete"}:
             return False
         if not active.exists():
+            return False
+        if parked_team_streams:
+            # Parked Team stream handlers no longer own team work; only the
+            # persistent leader stream keeps them alive.  The archive proceeds
+            # and leaves that stream alone.
             return False
         if action == "delete" and is_cron_session:
             return False
@@ -303,8 +314,16 @@ class SessionArchiveService:
                         restored=False,
                         project_id=project_id,
                     )
+            parked_team_streams = False
+            if action == "archive" and self.runtime.is_session_running(session_id):
+                probe = getattr(self.runtime, "has_parked_team_streams", None)
+                parked_team_streams = callable(probe) and bool(probe(session_id))
             if self._session_is_busy_for_action(
-                session_id, action, active, is_cron_session
+                session_id,
+                action,
+                active,
+                is_cron_session,
+                parked_team_streams=parked_team_streams,
             ):
                 raise lc.LifecycleError(
                     "SESSION_BUSY",
