@@ -46,7 +46,7 @@ A Swarm Skill is fundamentally a **structured directory**, not a single document
 ### 2.1 Directory Structure Overview
 
 ```
-team-skill-name/
+swarm-skill-name/
 ├── SKILL.md              # Team skill entry file
 ├── roles/                # Role definitions directory
 │   ├── coordinator.md    # Coordinator role
@@ -85,12 +85,12 @@ team-skill-name/
 ---
 name: medical-consultation-swarm
 version: 1.0.0
-author: jiuwenclaw-team
+author: jiuwenswarm-team
 description: |
   Multi-disciplinary medical expert consultation team skill, organizing specialists for parallel evaluation and opinion integration via a coordinator.
   Use when multiple specialist experts need to jointly evaluate a complex case and output structured treatment recommendations.
   Do NOT use for simple cases that a single specialty can independently judge.
-kind: team-skill
+kind: swarm-skill
 roles:
   - id: coordinator
     purpose: Organize experts, consolidate opinions, output treatment recommendations
