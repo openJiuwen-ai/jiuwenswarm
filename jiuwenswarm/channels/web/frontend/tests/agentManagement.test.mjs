@@ -19,7 +19,12 @@ import {
   initialAgentManagementState,
 } from '../node_modules/.cache/agent-management/state.js';
 import { resolveAgentTagPayload } from '../node_modules/.cache/agent-management/tagOptions.js';
-import { isSkillVisibleInSourceTab, sortInstalledFirst } from '../node_modules/.cache/agent-management/selection.js';
+import {
+  isMcpSelectable,
+  isSkillVisibleInSourceTab,
+  sortInstalledFirst,
+  sortMcpOptions,
+} from '../node_modules/.cache/agent-management/selection.js';
 import {
   buildCatalogViewModel,
   findFirstPreviewableFile,
@@ -40,6 +45,28 @@ test('selection pickers share installed-first and label sorting', () => {
     'skill-a',
     'skill-z',
   ]);
+});
+
+test('connector selection only allows connected items and orders by availability', () => {
+  const items = [
+    { id: 'not-installed', name: 'Alpha', installed: false, connectionState: 'disconnected' },
+    { id: 'pending-connection', name: 'Bravo', installed: true, connectionState: 'disconnected' },
+    { id: 'connecting', name: 'Charlie', installed: true, connectionState: 'connecting' },
+    { id: 'available-z', name: 'Zulu', installed: true, connectionState: 'connected' },
+    { id: 'available-a', name: 'Alpha', installed: true, connectionState: 'connected' },
+  ];
+
+  assert.deepEqual(sortMcpOptions(items).map((item) => item.id), [
+    'available-a',
+    'available-z',
+    'pending-connection',
+    'connecting',
+    'not-installed',
+  ]);
+  assert.equal(isMcpSelectable(items[3]), true);
+  assert.equal(isMcpSelectable(items[0]), false);
+  assert.equal(isMcpSelectable(items[1]), false);
+  assert.equal(isMcpSelectable(items[2]), false);
 });
 
 test('skill source tabs keep marketplace and local visibility semantics', () => {
