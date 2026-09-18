@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import email.parser
 import email.policy
+import json
 import logging
 import os
 import shutil
@@ -14,10 +15,12 @@ import tempfile
 import uuid
 from pathlib import Path, PureWindowsPath
 from typing import Any
+from urllib.parse import urlsplit
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_INVALID_PACKAGE,
     ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT,
@@ -133,6 +136,85 @@ def _parse_overwrite(raw: Any) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def _build_ws_origin(uri: str) -> str | None:
+    """将 ws/wss URI 转为标准浏览器 Origin（与 AgentServer WS 鉴权对齐）。"""
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return None
+    if not parsed.netloc:
+        return None
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    return f"{scheme}://{parsed.netloc}"
+
+
+class _MinimalAgentWsClient:
+    """内部最小 AgentServer WS 客户端（gateway 拆分：不再依赖 gateway.routing.agent_client）。
+
+    仅覆盖本模块用法：connect → 单次 send_request → disconnect。线上协议与
+    ``WebSocketAgentServerClient`` 对齐：
+    - connect 后消费首帧 ``connection.ack``（等待 5s，超时容忍）；
+    - send_request 发送 ``E2AEnvelope.to_dict()`` JSON，按 request_id 匹配回包，
+      经 ``common.e2a.wire_codec.parse_agent_server_wire_unary`` 解析为 AgentResponse。
+
+    超时由调用方 ``asyncio.wait_for`` 控制（本客户端不内置等待上限）。
+    """
+
+    def __init__(self) -> None:
+        self._ws: Any = None
+
+    async def connect(self, uri: str) -> None:
+        if self._ws is not None:
+            await self.disconnect()
+        connect_kwargs: dict[str, Any] = {
+            "origin": _build_ws_origin(uri),
+            "ping_interval": None,
+            "ping_timeout": None,
+            "close_timeout": 5.0,
+            "max_size": AGENT_WS_MAX_MESSAGE_BYTES,
+        }
+        try:
+            from websockets.legacy.client import connect as legacy_connect
+            self._ws = await legacy_connect(uri, **connect_kwargs)
+        except ImportError:
+            import websockets
+            self._ws = await websockets.connect(uri, **connect_kwargs)
+        # 读取 AgentServer 的 connection.ack 首帧（超时容忍，不阻断上传链路）
+        try:
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
+            data = json.loads(raw)
+            if not (data.get("type") == "event" and data.get("event") == "connection.ack"):
+                logger.warning("[skills_multipart_http] connect 首帧非 connection.ack: %s", data.get("type"))
+        except asyncio.TimeoutError:
+            logger.warning("[skills_multipart_http] 等待 connection.ack 超时")
+        except Exception as e:
+            logger.warning("[skills_multipart_http] 读取 connection.ack 失败: %s", e)
+
+    async def send_request(self, envelope: Any) -> Any:
+        if self._ws is None:
+            raise RuntimeError("未连接 AgentServer，请先调用 connect(uri)")
+        envelope.is_stream = False
+        rid = str(envelope.request_id or "")
+        await self._ws.send(json.dumps(envelope.to_dict(), ensure_ascii=False))
+        # 单连接单请求：读至 request_id 匹配的回包（跳过 server push 等旁路帧）
+        while True:
+            raw = await self._ws.recv()
+            data = json.loads(raw)
+            if str(data.get("request_id") or "") == rid:
+                return parse_agent_server_wire_unary(data)
+            logger.debug(
+                "[skills_multipart_http] 跳过非本请求帧: request_id=%s", data.get("request_id")
+            )
+
+    async def disconnect(self) -> None:
+        if self._ws is None:
+            return
+        try:
+            await self._ws.close()
+        finally:
+            self._ws = None
+
+
 def _agent_server_ws_uri() -> str:
     url = (os.getenv("AGENT_SERVER_URL") or "").strip()
     if url:
@@ -153,7 +235,7 @@ async def _call_agent_skill_rpc(
     timeout_s: float = 600.0,
 ) -> dict[str, Any]:
     """经 AgentServer WebSocket 调用 skills.*，返回 payload 或抛 SkillRpcError."""
-    client = WebSocketAgentServerClient(ping_interval=None, ping_timeout=None)
+    client = _MinimalAgentWsClient()
     uri = _agent_server_ws_uri()
     request_id = f"file-api-{uuid.uuid4().hex}"
     try:
