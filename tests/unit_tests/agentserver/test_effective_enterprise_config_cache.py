@@ -45,7 +45,6 @@ async def test_effective_config_assembly_cache_hits(
         order_by: str = "",
     ) -> list[dict]:
         list_calls.append(table)
-        scoped = dict(filters or {})
         if table == "instance_agent_resource":
             return [
                 {

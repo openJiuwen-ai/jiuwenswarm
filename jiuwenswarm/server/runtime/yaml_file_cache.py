@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import copy
 import threading
 from pathlib import Path
 from typing import Any
@@ -33,8 +34,7 @@ def load_yaml_file_cached(path: str | Path) -> dict[str, Any]:
     with _LOCK:
         hit = _YAML_CACHE.get(key)
         if hit is not None and hit[0] == identity and identity is not None:
-            cached = hit[1]
-            return dict(cached) if isinstance(cached, dict) else cached
+            return copy.deepcopy(hit[1]) if isinstance(hit[1], dict) else hit[1]
 
     if identity is None:
         with _LOCK:
@@ -46,14 +46,13 @@ def load_yaml_file_cached(path: str | Path) -> dict[str, Any]:
             parsed = yaml.safe_load(f) or {}
     except FileNotFoundError:
         parsed = {}
-    except Exception:
-        raise
 
     if not isinstance(parsed, dict):
         parsed = {}
+    stored = copy.deepcopy(parsed)
     with _LOCK:
-        _YAML_CACHE[key] = (identity, dict(parsed))
-    return dict(parsed)
+        _YAML_CACHE[key] = (identity, stored)
+    return copy.deepcopy(stored)
 
 
 def clear_yaml_file_cache() -> None:

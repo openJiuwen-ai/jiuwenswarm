@@ -155,9 +155,7 @@ _INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS = 0.05
 
 # SkillTurbo 内部工具 id 后缀（如 BashTool_skill_turbo）。外层 ReAct 工具结果不含此后缀。
 _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
-# 进程级：SkillTurbo enabled 与 web tools 构建结果缓存；gitignore 已处理仓库根。
-_SKILL_TURBO_ENABLED: bool | None = None
-_WEB_TOOLS_BUILD_CACHE: dict[str, tuple[Any, ...]] = {}
+# 进程级：gitignore 已处理仓库根。
 _GITIGNORE_AGENT_HISTORY_DONE: set[str] = set()
 _GITIGNORE_DONE_LOCK = threading.Lock()
 
@@ -9786,19 +9784,11 @@ class JiuWenSwarmDeepAdapter:
         )
 
         content_cache = await get_agent_cache_registry().get_cache(agent_id)
-        language = self._resolve_runtime_language()
-        web_tools_key = f"{agent_id}:{language}"
-        cached_web_tools = _WEB_TOOLS_BUILD_CACHE.get(web_tools_key)
-        if cached_web_tools is None:
-            cached_web_tools = tuple(
-                build_jiuwen_harness_named_web_tools(
-                    agent_id=agent_id,
-                    language=language,
-                    cache=content_cache,
-                )
-            )
-            _WEB_TOOLS_BUILD_CACHE[web_tools_key] = cached_web_tools
-        for tool_instance in cached_web_tools:
+        for tool_instance in build_jiuwen_harness_named_web_tools(
+            agent_id=agent_id,
+            language=self._resolve_runtime_language(),
+            cache=content_cache,
+        ):
             registered = self._register_agent_owned_tool(tool_instance, agent_id)
             tool_cards.append(registered.card)
 
@@ -10301,7 +10291,7 @@ class JiuWenSwarmDeepAdapter:
 
                 self._sync_preinstance_runtime_tools_to_ability_manager()
                 self._sync_multimodal_tools_for_runtime()
-                self._init_skill_turbo_tool()
+                self._init_skill_turbo_tool(config_base)
                 await asyncio.sleep(0)
 
                 # 动态加载用户自定义的 Rail 扩展
@@ -10444,13 +10434,16 @@ class JiuWenSwarmDeepAdapter:
             if repo_root_text in _GITIGNORE_AGENT_HISTORY_DONE:
                 return
 
-        from jiuwenswarm.server.runtime.async_fs import async_exists
-        import anyio
+        from jiuwenswarm.server.runtime.async_fs import (
+            async_exists,
+            async_read_bytes,
+            async_write_bytes,
+        )
 
         gitignore_path = Path(repo_root_text) / ".gitignore"
         try:
             if await async_exists(gitignore_path):
-                existing_bytes = await anyio.Path(gitignore_path).read_bytes()
+                existing_bytes = await async_read_bytes(gitignore_path)
             else:
                 existing_bytes = b""
         except OSError as exc:
@@ -10469,7 +10462,9 @@ class JiuWenSwarmDeepAdapter:
         prefix = "" if not existing else ("\n" if existing.endswith(("\n", "\r")) else "\n\n")
         addition = f"{prefix}# JiuwenSwarm runtime file operation logs\n.agent_history/\n"
         try:
-            await anyio.Path(gitignore_path).write_bytes(existing_bytes + addition.encode("utf-8"))
+            await async_write_bytes(
+                gitignore_path, existing_bytes + addition.encode("utf-8")
+            )
         except OSError as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] ensure .agent_history gitignore failed: %s",
@@ -12117,32 +12112,26 @@ class JiuWenSwarmDeepAdapter:
                 session_id, request_id, exc,
             )
 
-    def _init_skill_turbo_tool(self) -> None:
+    def _init_skill_turbo_tool(self, config_base: dict[str, Any] | None = None) -> None:
         """Initialize skill_turbo tool for SkillTurbo integration."""
-        global _SKILL_TURBO_ENABLED
         if self._instance is None:
             return
         if getattr(self, "_skill_turbo_tools_ready", False):
             return
         try:
-            if _SKILL_TURBO_ENABLED is False:
-                return
-            if _SKILL_TURBO_ENABLED is None:
-                config_base = get_config()
-                react_config = (
-                    config_base.get("react", {}) if isinstance(config_base, dict) else {}
-                )
-                skill_turbo_config = (
-                    react_config.get("skill_turbo", {})
-                    if isinstance(react_config, dict)
-                    else {}
-                )
-                _SKILL_TURBO_ENABLED = bool(
-                    skill_turbo_config.get("enabled", False)
-                    if isinstance(skill_turbo_config, dict)
-                    else False
-                )
-            if not _SKILL_TURBO_ENABLED:
+            cfg = config_base if isinstance(config_base, dict) else get_config()
+            react_config = cfg.get("react", {}) if isinstance(cfg, dict) else {}
+            skill_turbo_config = (
+                react_config.get("skill_turbo", {})
+                if isinstance(react_config, dict)
+                else {}
+            )
+            skill_turbo_enabled = bool(
+                skill_turbo_config.get("enabled", False)
+                if isinstance(skill_turbo_config, dict)
+                else False
+            )
+            if not skill_turbo_enabled:
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] SkillTurbo disabled, skipping tool registration"
                 )

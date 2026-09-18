@@ -14,6 +14,16 @@ async def async_read_text(path: str | Path, *, encoding: str = "utf-8") -> str:
     return await anyio.Path(path).read_text(encoding=encoding)
 
 
+async def async_read_bytes(path: str | Path) -> bytes:
+    return await anyio.Path(path).read_bytes()
+
+
+async def async_write_bytes(path: str | Path, data: bytes) -> None:
+    p = anyio.Path(path)
+    await p.parent.mkdir(parents=True, exist_ok=True)
+    await p.write_bytes(data)
+
+
 async def async_write_text(
     path: str | Path,
     text: str,
@@ -49,6 +59,8 @@ __all__ = [
     "async_is_file",
     "async_iterdir",
     "async_mkdir",
+    "async_read_bytes",
     "async_read_text",
+    "async_write_bytes",
     "async_write_text",
 ]
