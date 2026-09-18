@@ -2009,10 +2009,11 @@ class RichTelemetryCallbacks:
             if override is _OUTPUT_MESSAGES_CLEAR:
                 RichTelemetryCallbacks._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES)
             elif isinstance(override, str):
-                try:
-                    span.set_attribute(GEN_AI_OUTPUT_MESSAGES, override)
-                except (TypeError, ValueError):
-                    return
+                RichTelemetryCallbacks._set_attribute(
+                    span,
+                    GEN_AI_OUTPUT_MESSAGES,
+                    override,
+                )
 
         setattr(_wrapped, _AGENTCORE_OUTPUT_WRAP_ATTR, True)
         OtelCallbackHandler._record_structured_output = _wrapped  # type: ignore[method-assign]
@@ -2022,8 +2023,12 @@ class RichTelemetryCallbacks:
         """强制写入属性（覆盖 AgentCore 已写入的同名键）。"""
         try:
             span.set_attribute(key, value)
-        except (TypeError, ValueError):
-            return
+        except (TypeError, ValueError) as exc:
+            _LOGGER.debug(
+                "span attribute rejected: key=%s error=%s",
+                key,
+                exc,
+            )
 
     @staticmethod
     def _clear_attribute(span: Span, key: str) -> None:
@@ -2037,14 +2042,22 @@ class RichTelemetryCallbacks:
             if attrs is not None and hasattr(attrs, "pop"):
                 attrs.pop(key, None)  # type: ignore[call-arg]
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.debug(
+                "span attribute pop failed: key=%s error=%s",
+                key,
+                exc,
+            )
         try:
             raw = getattr(attrs, "_dict", None)
             if isinstance(raw, dict):
                 raw.pop(key, None)
-        except Exception:
-            return
+        except Exception as exc:
+            _LOGGER.debug(
+                "span attribute clear failed: key=%s error=%s",
+                key,
+                exc,
+            )
 
     @staticmethod
     def _set_if_empty(span: Span, key: str, value: Any) -> None:
@@ -2058,10 +2071,7 @@ class RichTelemetryCallbacks:
         value = span.attributes.get(primary) if span.attributes is not None else None
         if value in (None, "", (), []):
             return
-        try:
-            span.set_attribute(alias, value)
-        except (TypeError, ValueError):
-            return
+        RichTelemetryCallbacks._set_attribute(span, alias, value)
 
     def _sync_primary_alias(
         self,
@@ -2084,11 +2094,7 @@ class RichTelemetryCallbacks:
         current = span.attributes.get(key, 0) if span.attributes is not None else 0
         if isinstance(current, bool) or not isinstance(current, (int, float)):
             current = 0
-        try:
-            span.set_attribute(key, current + value)
-        except (TypeError, ValueError):
-            return
-
+        RichTelemetryCallbacks._set_attribute(span, key, current + value)
     def _write_common_attributes(self, span: Span) -> None:
         resource = getattr(span, "resource", None)
         resource_attributes = getattr(resource, "attributes", {})
