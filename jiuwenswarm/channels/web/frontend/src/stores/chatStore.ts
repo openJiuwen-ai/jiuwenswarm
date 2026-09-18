@@ -73,8 +73,6 @@ export interface TaskInputReceipt {
   status: 'sending' | 'accepted' | 'failed' | 'unknown';
   error?: string;
   errorCode?: string;
-  /** Stable UI anchor for the execution receiving this input, independent of subsequent turns. */
-  anchorMessageId?: string;
 }
 
 interface TaskItem {
@@ -1597,10 +1595,6 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
                 taskId,
                 content: task.content,
                 status: 'sending',
-                anchorMessageId:
-                  runtime.messages.slice().reverse().find((message) => message.role === 'user')?.id ??
-                  runtime.currentStreamId ??
-                  undefined,
               },
             },
           },

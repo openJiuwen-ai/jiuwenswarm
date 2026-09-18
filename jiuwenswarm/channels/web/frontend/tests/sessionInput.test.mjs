@@ -155,7 +155,7 @@ async function mount(context) {
     receive,
     socket,
     find,
-    receipt: (taskId) => document.querySelector(`[data-testid="chat-panel-task-input-receipt"][data-variant="${taskId}"]`),
+    receipt: (taskId) => runtime().taskInputReceipts[taskId],
     api: () => api,
     requests: () => socket.requests.filter((request) => request.method === 'chat.send'),
     queue(text, media) {
@@ -217,12 +217,12 @@ test('two queued messages: only the selected item steers, locks double click, an
     assert.equal(request.params.expected_execution_id, 'execution-A');
     assert.equal(request.params.source, undefined, 'never uses permission/ask-user resume');
     assert.equal(c.runtime().taskQueue[1].status, 'sending');
-    assert.match(c.receipt(second).getAttribute('aria-label').replace(/\n/g, ' '), /extra constraint.*正在发送补充输入/);
+    assert.equal(c.receipt(second).status, 'sending');
     assert.equal(c.find(second, 'delete').disabled, false);
     act(() => c.socket.response(request.id));
     await c.flush();
     assert.equal(c.runtime().taskQueue[1].status, 'sending', 'Gateway receipt is not Runtime acceptance');
-    assert.doesNotMatch(c.receipt(second).textContent, /已收到补充输入/);
+    assert.notEqual(c.receipt(second).status, 'accepted');
     c.receive('runtime.accepted', { request_id: 'unrelated' });
     assert.equal(c.runtime().taskQueue[1].status, 'sending');
     c.receive('runtime.accepted', { request_id: request.id });
@@ -237,7 +237,7 @@ test('two queued messages: only the selected item steers, locks double click, an
     assert.equal(c.runtime().currentStreamId, streamId);
     assert.equal(c.runtime().messages, messages, 'a supplement is not a new user turn');
     assert.equal(c.find(second, 'send'), null, 'accepted input leaves the original queue');
-    assert.match(c.receipt(second).getAttribute('aria-label').replace(/\n/g, ' '), /extra constraint.*已收到补充输入/);
+    assert.equal(c.receipt(second).status, 'accepted');
     assert.equal(c.runtime().taskInputReceipts[second].requestId, request.id);
     c.receive('chat.delta', { content: ' continued', request_id: 'original' });
     await c.tick(16);
@@ -296,7 +296,8 @@ test('Host rejection preserves original output, pending question and Goal, and r
     assert.equal(useGoalStore.getState().getRuntime(c.sid).pendingAction, 'resume');
     assert.equal(c.runtime().executionError, null);
     assert.equal(c.runtime().interruptResult, null, 'request feedback does not overwrite interrupt feedback');
-    assert.match(c.receipt(id).getAttribute('aria-label').replace(/\n/g, ' '), /keep this body.*补充输入发送失败：session is waiting for an interaction answer/);
+    assert.equal(c.receipt(id).status, 'failed');
+    assert.equal(c.receipt(id).error, "session is waiting for an interaction answer");
     assert.equal(c.requests().length, 1);
     assert.equal(c.find(id, 'send').disabled, false);
     assert.equal(c.find(id, 'requeue'), null, 'no additional UI controls');
@@ -321,7 +322,8 @@ test('unknown delivery is retained and never drained/retried; late ACK only sett
     });
     await c.flush();
     assert.equal(c.runtime().taskQueue[0].status, 'unknown');
-    assert.match(c.receipt(id).getAttribute('aria-label').replace(/\n/g, ' '), /uncertain.*暂未确认补充输入是否收到：delivery uncertain/);
+    assert.equal(c.receipt(id).status, 'unknown');
+    assert.equal(c.receipt(id).error, "delivery uncertain");
     assert.equal(c.runtime().taskInputReceipts[id].errorCode, 'SESSION_INPUT_DELIVERY_UNKNOWN');
     assert.equal(c.find(id, 'send').disabled, false);
     assert.equal(c.find(id, 'requeue'), null);
@@ -332,8 +334,8 @@ test('unknown delivery is retained and never drained/retried; late ACK only sett
     c.receive('runtime.accepted', { request_id: request.id });
     assert.equal(c.runtime().taskQueue.length, 0);
     assert.equal(c.runtime().isProcessing, false);
-    assert.match(c.receipt(id).textContent, /已收到补充输入/);
-    assert.doesNotMatch(c.receipt(id).textContent, /delivery uncertain/);
+    assert.equal(c.receipt(id).status, 'accepted');
+    assert.equal(c.receipt(id).error, undefined);
   } finally {
     await c.dispose();
   }
@@ -461,7 +463,7 @@ test('supplemental ACK and stream termination preserve the original stream, tool
     c.receive('chat.delta', { request_id: 'original', content: ' after receipt' });
     await c.tick(16);
     assert.equal(c.runtime().messages.at(-1).content, 'original answer after receipt');
-    assert.match(c.receipt(id).textContent, /已收到补充输入/);
+    assert.equal(c.receipt(id).status, 'accepted');
   } finally {
     await c.dispose();
   }
@@ -479,17 +481,18 @@ test('empty supplemental termination before ACK does not imply acceptance or fin
     assert.equal(c.runtime().isProcessing, true);
     assert.equal(c.runtime().currentStreamId, streamId);
     assert.equal(c.runtime().taskInputReceipts[id].status, 'sending');
-    assert.match(c.receipt(id).textContent, /正在发送补充输入/);
+    assert.equal(c.receipt(id).status, 'sending');
     c.receive('chat.error', { request_id: requestId, error: 'SDK rejected input', code: 'INPUT_REJECTED' });
     await c.flush();
-    assert.match(c.receipt(id).textContent, /补充输入发送失败：SDK rejected input/);
+    assert.equal(c.receipt(id).status, 'failed');
+    assert.equal(c.receipt(id).error, "SDK rejected input");
     assert.equal(c.runtime().isProcessing, true);
   } finally {
     await c.dispose();
   }
 });
 
-test('multiple equal-text supplements retain distinct visible results without overwriting interrupt feedback', async (context) => {
+test('multiple equal-text supplements retain distinct delivery states without overwriting interrupt feedback', async (context) => {
   const c = await mount(context);
   try {
     const first = c.queue('same input');
@@ -503,24 +506,25 @@ test('multiple equal-text supplements retain distinct visible results without ov
     c.receive('runtime.accepted', { request_id: one.id });
     c.receive('runtime.accepted', { request_id: one.id });
     await c.flush();
-    assert.match(c.receipt(first).getAttribute('aria-label').replace(/\n/g, ' '), /same input.*已收到补充输入/);
-    assert.match(c.receipt(second).getAttribute('aria-label').replace(/\n/g, ' '), /same input.*补充输入发送失败：SDK delivery rejected <details>/);
-    assert.equal(c.receipt(second).querySelector('details'), null, 'errors are rendered as text');
+    assert.equal(c.receipt(first).status, 'accepted');
+    assert.equal(c.receipt(second).status, 'failed');
+    assert.equal(c.receipt(second).error, "SDK delivery rejected <details>");
+    assert.equal(document.querySelector('[data-testid="chat-panel-task-input-receipt"]'), null);
     assert.equal(c.runtime().taskInputReceipts[second].errorCode, 'DELIVERY_REJECTED');
     assert.equal(c.runtime().interruptResult, interrupt);
-    assert.equal(document.querySelectorAll('[data-testid="chat-panel-task-input-receipt"]').length, 2);
+    assert.equal(Object.keys(c.runtime().taskInputReceipts).length, 2);
     await c.tick(3001);
     assert.ok(c.receipt(first), 'receipts remain associated after interrupt feedback expires');
     assert.ok(c.receipt(second));
     c.receive('chat.error', { request_id: one.id, error: 'late duplicate error' });
-    assert.match(c.receipt(first).textContent, /已收到补充输入/);
+    assert.equal(c.receipt(first).status, 'accepted');
     assert.equal(c.runtime().isProcessing, true);
   } finally {
     await c.dispose();
   }
 });
 
-test('a connection failure before assigning a request ID is shown on the selected message', async (context) => {
+test('a connection failure before assigning a request ID stays associated with the selected message', async (context) => {
   const c = await mount(context);
   const originalRequest = webClient.request;
   try {
@@ -532,7 +536,8 @@ test('a connection failure before assigning a request ID is shown on the selecte
     await c.flush();
     assert.equal(c.runtime().taskInputReceipts[id].requestId, undefined);
     assert.equal(c.runtime().taskInputReceipts[id].status, 'failed');
-    assert.match(c.receipt(id).getAttribute('aria-label').replace(/\n/g, ' '), /not sent.*补充输入发送失败：Connection unavailable before send/);
+    assert.equal(c.receipt(id).status, 'failed');
+    assert.equal(c.receipt(id).error, "Connection unavailable before send");
     assert.equal(c.runtime().isProcessing, true);
     assert.equal(c.requests().length, 0);
   } finally {
@@ -541,32 +546,41 @@ test('a connection failure before assigning a request ID is shown on the selecte
   }
 });
 
-test('receipts stay beside thinking and folding metadata without changing reasoning or following another turn', async (context) => {
+test('steering receipts do not change the thinking header or add visible feedback', async (context) => {
   const c = await mount(context);
   try {
     c.receive('chat.reasoning', { request_id: 'original', content: 'original reasoning only' });
-    const id = c.queue('supplement must remain UI metadata');
-    await c.click(id, 'send');
+    const header = () => document.querySelector('[data-testid="chat-panel-reasoning-panel-header"]').outerHTML;
+    const originalHeader = header();
     const reasoning = c.runtime().reasoningSegments;
-    const requestId = c.requests()[0].id;
-    c.receive('runtime.accepted', { request_id: requestId });
+    const assertOriginalDisplay = () => {
+      assert.equal(header(), originalHeader);
+      assert.equal(document.querySelector('[data-testid="chat-panel-task-input-feedback"]'), null);
+      assert.equal(document.querySelector('[data-testid="chat-panel-task-input-receipt"]'), null);
+      assert.equal(document.querySelector('[data-testid="chat-panel-reasoning-panel-body"]').textContent, 'original reasoning only');
+      assert.equal(c.runtime().reasoningSegments, reasoning);
+      assert.equal(c.runtime().isProcessing, true);
+      assert.equal(c.runtime().interruptResult, null);
+    };
+    const accepted = c.queue('supplement');
+    await c.click(accepted, 'send');
+    assertOriginalDisplay();
+    c.receive('runtime.accepted', { request_id: c.requests()[0].id });
     await c.flush();
-    assert.ok(c.receipt(id).closest('[data-testid="chat-panel-reasoning-panel-header"]'));
-    assert.equal(c.runtime().reasoningSegments, reasoning, 'ACK does not modify model reasoning');
-    assert.equal(document.querySelector('[data-testid="chat-panel-reasoning-panel-body"]').textContent, 'original reasoning only');
-    assert.match(c.receipt(id).title, /supplement must remain UI metadata/);
-    assert.equal(c.receipt(id).closest('.chat-interrupt-bubble'), null);
-    await c.tick(1000);
-    c.receive('chat.final', { request_id: 'original', content: 'original finished' });
+    assert.equal(c.receipt(accepted).status, 'accepted');
+    assertOriginalDisplay();
+    const failed = c.queue('rejected supplement');
+    await c.click(failed, 'send');
+    c.receive('chat.error', { request_id: c.requests()[1].id, error: 'SDK rejected input' });
     await c.flush();
-    assert.ok(c.receipt(id).closest('[data-testid="chat-panel-completed-work-chip"]'), 'receipt follows folded reasoning');
-    await c.tick(1000);
-    act(() => c.store.addMessage(c.sid, { id: 'next-user', role: 'user', content: 'unrelated next task', timestamp: new Date().toISOString() }));
-    c.receive('chat.processing_status', { request_id: 'next', is_processing: true });
-    c.receive('chat.reasoning', { request_id: 'next', content: 'new task reasoning' });
-    assert.ok(c.receipt(id).closest('[data-testid="chat-panel-completed-work-chip"]'), 'receipt remains with its original task');
-    assert.equal(document.querySelectorAll('[data-testid="chat-panel-task-input-receipt"]').length, 1);
-    assert.equal(c.runtime().reasoningSegments.at(-1).text, 'new task reasoning');
+    assert.equal(c.receipt(failed).status, 'failed');
+    assertOriginalDisplay();
+    const unknown = c.queue('unconfirmed supplement');
+    await c.click(unknown, 'send');
+    c.receive('chat.error', { request_id: c.requests()[2].id, error: 'delivery uncertain', code: 'SESSION_INPUT_DELIVERY_UNKNOWN' });
+    await c.flush();
+    assert.equal(c.receipt(unknown).status, 'unknown');
+    assertOriginalDisplay();
   } finally {
     await c.dispose();
   }
@@ -626,7 +640,7 @@ test('missing execution identity fails locally instead of sending an unbound ste
     assert.equal(c.requests().length, 0);
     assert.equal(c.runtime().taskQueue[0].status, 'failed');
     assert.equal(c.runtime().isProcessing, true);
-    assert.match(c.receipt(id).textContent, /当前任务尚未就绪/);
+    assert.match(c.receipt(id).error, /当前任务尚未就绪/);
   } finally {
     await c.dispose();
   }
@@ -646,13 +660,13 @@ test('manual retry uses a new request, ignores the previous ACK, and retains the
     assert.notEqual(newId, oldId);
     c.receive('runtime.accepted', { request_id: oldId });
     assert.equal(c.runtime().taskQueue[0].status, 'sending');
-    assert.match(c.receipt(id).textContent, /正在发送补充输入/);
+    assert.equal(c.receipt(id).status, 'sending');
     c.receive('runtime.accepted', { request_id: newId });
     await c.flush();
     assert.equal(c.runtime().taskQueue.length, 0);
     assert.equal(c.runtime().taskInputRequests[newId].content, 'retry once');
     assert.equal(c.runtime().taskInputReceipts[id].requestId, newId);
-    assert.match(c.receipt(id).textContent, /已收到补充输入/);
+    assert.equal(c.receipt(id).status, 'accepted');
   } finally {
     await c.dispose();
   }
@@ -673,9 +687,9 @@ test('switching sessions and dismissing a receipt do not route its late error in
     c.receive('runtime.accepted', { request_id: requestId });
     await c.flush();
     assert.equal(c.runtime().taskQueue.length, 0);
-    assert.equal(c.receipt(id), null, 'a background session receipt is not shown in another session');
+    assert.deepEqual(c.store.getRuntime(other).taskInputReceipts, {});
     act(() => c.store.setActiveSessionId(c.sid));
-    assert.match(c.receipt(id).getAttribute('aria-label').replace(/\n/g, ' '), /belongs to first session.*已收到补充输入/);
+    assert.equal(c.receipt(id).status, 'accepted');
     act(() => c.store.removeFromTaskQueue(c.sid, id));
     c.receive('chat.error', { request_id: requestId, error: 'late duplicate' });
     assert.equal(c.runtime().isProcessing, true);
@@ -698,7 +712,7 @@ test('clearing conversation feedback still isolates late receipt errors from exe
     act(() => c.store.clearMessages(c.sid));
     c.receive('chat.error', { request_id: requestId, error: 'late error for cleared input' });
     await c.flush();
-    assert.equal(c.receipt(id), null);
+    assert.equal(c.receipt(id), undefined);
     assert.deepEqual(c.runtime().taskInputReceipts, {});
     assert.equal(c.runtime().executionError, null);
   } finally {
@@ -729,7 +743,7 @@ test('editing, deleting and clearing queued messages preserve sending and unknow
     await c.click(sending, 'delete');
     assert.equal(c.runtime().taskQueue.length, 0);
     c.receive('runtime.accepted', { request_id: c.requests()[0].id });
-    assert.match(c.receipt(sending).textContent, /已收到补充输入/, 'deleting a queue item does not lose its late receipt');
+    assert.equal(c.receipt(sending).status, 'accepted');
   } finally {
     await c.dispose();
   }
