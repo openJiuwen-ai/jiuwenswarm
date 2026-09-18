@@ -38,4 +38,4 @@ def apply_openjiuwen_log_to_file_setting() -> None:
     if changed:
         configure_log_config(config)
     _LOG_TO_FILE_PATCH_APPLIED = True
-    logger.info("openjiuwen logging forced to console-only (LOG_TO_FILE_ENABLED=false)")
+    logger.info("openjiuwen log forced to console-only (LOG_TO_FILE_ENABLED=false)")
