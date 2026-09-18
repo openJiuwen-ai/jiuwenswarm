@@ -22,9 +22,12 @@ def enqueue_bound_session_input(instance, target_round, request, sdk_request) ->
     """
     runtime = get_current_runtime()
     execution = runtime.get_session_execution(request.params["expected_execution_id"]) if runtime else None
+    if execution is None:
+        raise SessionInputTargetError(
+            "the targeted execution has ended or changed; supplemental input was not sent"
+        )
     if (
-        execution is None
-        or execution.session_id != request.session_id
+        execution.session_id != request.session_id
         or execution.state is not SessionExecutionState.RUNNING
         or execution.cancellation_requested
     ):
