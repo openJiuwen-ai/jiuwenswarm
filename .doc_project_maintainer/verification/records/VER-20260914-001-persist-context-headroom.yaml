@@ -1,0 +1,26 @@
+id: VER-20260914-001-persist-context-headroom
+applies_to:
+  source_revision: working-tree-2026-09-14
+  modules: [agent-harness]
+  flows: [eternal-conversation-memory]
+  symbols:
+    - EternalConversationRail.on_user_message
+    - SessionCoordinator.wait_for_projection_boundary
+  paths:
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/rail.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/coordinator.py
+    - tests/unit_tests/agentserver/rails/test_eternal_conversation_rail.py
+evidence:
+  level: unit
+  scenario: lagging-extractor-at-430000-byte-pre-admission-context
+  environment: local Windows Python 3.12
+  command: uv run pytest -q tests/unit_tests/agentserver/rails/test_eternal_conversation_rail.py tests/unit_tests/agentserver/rails/test_eternal_conversation_deep_agents.py tests/unit_tests/runtime/test_runtime_service.py tests/unit_tests/agentserver/test_context_window_config.py tests/unit_tests/agentserver/test_context_engine_config_wiring.py tests/unit_tests/agentserver/test_session_manager_lifecycle.py
+  repetitions: 1
+  successes: 153
+  warnings: 1
+result: passed
+status: superseded
+recorded_at: 2026-09-14T01:41:00Z
+supersedes: []
+evidence_paths: []
+notes: Superseded by VER-20260914-002. The fixed 256/512 KiB foreground byte threshold was removed; the normal model context-window policy now owns foreground sizing, while Extractor fork eligibility is measured independently at 70% of the model token window. The live task-124 failure remains active until the real checkpoint replay passes.

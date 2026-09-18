@@ -6,10 +6,13 @@ import asyncio
 import contextvars
 import hashlib
 import json
+import re
+import shutil
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from .background_agents import BackgroundAgentRunner
+from .background_agents import BackgroundAgentRunner, ExtractorForkContext
 from .evidence import (
     EvidenceWriter,
     read_json,
@@ -19,6 +22,7 @@ from .evidence import (
 )
 from .memory_cli import DynamicMemoryGateway
 from .prompts import BUILDER_SYSTEM_PROMPT, EXTRACTOR_SYSTEM_PROMPT, prompt_hashes
+from .retrieval import constraint_candidates, extract_user_text, user_text_query
 
 
 SNAPSHOT_LIMITS = {
@@ -29,6 +33,8 @@ SNAPSHOT_LIMITS = {
     "next_actions": 4,
     "constraints": 6,
 }
+SNAPSHOT_ITEM_CHARACTER_LIMIT = 1000
+SNAPSHOT_ITEM_RETRY_TARGET = 900
 
 # A lagging worker must never turn many completed foreground tasks into one
 # unbounded model request.  Four natural-task boundaries preserve throughput
@@ -37,6 +43,19 @@ MAX_TASKS_PER_EXTRACTION = 4
 PROTOCOL_STRING_INLINE_LIMIT = 2048
 PROTOCOL_CONTAINER_INLINE_LIMIT = 256 * 1024
 FROZEN_WORKING_MEMORY_INLINE_LIMIT = 512 * 1024
+UT_HASH_FIELDS = (
+    "id",
+    "memory_id",
+    "priority",
+    "content",
+    "queries",
+    "must_include",
+    "evidence_refs",
+    "source",
+    "tags",
+    "status",
+)
+EVIDENCE_RANGE_RE = re.compile(r"^raw-history:cursor-(\d+)-(\d+)$")
 
 
 def _compact_protocol_value(value: Any) -> Any:
@@ -149,7 +168,12 @@ def _tool_inventory(value: Any) -> list[str]:
     return names
 
 
-def _validate_extractor(value: dict[str, Any]) -> None:
+def _validate_extractor(
+    value: dict[str, Any],
+    *,
+    candidate_constraints: list[dict[str, Any]] | None = None,
+    direct_user_evidence: dict[str, str] | None = None,
+) -> None:
     snapshot = value.get("snapshot")
     if not isinstance(snapshot, dict):
         raise ValueError("extractor snapshot must be an object")
@@ -163,15 +187,16 @@ def _validate_extractor(value: dict[str, Any]) -> None:
                 f"Merge or remove {len(items) - limit} item(s)."
             )
         for index, item in enumerate(items):
-            if len(item) > 280:
+            if len(item) > SNAPSHOT_ITEM_CHARACTER_LIMIT:
                 raise ValueError(
-                    f"snapshot.{field}[{index}] has {len(item)} characters; hard limit is 280. "
-                    "Rewrite that item to at most 220 characters without dropping its durable facts."
+                    f"snapshot.{field}[{index}] has {len(item)} characters; hard limit is "
+                    f"{SNAPSHOT_ITEM_CHARACTER_LIMIT}. Rewrite that item to at most "
+                    f"{SNAPSHOT_ITEM_RETRY_TARGET} characters without dropping its durable facts."
                 )
     changes = value.get("changed_uts")
     if not isinstance(changes, list) or len(changes) > 4:
         raise ValueError("changed_uts must contain at most four items")
-    for change in changes:
+    for change_index, change in enumerate(changes):
         if not isinstance(change, dict):
             raise ValueError("each UT change must be an object")
         action = change.get("action", "upsert")
@@ -181,6 +206,9 @@ def _validate_extractor(value: dict[str, Any]) -> None:
             if not str(change.get("id") or "").strip():
                 raise ValueError("retire requires id")
             continue
+        priority = change.get("priority")
+        if isinstance(priority, bool) or priority not in {20, 40, 60, 80, 100}:
+            raise ValueError("UT priority must be one of 20, 40, 60, 80, or 100")
         content = change.get("content")
         queries = change.get("queries")
         must_include = change.get("must_include")
@@ -190,9 +218,96 @@ def _validate_extractor(value: dict[str, Any]) -> None:
             raise ValueError("UT queries must contain one to four items")
         if not isinstance(must_include, list) or not must_include or len(must_include) > 3:
             raise ValueError("UT must_include must contain one to three items")
-        for phrase in must_include:
+        for phrase_index, phrase in enumerate(must_include):
             if not isinstance(phrase, str) or phrase not in content:
-                raise ValueError("every must_include phrase must be an exact content substring")
+                ut_id = str(change.get("id") or "<missing-id>")
+                raise ValueError(
+                    f"changed_uts[{change_index}] id={ut_id!r} must_include"
+                    f"[{phrase_index}]={phrase!r} is not an exact substring of content; "
+                    "copy it verbatim into content or replace it with an exact, "
+                    "answer-bearing substring already present in content"
+                )
+    candidates = candidate_constraints or []
+    if not candidates:
+        return
+    assessments = value.get("constraint_assessments")
+    if not isinstance(assessments, list):
+        raise ValueError("constraint_assessments must cover every candidate constraint")
+    by_id: dict[str, dict[str, Any]] = {}
+    for assessment in assessments:
+        if not isinstance(assessment, dict):
+            raise ValueError("each constraint assessment must be an object")
+        # ``id`` is a harmless structural alias that models commonly copy from
+        # the candidate object itself.  Canonicalize it here because the
+        # Harness owns structure, while keeping conflicting identifiers
+        # fail-closed so no semantic association can be guessed.
+        raw_ut_id = assessment.get("ut_id")
+        raw_alias = assessment.get("id")
+        if raw_ut_id in (None, "") and raw_alias not in (None, ""):
+            assessment["ut_id"] = raw_alias
+            raw_ut_id = raw_alias
+        elif (
+            raw_ut_id not in (None, "")
+            and raw_alias not in (None, "")
+            and str(raw_ut_id).strip() != str(raw_alias).strip()
+        ):
+            raise ValueError("constraint assessment id and ut_id must match")
+        assessment.pop("id", None)
+        ut_id = str(raw_ut_id or "").strip()
+        if not ut_id or ut_id in by_id:
+            raise ValueError("constraint assessments require unique non-empty ut_id values")
+        outcome = assessment.get("outcome")
+        if outcome not in {"preserved", "unresolved", "overridden", "not_relevant"}:
+            raise ValueError(f"constraint assessment {ut_id!r} has invalid outcome")
+        by_id[ut_id] = assessment
+    expected = {str(item.get("id")) for item in candidates}
+    if set(by_id) != expected:
+        raise ValueError(
+            "constraint_assessments must exactly cover candidate constraints: "
+            f"expected={sorted(expected)!r}, actual={sorted(by_id)!r}"
+        )
+    snapshot_constraints = snapshot.get("constraints") or []
+    user_evidence = direct_user_evidence or {}
+    for candidate in candidates:
+        ut_id = str(candidate.get("id"))
+        assessment = by_id[ut_id]
+        outcome = assessment["outcome"]
+        if outcome == "unresolved":
+            notice = assessment.get("snapshot_notice")
+            if not isinstance(notice, str) or notice not in snapshot_constraints:
+                raise ValueError(
+                    f"unresolved constraint {ut_id!r} requires snapshot_notice copied "
+                    "verbatim into snapshot.constraints"
+                )
+        if outcome != "overridden":
+            continue
+        refs = assessment.get("direct_user_evidence_refs")
+        quotes = assessment.get("acknowledgement_quotes")
+        if not isinstance(refs, list) or not refs or not all(ref in user_evidence for ref in refs):
+            raise ValueError(
+                f"overridden constraint {ut_id!r} requires direct user evidence references"
+            )
+        if not isinstance(quotes, list) or not quotes or not all(
+            isinstance(quote, str)
+            and quote
+            and any(quote in user_evidence[ref] for ref in refs)
+            for quote in quotes
+        ):
+            raise ValueError(
+                f"overridden constraint {ut_id!r} requires exact acknowledgement quotes"
+            )
+        anchors = [
+            str(item).casefold()
+            for item in candidate.get("must_include") or []
+            if str(item).strip()
+        ]
+        if anchors and not any(
+            anchor in quote.casefold() for anchor in anchors for quote in quotes
+        ):
+            raise ValueError(
+                f"overridden constraint {ut_id!r} acknowledgement must name an exact "
+                "constraint anchor"
+            )
 
 
 def _validate_builder(value: dict[str, Any]) -> None:
@@ -214,7 +329,8 @@ def _normalize_changes(
             value["source"] = session_id
             value["evidence_refs"] = [evidence_ref]
             value.setdefault("tags", [])
-            value.setdefault("memory_id", f"memory-{value.get('id')}")
+            if not str(value.get("memory_id") or "").strip():
+                value["memory_id"] = f"memory-{value.get('id')}"
         normalized.append(value)
     return normalized
 
@@ -326,17 +442,33 @@ def _extractor_evidence(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _memory_query(events: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for event in reversed(events):
-        if event.get("type") not in {"user-message", "task-started", "model-visible-envelope"}:
+    return user_text_query(events)
+
+
+def _direct_user_evidence(events: list[dict[str, Any]]) -> dict[str, str]:
+    """Index exact direct-user messages by cursor for structural validation."""
+    evidence: dict[str, str] = {}
+    for event in events:
+        if event.get("type") != "user-message":
             continue
         payload = event.get("payload")
-        text = json.dumps(payload, ensure_ascii=False) if not isinstance(payload, str) else payload
-        if text.strip():
-            parts.append(text[:800])
-        if len(parts) == 4:
-            break
-    return " ".join(reversed(parts))[:2400] or "recent conversation"
+        candidate = payload.get("parts") if isinstance(payload, dict) else payload
+        text = extract_user_text(candidate)
+        cursor = int(event.get("cursor") or 0)
+        if cursor > 0 and text:
+            evidence[f"raw-history:cursor-{cursor}"] = text
+    return evidence
+
+
+def _ut_content_hash(record: dict[str, Any]) -> str:
+    semantic = {key: record.get(key) for key in UT_HASH_FIELDS}
+    encoded = json.dumps(
+        semantic,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class SessionCoordinator:
@@ -352,13 +484,23 @@ class SessionCoordinator:
         self.session_id = session_id
         self.evidence = EvidenceWriter(root, session_id)
         self.memory = DynamicMemoryGateway(root / "memory", self.evidence)
-        self.agents = BackgroundAgentRunner(model_supplier, self.evidence)
+        self.agents = BackgroundAgentRunner(
+            model_supplier,
+            self.evidence,
+            root=root,
+            session_id=session_id,
+        )
         self.state_path = root / "state" / "harness.json"
         self.projection_path = root / "state" / "eternal-conversation.json"
         self._worker: asyncio.Task[None] | None = None
         self._builder: asyncio.Task[None] | None = None
+        self._extractor_forks: dict[int, ExtractorForkContext] = {}
         self._closed = False
         self._schedule_lock = asyncio.Lock()
+        # Publish/freeze/copy/build are short formal-state transitions.  The
+        # Agents run outside this lock, so foreground extraction can continue,
+        # while every Builder staging copy is still a consistent Pending view.
+        self._memory_publication_lock = asyncio.Lock()
         self._write_manifest()
 
     def _write_manifest(self) -> None:
@@ -374,9 +516,26 @@ class SessionCoordinator:
             },
         )
 
-    async def request_extract(self, cursor: int) -> None:
+    async def request_extract(
+        self,
+        cursor: int,
+        *,
+        fork_context: ExtractorForkContext | None = None,
+    ) -> None:
         if self._closed:
             return
+        if fork_context is not None:
+            await self.evidence.append_audit(
+                "extractor-forks",
+                {
+                    "cursor": int(cursor),
+                    **fork_context.manifest(),
+                    "accepted": fork_context.within_seventy_percent,
+                    "limit": "70% of model context window",
+                },
+            )
+            if fork_context.within_seventy_percent:
+                self._extractor_forks[int(cursor)] = fork_context
         async with self._schedule_lock:
             state = read_json(self.state_path, {}) or {}
             requested = max(int(state.get("requested_cursor") or 0), int(cursor))
@@ -441,6 +600,9 @@ class SessionCoordinator:
             related = await self.memory.search(_memory_query(events)) if memories else {"matches": []}
             related_ids = [str(item.get("id")) for item in related.get("matches") or []][:32]
             by_id = {str(item.get("id")): item for item in memories}
+            related_records = [by_id[item_id] for item_id in related_ids if item_id in by_id]
+            candidates = constraint_candidates(related_records)
+            user_evidence = _direct_user_evidence(events)
             high_priority = sorted(memories, key=lambda item: int(item.get("priority") or 0), reverse=True)[:12]
             references: list[dict[str, Any]] = []
             seen: set[str] = set()
@@ -455,6 +617,8 @@ class SessionCoordinator:
                 "old_snapshot": formal.get("snapshot") or {},
                 **evidence_view,
                 "published_uts": references,
+                "candidate_constraints": candidates,
+                "direct_user_evidence": user_evidence,
                 "source": self.session_id,
                 "evidence_ref": evidence_ref,
             }
@@ -462,7 +626,12 @@ class SessionCoordinator:
                 role="extractor",
                 system_prompt=EXTRACTOR_SYSTEM_PROMPT,
                 request=request,
-                validate=_validate_extractor,
+                validate=lambda value: _validate_extractor(
+                    value,
+                    candidate_constraints=candidates,
+                    direct_user_evidence=user_evidence,
+                ),
+                fork_context=self._extractor_forks.get(target),
             )
             proposal = {
                 "base_memory_revision": formal["memory_revision"],
@@ -477,13 +646,16 @@ class SessionCoordinator:
                 "semantic_statement": parsed.get("semantic_statement")
                 or "All future-relevant effects are carried.",
             }
-            result = await self.memory.file_command(
-                "publish-pending", proposal, f"proposal-{covered + 1}-{target}"
-            )
+            async with self._memory_publication_lock:
+                result = await self.memory.file_command(
+                    "publish-pending", proposal, f"proposal-{covered + 1}-{target}"
+                )
             await asyncio.to_thread(write_json_atomic, self.projection_path, result)
             await self.evidence.append_audit(
                 "publications", {"proposal": proposal, "result": result}
             )
+            for cursor in [value for value in self._extractor_forks if value <= target]:
+                self._extractor_forks.pop(cursor, None)
             await self._schedule_builder()
 
     async def _schedule_builder(self) -> None:
@@ -527,14 +699,33 @@ class SessionCoordinator:
     async def _build_loop(self) -> None:
         while not self._closed:
             output = self.root / "memory" / "jobs" / f"build-{utc_now().replace(':', '-')}.json"
-            frozen = await self.memory.call("freeze-pending", "--output", str(output))
-            if int(frozen.get("count") or 0) == 0:
-                return
-            batch = read_json(output, {}) or {}
+            async with self._memory_publication_lock:
+                frozen = await self.memory.call("freeze-pending", "--output", str(output))
+                if int(frozen.get("count") or 0) == 0:
+                    return
+                batch = read_json(output, {}) or {}
+                builder_request: dict[str, Any] = dict(batch)
+                staging: dict[str, Any] | None = None
+                if self.agents.uses_deep_agent():
+                    staging = await self._prepare_builder_staging(output, batch)
+                    builder_request = {
+                        "frozen_batch": batch,
+                        "builder_run": {
+                            "workspace": str(staging["workspace"]),
+                            "memory_root": staging["memory_root"],
+                            "batch": staging["batch"],
+                            "manifest": staging["manifest"],
+                            "required_commands": [
+                                "build-pending",
+                                "test --built-only",
+                                "bench",
+                            ],
+                        },
+                    }
             review = await self.agents.call_json(
                 role="builder",
                 system_prompt=BUILDER_SYSTEM_PROMPT,
-                request=batch,
+                request=builder_request,
                 validate=_validate_builder,
             )
             if not review["approved"]:
@@ -544,10 +735,159 @@ class SessionCoordinator:
                     "builder rejected frozen Pending batch"
                     + (f": {diagnostics}" if diagnostics else "")
                 )
-            result = await self.memory.call("build-pending", "--file", str(output))
+            staging_validation = None
+            if staging is not None:
+                staging_validation = await self._validate_builder_staging(staging, batch)
+            async with self._memory_publication_lock:
+                await self._validate_builder_publication(batch)
+                result = await self.memory.call("build-pending", "--file", str(output))
             await self.evidence.append_audit(
-                "builds", {"batch": str(output), "review": review, "result": result}
+                "builds",
+                {
+                    "batch": str(output),
+                    "review": review,
+                    "staging": staging_validation,
+                    "result": result,
+                },
             )
+
+    async def _prepare_builder_staging(
+        self, frozen_path: Path, batch: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Copy canonical Pending into a unique Builder-only staging project."""
+        workspace = self.agents.prepare_workspace("builder")
+        run_id = f"build-{int(batch.get('memory_revision') or 0)}-{uuid.uuid4().hex[:12]}"
+        run_root = workspace / "runs" / run_id
+        memory_root = run_root / "memory"
+        batch_path = run_root / "pending-batch.json"
+        manifest_path = run_root / "build-manifest.json"
+
+        def _copy() -> None:
+            run_root.mkdir(parents=True, exist_ok=False)
+            shutil.copytree(
+                self.root / "memory",
+                memory_root,
+                ignore=shutil.ignore_patterns("jobs"),
+            )
+            shutil.copy2(frozen_path, batch_path)
+
+        await asyncio.to_thread(_copy)
+        return {
+            "workspace": workspace,
+            "run_root": run_root,
+            "memory_root": memory_root.relative_to(workspace).as_posix(),
+            "batch": batch_path.relative_to(workspace).as_posix(),
+            "manifest": manifest_path.relative_to(workspace).as_posix(),
+        }
+
+    async def _validate_builder_staging(
+        self, staging: dict[str, Any], batch: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Validate Builder command evidence and staged Built state structurally."""
+        workspace = Path(staging["workspace"])
+        manifest_path = workspace / str(staging["manifest"])
+        manifest = read_json(manifest_path, {}) or {}
+        commands = manifest.get("commands")
+        if manifest.get("success") is not True or not isinstance(commands, list):
+            raise RuntimeError("Builder did not produce a successful build manifest")
+        required = (("build-pending",), ("test", "--built-only"), ("bench",))
+        if len(commands) != len(required):
+            raise RuntimeError("Builder manifest does not contain all required memory-cli calls")
+        for record, required_tokens in zip(commands, required):
+            command = record.get("command") if isinstance(record, dict) else None
+            if (
+                not isinstance(command, list)
+                or int(record.get("returncode", -1)) != 0
+                or not all(token in command for token in required_tokens)
+            ):
+                raise RuntimeError(
+                    f"Builder memory-cli evidence failed for {' '.join(required_tokens)}"
+                )
+        manifest_batch = Path(str(manifest.get("batch") or "")).as_posix()
+        expected_batch = Path(str(staging["batch"])).as_posix()
+        if manifest_batch != expected_batch:
+            raise RuntimeError("Builder manifest batch path does not match the frozen input")
+
+        staging_gateway = DynamicMemoryGateway(
+            workspace / str(staging["memory_root"]),
+            self.evidence,
+            script=workspace
+            / "skills"
+            / "dynamic-memory-cli"
+            / "scripts"
+            / "dynamic_memory_cli.py",
+        )
+        listed = await staging_gateway.call("list", "--full")
+        by_id = {
+            str(item.get("id")): item for item in list(listed.get("memories") or [])
+        }
+        expected_ids = [
+            str(item.get("id"))
+            for item in list(batch.get("items") or [])
+            if str(item.get("id") or "")
+        ]
+        missing = [
+            item_id
+            for item_id in expected_ids
+            if str((by_id.get(item_id) or {}).get("build_state") or "") != "built"
+        ]
+        if missing:
+            raise RuntimeError(f"Builder staging did not build frozen UTs: {missing}")
+        return {
+            "workspace": str(workspace),
+            "run_root": str(staging["run_root"]),
+            "manifest": manifest,
+            "built_ids": expected_ids,
+        }
+
+    async def _validate_builder_publication(self, batch: dict[str, Any]) -> None:
+        """Recheck frozen revision/cursor/hash/evidence immediately before Built."""
+        for field in ("memory_revision", "snapshot_revision", "covered_through"):
+            if not isinstance(batch.get(field), int) or int(batch[field]) < 0:
+                raise RuntimeError(f"Builder frozen batch has invalid {field}")
+        formal = await self.memory.projection()
+        for field in ("memory_revision", "snapshot_revision", "covered_through"):
+            if int(formal.get(field) or 0) < int(batch[field]):
+                raise RuntimeError(f"canonical {field} moved behind the frozen Builder batch")
+
+        required_cursors: set[int] = set()
+        covered = int(batch["covered_through"])
+        for item in list(batch.get("items") or []):
+            if not isinstance(item, dict):
+                raise RuntimeError("Builder frozen batch contains a non-object UT")
+            if item.get("content_hash") != _ut_content_hash(item):
+                raise RuntimeError(f"Builder frozen UT hash mismatch: {item.get('id')}")
+            evidence_refs = item.get("evidence_refs")
+            if not isinstance(evidence_refs, list) or not evidence_refs:
+                raise RuntimeError(f"Builder frozen UT has no evidence: {item.get('id')}")
+            for reference in evidence_refs:
+                match = EVIDENCE_RANGE_RE.fullmatch(str(reference))
+                if match is None:
+                    raise RuntimeError(f"Builder frozen UT has invalid evidence: {item.get('id')}")
+                start, end = (int(value) for value in match.groups())
+                if start < 1 or end < start or end > covered:
+                    raise RuntimeError(f"Builder frozen UT evidence is out of range: {item.get('id')}")
+                required_cursors.update((start, end))
+
+        if required_cursors:
+            found: set[int] = set()
+
+            def _scan_raw_history() -> None:
+                try:
+                    with self.evidence.raw_path.open("r", encoding="utf-8") as handle:
+                        for line in handle:
+                            if not line.strip():
+                                continue
+                            cursor = int(json.loads(line).get("cursor") or 0)
+                            if cursor in required_cursors:
+                                found.add(cursor)
+                except FileNotFoundError:
+                    return
+
+            await asyncio.to_thread(_scan_raw_history)
+            missing = sorted(required_cursors - found)
+            if missing:
+                raise RuntimeError(f"Builder frozen UT evidence cursors are missing: {missing}")
 
     async def projection_for_boundary(self, *, force: bool = False) -> dict[str, Any] | None:
         """Return a projection only when no newer foreground task can be lost."""
@@ -561,6 +901,19 @@ class SessionCoordinator:
         if (revision <= applied and not force) or int(formal.get("covered_through") or 0) != requested:
             return None
         return formal
+
+    async def wait_for_projection_boundary(self) -> dict[str, Any] | None:
+        """Wait only for the Extractor when foreground replacement needs headroom.
+
+        Pending is already published long-term memory, so foreground replacement
+        does not need to wait for the Builder.  The guarded Extractor task records
+        its own failure and then finishes; in that case no unsafe projection is
+        returned and the normal context-processing path remains in control.
+        """
+        worker = self._worker
+        if worker is not None and not worker.done():
+            await asyncio.shield(worker)
+        return await self.projection_for_boundary(force=True)
 
     async def mark_projection_applied(self, revision: int) -> None:
         async with self._schedule_lock:
@@ -579,6 +932,7 @@ class SessionCoordinator:
     async def close(self) -> None:
         await self.wait_idle()
         self._closed = True
+        await self.agents.close()
 
 
 __all__ = ["SessionCoordinator"]

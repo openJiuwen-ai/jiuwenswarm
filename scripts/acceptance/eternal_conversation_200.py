@@ -135,6 +135,24 @@ def append_interrupted_once(path: Path, row: dict[str, Any]) -> None:
     append_jsonl(path, row)
 
 
+def verified_noop_evidence(
+    task: dict[str, Any], answer: str, evidence: dict[str, Any]
+) -> bool:
+    """Accept an already-satisfied report only with strong, scoped evidence."""
+    if not task.get("allow_verified_noop"):
+        return False
+    normalized = answer.casefold()
+    conclusion = any(
+        marker in normalized
+        for marker in ("未复现", "无需修改", "already satisfied", "does not reproduce")
+    )
+    return bool(
+        conclusion
+        and int(evidence.get("successful_tool_results") or 0) >= 4
+        and evidence.get("verification_commands")
+    )
+
+
 def _scenario_namespace() -> dict[str, Any]:
     """Compile only the versioned workload's data and build helpers."""
     tree = ast.parse(WORKLOAD.read_text(encoding="utf-8"), filename=str(WORKLOAD))
@@ -649,6 +667,32 @@ def evidence_inventory(feature_root: Path) -> dict[str, Any]:
     }
 
 
+def extractor_fork_cache_inventory(feature_root: Path) -> dict[str, Any]:
+    """Verify the frozen Worker prefix and report provider cache diagnostics.
+
+    Byte-for-byte prefix identity is the correctness contract owned by the
+    harness.  Provider-reported KV cache reuse is intentionally diagnostic:
+    routed model endpoints may report a partial hit even when the exact frozen
+    prefix is preserved.
+    """
+    path = feature_root / "audit" / "extractor-fork-cache.jsonl"
+    rows = list(iter_jsonl(path)) if path.exists() else []
+    full_hits = sum(row.get("full_prefix_hit") is True for row in rows)
+    byte_prefix_matches = sum(row.get("byte_prefix_match") is True for row in rows)
+    return {
+        "path": str(path),
+        "calls": len(rows),
+        "byte_prefix_matches": byte_prefix_matches,
+        "full_prefix_hits": full_hits,
+        "verified": bool(rows) and byte_prefix_matches == len(rows),
+        "provider_cache_diagnostic": {
+            "full_prefix_hits": full_hits,
+            "all_calls_full_hit": bool(rows) and full_hits == len(rows),
+        },
+        "prefix_hashes": [str(row.get("prefix_sha256") or "") for row in rows],
+    }
+
+
 async def run_final_pytest(workspace: Path, timeout: float) -> dict[str, Any]:
     def invoke() -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -776,6 +820,12 @@ async def receive_turn(
             approval_in_flight = None
             await send_next_approval()
             continue
+        if (
+            event_type == "chat.processing_status"
+            and payload.get("is_complete") is True
+            and saw_terminal
+        ):
+            return final or "".join(chunks)
         if event_type == "chat.delta" and isinstance(content, str):
             chunks.append(content)
         elif event_type == "chat.ask_user_question":
@@ -1025,6 +1075,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
         marker = task.get("probe_marker")
         question = bool(re.search(r"[?？][\s*_`'\"）)\]]*$", answer.strip()))
         marker_found = bool(marker and str(marker).casefold() in answer.casefold()) if is_probe else None
+        verified_noop = verified_noop_evidence(task, answer, evidence) if not changed else False
         failures: list[str] = []
         if not answer.strip():
             failures.append("empty foreground answer")
@@ -1040,7 +1091,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             if not args.ablation_no_eternal and evidence["memory_searches"] < 1:
                 failures.append("blind conflict probe did not call memory search")
         else:
-            if not changed:
+            if not changed and not verified_noop:
                 failures.append("natural development task made no persistent change")
             if not evidence["verification_commands"]:
                 failures.append("natural development task ran no pytest verification")
@@ -1054,6 +1105,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             "evidence": evidence,
             "question_evidence": question,
             "marker_evidence": marker_found,
+            "verified_noop": verified_noop,
             "failures": failures,
             "passed": not failures,
         }
@@ -1232,6 +1284,9 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
         )
     else:
         inventory = evidence_inventory(feature_root)
+        inventory["extractor_fork_cache"] = extractor_fork_cache_inventory(
+            feature_root
+        )
         formal_gates = (
             not args.formal
             or (
@@ -1244,6 +1299,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             and inventory["raw_hash_chain"]["verified"] is True
             and int(inventory["raw_hash_chain"]["records"]) == int(raw_metrics["records"])
             and inventory["derived_evidence_views"]["verified"] is True
+            and inventory["extractor_fork_cache"]["verified"] is True
             )
         )
     accepted = (
