@@ -1,4 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+#
+# This file is a Python port of the attention/strikethrough semantics of:
+#   micromark-extension-cjk-friendly and micromark-extension-cjk-friendly-util
+#   Copyright (c) Tatsunori Uchino (https://github.com/tats-u)
+#   Licensed under the MIT License (https://opensource.org/licenses/MIT)
 """CJK-friendly emphasis and strikethrough flanking for markdown-it-py.
 
 Ports the attention semantics of the relay-claw frontend parser stack
