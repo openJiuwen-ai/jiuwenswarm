@@ -6,6 +6,7 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.config_panel import tui_models_handlers
 from jiuwenswarm.gateway.channel_manager.tui import tui_connect as tui_connect_module
 from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
     CliHandlersBindParams,
@@ -851,7 +852,7 @@ async def test_config_validate_model_handler_uses_local_probe(monkeypatch):
         async def invoke(self, *args, **kwargs):
             return {"content": "hello"}
 
-    monkeypatch.setattr("jiuwenswarm.gateway.channel_manager.tui.tui_connect.Model", FakeModel)
+    monkeypatch.setattr("jiuwenswarm.common.config_panel.tui_models_handlers.Model", FakeModel)
 
     await cli_handlers["config.validate_model"](
         object(),
@@ -907,7 +908,7 @@ async def test_config_validate_model_retries_failed_probe_with_more_tokens(
                 return {"content": "", "reasoning_content": ""}
             return {"content": "hello"}
 
-    monkeypatch.setattr(tui_connect_module, "Model", FakeModel)
+    monkeypatch.setattr(tui_models_handlers, "Model", FakeModel)
 
     await server.local_handlers["/tui"]["config.validate_model"](
         object(),
@@ -961,13 +962,13 @@ async def test_command_model_switch_sends_scoped_agent_reload(monkeypatch):
         return mutator(data)
 
     monkeypatch.setattr(tui_connect_module, "_send_tui_agent_request", fake_send_tui_agent_request)
-    monkeypatch.setattr(tui_connect_module, "update_config", fake_update_config)
+    monkeypatch.setattr(tui_models_handlers, "update_config", fake_update_config)
     monkeypatch.setattr(
-        tui_connect_module,
+        tui_models_handlers,
         "get_config_raw",
         lambda: {"models": {"defaults": defaults}},
     )
-    monkeypatch.setattr(tui_connect_module, "get_config", lambda: {"models": {"defaults": defaults}})
+    monkeypatch.setattr(tui_models_handlers, "get_config", lambda: {"models": {"defaults": defaults}})
 
     register_cli_handlers(
         CliHandlersBindParams(
@@ -1052,14 +1053,14 @@ async def test_command_model_delete_matches_by_name_when_index_drifted(monkeypat
         return mutator(data)
 
     monkeypatch.setattr(tui_connect_module, "_send_tui_agent_request", fake_send_tui_agent_request)
-    monkeypatch.setattr(tui_connect_module, "update_config", fake_update_config)
+    monkeypatch.setattr(tui_models_handlers, "update_config", fake_update_config)
     monkeypatch.setattr(
-        tui_connect_module,
+        tui_models_handlers,
         "get_config_raw",
         lambda: {"models": {"defaults": current_defaults}},
     )
     monkeypatch.setattr(
-        tui_connect_module, "get_config", lambda: {"models": {"defaults": current_defaults}}
+        tui_models_handlers, "get_config", lambda: {"models": {"defaults": current_defaults}}
     )
 
     register_cli_handlers(
@@ -1137,14 +1138,14 @@ async def test_command_model_delete_rejects_when_index_and_name_mismatch(monkeyp
         return mutator(data)
 
     monkeypatch.setattr(tui_connect_module, "_send_tui_agent_request", fake_send_tui_agent_request)
-    monkeypatch.setattr(tui_connect_module, "update_config", fake_update_config)
+    monkeypatch.setattr(tui_models_handlers, "update_config", fake_update_config)
     monkeypatch.setattr(
-        tui_connect_module,
+        tui_models_handlers,
         "get_config_raw",
         lambda: {"models": {"defaults": current_defaults}},
     )
     monkeypatch.setattr(
-        tui_connect_module, "get_config", lambda: {"models": {"defaults": current_defaults}}
+        tui_models_handlers, "get_config", lambda: {"models": {"defaults": current_defaults}}
     )
 
     register_cli_handlers(
@@ -1189,9 +1190,9 @@ async def test_command_model_lists_agentos_models_without_defaults(monkeypatch):
             "model_config_obj": {},
         }
     ]
-    monkeypatch.setattr(tui_connect_module, "get_model_names", lambda: [])
+    monkeypatch.setattr(tui_models_handlers, "get_model_names", lambda: [])
     monkeypatch.setattr(
-        tui_connect_module,
+        tui_models_handlers,
         "get_config_raw",
         lambda: {"models": {"defaults": [], "agentos": agentos_models}},
     )
@@ -1793,8 +1794,8 @@ async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch):
             seen["on_event_loop"] = False
         return [{"model_client_config": {"model_name": "m", "api_key": "k"}}]
 
-    monkeypatch.setattr(tui_connect_module, "get_config", lambda: {})
-    monkeypatch.setattr(tui_connect_module, "get_available_models", fake_available)
+    monkeypatch.setattr(tui_models_handlers, "get_config", lambda: {})
+    monkeypatch.setattr(tui_models_handlers, "get_available_models", fake_available)
 
     await server.local_handlers["/tui"]["models.list"](object(), "req-models", {}, "sess-1")
 
