@@ -171,6 +171,33 @@ _DANGEROUS_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         ),
         "blocked pattern: xargs kill pipeline targeting jiuwenswarm",
     ),
+    (
+        re.compile(r"Get-Process[\s\S]{0,400}Stop-Process", re.IGNORECASE),
+        "blocked pattern: Get-Process | Stop-Process (kills agent/host python)",
+    ),
+    (
+        re.compile(
+            r"\bStop-Process\b[\s\S]{0,200}-Name\s+['\"]?(?:python(?:\d+(?:\.\d+)*)?(?:\.exe)?"
+            r"|node(?:\.exe)?|jiuwenswarm|jiuwenclaw)\b",
+            re.IGNORECASE,
+        ),
+        "blocked pattern: Stop-Process -Name targeting agent/host runtime",
+    ),
+    (
+        re.compile(
+            r"\btaskkill\b[\s\S]*?/{1,2}im\b[\s\S]*?\b(?:python(?:\d+(?:\.\d+)*)?(?:\.exe)?"
+            r"|node(?:\.exe)?|jiuwenswarm|jiuwenclaw)\b",
+            re.IGNORECASE,
+        ),
+        "blocked pattern: taskkill /im targeting agent/host runtime",
+    ),
+    (
+        re.compile(
+            r"\b(?:pkill|killall)\b[^\n\r;|&]*\bpython(?:\d+(?:\.\d+)*)?(?:\.exe)?\b",
+            re.IGNORECASE,
+        ),
+        "blocked pattern: pkill/killall targeting python runtime",
+    ),
 ]
 
 _POWERSHELL_TOKENS = (
@@ -274,11 +301,43 @@ def _clip_text(value: str, max_chars: int) -> str:
     return f"{value[:max_chars]}\n...[truncated]"
 
 
+_TASKKILL_PID_RE = re.compile(
+    r"\btaskkill\b[\s\S]*?/{1,2}pid\b[\s:=]*(\d+)",
+    re.IGNORECASE,
+)
+_STOP_PROCESS_ID_RE = re.compile(
+    r"\bStop-Process\b[\s\S]{0,300}-Id\s+(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _protected_runtime_pids() -> set[str]:
+    pids = {str(os.getpid())}
+    try:
+        ppid = os.getppid()
+    except OSError:
+        return pids
+    if ppid > 1:
+        pids.add(str(ppid))
+    return pids
+
+
+def _check_self_pid_kill(command: str) -> str | None:
+    protected = _protected_runtime_pids()
+    for match in _TASKKILL_PID_RE.finditer(command):
+        if match.group(1) in protected:
+            return "blocked pattern: taskkill targeting current agent/host process"
+    for match in _STOP_PROCESS_ID_RE.finditer(command):
+        if match.group(1) in protected:
+            return "blocked pattern: Stop-Process targeting current agent/host process"
+    return None
+
+
 def _check_command_safety(command: str) -> str | None:
     for pattern, message in _DANGEROUS_COMMAND_PATTERNS:
         if pattern.search(command):
             return message
-    return None
+    return _check_self_pid_kill(command)
 
 
 # Options of `git worktree add` that consume the following token as a value.

@@ -84,3 +84,10 @@ rules:
     match_type: command
     pattern: 're:(?i)(^|[\s;&|()])((shutdown|reboot|halt|poweroff)\b|(init|telinit)\s+(0|6)\b)'
     action: deny
+
+  - id: shell_host_runtime_process_kill
+    description: "按进程名批量终止 python/node，或 Get-Process 管道 Stop-Process，可能杀死智能体自身进程"
+    tools: [bash, mcp_exec_command, create_terminal]
+    match_type: command
+    pattern: 're:(?i)(Get-Process[\s\S]*?Stop-Process|\bStop-Process\b[\s\S]*-Name\s+\S*(python|node|jiuwenswarm|jiuwenclaw)|\btaskkill\b[\s\S]*/+[iI][mM]\b[\s\S]*\b(python(?:\.exe)?|node(?:\.exe)?|jiuwenswarm|jiuwenclaw)\b|\b(pkill|killall)\b[^\n\r;|&]*\bpython(?:\d*)\b)'
+    action: deny
