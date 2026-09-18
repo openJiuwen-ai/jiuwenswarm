@@ -441,8 +441,8 @@ class _InlineScanner:
     ) -> None:
         if not rendered:
             return
-        # CommonMark flanking rules can leave a balanced, paired `**`/`__`/`~~`
-        # as literal text inside a text token (e.g. `每周**≤2次**。`, where the
+        # Flanking rules can leave a balanced, paired `**`/`__`/`~~` as
+        # literal text inside a text token (e.g. `x**≤**y`, where the Latin
         # opener is followed by the punctuation `≤`). markdown-it has already
         # decided these are literal, so consuming them as text preserves the
         # lossless invariant. Only genuinely unbalanced markers (odd count,
