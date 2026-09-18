@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -282,8 +283,16 @@ def test_web_ui_banner_prints_before_backends_ready(caplog: pytest.LogCaptureFix
                 return None
             raise OSError("refused")
 
+    # patch("...start_services.time.sleep") 替换的是共享 time 模块的 sleep，
+    # 进程内所有线程都会命中：其它 daemon 线程（history-writer 等）的 sleep
+    # 不能触发副作用，否则后端端口提前就绪，首轮 probe 即 all ready，
+    # 只打出「已启动」banner，「启动中」场景（CR-001）丢失。
+    waiter = threading.current_thread()
+
     def _sleep(_seconds: float) -> None:
         # After the first wait tick, backends come up (Web UI already bannered).
+        if threading.current_thread() is not waiter:
+            return
         open_set.update({18092, 19000, 19001, 19002})
 
     with patch("socket.socket", side_effect=lambda *a, **k: _Sock()):

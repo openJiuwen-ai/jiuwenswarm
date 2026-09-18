@@ -1176,6 +1176,13 @@ def append_history_record(
         except queue.Full:
             _write_item(sid, item, sessions_root_s)
 
+    # 工具调用成败统计：tool_call/tool_result 事件后防抖触发后台增量扫描（不阻塞主流程）
+    if et in ("chat.tool_call", "chat.tool_result"):
+        try:
+            schedule_tool_stats_update(sid, sessions_root_s)
+        except Exception as exc:
+            logger.info("tool_stats 调度失败: %s", exc)
+
     # 更新会话元数据
     try:
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -1287,3 +1294,203 @@ def truncate_history_records(*, session_id: str, cut_index: int) -> dict[str, An
             "remaining_records": len(truncated),
             "removed_records": total - len(truncated),
         }
+
+
+# ---------- 工具调用成败统计（内联自原 tool_success_stats 模块） ----------
+#
+# 原理：
+# - history(JSONL) 已记录 chat.tool_call / chat.tool_result 事件流；
+# - 事件落盘路径上防抖 5s，后台 daemon 线程增量扫描，按 tool_call_id 配对，
+#   依据结果字符串头部的 success=True/False（或 status=="error"）判定成败；
+# - 增量扫描：会话目录 tool_stats.json 持久化已读字节偏移（offset），不重复统计；
+#   文件被截断/回退（rewind/fork）时 size < offset 则整体重扫。
+# - 调度只刷新 deadline（微秒级），不阻塞 agent 主流程。
+
+_TOOL_STATS_FILENAME = "tool_stats.json"
+_TOOL_STATS_DEBOUNCE_SECONDS = 5.0
+_TOOL_STATS_POLL_INTERVAL = 0.5
+_TOOL_STATS_OPEN_CALLS_MAX = 4096  # 未闭合 tool_call 的携带上限（防悬空调用撑爆状态文件）
+
+_TOOL_STATS_PENDING: dict[str, tuple[float, str | None]] = {}
+_TOOL_STATS_PENDING_LOCK = threading.Lock()
+_TOOL_STATS_SCHEDULER_STARTED = False
+
+
+def _tool_stats_empty() -> dict[str, Any]:
+    return {"total": 0, "success": 0, "failed": 0, "pending": 0, "by_tool": {}, "updated_at": 0.0}
+
+
+def _tool_stats_load_state(state_path: Path) -> dict[str, Any]:
+    try:
+        with state_path.open(encoding="utf-8") as fh:
+            state = json.load(fh)
+        if isinstance(state, dict) and isinstance(state.get("stats"), dict):
+            state.setdefault("offset", 0)
+            state.setdefault("open_calls", {})
+            return state
+    except FileNotFoundError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("tool_stats 状态读取失败，重置统计: %s", exc)
+    return {"offset": 0, "open_calls": {}, "stats": _tool_stats_empty()}
+
+
+def _tool_stats_write_state(state_path: Path, state: dict[str, Any]) -> None:
+    tmp = state_path.parent / (state_path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(state, fh, ensure_ascii=False)
+    os.replace(tmp, state_path)
+
+
+def _tool_stats_is_failed(result: Any, status: Any) -> bool:
+    if status == "error":
+        return True
+    text = result if isinstance(result, str) else (
+        json.dumps(result, ensure_ascii=False) if result is not None else "")
+    return text[:30].find("success=False") >= 0
+
+
+def _tool_stats_finalize(stats: dict[str, Any], by_tool: dict[str, Any]) -> None:
+    """补充派生指标：整体成功率 + 失败率最高的工具（便于针对性优化）。
+
+    口径：completed = success + failed（已出结果的调用）；pending（无 result 的
+    悬空调用，如中断/取消）不计入成功率分母，单独列出；worst_tool 取失败次数
+    最多者，并列时失败率更高者。
+    """
+    success = stats.get("success", 0)
+    failed = stats.get("failed", 0)
+    completed = success + failed
+    stats["completed_total"] = completed
+    stats["success_rate"] = round(success / completed, 4) if completed else None
+    for bucket in by_tool.values():
+        runs = bucket.get("success", 0) + bucket.get("failed", 0)
+        bucket["success_rate"] = round(bucket.get("success", 0) / runs, 4) if runs else None
+    worst_name, worst = None, None
+    for name, bucket in by_tool.items():
+        runs = bucket.get("success", 0) + bucket.get("failed", 0)
+        f = bucket.get("failed", 0)
+        if runs <= 0 or f <= 0:
+            continue
+        rate = f / runs
+        if (worst is None or f > worst["failed"]  # pylint: disable=too-many-boolean-expressions
+                or (f == worst["failed"] and rate > worst["failure_rate"])):
+            worst_name, worst = name, {"failed": f, "total": runs, "failure_rate": round(rate, 4)}
+    stats["worst_tool"] = {**worst, "name": worst_name} if worst else None
+
+
+def _tool_stats_scan_once(session_id: str, sessions_root: str | None) -> None:
+    """增量扫描一个会话的 history，更新 tool_stats.json（后台线程调用）。"""
+    history_path = get_read_history_path(session_id, sessions_root=sessions_root)
+    if not history_path.exists():
+        return
+    state_path = history_path.parent / _TOOL_STATS_FILENAME
+    state = _tool_stats_load_state(state_path)
+    offset = int(state.get("offset", 0))
+    open_calls: dict[str, str] = dict(state.get("open_calls") or {})
+    stats = state["stats"]
+    by_tool: dict[str, Any] = stats.get("by_tool") or {}
+
+    # 持 _FILE_LOCK 读取（含 stat 判断）：避免并发批量写刷到一半（文件尾为半行）
+    # 时越过行边界，导致该行事件统计永久丢失；且 stat 与读取在同一锁内，杜绝
+    # truncate/重写在二者之间插入致 offset 指向新文件中部的 TOCTOU。
+    # （tool_stats.json 自身走 tmp+os.replace 原子写，无需锁）
+    with _FILE_LOCK:
+        if history_path.stat().st_size < offset:
+            # 文件被截断/回退（rewind/fork），整体重扫
+            offset = 0
+            open_calls = {}
+            stats = _tool_stats_empty()
+            by_tool = stats["by_tool"]
+        with history_path.open("r", encoding="utf-8") as fh:
+            fh.seek(offset)
+            new_data = fh.read()
+            new_offset = fh.tell()
+
+    for line in new_data.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(rec, dict):
+            continue
+        et = rec.get("event_type")
+        if et == "chat.tool_call":
+            tc = rec.get("tool_call") or {}
+            tcid = _extract_tool_call_id(rec)
+            if tcid:
+                open_calls[str(tcid)] = str(tc.get("name") or "unknown")
+                if len(open_calls) > _TOOL_STATS_OPEN_CALLS_MAX:
+                    open_calls.clear()
+        elif et == "chat.tool_result":
+            tcid = _extract_tool_call_id(rec)
+            if not tcid:
+                continue
+            name = open_calls.pop(str(tcid), None)
+            if name is None and not rec.get("result"):
+                # 孤儿空 result（如 ask_user 先行空结果，tool_call 尚未到达）：
+                # 跳过避免一次调用计 2 次（与 session_ops_service 孤儿语义对齐）
+                continue
+            name = name or str(rec.get("tool_name") or "unknown")
+            stats["total"] += 1
+            if _tool_stats_is_failed(rec.get("result"), rec.get("status")):
+                stats["failed"] += 1
+                bucket = by_tool.setdefault(name, {"success": 0, "failed": 0})
+                bucket["failed"] += 1
+            else:
+                stats["success"] += 1
+                bucket = by_tool.setdefault(name, {"success": 0, "failed": 0})
+                bucket["success"] += 1
+
+    stats["pending"] = len(open_calls)
+    stats["updated_at"] = time.time()
+    stats["by_tool"] = by_tool
+    _tool_stats_finalize(stats, by_tool)
+
+    _tool_stats_write_state(state_path, {
+        "session_id": session_id,
+        "offset": new_offset,
+        "open_calls": open_calls,
+        "stats": stats,
+    })
+
+
+def _tool_stats_ensure_scheduler_started() -> None:
+    global _TOOL_STATS_SCHEDULER_STARTED
+    with _TOOL_STATS_PENDING_LOCK:
+        if _TOOL_STATS_SCHEDULER_STARTED:
+            return
+
+        def _worker() -> None:
+            while True:
+                time.sleep(_TOOL_STATS_POLL_INTERVAL)
+                now = time.monotonic()
+                with _TOOL_STATS_PENDING_LOCK:
+                    due = [(sid, root) for sid, (deadline, root) in _TOOL_STATS_PENDING.items()
+                           if now >= deadline]
+                    for sid, _ in due:
+                        _TOOL_STATS_PENDING.pop(sid, None)
+                for sid, root in due:
+                    try:
+                        _tool_stats_scan_once(sid, root)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("tool_stats 扫描失败 session_id=%s: %s", sid, exc)
+
+        t = threading.Thread(target=_worker, name="tool-stats-scanner", daemon=True)
+        t.start()
+        _TOOL_STATS_SCHEDULER_STARTED = True
+
+
+def schedule_tool_stats_update(session_id: str, sessions_root: str | None = None) -> None:
+    """tool_call/tool_result 事件落盘后调用：防抖 5s 后后台线程增量扫描。
+
+    重复调用只刷新 deadline，同批事件只统计一次。
+    """
+    sid = (session_id or "").strip()
+    if not sid:
+        return
+    _tool_stats_ensure_scheduler_started()
+    with _TOOL_STATS_PENDING_LOCK:
+        _TOOL_STATS_PENDING[sid] = (time.monotonic() + _TOOL_STATS_DEBOUNCE_SECONDS, sessions_root)

@@ -153,7 +153,7 @@ link_mtls_worker() (
         connect_host=$(link_mtls_resolve_host "$service") || return 1
     fi
     settings=$(link_mtls_settings_json) || return 1
-    link_mtls_require_serialized_database_settings "$settings" || return 1
+    [[ "$action" == imports ]] || link_mtls_require_serialized_database_settings "$settings" || return 1
     {
         printf '%s\n' "$settings"
         printf '\n%s' "$existing"

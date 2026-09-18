@@ -37,6 +37,8 @@ try:
 except ImportError:
     pass
 
+from jiuwenswarm.edition import is_enterprise
+
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
 
 
@@ -140,6 +142,14 @@ def build_mcp_server_config(
         payload["server_id"] = explicit_server_id
 
     if transport == "stdio":
+        # 个人版可用本地 stdio（mcp.servers / mcp.server）；企业版仅远程模板。
+        if is_enterprise():
+            logger.warning(
+                "enterprise edition rejects local stdio MCP server %r; "
+                "use remote MCP template from management console",
+                name,
+            )
+            return None
         command = str(entry.get("command", "")).strip()
         if not command:
             return None
@@ -583,9 +593,14 @@ def _validate_request_scoped_remote_mcp(tool_name: str, cfg: dict) -> None:
 def create_mcp_tool(config_str: str) -> McpServerConfig:
     """从 JSON 字符串解析并构造 ``McpServerConfig``。
 
-    用户连接器支持 stdio（node/python/npx/uvx 白名单）以及远程
-    sse / streamable-http / playwright / openapi（方案 §5.2 / §10.1）。
+    个人版用户连接器支持本地 stdio（node/python/npx/uvx 白名单，供
+    ``mcp.server`` / 请求级连接器）以及远程 sse / streamable-http /
+    playwright / openapi（方案 §5.2 / §10.1）。
+    企业版禁止用户可配本地 stdio，仅允许远程类型（本地 /mcp 与
+    ``mcp.server.*`` 管理面另有入口拦截）。
     远程鉴权经 ``_resolve_remote_mcp_auth`` 写入 SDK ``auth_headers``。
+    OfficeClaw Relay 自带 bundle 走 ``validate_office_claw_mcp_config``，
+    不经过本入口的 stdio 分支。
     """
     try:
         config = json.loads(config_str)
@@ -683,8 +698,27 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
             params=params,
         )
 
+    # 仅缺省 type / 显式 stdio 才走本地进程；未知 type 单独报错，避免企业版误报成 stdio。
+    if client_type != "stdio":
+        if is_enterprise():
+            raise ValueError(
+                f"工具 '{tool_name}' 不支持 type={tool_config.get('type')!r}；"
+                "企业版仅支持 sse / streamable-http / playwright / openapi"
+            )
+        raise ValueError(
+            f"工具 '{tool_name}' 不支持 type={tool_config.get('type')!r}；"
+            "请使用 sse / streamable-http / playwright / openapi / stdio"
+        )
+
     if not isinstance(args, list):
         raise ValueError(f"工具 '{tool_name}' 的 args 必须是列表类型")
+
+    if is_enterprise():
+        raise ValueError(
+            f"工具 '{tool_name}' 不支持本地 stdio；"
+            "企业版仅允许远程 MCP（sse / streamable-http / playwright / openapi），"
+            "请通过管理端模板下发"
+        )
 
     _check_dangerous_args(tool_name, args)
 

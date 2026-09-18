@@ -1,6 +1,6 @@
 # Gateway 企业 Web：session/chat 接口 WS → HTTP/SSE 协议转换说明
 
-> **目标**：将企业版浏览器 / BFF 调用 Gateway 的方式，由原 WebSocket（A1，`/ws`）并行扩展为 **HTTP + 标准 SSE（A2，**`/api/v1`**）**，并保证与现有 RPC 语义完全对齐。  
+> **目标**：将企业版浏览器 / 前端 调用 Gateway 的方式，由原 WebSocket（A1，`/ws`）并行扩展为 **HTTP + 标准 SSE（A2，**`/api/v1`**）**，并保证与现有 RPC 语义完全对齐。  
 > **风格**：符合 RESTful 规范；一元响应采用 JSON（`Content-Type: application/json`）；流式响应采用 SSE（`Content-Type: text/event-stream`）。  
 > **范围**：`session.create` / `chat.send` / `chat.interrupt` / `chat.user_answer` 会话与对话接口（含追问与权限确认分支）。  
 > **对应实现**：`jiuwenswarm/gateway/channel_manager/web/web_http_app.py`、`web_http_dispatch.py`、`outbound.py`、`web_http_server.py`、`web_ws_transport.py`；Handler / MessageHandler 与 A1 共用。  
@@ -9,8 +9,8 @@
 > **A2A 专项接口**：13 个出站 Web HTTP 路由、企业版实际放行范围以及 Manager Config Receiver 的 6 个写操作，统一见 [Gateway A2A HTTP 接口文档](Gateway%20A2A接口文档.md)。本文保留 Web HTTP 通用信封、身份头和状态码约定，不重复维护 A2A DTO。
 
 ```text
-【WS / A1】浏览器/BFF ── JSON 帧 ──► Gateway /ws        ──► Handler / MH ──► Agent
-【HTTP/A2】浏览器/BFF ── REST/SSE ──► Gateway /api/v1   ──► 同一套 Handler / MH ──► Agent
+【WS / A1】浏览器/前端 ── JSON 帧 ──► Gateway /ws        ──► Handler / MH ──► Agent
+【HTTP/A2】浏览器/前端 ── REST/SSE ──► Gateway /api/v1   ──► 同一套 Handler / MH ──► Agent
 ```
 
 ---
@@ -69,7 +69,7 @@ WebSocket 侧通过单一连接 + `method` 字段路由到不同 Handler。HTTP 
 - `POST /api/v1/chat/send` → 同 `chat.completions`
 - `POST /api/v1/chat/{session_id}/actions/answer` → 同 `user_answer`
 
-**其它 BFF 常需接口（同进程已落地，完整表见** `GET /api/v1/catalog`**）：**  
+**其它前端常需接口（同进程已落地，完整表见** `GET /api/v1/catalog`**）：**  
 `GET /api/v1/health`、`GET /api/v1/connection/status`、`GET/PATCH/DELETE /api/v1/sessions…`、`GET …/history`、config / models / locale / cron / permissions / skills / harness、企业兼容 `GET /api/sessions*`、`/file-api/*`。
 
 ---
@@ -98,6 +98,8 @@ http://{host}:{port}/api/v1
 
 所有本文件接口路径均以 `/api/v1` 为前缀；版本号通过 URL 路径承载（`v1`）。
 
+> **入口边界**：本文件只描述 **Web HTTP**（浏览器 / 前端，默认 19002）。Manager 配置下发走 **Config Receiver**（默认 **8775**，信封 `{ code, message, data }`），见 [Gateway对接管理面接口文档.md](../../jiuwenswarm/gateway/docs/Gateway对接管理面接口文档.md)；二者端口、身份与返回格式均不同，不可混用。
+
 ### 1.2 通用请求头
 
 
@@ -105,7 +107,7 @@ http://{host}:{port}/api/v1
 | ----------------- | ------ | -------------------------------------------------------------------------------------------------------------------- |
 | `Content-Type`    | 是（写操作） | `application/json`（建议 `charset=utf-8`）                                                                               |
 | `Accept`          | 流式推荐   | `text/event-stream`：`chat.send` 走 SSE；亦可仅靠 body `enable_streaming`（默认 `true`）                                        |
-| `Authorization`   | 否      | 现网前端常带 `Bearer <token>`；**Gateway Web HTTP 应用层无 auth middleware，不校验 Bearer**（鉴权通常由 Ingress / 壳层 / BFF 完成；企业历史分支同样如此） |
+| `Authorization`   | 否      | 现网前端常带 `Bearer <token>`；**Gateway Web HTTP 应用层无 auth middleware，不校验 Bearer**（鉴权通常由 Ingress / 壳层 / 反向代理 完成；企业历史分支同样如此） |
 | `X-Request-Id`    | 否      | 客户端追踪 id；缺省服务端 `uuid4().hex`；回显于响应头、信封 `request_id`、SSE `id:`                                                        |
 | `X-Session-Id`    | 视接口    | 可补会话绑定；`session.create` **会剥离** body 中的 `session_id`，权威 ID 由服务端返回                                                    |
 | `X-Channel-Id`    | 否      | 渠道标识，默认 `web`                                                                                                        |
@@ -244,7 +246,7 @@ id: {request_id}\nevent: {event}\ndata: {json.dumps(payload, ensure_ascii=False)
 | 项            | 代码行为                                       |
 | ------------ | ------------------------------------------ |
 | Content-Type | **仅** `text/event-stream`                  |
-| NDJSON       | **未实现** `application/x-ndjson`；BFF 只需一种解析器 |
+| NDJSON       | **未实现** `application/x-ndjson`；客户端只需一种解析器 |
 | 编码           | UTF-8；JSON 可含 Unicode                      |
 | 多事件同包        | 允许；按空行切分事件块                                |
 | `data` 多行合并  | 当前按单行输出；解析器仍建议按 SSE 规范合并多行 `data:`         |
@@ -403,7 +405,7 @@ X-Web-RPC-Method: session.create
 }
 ```
 
-> `data` 内具体键以 Agent 返回的 `payload` 为准；上表为典型字段。BFF **必须以** `data.session_id` **作为后续对话的会话主键**。
+> `data` 内具体键以 Agent 返回的 `payload` 为准；上表为典型字段。客户端 **必须以** `data.session_id` **作为后续对话的会话主键**。
 
 **失败响应示例 —** `400` **/** `409` **等**
 
@@ -764,7 +766,7 @@ X-Web-RPC-Method: chat.interrupt
 | 场景                                      | 代码行为                                                       |
 | --------------------------------------- | ---------------------------------------------------------- |
 | 原 SSE 是否再收 `interrupt_result` / `final` | **不保证**；请以 interrupt **一元响应**收尾 UI                         |
-| BFF 主动关闭 `chat.send` SSE                | **仅停止推送**；**不**自动 cancel Agent                             |
+| 客户端主动关闭 `chat.send` SSE                | **仅停止推送**；**不**自动 cancel Agent                             |
 | 网络异常断 SSE                               | 默认任务**继续**                                                 |
 | 可靠停止                                    | **必须**调用本接口                                                |
 | 按 `request_id` 精确中止单任务                  | HTTP **无**该参数；按 **session**                                |
@@ -972,7 +974,7 @@ data: {"session_id":"web_a1b2c3d4e5f6","content":"…","event_type":"chat.final"
 }
 ```
 
-该次调用建立（或顶替为）**新的 SSE**；同 session 上旧流会被 `new_chat_send` 取消。BFF 应按**新 SSE**消费后续事件。
+该次调用建立（或顶替为）**新的 SSE**；同 session 上旧流会被 `new_chat_send` 取消。客户端应按**新 SSE**消费后续事件。
 
 ### 5.6 推荐时序
 
@@ -1006,7 +1008,7 @@ curl -sS -X POST "http://127.0.0.1:19002/api/v1/chat/web_a1b2c3d4e5f6/actions/us
 
 ## 6. 定时任务（Cron）
 
-对应 A1 `method: "cron.job.*"`。企业版前端（或客户自研 BFF）通过 REST 管理定时任务。**本章只说明后端提供的能力与边界**，不涉及官方前端实现。
+对应 A1 `method: "cron.job.*"`。企业版前端通过 REST 管理定时任务。**本章只说明后端提供的能力与边界**，不涉及官方前端实现。
 
 ### 6.1 与核心接口的区别：结果不走 SSE push
 
@@ -1234,7 +1236,7 @@ curl -sS "http://127.0.0.1:19002/api/v1/sessions/{last_session_id}/history" \
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as 客户端(自研BFF/前端)
+    participant C as 客户端(前端)
     participant GW as Gateway /api/v1
     participant Sch as 调度器(后端)
     participant AG as Agent
@@ -1369,7 +1371,7 @@ sequenceDiagram
 
 ### A.Q2 SSE vs NDJSON
 
-**【代码】** 仅 `text/event-stream`；空行分隔；`id`/`event`/`data`；`data`=payload；心跳注释。BFF 只支持这一种。样例 **§1.5 / §3.4**。
+**【代码】** 仅 `text/event-stream`；空行分隔；`id`/`event`/`data`；`data`=payload；心跳注释。客户端只支持这一种。样例 **§1.5 / §3.4**。
 
 ### A.Q3 流生命周期
 
@@ -1413,7 +1415,7 @@ sequenceDiagram
 
 ### A.Q13 session.create
 
-**【代码】** ID 由 Agent 返回，非 BFF 权威传入。TTL **【未定义】**。**§2**。
+**【代码】** ID 由 Agent 返回，非客户端权威传入。TTL **【未定义】**。**§2**。
 
 ### A.Q14 鉴权
 
@@ -1459,42 +1461,42 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-  participant BFF as BFF/WebHttpClient
+  participant Client as 前端/WebHttpClient
   participant GW as Gateway /api/v1
   participant H as Handlers
   participant MH as MessageHandler
   participant AG as Agent
 
-  BFF->>GW: POST /sessions
+  Client->>GW: POST /sessions
   GW->>MH: session.create
   MH->>AG: send_request
-  AG-->>BFF: 201 data.session_id
+  AG-->>Client: 201 data.session_id
 
-  BFF->>GW: POST /chat/completions (SSE)
+  Client->>GW: POST /chat/completions (SSE)
   GW->>H: _chat_send accepted
-  GW-->>BFF: event web.response
+  GW-->>Client: event web.response
   GW->>MH: stream forward
-  AG-->>BFF: chat.delta … chat.final
+  AG-->>Client: chat.delta … chat.final
 
   opt ask_user → user_answer
-    AG-->>BFF: chat.ask_user_question
-    BFF->>GW: POST .../user_answer
-    GW-->>BFF: unary accepted
-    AG-->>BFF: (same SSE) delta…final
+    AG-->>Client: chat.ask_user_question
+    Client->>GW: POST .../user_answer
+    GW-->>Client: unary accepted
+    AG-->>Client: (same SSE) delta…final
   end
 
   opt permission_interrupt
-    AG-->>BFF: ask_user_question source=permission_interrupt
-    BFF->>GW: POST /chat/completions query="" + answers
-    AG-->>BFF: (new SSE) …
+    AG-->>Client: ask_user_question source=permission_interrupt
+    Client->>GW: POST /chat/completions query="" + answers
+    AG-->>Client: (new SSE) …
   end
 
-  BFF->>GW: POST .../interrupt
-  GW-->>BFF: unary + event_type=chat.interrupt_result
+  Client->>GW: POST .../interrupt
+  GW-->>Client: unary + event_type=chat.interrupt_result
 ```
 
 
 
 ---
 
-*本文写法对齐《JiuwenSwarm RESTful + SSE 接口设计文档》的原则/约定/完整样例结构；协议事实以 Gateway* `dev-stable` *现网实现为准。产品排期、Ingress 超时、Token claims、限流等【未定义】项请书面确认后再冻结 BFF 方案。*
+*本文写法对齐《JiuwenSwarm RESTful + SSE 接口设计文档》的原则/约定/完整样例结构；协议事实以 Gateway* `dev-stable` *现网实现为准。产品排期、Ingress 超时、Token claims、限流等【未定义】项请书面确认后再冻结接入方案。*

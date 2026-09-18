@@ -5410,13 +5410,13 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any],
     ) -> bool:
         """Build DeepAgent video config from service config/env mapping."""
-        apply_video_model_config_from_yaml(config_base)
         if not complete_multimodal_model_configured(config_base, "video"):
             logger.info(
                 "[JiuWenSwarmDeepAdapter] skip video_understanding: models.video requires "
                 "api_key, api_base, and model_name in config.yaml"
             )
             return False
+        apply_video_model_config_from_yaml(config_base)
         video_api_key = str(read_env("VIDEO_API_KEY", "")).strip()
         video_api_base = str(read_env("VIDEO_API_BASE", "")).strip()
         video_model_name = str(read_env("VIDEO_MODEL_NAME", "")).strip()
@@ -10290,9 +10290,15 @@ class JiuWenSwarmDeepAdapter:
         lazily by :meth:`ensure_instance`, which the non-chat RPCs that need a
         DeepAgent handle call first.
 
+        A True skip still runs checkpoint setup, env overlay, dotenv, and
+        enterprise config/model merge so the config snapshot
+        (``_config_base_cache``, agent/project/workspace overrides) is
+        populated. It returns before multimodal refresh, skill prebuilt
+        sync, prompt layout, and DeepAgent construction. Do not add more
+        work in front of the skip; put it on the ``ensure_instance`` path.
+
         Returns:
-            True when the caller should return after the cheap config-cache
-            section, leaving ``self._instance`` unset.
+            True when ``create_instance`` should leave ``self._instance`` unset.
         """
         return not self._is_session_scoped_adapter and not self._root_instance_requested
 
@@ -10415,12 +10421,26 @@ class JiuWenSwarmDeepAdapter:
             try:
                 self._config_base_cache = config_base.copy()
                 self._startup_config_base = config_base.copy()
-                self._refresh_multimodal_configs(config_base)
                 config = config_base.get("react", {}).copy()
                 self._config_cache = config.copy()
                 self._agent_name = self._instance_overrides.get(
                     "agent_name", config.get("agent_name", "main_agent")
                 )
+                self._project_dir = self._instance_overrides.get(
+                    "project_dir", config.get("project_dir")
+                )
+                # Keep constructor-injected tenant workspace by default.
+                # Apply create_instance(config) workspace_dir before skill
+                # prebuilt sync so skills land where this instance will run.
+                configured_workspace = self._instance_overrides.get("workspace_dir")
+                if configured_workspace is not None:
+                    self._workspace_dir = configured_workspace
+
+                if self._skip_own_instance_build():
+                    await asyncio.sleep(0)
+                    return
+
+                self._refresh_multimodal_configs(config_base)
 
                 if (
                     is_skill_prebuilt_tenant(self._agent_id, self._service_id)
@@ -10474,19 +10494,8 @@ class JiuWenSwarmDeepAdapter:
                             for name in (sync_result.prebuilt_skill_dirs or [])
                             if str(name).strip()
                         }
-                self._project_dir = self._instance_overrides.get(
-                    "project_dir", config.get("project_dir")
-                )
-                # Keep constructor-injected tenant workspace by default.
-                # Only override when request explicitly provides workspace_dir.
-                configured_workspace = self._instance_overrides.get("workspace_dir")
-                if configured_workspace is not None:
-                    self._workspace_dir = configured_workspace
                 self._prompt_attachment_loader = PromptAttachmentLoader(self._prompt_attachment_root())
                 self._prompt_attachment_loader.ensure_layout()
-
-                if self._skip_own_instance_build():
-                    return
 
                 self._log_active_model_on_startup(phase=f"create_instance:{mode}")
                 try:
