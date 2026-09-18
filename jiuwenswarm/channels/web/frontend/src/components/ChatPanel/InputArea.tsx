@@ -177,7 +177,7 @@ type InputAreaSkillItem = {
   enabled?: boolean;
   installed?: boolean;
   tags?: string[];
-  skill_type?: 'skill' | 'swarm_skill' | 'multimodal_skill';
+  skill_type?: 'skill' | 'skillpack' | 'swarm_skill' | 'multimodal_skill';
 };
 
 type SlashCommandMeta = {
@@ -249,7 +249,10 @@ function getComposerSuggestionItems(
       }));
     const skills = slashSkills
       .filter((skill) =>
-        isTeamMode ? skill.skill_type === 'swarm_skill' : !skill.skill_type || skill.skill_type === 'skill',
+        // 单 agent：普通 skill + skillpack（技能包可当普通技能选用）；集群：swarm_skill。
+        isTeamMode
+          ? skill.skill_type === 'swarm_skill'
+          : !skill.skill_type || skill.skill_type === 'skill' || skill.skill_type === 'skillpack',
       )
       .filter((skill) => {
         if (!query) return true;
