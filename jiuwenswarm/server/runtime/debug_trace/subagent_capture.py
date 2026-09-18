@@ -83,6 +83,7 @@ async def invoke_subagent_with_trace(
     inputs: dict,
     session: Any,
     source_label: str,
+    session_id: str | None = None,
 ) -> dict:
     """Run *subagent*, capturing its stream into the active run's debug dump.
 
@@ -91,6 +92,8 @@ async def invoke_subagent_with_trace(
         inputs: The inputs dict (``{"query": ..., "conversation_id": ...}``).
         session: The parent session, forwarded to the subagent.
         source_label: Dump source tag, e.g. ``subagent:builtin:explore_agent``.
+        session_id: Parent session id used when *session* has no
+            ``get_session_id``. Dest still drives ``stream(session=None)``.
 
     Returns:
         An invoke-style result dict (``{"output": ..., "result_type": ...}``),
@@ -113,6 +116,8 @@ async def invoke_subagent_with_trace(
         # custom AgentTool path inside the DeepAgent's supervisor task, where the
         # per-request ContextVar isn't visible. Fall back to a session lookup.
         sid = session.get_session_id() if hasattr(session, "get_session_id") else None
+        if not sid:
+            sid = session_id
         if sid:
             dbg = get_debug_trace_logger_for_session(sid)
     if dbg is None or not dbg.captures_subagent_flow():

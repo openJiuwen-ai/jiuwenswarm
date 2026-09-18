@@ -874,6 +874,41 @@ class TestSubagentCapture:
         lg.end_run(status="ok")
         lg.flush()
 
+    def test_invoke_subagent_with_trace_uses_session_id_fallback(self, tmp_path):
+        from jiuwenswarm.server.runtime.debug_trace import invoke_subagent_with_trace
+        from jiuwenswarm.server.runtime.debug_trace.context import (
+            register_debug_trace_logger,
+            unregister_debug_trace_logger,
+        )
+
+        lg = _logger(tmp_path, session_id="sid-parent")
+        lg.start_run()
+        register_debug_trace_logger("sid-parent", lg)
+        try:
+            captured: dict[str, Any] = {}
+
+            class FakeSub:
+                async def invoke(self, inputs, session=None):  # pragma: no cover
+                    return {"output": "x"}
+
+                async def stream(self, inputs, session=None):
+                    captured["session"] = session
+                    yield _chunk("llm_output", {"content": "hi"})
+
+            asyncio.run(invoke_subagent_with_trace(
+                FakeSub(),
+                inputs={"query": "q"},
+                session=None,
+                session_id="sid-parent",
+                source_label="subagent:builtin:explore_agent",
+            ))
+        finally:
+            unregister_debug_trace_logger("sid-parent")
+            lg.end_run(status="ok")
+            lg.flush()
+        assert captured.get("session") is None
+        assert "subagent start" in _read(lg)
+
     def test_invoke_subagent_with_trace_flag_off_falls_back_to_invoke(self, tmp_path):
         from jiuwenswarm.server.runtime.debug_trace import (
             invoke_subagent_with_trace,
@@ -946,6 +981,110 @@ class TestSubagentCapture:
         apply_task_tool_debug_patch()
         apply_task_tool_debug_patch()  # second call must be a no-op
         assert getattr(TaskTool, "debug_trace_patch_applied", False) is True
+        mode = getattr(TaskTool, "debug_trace_patch_mode", None)
+        assert mode in {"dispatch_only", "unsupported_sdk"}
+
+    def test_task_tool_source_label_prefers_card_name(self):
+        from types import SimpleNamespace
+
+        from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+            _subagent_source_label,
+        )
+
+        named = SimpleNamespace(card=SimpleNamespace(name="explore_agent", id="card-id"))
+        assert _subagent_source_label(named) == "subagent:builtin:explore_agent"
+        id_only = SimpleNamespace(card=SimpleNamespace(id="browser_agent"))
+        assert _subagent_source_label(id_only) == "subagent:builtin:browser_agent"
+        assert _subagent_source_label(SimpleNamespace()) == "subagent:builtin:unknown"
+
+    def test_task_tool_patch_forwards_sdk_session(self, monkeypatch):
+        from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+            _wrap_invoke_subagent,
+        )
+
+        forwarded: dict[str, Any] = {}
+        captured: dict[str, Any] = {}
+
+        async def original_dispatch(
+            self, subagent, inputs, *, parent_session_id, session=None,
+        ):
+            forwarded["sdk"] = {
+                "parent_session_id": parent_session_id,
+                "session": session,
+                "inputs": inputs,
+            }
+            return "from-sdk"
+
+        async def fake_capture(
+            subagent, *, inputs, session, source_label, session_id=None,
+        ):
+            captured["trace"] = {
+                "session": session,
+                "session_id": session_id,
+                "source_label": source_label,
+                "inputs": inputs,
+            }
+            return {"output": "from-trace"}
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.debug_trace.invoke_subagent_with_trace",
+            fake_capture,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.debug_trace.get_debug_trace_logger",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.debug_trace.context.get_debug_trace_logger_for_session",
+            lambda _sid: None,
+        )
+
+        parent = SimpleNamespace(name="parent-session")
+        wrapped = _wrap_invoke_subagent(original_dispatch)
+        result = asyncio.run(wrapped(
+            None,
+            SimpleNamespace(card=SimpleNamespace(name="explore_agent")),
+            {"query": "q"},
+            parent_session_id="sid-parent",
+            session=parent,
+        ))
+        assert result == "from-sdk"
+        assert forwarded["sdk"]["session"] is parent
+        assert forwarded["sdk"]["parent_session_id"] == "sid-parent"
+
+        class _CaptureOn:
+            def captures_subagent_flow(self):
+                return True
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.debug_trace.get_debug_trace_logger",
+            lambda: _CaptureOn(),
+        )
+        result = asyncio.run(wrapped(
+            None,
+            SimpleNamespace(card=SimpleNamespace(name="explore_agent")),
+            {"query": "q"},
+            parent_session_id="sid-parent",
+            session=parent,
+        ))
+        assert result == {"output": "from-trace"}
+        assert captured["trace"]["session"] is parent
+        assert captured["trace"]["session_id"] == "sid-parent"
+        assert captured["trace"]["source_label"] == "subagent:builtin:explore_agent"
+
+    def test_task_tool_patch_marks_unsupported_sdk_without_behavior_change(self):
+        from openjiuwen.harness.tools.subagent.task_tool import TaskTool
+
+        from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+            apply_task_tool_debug_patch,
+        )
+
+        apply_task_tool_debug_patch()
+        mode = getattr(TaskTool, "debug_trace_patch_mode", None)
+        if mode != "unsupported_sdk":
+            pytest.skip("current SDK already exposes _invoke_subagent")
+        assert TaskTool.invoke.__module__ == "openjiuwen.harness.tools.subagent.task_tool"
+        assert getattr(TaskTool, "_invoke_subagent", None) is None
 
     def test_ensure_observability_rail_attaches_when_obs_up(self, monkeypatch):
         # When observability is initialized, _ensure_observability_rail must
