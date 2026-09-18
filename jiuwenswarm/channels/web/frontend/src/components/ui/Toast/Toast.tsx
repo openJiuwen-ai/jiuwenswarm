@@ -13,7 +13,7 @@ const VARIANT_ICON: Partial<Record<ToastVariant, LucideIcon>> = {
 };
 
 function ToastItem({ record }: { record: ToastRecord }) {
-  const { key, content, actions, durationMs, variant, icon, closing } = record;
+  const { key, content, actions, durationMs, variant, icon, wide, closing } = record;
   useEffect(() => {
     if (durationMs <= 0) return undefined;
     const timerId = window.setTimeout(() => toast.close(key), durationMs);
@@ -23,7 +23,7 @@ function ToastItem({ record }: { record: ToastRecord }) {
   const hasActions = actions.length > 0;
   return (
     <div
-      className={`ui-toast${variant === 'default' ? '' : ` ui-toast--${variant}`}${hasActions ? ' ui-toast--with-actions' : ''}${closing ? ' ui-toast--closing' : ''}`}
+      className={`ui-toast${variant === 'default' ? '' : ` ui-toast--${variant}`}${hasActions ? ' ui-toast--with-actions' : ''}${wide ? ' ui-toast--wide' : ''}${closing ? ' ui-toast--closing' : ''}`}
       role="status"
       data-testid="ui-toast"
       data-variant={key}
