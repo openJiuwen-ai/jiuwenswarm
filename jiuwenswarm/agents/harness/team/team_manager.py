@@ -125,6 +125,35 @@ def _safe_payload_preview(payload: Any) -> str:
 # and init / shutdown accordingly on each team request.
 _observability_active: bool = False
 
+# The last ObservabilityConfig the team runtime applied; drift against it
+# (not the provider's live config) triggers the provider rebuild above.
+_team_last_applied_config: Any | None = None
+
+
+def _apply_team_observability_config(obs_cfg: Any) -> bool:
+    """Team-side counterpart of ``_apply_agent_observability_config``.
+
+    Rationale and the shared-provider / OTel-global caveats are documented
+    there; only the differences live here. Team sync has no lock of its own —
+    it assumes single-threaded invocation from the request-preparation path,
+    and the SDK demand lock bounds concurrent misuse to one redundant rebuild.
+    """
+    global _observability_active, _team_last_applied_config
+    if _observability_active:
+        if _team_last_applied_config is not None and _team_last_applied_config == obs_cfg:
+            return True
+        logger.info(
+            "[TeamObservability] config changed, rebuilding provider: "
+            "exporter=%s endpoint=%s",
+            obs_cfg.exporter,
+            obs_cfg.endpoint,
+        )
+        team_observability.release_observability()
+        _observability_active = False
+    provider_existed = team_observability.acquire_observability(obs_cfg)
+    _team_last_applied_config = obs_cfg
+    return provider_existed
+
 
 def sync_team_observability() -> None:
     """Synchronize observability state with current config.
@@ -144,7 +173,7 @@ def sync_team_observability() -> None:
 
     Evolution also requests the provider when the explicit switch is disabled.
     """
-    global _observability_active
+    global _observability_active, _team_last_applied_config
     config = get_config()
     cfg = config.get("team_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
@@ -181,8 +210,8 @@ def sync_team_observability() -> None:
             service_name="jiuwenswarm",
             traces_dir=traces_dir,
         )
-        provider_existed = team_observability.acquire_observability(obs_cfg)
         was_active = _observability_active
+        provider_existed = _apply_team_observability_config(obs_cfg)
         _observability_active = True
         if not was_active and not provider_existed:
             # Log the resolved config, not the yaml: the two once diverged
@@ -201,6 +230,7 @@ def sync_team_observability() -> None:
                 )
     except Exception as exc:
         _observability_active = False
+        _team_last_applied_config = None
         if evolution_requested:
             raise RuntimeError(
                 "Team evolution observability initialization failed"
@@ -210,7 +240,7 @@ def sync_team_observability() -> None:
 
 def shutdown_team_observability() -> None:
     """Shutdown team observability (called on disable or process exit)."""
-    global _observability_active
+    global _observability_active, _team_last_applied_config
     try:
         if not shutdown_trajectory_runtime(demand="team"):
             logger.warning("[TeamObservability] trajectory runtime did not drain cleanly")
@@ -221,8 +251,11 @@ def shutdown_team_observability() -> None:
     try:
         team_observability.release_observability()
         _observability_active = False
+        _team_last_applied_config = None
         logger.info("[TeamObservability] disabled")
     except Exception as exc:
+        # Clear the fast-path memory so the next sync retries acquire.
+        _team_last_applied_config = None
         logger.warning("[TeamObservability] shutdown failed: %s", exc)
 
 
