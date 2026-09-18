@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "workswarm"
 version = "0.2.5.beta1"
 description = "WorkSwarm"
+readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = { text = "Apache-2.0" }
 classifiers = [
