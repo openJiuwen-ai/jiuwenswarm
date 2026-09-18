@@ -230,6 +230,23 @@ class WebChannel(BaseChannel):
         *,
         routing_target: RoutingTarget | None = None,
     ) -> None:
+        # 长程到点提醒绑定 exec session，常无前端 tab；按 session 路由会丢帧。
+        # 广播给全部 web 客户端，由前端 Toast 消费。
+        payload = msg.payload if isinstance(msg.payload, dict) else {}
+        event_name = ""
+        if isinstance(payload.get("event_type"), str):
+            event_name = payload["event_type"].strip()
+        elif getattr(msg, "event_type", None) is not None:
+            raw = msg.event_type
+            event_name = raw.value if hasattr(raw, "value") else str(raw)
+        if event_name == "long_horizon.stage_due":
+            frame = {
+                **payload,
+                "session_id": getattr(msg, "session_id", None) or payload.get("session_id"),
+                "request_id": getattr(msg, "id", None) or payload.get("request_id"),
+            }
+            await self.broadcast_event("long_horizon.stage_due", frame)
+            return
         await self.ws.send(msg, routing_target=routing_target)
 
     def is_session_busy(self, session_id: str) -> bool:

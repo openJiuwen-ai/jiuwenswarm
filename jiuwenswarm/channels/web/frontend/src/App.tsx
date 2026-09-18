@@ -12,6 +12,7 @@ import { AgentPanel } from './components/AgentPanel/index';
 import { TeamPanel } from './components/TeamPanel';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
+import LongHorizonReminderToasts from './components/LongHorizonReminderToast';
 import { ToolPanel } from './components/ToolPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { ChannelsPanel } from './components/ChannelsPanel';
@@ -48,6 +49,7 @@ import {
   useCronJobSync,
 } from './hooks';
 import { webRequest } from './services/webClient';
+import { OPEN_SESSION_EVENT, type OpenSessionDetail } from './features/longHorizon/sessionNav';
 import { getWebTransport } from './utils/env';
 import { useTeamPanelState } from './features/teamPanelState';
 import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Session, type UserAnswerStatus } from './types';
@@ -696,6 +698,7 @@ function AppContent() {
     persistMedia,
     persistDocuments,
     sendMessage,
+    sendLongHorizonKick,
     sendStructuredChatContent,
     pause,
     cancel,
@@ -2178,6 +2181,74 @@ function AppContent() {
     void handleRestoreSession(target.session_id, target.mode, target);
   }, [enterNewConversation, handleRestoreSession, mode]);
 
+  const openLongHorizonSession = useCallback((
+    targetSessionId: string,
+    title?: string,
+    kickQuery?: string,
+    extra?: { taskId?: string; stageId?: string },
+  ) => {
+    const existing = useChatStore.getState().getRuntime(targetSessionId);
+    const hasChat = (existing?.messages ?? []).some(
+      (message) => message.role === 'user' || message.role === 'assistant',
+    );
+    const sessionTitle = (() => {
+      const raw = (title || '').trim();
+      if (!raw) return '长程任务';
+      return raw.startsWith('长程') ? raw : `长程·${raw}`;
+    })();
+    const workContext = getWorkContextForSession(targetSessionId);
+    const nowIso = new Date().toISOString();
+    const placeholderSession: Session = {
+      session_id: targetSessionId,
+      title: sessionTitle,
+      project_id: workContext.project_id || '',
+      project_dir: workContext.project_dir || '',
+      mode: 'agent',
+      status: 'active',
+      message_count: 0,
+      created_at: nowIso,
+      updated_at: nowIso,
+    };
+    // Sidebar reads workspaceStore.projectSessions — upsert immediately so the
+    // 长程 session appears without waiting for history / LLM / list refresh.
+    upsertSessionMetadata(placeholderSession, { setCurrent: true });
+    useWorkspaceStore.getState().upsertSession(placeholderSession, { isNew: true });
+
+    // 空执行会话不要走 history.restore：空结果会把「现在做」开场冲成空白页。
+    if (kickQuery && !hasChat) {
+      useChatStore.getState().ensureRuntime(targetSessionId);
+      useChatStore.getState().setNewSession(targetSessionId, true);
+    }
+    void handleRestoreSession(
+      targetSessionId,
+      'agent',
+      placeholderSession,
+      { skipHistoryLoad: Boolean(kickQuery && !hasChat) },
+    ).then(() => {
+      if (kickQuery) {
+        return sendLongHorizonKick(targetSessionId, kickQuery, extra);
+      }
+    });
+  }, [handleRestoreSession, sendLongHorizonKick, upsertSessionMetadata]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<OpenSessionDetail>).detail;
+      if (!detail?.sessionId) return;
+      openLongHorizonSession(
+        detail.sessionId,
+        detail.title,
+        detail.kickQuery,
+        {
+          taskId: detail.taskId,
+          stageId: detail.stageId,
+        },
+      );
+    };
+    window.addEventListener(OPEN_SESSION_EVENT, handler);
+    return () => window.removeEventListener(OPEN_SESSION_EVENT, handler);
+  }, [openLongHorizonSession]);
+
   const handleTeamSessionsDeleted = useCallback(async (sessionIds: string[]) => {
     const deletedSessionIds = new Set(sessionIds);
     const sessionState = useSessionStore.getState();
@@ -2647,6 +2718,8 @@ function AppContent() {
           </div>
         </div>
       )}
+
+      <LongHorizonReminderToasts />
 
       {/* 安全警告提示 */}
       {securityAlertVisible && (

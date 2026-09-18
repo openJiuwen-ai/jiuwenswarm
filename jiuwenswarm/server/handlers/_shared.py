@@ -246,8 +246,41 @@ def _is_team_metadata_mode(metadata: dict[str, Any]) -> bool:
     return mode in {"team", "team.plan", "code.team"}
 
 
-def _sessions_dir_for_request(request: AgentRequest) -> Path:
-    """Resolve tenant ``<tenant_root>/agent/sessions`` for an AgentRequest."""
+def _is_cron_session_request(
+    request: AgentRequest,
+    params: dict | None = None,
+) -> bool:
+    """True when the request belongs to a cron execution session."""
+    if str(request.channel_id or "").strip() == "__cron__":
+        return True
+    merged = (
+        params
+        if isinstance(params, dict)
+        else (
+            request.params
+            if isinstance(getattr(request, "params", None), dict)
+            else {}
+        )
+    )
+    cron_id = merged.get("cron_id")
+    return isinstance(cron_id, str) and bool(cron_id.strip())
+
+
+def _sessions_dir_for_request(
+    request: AgentRequest,
+    *,
+    params: dict | None = None,
+) -> Path:
+    """Resolve sessions root for an AgentRequest.
+
+    Cron execution sessions use the global tree so ``collect_all_sessions_metadata``
+    and cron session listing can find them. Other requests use the tenant workspace
+    tree.
+    """
+    if _is_cron_session_request(request, params):
+        from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+        return get_agent_sessions_dir()
     agent_id, service_id, workspace_key = TenantAgentPool.extract_ids(request)
     return resolve_tenant_sessions_dir(
         workspace_key,

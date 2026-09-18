@@ -546,6 +546,7 @@ def test_build_member_capability_specs_tool_names(role: str) -> None:
 
     assert tool_names == _COMMON_TOOL_NAMES
     assert "core.web_paid_search" not in tool_names
+    assert registry.LONG_HORIZON not in tool_names
     assert all(isinstance(spec, BuiltinToolSpec) for spec in tool_specs)
 
 
@@ -1296,6 +1297,7 @@ def test_team_workspace_report_path_returns_none_without_root() -> None:
     assert member_rails._build_team_workspace_report_path_rail({}, ctx) is None
 
 
+@pytest.mark.asyncio
 async def test_team_workspace_report_path_uses_flat_mount_with_team_id() -> None:
     """A session-scoped team id must not be repeated inside the mount path."""
     team_id = "oc_team_preset-research-insight_officeclaw_1a03cd0f2a9_26b2ec1a2e78"
@@ -1829,6 +1831,7 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.CRON_TOOLS,
         registry.SEND_FILE,
     }
+    assert registry.LONG_HORIZON not in tool_names
 
 
 def test_team_plan_approval_only_mounts_on_leader() -> None:
