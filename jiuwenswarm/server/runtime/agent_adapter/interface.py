@@ -38,6 +38,7 @@ from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
     resolve_sdk_choice,
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_auto_memory_enabled, is_memory_enabled
+from jiuwenswarm.server.runtime.session.history_io import run_history_io as _run_history_io
 from jiuwenswarm.server.runtime.session.session_history import (
     append_compact_history_records,
     append_history_record,
@@ -2834,12 +2835,14 @@ class JiuWenSwarm:
                         goal_obj = goal_result.get("goal")
                         record_fn = getattr(adapter, "_record_goal_set_history_if_needed", None)
                         if callable(record_fn):
-                            record_fn(
+                            history_result = record_fn(
                                 request,
                                 action=str(action),
                                 result_type=str(result_type) if result_type else None,
                                 goal_payload=goal_obj if isinstance(goal_obj, dict) else None,
                             )
+                            if inspect.isawaitable(history_result):
+                                await history_result
                         else:
                             objective = str(params.get("objective") or "").strip()
                             if objective:
@@ -2848,7 +2851,8 @@ class JiuWenSwarm:
                                     if isinstance(goal_obj, dict)
                                     else None
                                 )
-                                append_history_record(
+                                await _run_history_io(
+                                    append_history_record,
                                     session_id=session_id,
                                     request_id=request.request_id,
                                     channel_id=request.channel_id,
@@ -2943,7 +2947,8 @@ class JiuWenSwarm:
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         if _should_record_user_history(request.params):
-            append_history_record(
+            await _run_history_io(
+                append_history_record,
                 session_id=session_id,
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -3030,7 +3035,8 @@ class JiuWenSwarm:
                 request.channel_id,
                 event_type="chat.final",
             )
-            append_history_record(
+            await _run_history_io(
+                append_history_record,
                 session_id=session_id,
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -3247,7 +3253,8 @@ class JiuWenSwarm:
             request.req_method != ReqMethod.COMMAND_GOAL
             and _should_record_user_history(params_for_history)
         ):
-            append_history_record(
+            await _run_history_io(
+                append_history_record,
                 session_id=session_id,
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -3366,7 +3373,7 @@ class JiuWenSwarm:
             merged["reasoning_updated_at"] = updated_at or started_at or (time.time() * 1000)
             return merged
 
-        def _persist_pending_reasoning() -> None:
+        async def _persist_pending_reasoning() -> None:
             """异常/非 Goal 结束兜底：把未随 tool_call/final 落盘的思考补落一条记录。
 
             正常完成时 reasoning 已被最后一条 tool_call/final 附走、缓冲为空，这里 no-op。
@@ -3378,7 +3385,8 @@ class JiuWenSwarm:
             if not reasoning_text.strip():
                 return
             now_ms = time.time() * 1000
-            append_history_record(
+            await _run_history_io(
+                append_history_record,
                 session_id=session_id,
                 request_id=rid,
                 channel_id=cid,
@@ -3416,7 +3424,7 @@ class JiuWenSwarm:
             if event_type.startswith("goal.") or payload.get("goal_intermediate"):
                 saw_goal_stream_output = True
 
-        def _persist_pending_final_text() -> None:
+        async def _persist_pending_final_text() -> None:
             nonlocal durable_final_content
             pending_text = "".join(durable_pending_final_chunks)
             segment_started_at = durable_pending_final_started_at
@@ -3446,7 +3454,8 @@ class JiuWenSwarm:
                 segment_started_at=segment_started_at,
                 extra_fields=extra_fields,
             )
-            append_history_record(
+            await _run_history_io(
+                append_history_record,
                 session_id=session_id,
                 request_id=rid,
                 channel_id=cid,
@@ -3682,7 +3691,8 @@ class JiuWenSwarm:
                     }
                     if error_type:
                         error_payload["error_type"] = error_type
-                    append_history_record(
+                    await _run_history_io(
+                        append_history_record,
                         session_id=session_id,
                         request_id=rid,
                         channel_id=cid,
@@ -3730,7 +3740,8 @@ class JiuWenSwarm:
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
                             if et == "context.compression_state":
-                                _append_compact_history_from_payload(
+                                await _run_history_io(
+                                    _append_compact_history_from_payload,
                                     payload=data.payload,
                                     session_id=session_id,
                                     request_id=rid,
@@ -3818,7 +3829,7 @@ class JiuWenSwarm:
                                 "chat.ask_user_question",
                                 "harness.activate_interaction",
                             ):
-                                _persist_pending_final_text()
+                                await _persist_pending_final_text()
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
                                     ensure_final_mode_inplace(data.payload)
@@ -3847,7 +3858,7 @@ class JiuWenSwarm:
                                     # 空 final 只是收尾/拆气泡信号（Goal 中间态 final 被降级成
                                     # chat.delta、流末尾的兜底 final），气泡里留下的正文就是前面
                                     # 那些 delta。这里必须落盘同一份，否则历史里整段回答会消失。
-                                    _persist_pending_final_text()
+                                    await _persist_pending_final_text()
                                     final_segment_started_at = None
 
                             if should_record:
@@ -3894,7 +3905,8 @@ class JiuWenSwarm:
                                     ),
                                     extra_fields=extra_fields,
                                 )
-                                append_history_record(
+                                await _run_history_io(
+                                    append_history_record,
                                     session_id=session_id,
                                     request_id=rid,
                                     channel_id=cid,
@@ -3926,7 +3938,8 @@ class JiuWenSwarm:
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
                         if et == "context.compression_state":
-                            _append_compact_history_from_payload(
+                            await _run_history_io(
+                                _append_compact_history_from_payload,
                                 payload=data,
                                 session_id=session_id,
                                 request_id=rid,
@@ -4014,7 +4027,7 @@ class JiuWenSwarm:
                             "chat.ask_user_question",
                             "harness.activate_interaction",
                         ):
-                            _persist_pending_final_text()
+                            await _persist_pending_final_text()
                         elif et == "chat.final":
                             if suppress_a2ui_stream or a2ui_split is not None:
                                 first_a2ui_suppression = not suppress_a2ui_stream
@@ -4038,7 +4051,7 @@ class JiuWenSwarm:
                                 _reset_durable_pending_final()
                             else:
                                 # 同上：空 final 收尾时把气泡正文落盘，别丢历史。
-                                _persist_pending_final_text()
+                                await _persist_pending_final_text()
                                 final_segment_started_at = None
 
                         if should_record:
@@ -4083,7 +4096,8 @@ class JiuWenSwarm:
                                 ),
                                 extra_fields=extra_fields,
                             )
-                            append_history_record(
+                            await _run_history_io(
+                                append_history_record,
                                 session_id=session_id,
                                 request_id=rid,
                                 channel_id=cid,
@@ -4114,41 +4128,43 @@ class JiuWenSwarm:
             logger.info("[JiuWenSwarm] 流式连接已关闭: request_id=%s", rid)
             raise
         finally:
-            # Goal 还在跑时这条流不会收到收尾的 chat.final，气泡里已经展示的正文
-            # 也就没有任何一处落盘。补一次，否则重新打开历史记录时这段回答凭空
-            # 消失，和实时看到的不是一回事。非 Goal 流不进这里。
-            if saw_goal_stream_output:
-                _persist_pending_final_text()
-            else:
-                # 非 Goal 异常结束（LLM 错误/断连，或流结束无收尾事件）时，pending
-                # reasoning 不会随 tool_call/final 落盘；补落一条，刷新后思考内容
-                # 与耗时终点（末帧时刻）都能恢复。正文 final 故意不落——半截回答
-                # 不该当 chat.final 写进历史。
-                _persist_pending_reasoning()
-            # The adapter producer owns RuntimeOutputStream.  Cancelling and
-            # awaiting it releases the runtime output lease and aborts the
-            # in-flight round when the outer WebSocket consumer disappears.
-            unfinished_a2ui_tasks = [
-                task for task in team_a2ui_tasks.values() if not task.done()
-            ]
-            for task in unfinished_a2ui_tasks:
-                task.cancel()
-            if not stream_task.done():
-                stream_task.cancel()
-            if unfinished_a2ui_tasks:
-                await asyncio.gather(*unfinished_a2ui_tasks, return_exceptions=True)
             try:
-                await stream_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                # run_stream_task normally converts producer failures into a
-                # queue item.  Do not let a cleanup failure mask cancellation.
-                logger.debug(
-                    "[JiuWenSwarm] stream producer cleanup failed: request_id=%s",
-                    rid,
-                    exc_info=True,
-                )
+                # Goal 还在跑时这条流不会收到收尾的 chat.final，气泡里已经展示的正文
+                # 也就没有任何一处落盘。补一次，否则重新打开历史记录时这段回答凭空
+                # 消失，和实时看到的不是一回事。非 Goal 流不进这里。
+                if saw_goal_stream_output:
+                    await _persist_pending_final_text()
+                else:
+                    # 非 Goal 异常结束（LLM 错误/断连，或流结束无收尾事件）时，pending
+                    # reasoning 不会随 tool_call/final 落盘；补落一条，刷新后思考内容
+                    # 与耗时终点（末帧时刻）都能恢复。正文 final 故意不落——半截回答
+                    # 不该当 chat.final 写进历史。
+                    await _persist_pending_reasoning()
+            finally:
+                # The adapter producer owns RuntimeOutputStream.  Cancelling and
+                # awaiting it releases the runtime output lease and aborts the
+                # in-flight round when the outer WebSocket consumer disappears.
+                unfinished_a2ui_tasks = [
+                    task for task in team_a2ui_tasks.values() if not task.done()
+                ]
+                for task in unfinished_a2ui_tasks:
+                    task.cancel()
+                if not stream_task.done():
+                    stream_task.cancel()
+                if unfinished_a2ui_tasks:
+                    await asyncio.gather(*unfinished_a2ui_tasks, return_exceptions=True)
+                try:
+                    await stream_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    # run_stream_task normally converts producer failures into a
+                    # queue item.  Do not let a cleanup failure mask cancellation.
+                    logger.debug(
+                        "[JiuWenSwarm] stream producer cleanup failed: request_id=%s",
+                        rid,
+                        exc_info=True,
+                    )
 
         # A producer may cancel itself without the outer WebSocket consumer
         # being cancelled.  Keep that terminal state out of the bounded queue
@@ -4179,7 +4195,8 @@ class JiuWenSwarm:
             ):
                 if key in request.params:
                     history_metadata[key] = request.params[key]
-            append_history_record(
+            await _run_history_io(
+                append_history_record,
                 session_id=session_id,
                 request_id=rid,
                 channel_id=cid,

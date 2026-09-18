@@ -21,6 +21,8 @@ from weakref import WeakValueDictionary
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
+
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
@@ -5575,7 +5577,7 @@ class AgentWebSocketServer:
                     else f"Summarized {summarized_count} messages up to this point."
                 )
 
-                append_history_record(
+                await run_history_io(append_history_record,
                     session_id=target_sid,
                     request_id=request_id,
                     channel_id=request.channel_id or "tui",
@@ -5593,7 +5595,7 @@ class AgentWebSocketServer:
                     },
                 )
 
-                append_history_record(
+                await run_history_io(append_history_record,
                     session_id=target_sid,
                     request_id=request_id,
                     channel_id=request.channel_id or "tui",
@@ -5613,7 +5615,7 @@ class AgentWebSocketServer:
                 )
 
                 if isinstance(compact_summary, str) and compact_summary.strip():
-                    append_history_record(
+                    await run_history_io(append_history_record,
                         session_id=target_sid,
                         request_id=request_id,
                         channel_id=request.channel_id or "tui",
@@ -5841,7 +5843,7 @@ class AgentWebSocketServer:
             timestamp = _dt.datetime.now().timestamp()
 
         try:
-            append_history_record(
+            await run_history_io(append_history_record,
                 session_id=session_id,
                 request_id=request_id,
                 channel_id=channel_id,
