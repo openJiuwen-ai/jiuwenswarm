@@ -259,6 +259,19 @@ ensure_redis_up() {
 
     DEPLOY_VARS["REDIS_CHECKED"]="true"
 
+    # cluster 模式必须显式给外部集群：内置 Redis 恒为单实例
+    # （redis.template.yaml 无 --cluster-enabled，replicas=1）。
+    # 若放任它走下面的"自动部署内置 Redis"分支，会渲染出"集群协议打单实例"的
+    # 必失败配置（gateway / agent-runtime 连接全废），且要到运行期才暴露。
+    # 在此提前拦下，不静默降级。
+    if [ "${DEPLOY_VARS["REDIS_MODE"]:-standalone}" == "cluster" ] \
+        && [ -z "${DEPLOY_VARS["REDIS_HOST"]:-}" ]; then
+        error "REDIS_MODE=cluster 但 REDIS_HOST 未设置：内置 Redis 恒为单实例，无法以集群模式工作。" \
+              "请将 REDIS_HOST 设为外部集群节点列表（逗号分隔，每项带端口），例如：" \
+              "  REDIS_HOST=\"10.0.0.11:6379,10.0.0.12:6379,10.0.0.13:6379\"" \
+              "或把 REDIS_MODE 改回 standalone 以使用内置 Redis。"
+    fi
+
     local namespace="${DEPLOY_VARS["NAMESPACE"]}"
     local redis_name="${DEPLOY_VARS["REDIS_NAME"]}"
 
@@ -274,6 +287,16 @@ ensure_redis_up() {
 
     # 同命名空间已有 redis，直接用
     if check_k8s_resource_exists "deployment" "${redis_name}" "${namespace}"; then
+        # 升级陷阱：存量内置 Redis 未启用 ACL，此时新配 REDIS_USERNAME 会让
+        # gateway / agentserver 拿一个不存在的用户去认证而全量失败。
+        # 不静默降级，直接报错交由用户决策。
+        if [ -n "${DEPLOY_VARS["REDIS_USERNAME"]:-}" ] \
+            && ! redis_deployment_has_acl "${redis_name}" "${namespace}"; then
+            error "Built-in Redis '${redis_name}' has no ACL enabled, but REDIS_USERNAME is set to" \
+                  "'${DEPLOY_VARS["REDIS_USERNAME"]}'. Use an external Redis (set REDIS_HOST)," \
+                  "or clear REDIS_USERNAME. To enable ACL the built-in Redis must be recreated" \
+                  "(./deploy.sh down redis, then up; note it is emptyDir-backed, recreate wipes data)."
+        fi
         info "Use built-in Redis server in namespace: ${namespace}"
         return
     fi
@@ -288,6 +311,16 @@ ensure_redis_up() {
 
     # 同命名空间没有 redis 且非外挂 → 自动启动一个
     info "Redis not found in namespace '${namespace}', auto-deploying built-in Redis..."
+
+    # 启用 ACL 时 Redis Pod 需要从 Secret 读 REDIS_PASSWORD，而 Secret 正常要到
+    # render_gateway_files 阶段才创建（晚于本函数），Pod 会卡在
+    # CreateContainerConfigError 且 deploy_redis 的 wait_k8s_resource_ready 一直等待。
+    # 此处提前创建；两个函数都是幂等的（已存在则跳过）。
+    if [ -n "${DEPLOY_VARS["REDIS_USERNAME"]:-}" ]; then
+        render_secret_configmap
+        ensure_secret_configmap
+    fi
+
     deploy_redis
     success "Deploy Redis in namespace '${namespace}'"
 }

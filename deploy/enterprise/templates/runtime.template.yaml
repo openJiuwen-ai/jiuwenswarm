@@ -108,6 +108,10 @@ spec:
               # AgentServer checkpointer 用此 URL 连接 Redis（与 gateway 的 redis client 独立）
               # 由 runtime_handler.sh 按 REDIS_MODE 计算：cluster -> redis+cluster://host:port / standalone -> redis://host:port/db
               value: "<<OPENJIUWEN_SERVICE_REDIS_URL>>"
+            - name: REDIS_USERNAME
+              # ACL 用户名；与 REDIS_PASSWORD（Secret envFrom 注入）配对，
+              # 由 bootstrap 作为 username kwarg 注入客户端。留空则走 default 用户
+              value: "<<REDIS_USERNAME>>"
             - name: OPENJIUWEN_SERVICE_REQUEST_TIMEOUT_SECONDS
               value: "<<AGENT_RUNTIME_REQUEST_TIMEOUT>>"
             - name: OPENJIUWEN_SERVICE_DB_TYPE

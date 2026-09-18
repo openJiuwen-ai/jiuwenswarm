@@ -49,6 +49,7 @@ class RedisConfig:
     startup_nodes: list[dict] = field(default_factory=list)   # [{host, port}, ...]; cluster 启动节点
     host: str = "localhost"
     port: int = 6379
+    username: str | None = None
     password: str | None = None
     db: int = 0
     key_prefix: str = "jiuwenswarm:"
@@ -58,8 +59,13 @@ class RedisConfig:
     health_check_interval: int = 30
 
     @staticmethod
-    def _normalize_password(value: Any) -> str | None:
-        """处理 YAML 解析后的密码值（false/0 等应视为无密码）。"""
+    def _normalize_optional_str(value: Any) -> str | None:
+        """处理 YAML 解析后的可选字符串（false/0/空串等应视为未配置）。
+
+        同时用于 ``password`` 与 ``username``：空 username 必须归一为 ``None``，
+        否则 redis-py 会走 ``AUTH <username> <password>`` 的 ACL 路径而非
+        ``AUTH <password>`` 的 default 用户路径。
+        """
         if value is None or value is False:
             return None
         if isinstance(value, str) and value.strip() == "":
@@ -84,7 +90,8 @@ class RedisConfig:
         kp = str(m.get("key_prefix") if m.get("key_prefix") is not None else "jiuwenswarm:")
         if kp and not kp.endswith(":"):
             kp = f"{kp}:"
-        pw = cls._normalize_password(m.get("password"))
+        username = cls._normalize_optional_str(m.get("username"))
+        pw = cls._normalize_optional_str(m.get("password"))
         mode = str(m.get("mode") or "standalone").strip().lower()
         if mode not in ("standalone", "cluster"):
             mode = "standalone"
@@ -104,6 +111,7 @@ class RedisConfig:
             startup_nodes=startup_nodes,
             host=host,
             port=port,
+            username=username,
             password=pw,
             db=_coerce_int(m.get("db"), 0),
             key_prefix=kp,
@@ -157,6 +165,7 @@ class RedisClient:
                 or [ClusterNode(self._cfg.host, self._cfg.port)]
             self._redis = RedisCluster(
                 startup_nodes=nodes,
+                username=self._cfg.username,
                 password=self._cfg.password,
                 decode_responses=True,
                 socket_connect_timeout=self._cfg.connect_timeout,
@@ -168,7 +177,7 @@ class RedisClient:
         self._pool = redis.ConnectionPool(
             host=self._cfg.host,
             port=self._cfg.port,
-            username=None,
+            username=self._cfg.username,
             password=self._cfg.password,
             db=self._cfg.db,
             decode_responses=True,
