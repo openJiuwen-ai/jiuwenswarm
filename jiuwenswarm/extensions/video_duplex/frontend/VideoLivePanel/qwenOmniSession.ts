@@ -122,6 +122,7 @@ export class RealtimeDuplexSession {
   private sendTimer: number | null = null;
   private sessionReady = false;
   private responseId: string | null = null;
+  private pendingOperations: Array<{ callId: string; output: unknown }> = [];
   private pendingToolResults: RealtimeToolResult[] = [];
   private toolResultWaitKey = '';
   private acceptedToolResultIds = new Set<string>();
@@ -272,6 +273,7 @@ export class RealtimeDuplexSession {
     this.pending = [];
     this.pendingSamples = 0;
     this.pendingToolResults = [];
+    this.pendingOperations = [];
     this.toolResultWaitKey = '';
     this.acceptedToolResultIds.clear();
     this.acceptedFunctionCallIds.clear();
@@ -308,6 +310,14 @@ export class RealtimeDuplexSession {
       status: 'cancelled', job_id: jobId,
       message: '用户手动停止了此任务。不要重试，不要宣称完成；取消记录已显示，无需播报。',
     })));
+  }
+
+  enqueueOperationResult(callId: string, output: unknown): void {
+    const key = `operation:${callId}`;
+    if (this.acceptedToolResultIds.has(key)) return;
+    this.acceptedToolResultIds.add(key);
+    this.pendingOperations.push({ callId, output });
+    this.dispatchQueuedToolResult();
   }
 
   enqueueToolResult(toolResult: RealtimeToolResult): boolean {
@@ -515,7 +525,7 @@ export class RealtimeDuplexSession {
   }
 
   private dispatchQueuedToolResult(): void {
-    if (!this.pendingToolResults.length) {
+    if (!this.pendingToolResults.length && !this.pendingOperations.length) {
       this.toolResultWaitKey = '';
       return;
     }
@@ -528,7 +538,7 @@ export class RealtimeDuplexSession {
             ? 'response_generating'
             : '';
     if (reason) {
-      const jobId = this.pendingToolResults[0].jobId;
+      const jobId = this.pendingToolResults[0]?.jobId || this.pendingOperations[0].callId;
       const waitKey = `${jobId}:${reason}`;
       if (waitKey !== this.toolResultWaitKey) {
         this.toolResultWaitKey = waitKey;
@@ -541,6 +551,13 @@ export class RealtimeDuplexSession {
       return;
     }
     this.toolResultWaitKey = '';
+    const operation = this.pendingOperations.shift();
+    if (operation) {
+      this.send(createQwenOmniToolOutputEvent(operation.callId, JSON.stringify(operation.output)));
+      this.responseActive = true;
+      this.send({ type: 'response.create' });
+      return;
+    }
     while (this.pendingToolResults.length > 0) {
       const toolResult = this.pendingToolResults.shift();
       if (!toolResult) return;

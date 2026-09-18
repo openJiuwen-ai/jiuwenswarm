@@ -28,6 +28,8 @@ export class TaskDuplexJobs {
     if (!jobId || !sessionId) return null;
     const previous = this.jobs.get(jobId);
     if (previous && previous.sessionId !== sessionId) return null;
+    if (previous && payload.sequence != null && previous.payload.sequence != null
+        && payload.sequence < previous.payload.sequence) return null;
     if (previous?.payload.status === "cancelled") return null;
     if (
       previous &&
@@ -46,8 +48,8 @@ export class TaskDuplexJobs {
       return null;
     const job = {
       sessionId,
-      payload: { ...previous?.payload, ...payload },
-      delivered: previous?.delivered ?? false,
+      payload: { ...previous?.payload, ...payload, replay: payload.replay ?? false },
+      delivered: previous?.delivered || (payload.replay === true && isTerminal(payload)),
     };
     this.jobs.set(jobId, job);
     return job;

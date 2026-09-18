@@ -883,6 +883,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     # ------------------------------------------------------------------
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        from jiuwenswarm.runtime.tasks.checkpoint import task_checkpoint
+
+        await task_checkpoint(self, ctx, "before_model")
         sid = self._resolve_sid(ctx, ctx.session)
         await self._get_pause_event(sid).wait()
         if self._abort_requested.get(sid, False):
@@ -951,6 +954,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        from jiuwenswarm.runtime.tasks.checkpoint import task_checkpoint
+
+        await task_checkpoint(self, ctx, "after_model")
         # New agent-core versions emit the complete pre/post context usage
         # snapshots themselves.  The report on the callback context is the
         # capability marker; emitting the legacy rail event as well would add
@@ -970,6 +976,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         )
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        from jiuwenswarm.runtime.tasks.checkpoint import task_checkpoint
+
+        await task_checkpoint(self, ctx, "before_tool")
         sid = self._resolve_sid(ctx, ctx.session)
         tc = ctx.inputs.tool_call if isinstance(ctx.inputs, ToolCallInputs) else None
         reviewer_progress_metadata = peek_reviewer_tool_result_metadata(

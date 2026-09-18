@@ -14822,7 +14822,12 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one request."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
-            with self._bind_permission_request_context(request):
+            from jiuwenswarm.runtime.tasks.checkpoint import bind_task_execution
+
+            with (
+                self._bind_permission_request_context(request),
+                bind_task_execution(request, self, inputs),
+            ):
                 return await self._process_message_impl(request, inputs)
 
     async def _process_message_impl(
@@ -15401,7 +15406,12 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one stream."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
-            with self._bind_permission_request_context(request):
+            from jiuwenswarm.runtime.tasks.checkpoint import bind_task_execution
+
+            with (
+                self._bind_permission_request_context(request),
+                bind_task_execution(request, self, inputs),
+            ):
                 async with aclosing(self._process_message_stream_impl(request, inputs)) as stream:
                     async for chunk in stream:
                         yield chunk

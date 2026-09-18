@@ -19,7 +19,7 @@ import httpx
 
 
 MAX_FRAME_CHARS = 4_000_000
-MAX_INSTRUCTION_CHARS = 2_000
+MAX_INSTRUCTION_CHARS = 16_000
 MAX_TOOL_CONTEXT_CHARS = 4_000
 _TTS_VOICE = "vivian"
 _TTS_INSTRUCTIONS = (
@@ -123,6 +123,12 @@ def ground_user_instruction(instruction: str, tool_context: str = "") -> str:
     return (
         f"{confirmed_context}【用户原话】{instruction}\n\n"
         f"{_USER_KNOWLEDGE_GUARD}"
+        "\n任务管理例外：用户查询、取消或修改已有委托时，不得再创建普通委托。"
+        '在 </delegation> 后输出一个 JSON 对象，例如 {"name":"jiuwen_task_query","arguments":{"query":"巴黎"}}。'
+        '取消使用 jiuwen_task_cancel，arguments 为 {"job_id":"查询返回的准确标识"}；'
+        '修改使用 jiuwen_task_modify，arguments 为 {"job_id":"准确标识","revision":查询返回的版本,"instruction":"新增要求"}。'
+        "目标不明确时先查询，不猜标识。accepted/pending 只表示受理，不能说任务已经停止或修改已完成。"
+
     )
 
 
