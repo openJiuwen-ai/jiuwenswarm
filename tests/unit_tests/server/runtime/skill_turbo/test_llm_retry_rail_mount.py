@@ -111,7 +111,6 @@ def _make_executor(
     rail: NotifyingLLMRetryRail | None,
 ) -> SkillTurboExecutor:
     with (
-        patch.object(SkillTurboExecutor, "_build_permission_rail", return_value=None),
         patch.object(SkillTurboExecutor, "_build_ask_user_rail", return_value=None),
         patch.object(SkillTurboExecutor, "_build_llm_retry_rail", return_value=rail),
     ):
@@ -135,7 +134,6 @@ class TestLlmRetryRailMount:
     def test_build_respects_config_disabled(self):
         client, _ = _client_with_stream_outputs([["ok"]])
         with (
-            patch.object(SkillTurboExecutor, "_build_permission_rail", return_value=None),
             patch.object(SkillTurboExecutor, "_build_ask_user_rail", return_value=None),
             patch(
                 "jiuwenswarm.common.config.get_config",
