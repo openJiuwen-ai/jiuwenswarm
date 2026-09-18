@@ -291,13 +291,13 @@ agents:
   agent_leader:
     workspace:
       stable_base: true
-    max_iterations: 200
+    max_iterations: 200000
     completion_timeout: 600.0
 
   agent_teammate:
     workspace:
       stable_base: true
-    max_iterations: 200
+    max_iterations: 200000
     completion_timeout: 600.0
 
 telemetry:
@@ -349,7 +349,7 @@ team_observability:
 react:
   agent_name: main_agent
   enable_task_loop: false
-  max_iterations: 100
+  max_iterations: 100000
   model_name: ${MODEL_NAME}
   skill_mode: all
   # code_agent / research_agent 默认不启用；只有显式配置 enabled: true 才会显示并可被 task_tool 调用
