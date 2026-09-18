@@ -59,9 +59,6 @@ FORBIDDEN_OUTPUT_RE = re.compile(
 LIST_RE = re.compile(r"^\s*(?:[-+*]|\d+[.)])\s+")
 TOKEN_TTL_SECONDS = 10 * 60
 CONTEXT_CACHE_MAX = 1024
-# Must stay >= the relay-claw provenance readers' caps (api read-local-text and web
-# parser both use 8 MiB); a lower value here rejects large reports (736+ citations
-# exceed 4 MiB) with DOCUMENT_NOT_FOUND even though the sidecar file exists.
 PROVENANCE_MAX_BYTES = 8 * 1024 * 1024
 FINAL_RESULT_MAX_BYTES = 64 * 1024 * 1024
 MARKDOWN_MAX_BYTES = 64 * 1024 * 1024
