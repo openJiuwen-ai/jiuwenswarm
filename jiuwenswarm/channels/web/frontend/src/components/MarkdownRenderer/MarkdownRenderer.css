@@ -11,36 +11,43 @@
 /* Inline code one-click copy (#4360): hover-revealed affordance anchored to
    the code element; copies the full raw value while the visible text may be
    truncated. The wrapper is inline-block so a wrapped (multi-line) code span
-   is one unfragmented box — an abs-positioned child of a plain inline element
-   anchors to a fragment-union box in Chrome and lands mid-text. */
+   is one unfragmented box. Long unbreakable tokens (paths without spaces)
+   wrap anywhere instead of overflowing the bubble — overflow would push the
+   affordance past overflow-hidden ancestors and off-screen on narrow
+   viewports (the exact truncation scenario the issue reports). */
 .markdown-inline-code {
-  position: relative;
   display: inline-block;
   max-width: 100%;
 }
 
+.markdown-inline-code code {
+  overflow-wrap: anywhere;
+}
+
+/* The affordance is a zero-width inline box at the end of the code's last
+   line: no layout shift when it appears, never positioned outside ancestors
+   (so never clipped), and its icon draws into the gap after the code. */
 .markdown-inline-code__copy {
-  position: absolute;
-  left: calc(100% + 4px);
-  top: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
+  width: 0;
   height: 18px;
+  vertical-align: middle;
+  overflow: visible;
   border-radius: var(--radius-sm);
   color: var(--color-text-secondary);
   background: var(--color-surface-card);
   cursor: pointer;
   opacity: 0;
   transition: opacity 120ms ease;
-  /* 不占据内容布局：锚定在 code 右缘外沿，避免撑开行内排版 */
-  z-index: 1;
 }
 
 .markdown-inline-code__icon {
+  flex: none;
   width: 14px;
   height: 14px;
+  margin-left: 4px;
 }
 
 .markdown-inline-code:hover .markdown-inline-code__copy,
