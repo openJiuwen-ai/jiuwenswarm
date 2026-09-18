@@ -27,7 +27,12 @@ def enqueue_bound_session_input(instance, target_round, request, sdk_request) ->
         or execution.session_id != request.session_id
         or execution.state is not SessionExecutionState.RUNNING
         or execution.cancellation_requested
-        or instance.active_round is not target_round
+    ):
+        raise SessionInputTargetError(
+            "the targeted execution has ended or changed; supplemental input was not sent"
+        )
+    if (
+        instance.active_round is not target_round
         or target_round is None
         or not instance.has_output_stream()
     ):
