@@ -5851,6 +5851,33 @@ class AgentWebSocketServer:
                 event_type=event_type,
                 mode=mode,
             )
+            # Cron 失败补写可能落到尚未有标题的会话（会话分配失败的 run 写
+            # 占位会话）。assistant 记录不触发 auto_title，这里按调用方传入
+            # 的 title 回填空标题；已有标题（正常 run 的 auto_title）不覆盖。
+            title = str(params.get("title") or "").strip()
+            if title:
+                try:
+                    # get_session_metadata 已在模块顶部导入，不再局部重复导入
+                    # （redefined-outer-name）；update_session_metadata 沿用本文件
+                    # 使用点局部导入的既有风格。
+                    from jiuwenswarm.server.runtime.session.session_metadata import (
+                        update_session_metadata,
+                    )
+
+                    current = get_session_metadata(session_id) or {}
+                    if not str(current.get("title") or "").strip():
+                        update_session_metadata(
+                            session_id=session_id,
+                            title=title,
+                            touch_last_message_at=False,
+                        )
+                except Exception as title_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[AgentWebSocketServer] history.append_record title "
+                        "backfill failed: session_id=%s error=%s",
+                        session_id,
+                        title_exc,
+                    )
             # The history writer is asynchronous.  Wait for a FIFO completion
             # marker so a frontend history reload immediately after this RPC
             # observes the newly appended terminal record.
