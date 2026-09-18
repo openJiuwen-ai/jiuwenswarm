@@ -1,0 +1,48 @@
+name: agent_moss
+display_name: "AgentMoss 行为链与 Agent行为图检测模块"
+enabled: true
+event_version: "1.0"
+subscribed_events:
+  - "invoke_start"
+  - "llm_input"
+  - "llm_output"
+  - "tool_input"
+  - "tool_output"
+  - "invoke_end"
+analytic_type_id: 2
+# 仍分析所有订阅事件,但只将 has_risk=true 的报告写入 AgentSSAS
+# 模块结果库和 OCSF 威胁日志。
+report_only_risks: true
+
+plugins:
+  - type: data_modeling
+    name: AgentMossModeler
+    model_type: agent_behavior_model
+  - type: threat_analysis
+    name: AgentMossAnalyzer
+    expected_model_type: agent_behavior_model
+    config:
+      analysis_methods: [rule, behavior_chain, agent_behavior_graph]
+      risk_threshold: low
+      max_history_events: 200
+      include_agent_behavior_graph: true
+      policy:
+        default_decision: allow
+        # AgentSSAS subscribes in notify mode. Decisions are reported as
+        # recommendations and do not block the JiuwenSwarm runtime.
+        enforcement_scope: behavior_chain
+        ask_threshold: 45
+        block_threshold: 80
+        enforce_behavior_chain: true
+        analyze_behavior_chain: true
+        analyze_agent_behavior_graph: true
+        enforce_agent_behavior_graph: true
+        agent_behavior_graph_max_events: 80
+        agent_behavior_graph_trusted_egress_patterns: []
+        agent_behavior_graph_egress_tool_patterns: []
+        analyze_destructive_shell: true
+        analyze_sensitive_path_access: true
+        analyze_data_exfiltration: true
+        analyze_privileged_account_ops: true
+        analyze_persistence_ops: true
+        analyze_obfuscated_execution: true
