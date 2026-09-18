@@ -724,6 +724,14 @@
     }
   },
   "chat": {
+    "slashPicker": {
+      "commands": "Commands",
+      "skills": "Skills",
+      "loadingSkills": "Loading skills…",
+      "loadingCommandsAndSkills": "Loading commands and skills…",
+      "noMatchingSkills": "No matching skills",
+      "noMatchingCommandsOrSkills": "No matching commands or skills"
+    },
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
     "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
