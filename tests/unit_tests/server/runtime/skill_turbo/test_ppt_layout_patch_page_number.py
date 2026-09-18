@@ -6,6 +6,9 @@ the bottom-left page number after §3.5 in-place layout patch rewrote the full H
 Root cause: `_generate_layout_patch` postprocess chain lacks `_apply_visible_page_number_policy`
 (which every other generation path applies), so when the patch LLM drops the
 `data-skill-turbo-page-number` span there is no deterministic re-insert.
+
+B′ contract: layout_patch merges filled HTML back onto seed slots; fixtures must
+provide seed `{{}}` placeholders (production templates always do).
 """
 
 from __future__ import annotations
@@ -32,13 +35,34 @@ _PAGE_NUMBER_SPAN = (
 _BARE_PAGE_MARKER_SPAN = '<span class="footer-note">4 / 8</span>'
 
 
-def _slide_html(inner_extra: str = "") -> str:
-    """构造可通过 P8.1 结构页校验的单页 HTML（恰好 1 个 ppt-slide，main 在内）。"""
+def _seed_html() -> str:
+    """预铺结构页 seed：含 {{}}，对齐 B′ layout-patch merge 契约。"""
     return (
-        '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
-        "<title>测试页面标题内容</title></head><body>"
-        '<div class="ppt-slide h-[720px]">'
-        '<main class="flex-1 min-h-0"><section>核心内容区块测试数据展示</section></main>'
+        "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"UTF-8\">"
+        "<title>{{PAGE_TITLE}}</title>"
+        "<style>@layer utilities{.ppt-slide{width:1280px;height:720px}}</style>"
+        "</head><body>"
+        '<div class="ppt-slide h-[720px] w-[1280px]">'
+        "<h1>{{PAGE_TITLE}}</h1>"
+        '<main class="flex-1 min-h-0">'
+        '<div class="body">{{PAGE_CONTENT}}</div>'
+        "</main>"
+        "</div></body></html>"
+    )
+
+
+def _filled_html(inner_extra: str = "") -> str:
+    """修补 LLM 输出：槽已填，可通过结构页 seed-slot-merge。"""
+    return (
+        "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"UTF-8\">"
+        "<title>测试页面标题内容足够长度</title>"
+        "<style>@layer utilities{.ppt-slide{width:1280px;height:720px}}</style>"
+        "</head><body>"
+        '<div class="ppt-slide h-[720px] w-[1280px]">'
+        "<h1>测试页面标题内容足够长度</h1>"
+        '<main class="flex-1 min-h-0">'
+        '<div class="body"><section>核心内容区块测试数据展示与补充说明</section></div>'
+        "</main>"
         f"{inner_extra}"
         "</div></body></html>"
     )
@@ -80,13 +104,13 @@ class _PatchLLM:
 async def test_layout_patch_missing_page_number_reinserted() -> None:
     """修补 LLM 丢失页码锚点时，成功出口必须重新插入统一页码（回归主用例）。"""
     gen = PageWorkerNode()
-    llm = _PatchLLM(_slide_html())  # 修补输出丢了页码 span
+    llm = _PatchLLM(_filled_html())  # 修补输出丢了页码 span
     gen.stream_llm_collect = llm  # type: ignore[method-assign]
 
     html, _raw, reason = await gen._generate_layout_patch(
         _make_ctx(),
-        current_html=_slide_html(_PAGE_NUMBER_SPAN),
-        seed_html=_slide_html(),
+        current_html=_filled_html(_PAGE_NUMBER_SPAN),
+        seed_html=_seed_html(),
         fix_hint="overflow: card bar",
     )
 
@@ -100,13 +124,13 @@ async def test_layout_patch_missing_page_number_reinserted() -> None:
 async def test_layout_patch_kept_page_number_not_duplicated() -> None:
     """修补 LLM 保留页码锚点时，结果必须恰好 1 个页码（strip 后重插，不重复）。"""
     gen = PageWorkerNode()
-    llm = _PatchLLM(_slide_html(_PAGE_NUMBER_SPAN))  # 修补输出保留了页码 span
+    llm = _PatchLLM(_filled_html(_PAGE_NUMBER_SPAN))  # 修补输出保留了页码 span
     gen.stream_llm_collect = llm  # type: ignore[method-assign]
 
     html, _raw, reason = await gen._generate_layout_patch(
         _make_ctx(),
-        current_html=_slide_html(_PAGE_NUMBER_SPAN),
-        seed_html=_slide_html(),
+        current_html=_filled_html(_PAGE_NUMBER_SPAN),
+        seed_html=_seed_html(),
         fix_hint="v-gap: card bar",
     )
 
@@ -119,13 +143,13 @@ async def test_layout_patch_kept_page_number_not_duplicated() -> None:
 async def test_layout_patch_without_page_number_policy_strips_marker() -> None:
     """用户未要求页码时不得插入；修补输出残留的裸运行页码文本应被移除。"""
     gen = PageWorkerNode()
-    llm = _PatchLLM(_slide_html(_BARE_PAGE_MARKER_SPAN))
+    llm = _PatchLLM(_filled_html(_BARE_PAGE_MARKER_SPAN))
     gen.stream_llm_collect = llm  # type: ignore[method-assign]
 
     html, _raw, reason = await gen._generate_layout_patch(
         _make_ctx(style_constraints="", user_query="制作测试 PPT，共 8 页"),
-        current_html=_slide_html(),
-        seed_html=_slide_html(),
+        current_html=_filled_html(),
+        seed_html=_seed_html(),
         fix_hint="overflow: card bar",
     )
 
@@ -138,27 +162,30 @@ async def test_layout_patch_without_page_number_policy_strips_marker() -> None:
 async def test_layout_patch_system_prompt_requires_page_number_anchor() -> None:
     """两个修补分支的 system_prompt 都必须显式要求保留页码锚点。"""
     gen = PageWorkerNode()
-    llm = _PatchLLM(_slide_html())
+    llm = _PatchLLM(_filled_html())
     gen.stream_llm_collect = llm  # type: ignore[method-assign]
 
     # 分支一：无未填图表 option
     await gen._generate_layout_patch(
         _make_ctx(),
-        current_html=_slide_html(_PAGE_NUMBER_SPAN),
-        seed_html=_slide_html(),
+        current_html=_filled_html(_PAGE_NUMBER_SPAN),
+        seed_html=_seed_html(),
         fix_hint="overflow: card bar",
     )
     # 分支二：存在可执行 const option = null
     await gen._generate_layout_patch(
         _make_ctx(),
         current_html=(
-            "<!DOCTYPE html><html><body>"
-            '<div class="ppt-slide h-[720px]">'
-            '<main class="flex-1"><section>内容</section></main>'
+            "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+            "<title>图表页标题足够长度占位</title>"
+            "<style>@layer utilities{.ppt-slide{width:1280px}}</style>"
+            "</head><body>"
+            '<div class="ppt-slide h-[720px] w-[1280px]">'
+            '<main class="flex-1"><section>内容区块测试数据展示说明</section></main>'
             "<script>const option = null;</script>"
             "</div></body></html>"
         ),
-        seed_html=_slide_html(),
+        seed_html=_seed_html(),
         fix_hint="whitespace: chart empty",
     )
 
