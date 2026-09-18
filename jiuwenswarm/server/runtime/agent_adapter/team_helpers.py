@@ -2310,6 +2310,48 @@ async def process_team_message_stream(
                 )
 
 
+async def _finalize_org_bound_team_after_idle(
+    *,
+    session_id: str,
+    team_name: str,
+) -> None:
+    """Pause org-bound teams after a chat round so organization wakes can run.
+
+    Org background turns (unclaimed revision/expired, parent review, ...) only
+    resume leaders in ``RuntimeState.PAUSED``. User chat previously left the
+    owner ``RUNNING`` after ``team.idle``, so those wakes never drained.
+    """
+    name = str(team_name or "").strip()
+    sid = str(session_id or "").strip()
+    if not name or not sid:
+        return
+    try:
+        from openjiuwen.agent_teams.runtime.pool import RuntimeState
+        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            _runner_team_runtime_manager,
+        )
+
+        runtime = _runner_team_runtime_manager(GLOBAL_RUNNER)
+        entry = await runtime.pool.get(name)
+        if entry is None or getattr(entry, "current_session_id", None) != sid:
+            return
+        if getattr(entry, "state", None) is RuntimeState.PAUSED:
+            return
+        backend = getattr(getattr(entry, "agent", None), "team_backend", None)
+        if getattr(backend, "org_task_manager", None) is None:
+            return
+        await runtime.finalize(team_name=name, session_id=sid)
+    except Exception:
+        logger.exception(
+            "[TeamHelpers] finalize org-bound team after idle failed "
+            "session_id=%s team_name=%s",
+            sid,
+            name,
+        )
+
+
 async def _consume_stream_with_query(
     channel_id: str | None,
     session_id: str,
@@ -2557,6 +2599,10 @@ async def _consume_stream_with_query(
                             "task_count": parsed.get("task_count"),
                         },
                     )
+                    await _finalize_org_bound_team_after_idle(
+                        session_id=session_id,
+                        team_name=roster_team_name,
+                    )
                     continue
                 elif parsed.get("event_type") == "team.idle":
                     # A swarmflow workflow may still be running while the leader
@@ -2596,6 +2642,10 @@ async def _consume_stream_with_query(
                             "is_complete": True,
                             "member_count": parsed.get("member_count"),
                         },
+                    )
+                    await _finalize_org_bound_team_after_idle(
+                        session_id=session_id,
+                        team_name=roster_team_name,
                     )
                     continue
                 elif (
