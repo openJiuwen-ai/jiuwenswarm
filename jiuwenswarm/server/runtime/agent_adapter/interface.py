@@ -2424,20 +2424,21 @@ class JiuWenSwarm:
         name = params.get("id") if params.get("id") not in (None, "") else params.get("name")
         try:
             if method == ReqMethod.AGENT_GROUPS_LIST:
-                payload: dict[str, Any] = {
-                    "agentGroups": package_manager.list_agent_groups(params)
-                }
+                cards = await package_manager.list_agent_groups_with_hub(params)
+                payload: dict[str, Any] = {"agentGroups": cards}
+                if hasattr(cards, "cache"):
+                    payload["cache"] = cards.cache
             elif method == ReqMethod.AGENT_GROUPS_SHOW:
-                group = package_manager.show_agent_group(str(name or ""))
+                group = await package_manager.show_agent_group_with_hub(str(name or ""))
                 if group is None:
                     raise ValueError(f"agent_group not found: {name!r}")
                 payload = {"group": group}
             elif method == ReqMethod.AGENT_GROUPS_FILE_LIST:
                 payload = {
-                    "tree": package_manager.list_agent_group_files(str(name or ""))
+                    "tree": await package_manager.list_agent_group_files_with_hub(str(name or ""))
                 }
             elif method == ReqMethod.AGENT_GROUPS_FILE_READ:
-                payload = package_manager.read_agent_group_file(
+                payload = await package_manager.read_agent_group_file_with_hub(
                     str(name or ""), str(params.get("path", ""))
                 )
             elif method == ReqMethod.AGENT_GROUPS_CREATE:
@@ -2445,7 +2446,7 @@ class JiuWenSwarm:
             elif method == ReqMethod.AGENT_GROUPS_IMPORT_LOCAL:
                 payload = package_manager.import_agent_group(params)
             elif method == ReqMethod.AGENT_GROUPS_INSTALL:
-                package_manager.install_agent_group(params)
+                await package_manager.install_agent_group_with_hub(params)
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
                 package_manager.uninstall_agent_group(params)

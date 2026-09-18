@@ -1,4 +1,5 @@
 import { webRequest } from '../../services/webClient';
+import { withCatalogCache } from '../catalogCache';
 import { getAgentManagementLocale } from './locale';
 import {
   normalizeAgentGroupDetail,
@@ -51,8 +52,14 @@ export function createLiveAgentGroupManagementClient(): AgentGroupManagementClie
     async listGroups(options: AgentGroupListOptions = {}) {
       try {
         const filter = options.filter && options.filter !== 'all' ? { filter: options.filter } : {};
-        const payload = await webRequest<RawAgentGroupListPayload>('agent_groups.list', filter);
-        return (payload.agentGroups || []).map((item) => normalizeAgentGroupListItem(item, getAgentManagementLocale()));
+        const payload = await webRequest<RawAgentGroupListPayload>('agent_groups.list', {
+          ...filter,
+          ...(options.cache_mode ? { cache_mode: options.cache_mode } : {}),
+        });
+        return withCatalogCache(
+          (payload.agentGroups || []).map((item) => normalizeAgentGroupListItem(item, getAgentManagementLocale())),
+          payload.cache,
+        );
       } catch (error) {
         return rethrowGroupError(error);
       }

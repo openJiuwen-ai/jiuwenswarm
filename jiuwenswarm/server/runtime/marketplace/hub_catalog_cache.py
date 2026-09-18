@@ -349,7 +349,7 @@ async def start_hub_catalog_preload(skill_manager=None):
     """Schedule the four configured defaults, returning without network waits."""
     from .hub_asset_port import create_default_hub_asset_port
     port = create_default_hub_asset_port()
-    for kind in ('agent_template', 'plugin', 'mcp'):
+    for kind in ('agent_template', 'agent_group', 'plugin', 'mcp'):
         await cached_asset_catalog(port, kind, preload=True)
     if skill_manager is not None:
         await skill_manager.handle_skills_swarm_skills_hub_recommend({

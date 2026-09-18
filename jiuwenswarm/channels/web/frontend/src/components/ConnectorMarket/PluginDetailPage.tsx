@@ -196,7 +196,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           tags={detail.tags.length > 0 ? detail.tags.map((tag) => localizedText(tag, i18n.language)) : undefined}
           actions={
             <div className="flex items-center gap-3" data-testid="connector-market-plugin-detail-actions">
-              {(installed || detail.source !== 'hub') && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="connector-market-plugin-publish" onClick={() => openAssetPublish({ kind: 'plugin', local_id: id })}>{t('skills.actions.publish')}</button>}
+              {(installed || detail.source !== 'hub') && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="connector-market-plugin-publish" onClick={() => openAssetPublish({ kind: 'plugin', local_id: id, avatar_url: detail.avatar || undefined })}>{t('skills.actions.publish')}</button>}
               {/* 自定义插件（source==='local'）的编辑——后端 plugin_packages.* 目前只有
               list/show/create/install/uninstall，没有任何 update/编辑接口（create 对已存在 id
               会直接拒绝，不是隐式 upsert，见 backend-requests.md 需求13），先做降级占位：按钮

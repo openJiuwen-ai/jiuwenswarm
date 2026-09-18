@@ -72,7 +72,6 @@ import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveM
 import { webRequest } from './services/webClient';
 import { getArchiveErrorCode } from './features/workspace/archivedTaskClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
-import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
@@ -453,29 +452,10 @@ function AppContent({
   const [missingSessionId, setMissingSessionId] = useState<string | null>(null);
   const startupUpdateCheckRef = useRef(false);
   const modelSetupGuideEvaluatedRef = useRef(false);
-  /** OAuth 回调恢复导航后标记，防止 fetchConfig 等后续逻辑覆盖 activeNav */
-  const oauthNavRestoredRef = useRef(false);
 
   useEffect(() => {
     tRef.current = t;
   }, [t]);
-
-  // OAuth 回调处理：页面加载时检测 URL 中的 code，自动换 token + 获取用户信息
-  useEffect(() => {
-    processOAuthCallback()
-      .finally(() => {
-        // 备份：OAuth 回调完成后再次确认导航（通常路由 effect 已设置）
-        const nav = sessionStorage.getItem('oauth_redirect_nav');
-        if (nav) {
-          sessionStorage.removeItem('oauth_redirect_nav');
-          oauthNavRestoredRef.current = true;
-          setActiveNav(nav as MainNavKey);
-          if (nav === 'skills') setHasVisitedSkills(true);
-        }
-        // 无论成功或失败都派发事件，SkillPanel 根据有无 oauth_error 决定显示错误或开抽屉
-        window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
-      });
-  }, []);
 
   useEffect(() => {
     if (activeNav === 'chat') {
@@ -641,21 +621,13 @@ function AppContent({
   } = useSingleAgentPanelState();
 
   useEffect(() => {
-    const oauthNav = sessionStorage.getItem('oauth_redirect_nav');
-    const targetNav = (oauthNav || 'chat') as MainNavKey;
-    if (oauthNav === 'skills') setHasVisitedSkills(true);
     if (route.kind === 'chat-session') {
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
-      setActiveNav(targetNav);
+      setActiveNav('chat');
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') {
-        if (oauthNav) {
-          // OAuth 重定向：用 replaceState 改 URL 但不触发 route 变化，避免 effect 重跑覆盖 activeNav
-          window.history.replaceState(null, '', '/chat/new');
-        } else {
-          navigate({ kind: 'chat-new' }, { replace: true });
-        }
+        navigate({ kind: 'chat-new' }, { replace: true });
       }
       pendingNewConversationRef.current = true;
       if (preserveSelectedProjectOnChatNewRef.current) {
@@ -665,13 +637,11 @@ function AppContent({
       }
       sessionIdRef.current = 'new';
       setSessionId('new');
-      setActiveNav(targetNav);
-      if (!oauthNav) {
-        setTeamAreaExpanded(false);
-        setSingleAgentPanelExpanded(false);
-      }
+      setActiveNav('chat');
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded, setHasVisitedSkills]);
+  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -1733,7 +1703,7 @@ function AppContent({
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
         modelSetupGuideEvaluatedRef.current = true;
-        if (!oauthNavRestoredRef.current && (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled))) {
+        if (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled)) {
           setActiveNav('chat');
           setModelSetupGuideStep(1);
         }
