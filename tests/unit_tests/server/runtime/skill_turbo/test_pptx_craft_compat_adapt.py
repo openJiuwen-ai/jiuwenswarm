@@ -15,7 +15,7 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import 
     _build_content_template_fill_prompt,
     _build_content_template_fill_system_prompt,
     _chart_activation_incomplete,
-    _extract_chart_scaffold_region,
+    _collect_activated_chart_scaffolds,
     _extract_designer_section,
     _filled_chart_scaffold_is_progressed,
     _is_chart_candidate_page,
@@ -326,7 +326,7 @@ def test_custom_chart_prompt_mentions_chart_font_family():
     assert "须按" in prompt and "style-custom.md" in prompt
 
 
-def test_extract_chart_scaffold_region_ignores_scripts_after_body_with_prior_comment():
+def test_collect_activated_chart_scaffolds_ignores_scripts_after_body_with_prior_comment():
     """</body> 前有 HTML 注释时，须在去注释坐标系内截断，避免误取 body 后的 script。"""
     scaffold_script = (
         '<script>const option = {"series":[{"data":[1]}]}; '
@@ -345,8 +345,9 @@ def test_extract_chart_scaffold_region_ignores_scripts_after_body_with_prior_com
         f"{decoy_script}"
         "</html>"
     )
-    region = _extract_chart_scaffold_region(filled)
-    assert region is not None
+    activated = _collect_activated_chart_scaffolds(filled)
+    assert len(activated) == 1
+    _target_id, region = activated[0]
     assert 'getElementById("chart-1")' in region
     assert 'getElementById("decoy")' not in region
     assert "[1]" in region
@@ -452,7 +453,7 @@ def test_chart_scaffold_path_b_ignores_main_inline_echarts_init():
         "</body></html>"
     )
     assert _filled_chart_scaffold_is_progressed(filled) is False
-    assert _extract_chart_scaffold_region(filled) is None
+    assert _collect_activated_chart_scaffolds(filled) == []
     merged = _merge_chart_scaffold_from_filled(seed, filled)
     assert "CHART_SCAFFOLD_BEGIN" in merged
     assert "const option = null" in merged

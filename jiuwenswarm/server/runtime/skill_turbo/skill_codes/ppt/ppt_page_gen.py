@@ -78,17 +78,17 @@ def _postprocess_structural_template_fill_html(
     page_type: str,
     seed_html: str = "",
 ) -> str:
-    # 落盘权威：seed 骨架 + 仅 skill 已定义槽；页码策略在 merge 之后再跑，避免 chrome 外标记丢失。
+    # 落盘权威：优先 seed 骨架 + 仅 skill 已定义槽；merge 失败时回退旧门禁校验 LLM html。
     if (seed_html or "").strip():
         merged = _repair_structural_template_slots(seed_html, html)
-        if not merged:
+        if merged:
+            html = merged
+        else:
             logger.warning(
-                "[P8.1] 结构页 seed-slot-merge 失败 page=%d type=%s",
+                "[P8.1] 结构页 seed-slot-merge 失败 page=%d type=%s；回退旧门禁校验 LLM html",
                 ctx.page_num,
                 page_type,
             )
-            return ""
-        html = merged
     html = _apply_visible_page_number_policy(
         html,
         user_query=ctx.user_query,
@@ -972,13 +972,6 @@ def _collect_activated_chart_scaffolds(filled_html: str) -> list[tuple[str, str]
     return activated
 
 
-def _extract_chart_scaffold_region(filled_html: str) -> str | None:
-    activated = _collect_activated_chart_scaffolds(filled_html)
-    if not activated:
-        return None
-    return activated[0][1]
-
-
 def _merge_chart_scaffold_from_filled(seed_html: str, filled_html: str) -> str:
     """Merge activated chart scaffolds from filled into seed comment blocks.
 
@@ -1130,6 +1123,7 @@ def _slice_between_anchors(
 
 
 _IMG_OPEN_TAG_RE = re.compile(r"<img\b[^>]*", re.IGNORECASE)
+_STRUCTURAL_IMAGE_ATTR_SLOTS = frozenset({"STRUCTURAL_IMAGE_PATH", "STRUCTURAL_IMAGE_ALT"})
 
 
 def _strip_open_tag_attrs(anchor: str) -> str:
@@ -1138,7 +1132,7 @@ def _strip_open_tag_attrs(anchor: str) -> str:
 
 
 def _structural_slot_dom_fallback(name: str, filled_html: str) -> str | None:
-    """DOM-based fallback for common structural slots when neighbor slice fails."""
+    """DOM extract for common structural slots (attr slots prefer this over adjacency)."""
     if name == "PAGE_TITLE":
         title = _extract_filled_title_inner(filled_html)
         if title and not _has_placeholder_slop(_plain_text_fragment(title)):
@@ -1157,8 +1151,9 @@ def _structural_slot_dom_fallback(name: str, filled_html: str) -> str | None:
         if plain and _has_placeholder_slop(plain):
             return None
         return footer_inner
-    # Review: attribute slots (PATH/ALT) need DOM fallback; adjacency is brittle.
-    if name in ("STRUCTURAL_IMAGE_PATH", "STRUCTURAL_IMAGE_ALT"):
+    # Attribute slots: values live inside <img ...> attrs; adjacency after
+    # _strip_open_tag_attrs shifts the slice start and can swallow neighboring attrs.
+    if name in _STRUCTURAL_IMAGE_ATTR_SLOTS:
         match = re.search(
             r"<img\b[^>]*(?:"
             r"\bdata-pptx-role\s*=\s*[\"']structural-background[\"']|"
@@ -1252,6 +1247,18 @@ def _repair_structural_template_slots(seed_html: str, filled_html: str) -> str |
         # Open-tag attributes are unstable under LLM rewrite; keep tag names only.
         left_anchor = _strip_open_tag_attrs(left_anchor)
         right_anchor = _strip_open_tag_attrs(right_anchor)
+
+        # PATH/ALT：DOM 优先。剥离 img 属性后邻接切片起点会前移，happy path
+        # 也会把相邻属性吞进槽值（如 src=" data-pptx-role=...）。
+        if name in _STRUCTURAL_IMAGE_ATTR_SLOTS:
+            value = _structural_slot_dom_fallback(name, filled_html)
+            if value is not None:
+                slots[name] = value
+                if value:
+                    loc = filled_html.find(value, search_from)
+                    if loc >= 0:
+                        search_from = loc + len(value)
+                continue
 
         sliced = _slice_between_anchors(
             filled_html, left_anchor, right_anchor, search_from=search_from

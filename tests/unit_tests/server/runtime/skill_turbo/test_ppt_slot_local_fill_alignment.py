@@ -8,6 +8,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
     _postprocess_content_template_fill_html,
+    _postprocess_structural_template_fill_html,
     _repair_content_template_chrome,
     _repair_structural_template_slots,
     _validate_content_template_fill_output,
@@ -212,7 +213,41 @@ def test_structural_seed_slot_merge_duplicate_title_and_empty_optional_slot():
     assert merged.count("双标题页") >= 2
     assert "{{PAGE_TITLE}}" not in merged
     assert "{{STRUCTURAL_IMAGE_PATH}}" not in merged
+    assert 'src=""' in merged
+    assert 'alt=""' in merged
+    assert "src=\" data-pptx-role=" not in merged
     assert "正文区" in merged
+
+
+def test_structural_seed_slot_merge_perfect_fill_keeps_clean_image_attrs():
+    """Happy path：LLM 逐字保留骨架仅换 token 时，PATH/ALT 须干净，不得吞入相邻属性。"""
+    seed = """<!DOCTYPE html>
+<html><head><title>{{PAGE_TITLE}}</title>
+<script>tailwind.config={theme:{extend:{colors:{brand:'#c00'}}}}</script>
+<style>@layer utilities{.ppt-slide{width:1280px}}</style>
+</head>
+<body>
+<div class="ppt-slide w-[1280px] h-[720px]">
+  <h1>{{PAGE_TITLE}}</h1>
+  <div class="body">{{PAGE_CONTENT}}</div>
+  <img data-pptx-role="structural-background" src="{{STRUCTURAL_IMAGE_PATH}}" alt="{{STRUCTURAL_IMAGE_ALT}}"/>
+</div>
+</body></html>
+"""
+    filled = (
+        seed.replace("{{PAGE_TITLE}}", "封面标题")
+        .replace("{{PAGE_CONTENT}}", "<p>封面导语</p>")
+        .replace("{{STRUCTURAL_IMAGE_PATH}}", "assets/cover.png")
+        .replace("{{STRUCTURAL_IMAGE_ALT}}", "封面背景")
+    )
+    merged = _repair_structural_template_slots(seed, filled)
+    assert merged is not None
+    assert 'src="assets/cover.png"' in merged
+    assert 'alt="封面背景"' in merged
+    assert 'src=" data-pptx-role=' not in merged
+    assert 'data-pptx-role="structural-background" src="assets/cover.png"' in merged
+    assert merged.count("src=") == 1
+    assert merged.count("alt=") == 1
 
 
 def test_structural_seed_slot_merge_survives_img_attr_reorder():
@@ -247,6 +282,8 @@ def test_structural_seed_slot_merge_survives_img_attr_reorder():
     assert merged is not None
     assert 'src="assets/cover-bg.png"' in merged
     assert 'alt="封面背景"' in merged
+    assert 'src=" data-pptx-role=' not in merged
+    assert merged.count("src=") == 1
     assert "封面标题" in merged
     assert "{{STRUCTURAL_IMAGE_PATH}}" not in merged
     assert "{{STRUCTURAL_IMAGE_ALT}}" not in merged
@@ -288,4 +325,59 @@ def test_structural_seed_slot_merge_survives_img_reindent():
     assert merged is not None
     assert 'src="assets/reindent.png"' in merged
     assert 'alt="重缩进背景"' in merged
+    assert 'src=" data-pptx-role=' not in merged
+    assert merged.count("src=") == 1
     assert "{{STRUCTURAL_IMAGE" not in merged
+
+
+def test_structural_postprocess_falls_back_to_old_gates_when_merge_fails():
+    """整体重缩进致邻接切片失败、且无 <main> 时 merge 失败；旧门禁通过则仍落盘 LLM html。"""
+    seed = _STRUCTURAL_SEED_HTML
+    filled = """<!DOCTYPE html>
+<html><head><title>整体重缩进封面</title>
+<script>tailwind.config={theme:{extend:{colors:{brand:'#c00'}}}}</script>
+<style type="text/tailwindcss">@layer utilities{.ppt-slide{@apply relative w-[1280px] h-[720px];}
+.content-safe{width:1220px}</style>
+</head>
+<body>
+<div class="ppt-slide w-[1280px] h-[720px]">
+<div class="content-safe cover-stage">
+<h1 class="cover-title">
+整体重缩进封面
+</h1>
+<div class="cover-body">
+<p>副标题与简介足够长以通过校验</p>
+</div>
+</div>
+</div>
+</body></html>
+"""
+    assert _repair_structural_template_slots(seed, filled) is None
+    ctx = _Ctx()
+    ctx.page_num = 1
+    out = _postprocess_structural_template_fill_html(
+        filled, ctx, "cover", seed_html=seed
+    )
+    assert out
+    assert "整体重缩进封面" in out
+    assert "{{PAGE_TITLE}}" not in out
+    assert "{{PAGE_CONTENT}}" not in out
+
+
+def test_structural_postprocess_merge_fail_still_rejects_unfilled_placeholders():
+    """merge 失败回退旧门禁时，残留 {{}} 仍须拒绝，不得假成功。"""
+    seed = _STRUCTURAL_SEED_HTML
+    filled = seed.replace("{{PAGE_TITLE}}", "只填了标题")
+    # PAGE_CONTENT 仍为 {{PAGE_CONTENT}}；整体改缩进使邻接切片也失败
+    filled = filled.replace(
+        '  <div class="cover-body">{{PAGE_CONTENT}}</div>\n',
+        '<div class="cover-body">{{PAGE_CONTENT}}</div>\n',
+        1,
+    )
+    assert _repair_structural_template_slots(seed, filled) is None
+    ctx = _Ctx()
+    ctx.page_num = 1
+    out = _postprocess_structural_template_fill_html(
+        filled, ctx, "cover", seed_html=seed
+    )
+    assert out == ""
