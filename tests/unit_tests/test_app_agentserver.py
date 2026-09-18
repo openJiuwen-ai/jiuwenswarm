@@ -50,7 +50,8 @@ async def test_run_does_not_delete_agent_teams_directory(monkeypatch: pytest.Mon
         def __init__(self, registry) -> None:
             self.registry = registry
 
-        async def load_all_extensions(self) -> None:
+        async def load_all_extensions(self, *, include_transport_extensions: bool = True) -> None:
+            _ = include_transport_extensions
             return None
 
         @staticmethod
