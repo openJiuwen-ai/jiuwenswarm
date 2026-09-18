@@ -101,12 +101,15 @@ class A2AManager:
         outbound_settings = self._outbound_settings_repository.load()
         allow_loopback = bool(outbound_settings.get("allow_loopback", False))
         allow_http = bool(outbound_settings.get("allow_http", False))
+        allow_private_network = bool(outbound_settings.get("allow_private_network", False))
         self._outbound = outbound_registry
         if self._outbound is None and outbound_repository is not None:
             self._outbound = A2AOutboundRegistry(
                 outbound_repository,
                 discovery_service=A2AOutboundDiscoveryService(
-                    allow_loopback=allow_loopback, allow_http=allow_http
+                    allow_loopback=allow_loopback,
+                    allow_http=allow_http,
+                    allow_private_network=allow_private_network
                 ),
             )
         self._outbound_dispatcher = outbound_dispatcher
@@ -114,10 +117,16 @@ class A2AManager:
             self._outbound_dispatcher = A2AOutboundDispatcher(
                 outbound_repository,
                 discovery_service=A2AOutboundDiscoveryService(
-                    allow_loopback=allow_loopback, allow_http=allow_http
+                    allow_loopback=allow_loopback,
+                    allow_http=allow_http,
+                    allow_private_network=allow_private_network
                 ),
             )
-        self._apply_outbound_settings(allow_loopback=allow_loopback, allow_http=allow_http)
+        self._apply_outbound_settings(
+            allow_loopback=allow_loopback,
+            allow_http=allow_http,
+            allow_private_network=allow_private_network,
+        )
 
     @property
     def channel(self) -> _ManagedA2AChannel | None:
@@ -146,19 +155,40 @@ class A2AManager:
         return dict(self._outbound_settings_repository.load())
 
     async def outbound_update_settings(
-        self, *, allow_loopback: bool, allow_http: bool
+        self, *, allow_loopback: bool, allow_http: bool, allow_private_network: bool = False
     ) -> dict[str, bool]:
-        if not isinstance(allow_loopback, bool) or not isinstance(allow_http, bool):
+        if not all(
+            isinstance(value, bool)
+            for value in (allow_loopback, allow_http, allow_private_network)
+        ):
             raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
-        self._outbound_settings_repository.save(allow_loopback=allow_loopback, allow_http=allow_http)
-        self._apply_outbound_settings(allow_loopback=allow_loopback, allow_http=allow_http)
-        return {"allow_loopback": allow_loopback, "allow_http": allow_http}
+        self._outbound_settings_repository.save(
+            allow_loopback=allow_loopback,
+            allow_http=allow_http,
+            allow_private_network=allow_private_network,
+        )
+        self._apply_outbound_settings(
+            allow_loopback=allow_loopback,
+            allow_http=allow_http,
+            allow_private_network=allow_private_network,
+        )
+        return {
+            "allow_loopback": allow_loopback,
+            "allow_http": allow_http,
+            "allow_private_network": allow_private_network,
+        }
 
-    def _apply_outbound_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
+    def _apply_outbound_settings(
+        self, *, allow_loopback: bool, allow_http: bool, allow_private_network: bool = False
+    ) -> None:
         for target in (self._outbound, self._outbound_dispatcher):
             setter = getattr(target, "set_network_settings", None)
             if callable(setter):
-                setter(allow_loopback=allow_loopback, allow_http=allow_http)
+                setter(
+                    allow_loopback=allow_loopback,
+                    allow_http=allow_http,
+                    allow_private_network=allow_private_network,
+                )
 
     async def outbound_register(self, params: dict[str, Any]) -> dict[str, Any]:
         return await self._require_outbound().register(params)

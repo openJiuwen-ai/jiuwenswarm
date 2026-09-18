@@ -104,23 +104,23 @@ Body/path/query 合并规则：只读取该路由声明的 query；path/query �
 
 ### 4.1 GET `/api/v1/a2a/outbound/settings`
 
-无 Body、无业务 query。个人版读取进程环境中的 `A2A_OUTBOUND_ALLOW_LOOPBACK`、`A2A_OUTBOUND_ALLOW_HTTP`，均默认 false。
+无 Body、无业务 query。个人版读取进程环境中的 `A2A_OUTBOUND_ALLOW_LOOPBACK`、`A2A_OUTBOUND_ALLOW_HTTP`、`A2A_OUTBOUND_ALLOW_PRIVATE_NETWORK`，均默认 false。
 
 ```json
-{"allow_loopback": false, "allow_http": false}
+{"allow_loopback": false, "allow_http": false, "allow_private_network": false}
 ```
 
 此设置属于当前个人版 Gateway，不是 Manager 全局网络策略，企业入口返回 FORBIDDEN。出站管理服务未装配时返回 `A2A_OUTBOUND_STORE_INVALID`。
 
 ### 4.2 PATCH `/api/v1/a2a/outbound/settings`
 
-Body 两个字段都必须存在且为真正的 JSON boolean，不接受 `"true"`、`1`。虽为 PATCH，当前不是单字段部分更新。
+Body 的 `allow_loopback`、`allow_http` 必须存在；`allow_private_network` 省略时按 false 处理。提供的字段必须为真正的 JSON boolean，不接受 `"true"`、`1` 或 null。虽为 PATCH，当前不是单字段部分更新。
 
 ```json
-{"allow_loopback": true, "allow_http": false}
+{"allow_loopback": false, "allow_http": true, "allow_private_network": true}
 ```
 
-成功 `data` 同 §4.1 的两字段结构；持久化到个人 `.env`、更新 `os.environ`，并应用到发现与 Dispatcher。false 默认只允许公网 HTTPS；开启 loopback 不等于允许所有私网，HTTP 仍独立受 `allow_http` 限制。参数类型错误为 `A2A_CONFIG_INVALID`（当前 HTTP 500）；持久化/其他处理失败可能被 handler 归一为 `A2A_OUTBOUND_STORE_INVALID`。企业入口返回 FORBIDDEN。
+成功 `data` 同 §4.1 的三字段结构；持久化到个人 `.env`、更新 `os.environ`，并应用到发现与 Dispatcher。false 默认只允许公网 HTTPS；`allow_loopback` 仅放行回环；`allow_private_network` 放行 RFC1918 IPv4（10.0.0.0/8、172.16.0.0/12、192.168.0.0/16），不放行链路本地地址、IPv6 ULA 或 IPv4-mapped IPv6。HTTP 仍独立受 `allow_http` 限制。发现地址、重定向及 Card 中接口地址均接受校验，Dispatcher 在建立连接前再次校验。局域网 HTTP Demo 需同时开启 `allow_private_network` 与 `allow_http`，无需开启回环。参数类型错误为 `A2A_CONFIG_INVALID`（当前 HTTP 500）；持久化/其他处理失败可能被 handler 归一为 `A2A_OUTBOUND_STORE_INVALID`。企业入口返回 FORBIDDEN。
 
 ### 4.3 POST `/api/v1/a2a/outbound/discover`
 
@@ -498,7 +498,7 @@ Manager 是另一服务；同路径在 Manager 存在不代表 Gateway 也注册
 
 | Manager 管理接口 | Gateway 已有入口 | 已确认的差异 |
 | --- | --- | --- |
-| GET/PUT `/api/v1/a2a-discovery-settings` | Web GET/PATCH `/api/v1/a2a/outbound/settings` | Manager 全局 allow_http/allow_private_network/allow_public_http；Gateway 个人设置 allow_loopback/allow_http；字段、作用域和企业权限不等价 |
+| GET/PUT `/api/v1/a2a-discovery-settings` | Web GET/PATCH `/api/v1/a2a/outbound/settings` | Manager 全局 allow_http/allow_private_network/allow_public_http；Gateway 个人设置 allow_loopback/allow_http/allow_private_network；字段、作用域和企业权限不等价 |
 | POST `/api/v1/a2a-outbound-discoveries` | Web POST `/api/v1/a2a/outbound/discover` | 都预览候选，但服务/缓存/返回 DTO 不同；企业发现必须走 Manager |
 | POST `/api/v1/a2a-outbound-templates` | Web POST `/api/v1/a2a/outbound/agents`；Receiver POST `/api/v1/a2a-outbound-templates` | 分别为 Manager 候选注册、个人运行态注册、企业确认快照投影；Body 和凭据结构不同 |
 | POST `/api/v1/a2a-outbound-templates/{template_id}:refresh`、`:confirm-revision` | Web 同动作但资源为 `/a2a/outbound/agents/{agent_id}` | 企业用户 Web 动作拒绝；Manager 确认快照再下发；不能用个人动作替代模板管理 |

@@ -234,7 +234,8 @@ async def _dispatcher(client: _FakeClient):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_client_applies_template_network_policy(monkeypatch):
+@pytest.mark.parametrize("personal", [False, True])
+async def test_dispatch_client_applies_template_network_policy(monkeypatch, personal):
     import httpx
     from jiuwenswarm.gateway.a2a_manager.outbound import dispatcher as module
 
@@ -267,11 +268,16 @@ async def test_dispatch_client_applies_template_network_policy(monkeypatch):
         A2AOutboundRepository(InMemoryPersistentBackend()),
         discovery_service=A2AOutboundDiscoveryService(address_resolver=resolver),
     )
+    if personal:
+        agent = replace(agent, network_policy=None)
+        dispatcher.set_network_settings(allow_loopback=False, allow_http=True, allow_private_network=True)
     try:
         await dispatcher._build_client(agent)
         assert pinned == [{"weather.example.com": "192.168.1.27"}]
+        if personal:
+            dispatcher.set_network_settings(allow_loopback=False, allow_http=True, allow_private_network=False)
         with pytest.raises(A2AOutboundError) as error:
-            await dispatcher._build_client(replace(agent, network_policy={}))
+            await dispatcher._build_client(agent if personal else replace(agent, network_policy={}))
         assert error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED
         assert len(pinned) == 1
     finally:

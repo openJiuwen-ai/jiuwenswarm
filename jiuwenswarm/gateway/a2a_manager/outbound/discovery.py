@@ -219,17 +219,22 @@ class A2AOutboundDiscoveryService:
         *,
         allow_loopback: bool = False,
         allow_http: bool = False,
+        allow_private_network: bool = False,
         address_resolver: AddressResolver = _resolve_addresses,
         transport_factory: TransportFactory = _pinned_transport_factory,
     ) -> None:
         self._allow_loopback = allow_loopback
         self._allow_http = allow_http
+        self._allow_private_network = allow_private_network
         self._address_resolver = address_resolver
         self._transport_factory = transport_factory
 
-    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
+    def set_network_settings(
+        self, *, allow_loopback: bool, allow_http: bool, allow_private_network: bool = False
+    ) -> None:
         self._allow_loopback = allow_loopback
         self._allow_http = allow_http
+        self._allow_private_network = allow_private_network
 
     async def discover(self, url: str, card_path: str | None = None) -> DiscoveredCard:
         source_url, normalized_path, card_url = self._normalize(url, card_path)
@@ -421,7 +426,11 @@ class A2AOutboundDiscoveryService:
         if network_policy is None:
             if scheme == "http" and not self._allow_http:
                 raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
-            if not public_only and not (self._allow_loopback and loopback_only):
+            if not (
+                public_only
+                or (self._allow_loopback and loopback_only)
+                or (self._allow_private_network and _is_rfc1918_ipv4_only(addresses))
+            ):
                 raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
         else:
             private_only = _is_rfc1918_ipv4_only(addresses)

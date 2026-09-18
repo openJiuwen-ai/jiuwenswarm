@@ -42,6 +42,8 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
   const [agents, setAgents] = useState<A2AOutboundAgent[]>([]);
   const [allowLoopback, setAllowLoopback] = useState(false);
   const [savedAllowLoopback, setSavedAllowLoopback] = useState(false);
+  const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(false);
+  const [savedAllowPrivateNetwork, setSavedAllowPrivateNetwork] = useState(false);
   const [allowHttp, setAllowHttp] = useState(false);
   const [savedAllowHttp, setSavedAllowHttp] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -107,6 +109,8 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
         setSavedAllowLoopback(settings.allow_loopback);
         setAllowHttp(settings.allow_http);
         setSavedAllowHttp(settings.allow_http);
+        setAllowPrivateNetwork(settings.allow_private_network);
+        setSavedAllowPrivateNetwork(settings.allow_private_network);
       }
       setError(null);
     } catch (nextError) {
@@ -159,11 +163,14 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
     }
   };
 
-  const updateNetworkSettings = async (field: 'allow_loopback' | 'allow_http', nextEnabled: boolean) => {
+  const updateNetworkSettings = async (field: 'allow_loopback' | 'allow_http' | 'allow_private_network', nextEnabled: boolean) => {
     if (busy || !isConnected) return;
     const generation = generationRef.current.next();
     const previous = savedAllowLoopback;
     const previousHttp = savedAllowHttp;
+    const previousPrivateNetwork = savedAllowPrivateNetwork;
+    const nextPrivateNetwork = field === 'allow_private_network' ? nextEnabled : savedAllowPrivateNetwork;
+    setAllowPrivateNetwork(nextPrivateNetwork);
     const nextLoopback = field === 'allow_loopback' ? nextEnabled : savedAllowLoopback;
     const nextHttp = field === 'allow_http' ? nextEnabled : savedAllowHttp;
     setAllowLoopback(nextLoopback);
@@ -176,6 +183,7 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
         await request('a2a.outbound.settings.update', {
           allow_loopback: nextLoopback,
           allow_http: nextHttp,
+          allow_private_network: nextPrivateNetwork,
         }),
       );
       if (!settings) throw new Error(t('a2aIngress.outbound.errors.invalidResponse'));
@@ -184,11 +192,14 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
       setSavedAllowLoopback(settings.allow_loopback);
       setAllowHttp(settings.allow_http);
       setSavedAllowHttp(settings.allow_http);
+      setAllowPrivateNetwork(settings.allow_private_network);
+      setSavedAllowPrivateNetwork(settings.allow_private_network);
       setNotice(t('a2aIngress.outbound.localDebug.saved'));
     } catch (nextError) {
       if (!generationRef.current.accepts(generation)) return;
       setAllowLoopback(previous);
       setAllowHttp(previousHttp);
+      setAllowPrivateNetwork(previousPrivateNetwork);
       setError(errorMessage(nextError));
     } finally {
       setBusy(null);
@@ -424,6 +435,18 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
                         </div>
                         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                           <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-text">{t('a2aIngress.outbound.localDebug.allowPrivateNetwork')}</div>
+                            <p className="mt-1 text-xs text-text-muted">{t('a2aIngress.outbound.localDebug.privateNetworkDescription')}</p>
+                          </div>
+                          <Switch
+                            checked={allowPrivateNetwork}
+                            onChange={nextEnabled => void updateNetworkSettings('allow_private_network', nextEnabled)}
+                            disabled={!isConnected || !!busy}
+                            title={t('a2aIngress.outbound.localDebug.allowPrivateNetwork')}
+                          />
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
                             <div className="text-sm font-medium text-text">{t('a2aIngress.outbound.localDebug.allowHttp')}</div>
                             <p className="mt-1 text-xs text-text-muted">{t('a2aIngress.outbound.localDebug.httpDescription')}</p>
                           </div>
@@ -434,9 +457,10 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
                             title={t('a2aIngress.outbound.localDebug.allowHttp')}
                           />
                         </div>
-                        {(allowLoopback || allowHttp) && (
+                        {(allowLoopback || allowPrivateNetwork || allowHttp) && (
                           <div className="mt-3 space-y-1 border-t border-warn/20 pt-3 text-xs text-warn">
                             {allowLoopback && <p>{t('a2aIngress.outbound.localDebug.warning')}</p>}
+                            {allowPrivateNetwork && <p>{t('a2aIngress.outbound.localDebug.privateNetworkWarning')}</p>}
                             {allowHttp && <p>{t('a2aIngress.outbound.localDebug.httpWarning')}</p>}
                           </div>
                         )}

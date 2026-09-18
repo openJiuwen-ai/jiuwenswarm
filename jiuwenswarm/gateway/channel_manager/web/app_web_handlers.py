@@ -1963,12 +1963,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _a2a_outbound_settings_update(ws, req_id, params, session_id):
         allow_loopback = params.get("allow_loopback")
         allow_http = params.get("allow_http")
-        if not isinstance(allow_loopback, bool) or not isinstance(allow_http, bool):
+        allow_private_network = params.get("allow_private_network", False)
+        if not all(isinstance(value, bool) for value in (allow_loopback, allow_http, allow_private_network)):
             await channel.send_response(
                 ws,
                 req_id,
                 ok=False,
-                error="allow_loopback and allow_http must be booleans",
+                error="allow_loopback, allow_http and allow_private_network must be booleans",
                 code="A2A_CONFIG_INVALID",
             )
             return
@@ -1976,7 +1977,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws,
             req_id,
             lambda: a2a_manager.outbound_update_settings(
-                allow_loopback=allow_loopback, allow_http=allow_http
+                allow_loopback=allow_loopback, allow_http=allow_http, allow_private_network=allow_private_network
             ),
         )
 

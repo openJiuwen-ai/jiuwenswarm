@@ -106,8 +106,14 @@ class A2AOutboundRegistry:
         if getattr(self._repository, "manager_owned", False):
             raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
 
-    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
-        self._discovery.set_network_settings(allow_loopback=allow_loopback, allow_http=allow_http)
+    def set_network_settings(
+        self, *, allow_loopback: bool, allow_http: bool, allow_private_network: bool = False
+    ) -> None:
+        self._discovery.set_network_settings(
+            allow_loopback=allow_loopback,
+            allow_http=allow_http,
+            allow_private_network=allow_private_network,
+        )
 
     async def discover(self, url: str, card_path: str | None = None) -> dict[str, Any]:
         self._require_mutable_catalog()

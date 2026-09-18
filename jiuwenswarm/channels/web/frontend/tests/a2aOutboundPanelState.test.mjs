@@ -87,7 +87,7 @@ test('A2A outbound list rejects any malformed item', () => {
 });
 
 test('A2A outbound settings require explicit loopback and HTTP booleans', () => {
-  assert.deepEqual(normalizeA2AOutboundSettings({ allow_loopback: true, allow_http: false }), { allow_loopback: true, allow_http: false });
+  assert.deepEqual(normalizeA2AOutboundSettings({ allow_loopback: true, allow_http: false }), { allow_loopback: true, allow_http: false, allow_private_network: false });
   assert.equal(normalizeA2AOutboundSettings({ allow_loopback: 'true', allow_http: false }), null);
   assert.equal(normalizeA2AOutboundSettings({ allow_loopback: true }), null);
   assert.equal(normalizeA2AOutboundSettings({ allow_loopback: false, allow_http: 'true' }), null);
@@ -146,4 +146,14 @@ test('Card credential help reads current scheme declarations without guessing', 
   assert.equal(describeA2AOutboundAuthentication({}, t), 'undeclared');
   assert.equal(describeA2AOutboundAuthentication({ securityRequirements: [{}] }, t), 'none');
   assert.equal(describeA2AOutboundAuthentication({ securityRequirements: [{ schemes: { bearer: {} } }] }, t), 'unknown');
+});
+
+test("LAN setting accepts booleans and rejects invalid values", () => {
+  for (const allow_private_network of [true, false]) {
+    const settings = { allow_loopback: false, allow_http: true, allow_private_network };
+    assert.deepEqual(normalizeA2AOutboundSettings(settings), settings);
+  }
+  for (const allow_private_network of [null, "true", 1]) {
+    assert.equal(normalizeA2AOutboundSettings({ allow_loopback: false, allow_http: true, allow_private_network }), null);
+  }
 });
