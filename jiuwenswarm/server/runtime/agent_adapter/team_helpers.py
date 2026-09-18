@@ -2644,6 +2644,17 @@ async def _process_team_message_stream(
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=channel_id,
+            payload={
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "is_processing": False,
+                "is_complete": True,
+            },
+            is_complete=False,
+        )
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=channel_id,
             payload=None,
             is_complete=True,
         )
