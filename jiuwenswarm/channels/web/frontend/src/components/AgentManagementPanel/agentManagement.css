@@ -2746,13 +2746,13 @@
 }
 
 .agent-management-selection-card.page-card.is-disabled .entity-header__title,
-.agent-management-selection-card.page-card.is-disabled .entity-header__tag,
 .agent-management-selection-card.page-card.is-disabled .page-card__body {
   color: var(--color-text-tertiary);
 }
 
 .agent-management-selection-card.page-card.is-disabled .entity-header__tag {
   border: 1px solid var(--color-border-default);
+  color: var(--color-text-tertiary);
 }
 
 .agent-management-selection-card.page-card.is-disabled .entity-header__avatar {

@@ -10,6 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   isSkillVisibleInSourceTab,
+  isMcpSelectable,
   sortInstalledFirst,
   sortMcpOptions,
   type AgentDraft,
@@ -810,8 +811,8 @@ export function AgentEditor({
                           {pageMcps.map((mcp) => {
                             const selected = mcpDraft.includes(mcp.id);
                             const installed = mcp.installed === true;
-                            const unconnected = installed && mcp.connectionState !== 'connected';
-                            const selectable = installed && !unconnected;
+                            const selectable = isMcpSelectable(mcp);
+                            const unconnected = installed && !selectable;
                             const connecting = connectingMcpId === mcp.id || mcp.connectionState === 'connecting';
                             const installing = installingMcpId === mcp.id;
                             return (
@@ -820,9 +821,9 @@ export function AgentEditor({
                                 className={`agent-management-selection-card${selected ? ' is-selected' : ''}${!selectable ? ' is-disabled' : ''}`}
                                 testId="agent-editor-mcp-picker-item"
                                 variant={mcp.id}
-                                interactive={installed}
+                                interactive={selectable}
                                 selected={selected}
-                                disabled={unconnected || (!installed && !onInstallMcp)}
+                                disabled={!selectable && !onInstallMcp && !onConnectMcp}
                                 ariaLabel={mcp.name}
                                 onClick={
                                   selectable

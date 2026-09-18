@@ -242,6 +242,8 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(agentEditorSource, /agent-editor-mcp-picker-pagination/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
   assert.match(agentEditorSource, /sortMcpOptions\(\s*mcpOptions\.filter\([\s\S]*?mcpSourceTab/);
+  assert.match(agentEditorSource, /const selectable = isMcpSelectable\(mcp\)/);
+  assert.match(agentEditorSource, /interactive=\{selectable\}/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-tab-market/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-tab-local/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-market/);
@@ -258,6 +260,10 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(
     agentManagementCss,
     /agent-management-selection-card\.page-card\.is-disabled[\s\S]*opacity: 1;/,
+  );
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card\.page-card\.is-disabled \.entity-header__tag[\s\S]*border: 1px solid var\(--color-border-default\);/,
   );
   assert.match(
     agentManagementCss,

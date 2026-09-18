@@ -22,6 +22,7 @@ import {
 } from '../node_modules/.cache/agent-management/state.js';
 import { resolveAgentTagPayload } from '../node_modules/.cache/agent-management/tagOptions.js';
 import {
+  isMcpSelectable,
   isSkillVisibleInSourceTab,
   sortInstalledFirst,
   sortMcpOptions,
@@ -62,6 +63,10 @@ test('MCP picker sorts connected, reconnectable and installable options in readi
     'connect-z',
     'install-z',
   ]);
+  assert.equal(isMcpSelectable(items[2]), true);
+  assert.equal(isMcpSelectable(items[0]), false);
+  assert.equal(isMcpSelectable(items[1]), false);
+  assert.equal(isMcpSelectable(items[3]), false);
 });
 
 test('skill source tabs keep marketplace and local visibility semantics', () => {

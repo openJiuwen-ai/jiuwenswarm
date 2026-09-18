@@ -1,4 +1,4 @@
-import type { SkillOption } from './types';
+import type { McpOption, SkillOption } from './types';
 
 export type SelectionSourceTab = 'local' | 'market';
 
@@ -33,6 +33,20 @@ type SortableSelection = {
   displayName?: string;
 };
 
+export type McpSelectionState = 'available' | 'pending-connection' | 'pending-install';
+
+export function getMcpSelectionState(
+  mcp: Pick<McpOption, 'installed' | 'connectionState'>,
+): McpSelectionState {
+  if (mcp.installed === true && mcp.connectionState === 'connected') return 'available';
+  if (mcp.installed === true) return 'pending-connection';
+  return 'pending-install';
+}
+
+export function isMcpSelectable(mcp: Pick<McpOption, 'installed' | 'connectionState'>): boolean {
+  return getMcpSelectionState(mcp) === 'available';
+}
+
 function selectionLabel(item: SortableSelection): string {
   return item.displayName?.trim() || item.name?.trim() || item.id?.trim() || '';
 }
@@ -54,18 +68,17 @@ export function sortInstalledFirst<T extends SortableSelection>(items: T[]): T[]
   });
 }
 
-type McpSelection = SortableSelection & {
-  connectionState?: string;
-};
+export function sortMcpOptions<T extends SortableSelection & Pick<McpOption, 'connectionState'>>(items: T[]): T[] {
+  const stateOrder: Record<McpSelectionState, number> = {
+    available: 0,
+    'pending-connection': 1,
+    'pending-install': 2,
+  };
 
-function mcpReadinessRank(item: McpSelection): number {
-  if (item.installed !== true) return 2;
-  return item.connectionState === 'connected' ? 0 : 1;
-}
-
-export function sortMcpOptions<T extends McpSelection>(items: T[]): T[] {
   return [...items].sort((left, right) => {
-    const readinessOrder = mcpReadinessRank(left) - mcpReadinessRank(right);
-    return readinessOrder || compareSelectionLabels(left, right);
+    const mcpStateOrder = stateOrder[getMcpSelectionState(left)] - stateOrder[getMcpSelectionState(right)];
+    if (mcpStateOrder !== 0) return mcpStateOrder;
+
+    return compareSelectionLabels(left, right);
   });
 }
