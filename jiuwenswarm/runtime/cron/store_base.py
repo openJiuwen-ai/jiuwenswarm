@@ -41,6 +41,7 @@ class CronJobStoreBackend(Protocol):
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        model_selection: dict[str, str] | None = None,
         app_id: str = "",
         work_mode: str = "work",
         user_id: str = "",

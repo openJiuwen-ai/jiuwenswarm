@@ -871,6 +871,7 @@ class CronSchedulerService:
                 "project_id": job.project_id or "",
                 "work_mode": job.work_mode or DEFAULT_WEB_WORK_MODE,
                 "model_name": job.model_name or None,
+                "model_selection": job.model_selection,
                 "cron_id": job.id,
                 "user_id": cron_user_id,
                 # 创建即带标题：标题若为空，则完全依赖首条用户消息的
@@ -1343,6 +1344,8 @@ class CronSchedulerService:
                 }
                 if job.model_name:
                     params["model_name"] = job.model_name
+                if job.model_selection:
+                    params["model_selection"] = dict(job.model_selection)
                 # 会话级 MCP 选择：注入 chat.send 的 ``mcp`` 字段，走 AgentServer
                 # 与 chat-session 相同的 reconcile_session_mcp 通道（增量注册/注销）；
                 # 未配置（None）时保持既有行为（仅 init 全局默认集）。
