@@ -8,6 +8,10 @@ import json
 import logging
 from typing import Any
 
+from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
+    try_handle_subagent_chunk,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -223,6 +227,12 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                 "timestamp": payload.get("timestamp"),
             }
         return None
+
+    handled, parsed = try_handle_subagent_chunk(chunk_type, payload)
+    if handled:
+        if isinstance(parsed, dict):
+            parsed = {**parsed, **_propagate_stream_source_id(payload)}
+        return parsed
 
     if isinstance(chunk_type, str) and "." in chunk_type:
         if chunk_type == "context.compression_state":

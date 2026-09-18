@@ -177,6 +177,12 @@ def _has_persistable_assistant_payload(
             or payload.get("usage_metadata")
         )
     # HITL cards have empty content; questions / expiry live in extras.
+    if et == "chat.subagent_activity" and isinstance(payload.get("subagent_activity"), dict):
+        return True
+    if et == "chat.subtask_update" and (
+        payload.get("task_id") or payload.get("subagent_id") or payload.get("description")
+    ):
+        return True
     if et == "chat.ask_user_question":
         questions = payload.get("questions")
         return isinstance(questions, list) and bool(questions)
@@ -346,6 +352,43 @@ _MERGE = {
 }
 
 
+def subagent_history_dir_name(subagent_id: str) -> str:
+    """Return a single path component for a child subagent history directory."""
+    normalized = (subagent_id or "").strip()
+    if is_valid_session_id(normalized):
+        return normalized
+    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", normalized).strip("._-")
+    if len(slug) > 80:
+        slug = slug[:80]
+    return slug
+
+
+def resolve_subagent_history_path(
+    session_id: str,
+    subagent_id: str,
+    *,
+    create: bool = False,
+    sessions_root: str | Path | None = None,
+) -> tuple[Path | None, str | None]:
+    """Resolve ``<parent>/subagents/<id>/history.json(l)`` inside the parent session."""
+    root = Path(sessions_root) if sessions_root is not None else None
+    parent, error = resolve_session_dir(session_id, create=create, sessions_root=root)
+    if error or parent is None:
+        return None, error or "invalid session_id"
+    name = subagent_history_dir_name(subagent_id)
+    if not name:
+        return None, "invalid subagent_id"
+    sub_dir = (parent / "subagents" / name).resolve()
+    try:
+        sub_dir.relative_to(parent.resolve())
+    except ValueError:
+        return None, "invalid subagent_id"
+    if create:
+        sub_dir.mkdir(parents=True, exist_ok=True)
+    filename = _LEGACY_HISTORY_FILENAME if use_legacy_history_json() else _JSONL_HISTORY_FILENAME
+    return sub_dir / filename, None
+
+
 def _session_dir(
     session_id: str, *, create: bool = True, sessions_root: str | None = None
 ) -> Path:
@@ -425,8 +468,23 @@ def get_write_history_path(session_id: str, sessions_root: str | None = None) ->
     return _history_jsonl_file(session_id, sessions_root=sessions_root)
 
 
-def get_read_history_path(session_id: str, sessions_root: str | None = None) -> Path:
+def get_read_history_path(
+    session_id: str,
+    sessions_root: str | None = None,
+    *,
+    subagent_id: str | None = None,
+) -> Path:
     """Return the preferred history source, falling back to legacy json."""
+    if subagent_id:
+        path, error = resolve_subagent_history_path(
+            session_id,
+            subagent_id,
+            create=False,
+            sessions_root=sessions_root,
+        )
+        if path is not None and error is None:
+            return path
+        return Path("__missing_subagent_history__")
     if use_legacy_history_json():
         legacy_path = _history_file(session_id, create=False, sessions_root=sessions_root)
         if legacy_path.exists():
@@ -445,8 +503,17 @@ def get_read_history_path(session_id: str, sessions_root: str | None = None) -> 
     return jsonl_path
 
 
-def history_exists(session_id: str, sessions_root: str | None = None) -> bool:
-    return get_read_history_path(session_id, sessions_root=sessions_root).exists()
+def history_exists(
+    session_id: str,
+    sessions_root: str | None = None,
+    *,
+    subagent_id: str | None = None,
+) -> bool:
+    return get_read_history_path(
+        session_id,
+        sessions_root=sessions_root,
+        subagent_id=subagent_id,
+    ).exists()
 
 
 def get_history_mtime(session_id: str) -> float | None:
@@ -537,8 +604,19 @@ def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def load_history_records(session_id: str, sessions_root: str | None = None) -> list[dict[str, Any]]:
-    return _read_history(get_read_history_path(session_id, sessions_root=sessions_root))
+def load_history_records(
+    session_id: str,
+    sessions_root: str | None = None,
+    *,
+    subagent_id: str | None = None,
+) -> list[dict[str, Any]]:
+    return _read_history(
+        get_read_history_path(
+            session_id,
+            sessions_root=sessions_root,
+            subagent_id=subagent_id,
+        )
+    )
 
 
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
@@ -770,6 +848,37 @@ def _batch_write_items(session_id: str, items: list[dict], sessions_root: str | 
 
 def _write_item(session_id: str, item: dict[str, Any], sessions_root: str | None = None) -> None:
     _batch_write_items(session_id, [item], sessions_root)
+
+
+def _batch_write_subagent_items(
+    session_id: str,
+    subagent_id: str,
+    items: list[dict],
+    sessions_root: str | None,
+) -> None:
+    """Append JSONL rows to the child subagent file; dest parent buffer is untouched."""
+    if not items:
+        return
+    path, error = resolve_subagent_history_path(
+        session_id,
+        subagent_id,
+        create=True,
+        sessions_root=sessions_root,
+    )
+    if error or path is None:
+        logger.warning(
+            "skip subagent history write: session_id=%s subagent_id=%s error=%s",
+            session_id,
+            subagent_id,
+            error,
+        )
+        return
+    with _FILE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as fh:
+            for item in items:
+                fh.write(json.dumps(item, ensure_ascii=False))
+                fh.write("\n")
 
 
 def _ensure_worker_started() -> None:
@@ -1109,6 +1218,7 @@ def append_history_record(
     mode: str | None = None,
     sessions_root: str | Path | None = None,
     task_id: str | None = None,
+    subagent_id: str | None = None,
 ) -> None:
     """向指定 session 的 history.json 追加一条 JSONL 记录（可合并事件先缓冲）。"""
     sid = (session_id or "default").strip() or "default"
@@ -1158,11 +1268,18 @@ def append_history_record(
     if mode:
         item["mode"] = str(mode)
     item["session_id"] = sid
+    child_id = (subagent_id or "").strip() or None
+    if child_id:
+        item["subagent_id"] = child_id
     # skill_envs injected into bash tool_args.env must not be persisted.
     _strip_skill_env_from_history_item(item)
 
     sessions_root_s = str(sessions_root) if sessions_root else None
     et = event_type if (role_norm == "assistant" and event_type) else None
+
+    if child_id:
+        _batch_write_subagent_items(sid, child_id, [item], sessions_root_s)
+        return
 
     _ensure_flush_thread_started()
     try:

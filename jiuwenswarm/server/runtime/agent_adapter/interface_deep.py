@@ -386,6 +386,10 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_slash import (
     handle_evolution_slash_command,
 )
 from jiuwenswarm.server.runtime.agent_adapter import evolution_version as evolution_version_ctl
+from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
+    clear_subagent_progress_batch,
+    try_handle_subagent_chunk,
+)
 from jiuwenswarm.server.utils.stream_utils import (
     build_tool_result_payload,
     parse_ask_user_question_payload,
@@ -2913,6 +2917,7 @@ class JiuWenSwarmDeepAdapter:
         sid = self._session_adapter_key(session_id)
         if not sid:
             return
+        clear_subagent_progress_batch(sid)
         if not self._is_session_scoped_adapter:
             child = self._session_adapters.get(sid)
             if child is not None and child is not self:
@@ -17734,7 +17739,10 @@ class JiuWenSwarmDeepAdapter:
                                 mark_request_first_byte()
                     else:
                         # check for error in other typed chunks (e.g. controller_output.task_failed)
-                        parsed = self._parse_stream_chunk(chunk)
+                        parsed = self._parse_stream_chunk(
+                            chunk,
+                            _parent_session_id=session_id,
+                        )
                         if parsed is not None:
                             event_type = str(parsed.get("event_type") or "").strip()
                             if event_type in ("chat.error", "error"):
@@ -19356,6 +19364,7 @@ class JiuWenSwarmDeepAdapter:
                 parsed = self._parse_stream_chunk(
                     chunk,
                     _streamed_text=segment_streamed_text,
+                    _parent_session_id=session_id,
                 )
                 parsed = self._adapt_goal_intermediate_final(parsed)
                 if parsed is not None:
@@ -19933,6 +19942,7 @@ class JiuWenSwarmDeepAdapter:
         _stage: str = "",
         _streamed_text: str = "",
         _protocol_buffer: Any = None,
+        _parent_session_id: str | None = None,
     ) -> dict | None:
         """将 SDK OutputSchema 转为前端可消费的 payload dict.
 
@@ -19943,6 +19953,7 @@ class JiuWenSwarmDeepAdapter:
             _streamed_text: 本段已通过 chat.delta 发出的可见正文（用于空 final / drain）
             _protocol_buffer: 调用方持有的 StreamProtocolBuffer；跨 chunk 缓冲在 call site
                 feed/flush，此处仅吸收关键字以免 TypeError
+            _parent_session_id: parent session fallback for native subagent persist
 
         Returns:
             dict  – 含 event_type 的 payload，或 None（需跳过的帧）。
@@ -20220,6 +20231,14 @@ class JiuWenSwarmDeepAdapter:
                             "timestamp": payload.get("timestamp"),
                         }
                     return None
+
+                handled, parsed = try_handle_subagent_chunk(
+                    chunk_type,
+                    payload,
+                    parent_session_id=_parent_session_id,
+                )
+                if handled:
+                    return parsed
 
                 if chunk_type == "context.usage":
                     if isinstance(payload, dict):

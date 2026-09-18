@@ -69,6 +69,34 @@ def test_session_has_live_subagent_runtime_reads_capacity() -> None:
     ) is False
 
 
+def test_release_subagent_runtime_clears_progress_batch() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
+        clear_all_subagent_progress_batches,
+        resolve_subagent_parallel_fields,
+    )
+
+    clear_all_subagent_progress_batches()
+    resolve_subagent_parallel_fields(
+        parent_session_id="sess-1",
+        subagent_id="sa-a",
+        legacy_status="starting",
+    )
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = None
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = "sess-1"
+
+    import asyncio
+
+    asyncio.run(adapter.release_subagent_runtime_for_session("sess-1"))
+    again = resolve_subagent_parallel_fields(
+        parent_session_id="sess-1",
+        subagent_id="sa-b",
+        legacy_status="starting",
+    )
+    assert again == (0, 1, False)
+
+
 def test_agent_ras_passthrough_still_enabled() -> None:
     kwargs = _agent_ras_kwargs_from_config({"agent_ras": {"enabled": True}})
     assert "agent_ras" in kwargs
