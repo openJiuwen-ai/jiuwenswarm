@@ -11,6 +11,7 @@ import remarkGfm from 'remark-gfm';
 import {
   isSkillVisibleInSourceTab,
   sortInstalledFirst,
+  sortMcpOptions,
   type AgentDraft,
   type McpOption,
   type RequestStatus,
@@ -107,7 +108,7 @@ export function AgentEditor({
         .includes(skillQuery.trim().toLocaleLowerCase());
     }),
   );
-  const filteredMcps = sortInstalledFirst(
+  const filteredMcps = sortMcpOptions(
     mcpOptions.filter((mcp) => {
       const isMarketplace = mcp.source === 'built_in' || mcp.source === 'hub';
       const isMine = mcp.installed === true || mcp.source === 'customize';

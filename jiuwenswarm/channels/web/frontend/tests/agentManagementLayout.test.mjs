@@ -241,7 +241,7 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(agentEditorSource, /agent-editor-mcp-picker-tabs/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-pagination/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
-  assert.match(agentEditorSource, /sortInstalledFirst\(\s*mcpOptions\.filter\([\s\S]*?mcpSourceTab/);
+  assert.match(agentEditorSource, /sortMcpOptions\(\s*mcpOptions\.filter\([\s\S]*?mcpSourceTab/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-tab-market/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-tab-local/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-market/);
@@ -273,14 +273,14 @@ test('management pickers expose source tabs and preserve install/connect actions
   );
 });
 
-test('Expert Team chat creation uses the team welcome in Team mode', () => {
+test('Expert Team chat creation uses the standard new-chat welcome in Agent mode', () => {
   const groupCreateNavigation = appSource.match(
     /onCreateGroupViaChat=\{\(\) => requestSessionNavigation\('new', \{[\s\S]*?\}\)\}/,
   )?.[0];
   assert.ok(groupCreateNavigation);
   assert.match(groupCreateNavigation, /initialSelectedSkills: \['agent-group-creator'\]/);
-  assert.match(groupCreateNavigation, /forceMode: 'team'/);
-  assert.match(groupCreateNavigation, /welcomeVariant: 'group-create'/);
+  assert.match(groupCreateNavigation, /forceMode: 'agent'/);
+  assert.doesNotMatch(groupCreateNavigation, /welcomeVariant/);
 });
 
 test('MCP picker keeps installed but disconnected connectors out of selection', () => {

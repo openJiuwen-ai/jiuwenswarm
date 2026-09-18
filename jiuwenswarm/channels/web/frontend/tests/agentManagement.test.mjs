@@ -21,7 +21,11 @@ import {
   initialAgentManagementState,
 } from '../node_modules/.cache/agent-management/state.js';
 import { resolveAgentTagPayload } from '../node_modules/.cache/agent-management/tagOptions.js';
-import { isSkillVisibleInSourceTab, sortInstalledFirst } from '../node_modules/.cache/agent-management/selection.js';
+import {
+  isSkillVisibleInSourceTab,
+  sortInstalledFirst,
+  sortMcpOptions,
+} from '../node_modules/.cache/agent-management/selection.js';
 import {
   buildCatalogViewModel,
   findFirstPreviewableFile,
@@ -41,6 +45,22 @@ test('selection pickers share installed-first and label sorting', () => {
     'expert-z',
     'skill-a',
     'skill-z',
+  ]);
+});
+
+test('MCP picker sorts connected, reconnectable and installable options in readiness order', () => {
+  const items = [
+    { id: 'install-z', name: 'z', installed: false, connectionState: 'disconnected' },
+    { id: 'connect-z', name: 'z', installed: true, connectionState: 'disconnected' },
+    { id: 'connected-z', name: 'z', installed: true, connectionState: 'connected' },
+    { id: 'connecting-a', name: 'a', installed: true, connectionState: 'connecting' },
+  ];
+
+  assert.deepEqual(sortMcpOptions(items).map((item) => item.id), [
+    'connected-z',
+    'connecting-a',
+    'connect-z',
+    'install-z',
   ]);
 });
 
