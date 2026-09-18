@@ -1000,6 +1000,9 @@ export const ChatPanel = React.memo(function ChatPanel({
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const agentGroupUnavailable = useChatStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
+  );
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const isThinking = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isThinking ?? false);
   const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
@@ -1007,9 +1010,13 @@ export const ChatPanel = React.memo(function ChatPanel({
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const [teamGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  const [agentGroupDeletedNoticeOpen, setAgentGroupDeletedNoticeOpen] = useState(false);
   useEffect(() => {
     setTeamGroupIdentity(null);
   }, [activeSessionId]);
+  useEffect(() => {
+    setAgentGroupDeletedNoticeOpen(agentGroupUnavailable);
+  }, [agentGroupUnavailable, activeSessionId]);
   const hasHarnessProgress = useHarnessStore(
     (s) => mode === 'auto_harness' && (s.runtimes[activeSessionId ?? '']?.stageResults.length ?? 0) > 0,
   );
@@ -2029,6 +2036,19 @@ export const ChatPanel = React.memo(function ChatPanel({
       <div className="chat-ai-disclaimer" data-testid="chat-panel-ai-disclaimer">
         {t('share.aiNotice')}
       </div>
+      {agentGroupDeletedNoticeOpen && (
+        <div className="conversation-dialog" role="dialog" aria-modal="true" aria-label={t('chat.agentGroupDeletedTitle')} data-testid="agent-group-deleted-dialog">
+          <button type="button" className="conversation-dialog__backdrop" onClick={() => setAgentGroupDeletedNoticeOpen(false)} aria-label={t('common.close')} />
+          <div className="conversation-dialog__panel">
+            <button type="button" className="conversation-dialog__close" onClick={() => setAgentGroupDeletedNoticeOpen(false)} aria-label={t('common.close')}><X size={20} /></button>
+            <h2>{t('chat.agentGroupDeletedTitle')}</h2>
+            <p>{t('chat.agentGroupDeletedDescription')}</p>
+            <div className="conversation-dialog__actions">
+              <button type="button" className="is-primary" onClick={() => setAgentGroupDeletedNoticeOpen(false)}>{t('common.confirm')}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 });
