@@ -771,6 +771,8 @@ redis:
   # 单机：host / host:port；cluster：逗号列表(如 10.0.0.11:6379,10.0.0.12:6379)；不带端口时用 port
   host: ${REDIS_HOST:-localhost}
   port: ${REDIS_PORT:-6379}
+  # ACL 用户名；留空走 default 用户（等价于只发 AUTH <password>）
+  username: ${REDIS_USERNAME:-}
   password: ${REDIS_PASSWORD:-}
   db: ${REDIS_DB:-0}
   # Session 数据过期时间（秒）

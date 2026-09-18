@@ -223,6 +223,8 @@ declare -A DEPLOY_VARS=(
     ["REDIS_NAME"]="jiuwenclaw-redis"
     ["REDIS_PASSWORD"]=""
     ["REDIS_PORT"]="6379"
+    # ACL 用户名；留空走 default 用户（等价于只发 AUTH <password>）
+    ["REDIS_USERNAME"]=""
     ["RENDER_ONLY"]="false"
     ["SECRET_CM_NAME"]="jiuwenclaw-secret-configmap"
     ["TIMEZONE"]="Asia/Shanghai"

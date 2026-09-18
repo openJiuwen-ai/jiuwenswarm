@@ -45,7 +45,24 @@ gen_runtime_file() {
     local redis_db="${DEPLOY_VARS["AGENT_RUNTIME_REDIS_DB"]}"
 
     if [[ "${redis_mode}" == "cluster" ]]; then
-        DEPLOY_VARS["OPENJIUWEN_SERVICE_REDIS_URL"]="redis+cluster://${redis_host}:${redis_port}"
+        # cluster 是多节点：REDIS_HOST 支持逗号分隔列表（如 h1:6379,h2:6379）。
+        # 逐项归一化——已带端口的项不再追加端口，否则会拼出 "h2:6379:6379" 这种坏 URL。
+        # （旧实现是 "redis+cluster://${redis_host}:${redis_port}"，单节点时正确，
+        #   多节点时整串被塞进 host 位再补一个端口，末尾必然坏。）
+        local nodes="" node
+        local -a redis_nodes
+        IFS=',' read -ra redis_nodes <<< "${redis_host}"
+        for node in "${redis_nodes[@]}"; do
+            node="${node//[[:space:]]/}"              # 去空白，容忍 "h1:6379, h2:6379"
+            [ -z "${node}" ] && continue              # 容忍尾随逗号
+            [[ "${node}" == *:* ]] || node="${node}:${redis_port}"
+            nodes="${nodes:+${nodes},}${node}"
+        done
+        [ -n "${nodes}" ] || error \
+            "REDIS_MODE=cluster 但 REDIS_HOST 为空，无法构造集群连接串。" \
+            "请设置形如 \"10.0.0.11:6379,10.0.0.12:6379,10.0.0.13:6379\" 的节点列表。"
+        # cluster 无库号，URL 不带 /<db>
+        DEPLOY_VARS["OPENJIUWEN_SERVICE_REDIS_URL"]="redis+cluster://${nodes}"
     else
         DEPLOY_VARS["OPENJIUWEN_SERVICE_REDIS_URL"]="redis://${redis_host}:${redis_port}/${redis_db}"
     fi

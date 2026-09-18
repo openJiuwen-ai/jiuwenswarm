@@ -18,4 +18,5 @@
 
 | 日期 | 文档 | 一句话 |
 |---|---|---|
+| 2026-09 | [Redis ACL 用户名支持](2026-09-redis-acl-username.md) | 新增 `REDIS_USERNAME` 支持连接非 default 用户：Gateway/AgentServer/agent-runtime 三处分别注入；内置 Redis 可同步建 ACL 用户（密码经 `secretKeyRef` + k8s `$(VAR)` 展开，不落 manifest 明文）；配套[方案设计文档](2026-09-redis-acl-username-design.md) |
 | 2026-08 | [企业用户面登录解耦与认证模拟插件化](2026-08-enterprise-user-web-login-auth-pluggable.md) | 用户面脱离 Manager Web 独立交付，正式认证与可剥离模拟认证通过 Provider 装配 |
