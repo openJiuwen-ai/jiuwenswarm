@@ -1667,28 +1667,63 @@ def _deep_agent_kv_cache_affinity_config(
 
 def _build_context_assemble_rail(
     disabled_tools: list[str] | None = None,
+    tool_name_allowlist: list[str] | None = None,
 ) -> ContextAssembleRail | None:
     """Build ContextAssembleRail.
 
     ``disabled_tools`` seeds the tools prompt hide-list. Product adapters own
     the blacklist data flow at construction time (and optional later
-    ``update_disabled_tools`` calls). Compatible with older openjiuwen / test
-    fakes whose constructor does not accept ``disabled_tools=``: fall back to
-    no-arg construction and ``update_disabled_tools`` when available.
+    ``update_disabled_tools`` calls).
+
+    ``tool_name_allowlist`` (typically ProgressiveToolRail.eager_tools) keeps the
+    system ``# 可用工具`` section aligned with the fixed eager schema so deferred
+    / OfficeClaw MCP registrations do not rewrite the prompt prefix mid-task.
+    Compatible with older openjiuwen / test fakes whose constructor does not
+    accept the newer kwargs.
     """
     try:
         try:
-            context_assemble_rail = ContextAssembleRail(disabled_tools=disabled_tools)
+            context_assemble_rail = ContextAssembleRail(
+                disabled_tools=disabled_tools,
+                tool_name_allowlist=tool_name_allowlist,
+            )
         except TypeError:
-            context_assemble_rail = ContextAssembleRail()
-            update = getattr(context_assemble_rail, "update_disabled_tools", None)
-            if callable(update) and disabled_tools:
-                update(disabled_tools)
-        logger.info("[JiuWenSwarmDeepAdapter] ContextAssembleRail create success")
+            try:
+                context_assemble_rail = ContextAssembleRail(disabled_tools=disabled_tools)
+            except TypeError:
+                context_assemble_rail = ContextAssembleRail()
+                update = getattr(context_assemble_rail, "update_disabled_tools", None)
+                if callable(update) and disabled_tools:
+                    update(disabled_tools)
+            setter = getattr(context_assemble_rail, "set_tool_name_allowlist", None)
+            if callable(setter) and tool_name_allowlist is not None:
+                setter(tool_name_allowlist)
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] ContextAssembleRail create success "
+            "(allowlist=%s)",
+            list(tool_name_allowlist) if tool_name_allowlist else None,
+        )
     except Exception as exc:
         logger.warning("[JiuWenSwarmDeepAdapter] ContextAssembleRail create failed: %s", exc)
         context_assemble_rail = None
     return context_assemble_rail
+
+
+def _sync_context_assemble_tool_allowlist(
+    assemble: ContextAssembleRail | None,
+    progressive: Any | None,
+) -> None:
+    """Keep ContextAssemble tools-section allowlist aligned with eager schema."""
+    if assemble is None:
+        return
+    setter = getattr(assemble, "set_tool_name_allowlist", None)
+    if not callable(setter):
+        return
+    if progressive is None:
+        setter(None)
+        return
+    eager = getattr(progressive, "eager_tools", None) or []
+    setter(list(eager))
 
 
 def _resolve_session_memory_config(context_engine_cfg: dict[str, Any]) -> dict[str, Any] | None:
@@ -9664,8 +9699,16 @@ class JiuWenSwarmDeepAdapter:
                         ),
                         invocation_id=active_mcp.invocation_id or None,
                     )
+                _sync_context_assemble_tool_allowlist(
+                    self._context_assemble_rail,
+                    progressive_tool_rail,
+                )
             elif old_progressive_tool_rail is not None:
                 rails_to_unregister.append(old_progressive_tool_rail)
+                _sync_context_assemble_tool_allowlist(
+                    self._context_assemble_rail,
+                    None,
+                )
 
         # 统一工具开关热更新：重建式（与 ProgressiveToolRail 一致）。
         # 旧 rail uninit 时回滚它注销的工具（重新注册），新 rail init 再按新名单注销。
@@ -11256,14 +11299,22 @@ class JiuWenSwarmDeepAdapter:
                 )
             self._context_assemble_rail = _build_context_assemble_rail(
                 disabled_tools=disabled_list or None,
+                tool_name_allowlist=(
+                    list(self._progressive_tool_rail.eager_tools)
+                    if self._progressive_tool_rail is not None
+                    else None
+                ),
             )
             self._context_assemble_mode = "agent"
             if self._context_assemble_rail is not None:
                 await self._instance.register_rail(self._context_assemble_rail)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] ContextAssembleRail registered for agent mode "
-                    "(disabled_tools=%s)",
+                    "(disabled_tools=%s allowlist=%s)",
                     disabled_list,
+                    list(self._progressive_tool_rail.eager_tools)
+                    if self._progressive_tool_rail is not None
+                    else None,
                 )
             else:
                 logger.warning(
