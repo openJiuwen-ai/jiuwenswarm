@@ -14,11 +14,11 @@ def build_acp_initialize_result() -> dict[str, Any]:
             "version": __version__,
         },
         "agentCapabilities": {
-            "loadSession": False,
+            "loadSession": True,
             "promptCapabilities": {
-                "image": False,
+                "image": True,
                 "audio": False,
-                "embeddedContext": False,
+                "embeddedContext": True,
             },
             "sessionCapabilities": {
                 "list": {},
