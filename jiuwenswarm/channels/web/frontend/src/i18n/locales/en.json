@@ -2498,7 +2498,8 @@
         "sourceTabsLabel": "Expert sources",
         "skillSourceTabsLabel": "Team skill sources",
         "install": "Install",
-        "installing": "Installing…"
+        "installing": "Installing…",
+        "loading": "Loading Expert information…"
       }
     }
   },

@@ -22,9 +22,11 @@ import {
 } from '../node_modules/.cache/agent-management/state.js';
 import { resolveAgentTagPayload } from '../node_modules/.cache/agent-management/tagOptions.js';
 import {
+  isAgentGroupAgentCompatibilityLoading,
   isMcpSelectable,
   isSkillVisibleInSourceTab,
   sortInstalledFirst,
+  sortAgentGroupOptions,
   sortMcpOptions,
 } from '../node_modules/.cache/agent-management/selection.js';
 import {
@@ -67,6 +69,48 @@ test('MCP picker sorts connected, reconnectable and installable options in readi
   assert.equal(isMcpSelectable(items[0]), false);
   assert.equal(isMcpSelectable(items[1]), false);
   assert.equal(isMcpSelectable(items[3]), false);
+});
+
+test('market Expert options still loading team compatibility sort after ready options', () => {
+  const items = [
+    {
+      id: 'uninstalled',
+      displayName: 'Uninstalled',
+      source: 'hub',
+      installed: false,
+      teamCompatible: undefined,
+    },
+    {
+      id: 'loading',
+      displayName: 'Loading',
+      source: 'hub',
+      installed: true,
+      teamCompatible: undefined,
+    },
+    {
+      id: 'ready',
+      displayName: 'Ready',
+      source: 'hub',
+      installed: true,
+      teamCompatible: { leader: true, member: true },
+    },
+  ];
+
+  assert.deepEqual(sortAgentGroupOptions(items, 'loading').map((item) => item.id), [
+    'ready',
+    'loading',
+    'uninstalled',
+  ]);
+  assert.equal(isAgentGroupAgentCompatibilityLoading(items[1], 'loading'), true);
+  assert.equal(isAgentGroupAgentCompatibilityLoading(items[1], 'success'), false);
+  assert.equal(isAgentGroupAgentCompatibilityLoading(items[0], 'loading'), false);
+  assert.equal(
+    isAgentGroupAgentCompatibilityLoading(
+      { id: 'builtin', displayName: 'Built-in', source: 'builtin', installed: true, teamCompatible: undefined },
+      'loading',
+    ),
+    false,
+  );
 });
 
 test('skill source tabs keep marketplace and local visibility semantics', () => {
@@ -422,6 +466,40 @@ test('agent catalog starts empty and reports the current request failure', () =>
   assert.equal(failed.catalogStatus, 'error');
   assert.deepEqual(failed.catalog, []);
   assert.equal(failed.catalogError, 'Hub timeout');
+});
+
+test('catalog compatibility state keeps failures separate from cached catalog status', () => {
+  const cachedAgent = {
+    id: 'cached-agent',
+    runtimePackageName: 'cached-agent',
+    displayName: '缓存专家',
+    description: '',
+    category: 'Efficiency',
+    source: 'hub',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+  };
+  const cached = {
+    ...initialAgentManagementState,
+    catalog: [cachedAgent],
+    catalogStatus: 'success',
+  };
+
+  const loading = agentManagementReducer(cached, { type: 'catalog.compatibility.loading' });
+  const failed = agentManagementReducer(loading, {
+    type: 'catalog.compatibility.error',
+    message: 'Compatibility timeout',
+  });
+  assert.equal(failed.catalogStatus, 'success');
+  assert.equal(failed.catalogCompatibilityStatus, 'error');
+  assert.equal(failed.catalogCompatibilityError, 'Compatibility timeout');
+  assert.deepEqual(failed.catalog, [cachedAgent]);
+
+  const ready = agentManagementReducer(loading, { type: 'catalog.compatibility.loaded' });
+  assert.equal(ready.catalogCompatibilityStatus, 'success');
+  assert.equal(ready.catalogCompatibilityError, null);
 });
 
 test('agent detail does not display summary data when the full detail request fails', () => {

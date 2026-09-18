@@ -26,6 +26,7 @@ type AgentGroupEditorProps = {
   draft: AgentGroupDraft;
   agentOptions: AgentCatalogItem[];
   agentsStatus: RequestStatus;
+  agentsError: string | null;
   skillOptions: SkillOption[];
   skillsStatus: RequestStatus;
   saving: boolean;
@@ -47,6 +48,7 @@ export function AgentGroupEditor({
   draft,
   agentOptions,
   agentsStatus,
+  agentsError,
   skillOptions,
   skillsStatus,
   saving,
@@ -531,12 +533,15 @@ export function AgentGroupEditor({
         <AgentGroupMemberPicker
           mode={pickerMode}
           agents={uniqueAgentOptions}
+          agentsStatus={agentsStatus}
+          agentsError={agentsError}
           selectedLeaderId={draft.leaderId}
           selectedMemberIds={draft.memberIds}
           restoreFocusRef={pickerMode === 'leader' ? leaderPickerTriggerRef : memberPickerTriggerRef}
           selectionError={selectionError}
           onInstallAgent={onInstallAgent}
           installingAgentId={installingAgentId}
+          onReloadAgents={onReloadAgents}
           onCancel={() => setPickerMode(null)}
           onConfirm={(ids) => {
             if (pickerMode === 'leader')

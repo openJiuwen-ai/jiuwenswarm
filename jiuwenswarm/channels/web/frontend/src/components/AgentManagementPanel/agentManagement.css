@@ -2622,6 +2622,11 @@
   margin: 0;
 }
 
+.agent-management-selection-empty-state.is-loading {
+  align-items: center;
+  gap: 8px;
+}
+
 .agent-management-selection-dialog>footer {
   border-top: 1px solid var(--color-border-default);
   border-bottom: 0;
@@ -2759,6 +2764,19 @@
   opacity: var(--opacity-agent-muted);
 }
 
+.agent-management-selection-card.page-card.is-loading {
+  background: var(--color-surface-card);
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
+  cursor: wait;
+  opacity: 1;
+}
+
+.agent-management-selection-card.page-card.is-loading .entity-header__title,
+.agent-management-selection-card.page-card.is-loading .entity-header__tag,
+.agent-management-selection-card.page-card.is-loading .page-card__body {
+  color: var(--color-text-secondary);
+}
+
 .agent-management-selection-card.page-card .entity-header__actions {
   align-self: flex-start;
 }
@@ -2785,6 +2803,25 @@
 
 .agent-management-selection-card.page-card .agent-management-selection-card__action {
   margin-top: 0;
+}
+
+.agent-management-selection-card__loading {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-action-primary);
+}
+
+.agent-management-selection-card__loading-icon {
+  animation: agent-management-selection-spin 1s linear infinite;
+}
+
+@keyframes agent-management-selection-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .agent-management-inline-action {

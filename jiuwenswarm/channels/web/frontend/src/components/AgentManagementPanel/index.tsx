@@ -389,6 +389,7 @@ export function AgentManagementPanel({
 
   const loadCatalog = useCallback(async (options: { includeTeamCompatibility?: boolean } = {}) => {
     const revision = ++catalogRevisionRef.current;
+    if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loading' });
     dispatch({ type: 'catalog.loading' });
     try {
       const compatibilityOptions = options.includeTeamCompatibility
@@ -403,11 +404,13 @@ export function AgentManagementPanel({
       );
       if (revision !== catalogRevisionRef.current) return;
       catalogRef.current = catalog;
+      if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       dispatch({ type: 'catalog.loaded', catalog });
     } catch (error) {
       if (revision !== catalogRevisionRef.current) return;
-      catalogRef.current = [];
-      dispatch({ type: 'catalog.error', message: formatActionError(error, t('agentManagement.states.loadError')) });
+      const message = formatActionError(error, t('agentManagement.states.loadError'));
+      if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.error', message });
+      dispatch({ type: 'catalog.error', message });
     }
   }, [client, formatActionError, t]);
 
@@ -545,10 +548,10 @@ export function AgentManagementPanel({
     const isInitialMount = !panelMountedRef.current;
     panelMountedRef.current = true;
     if (isActive && (!prevIsActive || isInitialMount)) {
-      void loadCatalog();
+      void loadCatalog(view === 'group-create' ? { includeTeamCompatibility: true } : {});
     }
     panelPrevActiveRef.current = isActive;
-  }, [isActive, loadCatalog]);
+  }, [isActive, loadCatalog, view]);
 
   useEffect(() => {
     if (view === 'teams') void loadGroups('catalog');
@@ -1484,7 +1487,8 @@ export function AgentManagementPanel({
         <AgentGroupEditor
           draft={groupDraft}
           agentOptions={catalogRef.current}
-          agentsStatus={state.catalogStatus}
+          agentsStatus={state.catalogCompatibilityStatus}
+          agentsError={state.catalogCompatibilityError}
           skillOptions={state.skillOptions}
           skillsStatus={state.skillsStatus}
           saving={groupSaving}

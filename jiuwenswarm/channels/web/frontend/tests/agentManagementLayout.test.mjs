@@ -216,12 +216,22 @@ test('leader and member picker cards include the shared Expert description', () 
 });
 
 test('management pickers expose source tabs and preserve install/connect actions', () => {
+  assert.match(panelSource, /void loadCatalog\(view === 'group-create' \? \{ includeTeamCompatibility: true \} : \{\}\);/);
+  assert.match(panelSource, /catalog\.compatibility\.loading/);
+  assert.match(panelSource, /catalog\.compatibility\.error/);
+  assert.match(panelSource, /agentsStatus=\{state\.catalogCompatibilityStatus\}/);
+  assert.match(groupEditorSource, /agentsError=\{agentsError\}/);
+  assert.match(groupEditorSource, /onReloadAgents=\{onReloadAgents\}/);
   assert.match(memberPickerSource, /agent-group-member-picker-tabs/);
   assert.match(memberPickerSource, /agent-group-member-picker-install/);
+  assert.match(memberPickerSource, /agent-group-member-picker-error/);
+  assert.match(memberPickerSource, /onReloadAgents/);
   assert.match(memberPickerSource, /agent-group-member-picker-pagination/);
   assert.match(memberPickerSource, /agent-group-member-picker-tab-market/);
   assert.match(memberPickerSource, /agent-group-member-picker-tab-local/);
-  assert.match(memberPickerSource, /sortInstalledFirst\(sourceAgents\)/);
+  assert.match(memberPickerSource, /sortAgentGroupOptions\(sourceAgents, agentsStatus\)/);
+  assert.match(memberPickerSource, /isAgentGroupAgentCompatibilityLoading\(agent, agentsStatus\)/);
+  assert.match(memberPickerSource, /className=.*is-loading/);
   assert.match(
     memberPickerSource,
     /sourceTab === 'market' \? agent\.source !== 'local' : agent\.source === 'local' \|\| agent\.installed === true/,
@@ -265,6 +275,11 @@ test('management pickers expose source tabs and preserve install/connect actions
     agentManagementCss,
     /agent-management-selection-card\.page-card\.is-disabled \.entity-header__tag[\s\S]*border: 1px solid var\(--color-border-default\);/,
   );
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card\.page-card\.is-loading[\s\S]*cursor: wait[\s\S]*opacity: 1;/,
+  );
+  assert.match(agentManagementCss, /agent-management-selection-card__loading-icon[\s\S]*animation:/);
   assert.match(
     agentManagementCss,
     /agent-management-selection-card__install[\s\S]*color: var\(--color-action-primary\);/,
