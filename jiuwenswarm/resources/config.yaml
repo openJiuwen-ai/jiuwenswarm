@@ -545,6 +545,11 @@ react:
   task_planning:
     enable_progress_repeat: ${TODO_PROGRESS_REPEAT:-true}
     list_tool_call_interval: 20
+  # Persistent subagent runtime. When true, task_tool is replaced by
+  # subagent_spawn/wait/list/send_input/close/resume (mutually exclusive).
+  # dest-stable default is false; do not copy develop's template true.
+  subagent_runtime:
+    enabled: false
   # ProgressiveToolRail: 工具延迟加载，固定 eager_tools schema，deferred 工具通过
   # tools_search → invoke_tool 间接调用，最大化 prefix cache 命中率。
   tool_lazy_load:

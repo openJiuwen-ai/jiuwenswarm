@@ -541,6 +541,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             subagents=configured_subagents,
             rails=rails_list if rails_list else [],
             enable_task_loop=config.get("enable_task_loop", True),
+            enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
             max_iterations=config.get("max_iterations", 15),
             workspace=workspace,
             sys_operation=sys_operation,
