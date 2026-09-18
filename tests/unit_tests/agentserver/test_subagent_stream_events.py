@@ -61,6 +61,7 @@ def test_project_keeps_canonical_status() -> None:
         }
     )
     assert payload["event_type"] == "chat.subtask_update"
+    assert payload["session_id"] == "parent1"
     assert payload["status"] == "running"
     assert payload["legacy_status"] == "starting"
     assert payload["task_id"] == "sa-1"
@@ -82,6 +83,7 @@ def test_parse_stream_chunk_maps_activity_and_keeps_task_complete() -> None:
     assert activity[0] is True
     assert activity[1] is not None
     assert activity[1]["event_type"] == "chat.subagent_activity"
+    assert activity[1]["session_id"] == "parent1"
 
     task_chunk = SimpleNamespace(
         type="task.complete",

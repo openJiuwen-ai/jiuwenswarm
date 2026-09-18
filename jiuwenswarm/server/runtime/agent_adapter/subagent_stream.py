@@ -122,6 +122,7 @@ def project_subagent_updated_for_web(projection: dict[str, Any]) -> dict[str, An
     payload: dict[str, Any] = {
         "event_type": "chat.subtask_update",
         **projection,
+        "session_id": parent_session_id,
         "task_id": subagent_id,
         "description": description,
         "legacy_status": legacy_status,
@@ -289,6 +290,13 @@ def try_handle_subagent_chunk(
         if resolved_parent:
             persist_projection["parent_session_id"] = resolved_parent
         _safe_persist("subagent activity", persist_subagent_activity, persist_projection)
-        return True, {"event_type": "chat.subagent_activity", **projection}
+        activity_payload: dict[str, Any] = {
+            "event_type": "chat.subagent_activity",
+            **projection,
+        }
+        if resolved_parent:
+            activity_payload["session_id"] = resolved_parent
+            activity_payload["parent_session_id"] = resolved_parent
+        return True, activity_payload
 
     return False, None

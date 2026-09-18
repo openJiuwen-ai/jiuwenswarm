@@ -35,6 +35,9 @@
     "test:settle-historical-tool-executions": "esbuild src/stores/chatStore.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/chat-store-streaming/chatStore.mjs --define:import.meta.env.DEV=false && node --test tests/settleHistoricalToolExecutions.test.mjs",
     "test:history-pagination": "tsc src/features/historyPagination.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/history-pagination --skipLibCheck --noEmitOnError && node --test tests/historyPagination.test.mjs",
     "test:history-restore-source-skill": "esbuild src/features/historyRestore.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/history-restore/historyRestore.mjs --define:import.meta.env.DEV=false --define:import.meta.env.VITE_API_BASE='\"\"' --define:import.meta.env.VITE_WS_BASE='\"\"' --define:import.meta.env.VITE_JIUWENSWARM_EDITION='\"personal\"' --define:window.__JIUWEN_WEB_TRANSPORT__='\"websocket\"' --define:window.__JIUWENSWARM_EDITION__='\"personal\"' && node --test tests/historyRestoreSourceSkill.test.mjs",
+    "test:subagent-store": "esbuild src/stores/subagentStore.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/subagent-store/subagentStore.mjs && esbuild src/features/subagent/subagentNormalizer.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/subagent-store/subagentNormalizer.mjs && node --test tests/subagentStore.test.mjs",
+    "test:subagent-status-presentation": "esbuild src/features/subagent/subagentStatusPresentation.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/subagent-status/subagentStatusPresentation.mjs && node --test tests/subagentStatusPresentation.test.mjs",
+    "test:subagent-activity-presentation": "esbuild src/features/subagent/subagentActivityPresentation.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/subagent-activity/subagentActivityPresentation.mjs && node --test tests/subagentActivityPresentation.test.mjs",
     "test:artifact-collection": "esbuild src/components/ArtifactsPanel/artifactCollection.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/artifact-collection/artifactCollection.mjs && node --test tests/artifactCollection.test.mjs",
     "test:desktop-save": "esbuild src/utils/desktopSave.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/desktop-save/desktopSave.mjs && node --test tests/desktopSave.test.mjs",
     "test:ask-user-submission": "tsc src/components/InteractionSlot/interactionSubmission.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/ask-user-submission --skipLibCheck --noEmitOnError && node --test tests/askUserSubmission.test.mjs",
@@ -99,5 +102,8 @@
     "typescript": "^5.3.0",
     "vite": "^5.0.0",
     "vite-plugin-svgr": "^4.5.0"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true
   }
 }

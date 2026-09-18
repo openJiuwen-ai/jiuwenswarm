@@ -23,6 +23,7 @@ import deleteIcon from '../../assets/delete.svg';
 import moveIcon from '../../assets/move.svg';
 import restartIcon from '../../assets/restart.svg';
 import { SubtaskProgress } from './SubtaskProgress';
+import { SubagentCompactPanel } from '../subagent/SubagentCompactPanel';
 import { InlineQuestionCard } from './InlineQuestionCard';
 import { InteractionSlot } from '../InteractionSlot';
 import { GoalBar } from '../GoalBar';
@@ -1190,6 +1191,12 @@ export function ChatPanel({
                       onShare={() => setHumanShareOpen(true)}
                     />
                   )}
+                  {activeSessionId ? (
+                    <SubagentCompactPanel
+                      sessionId={activeSessionId}
+                      onExpand={() => onToggleTeamArea?.(true)}
+                    />
+                  ) : null}
                   <SubtaskProgress />
                   {/* 内联审批卡片（演进审批 & 权限审批共用） */}
                   <InlineQuestionCard onSubmit={onUserAnswer} />

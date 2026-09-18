@@ -60,6 +60,7 @@ import {
   useHarnessStore,
   useWorkspaceStore,
   useCronStore,
+  useSubagentStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import {
@@ -465,6 +466,11 @@ function AppContent() {
     setHistoryPrepending(historyLoadingSessionsRef.current.has(sessionId));
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    useSubagentStore.getState().hydrateRuntime(sessionId);
+  }, [sessionId]);
+
   const {
     teamAreaExpanded,
     teamAreaActiveTab,
@@ -673,18 +679,20 @@ function AppContent() {
   const proactiveNotificationMessage = useHarnessStore((s) => s.proactiveNotificationMessage);
   const setProactiveNotification = useHarnessStore((s) => s.setProactiveNotification);
 
+  const subagentCount = useSubagentStore((s) => Object.keys(s.runtimes[sessionId]?.subagentsById ?? {}).length);
   const toolPanelHasContent = useMemo(() => {
     const hasMessages = messages.length > 0;
     const hasCodeEnvironment = sessionProject?.work_mode === 'code' && sessionId !== NEW_CONVERSATION_ID;
+    const hasSubagents = subagentCount > 0;
     switch (mode) {
       case 'auto_harness':
         return Boolean(extensionReady?.runtimePath) || hasMessages;
       case 'team':
-        return isRestoringTeamHistory || teamTaskEvents.length > 0 || teamTasks.length > 0 || teamMembers.length > 0 || hasMessages || hasCodeEnvironment;
+        return isRestoringTeamHistory || teamTaskEvents.length > 0 || teamTasks.length > 0 || teamMembers.length > 0 || hasMessages || hasCodeEnvironment || hasSubagents;
       default:
-        return todos.length > 0 || hasMessages || hasCodeEnvironment;
+        return todos.length > 0 || hasMessages || hasCodeEnvironment || hasSubagents;
     }
-  }, [mode, todos.length, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
+  }, [mode, todos.length, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode, subagentCount]);
   // 单 agent 模式同样复用集群模式的展开布局（百分比宽度 + 可拖拽分割线），
   // 避免右侧面板与聊天面板平分空间导致宽度与集群模式不一致；auto_harness 走收起态分支。
   const isTeamAreaExpanded = mode !== 'auto_harness' && teamAreaExpanded && toolPanelHasContent;
