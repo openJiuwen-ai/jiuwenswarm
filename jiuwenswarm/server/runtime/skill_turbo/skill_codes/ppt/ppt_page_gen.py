@@ -76,7 +76,19 @@ def _postprocess_structural_template_fill_html(
     html: str,
     ctx: "PageGenContext",
     page_type: str,
+    seed_html: str = "",
 ) -> str:
+    # 落盘权威：优先 seed 骨架 + 仅 skill 已定义槽；merge 失败时回退旧门禁校验 LLM html。
+    if (seed_html or "").strip():
+        merged = _repair_structural_template_slots(seed_html, html)
+        if merged:
+            html = merged
+        else:
+            logger.warning(
+                "[P8.1] 结构页 seed-slot-merge 失败 page=%d type=%s；回退旧门禁校验 LLM html",
+                ctx.page_num,
+                page_type,
+            )
     html = _apply_visible_page_number_policy(
         html,
         user_query=ctx.user_query,
@@ -85,6 +97,14 @@ def _postprocess_structural_template_fill_html(
         total_pages=ctx.total_pages,
         style_id=ctx.style_id,
     )
+    if _has_unfilled_placeholders(html):
+        logger.warning(
+            "[P8.1] 结构页填槽残留占位符 page=%d type=%s placeholders=%s",
+            ctx.page_num,
+            page_type,
+            _UNFILLED_PLACEHOLDER_RE.findall(html)[:8],
+        )
+        return ""
     if not _validate_slide_dom(html):
         logger.warning(
             "[P8.1] 结构页 DOM 校验失败 page=%d type=%s",
@@ -108,56 +128,39 @@ def _postprocess_content_template_fill_html(
     validate_fn: Callable[[str, str], tuple[bool, str]],
 ) -> tuple[str, str, str]:
     html = _replace_placeholder_headings(html, ctx.outline_page)
-    html = _apply_visible_page_number_policy(
-        html,
+    html = _fix_echarts_svg_renderer(html)
+    html = _strip_unsupported_fullpage_overlays(html)
+    html = _strip_chart_header_unit(html)
+    html = _fix_chart_scaffold_activation(html)
+    html = _fix_chart_height_chain(html)
+
+    # 主路径出口：始终 seed-slot-merge，不以 LLM 整页 HTML 为落盘权威。
+    merged = _repair_content_template_chrome(seed_html, html)
+    if not merged:
+        _ok, reason = validate_fn(seed_html, html)
+        logger.warning(
+            "[P8.1] 内容页 seed-slot-merge 失败 page=%d style=%s reason=%s",
+            ctx.page_num,
+            ctx.style_id,
+            reason or "slot_merge_failed",
+        )
+        return "", html, reason or "slot_merge_failed"
+
+    merged = _apply_visible_page_number_policy(
+        merged,
         user_query=ctx.user_query,
         style_constraints=ctx.style_constraints,
         page_number=ctx.page_num,
         total_pages=ctx.total_pages,
         style_id=ctx.style_id,
     )
-    html = _fix_echarts_svg_renderer(html)
-    html = _strip_unsupported_fullpage_overlays(html)
-    html = _strip_chart_header_unit(html)
-    html = _fix_chart_scaffold_activation(html)
-    html = _fix_chart_height_chain(html)
-    ok, reason = validate_fn(seed_html, html)
-    if not ok and reason in _REPAIRABLE_CONTENT_TEMPLATE_REASONS:
-        repaired = _repair_content_template_chrome(seed_html, html)
-        if repaired:
-            repaired = _fix_echarts_svg_renderer(repaired)
-            repaired = _strip_unsupported_fullpage_overlays(repaired)
-            repaired = _strip_chart_header_unit(repaired)
-            repaired = _fix_chart_scaffold_activation(repaired)
-            repaired = _fix_chart_height_chain(repaired)
-            ok_repaired, reason_repaired = validate_fn(seed_html, repaired)
-            if ok_repaired:
-                if _chart_activation_incomplete(repaired):
-                    logger.warning(
-                        "[P8.1] 内容页图表 scaffold 未激活（本轮重试） page=%d style=%s "
-                        "from_reason=%s",
-                        ctx.page_num,
-                        ctx.style_id,
-                        reason,
-                    )
-                    return "", repaired, "chart_scaffold_not_activated"
-                _warn_chart_mount_mismatch_soft(repaired, page_num=ctx.page_num)
-                logger.info(
-                    "[P8.1] repaired=content_template_chrome page=%d style=%s "
-                    "from_reason=%s",
-                    ctx.page_num,
-                    ctx.style_id,
-                    reason,
-                )
-                return repaired, "", ""
-            logger.warning(
-                "[P8.1] 内容页 chrome 自动修复后仍失败 page=%d style=%s "
-                "from_reason=%s repair_reason=%s",
-                ctx.page_num,
-                ctx.style_id,
-                reason,
-                reason_repaired,
-            )
+    merged = _fix_echarts_svg_renderer(merged)
+    merged = _strip_unsupported_fullpage_overlays(merged)
+    merged = _strip_chart_header_unit(merged)
+    merged = _fix_chart_scaffold_activation(merged)
+    merged = _fix_chart_height_chain(merged)
+
+    ok, reason = validate_fn(seed_html, merged)
     if not ok:
         logger.warning(
             "[P8.1] 内容页填槽校验失败 page=%d style=%s reason=%s",
@@ -165,21 +168,21 @@ def _postprocess_content_template_fill_html(
             ctx.style_id,
             reason,
         )
-        return "", html, reason
-    if _chart_activation_incomplete(html):
+        return "", merged, reason
+    if _chart_activation_incomplete(merged):
         logger.warning(
             "[P8.1] 内容页图表 scaffold 未激活（本轮重试） page=%d style=%s",
             ctx.page_num,
             ctx.style_id,
         )
-        return "", html, "chart_scaffold_not_activated"
-    _warn_chart_mount_mismatch_soft(html, page_num=ctx.page_num)
+        return "", merged, "chart_scaffold_not_activated"
+    _warn_chart_mount_mismatch_soft(merged, page_num=ctx.page_num)
     logger.info(
         "[P8.1] 内容页官方模板填槽完成 page=%d style=%s",
         ctx.page_num,
         ctx.style_id,
     )
-    return html, "", ""
+    return merged, "", ""
 
 
 def _postprocess_generated_html(
@@ -925,29 +928,95 @@ def _filled_chart_scaffold_is_progressed(filled_html: str) -> bool:
     return False
 
 
-def _extract_chart_scaffold_region(filled_html: str) -> str | None:
-    for match in _COMMENTED_CHART_SCAFFOLD_BLOCK_RE.finditer(filled_html):
+def _collect_activated_chart_scaffolds(filled_html: str) -> list[tuple[str, str]]:
+    """Collect activated chart scaffolds as (target_id, replacement) pairs.
+
+    Path A: commented CHART_SCAFFOLD blocks with populated option (body only).
+    Path B: live scripts after </main> (full <script> tag); only for ids not
+    already taken by path A. Empty-id path-B scripts are kept only when path A
+    found nothing (legacy single-scaffold unwrap).
+    """
+    activated: list[tuple[str, str]] = []
+    seen_ids: set[str] = set()
+
+    for match in _COMMENTED_CHART_SCAFFOLD_BLOCK_RE.finditer(filled_html or ""):
         body = match.group(2) or ""
-        if _chart_scaffold_option_populated(body):
-            return body.strip()
-    html_no_comments = _HTML_COMMENT_RE.sub("", filled_html)
+        if not _chart_scaffold_option_populated(body):
+            continue
+        target_id = _chart_scaffold_target_id(body)
+        if target_id and target_id in seen_ids:
+            continue
+        if target_id:
+            seen_ids.add(target_id)
+        activated.append((target_id, body.strip()))
+
+    html_no_comments = _HTML_COMMENT_RE.sub("", filled_html or "")
     scaffold_region = _html_chart_scaffold_script_region(html_no_comments)
-    for match in reversed(list(_SCRIPT_BODY_RE.finditer(scaffold_region))):
+    for match in _SCRIPT_BODY_RE.finditer(scaffold_region):
         body = match.group(1) or ""
-        if "echarts.init" in body.lower() and _chart_scaffold_option_populated(body):
-            return match.group(0).strip()
-    return None
+        if "echarts.init" not in body.lower():
+            continue
+        if not _chart_scaffold_option_populated(body):
+            continue
+        target_id = _chart_scaffold_target_id(body)
+        if target_id:
+            if target_id in seen_ids:
+                continue
+            seen_ids.add(target_id)
+            activated.append((target_id, match.group(0).strip()))
+            continue
+        # Anonymous path-B: only when no commented activations were found.
+        if not activated:
+            activated.append(("", match.group(0).strip()))
+            break
+    return activated
 
 
 def _merge_chart_scaffold_from_filled(seed_html: str, filled_html: str) -> str:
+    """Merge activated chart scaffolds from filled into seed comment blocks.
+
+    Match by ``_chart_scaffold_target_id`` one-to-one; unmatched seed blocks stay
+    dormant. Preserves legacy single-block / empty-id unwrap behavior.
+    """
     if not _filled_chart_scaffold_is_progressed(filled_html):
         return seed_html
-    filled_scaffold = _extract_chart_scaffold_region(filled_html)
-    if not filled_scaffold:
+    activated = _collect_activated_chart_scaffolds(filled_html)
+    if not activated:
         return seed_html
-    match = _COMMENTED_CHART_SCAFFOLD_BLOCK_RE.search(seed_html)
-    if match:
-        return seed_html[:match.start()] + filled_scaffold + seed_html[match.end():]
+
+    by_id = {tid: snippet for tid, snippet in activated if tid}
+    unused_anon = [snippet for tid, snippet in activated if not tid]
+    seed_blocks = list(_COMMENTED_CHART_SCAFFOLD_BLOCK_RE.finditer(seed_html or ""))
+
+    if seed_blocks:
+        pieces: list[str] = []
+        last = 0
+        for match in seed_blocks:
+            pieces.append(seed_html[last:match.start()])
+            body = match.group(2) or ""
+            target_id = _chart_scaffold_target_id(body)
+            replacement: str | None = None
+            if target_id and target_id in by_id:
+                replacement = by_id.pop(target_id)
+            elif not target_id and unused_anon:
+                replacement = unused_anon.pop(0)
+            elif (
+                not target_id
+                and len(seed_blocks) == 1
+                and len(by_id) == 1
+            ):
+                # Legacy: seed dormants without getElementById; filled has one id.
+                replacement = next(iter(by_id.values()))
+                by_id.clear()
+            if replacement is not None:
+                pieces.append(replacement)
+            else:
+                pieces.append(match.group(0))
+            last = match.end()
+        pieces.append(seed_html[last:])
+        return "".join(pieces)
+
+    filled_scaffold = activated[0][1]
     body_close = seed_html.lower().rfind("</body>")
     if body_close == -1:
         return seed_html
@@ -963,21 +1032,12 @@ def _merge_chart_scaffold_from_filled(seed_html: str, filled_html: str) -> str:
     return seed_html[:body_close] + filled_scaffold + seed_html[body_close:]
 
 
-_REPAIRABLE_CONTENT_TEMPLATE_REASONS = frozenset({
-    "content_template_chrome_changed",
-    "head_chrome_changed",
-    "header_chrome_changed",
-    "footer_chrome_changed",
-    "main_tag_changed",
-})
-
-
 def _repair_content_template_chrome(seed_html: str, filled_html: str) -> str | None:
-    """Restore Page Chrome from seed; keep filled title/content/footer slot values.
+    """Seed-slot-merge for content templates: chrome from seed, slots from filled.
 
-    When the model rewrites head/header/footer/`<main>` chrome but still fills usable
-    slots, reassemble onto the seed skeleton instead of forcing a full LLM retry.
-    Returns None when filled output lacks extractable slot content.
+    Primary write-path authority for preset/custom content-template fill (and
+    layout-patch). PAGE_FOOTER may be empty (build-custom.md). Returns None when
+    required slots cannot be extracted.
     """
     if not (seed_html or "").strip() or not (filled_html or "").strip():
         return None
@@ -991,7 +1051,11 @@ def _repair_content_template_chrome(seed_html: str, filled_html: str) -> str | N
         return None
 
     footer_inner = _extract_filled_footer_inner(filled_html)
-    if not footer_inner or _has_placeholder_slop(_plain_text_fragment(footer_inner)):
+    # Allow empty footer; reject only unreplaced token / non-empty placeholder slop.
+    if "{{PAGE_FOOTER}}" in (footer_inner or ""):
+        return None
+    footer_plain = _plain_text_fragment(footer_inner)
+    if footer_plain and _has_placeholder_slop(footer_plain):
         return None
 
     out = seed_html
@@ -1021,16 +1085,229 @@ def _repair_content_template_chrome(seed_html: str, filled_html: str) -> str | N
         # <p> 标签内替换文本。_P_INNER_TEXT_RE 只匹配 count=1（footer block 内
         # 第一个 <p>），不会双重替换——footer_inner 是纯文本，不含 <p> 标签。
         seed_footer = _extract_footer_block(out)
-        if not seed_footer:
-            return None
-        repaired_footer = _P_INNER_TEXT_RE.sub(
-            lambda m: f"{m.group(1)}{footer_inner}{m.group(3)}",
-            seed_footer,
-            count=1,
-        )
-        out = out.replace(seed_footer, repaired_footer, 1)
+        if seed_footer:
+            repaired_footer = _P_INNER_TEXT_RE.sub(
+                lambda m: f"{m.group(1)}{footer_inner}{m.group(3)}",
+                seed_footer,
+                count=1,
+            )
+            out = out.replace(seed_footer, repaired_footer, 1)
+        # seed 无 footer 区域时跳过（不因此失败）
 
     out = _merge_chart_scaffold_from_filled(out, filled_html)
+    return out
+
+
+def _slice_between_anchors(
+    text: str,
+    left: str,
+    right: str,
+    *,
+    search_from: int = 0,
+) -> tuple[str, int] | None:
+    """Return (slice_between_anchors, end_index_of_slice)."""
+    if left:
+        pos = text.find(left, search_from)
+        if pos < 0:
+            return None
+        start = pos + len(left)
+    else:
+        start = search_from
+    if right:
+        end = text.find(right, start)
+        if end < 0:
+            return None
+    else:
+        end = len(text)
+    return text[start:end], end
+
+
+_IMG_OPEN_TAG_RE = re.compile(r"<img\b[^>]*", re.IGNORECASE)
+_STRUCTURAL_IMAGE_ATTR_SLOTS = frozenset({"STRUCTURAL_IMAGE_PATH", "STRUCTURAL_IMAGE_ALT"})
+
+
+def _strip_open_tag_attrs(anchor: str) -> str:
+    """Drop <img ...> attributes in anchors; attr reorder/reindent must not break slice."""
+    return _IMG_OPEN_TAG_RE.sub("<img", anchor or "")
+
+
+def _structural_slot_dom_fallback(name: str, filled_html: str) -> str | None:
+    """DOM extract for common structural slots (attr slots prefer this over adjacency)."""
+    if name == "PAGE_TITLE":
+        title = _extract_filled_title_inner(filled_html)
+        if title and not _has_placeholder_slop(_plain_text_fragment(title)):
+            return title
+        return None
+    if name == "PAGE_CONTENT":
+        main_inner = _extract_main_inner_html(filled_html)
+        if main_inner.strip() and "{{PAGE_CONTENT}}" not in main_inner:
+            return main_inner
+        return None
+    if name == "PAGE_FOOTER" or name.startswith("PAGE_FOOTER"):
+        footer_inner = _extract_filled_footer_inner(filled_html)
+        if "{{PAGE_FOOTER}}" in (footer_inner or ""):
+            return None
+        plain = _plain_text_fragment(footer_inner)
+        if plain and _has_placeholder_slop(plain):
+            return None
+        return footer_inner
+    # Attribute slots: values live inside <img ...> attrs; adjacency after
+    # _strip_open_tag_attrs shifts the slice start and can swallow neighboring attrs.
+    if name in _STRUCTURAL_IMAGE_ATTR_SLOTS:
+        match = re.search(
+            r"<img\b[^>]*(?:"
+            r"\bdata-pptx-role\s*=\s*[\"']structural-background[\"']|"
+            r"\bclass\s*=\s*[\"'][^\"']*\babsolute\b[^\"']*\binset-0\b"
+            r")[^>]*>",
+            filled_html or "",
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        tag = match.group(0)
+        attr = "src" if name == "STRUCTURAL_IMAGE_PATH" else "alt"
+        attr_m = re.search(
+            rf"\b{attr}\s*=\s*([\"'])(.*?)\1",
+            tag,
+            re.IGNORECASE | re.DOTALL,
+        )
+        return None if attr_m is None else attr_m.group(2)
+    return None
+
+
+_PPT_SLIDE_OPEN_FULL_RE = re.compile(
+    r'(<div\b[^>]*\bclass="[^"]*\bppt-slide\b[^"]*"[^>]*>)',
+    re.IGNORECASE,
+)
+_STRUCTURAL_BG_BUNDLE_RE = re.compile(
+    r'(\s*<img\b[^>]*(?:'
+    r'class="[^"]*\babsolute\b[^"]*\binset-0\b[^"]*"|'
+    r'data-pptx-role="structural-background"'
+    r')[^>]*>'
+    r'(?:\s*<div\b[^>]*class="[^"]*\babsolute\b[^"]*\binset-0\b[^"]*"[^>]*>\s*</div>)?)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _merge_structural_background_from_filled(merged_html: str, filled_html: str) -> str:
+    """Preserve preset structural background img/overlay allowed outside {{}} slots."""
+    if re.search(
+        r'<img\b[^>]*(?:class="[^"]*\babsolute\b[^"]*\binset-0\b[^"]*"|'
+        r'data-pptx-role="structural-background")',
+        merged_html or "",
+        re.IGNORECASE,
+    ):
+        return merged_html
+    slide = _PPT_SLIDE_OPEN_FULL_RE.search(filled_html or "")
+    if not slide:
+        return merged_html
+    bundle = _STRUCTURAL_BG_BUNDLE_RE.match((filled_html or "")[slide.end():])
+    if not bundle:
+        return merged_html
+    out_slide = _PPT_SLIDE_OPEN_FULL_RE.search(merged_html or "")
+    if not out_slide:
+        return merged_html
+    return (
+        (merged_html or "")[: out_slide.end()]
+        + bundle.group(1)
+        + (merged_html or "")[out_slide.end():]
+    )
+
+
+def _repair_structural_template_slots(seed_html: str, filled_html: str) -> str | None:
+    """Seed-slot-merge for structural templates; slot set driven by seed {{...}}."""
+    if not (seed_html or "").strip() or not (filled_html or "").strip():
+        return None
+
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.template_fill import (
+        apply_template_slots,
+        scan_placeholders,
+    )
+
+    names = scan_placeholders(seed_html)
+    if not names:
+        return None
+
+    slots: dict[str, str] = {}
+    search_from = 0
+    # Unique slot names only：同名 {{PAGE_TITLE}} 多处只抽一次，避免 search_from 错位。
+    for name in names:
+        token = f"{{{{{name}}}}}"
+        idx = seed_html.find(token)
+        if idx < 0:
+            return None
+        prev = list(_UNFILLED_PLACEHOLDER_RE.finditer(seed_html, 0, idx))
+        left_start = prev[-1].end() if prev else 0
+        left = seed_html[left_start:idx]
+        after = seed_html[idx + len(token):]
+        next_m = _UNFILLED_PLACEHOLDER_RE.search(after)
+        right = after[: next_m.start()] if next_m else after[:64]
+        left_anchor = left if len(left) <= 96 else left[-96:]
+        right_anchor = right if len(right) <= 96 else right[:96]
+        # Open-tag attributes are unstable under LLM rewrite; keep tag names only.
+        left_anchor = _strip_open_tag_attrs(left_anchor)
+        right_anchor = _strip_open_tag_attrs(right_anchor)
+
+        # PATH/ALT：DOM 优先。剥离 img 属性后邻接切片起点会前移，happy path
+        # 也会把相邻属性吞进槽值（如 src=" data-pptx-role=...）。
+        if name in _STRUCTURAL_IMAGE_ATTR_SLOTS:
+            value = _structural_slot_dom_fallback(name, filled_html)
+            if value is not None:
+                slots[name] = value
+                if value:
+                    loc = filled_html.find(value, search_from)
+                    if loc >= 0:
+                        search_from = loc + len(value)
+                continue
+
+        sliced = _slice_between_anchors(
+            filled_html, left_anchor, right_anchor, search_from=search_from
+        )
+        if sliced is None:
+            value = _structural_slot_dom_fallback(name, filled_html)
+            if value is None:
+                return None
+            slots[name] = value
+            # DOM fallback 也推进游标，避免后续邻接切片回到文档前部。
+            if value:
+                loc = filled_html.find(value, search_from)
+                if loc >= 0:
+                    search_from = loc + len(value)
+            continue
+        value, value_end = sliced
+        slots[name] = value
+        search_from = value_end
+
+    if "PAGE_TITLE" in slots:
+        dom_title = _extract_filled_title_inner(filled_html)
+        if dom_title and not _has_placeholder_slop(_plain_text_fragment(dom_title)):
+            slots["PAGE_TITLE"] = dom_title
+    if "PAGE_CONTENT" in slots:
+        main_inner = _extract_main_inner_html(filled_html)
+        if main_inner.strip() and "{{PAGE_CONTENT}}" not in main_inner:
+            slots["PAGE_CONTENT"] = main_inner
+    if "PAGE_FOOTER" in slots:
+        footer_inner = _extract_filled_footer_inner(filled_html)
+        if "{{PAGE_FOOTER}}" not in (footer_inner or ""):
+            footer_plain = _plain_text_fragment(footer_inner)
+            if not footer_plain or not _has_placeholder_slop(footer_plain):
+                slots["PAGE_FOOTER"] = footer_inner
+
+    # 仅拒绝槽值内残留 {{PLACEHOLDER}}；空串交给模板语义。
+    # footer 额外拒绝非空敷衍值（与内容页 PAGE_FOOTER 口径一致）。
+    for name, value in slots.items():
+        text = value or ""
+        if _UNFILLED_PLACEHOLDER_RE.search(text):
+            return None
+        if name == "PAGE_FOOTER" or name.startswith("PAGE_FOOTER"):
+            plain = _plain_text_fragment(text)
+            if plain and _has_placeholder_slop(plain):
+                return None
+
+    out = apply_template_slots(seed_html, slots)
+    out = _merge_structural_background_from_filled(out, filled_html)
+    if _has_unfilled_placeholders(out):
+        return None
     return out
 
 
@@ -5007,19 +5284,12 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 page_type,
             )
             return ""
-        if _has_unfilled_placeholders(html):
-            logger.warning(
-                "[P8.1] 结构页填槽残留占位符 page=%d type=%s placeholders=%s",
-                ctx.page_num,
-                page_type,
-                _UNFILLED_PLACEHOLDER_RE.findall(html)[:8],
-            )
-            return ""
         return await _run_postprocess(
             _postprocess_structural_template_fill_html,
             html,
             ctx,
             page_type,
+            seed_html,
         )
 
     async def _generate_agenda_template_fill(self, ctx: PageGenContext) -> str:
@@ -5201,26 +5471,25 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         html = _fix_chart_height_chain(html)
 
         if is_content:
+            merged = _repair_content_template_chrome(seed_html, html)
+            if merged:
+                merged = _fix_echarts_svg_renderer(merged)
+                merged = _strip_unsupported_fullpage_overlays(merged)
+                merged = _strip_chart_header_unit(merged)
+                merged = _fix_chart_scaffold_activation(merged)
+                merged = _fix_chart_height_chain(merged)
+                html = merged
+            else:
+                return "", html, "layout_patch_slot_merge_failed"
             ok, reason = _validate_content_template_fill_output(seed_html, html)
-            if not ok and reason in _REPAIRABLE_CONTENT_TEMPLATE_REASONS:
-                repaired = _repair_content_template_chrome(seed_html, html)
-                if repaired:
-                    repaired = _fix_echarts_svg_renderer(repaired)
-                    repaired = _strip_unsupported_fullpage_overlays(repaired)
-                    repaired = _strip_chart_header_unit(repaired)
-                    repaired = _fix_chart_scaffold_activation(repaired)
-                    repaired = _fix_chart_height_chain(repaired)
-                    ok_rep, reason_rep = _validate_content_template_fill_output(
-                        seed_html, repaired
-                    )
-                    if ok_rep:
-                        html = repaired
-                        ok = True
-                    else:
-                        reason = reason_rep or reason
             if not ok:
                 return "", html, reason or "layout_patch_invalid"
         else:
+            merged = _repair_structural_template_slots(seed_html, html)
+            if merged:
+                html = merged
+            else:
+                return "", html, "layout_patch_slot_merge_failed"
             if not _is_valid_html(html) or not _validate_slide_dom(html):
                 return "", html, "layout_patch_invalid_dom"
             if _has_unfilled_placeholders(html):

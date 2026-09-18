@@ -14,7 +14,8 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import 
     _build_page_prompt,
     _build_content_template_fill_prompt,
     _build_content_template_fill_system_prompt,
-    _extract_chart_scaffold_region,
+    _chart_activation_incomplete,
+    _collect_activated_chart_scaffolds,
     _extract_designer_section,
     _filled_chart_scaffold_is_progressed,
     _is_chart_candidate_page,
@@ -325,7 +326,7 @@ def test_custom_chart_prompt_mentions_chart_font_family():
     assert "须按" in prompt and "style-custom.md" in prompt
 
 
-def test_extract_chart_scaffold_region_ignores_scripts_after_body_with_prior_comment():
+def test_collect_activated_chart_scaffolds_ignores_scripts_after_body_with_prior_comment():
     """</body> 前有 HTML 注释时，须在去注释坐标系内截断，避免误取 body 后的 script。"""
     scaffold_script = (
         '<script>const option = {"series":[{"data":[1]}]}; '
@@ -344,8 +345,9 @@ def test_extract_chart_scaffold_region_ignores_scripts_after_body_with_prior_com
         f"{decoy_script}"
         "</html>"
     )
-    region = _extract_chart_scaffold_region(filled)
-    assert region is not None
+    activated = _collect_activated_chart_scaffolds(filled)
+    assert len(activated) == 1
+    _target_id, region = activated[0]
     assert 'getElementById("chart-1")' in region
     assert 'getElementById("decoy")' not in region
     assert "[1]" in region
@@ -377,6 +379,54 @@ def test_merge_chart_scaffold_active_script_without_comment():
     assert 'const option = {"series"' in merged
 
 
+def test_merge_chart_scaffold_dual_charts_all_activated_by_target_id():
+    """双 CHART_SCAFFOLD 全部激活时须按 target_id 一对一合回，不得只保留一块。"""
+    seed = (
+        "<html><body>"
+        '<main>'
+        '<div id="chart-1"></div><div id="chart-2"></div>'
+        "</main>"
+        '<div class="flex-shrink-0"><p>f</p></div>'
+        "<!-- CHART_SCAFFOLD_1_BEGIN\n"
+        "<script>\n"
+        "const option = null;\n"
+        'echarts.init(document.getElementById("chart-1"));\n'
+        "</script>\n"
+        "CHART_SCAFFOLD_1_END -->"
+        "<!-- CHART_SCAFFOLD_2_BEGIN\n"
+        "<script>\n"
+        "const option = null;\n"
+        'echarts.init(document.getElementById("chart-2"));\n'
+        "</script>\n"
+        "CHART_SCAFFOLD_2_END -->"
+        "</body></html>"
+    )
+    filled = (
+        seed.replace(
+            "const option = null;\n"
+            'echarts.init(document.getElementById("chart-1"));',
+            'const option = {"series":[{"type":"bar","data":[1,2]}]};\n'
+            'echarts.init(document.getElementById("chart-1"));',
+            1,
+        ).replace(
+            "const option = null;\n"
+            'echarts.init(document.getElementById("chart-2"));',
+            'const option = {"series":[{"type":"line","data":[3,4]}]};\n'
+            'echarts.init(document.getElementById("chart-2"));',
+            1,
+        )
+    )
+
+    merged = _merge_chart_scaffold_from_filled(seed, filled)
+
+    assert "CHART_SCAFFOLD" not in merged
+    assert 'getElementById("chart-1")' in merged
+    assert 'getElementById("chart-2")' in merged
+    assert '"data":[1,2]' in merged
+    assert '"data":[3,4]' in merged
+    assert _chart_activation_incomplete(merged) is False
+
+
 def test_chart_scaffold_path_b_ignores_main_inline_echarts_init():
     """PAGE_CONTENT 内违规 echarts.init 不得当作 scaffold 进度写回 seed。"""
     dormant_scaffold = (
@@ -403,7 +453,7 @@ def test_chart_scaffold_path_b_ignores_main_inline_echarts_init():
         "</body></html>"
     )
     assert _filled_chart_scaffold_is_progressed(filled) is False
-    assert _extract_chart_scaffold_region(filled) is None
+    assert _collect_activated_chart_scaffolds(filled) == []
     merged = _merge_chart_scaffold_from_filled(seed, filled)
     assert "CHART_SCAFFOLD_BEGIN" in merged
     assert "const option = null" in merged
