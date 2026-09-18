@@ -220,6 +220,20 @@ async def test_asset_port_search_maps_local_expert_kind_to_upstream_type() -> No
 
 
 @pytest.mark.asyncio
+async def test_asset_port_searches_expert_groups_with_distinct_hub_type() -> None:
+    payload = _catalog_payload()
+    payload["items"][0]["asset_type"] = "agent-group"
+    payload["items"][0]["plugin_type"] = "agent-group"
+    transport = RecordingTransport([payload])
+    client = HubClient(transport=transport)
+
+    page = await client.search_assets(HubSearchRequest(kind="agent_group"))
+
+    assert page.items[0].kind == "agent_group"
+    assert transport.requests[0][1]["plugin_type"] == "agent-group"
+
+
+@pytest.mark.asyncio
 async def test_asset_port_search_keeps_uuid_separate_from_package_name() -> None:
     payload = _catalog_payload()
     payload["items"][0].update(

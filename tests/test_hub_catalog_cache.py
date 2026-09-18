@@ -305,6 +305,6 @@ async def test_startup_uses_configured_recommendation_credentials(tmp_path, monk
     await module.start_hub_catalog_preload(manager)
     await asyncio.sleep(.01)
     result = await manager.handle_skills_swarm_skills_hub_recommend({'cache_mode': 'prefer_cache', 'top_k': 50, 'session_id': 'page'})
-    assert result['cache']['state'] == 'fresh' and kinds == ['agent_template', 'plugin', 'mcp']
+    assert result['cache']['state'] == 'fresh' and kinds == ['agent_template', 'agent_group', 'plugin', 'mcp']
     assert cache.db.execute('SELECT COUNT(*) FROM catalog').fetchone()[0] == 0
     await cache.close()

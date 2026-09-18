@@ -191,6 +191,35 @@ test('Expert and Expert Team content details use the same full-width markdown la
   assert.match(groupDetailSource, /<MarkdownPane[\s\S]*testId="agent-group-detail-content"/);
 });
 
+test('Expert Team detail uses the shared Expert detail layout primitives', () => {
+  assert.match(groupDetailSource, /<EntityHeader/);
+  assert.match(groupDetailSource, /<DetailSection[\s\S]*title=\{t\('agentManagement\.detail\.ability'\)\}/);
+  assert.match(groupDetailSource, /<Tabs[\s\S]*wrapperTestId="agent-group-detail-tabs"/);
+  assert.match(groupDetailSource, /<DetailPromptChip/);
+  assert.doesNotMatch(groupDetailSource, /<header className="agent-management-detail__header">/);
+  assert.doesNotMatch(groupDetailSource, /className="detail-back mb-\[35px\]"/);
+  assert.match(groupDetailSource, /<PublicationDetailStatus kind="agent_group"/);
+  assert.match(groupDetailSource, /openAssetPublish\(\{ kind: 'agent_group', local_id: detail\.id/);
+});
+
+test('installed Expert Team cards keep only use while detail retains uninstall', async () => {
+  const { GroupCard } = await import('../node_modules/.cache/agent-management-layout/GroupCard.mjs');
+  const { JSDOM } = await import('jsdom');
+  const item = {
+    id: 'group-1', displayName: '测试专家团', description: '测试', category: '',
+    tags: [], avatarUrl: null, installed: true,
+    capabilities: { canUse: true, canInstall: false, canUninstall: true },
+  };
+  const markup = renderToStaticMarkup(React.createElement(GroupCard, {
+    item, busy: false, onOpen: () => {}, onUse: () => {}, onInstall: () => {}, onUninstall: () => {},
+  }));
+  const card = new JSDOM(markup).window.document;
+  assert.equal(card.querySelectorAll('[data-testid="agent-group-card-action"]').length, 1);
+  assert.equal(card.querySelector('[data-testid="agent-group-card-action"]').getAttribute('data-variant'), 'use');
+  assert.equal(card.querySelector('[data-variant="uninstall"]'), null);
+  assert.match(groupDetailSource, /data-variant="uninstall"/);
+});
+
 test('Expert Team leader badge does not add a redundant status icon', () => {
   assert.doesNotMatch(groupDetailSource, /import \{ Check \} from 'lucide-react';/);
   assert.match(

@@ -25,6 +25,7 @@ type GroupCatalogPageProps = {
   totalPages: number;
   query: string;
   category: string;
+  installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
   error: string | null;
   busyId: string | null;
@@ -34,7 +35,6 @@ type GroupCatalogPageProps = {
   onOpen: (id: string) => void;
   onUse: (id: string) => void;
   onInstall: (id: string) => void;
-  onUninstall: (id: string) => void;
   onCreate: () => void;
 };
 
@@ -46,6 +46,7 @@ export function GroupCatalogPage({
   totalPages,
   query,
   category,
+  installation = 'all',
   status,
   error,
   busyId,
@@ -55,13 +56,12 @@ export function GroupCatalogPage({
   onOpen,
   onUse,
   onInstall,
-  onUninstall,
   onCreate,
 }: GroupCatalogPageProps) {
   const { t } = useTranslation();
   const isMine = scope === 'mine';
   const isEmpty = status === 'success' && totalItems === 0;
-  const hasQuery = query.trim().length > 0 || Boolean(category);
+  const hasQuery = query.trim().length > 0 || Boolean(category) || (scope === 'catalog' && installation !== 'all');
 
   return (
     <>
@@ -125,7 +125,6 @@ export function GroupCatalogPage({
                   onOpen={onOpen}
                   onUse={onUse}
                   onInstall={onInstall}
-                  onUninstall={onUninstall}
                 />
               ))}
             </div>

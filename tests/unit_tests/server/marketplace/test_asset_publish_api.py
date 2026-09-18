@@ -170,7 +170,8 @@ async def test_scope_is_persistently_bound_without_storing_tokens(api):
 
 @pytest.mark.parametrize(
     "kind,directory",
-    [("plugin", "plugin_packages"), ("agent_template", "agent_templates")],
+    [("plugin", "plugin_packages"), ("agent_template", "agent_templates"),
+     ("agent_group", "agent_groups")],
 )
 def test_real_equipment_resolver_accepts_installed_package(
     tmp_path, monkeypatch, kind, directory
@@ -181,7 +182,12 @@ def test_real_equipment_resolver_accepts_installed_package(
     )
 
     monkeypatch.setattr(packages, "get_agent_workspace_dir", lambda: tmp_path)
-    root = tmp_path / "plugins" / directory / "local" / "demo"
+    monkeypatch.setattr(packages, "get_user_workspace_dir", lambda: tmp_path)
+    root = (
+        tmp_path / ".agent_teams" / directory / "local" / "demo"
+        if kind == "agent_group"
+        else tmp_path / "plugins" / directory / "local" / "demo"
+    )
     root.mkdir(parents=True)
     (root / "manifest.json").write_text(
         json.dumps(
@@ -195,6 +201,42 @@ def test_real_equipment_resolver_accepts_installed_package(
         )
     )
     assert resolve_local_asset(kind, "demo") == root
+
+
+@pytest.mark.asyncio
+async def test_agent_group_describe_uses_local_group_manifest(tmp_path):
+    root = tmp_path / "demo"
+    root.mkdir()
+    (root / "manifest.json").write_text(json.dumps({
+        "package_type": "agent_group",
+        "name": "demo",
+        "version": "0.2.0",
+        "display_name": "Demo Team",
+        "description": "A team of experts",
+        "agents": ["leader"],
+    }))
+    instance = AssetPublishAPI(
+        tmp_path / "state",
+        publisher=Publisher(),
+        resolver=lambda kind, local_id: root,
+        hub_url="https://example.com",
+    )
+    try:
+        result = await instance.call(
+            "describe",
+            params(kind="agent_group", local_id="demo"),
+            gateway_user="browser-user",
+        )
+        assert result["defaults"] == {
+            "asset_name": "demo",
+            "version": "0.2.0",
+            "display_name": "Demo Team",
+            "description": "A team of experts",
+            "tags": [],
+            "visibility": "public",
+        }
+    finally:
+        instance.store.close()
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,6 @@ type GroupCardProps = {
   onOpen: (id: string) => void;
   onUse: (id: string) => void;
   onInstall: (id: string) => void;
-  onUninstall: (id: string) => void;
 };
 
 export function getAvatarTone(name: string): string {
@@ -39,11 +38,9 @@ function GroupAvatar({
   );
 }
 
-export function GroupCard({ item, busy, onOpen, onUse, onInstall, onUninstall }: GroupCardProps) {
+export function GroupCard({ item, busy, onOpen, onUse, onInstall }: GroupCardProps) {
   const { t } = useTranslation();
-  const canUse = item.installed && item.capabilities.canUse;
   const canInstall = !item.installed && item.capabilities.canInstall;
-  const canUninstall = item.capabilities.canUninstall;
   const fallbackTag = t(`agentManagement.categories.${item.category}`, {
     defaultValue: item.category || t('agentManagement.categoryOther'),
   });
@@ -53,7 +50,7 @@ export function GroupCard({ item, busy, onOpen, onUse, onInstall, onUninstall }:
 
   return (
     <article
-      className={`agent-management-card page-card agent-group-card${item.installed ? ' agent-management-card--multi-action' : ''}`}
+      className="agent-management-card page-card agent-group-card"
       data-testid={`agent-group-card-${item.id}`}
       data-variant={item.id}
     >
@@ -91,14 +88,14 @@ export function GroupCard({ item, busy, onOpen, onUse, onInstall, onUninstall }:
         aria-label={t('agentManagement.group.card.actions', { name: item.displayName })}
         data-testid="agent-group-card-actions"
       >
-        {canUse ? (
+        {item.installed ? (
           <button
             type="button"
-            className="agent-management-button agent-management-button--secondary agent-management-card-action--use"
+            className="agent-management-button agent-management-button--primary agent-management-card-action--use"
             data-testid="agent-group-card-action"
             data-variant="use"
-            disabled={busy}
-            aria-disabled={!canUse}
+            disabled={busy || !item.capabilities.canUse}
+            aria-disabled={busy || !item.capabilities.canUse}
             onClick={() => onUse(item.id)}
           >
             {t('agentManagement.group.actions.use')}
@@ -115,20 +112,6 @@ export function GroupCard({ item, busy, onOpen, onUse, onInstall, onUninstall }:
             onClick={() => onInstall(item.id)}
           >
             {busy ? t('agentManagement.group.actions.installing') : t('agentManagement.group.actions.install')}
-          </button>
-        ) : canUninstall ? (
-          <button
-            type="button"
-            className="agent-management-button agent-management-button--primary"
-            data-testid="agent-group-card-action"
-            data-variant={item.installed ? 'uninstall' : 'delete'}
-            disabled={busy}
-            aria-busy={busy}
-            onClick={() => onUninstall(item.id)}
-          >
-            {busy
-              ? t('agentManagement.group.actions.uninstalling')
-              : t(item.installed ? 'agentManagement.group.actions.uninstall' : 'agentManagement.group.actions.delete')}
           </button>
         ) : null}
       </div>

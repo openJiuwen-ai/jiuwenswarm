@@ -75,6 +75,7 @@ def test_update_cannot_return_another_asset(payload):
         ("skill", "teamskills"),
         ("plugin", "agent-plugin"),
         ("agent_template", "agent-template"),
+        ("agent_group", "agent-template"),
         ("mcp", "agent-mcp"),
     ],
 )
