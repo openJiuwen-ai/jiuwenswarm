@@ -232,24 +232,16 @@ function assignMessageRenderKeys(
 interface ChatState {
   runtimes: Record<string, ChatRuntime>;
   activeSessionId: string | null;
-  /**
-   * 当前左栏正在展示的 team 视图；null 表示展示这一轮的主视图（key = sessionId）。
-   *
-   * 它只影响「看哪条对话」：发送、任务队列、会话级元数据仍以 activeSessionId 为准，
-   * 所以这个字段为空时，整套读写与改造前完全等价。
-   */
-  activeTeamId: string | null;
   /** Gateway broadcasts this status without a session id, so it is intentionally app-wide. */
   globalTaskRunning: boolean;
 
   ensureRuntime: (sessionId: string) => ChatRuntime;
   getRuntime: (sessionId: string | null) => ChatRuntime | undefined;
   setActiveSessionId: (sessionId: string | null) => void;
-  /** 切换左栏展示的 team 视图。会按需为这个 team 建一份空运行态。 */
-  setActiveTeamId: (teamId: string | null) => void;
   /**
    * 取某个 team 视图的运行态。teamId 为空时退回主视图，因此调用方不必先判空。
    * 视图不存在时返回 undefined（不隐式创建，避免读操作产生副作用）。
+   * 当前选中 team 由 teamSelectorStore.selectedTeamId 决定，不在此 store 再存一份。
    */
   getTeamRuntime: (sessionId: string | null, teamId: string | null | undefined) => ChatRuntime | undefined;
   /** 取得（必要时创建）某个 team 视图的运行态，供事件写入路径使用。 */
@@ -320,7 +312,6 @@ interface ChatState {
 export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get) => ({
   runtimes: {},
   activeSessionId: null,
-  activeTeamId: null,
   globalTaskRunning: false,
 
   ensureRuntime: (sessionId) => {
@@ -365,18 +356,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
   },
 
   setActiveSessionId: (sessionId) => {
-    // 换会话时左栏回到该会话的主视图：team 视图是会话内的选择，不该跨会话保留。
-    set({ activeSessionId: sessionId, activeTeamId: null });
-  },
-
-  setActiveTeamId: (teamId) => {
-    const { activeSessionId } = get();
-    const normalized = teamId || null;
-    if (activeSessionId && normalized) {
-      // 先为该 team 建好运行态，右栏/左栏读到的是同一份空视图而不是 undefined。
-      get().ensureTeamRuntime(activeSessionId, normalized);
-    }
-    set({ activeTeamId: normalized });
+    set({ activeSessionId: sessionId });
   },
 
   setGlobalTaskRunning: (running) => {
@@ -399,7 +379,6 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       return {
         runtimes: next,
         activeSessionId: state.activeSessionId === sessionId ? null : state.activeSessionId,
-        activeTeamId: state.activeSessionId === sessionId ? null : state.activeTeamId,
       };
     });
   },

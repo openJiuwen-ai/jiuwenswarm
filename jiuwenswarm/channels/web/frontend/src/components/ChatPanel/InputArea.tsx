@@ -723,9 +723,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         setPendingVoiceText((prev) => prev + text);
       }
     },
-    onEnd: () => {
-      autoSendTimeoutRef.current = setTimeout(() => {}, 100);
-    },
     onError: (error) => {
       console.error('Speech recognition error:', error);
     },
@@ -762,7 +759,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
         setPendingVoiceText('');
 
-        setTimeout(() => {
+        if (autoSendTimeoutRef.current) {
+          clearTimeout(autoSendTimeoutRef.current);
+        }
+        autoSendTimeoutRef.current = setTimeout(() => {
+          autoSendTimeoutRef.current = null;
+          // The composer may have been unmounted or switched to another
+          // Session while recognition was settling. Keep the transcript in
+          // its source Session and never submit it into the new one.
+          if (!sid || useChatStore.getState().activeSessionId !== sid) return;
           if (isTeamMode) {
             onSubmit(finalText);
           } else if (isInterruptible) {

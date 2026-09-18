@@ -25,6 +25,7 @@ export interface RuntimeTeamInfo {
   team_id: string;
   team_name: string;
   display_name?: string | null;
+  agent_group_name?: string | null;
   state: RuntimeTeamState | string;
   leader_id?: string | null;
   organization_id?: string | null;
@@ -238,10 +239,10 @@ export const useTeamSelectorStore = create<TeamSelectorState>((set, get) => ({
       },
     }));
 
-    // 左栏跟着切：选中哪个 team，对话视图就换成哪个 team 的。
-    // 这是这个下拉真正要做的事——右侧 Task Pool 只是顺带。
-    if (useChatStore.getState().activeSessionId === sessionId) {
-      useChatStore.getState().setActiveTeamId(teamId);
+    // Ensure the team conversation runtime exists before snapshot projection.
+    // Display/routing authority is selectedTeamId above (not chatStore).
+    if (teamId) {
+      useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
     }
 
     if (!teamId) return;

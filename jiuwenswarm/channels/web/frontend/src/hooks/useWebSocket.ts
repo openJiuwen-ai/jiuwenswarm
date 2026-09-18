@@ -1039,15 +1039,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
    *
    * 与 resolveEventTeamId 分开：带归属的帧按归属走，不带归属的帧落主视图——
    * 只有 leader 收尾这种「本轮固定只有一条流」的调用才需要回退到当前选中 team。
-   * 收尾类信号（chat.final / 中断 / 报错）本身不带 team_name，用 activeTeamId 兜底，
-   * 否则收尾会打到主视图、而正文在 team 视图，那条流永远关不掉。
+   * 收尾类信号（chat.final / 中断 / 报错）本身不带 team_name，用
+   * teamSelectorStore.selectedTeamId 兜底，否则收尾会打到主视图、而正文在
+   * team 视图，那条流永远关不掉。
    */
   const resolveConversationId = useCallback(
     (payload: Record<string, unknown>, sessionId: string): string => {
       const chatState = useChatStore.getState();
       const sameSession = chatState.activeSessionId === sessionId;
       const eventTeamId =
-        resolveEventTeamId(payload) ?? (sameSession ? chatState.activeTeamId : null);
+        resolveEventTeamId(payload) ??
+        (sameSession
+          ? useTeamSelectorStore.getState().runtimes[sessionId]?.selectedTeamId ?? null
+          : null);
       const conversationId = conversationKey(sessionId, eventTeamId);
       // 视图不存在就现建：收尾信号可能先于任何内容帧到达。
       chatState.ensureTeamRuntime(sessionId, eventTeamId);
@@ -1064,7 +1068,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
    */
   const activeConversationIdOf = useCallback((sessionId: string): string => {
     const chatState = useChatStore.getState();
-    const teamId = chatState.activeSessionId === sessionId ? chatState.activeTeamId : null;
+    const teamId =
+      chatState.activeSessionId === sessionId
+        ? useTeamSelectorStore.getState().runtimes[sessionId]?.selectedTeamId ?? null
+        : null;
     return conversationKey(sessionId, teamId);
   }, []);
 
@@ -1081,11 +1088,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
    *
    * 分帧写入时用的键是 conversationKey(sessionId, teamId)，落盘也要用同一个键，
    * 否则收尾时 flush 的是一个没人写入过的键，最后一段增量会永远卡在 batcher 里。
-   * 调用方拿不到 teamId 时（收尾信号不带归属）回退主视图，与分帧的兜底一致。
+   * 调用方拿不到 teamId 时（收尾信号不带归属）回退到 selectedTeamId，与
+   * resolveConversationId / activeConversationIdOf 一致。
    */
   const flushPendingStreamDelta = useCallback((sessionId: string, targetConversationId?: string) => {
     const chatState = useChatStore.getState();
-    const teamId = chatState.activeSessionId === sessionId ? chatState.activeTeamId : null;
+    const teamId =
+      chatState.activeSessionId === sessionId
+        ? useTeamSelectorStore.getState().runtimes[sessionId]?.selectedTeamId ?? null
+        : null;
     const conversationId = targetConversationId ?? conversationKey(sessionId, teamId);
     const streamId =
       chatState.getRuntime(conversationId)?.currentStreamId ??

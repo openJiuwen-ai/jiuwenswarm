@@ -764,6 +764,7 @@ export function ConversationSidebar({
   const addMenuRef = useRef<HTMLDivElement>(null);
   const workModeMenuRef = useRef<HTMLDivElement>(null);
   const previousProcessing = useRef<Record<string, boolean>>({});
+  const sessionOrderByScopeRef = useRef(new Map<string, string[]>());
 
   useEffect(() => {
     if (!pathDialogError || pathDialogOpen) return;
@@ -913,18 +914,36 @@ export function ConversationSidebar({
 
   const pinnedProjects = useMemo(() => projects.filter((project) => project.pinned && !isDefaultProject(project)), [projects]);
   const regularProjects = useMemo(() => projects.filter((project) => !project.pinned && !isDefaultProject(project)), [projects]);
-  const sortedProjectSessions = useMemo(() => {
+  const { sortedProjectSessions, orderedPinnedSessions } = useMemo(() => {
+    const sortWithStableRunningOrder = (scope: string, list: Session[]) => {
+      const hasRunningSession = list.some(
+        (session) => Boolean(runtimes[session.session_id]?.isProcessing || session.is_processing),
+      );
+      const previousOrder = sessionOrderByScopeRef.current.get(scope);
+      const ordered = sortSessionsForSidebar(
+        list,
+        hasRunningSession ? previousOrder : undefined,
+      );
+      sessionOrderByScopeRef.current.set(
+        scope,
+        ordered.map((session) => session.session_id),
+      );
+      return ordered;
+    };
+
     const sorted: Record<string, Session[]> = {};
     for (const [projectId, list] of Object.entries(projectSessions)) {
-      sorted[projectId] = sortSessionsForSidebar(list);
+      sorted[projectId] = sortWithStableRunningOrder(`project:${projectId}`, list);
     }
-    return sorted;
-  }, [projectSessions]);
+    return {
+      sortedProjectSessions: sorted,
+      orderedPinnedSessions: sortWithStableRunningOrder('pinned', pinnedSessions),
+    };
+  }, [pinnedSessions, projectSessions, runtimes]);
   const conversationSessions = useMemo(() => {
     if (defaultProject) return sortedProjectSessions[defaultProject.project_id] || [];
     return [];
   }, [defaultProject, sortedProjectSessions]);
-  const orderedPinnedSessions = useMemo(() => sortSessionsForSidebar(pinnedSessions), [pinnedSessions]);
   const observedSidebarSessions = useMemo(() => {
     const byId = new Map<string, Session>();
     for (const session of orderedPinnedSessions) {

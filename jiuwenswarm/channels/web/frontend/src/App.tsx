@@ -463,6 +463,7 @@ function AppContent() {
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
   const sessionIdRef = useRef(sessionId);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const navigationSeqRef = useRef(0);
   const kvcViewIdRef = useRef(generateUuidV4());
   const kvcPreparedInputSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
@@ -557,10 +558,20 @@ function AppContent() {
     setSingleAgentPanelSelectedArtifactId,
   } = useSingleAgentPanelState();
 
+  // Sidebar / title use React sessionId; ChatPanel reads chatStore.activeSessionId.
+  // These must flip in the same turn — deferring activeSessionId to useEffect leaves one
+  // paint where the sidebar shows B but the transcript still shows A's user message.
+  const commitVisibleSessionId = useCallback((nextSessionId: string) => {
+    sessionIdRef.current = nextSessionId;
+    ensureSessionRuntimes(nextSessionId);
+    useChatStore.getState().setActiveSessionId(nextSessionId);
+    useSubagentStore.getState().hydrateRuntime(nextSessionId);
+    setSessionId(nextSessionId);
+  }, []);
+
   useEffect(() => {
     if (route.kind === 'chat-session') {
-      sessionIdRef.current = route.sessionId;
-      setSessionId(route.sessionId);
+      commitVisibleSessionId(route.sessionId);
       setActiveNav('chat');
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') navigate({ kind: 'chat-new' }, { replace: true });
@@ -570,25 +581,18 @@ function AppContent() {
       } else {
         useWorkspaceStore.getState().setSelectedProject(null);
       }
-      sessionIdRef.current = 'new';
-      setSessionId('new');
+      commitVisibleSessionId('new');
       setActiveNav('chat');
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
+  }, [commitVisibleSessionId, navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
 
   useEffect(() => {
     if (!teamAreaExpanded || toolPanelHidden) {
       setToolPanelMaximized(false);
     }
   }, [teamAreaExpanded, toolPanelHidden]);
-
-  useEffect(() => {
-    ensureSessionRuntimes(sessionId);
-    useChatStore.getState().setActiveSessionId(sessionId);
-    useSubagentStore.getState().hydrateRuntime(sessionId);
-  }, [sessionId]);
 
   useEffect(() => {
     if (!initialDataLoaded) {
@@ -2216,6 +2220,7 @@ function AppContent() {
     options: NewConversationOptions = {},
     lifecycle: { clearPreviousSession?: boolean } = {},
   ) => {
+    navigationSeqRef.current += 1;
     const currentSessionId = sessionIdRef.current;
     const currentRuntime = useSessionStore.getState().getRuntime(currentSessionId);
     const pendingNewRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
@@ -2269,15 +2274,14 @@ function AppContent() {
       newConversationProjectRef.current = null;
       setSelectedProject(null);
     }
-    sessionIdRef.current = NEW_CONVERSATION_ID;
-    setSessionId(NEW_CONVERSATION_ID);
+    commitVisibleSessionId(NEW_CONVERSATION_ID);
     setCurrentSession(null);
     setTeamAreaExpanded(false);
     setSingleAgentPanelExpanded(false);
     navigate({ kind: 'chat-new' });
     setActiveNav('chat');
     requestComposerFocus();
-  }, [disposeInFlightHistoryHandles, mode, navigate, requestComposerFocus, setCurrentSession, setSelectedProject, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
+  }, [commitVisibleSessionId, disposeInFlightHistoryHandles, mode, navigate, requestComposerFocus, setCurrentSession, setSelectedProject, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
 
   // 监听从 SkillPanel 发来的"新建会话并插入技能"事件
   useEffect(() => {
@@ -2452,8 +2456,9 @@ function AppContent() {
         useWorkspaceStore.getState().upsertSession(createdSession, { isNew: true });
         sessionIdsCreatedInThisPageRef.current.add(newSid);
         useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
-        sessionIdRef.current = newSid;
-        setSessionId(newSid);
+        // 使排队中的旧 session.restore 失效，避免创建成功后被切回 previous session。
+        navigationSeqRef.current += 1;
+        commitVisibleSessionId(newSid);
         navigate({ kind: 'chat-session', sessionId: newSid }, { replace: true });
         const goalArmedOnNew = useGoalStore.getState().runtimes[NEW_CONVERSATION_ID]?.armed ?? false;
         useGoalStore.getState().setArmed(NEW_CONVERSATION_ID, false);
@@ -2493,7 +2498,7 @@ function AppContent() {
     } else {
       useChatStore.getState().setInputValue(currentSessionId, content);
     }
-  }, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
+  }, [commitVisibleSessionId, disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
 
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -2644,7 +2649,13 @@ function AppContent() {
   ]);
 
   const performSessionRestore = useCallback(
-    async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean }) => {
+    async (
+      targetSessionId: string,
+      navigationSeq: number,
+      targetMode?: string,
+      targetSession?: Session,
+      options?: { skipHistoryLoad?: boolean },
+    ) => {
       const previousSessionId = sessionIdRef.current;
       const previousMode =
         useSessionStore.getState().getRuntime(previousSessionId)?.mode ?? mode;
@@ -2660,6 +2671,7 @@ function AppContent() {
             view_id: kvcViewIdRef.current,
           });
         } catch (error) {
+          if (navigationSeq !== navigationSeqRef.current) return;
           if (isTeamAgentMode(resolvedMode)) {
             console.error('Failed to switch team session:', error);
             window.alert(t('sessions.errors.switchSession'));
@@ -2668,6 +2680,7 @@ function AppContent() {
           console.warn('Session switch lifecycle hook failed; continuing restore:', error);
         }
       }
+      if (navigationSeq !== navigationSeqRef.current) return;
 
       setHistoryLoadingMore(false);
       const existingRuntime = useChatStore.getState().getRuntime(targetSessionId);
@@ -2684,9 +2697,7 @@ function AppContent() {
       }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
-      ensureSessionRuntimes(targetSessionId);
-      sessionIdRef.current = targetSessionId;
-      setSessionId(targetSessionId);
+      commitVisibleSessionId(targetSessionId);
       if (targetSession) {
         upsertSessionMetadata(targetSession, { setCurrent: true });
         // 会话打开时若后端 metadata 带 model（首条 chat.send 显式携带 model_name 时
@@ -2724,6 +2735,7 @@ function AppContent() {
     [
       clearMessages,
       clearTodos,
+      commitVisibleSessionId,
       disposeInFlightHistoryHandles,
       mode,
       navigate,
@@ -2737,7 +2749,6 @@ function AppContent() {
       setMode,
       setPaused,
       setProcessing,
-      setSessionId,
       setThinking,
       t,
       upsertSessionMetadata,
@@ -2751,6 +2762,7 @@ function AppContent() {
       targetSession?: Session,
       options?: { skipHistoryLoad?: boolean },
     ): Promise<void> => {
+      const navigationSeq = ++navigationSeqRef.current;
       // WebSocket requests are processed concurrently by AgentServer. Queue
       // navigation here so rapid A -> B -> C clicks cannot race and let an
       // older response overwrite the latest selected session.
@@ -2758,6 +2770,7 @@ function AppContent() {
         .catch(() => undefined)
         .then(() => performSessionRestore(
           targetSessionId,
+          navigationSeq,
           targetMode,
           targetSession,
           options,
@@ -3081,6 +3094,7 @@ function AppContent() {
                 >
                   <div className={`flex-1 min-h-0`}>
                     <ChatPanel
+                      key={sessionId}
                       onSendMessage={handleSendMessage}
                       onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
                       onPersistMedia={handlePersistMedia}

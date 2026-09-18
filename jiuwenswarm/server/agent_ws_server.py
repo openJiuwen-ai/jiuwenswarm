@@ -5404,6 +5404,7 @@ class AgentWebSocketServer:
                     "organization_id": None,
                     "is_leader": True,
                     "capabilities": [],
+                    "agent_group_name": None,
                     "source": extra.get("source") or "runtime",
                 }
                 existing = entries[team_name]
@@ -5431,6 +5432,10 @@ class AgentWebSocketServer:
                     if backend is not None and not getattr(backend, "is_leader", True):
                         # Only leader-backed teams are addressable as a unit.
                         continue
+                    spec_metadata = dict(
+                        getattr(getattr(active.agent, "spec", None), "metadata", None)
+                        or {}
+                    )
                     organization_id = getattr(
                         getattr(backend, "org_task_manager", None), "organization_id", None
                     )
@@ -5440,6 +5445,7 @@ class AgentWebSocketServer:
                         display_name=getattr(getattr(active.agent, "card", None), "name", None),
                         leader_id=getattr(backend, "leader_member_name", None),
                         organization_id=organization_id,
+                        agent_group_name=spec_metadata.get("agent_group_name"),
                         source="pool",
                     )
             except Exception as e:
@@ -5470,7 +5476,12 @@ class AgentWebSocketServer:
             metadata = get_session_metadata(session_id) or {}
             metadata_team_name = str(metadata.get("team_name") or "").strip()
             if metadata_team_name:
-                _upsert(metadata_team_name, state="configured", source="metadata")
+                _upsert(
+                    metadata_team_name,
+                    state="configured",
+                    agent_group_name=metadata.get("agent_group_name"),
+                    source="metadata",
+                )
 
         for entry in entries.values():
             entry["is_owner"] = bool(

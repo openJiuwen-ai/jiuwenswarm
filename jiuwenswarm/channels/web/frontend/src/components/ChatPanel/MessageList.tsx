@@ -7,7 +7,7 @@ import { MessageItem } from './MessageItem';
 import { ToolGroupDisplay } from './ToolGroupDisplay';
 import { useNow, formatDurationPrecise } from './chatTimelineClock';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
-import { useChatStore, useSessionStore } from '../../stores';
+import { useChatStore, useSessionStore, useTeamSelectorStore } from '../../stores';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import {
   buildTimelineItems,
@@ -352,7 +352,9 @@ export function ChatTimelineList({
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const activeTeamId = useChatStore((s) => s.activeTeamId);
+  const activeTeamId = useTeamSelectorStore((s) =>
+    activeSessionId ? s.runtimes[activeSessionId]?.selectedTeamId ?? null : null
+  );
   // 推理段与消息同源：都取「会话 + 当前选中 team」这条视图。这一行决定了切换下拉后
   // 左栏展示的到底是谁的思考过程。
   const conversationRuntime = useChatStore((s) => s.getTeamRuntime(activeSessionId, activeTeamId));
@@ -696,7 +698,9 @@ export function ChatTimelineList({
 
 export function MessageList({ messages, renderAfterMessage }: MessageListProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const activeTeamId = useChatStore((s) => s.activeTeamId);
+  const activeTeamId = useTeamSelectorStore((s) =>
+    activeSessionId ? s.runtimes[activeSessionId]?.selectedTeamId ?? null : null
+  );
   // 工具执行与消息同源：都取当前会话视图，避免出现「消息是 A team 的、工具卡片是主视图的」。
   const conversationRuntime = useChatStore((s) => s.getTeamRuntime(activeSessionId, activeTeamId));
   const toolExecutions = conversationRuntime?.toolExecutions ?? EMPTY_TOOL_EXECUTIONS;
@@ -711,6 +715,7 @@ export function MessageList({ messages, renderAfterMessage }: MessageListProps) 
 
   return (
     <ChatTimelineList
+      key={`${activeSessionId ?? ''}:${activeTeamId ?? ''}`}
       messages={messages}
       executions={executions}
       mode={mode}

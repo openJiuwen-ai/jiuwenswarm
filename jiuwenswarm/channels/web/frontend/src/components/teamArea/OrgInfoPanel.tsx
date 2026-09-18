@@ -249,10 +249,13 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                     const runtimeTeam = team.team_id
                       ? runtimeTeamById.get(team.team_id)
                       : undefined;
-                    const teamName =
+                    const teamId =
                       team.team_id ||
                       runtimeTeam?.team_name?.trim() ||
                       '-';
+                    const teamName =
+                      runtimeTeam?.agent_group_name?.trim() ||
+                      teamId;
                     const capabilities =
                       team.capabilities?.length
                         ? team.capabilities
@@ -266,6 +269,11 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                         <div className="truncate text-xs font-medium text-text" title={teamName}>
                           {teamName}
                         </div>
+                        {teamName !== teamId && (
+                          <div className="truncate text-[10px] text-text-muted" title={teamId}>
+                            {teamId}
+                          </div>
+                        )}
                         {capabilities.length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1">
                             {capabilities.map((capability) => (

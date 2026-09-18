@@ -108,8 +108,11 @@ export function getConversationMenuItems(isPinned: boolean, translate: Translate
   return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.conversation, translate);
 }
 
-export function sortSessionsForSidebar<T extends SessionLike>(sessions: T[]): T[] {
-  return [...sessions].sort((left, right) => {
+export function sortSessionsForSidebar<T extends SessionLike>(
+  sessions: T[],
+  stableOrder?: readonly string[],
+): T[] {
+  const activitySorted = [...sessions].sort((left, right) => {
     const pinDelta = Number(Boolean(right.pinned)) - Number(Boolean(left.pinned));
     if (pinDelta !== 0) return pinDelta;
     const leftPinOrder = left.pin_order ?? 0;
@@ -119,4 +122,19 @@ export function sortSessionsForSidebar<T extends SessionLike>(sessions: T[]): T[
     }
     return getSessionActivityAt(right) - getSessionActivityAt(left);
   });
+  if (!stableOrder?.length) return activitySorted;
+
+  const stableRank = new Map(stableOrder.map((sessionId, index) => [sessionId, index]));
+  const newlyAdded: T[] = [];
+  const existingById = new Map(activitySorted.map((session) => [session.session_id, session]));
+  for (const session of activitySorted) {
+    if (!stableRank.has(session.session_id)) newlyAdded.push(session);
+  }
+  const existing = stableOrder.flatMap((sessionId) => {
+    const session = existingById.get(sessionId);
+    return session ? [session] : [];
+  });
+  // A newly created conversation must remain discoverable while another one is
+  // running. Existing rows retain their previous relative positions.
+  return [...newlyAdded, ...existing];
 }

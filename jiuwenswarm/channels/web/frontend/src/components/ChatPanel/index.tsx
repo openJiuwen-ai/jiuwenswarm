@@ -143,7 +143,9 @@ function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }
 
 function InterruptResultBubble() {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const activeTeamId = useChatStore((s) => s.activeTeamId);
+  const activeTeamId = useTeamSelectorStore((s) =>
+    activeSessionId ? s.runtimes[activeSessionId]?.selectedTeamId ?? null : null
+  );
   const interruptResult = useChatStore(
     (s) => s.getTeamRuntime(activeSessionId, activeTeamId)?.interruptResult ?? null
   );
@@ -166,7 +168,9 @@ function InterruptResultBubble() {
 
 function ActiveTeamGroupEntry({ isProcessing, teamAreaExpanded }: { isProcessing: boolean; teamAreaExpanded?: boolean | null }) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const activeTeamId = useChatStore((s) => s.activeTeamId);
+  const activeTeamId = useTeamSelectorStore((s) =>
+    activeSessionId ? s.runtimes[activeSessionId]?.selectedTeamId ?? null : null
+  );
   // 集群卡片同样跟着当前选中的 team 走：它展示的是这条对话里的成员活动。
   const messages = useChatStore(
     (s) => s.getTeamRuntime(activeSessionId, activeTeamId)?.messages ?? EMPTY_MESSAGES
@@ -1155,9 +1159,12 @@ export function ChatPanel({
 
   // 包装发送消息函数，添加滚动逻辑
   const handleSendMessage = useCallback((content: string, mediaItems?: MediaItem[]) => {
+    // Voice/attachment callbacks may outlive the Session view that created
+    // them. Never let a stale callback submit into the newly active Session.
+    if (!activeSessionId || useChatStore.getState().activeSessionId !== activeSessionId) return;
     setIsSending(true);
     onSendMessage(content, mediaItems);
-  }, [onSendMessage]);
+  }, [activeSessionId, onSendMessage]);
 
   // 当发送消息时强制滚动到底部
   useEffect(() => {

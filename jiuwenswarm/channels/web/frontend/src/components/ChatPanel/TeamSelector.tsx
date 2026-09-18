@@ -41,14 +41,11 @@ function stateTone(state: string): 'running' | 'idle' | 'unknown' {
   return 'unknown';
 }
 
-/**
- * 下拉展示名优先用唯一的 team_id：多个 org leader 常共用同一个 agent card.name
- * （例如都叫 "Market Research and Data Analysis"），只用 display_name 会看起来像只有一项。
- */
+/** 下拉优先显示 AgentGroup 名称；旧会话没有该字段时回退到运行时 Team ID。 */
 function teamLabel(team: RuntimeTeamInfo, fallback: string): string {
+  const agentGroupName = team.agent_group_name?.trim();
+  if (agentGroupName) return agentGroupName;
   const id = (team.team_id || team.team_name || '').trim();
-  const leader = team.leader_id?.trim();
-  if (id && leader && leader !== id) return `${id} · ${leader}`;
   return id || team.display_name?.trim() || fallback;
 }
 
@@ -263,7 +260,11 @@ export function TeamSelector({ sessionId, isProcessing = false }: TeamSelectorPr
                 data-team-state={team.state}
                 title={team.team_id}
                 onClick={() => {
-                  if (sessionId) void selectTeam(sessionId, team.team_id);
+                  if (sessionId) {
+                    // 标记为已选，避免 selectedTeamId 更新后自动选择 effect 再请求一次快照。
+                    autoSelectedRef.current = `${sessionId}:${team.team_id}`;
+                    void selectTeam(sessionId, team.team_id);
+                  }
                   setOpen(false);
                 }}
               >
