@@ -7,6 +7,7 @@ export type MainNavKey =
   | 'history'
   | 'cron'
   | 'channels'
+  | 'personalContext'
   | 'extensions'
   | 'configpanel'
   | 'browserpanel'
@@ -24,6 +25,7 @@ const MAIN_NAV_KEYS = new Set<MainNavKey>([
   'history',
   'cron',
   'channels',
+  'personalContext',
   'extensions',
   'configpanel',
   'browserpanel',

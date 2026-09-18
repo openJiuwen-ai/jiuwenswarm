@@ -10,6 +10,7 @@ import {
   useMemo,
   forwardRef,
   useImperativeHandle,
+  type SVGProps,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -18,7 +19,7 @@ import { FileTypeIcon, getFileTypeIconKeyFromFilename, type FileTypeIconKey } fr
 import { useSpeechRecognition } from '../../hooks';
 
 // import { stopAllTts } from '../../utils';
-import { useChatStore, useGoalStore, useSessionStore, useWorkspaceStore, resolveEffectiveModel } from '../../stores';
+import { useChatStore, useGoalStore, useSessionStore, useWorkspaceStore, resolveEffectiveModel, usePersonalContextStore } from '../../stores';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
@@ -27,6 +28,7 @@ import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig'
 import clsx from 'clsx';
 import { PermissionWarningDialog } from './PermissionWarningDialog';
 import { ModelProviderIcon } from '../ModelProviderIcon';
+import { Switch } from '../Switch';
 import { getEvolutionPillLabel } from './evolution-status';
 import { isEnterprise } from '../../edition';
 import { webRequest } from '../../services/webClient';
@@ -119,6 +121,29 @@ function getProjectLabel(project: ProjectInfo | null, fallback: string): string 
 
 function WorkIcon({ name, className }: { name: WorkIconName; className?: string }) {
   return <span className={cx('chat-work-icon', `chat-work-icon--${name}`, className)} aria-hidden="true" />;
+}
+
+// 个人上下文图标——文档/知识库隐喻，与 SessionSidebar 的 personalContextNavIcon 同源内联 SVG。
+function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="none" {...props}>
+      <path
+        fillRule="evenodd"
+        d="M12 3C13.1046 3 14 3.89543 14 5C14 6.10457 13.1046 7 12 7L2 7C2 7 2.99999 6 2.99999 5C2.99999 4 2 3 2 3L12 3Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth={1}
+      />
+      <path
+        fillRule="evenodd"
+        d="M10 0C11.1046 0 12 0.89543 12 2C12 3.10457 11.1046 4 10 4L0 4C0 4 0.999991 3 0.999991 2C0.999992 1 0 0 0 0L10 0Z"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth={1}
+        transform="matrix(-1,0,0,1,14,9)"
+      />
+    </svg>
+  );
 }
 
 function isDefaultProject(project: ProjectInfo): boolean {
@@ -591,6 +616,23 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 就该跟着消失，不能靠"目标是否存在"续命——目标存在与否、当前状态、编辑/暂停/删除，已经由
   // 输入框上方常驻的 GoalBar 完整覆盖，工具栏这里再挂一份重复的常驻入口只会显得"选择没解除"。
   const goalTagVisible = canUseGoalMenu && goalArmed;
+
+  // 个人上下文：agent 加载开关（总开关联动）。总开关关闭时整个菜单项隐藏；开启时默认打开，可单独控制。
+  const isConnected = useSessionStore((s) => s.isConnected);
+  const personalContextMasterEnabled = usePersonalContextStore(
+    (s) => s.config.collection_enabled || s.config.agent_use_enabled,
+  );
+  const agentUseEnabled = usePersonalContextStore((s) => s.config.agent_use_enabled);
+  const agentUsePending = usePersonalContextStore((s) => !!s.pendingWrites.agent_use_enabled);
+  const setAgentUseEnabled = usePersonalContextStore((s) => s.setAgentUseEnabled);
+  const toggleAgentUse = useCallback(
+    (next: boolean) => {
+      void setAgentUseEnabled(next).catch(() => {
+        // 静默：store 已做乐观回滚，失败不额外提示
+      });
+    },
+    [setAgentUseEnabled],
+  );
 
   const mentionableMembers = useMemo(() => {
     return teamMembers
@@ -2297,6 +2339,25 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       <span className="chat-mode-select__label">{t('goal.toolbarTag')}</span>
                     </span>
                   </button>
+                )}
+                {personalContextMasterEnabled && (
+                  <div
+                    className="chat-mode-select__option"
+                    role="menuitem"
+                    data-testid="chat-panel-input-attach-menu-personal-context"
+                  >
+                    <span className="chat-mode-select__option-main">
+                      <span className="chat-mode-select__icon chat-mode-select__icon--asset" aria-hidden="true">
+                        <PersonalContextIcon aria-hidden="true" />
+                      </span>
+                      <span className="chat-mode-select__label">{t('personalContext.chat.toggleLabel')}</span>
+                    </span>
+                    <Switch
+                      checked={agentUseEnabled}
+                      disabled={!isConnected || agentUsePending}
+                      onChange={toggleAgentUse}
+                    />
+                  </div>
                 )}
               </div>,
               document.body

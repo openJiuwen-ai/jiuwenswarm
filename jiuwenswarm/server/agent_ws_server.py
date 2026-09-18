@@ -29,6 +29,7 @@ from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_out
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
     get_config_file,
+    get_user_workspace_dir,
     mask_sensitive,
     resolve_tenant_sessions_dir,
 )
@@ -154,6 +155,11 @@ from jiuwenswarm.common.security.ws_origin import (
     get_header_value,
     is_origin_check_enabled,
     is_allowed_browser_origin,
+)
+from jiuwenswarm.server.personal_context import PersonalContextHostAPI
+from jiuwenswarm.server.personal_context.ws_handler import (
+    PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS,
+    handle_personal_context_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -361,6 +367,11 @@ class AgentWebSocketServer:
         self._default_model: Optional[Any] = None
         # 本地 jiuwenbox 子进程管理器 (lazy 启动, 在 /sandbox enable 时 ensure_running)
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
+        # AgentServer 内唯一持有的进程内 PersonalContext Host；Context Rail 使用同一固定目录。
+        self._personal_context_host = PersonalContextHostAPI(
+            home=get_user_workspace_dir() / ".personal_context",
+        )
+        self._personal_context_start_task: asyncio.Task[None] | None = None
         # Proactive recommendation engine (set by app_agentserver for debug trigger)
         self._proactive_engine: Any = None
         get_acp_output_manager().set_send_push_callback(
@@ -528,6 +539,10 @@ class AgentWebSocketServer:
                 await _warmup_phase3()
 
             asyncio.create_task(_phase3_after_phase12(), name="startup-warmup-query")
+        self._personal_context_start_task = asyncio.create_task(
+            self._start_personal_context_best_effort(),
+            name="personal-context-host-start",
+        )
         # WS 监听已经开放, 现在按 config.yaml::sandbox 的 runtime.enabled +
         # startup_mode 决定要不要自动把 jiuwenbox 子进程也拉起来。失败不阻塞
         # 启动 (用户依然可以在 TUI 里跑 /sandbox enable 重试)。
@@ -580,6 +595,43 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] event loop lag elevated lag_ms=%.0f",
                     lag_ms,
                 )
+
+    async def _start_personal_context_best_effort(self) -> None:
+        """Start optional PersonalContext without changing AgentServer readiness."""
+        start_cancelled: asyncio.CancelledError | None = None
+        try:
+            await self._personal_context_host.start()
+        except asyncio.CancelledError as exc:
+            start_cancelled = exc
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] optional PersonalContext startup failed: %s",
+                type(exc).__name__,
+            )
+            return
+        if start_cancelled is not None:
+            raise start_cancelled
+
+        rail_sync_cancelled: asyncio.CancelledError | None = None
+        try:
+            state_reader = getattr(
+                self._personal_context_host, "is_runtime_enabled", None
+            )
+            enabled = bool(await state_reader()) if callable(state_reader) else False
+            manager_setter = getattr(
+                self._agent_manager, "set_personal_context_runtime_enabled", None
+            )
+            if callable(manager_setter):
+                await manager_setter(enabled)
+        except asyncio.CancelledError as exc:
+            rail_sync_cancelled = exc
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] optional PersonalContext Rail sync failed: %s",
+                type(exc).__name__,
+            )
+        if rail_sync_cancelled is not None:
+            raise rail_sync_cancelled
 
     async def _bootstrap_internal_jiuwenbox(self) -> None:
         """启动时按 ``config.yaml::sandbox`` 自动拉起 jiuwenbox 子进程。
@@ -930,8 +982,46 @@ class AgentWebSocketServer:
         )
         return forbidden_origin_response(args)
 
+    async def _stop_personal_context_best_effort(self) -> None:
+        """Cancel PersonalContext startup and stop PersonalContext without masking main shutdown."""
+        start_task = self._personal_context_start_task
+        self._personal_context_start_task = None
+        if start_task is not None:
+            if not start_task.done():
+                start_task.cancel()
+            try:
+                await start_task
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[AgentWebSocketServer] optional PersonalContext startup cleanup failed: %s",
+                    type(exc).__name__,
+                )
+        stop_cancelled: asyncio.CancelledError | None = None
+        try:
+            await self._personal_context_host.stop()
+        except asyncio.CancelledError as exc:
+            stop_cancelled = exc
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] optional PersonalContext stop failed: %s",
+                type(exc).__name__,
+            )
+        if stop_cancelled is not None:
+            raise stop_cancelled
+
     async def stop(self) -> None:
         """停止 WebSocket 服务端."""
+        try:
+            await self._stop_main_services()
+        finally:
+            await self._stop_personal_context_best_effort()
+
+    async def _stop_main_services(self) -> None:
+        """Run the unchanged AgentServer shutdown before optional PersonalContext cleanup."""
         global _startup_warmup_task
 
         async def _cancel_warmup_task(task: asyncio.Task[None] | None, label: str) -> None:
@@ -1125,6 +1215,23 @@ class AgentWebSocketServer:
             return
 
         request = result.request
+        # PersonalContext 请求在通用流水线之前拦截：其 wire 语义（host 持有、
+        # runtime 开关联动）与表驱动分发无关，直接交给独立 handler。
+        if request.req_method in _PERSONAL_CONTEXT_REQ_METHODS:
+            manager = getattr(self, "_agent_manager", None)
+            runtime_callback = getattr(
+                manager, "set_personal_context_runtime_enabled", None
+            )
+            await handle_personal_context_request(
+                self._personal_context_host,
+                ws,
+                request,
+                send_lock,
+                runtime_enabled_changed=(
+                    runtime_callback if callable(runtime_callback) else None
+                ),
+            )
+            return
         # 汇合点在server/pipeline.py
         ctx = RequestContext(
             request=request,

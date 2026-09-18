@@ -72,6 +72,7 @@ WEB_SEARCH = _tools.WEB_SEARCH
 WEB_FETCH = _tools.WEB_FETCH
 VISION = _OJ_VISION
 AUDIO = _OJ_AUDIO
+PERSONAL_CONTEXT = _member_rails.PERSONAL_CONTEXT
 RUNTIME_PROMPT = _member_rails.RUNTIME_PROMPT
 TEAM_SKILL_STORAGE_POLICY = _member_rails.TEAM_SKILL_STORAGE_POLICY
 TEAM_SHARED_SKILL_LINK_REFRESH = _member_rails.TEAM_SHARED_SKILL_LINK_REFRESH
@@ -168,6 +169,7 @@ def register_swarm_providers() -> None:
 
 
 __all__ = [
+    "PERSONAL_CONTEXT",
     "register_swarm_providers",
     "SKILL_TOOLKIT",
     "SKILL_RETRIEVAL",

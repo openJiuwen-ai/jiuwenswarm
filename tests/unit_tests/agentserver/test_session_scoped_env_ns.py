@@ -22,6 +22,9 @@ def test_new_session_scoped_adapter_inherits_tenant_env_namespace() -> None:
     parent._skill_manager = None
     parent._session_adapters = {}
     parent._session_adapter_locks = {}
+    # _new_session_scoped_adapter snapshots the Host's personal-context
+    # switch; the bypassed __init__ would leave it unset.
+    parent._personal_context_runtime_enabled = False
 
     child = parent._new_session_scoped_adapter("officeclaw_sess_test")
 

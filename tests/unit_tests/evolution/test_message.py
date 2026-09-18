@@ -26,6 +26,44 @@ class TestReqMethod:
         assert ReqMethod.CONFIG_SET.value == "config.set"
 
     @staticmethod
+    def test_personal_context_methods():
+        """Test PersonalContext request methods exposed through the WebSocket gateway."""
+        methods = {
+            item.value
+            for item in ReqMethod
+            if item.value.startswith("personal_context.")
+        }
+        assert methods == {
+            "personal_context.runtime.status",
+            "personal_context.runtime.start_collection",
+            "personal_context.runtime.stop_collection",
+            "personal_context.runtime.start_agent_use",
+            "personal_context.runtime.stop_agent_use",
+            "personal_context.runtime.get_config",
+            "personal_context.runtime.patch_config",
+            "personal_context.runtime.select_model",
+            "personal_context.fetch.list_services",
+            "personal_context.fetch.create_service",
+            "personal_context.fetch.delete_service",
+            "personal_context.fetch.patch_service",
+            "personal_context.fetch.start_service",
+            "personal_context.fetch.stop_run",
+            "personal_context.fetch.stop_service",
+            "personal_context.fetch.run_all",
+            "personal_context.fetch.run_one",
+            "personal_context.fetch.stop_run",
+            "personal_context.fetch.get_run_status",
+            "personal_context.fetch.get_authorization_status",
+            "personal_context.fetch.authorize_provider",
+            "personal_context.context.stream_graph",
+            "personal_context.context.stream_tree",
+            "personal_context.context.search_pages",
+            "personal_context.context.get_node",
+            "personal_context.context.get_source",
+        }
+        assert len(methods) == 25
+
+    @staticmethod
     def test_session_methods():
         """Test session-related request methods."""
         assert ReqMethod.SESSION_LIST.value == "session.list"

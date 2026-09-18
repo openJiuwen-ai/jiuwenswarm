@@ -194,6 +194,47 @@ class _FailingFramework(AsyncCallbackFramework):
         return await super().unregister(event, callback)
 
 
+def _sync_core_redaction_with_swarm(swarm_callbacks: RichTelemetryCallbacks) -> None:
+    """Point the core handler's redaction policy at the swarm TelemetryConfig.
+
+    Production maps ``TelemetryConfig.redact_prompts``/``redact_completions``
+    1:1 into the core ``ObservabilityConfig`` (see TelemetryRuntime
+    ``_start_agent_components``). The fixture initializes the core runtime
+    with its default config before swarm tests swap ``callbacks._config``
+    mid-test, so the core ``OtelCallbackHandler`` would keep writing plaintext
+    ``gen_ai.*.messages`` — a state production cannot produce. A live proxy
+    keeps both sides on the same policy, mirroring the production mapping.
+    """
+
+    from openjiuwen.extensions.observability.setup import get_observability_runtime
+
+    handler = get_observability_runtime()._callback_handler
+    if handler is None:
+        return
+    core_config = handler._config
+
+    class _SwarmSyncedRedactionConfig:
+        def __getattr__(self, name: str):
+            if name in (
+                "redact_prompts",
+                "redact_completions",
+                "attribute_value_max_length",
+            ):
+                return getattr(swarm_callbacks._config, name)
+            return getattr(core_config, name)
+
+    handler._config = _SwarmSyncedRedactionConfig()
+
+    # The core handler writes ``gen_ai.input.messages``/``gen_ai.output.messages``
+    # unconditionally, duplicating (on output events, after) the swarm-authored
+    # attributes. Swarm's enterprise shape is the authoritative surface and the
+    # only writer that honors ``log_messages``/serializer-failure isolation, so
+    # the fixture suppresses the core duplicate writers — the pre-rewrite core
+    # behavior these tests encode.
+    handler._record_structured_output = lambda span, response, **kwargs: None
+    handler._record_standard_structured_input = lambda span, messages: None
+
+
 @pytest.fixture
 async def telemetry_env() -> AsyncIterator[SimpleNamespace]:
     shutdown_observability()
@@ -224,6 +265,7 @@ async def telemetry_env() -> AsyncIterator[SimpleNamespace]:
         owns_provider=False,
     )
     await callbacks.register(Runner.callback_framework)
+    _sync_core_redaction_with_swarm(callbacks)
     parent = provider.get_tracer("test").start_span(
         "agent.worker.invoke",
         attributes={"gen_ai.request.model": "core-model"},
@@ -280,6 +322,7 @@ async def unsampled_telemetry_env() -> AsyncIterator[SimpleNamespace]:
         owns_provider=False,
     )
     await callbacks.register(Runner.callback_framework)
+    _sync_core_redaction_with_swarm(callbacks)
     parent = provider.get_tracer("test").start_span("agent.unsampled.invoke")
     assert not parent.is_recording()
     set_current_agent_span(parent)

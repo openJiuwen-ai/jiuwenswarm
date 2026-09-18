@@ -705,7 +705,7 @@ class RichTelemetryCallbacks:
             if serialized_output is not None:
                 self._best_effort(
                     warning,
-                    lambda: self._set_if_empty(
+                    lambda: self._set_authoritative(
                         span,
                         GEN_AI_OUTPUT_MESSAGES,
                         serialized_output,
@@ -1216,7 +1216,7 @@ class RichTelemetryCallbacks:
                 if serialized_prompt is not None:
                     self._best_effort(
                         warning,
-                        lambda: self._set_if_empty(
+                        lambda: self._set_authoritative(
                             span,
                             GEN_AI_INPUT_MESSAGES,
                             serialized_prompt,
@@ -1438,7 +1438,7 @@ class RichTelemetryCallbacks:
                 if serialized_messages is not None:
                     self._best_effort(
                         warning,
-                        lambda: self._set_if_empty(
+                        lambda: self._set_authoritative(
                             span,
                             GEN_AI_INPUT_MESSAGES,
                             serialized_messages,
@@ -1687,7 +1687,7 @@ class RichTelemetryCallbacks:
         state: _CallState | None,
     ) -> None:
         self._set_if_empty(span, GEN_AI_SPAN_TYPE, "model")
-        self._set_if_empty(span, GEN_AI_OPERATION_NAME, "chat")
+        self._set_authoritative(span, GEN_AI_OPERATION_NAME, "chat")
         provider = (
             state.provider
             if state is not None
@@ -1751,14 +1751,14 @@ class RichTelemetryCallbacks:
         if skill.version:
             self._set_if_empty(span, GEN_AI_SKILL_VERSION, skill.version)
         if skill.loaded:
-            self._set_if_empty(span, GEN_AI_OPERATION_NAME, "load_skill")
+            self._set_authoritative(span, GEN_AI_OPERATION_NAME, "load_skill")
             if emit_events:
                 span.add_event(
                     "skill.loaded",
                     {"skill.name": skill.name, "skill.id": skill.skill_id},
                 )
         if skill.released:
-            self._set_if_empty(span, GEN_AI_OPERATION_NAME, "release_skill")
+            self._set_authoritative(span, GEN_AI_OPERATION_NAME, "release_skill")
             if emit_events:
                 span.add_event(
                     "skill.released",
@@ -1938,6 +1938,20 @@ class RichTelemetryCallbacks:
         existing = span.attributes.get(key) if span.attributes is not None else None
         if existing not in (None, "", (), []):
             return
+        try:
+            span.set_attribute(key, value)
+        except (TypeError, ValueError):
+            return
+
+    @staticmethod
+    def _set_authoritative(span: Span, key: str, value: Any) -> None:
+        """Overwrite even when a core-side handler already populated the key.
+
+        AgentCore's OtelCallbackHandler writes ``gen_ai.input.messages`` /
+        ``gen_ai.output.messages`` / ``gen_ai.operation.name`` non-conditionally
+        before our enrichment runs; swarm semantics (skill operation aliases,
+        swarm-shaped message parts) must win, so these writes are unconditional.
+        """
         try:
             span.set_attribute(key, value)
         except (TypeError, ValueError):
