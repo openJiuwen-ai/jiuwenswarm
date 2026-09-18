@@ -3927,6 +3927,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setLoadingHistory(sessionId, false);
         const errorMsg =
           typeof payload.error === 'string' ? payload.error : t('network.unknownError');
+        if (payload.code === 'AGENT_GROUP_NOT_INSTALLED') {
+          const chatStore = useChatStore.getState();
+          chatStore.setAgentGroupUnavailable(sessionId, true);
+          chatStore.setProcessing(sessionId, false);
+          localSendPendingRef.current.delete(sessionId);
+        }
         // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
         if (errorMsg.includes('invalid page_idx or session history not found')) {
           return;

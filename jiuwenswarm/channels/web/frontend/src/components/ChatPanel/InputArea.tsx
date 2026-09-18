@@ -711,6 +711,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isVoicePressingRef = useRef(false);
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const agentGroupUnavailable = useChatStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
+  );
   const hasPendingQuestion = useChatStore(
     (s) => Boolean(s.runtimes[activeSessionId ?? '']?.pendingQuestion),
   );
@@ -727,7 +730,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       ),
     );
   });
-  const composerDisabled = isCompactRunning || (hasPendingQuestion && !hasRunningAgent);
+  const composerDisabled = agentGroupUnavailable || isCompactRunning || (hasPendingQuestion && !hasRunningAgent);
   const selectedAgentId = useSessionStore((s) => {
     const runtime = s.runtimes[activeSessionId ?? ''];
     if (runtime?.mode !== 'agent') return null;
@@ -3020,7 +3023,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         onBlur={saveSelection}
         onPaste={handlePaste}
         data-placeholder={
-          isCompactRunning
+          agentGroupUnavailable
+            ? t('chat.placeholderAgentGroupDeleted')
+            : isCompactRunning
             ? t('chat.placeholderCompacting')
             : hasPendingQuestion
               ? t('chat.placeholderAwaitingApproval')

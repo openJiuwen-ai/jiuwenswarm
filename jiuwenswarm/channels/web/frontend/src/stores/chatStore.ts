@@ -91,6 +91,8 @@ export interface ChatRuntime {
   messages: Message[];
   isProcessing: boolean;
   executionError: string | null;
+  /** The Team session's bound AgentGroup was deleted or uninstalled. */
+  agentGroupUnavailable: boolean;
   isThinking: boolean;
   isLoadingHistory: boolean;
   historyPagerMeta: HistoryPagerMeta | null;
@@ -140,6 +142,7 @@ function createEmptyRuntime(): ChatRuntime {
     messages: [],
     isProcessing: false,
     executionError: null,
+    agentGroupUnavailable: false,
     isThinking: false,
     isLoadingHistory: false,
     historyPagerMeta: null,
@@ -239,6 +242,7 @@ interface ChatState {
   ) => void;
   bumpThinkingAnchor: (sessionId: string) => void;
   setExecutionError: (sessionId: string, error: string | null) => void;
+  setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
   setProcessing: (sessionId: string, status: boolean) => void;
   setThinking: (sessionId: string, status: boolean) => void;
   setLoadingHistory: (sessionId: string, status: boolean) => void;
@@ -752,6 +756,19 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, executionError: error },
+        },
+      };
+    });
+  },
+
+  setAgentGroupUnavailable: (sessionId, unavailable) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.agentGroupUnavailable === unavailable) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, agentGroupUnavailable: unavailable },
         },
       };
     });
