@@ -71,7 +71,7 @@ symphony:
 auto_memory_enabled: false
 
 # 日志目录：~/.jiuwenswarm/agent/.logs/
-# gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总。
+# gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总（不含 gateway 日志）。
 # level：未单独指定时的默认级别。console_level：控制台；可省略则用 level。
 # 环境变量 LOG_LEVEL 仅覆盖控制台级别（不覆盖各日志文件）。
 logging:
@@ -444,6 +444,14 @@ gateway:
   # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
   session_map_scope: <<GATEWAY_SESSION_MAP_SCOPE>>
 
+  # Cron 作业定义持久化。与 agent_client.type 无关，不随 agentos_router 自动切换。
+  # file（单节点，默认）| etcd（一体机主备）：一体机模板默认 etcd，可用 CRON_STORE_BACKEND=file 覆盖。
+  # ETCD_ENDPOINTS 留空时由 check_handler 从 config.yaml etcd_nodes 填充。
+  cron:
+    store_backend: <<CRON_STORE_BACKEND>>
+    etcd_endpoints: <<ETCD_ENDPOINTS>>
+    etcd_prefix: /jiuwenswarm/cron/jobs/
+
   # AgentClient 配置 - Gateway 连接到 AgentServer 的方式
   # type: websocket（默认） | yuanrong（直接函数调用） | agentos_router（AgentOS 扩展）
   agent_client:
@@ -463,6 +471,27 @@ gateway:
   # 其他第三方 agent_type 走 registry launch-spec + create_sandbox。
   agentos:
     creating_timeout_seconds: 60
+    # GET /api/agent/:id 等到 status=running 的超时（秒）。须覆盖一次 create
+    # 的 startup 探针预算：initial_delay + period * failure_threshold
+    #（builtin 默认 3+3*6=21；3rdagent 默认 2+3*8=26）。load_router_config
+    # 取二者较大值，若本值更小则告警并抬到该下限。liveness 在 running 之后，
+    # 不计入 GET 等待。环境变量 AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS 可覆盖。
+    wait_running_timeout_seconds: 60
+    # GET 轮询间隔（秒）。环境变量 AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS 可覆盖。
+    wait_running_interval_seconds: 1
+    # YuanRong runtime_spec.probes。builtin 用这些时序打 18092；3rdagent 在
+    # registry 未带 probes 时：未改本节/环境变量则用 delay=2/failure=8，
+    # 有改动则与 builtin 共用配置打 SSH 2222。环境变量
+    # AGENTOS_PROBE_STARTUP_* / AGENTOS_PROBE_LIVENESS_* 可覆盖对应字段。
+    probes:
+      startup:
+        initial_delay_seconds: 3
+        period_seconds: 3
+        timeout_seconds: 2
+        failure_threshold: 6
+      liveness:
+        timeout_seconds: 2
+        failure_threshold: 3
     # Agent 复用 key 字段，默认 user_id + agent_type。
     # 可选字段：user_id、agent_type、session_id（必须包含前两项）。
     agent_key_fields:
@@ -491,11 +520,11 @@ gateway:
       # 本机 nodeIP，供 POST /api/nodes/{node}/heartbeat
       node: <<MASTER_NODE_IP>>
     # SSH 南向接入 YuanRong 实例（配合 channels.ssh 北向使用）：
-    # ssh -p <port> 'yr:instance:<instance_id>'@<frontend-host>
+    # ssh -p <port> 'yr:instance:<instance_id>:port=2222'@<frontend-host>
     # 主机取自 agent_client.frontend_endpoint；<instance_id> 为 create agent 返回的实例 id。
     ssh:
       port: 2222
-      user_template: "yr:instance:{instance}"
+      user_template: "yr:instance:{instance}:port=2222"
       connect_timeout_s: 30
     # agentos_router.load_router_config 不会解析 ${VAR}，部署时用 <<>> 替换进 yaml。
     # 部署脚本空值默认 http://<<MASTER_NODE_IP>>:8090；可用 AGENTOS_AUTH_SERVICE_URL 覆盖。
@@ -665,7 +694,7 @@ channels:
   ssh:
     # SSH channel -> MessageHandler（北向）；南向经 gateway.agent_client
     # （type=agentos_router 时由 AgentOS Router 创建 YuanRong 实例并
-    # 以 yr:instance:<instance_id> 中继到 frontend）。
+    # 以 yr:instance:<instance_id>:port=2222 中继到 frontend）。
     # 启用前请安装可选依赖: pip install "jiuwenswarm[ssh]" 或 uv sync --extra ssh
     # 客户端: ssh -p <listen_port> user@<gateway-host>
     # 南向连接参数见 gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。

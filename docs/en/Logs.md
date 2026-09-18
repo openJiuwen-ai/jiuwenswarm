@@ -22,7 +22,7 @@ The logging system categorizes logs by component type and stores them in differe
 | `gateway.log` | Gateway-related logs, including modules under `app`, `gateway`, `evolution`, `utils`, etc. |
 | `channel.log` | Channel-related logs, including all modules under `channels` |
 | `agent_server.log` | Agent server logs, including modules under `agents` and `.server` |
-| `full.log` | Aggregation of all component logs |
+| `full.log` | Aggregation of all component logs except gateway |
 | `permissions.log` | Permission-related logs |
 | `ws-dev.log` | Web service development mode logs |
 
@@ -139,7 +139,7 @@ The logging system adopts the following rotation strategy:
 1. Each module obtains a logger through `logging.getLogger(__name__)`
 2. Automatically classified into different components based on logger name
 3. Logs are output to both console and corresponding component log files
-4. All logs are aggregated into `full.log`
+4. All logs except gateway are aggregated into `full.log`
 5. Automatic rotation when log files reach size limit
 
 ## 5. Log Configuration

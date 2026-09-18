@@ -665,6 +665,8 @@ def _build_show_card(
         "rails": _map_class_entries(manifest, "rails"),
         "mcps": _map_mcps(pkg_dir, manifest),
     }
+    if package_type == "agent_template":
+        card["persona"] = _read_agent_template_persona(pkg_dir)
     if installed is not None:
         card["installed"] = installed
     elif marketplace is not None:
@@ -1525,14 +1527,55 @@ def _skills_manifest_entries(skill_names: list[str]) -> list[dict[str, str]]:
 
 
 def _copy_workspace_skills(pkg_dir: Path, skill_names: list[str]) -> None:
-    """Copy workspace/skills/{name}/ into the new package skills/ tree."""
+    """Copy workspace/skills/{name}/ into the package skills/ tree.
+
+    Overwrites the package skills/ tree so update flows replace removed or
+    changed skills instead of leaving stale copies behind. An empty
+    ``skill_names`` still clears a pre-existing skills/ dir so an update that
+    drops all skills leaves no stale copies.
+
+    写入是原子的：先把所有 skill copytree 到临时目录 ``.skills.tmp``，全部
+    成功后再替换旧 skills 目录（rmtree 旧 → rename 临时）。这样 copytree 中途
+    失败不会留下半空 skills 目录，旧 skills 保持完好由调用方决定回滚。
+
+    Windows 下文件可能被杀毒/索引器占用，rmtree 用带重试的 ``_rmtree``；rename
+    失败时把临时目录保留为 ``.skills.bak`` 供排查，避免包处于无 skills 目录的
+    半损坏状态。
+    """
+    skills_dir = pkg_dir / "skills"
     if not skill_names:
+        if skills_dir.exists():
+            _rmtree(skills_dir)
         return
     skills_root = get_agent_skills_dir()
-    for name in skill_names:
-        src = skills_root / name
-        dst = pkg_dir / "skills" / name
-        shutil.copytree(src, dst)
+    tmp_dir = pkg_dir / ".skills.tmp"
+    if tmp_dir.exists():
+        _rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True)
+    try:
+        for name in skill_names:
+            src = skills_root / name
+            shutil.copytree(src, tmp_dir / name)
+    except Exception:
+        # 清理临时目录时不抛新异常掩盖原异常（ignore_errors）。
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    # 替换旧 skills：先 rmtree 旧目录（带重试），再 rename 临时目录。
+    # 若 rename 失败（Windows 文件占用等），保留 tmp 为 .skills.bak 供排查，
+    # 而非让包处于无 skills 目录的半损坏状态。
+    if skills_dir.exists():
+        _rmtree(skills_dir)
+    try:
+        tmp_dir.rename(skills_dir)
+    except OSError:
+        bak_dir = pkg_dir / ".skills.bak"
+        if bak_dir.exists():
+            _rmtree(bak_dir)
+        try:
+            tmp_dir.rename(bak_dir)
+        except OSError:
+            pass
+        raise
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -2862,6 +2905,45 @@ def read_agent_group_file(name: str, rel_path: str) -> dict:
     return {"path": rel, "content": content}
 
 
+def _write_agent_template_package(
+    pkg_dir: Path,
+    *,
+    package_id: str,
+    name: str,
+    description: str,
+    persona: str,
+    skill_names: list[str],
+    mcp_names: list[str],
+    quick_inputs: list[dict[str, str]],
+    tags: list[dict[str, str]],
+) -> None:
+    """(Re)write an agent_template package directory under an existing pkg_dir.
+
+    Overwrites persona + skills + manifest in place. Any failure leaves the
+    caller to decide rollback; this helper does not touch the marketplace.
+    """
+    persona_dir = pkg_dir / "persona"
+    persona_dir.mkdir(parents=True, exist_ok=True)
+    (persona_dir / f"{package_id}.md").write_text(persona, encoding="utf-8")
+    _copy_workspace_skills(pkg_dir, skill_names)
+    manifest = {
+        "package_type": "agent_template",
+        "name": name,
+        "description": description,
+        "persona": {"dir": "./persona"},
+        "display_name": {"zh": name, "en": name},
+        "display_description": {"zh": description, "en": description},
+        "skills": _skills_manifest_entries(skill_names),
+    }
+    if mcp_names:
+        manifest["mcps"] = [{"connector": n} for n in mcp_names]
+    if quick_inputs:
+        manifest["quick_inputs"] = quick_inputs
+    if tags:
+        manifest["tags"] = tags
+    _write_json(pkg_dir / "manifest.json", manifest)
+
+
 def create_agent_template(params: dict) -> None:
     """Create a local expert package."""
     if not isinstance(params, dict):
@@ -2889,26 +2971,17 @@ def create_agent_template(params: dict) -> None:
     local_root.mkdir(parents=True, exist_ok=True)
     try:
         pkg_dir.mkdir(parents=False, exist_ok=False)
-        persona_dir = pkg_dir / "persona"
-        persona_dir.mkdir()
-        (persona_dir / f"{package_id}.md").write_text(persona, encoding="utf-8")
-        _copy_workspace_skills(pkg_dir, skill_names)
-        manifest = {
-            "package_type": "agent_template",
-            "name": name,
-            "description": description,
-            "persona": {"dir": "./persona"},
-            "display_name": {"zh": name, "en": name},
-            "display_description": {"zh": description, "en": description},
-            "skills": _skills_manifest_entries(skill_names),
-        }
-        if mcp_names:
-            manifest["mcps"] = [{"connector": n} for n in mcp_names]
-        if quick_inputs:
-            manifest["quick_inputs"] = quick_inputs
-        if tags:
-            manifest["tags"] = tags
-        _write_json(pkg_dir / "manifest.json", manifest)
+        _write_agent_template_package(
+            pkg_dir,
+            package_id=package_id,
+            name=name,
+            description=description,
+            persona=persona,
+            skill_names=skill_names,
+            mcp_names=mcp_names,
+            quick_inputs=quick_inputs,
+            tags=tags,
+        )
     except Exception:
         if pkg_dir.exists():
             shutil.rmtree(pkg_dir, ignore_errors=True)
@@ -2916,6 +2989,91 @@ def create_agent_template(params: dict) -> None:
     upsert_agent_template_marketplace_entry(
         package_id, installed=False, source="local"
     )
+
+
+def update_agent_template(params: dict) -> None:
+    """Update a user-created (local) expert package in place.
+
+    Reuses the create field validation and rewrites persona/skills/manifest,
+    preserving the package id and its marketplace installed/source state.
+    Only ``local`` packages are editable; built_in/resources are read-only,
+    and hub-installed packages are rejected so the hub install state and
+    upgrade semantics stay intact.
+    """
+    if not isinstance(params, dict):
+        raise ValueError("invalid params")
+    package_id = _reject_package_name(params.get("id"), "agent_template")
+    name = _require_nonempty_str(params, "name")
+    description = _require_nonempty_str(params, "description")
+    persona = _require_nonempty_str(params, "persona")
+    skill_names = _require_skill_names(params)
+    mcp_names = _require_mcp_names(params)
+    quick_inputs = _require_quick_inputs(params)
+    tags = _require_tags(params)
+
+    local_root = _local_root(_AGENT_TEMPLATE_KIND)
+    pkg_dir = local_root / package_id
+    if not pkg_dir.is_dir():
+        raise ValueError(f"agent_template not found: {package_id}")
+
+    # 校验来源：只有 local 包可编辑。hub/builtin 包拒绝，避免覆写 hub 资产
+    # 或把 source 篡改为 local 导致 hub 升级语义破坏。无 marketplace 条目
+    # （创建后未 install）允许编辑。
+    existing = next(
+        (entry for entry in read_agent_template_marketplace_entries() if entry.get("id") == package_id),
+        None,
+    )
+    if existing is not None and existing.get("source") != "local":
+        raise ValueError(
+            f"only local packages can be edited: {package_id} (source={existing.get('source')!r})"
+        )
+
+    # Failures in the in-place rewrite propagate to the caller unchanged; there
+    # is no partial state to clean up here (unlike create, which removes a
+    # freshly created package directory on error).
+    _write_agent_template_package(
+        pkg_dir,
+        package_id=package_id,
+        name=name,
+        description=description,
+        persona=persona,
+        skill_names=skill_names,
+        mcp_names=mcp_names,
+        quick_inputs=quick_inputs,
+        tags=tags,
+    )
+    # Preserve existing marketplace installed/source state; default local/uninstalled
+    # when the entry is missing (e.g. edited before first install).
+    installed = bool(existing.get("installed", False)) if existing else False
+    upsert_agent_template_marketplace_entry(
+        package_id, installed=installed, source="local"
+    )
+
+
+def delete_agent_template(params: dict) -> None:
+    """Permanently delete a user-created (local) expert package.
+
+    Removes the local package directory and its marketplace entry
+    irreversibly. Only ``local`` packages may be deleted; hub/builtin
+    packages are rejected (use ``uninstall_agent_template`` for those,
+    which locates the package via ``_locate_user_package_dir`` and also
+    clears the hub install state store).
+    """
+    package_id = _lifecycle_package_id(params, "agent_template")
+    pkg_dir = _local_root(_AGENT_TEMPLATE_KIND) / package_id
+    if not pkg_dir.is_dir():
+        raise ValueError(f"agent_template not found: {package_id}")
+    # 校验来源：只有 local 包可删除。hub/builtin 包走 uninstall_agent_template。
+    existing = next(
+        (entry for entry in read_agent_template_marketplace_entries() if entry.get("id") == package_id),
+        None,
+    )
+    if existing is not None and existing.get("source") != "local":
+        raise ValueError(
+            f"only local packages can be deleted: {package_id} (source={existing.get('source')!r})"
+        )
+    _rmtree(pkg_dir)
+    remove_agent_template_marketplace_entry(package_id)
 
 
 def _require_agent_group_members(params: dict) -> tuple[str, list[str]]:

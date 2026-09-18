@@ -247,6 +247,20 @@ Common self-evolution settings are listed below:
 
 > 📖 For details on the self-evolution mechanism, see [Skill Self-Evolution](SkillSelfEvolution.md).
 
+### TTSE (FACT/TIP dual-track)
+
+TTSE is independent of Skill-body evolution and is controlled by `react.ttse` (agent mode only). See [TTSE](TTSE.md).
+
+| Setting | Path | Default | Description |
+|---------|------|---------|-------------|
+| **Enable TTSE** | `react.ttse.enabled` | `false` | Mount `TTSERail` (Host skips if agent-core lacks it); also auto-acquires `agent_observability` for trajectory capture |
+| **Induce** | `react.ttse.evolve_enabled` | `true` | Induce FACT/TIP from trajectories |
+| **Inject** | `react.ttse.inject_enabled` | `true` | Inject system-prompt guidance |
+| **Auto-dream** | `react.ttse.dream_enabled` | `true` | Silent bank hygiene |
+| **Embedding** | `react.ttse.embedding.*` | `${EMBED_*}` | Optional; hybrid recall when all three resolve |
+
+`store_path`, `inject_mode`, and dream interval / min_hours / ttl are Host-fixed and not user knobs.
+
 ---
 
 ## 6. Context Compression

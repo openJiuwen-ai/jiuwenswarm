@@ -10,6 +10,7 @@ import { AssetPublishHost } from './components/AssetPublishDrawer';
 import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type PointerEvent as ReactPointerEvent } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { SideConversationPanel } from './components/ChatPanel/SideConversationPanel';
+import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
 import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
@@ -69,6 +70,7 @@ import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webRequest } from './services/webClient';
+import { getArchiveErrorCode } from './features/workspace/archivedTaskClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
@@ -420,6 +422,10 @@ function AppContent({
   const [externalCliInstallDialogOpen, setExternalCliInstallDialogOpen] = useState(false);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedAgents, setHasVisitedAgents] = useState(false);
+  const [agentManagementNavigationRequest, setAgentManagementNavigationRequest] = useState<{
+    target: 'agent' | 'group';
+    requestId: number;
+  } | null>(null);
   // Deferred CLI agent choices held here (not inside Settings) so they survive
   // leaving/returning to Settings and a full page refresh while an install runs.
   const [externalCliPendingChoices, setExternalCliPendingChoices] =
@@ -3426,7 +3432,9 @@ function AppContent({
       await deleteSideConversation(side.session.session_id);
     } catch (error) {
       console.error('Failed to close side conversation:', error);
-      window.alert(t('multiSession.errors.delete'));
+      window.alert(t(getArchiveErrorCode(error) === 'SESSION_BUSY'
+        ? 'multiSession.project.errors.deleteSessionBusy'
+        : 'multiSession.errors.delete'));
     }
   }, [deleteSideConversation, t]);
 
@@ -3479,6 +3487,17 @@ function AppContent({
       if (nav === 'personalContext') setHasVisitedPersonalContext(true);
     },
     [activeNav, isMobile, modelSetupGuideStep, setSingleAgentPanelExpanded, setHasVisitedPersonalContext, setRequestedSettingsModuleId, setTeamAreaExpanded, setToolPanelHidden, t],
+  );
+
+  const handleNavigateToAgentManagement = useCallback(
+    (target: 'agent' | 'group' = 'agent') => {
+      setAgentManagementNavigationRequest((current) => ({
+        target,
+        requestId: (current?.requestId ?? 0) + 1,
+      }));
+      handleNavigate('agents');
+    },
+    [handleNavigate],
   );
 
   const skipModelSetupGuide = useCallback(() => {
@@ -3739,7 +3758,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         teamAreaExpanded={toolPanelHidden ? null : isTeamAreaExpanded}
                         autoFocusKey={composerFocusKey}
                         onNavigateToSkills={() => handleNavigate('skills')}
-                        onNavigateToAgents={() => handleNavigate('agents')}
+                        onNavigateToAgents={handleNavigateToAgentManagement}
                         onToggleTeamArea={handleToggleDetailPanel}
                         onOpenCodeReview={handleOpenCodeReview}
                         permissionProfile={
@@ -3873,9 +3892,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               onCreateGroupViaChat={() => requestSessionNavigation('new', {
                 initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
                 initialSelectedSkills: ['agent-group-creator'],
-                forceMode: 'team',
-                welcomeVariant: 'group-create',
+                forceMode: 'agent',
               })}
+              navigationRequest={agentManagementNavigationRequest}
             />
           </div>
         )}
@@ -4168,6 +4187,7 @@ function App({
 }) {
   return (
     <ErrorBoundary>
+      <DesktopTextEditContextMenu />
       <AppContent
         settingsPageDefinition={settingsPageDefinition}
         resolveSettingsRequest={resolveSettingsRequest}

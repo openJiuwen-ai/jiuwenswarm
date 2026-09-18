@@ -6,7 +6,7 @@ import { webRequest } from '../../services/webClient';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { PickerPanel } from './PickerPanel';
-import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
+import { PickerSearchInput } from './PickerSearchInput';
 
 /** 输入栏下拉所需的最小技能数据结构（与 SkillPanel 中的 SkillItem 保持一致） */
 type SkillItem = {
@@ -190,18 +190,13 @@ export function SkillPickerPanel({
       rowHeight={LIST_ROW_HEIGHT}
       itemCount={filteredSkills.length}
       search={
-        <div className="chat-picker-panel__search" data-testid="chat-panel-skill-select-search">
-          <div className="chat-picker-panel__search-inner">
-            <SearchIcon aria-hidden="true" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={t('chat.skillsSearchPlaceholder')}
-              data-testid="chat-panel-skill-select-search-input"
-            />
-          </div>
-        </div>
+        <PickerSearchInput
+          value={searchQuery}
+          onChange={setSearchQuery}
+          placeholder={t('chat.skillsSearchPlaceholder')}
+          inputTestId="chat-panel-skill-select-search-input"
+          wrapperTestId="chat-panel-skill-select-search"
+        />
       }
       footer={{ label: t('chat.skillsManage'), onClick: handleOpenSkillsPage }}
     >

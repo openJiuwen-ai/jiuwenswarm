@@ -1850,7 +1850,7 @@ def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     next_event = dict(parsed)
     truncated = False
     original_size = 0
-    for key in ("result", "raw_output"):
+    for key in ("result", "rendered_result", "raw_output"):
         value = next_event.get(key)
         if not isinstance(value, str):
             continue
@@ -2271,17 +2271,30 @@ async def process_team_message_stream(
 ) -> AsyncIterator[AgentResponseChunk]:
     """Hold the session startup lock until registration, never while streaming."""
     team_manager = get_team_manager(request.channel_id)
-    startup_lock = team_manager.get_startup_lock(request.session_id or "default")
-    async with AsyncExitStack() as startup:
-        await startup.enter_async_context(startup_lock)
-        async with aclosing(_process_team_message_stream(
-            request, inputs, deep_agent, team_manager=team_manager, startup=startup,
-        )) as stream:
-            async for chunk in stream:
-                # Early replies (validation errors, slash commands) also end
-                # startup ownership before handing control to the caller.
-                await startup.aclose()
-                yield chunk
+    session_id = request.session_id or "default"
+    request_id = str(request.request_id or "")
+    # 归档闸门：Team 回合从进入适配器起即算「运行中」，直到本轮 round 终止
+    # （round 之前的 spec 组装 / 运行时激活等准备阶段也要覆盖）。
+    begin_request = getattr(team_manager, "begin_request", None)
+    end_request = getattr(team_manager, "end_request", None)
+    if callable(begin_request):
+        begin_request(session_id, request_id)
+    try:
+        startup_lock = team_manager.get_startup_lock(session_id)
+        async with AsyncExitStack() as startup:
+            await startup.enter_async_context(startup_lock)
+            async with aclosing(_process_team_message_stream(
+                request, inputs, deep_agent, team_manager=team_manager, startup=startup,
+            )) as stream:
+                async for chunk in stream:
+                    # Early replies (validation errors, slash commands) also end
+                    # startup ownership before handing control to the caller.
+                    await startup.aclose()
+                    yield chunk
+    finally:
+        # 兜底：提前返回（校验失败/斜杠命令）也要解除运行中标记。
+        if callable(end_request):
+            end_request(session_id, request_id)
 
 
 async def _process_team_message_stream(

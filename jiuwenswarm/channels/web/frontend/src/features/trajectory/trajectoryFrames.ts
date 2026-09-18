@@ -4,6 +4,11 @@ import type {
   OtlpSpanEvent,
 } from './shared/otlp'
 import type { TrajectoryStreamFrame } from './trajectoryClient'
+import {
+  OPENJIUWEN_ATTRIBUTES,
+  OPENJIUWEN_EVENTS,
+  STANDARD_ATTRIBUTES,
+} from './semconv/constants.ts'
 
 /**
  * What one still-running span has produced so far, rebuilt from its frames.
@@ -132,12 +137,12 @@ export function streamingTextFor(
   return state.bySpan.get(`${traceId}:${spanId}`)
 }
 
-const STREAM_CHUNK_EVENT = 'openjiuwen.stream.chunk'
-const EVENT_SEQUENCE_KEY = 'openjiuwen.event.sequence'
-const STREAM_KIND_KEY = 'openjiuwen.stream.kind'
-const STREAM_TEXT_KEY = 'openjiuwen.stream.text'
-const TOOL_ARGUMENTS_KEY = 'openjiuwen.stream.tool_call.arguments_delta'
-const TOOL_CALL_ID_KEY = 'gen_ai.tool.call.id'
+const STREAM_CHUNK_EVENT = OPENJIUWEN_EVENTS.streamChunk
+const EVENT_SEQUENCE_KEY = OPENJIUWEN_ATTRIBUTES.eventSequence
+const STREAM_KIND_KEY = OPENJIUWEN_ATTRIBUTES.streamKind
+const STREAM_TEXT_KEY = OPENJIUWEN_ATTRIBUTES.streamText
+const TOOL_ARGUMENTS_KEY = OPENJIUWEN_ATTRIBUTES.streamArgumentsDelta
+const TOOL_CALL_ID_KEY = STANDARD_ATTRIBUTES.toolCallId
 
 function chunkEvent(
   sequence: number,

@@ -1,6 +1,7 @@
 """Disk-backed lifecycle scenarios; runtime calls are isolated from LLMs."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -283,6 +284,11 @@ async def test_busy_session_archive_has_no_side_effects(archive):
     assert (directory / "metadata.json").read_bytes() == before
     assert not (root / "sessions_archived/sess_a").exists()
     runtime.stop_session_for_archive.assert_not_awaited()
+    with pytest.raises(lc.LifecycleError) as delete_error:
+        await service.session("sess_a", "delete", "web")
+    assert delete_error.value.code == "SESSION_BUSY"
+    runtime.stop_session_for_archive.assert_not_awaited()
+    runtime.delete_session.assert_not_awaited()
     lc.guard("sess_a")
     runtime.is_session_running.return_value = False
     await service.session("sess_a", "archive", "web")
@@ -303,13 +309,105 @@ def test_runtime_running_check_includes_team_without_stopping(monkeypatch):
     assert AgentRuntime.is_session_running(runtime, "sess_a")
     snapshot.executions[0].state = SessionExecutionState.SUCCEEDED
     assert not AgentRuntime.is_session_running(runtime, "sess_a")
+    # 等待本轮 round 的准备阶段（spec 组装/运行时激活）也算运行中。
     manager = SimpleNamespace(
-        has_stream_task=lambda sid: False,
-        is_runtime_active=lambda sid: True,
-        is_runtime_pending=lambda sid: False,
+        has_inflight_request=lambda sid: True,
+        is_round_active=lambda sid: False,
     )
     monkeypatch.setattr(team_manager, "_team_manager", manager)
     assert AgentRuntime.is_session_running(runtime, "sess_a")
+    # round 终止后即使持久 stream 与运行时仍在（idle 常驻），也不得算运行中。
+    manager = SimpleNamespace(
+        has_inflight_request=lambda sid: False,
+        is_round_active=lambda sid: True,
+    )
+    assert AgentRuntime.is_session_running(runtime, "sess_a")
+    manager = SimpleNamespace(
+        has_inflight_request=lambda sid: False,
+        is_round_active=lambda sid: False,
+        has_stream_task=lambda sid: True,
+        is_runtime_active=lambda sid: True,
+        is_runtime_pending=lambda sid: True,
+    )
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    assert not AgentRuntime.is_session_running(runtime, "sess_a")
+
+
+@pytest.mark.asyncio
+async def test_chat_preparation_blocks_archive_until_all_requests_finish(archive, monkeypatch):
+    from jiuwenswarm.runtime.service import AgentRuntime
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    service, create, root, runtime = archive
+    create()
+    monkeypatch.setattr(team_manager, "_team_manager", None)
+    runtime._pending_chat_requests = {}
+    runtime._session_coordinator = SimpleNamespace(snapshot_session=lambda sid: None)
+    runtime.is_session_running = lambda sid: AgentRuntime.is_session_running(runtime, sid)
+
+    AgentRuntime.begin_chat_request(runtime, "sess_a", "first")
+    AgentRuntime.begin_chat_request(runtime, "sess_a", "second")
+    with pytest.raises(lc.LifecycleError, match="running") as error:
+        await service.session("sess_a", "archive", "web")
+    assert error.value.code == "SESSION_BUSY"
+    AgentRuntime.end_chat_request(runtime, "sess_a", "first")
+    assert runtime.is_session_running("sess_a")
+    AgentRuntime.end_chat_request(runtime, "sess_a", "second")
+    assert not runtime.is_session_running("sess_a")
+    await service.session("sess_a", "archive", "web")
+    assert (root / "sessions_archived/sess_a").exists()
+
+
+@pytest.mark.asyncio
+async def test_chat_admission_marks_session_busy_before_team_binding(archive, monkeypatch):
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.runtime.service import AgentRuntime
+    from jiuwenswarm.server import agent_ws_server as module
+
+    service, create, _, runtime = archive
+    create()
+    runtime._pending_chat_requests = {}
+    runtime._session_coordinator = SimpleNamespace(snapshot_session=lambda sid: None)
+    runtime.is_session_running = lambda sid: AgentRuntime.is_session_running(runtime, sid)
+    runtime.begin_chat_request = lambda sid, rid: AgentRuntime.begin_chat_request(runtime, sid, rid)
+    runtime.end_chat_request = lambda sid, rid: AgentRuntime.end_chat_request(runtime, sid, rid)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    request = SimpleNamespace(
+        request_id="early-team-chat",
+        session_id="sess_a",
+        channel_id="web",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": "team.work.normal", "content": "hello"},
+        metadata={},
+        is_stream=True,
+    )
+    monkeypatch.setattr(module.E2AEnvelope, "from_dict", lambda data: (_ for _ in ()).throw(ValueError()))
+    monkeypatch.setattr(module, "_payload_to_request", lambda data: request)
+    server = module.AgentWebSocketServer.__new__(module.AgentWebSocketServer)
+    server._execution_runtime = lambda: runtime
+    server._handle_gateway_cron_callback = AsyncMock(return_value=False)
+    server._handle_lifecycle_request = AsyncMock(return_value=False)
+    server._dispatch_gateway_adapter_request = AsyncMock(return_value=False)
+    server._trigger_before_chat_request_hook = AsyncMock()
+    server._try_record_implicit_feedback = AsyncMock()
+
+    async def wait_for_binding(_request):
+        entered.set()
+        await release.wait()
+
+    server._ensure_auto_team_binding_for_chat = wait_for_binding
+    server._handle_stream = AsyncMock()
+    task = asyncio.create_task(server._handle_message(object(), "{}", asyncio.Lock()))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        with pytest.raises(lc.LifecycleError) as error:
+            await service.session("sess_a", "archive", "web")
+        assert error.value.code == "SESSION_BUSY"
+    finally:
+        release.set()
+        await task
+    assert not runtime.is_session_running("sess_a")
 
 
 def test_conflicts_and_batch_validation(archive):
@@ -469,6 +567,7 @@ async def test_project_delete_retries_preserve_counts_and_user_directory(archive
             {**token, "_lifecycle_stage": "finish", "deleted_cron_jobs": 2},
         )
     assert error.value.code == "PARTIAL_PROJECT_DELETE_FAILED"
+    assert set(error.value.details["completed_conversation_session_ids"]) == {"sess_a"}
     assert project_store.get_project_by_id(project.project_id, cache_bust=True)
     failures.clear()
     result = await service.project(
@@ -478,9 +577,135 @@ async def test_project_delete_retries_preserve_counts_and_user_directory(archive
         {**token, "_lifecycle_stage": "finish", "deleted_cron_jobs": 2},
     )
     assert result["deleted_sessions"] == 2
+    assert result["deleted_conversation_sessions"] == 2
     assert result["deleted_cron_jobs"] == 2
     assert await service.project(project.project_id, "delete", "web", {}) == result
     assert (user_dir / "keep.txt").read_text() == "keep"
+
+
+@pytest.mark.asyncio
+async def test_project_delete_skips_running_ordinary_session_and_keeps_project(archive):
+    import shutil
+
+    service, create, root, runtime = archive
+    project = project_store.create_project("keep-running", str(root / "work"))
+    for sid in ("sess_busy", "sess_idle", "cron_run"):
+        directory = create(sid)
+        meta = lc.raw_metadata(sid)
+        meta["project_id"] = project.project_id
+        if sid == "cron_run":
+            meta["cron_id"] = "job_a"
+        lc.atomic_json(directory / "metadata.json", meta)
+    runtime.is_session_running.side_effect = lambda sid: sid == "sess_busy"
+
+    async def delete_session(*, channel_id, session_id):
+        shutil.rmtree(lc.resolve_session(session_id))
+        return SimpleNamespace(ok=True)
+
+    runtime.delete_session.side_effect = delete_session
+    token = await service.project(
+        project.project_id, "delete", "web", {"_lifecycle_stage": "prepare"}
+    )
+    result = await service.project(
+        project.project_id, "delete", "web", {**token, "_lifecycle_stage": "finish"}
+    )
+    assert result["deleted"] is False
+    assert result["deleted_sessions"] == 2
+    assert result["deleted_conversation_sessions"] == 1
+    assert result["skipped_running_session_ids"] == ["sess_busy"]
+    assert service.project_sessions(project.project_id) == ["sess_busy"]
+    assert project_store.get_project_by_id(project.project_id, cache_bust=True)
+    assert not lc.projection("project", project.project_id)["execution_blocked"]
+    assert "sess_busy" not in [call.kwargs["session_id"] for call in runtime.stop_session_for_archive.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_project_delete_reuses_inventory_metadata(archive, monkeypatch):
+    import shutil
+
+    service, create, root, runtime = archive
+    project = project_store.create_project("reuse", str(root / "work"))
+    for sid in ("sess_1", "sess_2", "sess_3"):
+        directory = create(sid)
+        meta = lc.raw_metadata(sid)
+        meta["project_id"] = project.project_id
+        lc.atomic_json(directory / "metadata.json", meta)
+
+    async def delete_session(*, channel_id, session_id):
+        shutil.rmtree(lc.resolve_session(session_id))
+        return SimpleNamespace(ok=True)
+
+    runtime.delete_session.side_effect = delete_session
+
+    original = lc.raw_metadata
+    calls = []
+
+    def counting_raw_metadata(session_id):
+        calls.append(session_id)
+        return original(session_id)
+
+    monkeypatch.setattr(lc, "raw_metadata", counting_raw_metadata)
+    token = await service.project(
+        project.project_id, "delete", "web", {"_lifecycle_stage": "prepare"}
+    )
+    calls.clear()
+    result = await service.project(
+        project.project_id,
+        "delete",
+        "web",
+        {**token, "_lifecycle_stage": "finish"},
+    )
+    assert result["deleted"] is True
+    # Exactly one metadata read per session (the inventory scan); the delete
+    # loop and _session must consume the snapshot instead of re-reading.
+    assert sorted(calls) == ["sess_1", "sess_2", "sess_3"]
+
+
+@pytest.mark.asyncio
+async def test_delete_cron_sessions_removes_running_and_idle_children(archive):
+    import shutil
+
+    service, create, root, runtime = archive
+    for sid in ("cron_running", "cron_idle"):
+        directory = create(sid)
+        meta = lc.raw_metadata(sid)
+        meta["cron_id"] = "job_a"
+        lc.atomic_json(directory / "metadata.json", meta)
+    runtime.is_session_running.return_value = True
+
+    async def delete_session(*, channel_id, session_id):
+        shutil.rmtree(lc.resolve_session(session_id))
+        return SimpleNamespace(ok=True)
+
+    runtime.delete_session.side_effect = delete_session
+    result = await service.delete_cron_sessions("job_a", "web")
+    assert result["succeeded_count"] == 2
+    assert result["failed_count"] == 0
+    assert service.cron_sessions("job_a") == []
+
+
+@pytest.mark.asyncio
+async def test_delete_cron_sessions_locks_each_project_once(archive, monkeypatch):
+    service, create, _, _ = archive
+    create("cron_job_a")  # matched by naming convention
+    create("cron_child", cron_id="job_a")  # matched by metadata
+
+    locked = []
+    original = service.lock
+
+    @asynccontextmanager
+    async def counting_lock(kind, resource_id):
+        if kind == "project":
+            locked.append(resource_id)
+        async with original(kind, resource_id):
+            yield
+
+    monkeypatch.setattr(service, "lock", counting_lock)
+    result = await service.delete_cron_sessions("job_a", "web")
+    assert result["succeeded_count"] == 2
+    assert result["failed_count"] == 0
+    # One project execution lock for the whole group, not one per session.
+    assert locked == ["default"]
 
 
 @pytest.mark.asyncio
@@ -529,8 +754,114 @@ async def test_project_batch_archive_partial_and_delete_only_archived(archive):
     assert (await service.project_batch(project.project_id, "delete_archived", "web"))[
         "results"
     ] == []
-    # Direct session deletion remains available even when active and running.
+    # A running ordinary session must be stopped before direct deletion.
+    with pytest.raises(lc.LifecycleError) as error:
+        await service.session("sess_busy", "delete", "web")
+    assert error.value.code == "SESSION_BUSY"
+    runtime.is_session_running.side_effect = None
+    runtime.is_session_running.return_value = False
     assert (await service.session("sess_busy", "delete", "web"))["ok"]
+
+
+def test_project_inventory_builds_legacy_lookup_once_per_scan(archive, monkeypatch):
+    service, create, root, _ = archive
+    project = project_store.create_project("legacy-batch", str(root / "work"))
+    for sid in ("legacy_1", "legacy_2", "legacy_3"):
+        path = create(sid)
+        meta = lc.raw_metadata(sid)
+        meta.pop("project_id", None)
+        meta["project_dir"] = project.project_dir
+        lc.atomic_json(path / "metadata.json", meta)
+
+    original = lc.build_project_lookup
+    calls = 0
+
+    def build_project_lookup():
+        nonlocal calls
+        calls += 1
+        return original()
+
+    monkeypatch.setattr(lc, "build_project_lookup", build_project_lookup)
+    assert set(service.project_sessions(project.project_id)) == {
+        "legacy_1",
+        "legacy_2",
+        "legacy_3",
+    }
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_project_batch_reindexes_pins_once_only_when_required(
+    archive, monkeypatch
+):
+    service, create, root, _ = archive
+    project = project_store.create_project("pin-batch", str(root / "work"))
+    for sid, pinned in (("unpinned_a", False), ("unpinned_b", False)):
+        path = create(sid)
+        meta = lc.raw_metadata(sid)
+        meta.update(project_id=project.project_id, pinned=pinned)
+        lc.atomic_json(path / "metadata.json", meta)
+
+    reindex = Mock()
+    monkeypatch.setattr(service, "reindex_pins", reindex)
+    result = await service.project_batch(project.project_id, "archive", "web")
+    assert result["succeeded_count"] == 2
+    reindex.assert_not_called()
+    assert all("_pins_reindex_required" not in item for item in result["results"])
+
+    for sid in ("pinned_a", "pinned_b"):
+        path = create(sid)
+        meta = lc.raw_metadata(sid)
+        meta.update(project_id=project.project_id, pinned=True, pin_order=1)
+        lc.atomic_json(path / "metadata.json", meta)
+    result = await service.project_batch(project.project_id, "archive", "web")
+    assert result["succeeded_count"] == 2
+    reindex.assert_called_once_with()
+    assert all("_pins_reindex_required" not in item for item in result["results"])
+
+
+@pytest.mark.asyncio
+async def test_single_session_archive_reindexes_only_pinned_sessions(
+    archive, monkeypatch
+):
+    service, create, _, _ = archive
+    create("plain")
+    reindex = Mock()
+    monkeypatch.setattr(service, "reindex_pins", reindex)
+    await service.session("plain", "archive", "web")
+    # Archiving an unpinned session cannot change the pinned ordering.
+    reindex.assert_not_called()
+
+    create("pinned", pinned=True, pin_order=1)
+    await service.session("pinned", "archive", "web")
+    reindex.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_archive_retry_preserves_pin_reindex_requirement(archive, monkeypatch):
+    service, create, _, runtime = archive
+    create("first", pinned=True, pin_order=1)
+    create("second", pinned=True, pin_order=2)
+    monkeypatch.setattr(
+        service, "reindex_pins", Mock(side_effect=OSError("temporary reindex failure"))
+    )
+
+    with pytest.raises(lc.LifecycleError, match="temporary reindex failure"):
+        await service.session("first", "archive", "web")
+
+    assert lc.raw_metadata("first")["pinned"] is False
+    assert lc.raw_metadata("second")["pin_order"] == 2
+    operation = lc.state("session", "first")["operation"]
+    assert operation["status"] == "failed"
+    assert operation["pin_reindex_required"] is True
+
+    # A fresh service must recover the requirement from disk, not memory.
+    restarted = SessionArchiveService(runtime)
+    result = await restarted.session("first", "archive", "web")
+    assert result["ok"] is True
+    assert lc.raw_metadata("second")["pin_order"] == 1
+    operation = lc.state("session", "first")["operation"]
+    assert operation["status"] == "completed"
 
 
 def test_migrate_project_archives_preserves_session_and_delete_fences(archive):

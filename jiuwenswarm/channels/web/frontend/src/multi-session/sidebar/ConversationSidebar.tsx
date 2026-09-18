@@ -117,6 +117,7 @@ interface ConversationListItemProps {
   onPin: () => void;
   onRename: () => void;
   onArchive: () => void;
+  onDelete?: () => void;
   menuItems: SidebarMenuItem[];
 }
 
@@ -221,6 +222,7 @@ function ConversationListItem({
   onPin,
   onRename,
   onArchive,
+  onDelete,
   menuItems,
 }: ConversationListItemProps) {
   const { t, i18n } = useTranslation();
@@ -334,6 +336,9 @@ function ConversationListItem({
                 case 'archive':
                   onArchive();
                   break;
+                case 'delete':
+                  onDelete?.();
+                  break;
               }
             }}
           />
@@ -394,7 +399,7 @@ function ProjectEntityRow({
   const mainRef = useRef<HTMLButtonElement>(null);
   const tooltipId = useId();
   const [menuOpen, setMenuOpen] = useState(false);
-  const { tooltip: rowTooltip, handlers: rowTooltipHandlers } = useAdaptiveTooltip();
+  const { tooltip: rowTooltip, handlers: rowTooltipHandlers } = useAdaptiveTooltip({ align: 'left' });
   const [tooltipPos, setTooltipPos] = useState<{ left: number; top: number } | null>(null);
   // 分别跟踪 hover 与 focus 状态：任一活跃即保持 tooltip，避免 mouseleave/blur 互相误清
   const hoverRef = useRef(false);
@@ -457,7 +462,6 @@ function ProjectEntityRow({
           <span className="conversation-list-item__status-dot" aria-hidden="true" data-testid="multi-session-project-row-cron-unread" />
         ) : null}
         {isExpanded ? <CollapseIcon className="conversation-entity-row__chevron" aria-hidden /> : <ArrowRightIcon className="conversation-entity-row__chevron" aria-hidden />}
-        {isPinned ? <PinIcon className="conversation-entity-row__pin" aria-hidden /> : null}
       </button>
       <button
         type="button"
@@ -754,6 +758,7 @@ function ProjectDeleteDialog({
   project,
   action,
   error,
+  notice,
   deleting,
   onCancel,
   onDelete,
@@ -761,6 +766,7 @@ function ProjectDeleteDialog({
   project: ProjectInfo;
   action: 'delete' | 'archive';
   error?: string | null;
+  notice?: string | null;
   deleting: boolean;
   onCancel: () => void;
   onDelete: () => void;
@@ -775,6 +781,7 @@ function ProjectDeleteDialog({
       descriptionValues={{ projectName: project.name }}
       deleting={deleting}
       error={error ?? null}
+      notice={notice ?? null}
       onCancel={onCancel}
       onDelete={onDelete}
     />
@@ -849,6 +856,7 @@ export function ConversationSidebar({
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
   const { tooltip: conversationsTooltip, handlers: conversationsTooltipHandlers } = useAdaptiveTooltip();
+  const { tooltip: newProjectTooltip, handlers: newProjectTooltipHandlers } = useAdaptiveTooltip({ align: 'left' });
   const runtimes = useChatStore((state) => state.runtimes);
   const [relativeTimeNow, setRelativeTimeNow] = useState(Date.now);
   const [unreadSessions, setUnreadSessions] = useState(loadUnreadSessions);
@@ -864,6 +872,8 @@ export function ConversationSidebar({
   const [projectAction, setProjectAction] = useState<'delete' | 'archive'>('delete');
   const [deleteProjectBusy, setDeleteProjectBusy] = useState(false);
   const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
+  // 运行中会话被略过时的提示：展示后点确定仅关闭对话框，不再重试归档
+  const [deleteProjectNotice, setDeleteProjectNotice] = useState<string | null>(null);
   const [projectAddMenuOpen, setProjectAddMenuOpen] = useState(false);
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -1225,13 +1235,32 @@ export function ConversationSidebar({
 
   async function handleRemoveProject() {
     if (!deleteProjectTarget || (projectAction === 'delete' && isDefaultProject(deleteProjectTarget))) return;
+    // 运行中会话已按需求「略过」：确定键只关闭对话框，不重试归档操作
+    if (deleteProjectNotice) {
+      setDeleteProjectNotice(null);
+      setDeleteProjectError(null);
+      setDeleteProjectTarget(null);
+      return;
+    }
     setDeleteProjectBusy(true);
     setDeleteProjectError(null);
     try {
       const projectId = deleteProjectTarget.project_id;
       if (projectAction === 'delete') {
-        await removeProject(projectId);
+        const result = await removeProject(projectId);
         await loadCronJobs();
+        if (!result.deleted && result.skipped_running_session_ids?.length) {
+          setDeleteProjectNotice(t('multiSession.project.deleteSkippedRunning', {
+            count: result.skipped_running_session_ids.length,
+            sessions: result.deleted_conversation_sessions,
+            crons: result.deleted_cron_jobs,
+          }));
+          return;
+        }
+        toast.open({ content: t('multiSession.project.projectDeletedSummary', {
+          sessions: result.deleted_conversation_sessions,
+          crons: result.deleted_cron_jobs,
+        }), variant: 'success' });
       } else {
         const result = await projectRegistryClient.archiveSessions(projectId);
         const succeededIds = result.results.filter((item) => item.ok).map((item) => item.session_id);
@@ -1239,8 +1268,23 @@ export function ConversationSidebar({
         workspace.removeSessions(succeededIds);
         await Promise.all([workspace.loadProjects(), workspace.loadProjectSessions(projectId), workspace.loadPinnedSessions()]);
         if (result.failed_count) {
+          const failedItems = result.results.filter((item) => !item.ok);
+          const runningItems = failedItems.filter((item) => item.code === 'SESSION_BUSY');
+          // 失败项全部是运行中的会话：按需求略过，只给出提示，点确定即关闭对话框
+          if (runningItems.length > 0 && runningItems.length === failedItems.length) {
+            setDeleteProjectError(null);
+            setDeleteProjectNotice(
+              result.succeeded_count > 0
+                ? t('multiSession.project.archiveSkippedRunningWithSuccess', {
+                    succeeded: result.succeeded_count,
+                    count: runningItems.length,
+                  })
+                : t('multiSession.project.archiveSkippedRunning', { count: runningItems.length }),
+            );
+            return;
+          }
           setDeleteProjectError(t('multiSession.project.batchPartialFailure', { succeeded: result.succeeded_count, failed: result.failed_count })
-            + ' ' + result.results.filter((item) => !item.ok).map((item) => `${item.session_id}: ${item.error || item.code}`).join('; '));
+            + ' ' + failedItems.map((item) => `${item.session_id}: ${item.error || item.code}`).join('; '));
           return;
         }
         // 批量归档成功：复用单会话归档的 toast（查看归档页 + 撤销）。
@@ -1263,7 +1307,12 @@ export function ConversationSidebar({
     } catch (error) {
       // project.delete 的部分失败 payload 带有首个失败项的可读错误，优先展示
       const partial = parseProjectOperationFailure(error);
-      setDeleteProjectError(partial?.detail ?? (error instanceof Error ? error.message : String(error)));
+      setDeleteProjectError(partial
+        ? `${t('multiSession.project.deleteFailedSummary', {
+            sessions: partial.deletedConversations,
+            crons: partial.deletedCronJobs,
+          })}${partial.detail ? ` ${partial.detail}` : ''}`
+        : (error instanceof Error ? error.message : String(error)));
     } finally {
       setDeleteProjectBusy(false);
     }
@@ -1272,6 +1321,7 @@ export function ConversationSidebar({
   function renderSession(session: Session, options: { nested?: boolean; projectMenu?: boolean } = {}) {
     const nested = options.nested === true;
     const projectMenu = options.projectMenu === true;
+    const cronSession = Boolean(session.cron_id) || session.session_id.startsWith('cron_');
     return (
       <ConversationListItem
         key={session.session_id}
@@ -1284,7 +1334,20 @@ export function ConversationSidebar({
         onSelect={() => onSelect(session)}
         onPin={() => void handlePinSession(session)}
         onArchive={() => void handleArchiveSession(session)}
-        menuItems={projectMenu
+        onDelete={cronSession ? () => {
+          void (async () => {
+            try {
+              await archivedTaskClient.deleteSession(session.session_id);
+              removeSessionLocally(session.session_id);
+              await useWorkspaceStore.getState().refreshWorkspaceData();
+            } catch (error) {
+              toast.open({ content: error instanceof Error ? error.message : String(error), variant: 'error' });
+            }
+          })();
+        } : undefined}
+        menuItems={cronSession
+          ? getConversationMenuItems(Boolean(session.pinned), t, { archivable: false, deletable: true })
+          : projectMenu
           ? getProjectSessionMenuItems(Boolean(session.pinned), t)
           : getConversationMenuItems(Boolean(session.pinned), t)}
         onRename={() => setRenameTarget({
@@ -1336,7 +1399,18 @@ export function ConversationSidebar({
                   }}
                   onPin={() => void handlePinSession(ts)}
                   onArchive={() => void handleArchiveSession(ts)}
-                  menuItems={getConversationMenuItems(Boolean(ts.pinned), t, { archivable: false })}
+                  onDelete={() => {
+                    void (async () => {
+                      try {
+                        await archivedTaskClient.deleteSession(ts.session_id);
+                        removeSessionLocally(ts.session_id);
+                        await loadCronSessions(projectId, job.id);
+                      } catch (error) {
+                        toast.open({ content: error instanceof Error ? error.message : String(error), variant: 'error' });
+                      }
+                    })();
+                  }}
+                  menuItems={getConversationMenuItems(Boolean(ts.pinned), t, { archivable: false, deletable: true })}
                   onRename={() => setRenameTarget({
                     kind: 'session',
                     id: ts.session_id,
@@ -1428,11 +1502,13 @@ export function ConversationSidebar({
             if (isDefaultProject(project)) return;
             setProjectAction('delete');
             setDeleteProjectError(null);
+            setDeleteProjectNotice(null);
             setDeleteProjectTarget(project);
           }}
           onBatch={(action) => {
             setProjectAction(action);
             setDeleteProjectError(null);
+            setDeleteProjectNotice(null);
             setDeleteProjectTarget(project);
           }}
         />
@@ -1575,11 +1651,12 @@ export function ConversationSidebar({
               onClick={() => {
                 setProjectAddMenuOpen((open) => !open);
               }}
-              title={t('multiSession.project.newProject')}
               aria-label={t('multiSession.project.newProject')}
               aria-haspopup="menu"
               aria-expanded={projectAddMenuOpen}
+              data-tooltip={t('multiSession.project.newProject')}
               data-testid="multi-session-new-project-button"
+              {...newProjectTooltipHandlers}
             >
               <PlusIcon aria-hidden />
             </button>
@@ -1669,15 +1746,18 @@ export function ConversationSidebar({
           action={projectAction}
           deleting={deleteProjectBusy}
           error={deleteProjectError}
+          notice={deleteProjectNotice}
           onCancel={() => {
             if (deleteProjectBusy) return;
             setDeleteProjectError(null);
+            setDeleteProjectNotice(null);
             setDeleteProjectTarget(null);
           }}
           onDelete={() => { void handleRemoveProject(); }}
         />
       ) : null}
       {conversationsTooltip}
+      {newProjectTooltip}
     </aside>
     </>
   );

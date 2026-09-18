@@ -119,6 +119,7 @@ class ReqMethod(Enum):
     SESSION_ARCHIVE = "session.archive"
     SESSION_UNARCHIVE = "session.unarchive"
     SESSION_ARCHIVED_LIST = "session.archived.list"
+    CRON_SESSIONS_DELETE = "cron.sessions.delete"
     PROJECT_DELETE = "project.delete"
     PROJECT_LIFECYCLE = "project.lifecycle"
     PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"
@@ -327,6 +328,8 @@ class ReqMethod(Enum):
     AGENT_TEMPLATES_FILE_LIST = "agent_templates.file.list"
     AGENT_TEMPLATES_FILE_READ = "agent_templates.file.read"
     AGENT_TEMPLATES_CREATE = "agent_templates.create"
+    AGENT_TEMPLATES_UPDATE = "agent_templates.update"
+    AGENT_TEMPLATES_DELETE = "agent_templates.delete"
     AGENT_TEMPLATES_IMPORT_LOCAL = "agent_templates.import_local"
     AGENT_TEMPLATES_INSTALL = "agent_templates.install"
     AGENT_TEMPLATES_UNINSTALL = "agent_templates.uninstall"
@@ -365,16 +368,6 @@ class ReqMethod(Enum):
 
     MEMORY_FORBIDDEN_GET = "memory.forbidden.get"
     MEMORY_FORBIDDEN_SET = "memory.forbidden.set"
-
-    # A4P 授权桥接（Web User Authorizer → AgentServer A4PServer）
-    A4P_AUTHORIZATION_COMPLETE = "a4p.authorization.complete"
-    A4P_AUTHORIZATION_REJECT = "a4p.authorization.reject"
-    A4P_AUTHORIZATION_PENDING = "a4p.authorization.pending"
-    A4P_CONFIG_GET = "a4p.config.get"
-    A4P_CONFIG_UPDATE = "a4p.config.update"
-    A4P_WEBAUTHN_CREDENTIALS_GET = "a4p.webauthn.credentials.get"
-    A4P_WEBAUTHN_REGISTRATION_OPTIONS = "a4p.webauthn.registration.options"
-    A4P_WEBAUTHN_REGISTRATION_VERIFY = "a4p.webauthn.registration.verify"
 
     CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
     CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"
@@ -473,6 +466,7 @@ class EventType(Enum):
     CHAT_TOOL_UPDATE = "chat.tool_update"
     CHAT_TOOL_RESULT = "chat.tool_result"
     CHAT_SYMPHONY_STATUS = "chat.symphony_status"
+    CHAT_MESSAGE_UPDATED = "chat.message_updated"
     CONTEXT_USAGE = "context.usage"
     TODO_UPDATED = "todo.updated"
     CHAT_PROCESSING_STATUS = "chat.processing_status"

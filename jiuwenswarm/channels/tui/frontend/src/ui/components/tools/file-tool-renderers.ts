@@ -19,6 +19,7 @@ import {
   renderToolTail,
   renderToolTitle,
   summarizeToolResultByKind,
+  toolResultText,
   toolStateColor,
 } from "./tool-render-shared.js";
 
@@ -44,13 +45,13 @@ export function renderSessionTool(
   const lines = renderToolTitle(width, tool, label, options.animationPhase);
 
   if (tool.result) {
-    const previewLines = tool.result.split("\n").filter(Boolean);
+    const previewLines = toolResultText(tool).split("\n").filter(Boolean);
     lines.push(
       ...renderToolTail(
         width,
         tool.summary ??
-          summarizeToolResultByKind(tool.name, tool.result) ??
-          summarize(tool.result, 120),
+          summarizeToolResultByKind(tool.name, toolResultText(tool)) ??
+          summarize(toolResultText(tool), 120),
         toolStateColor(tool),
       ),
     );
@@ -96,7 +97,7 @@ export function renderReadTool(
   );
 
   if (tool.result) {
-    const content = getStringArg(payload ?? {}, "content", "result", "data") ?? tool.result;
+    const content = getStringArg(payload ?? {}, "content", "result", "data") ?? toolResultText(tool);
     const { notices } = extractTrailingBracketNotices(content);
     const totalLines =
       getNumericArg(payload ?? {}, "totalLines", "total_lines") ?? countLogicalLines(content);
@@ -143,7 +144,7 @@ export function renderListTool(
     const files = getStringList(payload ?? {}, "files");
     const dirs = getStringList(payload ?? {}, "dirs").map((dir) => `${dir}/`);
     const payloadEntries = [...files, ...dirs];
-    const { mainLines, notices } = extractTrailingBracketNotices(tool.result);
+    const { mainLines, notices } = extractTrailingBracketNotices(toolResultText(tool));
     const visibleEntries = payloadEntries.length > 0 ? payloadEntries : mainLines;
     const shown = visibleEntries.slice(0, options.showDetails ? 12 : 6);
     lines.push(
@@ -216,8 +217,8 @@ export function renderWriteTool(
       ...renderToolTail(
         width,
         tool.summary ??
-          summarizeToolResultByKind(tool.name, tool.result) ??
-          summarize(tool.result, 120),
+          summarizeToolResultByKind(tool.name, toolResultText(tool)) ??
+          summarize(toolResultText(tool), 120),
         toolStateColor(tool),
       ),
     );
@@ -314,8 +315,8 @@ export function renderEditTool(
       ...renderToolTail(
         width,
         tool.summary ??
-          summarizeToolResultByKind(tool.name, tool.result) ??
-          summarize(tool.result, 120),
+          summarizeToolResultByKind(tool.name, toolResultText(tool)) ??
+          summarize(toolResultText(tool), 120),
         toolStateColor(tool),
       ),
     );

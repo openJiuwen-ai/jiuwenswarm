@@ -29,6 +29,7 @@ export { Tabs, type TabsItem, type TabsProps } from './Tabs/Tabs';
 export { FilePreviewPanel, type FilePreviewPanelProps } from './FilePreviewPanel/FilePreviewPanel';
 export {
   FilePreviewTree,
+  findDefaultPreviewFile,
   type FilePreviewTreeNode,
   type FilePreviewTreeLabels,
   type FilePreviewTreeProps,
@@ -54,6 +55,7 @@ export {
 export { MarkdownPane, type MarkdownPaneProps } from './MarkdownPane/MarkdownPane';
 export {
   EntityHeader,
+  EntityTagList,
   type EntityHeaderProps,
   type EntityHeaderAvatar,
   type EntityImageAvatar,

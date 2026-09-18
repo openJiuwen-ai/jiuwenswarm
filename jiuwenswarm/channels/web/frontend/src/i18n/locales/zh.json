@@ -22,7 +22,13 @@
     "expandMore": "展开 {{count}} 个",
     "optional": "（可选）",
     "processing": "处理中…",
-    "retry": "重试"
+    "retry": "重试",
+    "editMenu": {
+      "cut": "剪切",
+      "copy": "复制",
+      "paste": "粘贴",
+      "selectAll": "全选"
+    }
   },
   "a2ui": {
     "generating": "A2UI 界面生成中...",
@@ -324,10 +330,12 @@
       "taskAsr": "ASR 模型配置",
       "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
+      "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹界面",
       "kvCacheAffinity": "算力亲和",
+      "skillPack": "技能包",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
@@ -372,6 +380,10 @@
         "placeholder": "例如：FunAudioLLM/SenseVoiceSmall"
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
+      "symphony_evolution_enabled": {
+        "title": "发现技能包",
+        "description": "任务结束后从执行经验中沉淀技能组合，自动发现技能包"
+      },
       "skill_retrieval_enabled": { "title": "技能自动检索", "description": "基于已安装技能数量，动态选择智能体的技能发现策略" },
       "skill_retrieval_index_enabled": {
         "title": "技能索引",
@@ -740,6 +752,7 @@
     "addImageDisabled": "处理中或录音中不可添加图片",
     "addFile": "上传文件",
     "addFileDisabled": "处理中或录音中不可上传文件",
+    "unsupportedImagePaste": "不支持粘贴该文件格式，仅支持粘贴 PNG、JPG/JPEG、WebP、GIF 图片。",
     "addFileTooltip": "可添加文件、专家、技能、连接器",
     "addAttachment": "添加附件",
     "removeImage": "移除图片",
@@ -879,8 +892,6 @@
       "permission": {
         "default": "默认权限",
         "defaultDesc": "编辑外部文件和使用互联网时始终询问",
-        "automatic": "智能审批",
-        "automaticDesc": "结合当前任务和权限规则，帮你处理每次工具审批；不确定时仍会询问你",
         "fullAccess": "完全访问权限",
         "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件",
         "fullAccessWarning": {
@@ -1803,7 +1814,8 @@
       "statKnowledge": "上下文节点数",
       "statCollecting": "正在采集",
       "knowledgeSource": "上下文来源",
-      "lastRun": "上次采集"
+      "lastRun": "上次采集",
+      "fetchTaskRunning": "当前有采集任务正在运行，请等待完成后再修改配置"
     },
     "addContent": {
       "title": "添加内容",
@@ -2635,7 +2647,12 @@
       "createByUpload": "上传文件创建",
       "uploading": "上传中…",
       "createViaChatPrompt": "帮我创建一个xxx专家，擅长xxx",
-      "back": "返回"
+      "back": "返回",
+      "edit": "编辑",
+      "updating": "保存中…"
+    },
+    "confirm": {
+      "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。"
     },
     "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作", "moreTagsTooltip": "更多标签：{{tags}}" },
     "states": {
@@ -2705,6 +2722,7 @@
     },
     "form": {
       "title": "手动创建",
+      "editTitle": "编辑专家",
       "subtitle": "创建一个可复用的专家定义",
       "createOnly": "仅支持创建",
       "createTabsLabel": "创建类型",
@@ -2793,7 +2811,7 @@
         "createFirst": "手动创建",
         "createByChat": "通过聊天创建",
         "createByUpload": "上传文件创建",
-        "createViaChatPrompt": "帮我创建一个 XXX 专家团，擅长 XXXXX。我的经验是：[请补充你的行业背景、相关经验]",
+        "createViaChatPrompt": "帮我创建一个xxx专家团，擅长xxx",
         "install": "安装",
         "installing": "安装中…",
         "use": "使用",
@@ -3327,10 +3345,15 @@
       "archiveView": "查看",
       "archiveUndo": "撤销",
       "deleteProject": "删除项目",
-      "deleteProjectDescription": "永久删除“<name>{{projectName}}</name>”及其下全部会话和定时任务，包括未归档会话。正在运行的任务将停止，不删除工作目录。此操作不可恢复。",
+      "deleteProjectDescription": "删除“<name>{{projectName}}</name>”下的定时任务和非运行中会话。若有普通会话正在运行，将跳过这些会话并保留项目；可停止后重试。不删除工作目录。已删除内容不可恢复。",
+      "projectDeletedSummary": "项目已删除：{{sessions}} 个对话、{{crons}} 个定时任务",
+      "deleteFailedSummary": "项目删除未完成：已删除 {{sessions}} 个对话、{{crons}} 个定时任务。",
+      "deleteSkippedRunning": "已删除 {{sessions}} 个对话、{{crons}} 个定时任务；{{count}} 个对话仍在运行，已跳过并保留项目。请先手动停止这些对话，再重试删除。",
       "archiveSessions": "归档全部会话",
-      "archiveSessionsDescription": "归档“<name>{{projectName}}</name>”下全部普通会话。运行中的会话将保留并提示失败，定时任务保持不变。",
+      "archiveSessionsDescription": "归档“<name>{{projectName}}</name>”下全部普通会话。运行中的会话将保留并略过，定时任务保持不变。",
       "sessionsArchived": "已归档 {{count}} 个会话",
+      "archiveSkippedRunning": "有 {{count}} 个会话正在运行中，已略过归档",
+      "archiveSkippedRunningWithSuccess": "已归档 {{succeeded}} 个会话；有 {{count}} 个会话正在运行中，已略过",
       "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。可重试失败项。",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
@@ -3339,7 +3362,8 @@
         "nameExists": "该项目名已存在，请换个名称",
         "pathMissing": "项目目录不存在，请选择已存在的目录",
         "projectUnavailable": "项目不可用，请刷新后重试",
-        "archiveSessionBusy": "会话运行中，请停止后再归档",
+        "archiveSessionBusy": "对话正在运行，无法归档。请先手动停止，再重试归档。",
+        "deleteSessionBusy": "对话正在运行，无法删除。请先手动停止，再重试删除。",
         "archiveForbidden": "该任务不支持归档",
         "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
         "archiveFailed": "归档操作失败，请稍后重试"
@@ -3898,8 +3922,6 @@
       "subtypePaper": "论文",
       "subtypeProgram": "程序",
       "optimizerModelLabel": "优化模型",
-      "pluginLabel": "初始插件",
-      "pluginDefault": "当前 Harness（未安装时使用原生基线）",
       "evaluationMethodLabel": "评测方法",
       "evaluationMethodAgent": "Agent评测",
       "evaluationMethodScript": "脚本评测",
@@ -4104,64 +4126,5 @@
     "budgetPlaceholder": "输入数字",
     "budgetActualHint": "本次配置上限：{{count}} tokens",
     "workflowList": "工作流列表"
-  },
-  "a4pSettings": {
-    "statusUnavailable": "Passkey 状态尚未就绪，请稍后刷新重试。",
-    "insecureContext": "当前访问地址不满足 Passkey 的安全要求，请通过本机 localhost 访问。",
-    "title": "A4P 意图授权",
-    "description": "启用 A4P 意图授权。仅当权限模式为“默认权限”时生效，“完全访问权限”时不生效。",
-    "active": "已启用",
-    "inactive": "未启用",
-    "authorizationMode": "使用 Passkey 签名",
-    "signedMode": "授权时需要使用已注册的 Passkey 签名，私钥由选择的 Passkey 提供方管理。",
-    "unsignedMode": "直接确认授权，无需用户签名，也无需注册 Passkey。",
-    "credentialStore": "公钥凭据存储",
-    "rpId": "RP ID",
-    "expectedOrigin": "预期 Origin",
-    "currentOrigin": "当前 Origin",
-    "passkeys": "已注册 Passkey",
-    "passkeyCount": "{{count}} 个凭据",
-    "register": "注册 Passkey",
-    "registering": "注册中...",
-    "refresh": "刷新",
-    "loading": "加载中...",
-    "unsupported": "当前浏览器不支持所需的 Passkey 功能，请使用支持的浏览器。",
-    "originMismatch": "当前 Passkey 仅支持通过 {{origin}} 访问，请切换到该地址。",
-    "noPasskeys": "本地 JiuwenSwarm 用户尚未注册 Passkey。",
-    "signCount": "签名计数",
-    "disabledRegistrationHint": "即使 A4P 授权已关闭，仍可管理 Passkey。"
-  },
-  "a4pAuthorization": {
-    "title": "A4P 预授权确认",
-    "requestLead": "JiuwenSwarm 请求 A4P 预授权。",
-    "intro": "请核对授权内容；如需查看协议详情，可展开完整授权对象。",
-    "wildcardWarning": "检测到宽泛的 Bash 授权范围：命令通配符可能允许任意 Shell 操作。请优先使用完整、精确的命令。",
-    "requestId": "请求 ID",
-    "reason": "授权原因",
-    "scheduledTask": "定时任务",
-    "authorizedActions": "授权操作",
-    "validTime": "有效时间",
-    "taskId": "任务 ID",
-    "taskInstructions": "任务内容",
-    "schedule": "执行计划",
-    "beijingTime": "北京时间",
-    "timeRangeTo": "至",
-    "defaultReason": "为以下工具操作申请预授权。",
-    "noActions": "未提供授权操作",
-    "tools": {
-      "bash": "执行 Shell 命令",
-      "mcpExecCommand": "执行命令",
-      "createTerminal": "创建终端",
-      "writeFile": "写入文件",
-      "editFile": "编辑文件",
-      "acpChat": "与 Agent 对话"
-    },
-    "fullAuthorizationObject": "完整授权对象",
-    "cronExplanation": "批准后，A4P 意图令牌将持久绑定到该定时任务，直至过期或任务被删除。",
-    "sessionExplanation": "批准后，当前会话中匹配的受保护调用使用 A4P 意图令牌，不再逐次请求审批。",
-    "reject": "拒绝",
-    "approve": "授权",
-    "approveWithPasskey": "使用 Passkey 授权",
-    "waiting": "处理中..."
   }
 }

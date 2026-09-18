@@ -8,7 +8,6 @@ import {
   TaskFullDuplexSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
-import { A4PSettings } from './A4PSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
   id: 'experimental',
@@ -46,14 +45,20 @@ export const experimentalModule: SettingsModuleDefinition = {
       items: [{ id: 'a2ui', component: 'custom', render: A2UISetting }],
     },
     {
-      id: 'a4p',
-      titleKey: 'a4pSettings.title',
-      items: [{ id: 'a4p-settings', component: 'custom', render: A4PSettings }],
-    },
-    {
       id: 'trajectory-ui',
       titleKey: 'settingsPanel.experimental.trajectoryUi',
       items: [{ id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting }],
+    },
+    {
+      id: 'skill-pack',
+      titleKey: 'settingsPanel.experimental.skillPack',
+      items: [
+        {
+          id: 'discover-skill-pack-enabled',
+          component: 'switch',
+          key: 'symphony_evolution_enabled',
+        },
+      ],
     },
     {
       id: 'kv-cache-affinity',

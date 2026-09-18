@@ -118,7 +118,7 @@ class _SessionOwner:
 
 
 @pytest.fixture
-def auto_config(monkeypatch):
+def auto_config(monkeypatch, internal_auto_mode):
     monkeypatch.setattr(
         agent_manager_module,
         "get_config",

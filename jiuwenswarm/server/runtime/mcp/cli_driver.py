@@ -20,6 +20,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -115,6 +116,23 @@ _SHELL_FORBIDDEN_FIRST = {"bash", "cmd", "/bin/sh", "sh"}
 _SHELL_FORBIDDEN_SECOND = "-c"
 
 
+def _is_harmony_runtime() -> bool:
+    """Return whether this Python process runs in the HarmonyOS HNP sandbox.
+
+    HarmonyOS Python may report linux as sys.platform. The facade exposes HNP
+    executables through PATH, so the HNP path is a reliable fallback when no
+    explicit runtime marker is available.
+    """
+    if os.environ.get("JIUWEN_HARMONY_RUNTIME") == "1":
+        return True
+    if sys.platform == "ohos":
+        return True
+    return any(
+        "/data/app/" in entry and "/hnp/" in entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+    )
+
+
 def _is_binary_not_found(exc: BaseException) -> bool:
     """True when *exc* means the executable/runtime is missing from PATH.
 
@@ -142,8 +160,10 @@ def _safe_split_command(command: str) -> list[str]:
     ``shutil.which`` (which searches PATHEXT — finds ``npm.CMD``). CreateProcess
     does NOT do PATHEXT resolution, so a bare ``npm`` fails with WinError 2
     even though ``npm.CMD`` is on PATH. This is the price of ``shell=False``;
-    the lookup here restores what the cmd shell used to do. No-op on POSIX
-    (execvp already searches PATH). The shell-binary ban above runs on the
+    the lookup here restores what the cmd shell used to do. HarmonyOS also
+    resolves bare HNP executables because its Python posix_spawn path can
+    return ENOENT even when PATH contains the executable. Other POSIX
+    platforms retain the existing bare-command behavior. The shell-binary ban above runs on the
     bare name, before resolution, so ``cmd``/``sh`` are still refused.
     """
     parts = shlex.split(command)
@@ -154,8 +174,7 @@ def _safe_split_command(command: str) -> list[str]:
         raise ValueError(f"refusing to run shell binary '{first}' as first arg")
     if len(parts) > 1 and parts[1] == _SHELL_FORBIDDEN_SECOND:
         raise ValueError("refusing '-c' as second arg (shell invocation)")
-    if sys.platform == "win32":
-        import shutil
+    if (sys.platform == "win32" or _is_harmony_runtime()) and not os.path.dirname(parts[0]):
         resolved = shutil.which(parts[0])
         if resolved:
             parts[0] = resolved

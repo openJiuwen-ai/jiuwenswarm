@@ -1,0 +1,241 @@
+{
+  "name": "compaction_correlation_conflict",
+  "derived_from": "jiuwenswarm/channels/web/frontend/tests/trajectoryProjector.test.mjs: schema-v2 compaction never guesses missing or conflicting output correlation (conflicting)",
+  "records": [
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000003",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "3000000",
+      "endTimeUnixNano": "3000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "output-conflicting"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "3"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "3000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-output\", \"base_window_id\": \"window-input\", \"complete\": true, \"delta\": [{\"op\": \"remove\", \"message_id\": \"removed-user\", \"from_index\": 1}], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"retained-user\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"retained user\"}], \"transition_kind\": \"compaction\", \"caused_by_operation_id\": \"operation-correlation\", \"input_window_id\": \"wrong-window\", \"output_window_id\": \"window-output\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-3"
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000002",
+      "name": "compaction.completed",
+      "startTimeUnixNano": "2000000",
+      "endTimeUnixNano": "2000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "compacted-conflicting"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "compaction.completed"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "2000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"operation_id\": \"operation-correlation\", \"input_window_id\": \"window-input\", \"output_window_id\": \"window-output\", \"summary\": \"compacted\", \"compact_summary\": \"complete compacted output\", \"model_requests\": [{\"request_id\": \"physical-correlation-request\", \"inference_id\": \"inference-2\"}]}"
+          }
+        }
+      ]
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000001",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "1000000",
+      "endTimeUnixNano": "1000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "before-conflicting"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "1"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "epoch-1"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "1000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-input\", \"base_window_id\": null, \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"retained-user\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"retained user\"}, {\"message_id\": \"removed-user\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"removed user\"}], \"transition_kind\": \"epoch_baseline\", \"baseline_reason\": \"runtime_epoch_start\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-1"
+    }
+  ],
+  "expected": {
+    "windows": {
+      "main": {
+        "window-input": [
+          "retained-user",
+          "removed-user"
+        ],
+        "window-output": [
+          "retained-user"
+        ]
+      }
+    },
+    "by_inference": {
+      "inference-1": [
+        "retained-user",
+        "removed-user"
+      ],
+      "inference-3": [
+        "retained-user"
+      ]
+    },
+    "issue_codes": [
+      "v2.invalid_compaction_correlation"
+    ]
+  },
+  "payloads_conform_to_schema": false
+}

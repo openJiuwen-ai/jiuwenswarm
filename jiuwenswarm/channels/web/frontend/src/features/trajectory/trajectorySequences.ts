@@ -15,9 +15,10 @@
 
 import type { TrajectoryDetailRecord } from './trajectoryClient'
 import type { OtlpExportTraceServiceRequest } from './shared/otlp'
-
-const SEQUENCE_REFERENCE_PREFIX = '@oj-seq'
-const SEQUENCE_REFERENCE_VERSION = '1'
+import {
+  SEQUENCE_REFERENCE_PREFIX,
+  SEQUENCE_REFERENCE_VERSION,
+} from './semconv/openjiuwen-semconv.generated.ts'
 
 /** Content held by hash, plus the chains seen so far. */
 export interface SequenceCache {
@@ -100,60 +101,86 @@ export function rebuildSequenceValue(
   return `[${parts.join(',')}]`
 }
 
+type UnknownRecord = Record<string, unknown>
+
+const NO_ITEMS: readonly UnknownRecord[] = []
+
 function rebuildSpanAttributes(
-  span: Record<string, unknown>,
+  span: UnknownRecord,
   cache: SequenceCache,
   unresolved: Set<string>,
-): boolean {
+): UnknownRecord {
   const attributes = span.attributes
-  if (!Array.isArray(attributes)) return false
-  let changed = false
-  for (const attribute of attributes) {
-    if (typeof attribute !== 'object' || attribute === null) continue
+  if (!Array.isArray(attributes)) return span
+  let rebuiltAttributes: unknown[] | null = null
+  attributes.forEach((attribute: unknown, index) => {
+    if (typeof attribute !== 'object' || attribute === null) return
     const entry = attribute as { key?: unknown; value?: unknown }
     const value = entry.value
-    if (typeof value !== 'object' || value === null) continue
-    const holder = value as { stringValue?: unknown }
-    const reference = parseSequenceReference(holder.stringValue)
-    if (reference === null) continue
+    if (typeof value !== 'object' || value === null) return
+    const reference = parseSequenceReference((value as { stringValue?: unknown }).stringValue)
+    if (reference === null) return
     const rebuilt = rebuildSequenceValue(cache, reference.hash)
     if (rebuilt === undefined) {
       // Leave the reference in place and say which attribute could not be
       // rebuilt. A missing element must not cost the reader the whole span.
       unresolved.add(String(entry.key ?? ''))
-      continue
+      return
     }
-    holder.stringValue = rebuilt
-    changed = true
-  }
-  return changed
+    rebuiltAttributes ??= [...attributes]
+    rebuiltAttributes[index] = { ...entry, value: { ...value, stringValue: rebuilt } }
+  })
+  return rebuiltAttributes === null ? span : { ...span, attributes: rebuiltAttributes }
+}
+
+/** Map a list copy-on-write: the input itself when no item changed. */
+function mapChanged<T>(items: readonly T[], map: (item: T) => T): readonly T[] {
+  let changed: T[] | null = null
+  items.forEach((item, index) => {
+    const next = map(item)
+    if (next === item) return
+    changed ??= [...items]
+    changed[index] = next
+  })
+  return changed ?? items
 }
 
 /**
  * Rebuild one record's OTLP into the shape the projection expects.
  *
- * The record is returned by reference when it states nothing to rebuild, so
- * the projection cache keeps recognizing it as unchanged.
+ * Only the spans that state a reference are copied; everything else is shared
+ * with the received record, which is never modified. The record is returned by
+ * reference when it states nothing to rebuild, so the projection cache keeps
+ * recognizing it as unchanged.
  */
 export function rebuildRecord(
   record: TrajectoryDetailRecord,
   cache: SequenceCache,
 ): TrajectoryDetailRecord {
   if (record.otlp === null || record.sequences === undefined) return record
-  const clone = JSON.parse(JSON.stringify(record.otlp)) as OtlpExportTraceServiceRequest
   const unresolved = new Set<string>()
-  let changed = false
-  for (const resource of (clone.resourceSpans ?? []) as Record<string, unknown>[]) {
-    for (const scope of (resource.scopeSpans ?? []) as Record<string, unknown>[]) {
-      for (const span of (scope.spans ?? []) as Record<string, unknown>[]) {
-        if (rebuildSpanAttributes(span, cache, unresolved)) changed = true
-      }
-    }
-  }
+  const otlp = record.otlp as unknown as UnknownRecord
+  const listOf = (value: unknown): readonly UnknownRecord[] => (
+    Array.isArray(value) ? value as UnknownRecord[] : NO_ITEMS
+  )
+  const sourceResources = listOf(otlp.resourceSpans)
+  const resourceSpans = mapChanged(sourceResources, (resource) => {
+    const sourceScopes = listOf(resource.scopeSpans)
+    const scopeSpans = mapChanged(sourceScopes, (scope) => {
+      const sourceSpans = listOf(scope.spans)
+      const spans = mapChanged(
+        sourceSpans,
+        span => rebuildSpanAttributes(span, cache, unresolved),
+      )
+      return spans === sourceSpans ? scope : { ...scope, spans }
+    })
+    return scopeSpans === sourceScopes ? resource : { ...resource, scopeSpans }
+  })
+  const changed = resourceSpans !== sourceResources
   if (!changed && unresolved.size === 0) return record
   return {
     ...record,
-    otlp: clone,
+    otlp: (changed ? { ...otlp, resourceSpans } : otlp) as unknown as OtlpExportTraceServiceRequest,
     ...(unresolved.size === 0 ? {} : { incomplete_sequences: [...unresolved] }),
   } as TrajectoryDetailRecord
 }

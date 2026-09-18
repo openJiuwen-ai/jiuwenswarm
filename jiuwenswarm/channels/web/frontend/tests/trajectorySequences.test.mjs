@@ -182,3 +182,28 @@ test('a record missing its span identity is left out rather than mis-keyed', () 
 
   assert.equal(unresolvedAttributesByRecordId([orphan]).size, 0);
 });
+
+test('rebuilding leaves the received record untouched and shares what it did not change', () => {
+  const cache = createSequenceCache();
+  absorbSequencePage(cache, {
+    sequences: { [HEAD]: ['e1', 'e2'] },
+    blobs: { e1: '{"role":"user"}', e2: '{"role":"assistant"}' },
+  });
+  const original = record(HEAD);
+  const received = structuredClone(original);
+  const referenced = received.otlp.resourceSpans[0].scopeSpans[0].spans[0];
+  const plain = { ...referenced, spanId: 'd'.repeat(16), attributes: [referenced.attributes[1]] };
+  received.otlp.resourceSpans[0].scopeSpans[0].spans.push(plain);
+
+  const rebuilt = rebuildRecord(received, cache);
+
+  assert.notEqual(rebuilt, received);
+  assert.deepEqual(
+    received.otlp.resourceSpans[0].scopeSpans[0].spans[0],
+    original.otlp.resourceSpans[0].scopeSpans[0].spans[0],
+  );
+  const spans = rebuilt.otlp.resourceSpans[0].scopeSpans[0].spans;
+  assert.equal(spans[1], plain);
+  assert.equal(spans[0].attributes[1], referenced.attributes[1]);
+  assert.equal(attributesOf(rebuilt)['gen_ai.input.messages'], '[{"role":"user"},{"role":"assistant"}]');
+});

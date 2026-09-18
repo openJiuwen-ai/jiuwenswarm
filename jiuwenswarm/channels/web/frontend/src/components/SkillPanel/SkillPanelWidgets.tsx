@@ -91,17 +91,28 @@ export function TopAnchorTooltip({ pos, text }: { pos: { left: number; top: numb
   );
 }
 
-/** 弹窗右上角关闭按钮 */
-export function ModalCloseButton({ onClick, label, testId }: { onClick: () => void; label: string; testId?: string }) {
+/** 弹窗右上角关闭按钮（24px，可传 size 覆盖） */
+export function ModalCloseButton({
+  onClick,
+  label,
+  testId,
+  size = 24,
+}: {
+  onClick: () => void;
+  label: string;
+  testId?: string;
+  size?: number;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-label={label}
       data-testid={testId}
-      className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-secondary text-text-muted hover:text-text"
+      className="flex items-center justify-center rounded-md hover:bg-secondary text-text-meta hover:text-text"
+      style={{ width: size, height: size }}
     >
-      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
       </svg>
     </button>

@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import asyncio
 import json
 
@@ -440,7 +442,6 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
         async def ensure_instance(self):
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
-
         async def compress_context(self, session_id, *, return_state=False):
             return {
                 "result": "compressed",
@@ -500,7 +501,6 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
         async def ensure_instance(self):
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
-
         async def compress_context(self, session_id, *, return_state=False):
             return {
                 "result": "compressed",
@@ -562,7 +562,6 @@ async def test_handle_command_compact_attributes_team_work_to_live_leader(server
 
         async def compress_context(self, session_id, *, return_state=False):
             return {"result": "noop", "stats": None}
-
     subject = SimpleNamespace(
         subject_id="team-member:session-team:demo:leader",
         display_name="Leader",
@@ -592,6 +591,66 @@ async def test_handle_command_compact_attributes_team_work_to_live_leader(server
 
     assert captured["execution_subject"] is subject
     assert captured["mode"] == "team.work.normal"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_mode", "expected_trajectory_mode"),
+    [
+        ("agent", "agent.work.normal"),
+        ("agent.plan", "agent.work.plan"),
+        ("agent.work.normal", "agent.work.normal"),
+    ],
+)
+async def test_handle_command_compact_opens_run_span_with_canonical_mode(
+    server,
+    fake_ws,
+    monkeypatch,
+    request_mode,
+    expected_trajectory_mode,
+):
+    # The trajectory store only serves traces stamped with a canonical mode;
+    # a legacy ``agent`` on the manual /compact run span hid the whole
+    # compaction trace from the viewer.
+    from openjiuwen.harness import observability as harness_observability
+    from jiuwenswarm.agents.harness import agent_observability
+
+    request = AgentRequest(
+        request_id="req-compact-mode",
+        channel_id="web",
+        session_id="session-compact-mode",
+        req_method=ReqMethod.COMMAND_COMPACT,
+        params={"mode": request_mode},
+    )
+
+    class MockAgent:
+        async def ensure_instance(self):
+            return None
+
+        async def compress_context(self, session_id, *, return_state=False):
+            return {"result": "noop", "stats": None}
+    captured = {}
+
+    monkeypatch.setattr(
+        server.get_agent_manager_for_test(),
+        "get_agent_for_session_nowait",
+        lambda channel_id, session_id: MockAgent(),
+    )
+    monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda: None)
+    monkeypatch.setattr(
+        harness_observability,
+        "open_agent_run_span",
+        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(),
+    )
+    monkeypatch.setattr(harness_observability, "close_agent_run_span", lambda *args, **kwargs: None)
+
+    await server.handle_command_compact_for_test(fake_ws, request, asyncio.Lock())
+
+    assert captured["mode"] == expected_trajectory_mode
+    # A manual compaction runs outside every turn and names none; the viewer
+    # shows it between the turns it happened between.
+    assert "turn_id" not in captured
+    assert "turn_number" not in captured
 
 
 @pytest.mark.asyncio

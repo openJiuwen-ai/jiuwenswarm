@@ -195,10 +195,22 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
       )
     : null;
 
+  // focus 只认键盘聚焦（:focus-visible）：点击触发的 focus（含菜单关闭后框架把焦点
+  // 还给触发按钮的程序性回焦）一律不弹 tooltip——保证"任何点击后 tooltip 必定消失"，
+  // 否则 pointerdown 隐藏后会被紧随的 refocus 重新拉起且再无 mouseleave 能关掉它。
+  const showOnFocus = useCallback(
+    (event: { currentTarget: EventTarget | null }) => {
+      const el = event.currentTarget as HTMLElement | null;
+      if (!el || !el.matches(':focus-visible')) return;
+      show(event);
+    },
+    [show],
+  );
+
   const handlers: TooltipHandlers = {
     onMouseEnter: show,
     onMouseLeave: hide,
-    onFocus: show,
+    onFocus: showOnFocus,
     onBlur: hide,
   };
 

@@ -479,6 +479,26 @@ def test_interface_deep_preserves_only_trusted_tool_result_reviewer_fields():
     assert raw_only["raw_output"] == spoofed_raw_output
 
 
+def test_tool_result_parsers_forward_rendered_result_as_its_own_field():
+    chunk = types.SimpleNamespace(
+        type="tool_result",
+        payload={
+            "tool_result": {
+                "tool_call_id": "call-1",
+                "tool_name": "glob",
+                "result": "success=True data={'matching_files': ['/a.py']} error=None",
+                "rendered_result": "/a.py",
+                "success": True,
+            }
+        },
+    )
+    deep_parse = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+
+    for parsed in (parse_stream_chunk(chunk), deep_parse(chunk)):
+        assert parsed["result"] == "success=True data={'matching_files': ['/a.py']} error=None"
+        assert parsed["rendered_result"] == "/a.py"
+
+
 def test_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
     raw_output = {
         "success": True,

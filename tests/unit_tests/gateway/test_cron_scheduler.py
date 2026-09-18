@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -2421,3 +2422,113 @@ class TestCrashRecoveryGraceWindow:
             if ev.kind == "wake" and ev.job_id == job_a.id
         ]
         assert len(wake_a_after) == 1
+
+
+class _MemoryCronStore:
+    supports_watch = False
+
+    def __init__(self, jobs: list[CronJob]) -> None:
+        self._jobs = {job.id: job for job in jobs}
+        self.revision = 1
+        # Gateway 生命周期归属记录与 cron 文件同目录；这里落到临时目录，避免写用户主目录。
+        self.path = Path(tempfile.gettempdir()) / f"jjws_memory_cron_{id(self)}.json"
+
+    async def list_jobs(self) -> list[CronJob]:
+        return list(self._jobs.values())
+
+    async def get_job(self, job_id: str) -> CronJob | None:
+        return self._jobs.get(job_id)
+
+    async def update_job(self, job_id: str, patch: dict) -> CronJob:
+        raise AssertionError(f"unexpected update_job {job_id} {patch}")
+
+    async def get_revision(self) -> int:
+        return self.revision
+
+
+class TestCrashRecoverySkip:
+    @pytest.mark.asyncio
+    async def test_skips_wake_when_offset_already_passed(self):
+        from jiuwenswarm.runtime.cron.cron_job_mutations import build_new_cron_job
+
+        job = build_new_cron_job(
+            name="past-wake",
+            cron_expr="* * * * *",
+            timezone="UTC",
+            description="x",
+            targets="web",
+            wake_offset_seconds=120,
+        )
+        store = _MemoryCronStore([job])
+        now = time.time()
+        svc = _TestableScheduler(
+            store=store,
+            agent_client=FakeAgentClient(),
+            message_handler=FakeMessageHandler(),
+            now_fn=lambda: now,
+        )
+        await svc.reload()
+        wake_events = [ev for _ts, _seq, ev in svc.events if ev.kind == "wake"]
+        push_events = [ev for _ts, _seq, ev in svc.events if ev.kind == "push"]
+        assert wake_events == []
+        assert push_events == []
+
+    @pytest.mark.asyncio
+    async def test_future_wake_is_scheduled(self):
+        from jiuwenswarm.runtime.cron.cron_job_mutations import build_new_cron_job
+
+        job = build_new_cron_job(
+            name="future-wake",
+            cron_expr="0 0 9 * * ? *",
+            timezone="UTC",
+            description="x",
+            targets="web",
+            wake_offset_seconds=0,
+        )
+        store = _MemoryCronStore([job])
+        svc = _make_scheduler(store)
+        await svc.reload()
+        wake_events = [ev for _ts, _seq, ev in svc.events if ev.kind == "wake"]
+        push_events = [ev for _ts, _seq, ev in svc.events if ev.kind == "push"]
+        assert len(wake_events) == 1
+        assert len(push_events) == 1
+        assert wake_events[0].job_id == job.id
+
+
+@pytest.mark.asyncio
+async def test_crash_recovery_skip_after_etcd_full_load(tmp_path, monkeypatch):
+    from jiuwenswarm.runtime.cron.etcd_store import EtcdCronJobStore
+    from tests.unit_tests.gateway.test_cron_etcd_store import FakeEtcdJsonClient
+
+    # etcd 后端没有本地 cron 文件，生命周期归属记录会退化到默认本地路径：
+    # 这里改到 tmp_path，避免测试写用户主目录。
+    import jiuwenswarm.common.utils as utils_module
+
+    monkeypatch.setattr(
+        utils_module, "get_cron_jobs_path", lambda: tmp_path / "cron_jobs.json"
+    )
+
+    fake = FakeEtcdJsonClient()
+    store = EtcdCronJobStore(
+        endpoints=["http://etcd.test:2379"],
+        client=fake,
+    )
+    await store.create_job(
+        name="past-wake",
+        cron_expr="* * * * *",
+        timezone="UTC",
+        description="x",
+        targets="web",
+        wake_offset_seconds=120,
+    )
+    now = time.time()
+    svc = _TestableScheduler(
+        store=store,
+        agent_client=FakeAgentClient(),
+        message_handler=FakeMessageHandler(),
+        now_fn=lambda: now,
+    )
+    await svc.reload()
+    assert len(svc.jobs) == 1
+    wake_events = [ev for _ts, _seq, ev in svc.events if ev.kind == "wake"]
+    assert wake_events == []

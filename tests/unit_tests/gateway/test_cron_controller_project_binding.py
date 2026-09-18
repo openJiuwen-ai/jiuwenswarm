@@ -6,11 +6,44 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.gateway.cron.controller import CronController
 from jiuwenswarm.server.runtime.session.project_store import CronProjectBinding
+
+
+@pytest.mark.asyncio
+async def test_delete_job_stops_runs_and_removes_sessions_before_job() -> None:
+    calls = []
+    job = SimpleNamespace(id="job_a", enabled=True, mode="code", user_id="alice")
+
+    async def update_job(job_id, patch):
+        calls.append("disable")
+
+    async def reload():
+        calls.append("reload")
+
+    async def stop_job_runs(job_id):
+        calls.append("stop")
+
+    async def delete_sessions(job_id, user_id):
+        calls.append("sessions")
+
+    async def delete_job(job_id, *, force=False):
+        calls.append("job")
+        return True
+
+    store = SimpleNamespace(
+        get_job=AsyncMock(return_value=job), update_job=update_job, delete_job=delete_job
+    )
+    scheduler = SimpleNamespace(
+        reload=reload, stop_job_runs=stop_job_runs, delete_cron_sessions=delete_sessions
+    )
+    controller = CronController(store=store, scheduler=scheduler)
+    assert await controller.delete_job("job_a")
+    assert calls == ["disable", "reload", "stop", "sessions", "job", "reload"]
 
 
 class _RecordingStore:

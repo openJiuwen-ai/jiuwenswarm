@@ -16,6 +16,7 @@ import yaml
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.config import (
     _transform_front_team_model_config,
+    coerce_config_bool,
     get_configured_read_image_multimodal,
     get_config_raw,
     get_evolution_auto_save_enabled,
@@ -23,6 +24,8 @@ from jiuwenswarm.common.config import (
     get_sandbox_runtime,
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
+    get_ttse_embedding_config,
+    get_ttse_enabled,
     migrate_config_from_template,
     replace_teams_in_config,
     reset_external_cli_agents_in_config,
@@ -665,7 +668,6 @@ class TestConfigFunctions:
         ("profile", "enabled", "mode"),
         [
             ("default", True, "manual"),
-            ("automatic", True, "auto"),
             ("full_access", False, "manual"),
         ],
     )
@@ -774,6 +776,159 @@ class TestConfigFunctions:
         ):
             monkeypatch.setenv(env_name, "true")
         assert get_skill_evolution_enabled(config) is expected
+
+    @pytest.mark.parametrize(
+        ("value", "default", "expected"),
+        [
+            (True, False, True),
+            (False, True, False),
+            (None, True, True),
+            ("true", False, True),
+            ("false", True, False),
+            ("0", True, False),
+            ("1", False, True),
+            ("yes", False, True),
+            ("no", True, False),
+            ("", True, False),
+            (1, False, True),
+            (0, True, False),
+        ],
+    )
+    def test_coerce_config_bool_values(self, value, default, expected):
+        assert coerce_config_bool(value, default) is expected
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"react": {"ttse": {"enabled": True}}}, True),
+            ({"react": {"ttse": {"enabled": False}}}, False),
+            ({"ttse": {"enabled": True}}, True),
+            ({"ttse": {"enabled": False}}, False),
+            (
+                {
+                    "react": {"ttse": {"enabled": True}},
+                    "ttse": {"enabled": False},
+                },
+                True,
+            ),
+            ({"react": {"ttse": {"enabled": "true"}}}, True),
+            ({"react": {"ttse": {"enabled": "false"}}}, False),
+            ({"react": {"ttse": {}}}, False),
+            ({"react": {"ttse": {"inject_enabled": True}}}, False),
+        ],
+    )
+    def test_ttse_enabled_config_values(self, config, expected):
+        assert get_ttse_enabled(config) is expected
+
+    def test_shipped_template_ttse_disabled_by_default(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["react"]["ttse"]["enabled"] is False
+        assert get_ttse_enabled(config) is False
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"react": {"ttse": {}}}, {}),
+            ({"react": {"ttse": {"embedding": {"api_key": "k"}}}}, {}),
+            (
+                {
+                    "react": {
+                        "ttse": {
+                            "embedding": {
+                                "api_key": "k",
+                                "base_url": "https://example.invalid/v1",
+                                "model": "m",
+                            }
+                        }
+                    }
+                },
+                {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                },
+            ),
+            (
+                {
+                    "ttse": {
+                        "embedding": {
+                            "api_key": " k ",
+                            "base_url": " https://example.invalid/v1 ",
+                            "model": " m ",
+                        }
+                    }
+                },
+                {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                },
+            ),
+        ],
+    )
+    def test_ttse_embedding_config_values(self, config, expected):
+        assert get_ttse_embedding_config(config) == expected
+
+    def test_ttse_embedding_resolves_secret_registry_embed_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("EMBED_API_KEY", "k")
+        monkeypatch.setenv("EMBED_API_BASE", "https://example.invalid/v1")
+        monkeypatch.setenv("EMBED_MODEL", "m")
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "model": "m",
+        }
+
+    def test_ttse_embedding_unresolved_embed_env_falls_back_to_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("EMBED_API_KEY", raising=False)
+        monkeypatch.delenv("EMBED_API_BASE", raising=False)
+        monkeypatch.delenv("EMBED_MODEL", raising=False)
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {}
+
+    def test_shipped_ttse_embedding_uses_embed_env_placeholders(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        embedding = config["react"]["ttse"]["embedding"]
+        assert embedding["api_key"] == "${EMBED_API_KEY}"
+        assert embedding["base_url"] == "${EMBED_API_BASE}"
+        assert embedding["model"] == "${EMBED_MODEL}"
 
     @pytest.mark.parametrize(
         ("raw", "expected"),

@@ -131,9 +131,9 @@ export const ProactiveRecommendationCard: React.FC<ProactiveRecommendationCardPr
               className={
                 'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors border ' +
                 (feedbackGiven === 'like'
-                  ? 'bg-green-500/30 border-green-500/60 text-green-300'
+                  ? 'bg-green-500/70 border-green-500/80 text-white'
                   : feedbackGiven === 'dislike'
-                    ? 'bg-green-500/10 border-green-500/20 text-green-400/60 opacity-40 cursor-not-allowed'
+                    ? 'bg-green-500/10 border-green-500/20 text-green-400/70 cursor-not-allowed'
                     : 'bg-green-500/10 hover:bg-green-500/25 text-green-400 border-green-500/20 hover:border-green-500/40')
               }
             >
@@ -148,9 +148,9 @@ export const ProactiveRecommendationCard: React.FC<ProactiveRecommendationCardPr
               className={
                 'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors border ' +
                 (feedbackGiven === 'dislike'
-                  ? 'bg-red-500/30 border-red-500/60 text-red-300'
+                  ? 'bg-red-500/70 border-red-500/80 text-white'
                   : feedbackGiven === 'like'
-                    ? 'bg-red-500/10 border-red-500/20 text-red-400/60 opacity-40 cursor-not-allowed'
+                    ? 'bg-red-500/10 border-red-500/20 text-red-400/70 cursor-not-allowed'
                     : 'bg-red-500/10 hover:bg-red-500/25 text-red-400 border-red-500/20 hover:border-red-500/40')
               }
             >

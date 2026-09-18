@@ -13,6 +13,7 @@ type DefinitionCardProps = {
   onReconnect: (id: string) => void;
   onInstall: (id: string) => void;
   onUninstall: (id: string) => void;
+  onEdit: (id: string) => void;
 };
 
 function getAvatarLetter(name: string): string {
@@ -122,6 +123,7 @@ export function DefinitionCard({
   onReconnect,
   onInstall,
   onUninstall,
+  onEdit,
 }: DefinitionCardProps) {
   const { t } = useTranslation();
   const canInstall = !item.installed;
@@ -129,6 +131,7 @@ export function DefinitionCard({
   const needsConnection = item.installed && item.connectionState !== 'connected';
   const avatarUrl = getAgentAvatarUrl(item);
   const description = item.description || t('agentManagement.unknownDescription');
+  const canEdit = scope === 'mine' && item.source === 'local';
 
   return (
     <article
@@ -187,6 +190,16 @@ export function DefinitionCard({
         aria-label={t('agentManagement.card.actions', { name: item.displayName })}
         data-testid="agent-card-actions"
       >
+        {canEdit ? (
+          <button
+            type="button"
+            className="agent-management-button agent-management-button--secondary agent-management-card-action--edit"
+            disabled={busy}
+            onClick={() => onEdit(item.id)}
+          >
+            {t('agentManagement.actions.edit')}
+          </button>
+        ) : null}
         {item.installed ? (
           <button
             type="button"

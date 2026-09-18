@@ -21,6 +21,7 @@ import { formatToolArguments } from '../../utils';
 import { classifyAuthOption, type AuthSemantic } from './promptRouting';
 import { AutoReviewerDetails, AutoReviewerStatusBadge } from '../ChatPanel/AutoReviewerStatus';
 import { permissionQuestionKind } from '../../stores/pendingQuestionQueue';
+import { translatePermissionText } from './permissionTextI18n';
 
 interface AuthorizationPromptProps {
   pending: AskUserQuestionPayload;
@@ -102,7 +103,7 @@ export function AuthorizationQuestionDetails({
   questions: Question[];
   requestId: string;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const count = questions.length;
   return (
     <>
@@ -118,11 +119,13 @@ export function AuthorizationQuestionDetails({
               className="auth-prompt__body-header"
               data-testid="interaction-slot-auth-body-item-header"
             >
-              {question.header}
+              {translatePermissionText(question.header, i18n.language)}
             </div>
           )}
           <AutoReviewerDetails reviewer={question.reviewer_metadata} />
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{question.question}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {translatePermissionText(question.question, i18n.language)}
+          </ReactMarkdown>
           {question.tool_payload !== undefined && (
             <details
               className="mt-3 rounded-lg border border-border bg-card p-3 text-xs"
@@ -183,7 +186,7 @@ function HoverTip({ text, children }: { text: string; children: React.ReactNode 
 }
 
 export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -194,11 +197,17 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   const isConfirm = pending.source === 'confirm_interrupt';
   const count = questions.length;
 
-  // 按钮文案与说明原样使用后端下发的 label / description；
-  // semantic 仅用于固定排序与样式映射，不再覆盖显示文案。
+  // 按钮的 label/description 原样使用后端下发的文案；semantic 判定用的是
+  // option.value（如 "allow_once"，与 label 无关），排序与语义分类不受影响。
+  // 展示层再叠一层已知短语的前端翻译（非中文语言下），查不到的原样显示。
   const actions = useMemo<ResolvedAction[]>(
-    () => resolveAuthorizationActions(questions),
-    [questions],
+    () =>
+      resolveAuthorizationActions(questions).map((action) => ({
+        ...action,
+        label: translatePermissionText(action.label, i18n.language),
+        tip: translatePermissionText(action.tip, i18n.language),
+      })),
+    [questions, i18n.language],
   );
 
   /** 把选中的语义应用到所有 question（多条时统一处理）。 */
@@ -220,7 +229,7 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   if (!primary) return null;
 
   const fallbackTitle = isConfirm ? t('authPrompt.titleConfirm') : t('authPrompt.title');
-  const title = (primary.header || '').trim() || fallbackTitle;
+  const title = translatePermissionText(primary.header, i18n.language).trim() || fallbackTitle;
 
   return (
     <div
@@ -308,7 +317,9 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
         {expanded ? (
           <AuthorizationQuestionDetails questions={questions} requestId={pending.request_id} />
         ) : (
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{firstLine(primary.question)}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {translatePermissionText(firstLine(primary.question), i18n.language)}
+          </ReactMarkdown>
         )}
       </div>
     </div>

@@ -58,53 +58,6 @@
   animation: history-loading-spin 700ms linear infinite;
 }
 
-.table tbody .historyLoadRow td {
-  height: 30px;
-  padding: 0;
-}
-
-/* The pagination control does not create a trajectory turn boundary. */
-.table tbody .historyLoadRow + tr[data-turn-start='true'] td::before {
-  content: none;
-}
-
-.historyLoadButton {
-  display: flex;
-  width: 100%;
-  height: 29px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 0;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  font: var(--dsw-font-xxs-12);
-}
-
-.historyLoadButton:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-
-.historyLoadButton:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
-  outline-offset: -2px;
-}
-
-.historyLoadButton:disabled {
-  cursor: default;
-}
-
-.visuallyHidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-
 .table:not([data-scroll-ready='true']) {
   visibility: hidden;
 }
@@ -1544,6 +1497,31 @@
 
 .schemaTree {
   margin: 0 6px 8px 0;
+}
+
+.toolResult {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 100%;
+}
+
+.toolResultSection {
+  min-width: 0;
+}
+
+.toolResultTitle {
+  margin: 0;
+  padding: 8px 14px 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font: 600 11px/16px var(--dsw-font-family);
+  user-select: none;
+}
+
+/* Two results stack in one panel, so neither may claim the panel's height. */
+.toolResultSection .payload,
+.toolResultSection .jsonPayload {
+  min-height: 0;
 }
 
 .payload {

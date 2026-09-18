@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Gateway WebChannel ``/file-api`` HTTP routes (agentos_router + dual_protocol)."""
+"""Gateway WebChannel ``/file-api`` HTTP routes (agentos_router, same port as ``/ws``)."""
 
 from __future__ import annotations
 
@@ -147,9 +147,14 @@ def _header_user_id(request: Request) -> str:
 
 
 def _token_identities(request: Request) -> frozenset[str]:
-    """IAM identities bound after ``authenticate_http`` succeeds."""
+    """IAM identities bound after ``authenticate_http`` succeeds.
+
+    Used only for USER_MISMATCH. Routing still uses the request ``user_id``
+    (or IAM username when omitted) so workspace paths stay
+    ``/home/agentos/users/<claimed>`` instead of the IAM UUID.
+    """
     ids: set[str] = set()
-    uid = str(getattr(request.state, "agentos_user_id", "") or "").strip()
+    uid = str(getattr(request.state, "agentos_iam_user_id", "") or "").strip()
     if uid:
         ids.add(uid)
     username = str(getattr(request.state, "agentos_username", "") or "").strip()
@@ -185,7 +190,8 @@ def _user_id_mismatch_against_token(
     """Reject when any claimed ``user_id`` is not the token's user_id or username.
 
     Skipped when auth is off (no IAM identity on the request). An omitted
-    ``user_id`` is allowed: routing then uses the IAM-bound identity.
+    ``user_id`` is allowed: routing then uses the request identity (username
+    when present), not the IAM UUID.
     """
     identities = _token_identities(request)
     if not identities:
@@ -200,13 +206,12 @@ def _resolve_user_id(request: Request, explicit: str | None = None) -> str:
     denied = _user_id_mismatch_against_token(request, explicit)
     if denied is not None:
         raise FileApiUserMismatch()
-    bound = str(getattr(request.state, "agentos_user_id", "") or "").strip()
-    if bound:
-        return bound
     if explicit and str(explicit).strip():
         uid = str(explicit).strip()
     else:
         uid = _header_user_id(request)
+    if not uid:
+        uid = str(getattr(request.state, "agentos_username", "") or "").strip()
     if uid:
         request.state.agentos_user_id = uid
     return uid
@@ -535,7 +540,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         if client.auth_enabled:
             iam_uid = str(result.user_id or "").strip()
             if iam_uid:
-                request.state.agentos_user_id = iam_uid
+                request.state.agentos_iam_user_id = iam_uid
             username = ""
             if isinstance(result.extensions, dict):
                 username = str(result.extensions.get("username") or "").strip()

@@ -145,6 +145,7 @@ test('the first schema-v2 subagent event creates a tab without misusing the owne
   const span = subagentEvent.resourceSpans[0].scopeSpans[0].spans[0];
   span.attributes.push(
     attribute('openjiuwen.trajectory.schema_version', '2'),
+    attribute('openjiuwen.trajectory.event_kind', 'context.window.commit'),
     attribute('openjiuwen.trajectory.subject_id', 'subagent:v2-first'),
     attribute('openjiuwen.trajectory.session_id', 'session-main'),
   );
@@ -164,6 +165,25 @@ test('the first schema-v2 subagent event creates a tab without misusing the owne
   assert.equal(group.records.length, 1);
 });
 
+test('the span schema version alone does not make a span a v2 event', () => {
+  // Every canonical span states schema version 2; only the event kind marks an
+  // event, so an ordinary span stays with its execution subject.
+  const ordinary = record('000000000000001b', 'chat model', '450', main);
+  ordinary.resourceSpans[0].scopeSpans[0].spans[0].attributes.push(
+    attribute('openjiuwen.trajectory.schema_version', '2'),
+  );
+
+  const result = groupTrajectorySubjects(
+    [ordinary],
+    [detail(ordinary, 1)],
+    new Map(),
+    'session-main',
+  );
+
+  assert.equal(result.byId.get(MAIN_TRAJECTORY_SUBJECT_ID)?.records.length, 1);
+  assert.equal(result.byId.get(UNASSIGNED_TRAJECTORY_SUBJECT_ID), undefined);
+});
+
 test('schema-v2 team leader events remain in the leader lane', () => {
   const leader = {
     id: 'team-member:session-main:demo:leader',
@@ -176,6 +196,7 @@ test('schema-v2 team leader events remain in the leader lane', () => {
   const span = compacted.resourceSpans[0].scopeSpans[0].spans[0];
   span.attributes.push(
     attribute('openjiuwen.trajectory.schema_version', '2'),
+    attribute('openjiuwen.trajectory.event_kind', 'compaction.completed'),
     attribute('openjiuwen.trajectory.subject_id', leader.id),
     attribute('openjiuwen.trajectory.session_id', 'session-main'),
   );
@@ -193,6 +214,51 @@ test('schema-v2 team leader events remain in the leader lane', () => {
   assert.equal(group.subject.kind, 'team_leader');
   assert.equal(group.subject.displayName, 'Leader');
   assert.equal(group.records.length, 1);
+});
+
+test('replacing one streaming record re-projects only its subject', () => {
+  const records = [
+    record('0000000000000030', 'main request', '100', main),
+    record('0000000000000031', 'subagent one request', '200', subagentOne),
+  ];
+  const rawRecords = records.map(detail);
+  const lifecycle = new Map(rawRecords.map(item => [item.record_id, 'completed']));
+  const cache = createTrajectorySubjectViewCache();
+  const projected = [];
+  const project = (group) => {
+    projected.push(group.subject.id);
+    return { subjectId: group.subject.id };
+  };
+  cache.update(groupTrajectorySubjects(records, rawRecords, lifecycle), project);
+  projected.length = 0;
+
+  // Overlaying frames swaps in a new object for the streaming record only.
+  const framed = [records[0], structuredClone(records[1])];
+  cache.update(groupTrajectorySubjects(framed, rawRecords, lifecycle), project);
+
+  assert.deepEqual(projected, [subagentOne.id]);
+});
+
+test('invalidating a subject re-projects it while the others stay cached', () => {
+  const records = [
+    record('0000000000000040', 'main request', '100', main),
+    record('0000000000000041', 'subagent one request', '200', subagentOne),
+  ];
+  const rawRecords = records.map(detail);
+  const lifecycle = new Map(rawRecords.map(item => [item.record_id, 'completed']));
+  const cache = createTrajectorySubjectViewCache();
+  const projected = [];
+  const project = (group) => {
+    projected.push(group.subject.id);
+    return { subjectId: group.subject.id };
+  };
+  cache.update(groupTrajectorySubjects(records, rawRecords, lifecycle), project);
+  projected.length = 0;
+
+  cache.invalidate(group => group.subject.id === main.id);
+  cache.update(groupTrajectorySubjects(records, rawRecords, lifecycle), project);
+
+  assert.deepEqual(projected, [main.id]);
 });
 
 test('subject view cache reuses every unchanged group and projection', () => {
@@ -354,11 +420,14 @@ test('Archive v1 replay produces the same execution-subject groups as live recor
   });
   const archive = parseTrajectoryArchive(JSON.stringify({
     format: 'openjiuwen.trajectory.archive',
-    archive_version: 1,
+    archive_version: 2,
     session_id: 'session-main',
     store_epoch: 'epoch-1',
     revision: '2',
     exported_at: '2026-08-21T00:00:00Z',
+    content_addressed: true,
+    sequences: {},
+    blobs: {},
     records: archiveRecords,
   }));
   const replay = trajectoryArchiveView(archive);

@@ -1110,6 +1110,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'asr_api_base',
     'asr_api_key',
     'asr_model',
+    'symphony_evolution_enabled',
     'kv_cache_affinity_enabled',
     'proactive_recommendation_enabled',
   ]);
@@ -1129,6 +1130,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
     'rsi_enabled',
+    'symphony_evolution_enabled',
     'task_full_duplex_enabled',
     'trajectory_ui_enabled',
   ]);
@@ -1992,15 +1994,4 @@ test('legacy page translations and Harness package state are removed without del
     harnessStore,
     /\b(?:CachedFileTreeEntry|packages|nativeVersion|activePackageIds|selectedPackageId|loadingPackages|activatingPackage|deactivatingPackage|extensionFileTreeCache|fileTreeLoadingPaths|setPackages|isPackageActive|setSelectedPackageId|setLoadingPackages|setActivatingPackage|setDeactivatingPackage|setFileTreeCache|getFileTreeCache|clearFileTreeCache|setFileTreeLoading|isFileTreeLoading)\s*:/,
   );
-});
-
-test('A4P settings use dedicated RPCs and are absent from generic persistence', () => {
-  assert.equal(SETTINGS_CONFIG_FIELDS.some((field) => field.key.startsWith('a4p_')), false);
-  for (const key of ['a4p_enabled', 'a4p_require_user_signature']) {
-    assert.throws(() => normalizeSettingsConfigUpdates({ [key]: true }));
-  }
-  const a4pSettings = source('src/features/settings/modules/experimental/A4PSettings.tsx');
-  assert.match(a4pSettings, /'a4p.config.get'/);
-  assert.match(a4pSettings, /'a4p.config.update'/);
-  assert.doesNotMatch(a4pSettings, /source\.save|useSettingsSource/);
 });

@@ -149,8 +149,8 @@ interface ChatPanelProps {
   autoFocusKey?: string | null;
   /** 跳转到技能管理页 */
   onNavigateToSkills?: () => void;
-  /** 跳转到智能体管理页 */
-  onNavigateToAgents?: () => void;
+  /** 跳转到专家管理页，可指定“我的专家”下的资产类型 */
+  onNavigateToAgents?: (target?: 'agent' | 'group') => void;
   /** 切换右侧紧缩面板展开状态，传 null 表示隐藏面板 */
   onToggleTeamArea?: (expanded: boolean | null) => void;
   /** 打开右侧面板并切换到代码审核 Tab */
@@ -1625,7 +1625,8 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   const ingestDesktopLocalFiles = useCallback(
     (detail: DesktopLocalFilesEventDetail | null | undefined, files: LocalFilePick[]) => {
-      if (detail?.source && detail.source !== 'drop') return;
+      // Native drop bridge uses source=drop; context-menu paste uses source=paste.
+      if (detail?.source && detail.source !== 'drop' && detail.source !== 'paste') return;
       if (!files.length) {
         clearDesktopFileDropZone();
         return;

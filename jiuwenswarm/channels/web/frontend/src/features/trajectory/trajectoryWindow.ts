@@ -57,13 +57,8 @@ export type SubjectRefreshWindow = {
 
 export interface TrajectoryOperationCoordinator {
   currentGeneration: () => number;
-  invalidate: (restoreBusy: () => void) => number;
+  invalidate: () => number;
   isCurrent: (generation: number) => boolean;
-  pendingLoadEarlier: (generation: number) => Promise<boolean> | null;
-  runLoadEarlier: (
-    operation: (generation: number) => Promise<boolean>,
-    setBusy: (busy: boolean) => void,
-  ) => Promise<boolean>;
 }
 
 export interface TrajectoryTraceHintCoordinator {
@@ -77,6 +72,11 @@ export interface TrajectoryTraceHintCoordinator {
 export interface StagedTrajectoryChain {
   bucket: TrajectoryChainBucket;
   invalidRecordSeen: boolean;
+  /**
+   * `traceId:spanId` of every record this page brought to a terminal state.
+   * Such a span states its own output, so its stream frames can be released.
+   */
+  finishedSpanKeys: readonly string[];
 }
 
 export type TrajectoryContentMode = 'new' | 'loading' | 'blocking-error' | 'empty' | 'data';
@@ -98,6 +98,28 @@ function sameUsage(left: TrajectoryUsage, right: TrajectoryUsage): boolean {
 }
 
 /** Report whether a cumulative-usage refresh changes any projected request fact. */
+/**
+ * Trace ids whose request usage differs between two session usage maps.
+ *
+ * Usage is keyed `traceId\u0000inferenceId`; a trace appears when any of its
+ * requests gained, lost or changed a cumulative figure.
+ */
+export function changedTrajectoryUsageTraceIds(
+  left: ReadonlyMap<string, TrajectoryUsage>,
+  right: ReadonlyMap<string, TrajectoryUsage>,
+): Set<string> {
+  const traceIds = new Set<string>();
+  const traceOf = (identity: string) => identity.slice(0, identity.indexOf('\u0000'));
+  for (const [identity, usage] of left) {
+    const candidate = right.get(identity);
+    if (candidate === undefined || !sameUsage(usage, candidate)) traceIds.add(traceOf(identity));
+  }
+  for (const identity of right.keys()) {
+    if (!left.has(identity)) traceIds.add(traceOf(identity));
+  }
+  return traceIds;
+}
+
 export function sameTrajectoryUsageMap(
   left: ReadonlyMap<string, TrajectoryUsage>,
   right: ReadonlyMap<string, TrajectoryUsage>,
@@ -175,45 +197,13 @@ export function resetTrajectoryWindowState(state: TrajectoryWindowState): void {
 
 export function createTrajectoryOperationCoordinator(): TrajectoryOperationCoordinator {
   let generation = 0;
-  let earlier: { generation: number; promise: Promise<boolean> } | null = null;
   return {
     currentGeneration: () => generation,
-    invalidate: (restoreBusy) => {
+    invalidate: () => {
       generation += 1;
-      earlier = null;
-      restoreBusy();
       return generation;
     },
     isCurrent: candidate => candidate === generation,
-    pendingLoadEarlier: candidate => (
-      candidate === generation && earlier?.generation === generation
-        ? earlier.promise
-        : null
-    ),
-    runLoadEarlier: (operation, setBusy) => {
-      if (earlier?.generation === generation) return earlier.promise;
-      const operationGeneration = generation;
-      setBusy(true);
-      let start: () => void = () => {};
-      const source = new Promise<boolean>((resolve, reject) => {
-        start = () => {
-          try {
-            void operation(operationGeneration).then(resolve, reject);
-          } catch (error) {
-            reject(error);
-          }
-        };
-      });
-      let promise: Promise<boolean>;
-      promise = source.finally(() => {
-        if (earlier?.promise !== promise) return;
-        earlier = null;
-        if (operationGeneration === generation) setBusy(false);
-      });
-      earlier = { generation: operationGeneration, promise };
-      start();
-      return promise;
-    },
   };
 }
 
@@ -301,6 +291,7 @@ export function applyTrajectoryDetailRecords(
   let rawRecords = new Map<string, TrajectoryDetailRecord>(current?.rawRecords ?? []);
   let versions = new Map<string, TrajectoryRecordVersion>(current?.versions ?? []);
   let invalidRecordSeen = false;
+  const finishedSpanKeys: string[] = [];
   if (detail.reset) {
     records = new Map();
     rawRecords = new Map();
@@ -333,6 +324,7 @@ export function applyTrajectoryDetailRecords(
     }
     versions.set(identity, incoming);
     rawRecords.set(identity, item);
+    if (terminal(incoming.lifecycle)) finishedSpanKeys.push(identity);
     if (!item.raw_valid || item.otlp === null) {
       invalidRecordSeen = true;
       records.delete(identity);
@@ -353,6 +345,7 @@ export function applyTrajectoryDetailRecords(
       versions,
     },
     invalidRecordSeen,
+    finishedSpanKeys,
   };
 }
 
@@ -367,6 +360,25 @@ export function dedupeSubjectSummaries(
     }
   }
   return [...bySubjectId.values()];
+}
+
+/** Which frame catch-up a refresh performs. */
+export type StreamFrameRefresh = 'always' | 'ifBehind';
+
+/**
+ * Whether a refresh should page stream frames.
+ *
+ * A trace hint states the frame watermark it was committed at. When the frames
+ * this reader already holds reach it, paging would only confirm there is
+ * nothing new -- one round trip per hint while an answer streams. Reconnects,
+ * terminal events and rebuilds pass 'always': they cannot trust a hint.
+ */
+export function shouldCatchUpStreamFrames(
+  mode: StreamFrameRefresh,
+  heldFrameSeq: number,
+  hintedFrameSeq: number,
+): boolean {
+  return mode === 'always' || heldFrameSeq < hintedFrameSeq;
 }
 
 export function selectSummariesNeedingLoad(
@@ -459,6 +471,7 @@ export async function stageTrajectoryChainPages(
         versions: stagedVersions,
       },
       invalidRecordSeen,
+      finishedSpanKeys: applied.finishedSpanKeys,
     };
     publishPage?.(progress);
     if (!detail.has_more) return progress;
