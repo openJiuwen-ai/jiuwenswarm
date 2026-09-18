@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 _installed = False
+_safe_handler_cls: type | None = None
 
 
 def _pre_execute_shell_command(command: str) -> str | None:
@@ -74,6 +75,61 @@ def _wrap_stream(
     return stream
 
 
+def _build_safe_process_handler_class(base: type) -> type:
+    """Return a handler subclass that reaps descendants after teardown."""
+
+    class SafeAsyncProcessHandler(base):
+        """AsyncProcessHandler whose teardown also kills descendant processes."""
+
+        def _kill_process_tree(self) -> None:
+            from jiuwenswarm.agents.harness.common.tools.command_tools import (
+                collect_process_descendant_pids,
+                kill_process_pids,
+                process_was_reaped,
+            )
+
+            proc = self._process
+            pid = proc.pid if proc is not None else None
+            # A reaped pid can belong to an unrelated process by now, and its
+            # children are not ours to kill. Same gate as the other shell path.
+            reaped = proc is None or process_was_reaped(proc)
+            descendants = [] if reaped else collect_process_descendant_pids(pid)
+            kill_process_pids(descendants)
+            super()._kill_process_tree()
+            kill_process_pids(descendants)
+            if proc is not None and not process_was_reaped(proc):
+                kill_process_pids(collect_process_descendant_pids(pid))
+
+    return SafeAsyncProcessHandler
+
+
+def _patch_process_handler() -> None:
+    """Patch the public factory ``bash`` and ``powershell`` both terminate through."""
+    global _safe_handler_cls
+    try:
+        from openjiuwen.core.sys_operation.local.utils import (
+            AsyncProcessHandler,
+            OperationUtils,
+        )
+    except ImportError:  # pragma: no cover - agent-core layout changed
+        return
+    if getattr(OperationUtils.create_handler, "jiuwenswarm_safety_wrapped", False):
+        return
+
+    _safe_handler_cls = _build_safe_process_handler_class(AsyncProcessHandler)
+
+    def create_handler(
+        process: Any,
+        chunk_size: int = 1024,
+        encoding: str = "utf-8",
+        timeout: int = 300,
+    ) -> Any:
+        return _safe_handler_cls(process, chunk_size, encoding, timeout)
+
+    create_handler.jiuwenswarm_safety_wrapped = True
+    OperationUtils.create_handler = staticmethod(create_handler)
+
+
 def _patch_tool_class(tool_cls: type) -> None:
     if not getattr(tool_cls.invoke, "jiuwenswarm_safety_wrapped", False):
         tool_cls.invoke = _wrap_invoke(tool_cls.invoke)
@@ -90,6 +146,7 @@ def install_shell_tool_safety_hooks() -> None:
     from openjiuwen.harness.tools.shell.bash._tool import BashTool
 
     _patch_tool_class(BashTool)
+    _patch_process_handler()
 
     try:
         from openjiuwen.harness.tools.shell.powershell._tool import PowerShellTool
