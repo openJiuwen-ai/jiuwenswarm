@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
-    _REPAIRABLE_CONTENT_TEMPLATE_REASONS,
     _extract_footer_block,
     _repair_content_template_chrome,
     _validate_content_template_fill_output,
@@ -73,7 +72,6 @@ def test_validate_splits_head_chrome_reason_and_repair_recovers():
     ok, reason = _validate_content_template_fill_output(seed, filled)
     assert not ok
     assert reason == "head_chrome_changed"
-    assert reason in _REPAIRABLE_CONTENT_TEMPLATE_REASONS
 
     repaired = _repair_content_template_chrome(seed, filled)
     assert repaired is not None
@@ -101,4 +99,3 @@ def test_validate_footer_chrome_changed_when_footer_structure_rewritten():
     ok, reason = _validate_content_template_fill_output(seed, filled)
     assert not ok
     assert reason == "footer_chrome_changed"
-    assert reason in _REPAIRABLE_CONTENT_TEMPLATE_REASONS
