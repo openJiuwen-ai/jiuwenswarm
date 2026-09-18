@@ -68,6 +68,7 @@ async def test_guard_install_failure_is_retryable_and_reload_replaces_registrati
     instance = SimpleNamespace(
         ensure_initialized=AsyncMock(), register_rail=AsyncMock(side_effect=RuntimeError("rail failed")),
         unregister_rail=AsyncMock(),
+        react_agent=SimpleNamespace(register_callback=AsyncMock()),
     )
     adapter = JiuWenSwarmDeepAdapter()
     monkeypatch.setattr(adapter, "_instance", instance)
@@ -82,6 +83,54 @@ async def test_guard_install_failure_is_retryable_and_reload_replaces_registrati
     await adapter.install_session_input_guard(reload=True)
     instance.unregister_rail.assert_awaited_once_with(guard)
     assert instance.register_rail.await_count == 3
+    assert instance.react_agent.register_callback.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reload", [False, True])
+async def test_resume_callback_install_failure_rolls_back_and_can_retry(monkeypatch, reload):
+    instance = SimpleNamespace(
+        ensure_initialized=AsyncMock(), register_rail=AsyncMock(), unregister_rail=AsyncMock(),
+        react_agent=SimpleNamespace(register_callback=AsyncMock()),
+    )
+    adapter = JiuWenSwarmDeepAdapter()
+    monkeypatch.setattr(adapter, "_instance", instance)
+    if reload:
+        await adapter.install_session_input_guard()
+    instance.react_agent.register_callback.side_effect = RuntimeError("callback failed")
+    with pytest.raises(RuntimeError, match="callback failed"):
+        await adapter.install_session_input_guard(reload=reload)
+    assert adapter._session_input_guard is None
+    assert instance.unregister_rail.await_count == (2 if reload else 1)
+    instance.react_agent.register_callback.side_effect = None
+    await adapter.install_session_input_guard()
+    assert adapter._session_input_guard is not None
+    assert instance.react_agent.register_callback.await_count == (3 if reload else 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["resume", "ordinary", "outer", "already_bound", "no_queue"])
+async def test_resume_queue_binding_is_scoped_and_preserves_sdk_queue(case):
+    import asyncio
+    from openjiuwen.core.session import InteractiveInput
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs
+    from openjiuwen.harness.task_loop.loop_queues import LoopQueues
+
+    queues = LoopQueues()
+    queues.push_steer("supplement")
+    instance = SimpleNamespace(react_agent=object(), event_handler=SimpleNamespace(interaction_queues=queues))
+    ctx = AgentCallbackContext(
+        agent=instance if case == "outer" else instance.react_agent,
+        inputs=InvokeInputs(query="ordinary" if case == "ordinary" else InteractiveInput()),
+    )
+    existing_queue = asyncio.Queue() if case == "already_bound" else None
+    if existing_queue is not None:
+        ctx.bind_steering_queue(existing_queue)
+    if case == "no_queue":
+        instance.event_handler.interaction_queues = None
+    await SessionInputGuard(instance).before_invoke(ctx)
+    assert ctx.steering_queue is (queues.steering if case == "resume" else existing_queue)
+    assert queues.steering.qsize() == 1
 
 
 @pytest.mark.asyncio

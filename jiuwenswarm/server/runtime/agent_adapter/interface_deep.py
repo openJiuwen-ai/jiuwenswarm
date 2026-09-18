@@ -15243,6 +15243,8 @@ class JiuWenSwarmDeepAdapter:
 
     async def install_session_input_guard(self, *, reload: bool = False) -> None:
         """Register the input guard on this Adapter's current SDK instance."""
+        from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
+
         from jiuwenswarm.server.runtime.agent_adapter.session_input import (
             SessionInputGuard,
         )
@@ -15257,9 +15259,19 @@ class JiuWenSwarmDeepAdapter:
         elif not reload:
             return
         else:
+            self._session_input_guard = None
             await instance.unregister_rail(guard)
         await instance.ensure_initialized()
         await register(guard)
+        try:
+            # DeepAgent routes BEFORE_INVOKE to the outer agent only. Resume
+            # queue binding must also run on the inner ReAct invocation.
+            event = AgentCallbackEvent.BEFORE_INVOKE
+            await instance.react_agent.register_callback(event, guard.before_invoke, guard.callback_priority(event))
+        except Exception as exc:
+            # DeepAgent unregisters all of this rail's callbacks on both agents.
+            await instance.unregister_rail(guard)
+            raise exc
         self._session_input_guard = guard
 
     async def deliver_active_session_input(

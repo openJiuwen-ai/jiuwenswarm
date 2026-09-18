@@ -73,6 +73,8 @@ export interface TaskInputReceipt {
   status: 'sending' | 'accepted' | 'failed' | 'unknown';
   error?: string;
   errorCode?: string;
+  timestamp: string;
+  supplementalInput: NonNullable<Message['supplementalInput']>;
 }
 
 interface TaskItem {
@@ -748,7 +750,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const msgs = runtime.messages;
       let turnStart = 0;
       for (let i = msgs.length - 1; i >= 0; i -= 1) {
-        if (msgs[i].role === 'user') {
+        if (msgs[i].role === 'user' && !msgs[i].supplementalInput) {
           turnStart = i + 1;
           break;
         }
@@ -1595,6 +1597,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
                 taskId,
                 content: task.content,
                 status: 'sending',
+                timestamp: new Date().toISOString(),
+                supplementalInput: {
+                  executionId: runtime.activeExecutionId ?? '',
+                  streamMessageId: runtime.currentStreamId ?? undefined,
+                  streamOffset: runtime.currentStreamContent.length,
+                },
               },
             },
           },
@@ -1641,11 +1649,24 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       // Late responses can settle unknown delivery, but cannot affect an accepted or retried item.
       if (!runtime || !receipt || receipt.requestId !== requestId || !['sending', 'unknown'].includes(receipt.status))
         return state;
+      const acceptedMessages = status === 'accepted'
+        ? assignMessageRenderKeys(runtime, [{
+            id: `user-steer-${taskId}`,
+            role: 'user',
+            content: receipt.content,
+            timestamp: receipt.timestamp,
+            supplementalInput: receipt.supplementalInput,
+          }])
+        : undefined;
       return {
         runtimes: {
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
+            ...(acceptedMessages ? {
+              messages: [...runtime.messages, ...acceptedMessages.messages],
+              messageRenderKeySeq: acceptedMessages.messageRenderKeySeq,
+            } : {}),
             taskQueue:
               status === 'accepted'
                 ? runtime.taskQueue.filter((item) => item.id !== taskId)

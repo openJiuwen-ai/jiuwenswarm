@@ -3,6 +3,7 @@
 
 from typing import Any
 
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.harness.schema.interaction import InputDispatchMode
 
@@ -52,10 +53,10 @@ def sdk_input_mode(params: Any) -> InputDispatchMode | None:
 
 
 class SessionInputGuard(AgentRail):
-    """Close Host admission before the SDK's final-save/iteration-limit gap.
+    """Guard admission and reconnect the SDK queue when an interaction resumes.
 
-    This observes public callbacks only; it neither drains the steering queue
-    nor drives the loop. A rejected input has not been submitted to the SDK.
+    This uses public callbacks only; it neither drains the steering queue nor
+    drives the loop. A rejected input has not been submitted to the SDK.
     """
 
     def __init__(self, owner: Any):
@@ -64,6 +65,19 @@ class SessionInputGuard(AgentRail):
         self.accepting = False
         self._model_allows_steer = False
         self._active_tools = 0
+
+    async def before_invoke(self, ctx):
+        # DeepAgent's InteractiveInput path bypasses the task-loop executor,
+        # which normally passes this queue to ReAct. Bind before its first
+        # steering drain, leaving consumption and context ordering to the SDK.
+        if ctx.agent is not self.owner.react_agent:
+            return
+        if not isinstance(ctx.inputs.query, InteractiveInput) or ctx.steering_queue is not None:
+            return
+        handler = self.owner.event_handler
+        queues = getattr(handler, "interaction_queues", None)
+        if queues is not None:
+            ctx.bind_steering_queue(queues.steering)
 
     async def before_model_call(self, ctx):
         limit = getattr(ctx.agent.config, "max_iterations", 0)

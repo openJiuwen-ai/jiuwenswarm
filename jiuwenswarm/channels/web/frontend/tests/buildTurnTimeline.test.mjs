@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
 import {
+  buildTimelineItems,
   buildLiveCompletedStreaks,
   buildRenderItems,
   buildTurnWorkMeta,
@@ -12,6 +13,44 @@ import {
 const U = 1_700_000_000_000; // 用户消息时刻
 const S = 1_700_000_005_000; // reasoning 首帧
 const A = 1_700_000_035_000; // reasoning 末帧（updatedAt）
+
+test('supplements split displayed text while keeping one task, original timing and untouched stream data', () => {
+  const messages = [
+    { id: 'user', role: 'user', content: 'write a story', timestamp: new Date(U).toISOString() },
+    { id: 'answer', role: 'assistant', content: 'before-middle-after', timestamp: new Date(S).toISOString(), completedAt: new Date(A).toISOString() },
+    { id: 'extra-1', role: 'user', content: 'space theme', timestamp: new Date(S + 1000).toISOString(), supplementalInput: { executionId: 'execution', streamMessageId: 'answer', streamOffset: 7 } },
+    { id: 'extra-2', role: 'user', content: 'happy ending', timestamp: new Date(S + 2000).toISOString(), supplementalInput: { executionId: 'execution', streamMessageId: 'answer', streamOffset: 14 } },
+  ];
+  const original = structuredClone(messages);
+  for (const running of [true, false]) {
+    const items = buildRenderItems(buildTimelineItems(messages, [], []), false, running);
+    assert.deepEqual(items.filter(item => item.type === 'message').map(item => item.message.content),
+      ['write a story', 'before-', 'space theme', 'middle-', 'happy ending', 'after']);
+    const summaries = items.filter(item => item.type === 'turnSummary');
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0].startMs, U);
+    assert.equal(summaries[0].endMs, A);
+    assert.deepEqual([...new Set(items.filter(item => item.type === 'message' && item.message.role === 'assistant').map(item => item.turnId))], [1]);
+  }
+  assert.deepEqual(messages, original);
+});
+
+test('late acceptance stays in its original turn and an empty continuation retains final metadata', () => {
+  const messages = [
+    { id: 'user', role: 'user', content: 'first', timestamp: new Date(U).toISOString() },
+    { id: 'answer', role: 'assistant', content: 'answer', timestamp: new Date(S).toISOString(), completedAt: new Date(A).toISOString(), fileItems: [{ name: 'result.txt' }] },
+    { id: 'next-user', role: 'user', content: 'second', timestamp: new Date(A + 1000).toISOString() },
+    { id: 'next-answer', role: 'assistant', content: 'second answer', timestamp: new Date(A + 2000).toISOString(), isStreaming: true },
+    { id: 'late', role: 'user', content: 'extra', timestamp: new Date(S + 1000).toISOString(), supplementalInput: { executionId: 'old-execution', streamMessageId: 'answer', streamOffset: 6 } },
+  ];
+  const items = buildRenderItems(buildTimelineItems(messages, [], []), false, true);
+  assert.deepEqual(items.filter(item => item.type === 'message').map(item => item.message.content), ['first', 'answer', 'extra', 'second', 'second answer']);
+  const summaries = items.filter(item => item.type === 'turnSummary');
+  assert.equal(summaries.length, 2);
+  assert.equal(summaries[0].endMs, A);
+  assert.equal(summaries[1].startMs, A + 1000);
+  assert.deepEqual(items.find(item => item.type === 'message' && item.message.id === 'answer').message.fileItems, [{ name: 'result.txt' }]);
+});
 
 test('全双工简短确认和后续发言在运行中及完成后均保持展开', () => {
   for (const isTeam of [false, true]) {

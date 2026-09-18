@@ -65,12 +65,12 @@ export function interpretChatFinalAction(payload: Record<string, unknown>): Chat
 }
 
 function collectTurnAssistantParts(
-  messages: { role: string; id?: string; content?: string }[],
+  messages: { role: string; id?: string; content?: string; supplementalInput?: unknown }[],
   kind: 'agent' | 'team'
 ): string[] {
   let turnStart = 0;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i].role === 'user') {
+    if (messages[i].role === 'user' && !messages[i].supplementalInput) {
       turnStart = i + 1;
       break;
     }
@@ -113,7 +113,7 @@ function collectTurnAssistantParts(
  *（不再用 final.includes(shown) 的宽松匹配）。
  */
 export function shouldCollapseTurnFinal(
-  messages: { role: string; id?: string; content?: string }[],
+  messages: { role: string; id?: string; content?: string; supplementalInput?: unknown }[],
   finalContent: string,
   kind: 'agent' | 'team',
   action: ChatFinalAction = { type: 'heuristic' }

@@ -222,6 +222,7 @@ test('two queued messages: only the selected item steers, locks double click, an
     act(() => c.socket.response(request.id));
     await c.flush();
     assert.equal(c.runtime().taskQueue[1].status, 'sending', 'Gateway receipt is not Runtime acceptance');
+    assert.equal(c.runtime().messages.filter((message) => message.supplementalInput).length, 0);
     assert.notEqual(c.receipt(second).status, 'accepted');
     c.receive('runtime.accepted', { request_id: 'unrelated' });
     assert.equal(c.runtime().taskQueue[1].status, 'sending');
@@ -235,13 +236,22 @@ test('two queued messages: only the selected item steers, locks double click, an
     );
     assert.equal(c.runtime().isProcessing, true);
     assert.equal(c.runtime().currentStreamId, streamId);
-    assert.equal(c.runtime().messages, messages, 'a supplement is not a new user turn');
+    assert.deepEqual(c.runtime().messages.slice(0, messages.length), messages, 'existing output is preserved');
+    const bubble = c.runtime().messages.at(-1);
+    assert.equal(bubble.role, 'user');
+    assert.equal(bubble.content, 'extra constraint');
+    assert.equal(bubble.supplementalInput.executionId, 'execution-A');
+    c.receive('runtime.accepted', { request_id: request.id });
+    assert.equal(c.runtime().messages.filter((message) => message.id === bubble.id).length, 1);
     assert.equal(c.find(second, 'send'), null, 'accepted input leaves the original queue');
     assert.equal(c.receipt(second).status, 'accepted');
     assert.equal(c.runtime().taskInputReceipts[second].requestId, request.id);
     c.receive('chat.delta', { content: ' continued', request_id: 'original' });
     await c.tick(16);
-    assert.equal(c.runtime().messages.at(-1).content, 'original answer continued');
+    assert.equal(c.runtime().messages.find((message) => message.id === streamId).content, 'original answer continued');
+    const visible = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')].map((node) => node.textContent.trim());
+    assert.deepEqual(visible, ['original answer', 'extra constraint', 'continued']);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-turn-elapsed-value"]').length, 1);
     c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
     await c.flush();
     assert.equal(c.requests().length, 2);
@@ -274,6 +284,33 @@ test('the same queue send button starts an ordinary task when idle', async (cont
   }
 });
 
+test('the original final completes one task without duplicating text around the supplemental bubble', async (context) => {
+  const c = await mount(context);
+  try {
+    const streamId = c.runtime().currentStreamId;
+    const anchor = c.runtime().thinkingAnchorAt;
+    const id = c.queue('space theme');
+    await c.click(id, 'send');
+    c.receive('runtime.accepted', { request_id: c.requests()[0].id });
+    await c.flush();
+    assert.equal(c.runtime().thinkingAnchorAt, anchor);
+    c.receive('chat.delta', { request_id: 'original', content: ' in space' });
+    await c.tick(1000);
+    assert.equal(c.runtime().currentStreamId, streamId);
+    assert.equal(c.runtime().activeExecutionId, 'execution-A');
+    c.receive('chat.final', { request_id: 'original', content: 'original answer in space' });
+    await c.flush();
+    const visible = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')].map(node => node.textContent.trim());
+    assert.deepEqual(visible, ['original answer', 'space theme', 'in space']);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-turn-elapsed-value"]').length, 1);
+    assert.equal(c.runtime().isProcessing, false);
+    assert.equal(c.runtime().currentStreamId, null);
+    assert.equal(c.requests().length, 1);
+  } finally {
+    await c.dispose();
+  }
+});
+
 test('Host rejection preserves original output, pending question and Goal, and requires manual retry', async (context) => {
   const c = await mount(context);
   try {
@@ -290,6 +327,7 @@ test('Host rejection preserves original output, pending question and Goal, and r
     await c.flush();
     assert.equal(c.runtime().taskQueue[0].status, 'failed');
     assert.equal(c.runtime().taskQueue[0].content, 'keep this body');
+    assert.equal(c.runtime().messages.filter((message) => message.supplementalInput).length, 0);
     assert.equal(c.runtime().isProcessing, true);
     assert.equal(c.runtime().currentStreamId, streamId);
     assert.equal(c.runtime().pendingQuestions, questions);
@@ -462,7 +500,7 @@ test('supplemental ACK and stream termination preserve the original stream, tool
     assert.equal(c.requests().length, 1, 'a receipt cannot dispatch the next queued task');
     c.receive('chat.delta', { request_id: 'original', content: ' after receipt' });
     await c.tick(16);
-    assert.equal(c.runtime().messages.at(-1).content, 'original answer after receipt');
+    assert.equal(c.runtime().messages.find((message) => message.id === c.runtime().currentStreamId).content, 'original answer after receipt');
     assert.equal(c.receipt(id).status, 'accepted');
   } finally {
     await c.dispose();
