@@ -194,6 +194,38 @@ class TestAgentConfigService:
         assert agent.description == "new description"
         assert agent.prompt == "new prompt"
 
+    # ---- create_agent name normalization ----
+
+    @staticmethod
+    def test_create_agent_strips_whitespace_from_name(service, tmp_workspace):
+        params = CreateAgentParams(
+            name=" test-agent ",
+            description="test desc",
+            prompt="test prompt",
+            location="project",
+        )
+        agent = service.create_agent(params)
+        assert agent.name == "test-agent"
+
+        md_file = tmp_workspace / ".jiuwenswarm" / "agents" / "test-agent.md"
+        assert md_file.exists()
+        content = md_file.read_text(encoding="utf-8")
+        assert "name: test-agent" in content
+
+    @staticmethod
+    def test_create_agent_with_whitespace_name_can_be_found(service):
+        params = CreateAgentParams(
+            name=" test-agent ",
+            description="test desc",
+            prompt="test prompt",
+            location="project",
+        )
+        service.create_agent(params)
+
+        found = service.get_agent("test-agent")
+        assert found is not None
+        assert found.name == "test-agent"
+
     # ---- update_agent ----
 
     @staticmethod
@@ -222,6 +254,19 @@ class TestAgentConfigService:
         params = UpdateAgentParams(description="x")
         with pytest.raises(ValueError, match="Agent 不存在"):
             service.update_agent("nonexistent", params)
+
+    @staticmethod
+    def test_update_agent_strips_whitespace_from_name(service, tmp_workspace):
+        agents_dir = tmp_workspace / ".jiuwenswarm" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "my-agent.md").write_text(
+            "---\nname: my-agent\ndescription: original\n---\n\noriginal prompt\n",
+            encoding="utf-8",
+        )
+
+        params = UpdateAgentParams(description="updated")
+        agent = service.update_agent(" my-agent ", params)
+        assert agent.description == "updated"
 
     # ---- delete_agent ----
 
