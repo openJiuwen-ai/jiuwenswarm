@@ -382,6 +382,10 @@ async def test_deep_adapter_global_reload_marks_sessions_stale_without_fanout(mo
     # reload 路径会 await self._instance.ensure_initialized()（interface_deep.py:8307），
     # 裸 MagicMock 的该方法返回不可 await 的对象 → TypeError，故配 AsyncMock。
     parent._instance.ensure_initialized = AsyncMock()
+    # reload → _reconcile_evolution_rails → _ensure_ttse_rail_registered 会
+    # await register_rail；unregister 同理需要可 await。
+    parent._instance.register_rail = AsyncMock()
+    parent._instance.unregister_rail = AsyncMock()
     session_a = FakeAgent()
     session_b = FakeAgent()
     parent._session_adapters = {
@@ -468,6 +472,8 @@ async def _reload_deep_adapter_config_for_test(previous_config, deep_config_fact
     adapter._instance = MagicMock()
     # 同上：reload 路径 await ensure_initialized() 需可 await。
     adapter._instance.ensure_initialized = AsyncMock()
+    adapter._instance.register_rail = AsyncMock()
+    adapter._instance.unregister_rail = AsyncMock()
     adapter._instance._deep_config = previous_config
 
     def _configure(cfg):

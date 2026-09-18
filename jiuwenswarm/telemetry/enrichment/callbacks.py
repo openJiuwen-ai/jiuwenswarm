@@ -392,6 +392,17 @@ class RichTelemetryCallbacks:
         pairs = (
             (LLMCallEvents.LLM_INVOKE_INPUT, self._on_llm_invoke_input, INPUT_PRIORITY),
             (LLMCallEvents.LLM_STREAM_INPUT, self._on_llm_stream_input, INPUT_PRIORITY),
+            # AgentCore(priority=0) 可能在我们之后写入明文 messages；用更高优先级再落实策略。
+            (
+                LLMCallEvents.LLM_INVOKE_INPUT,
+                self._on_llm_input_message_policy,
+                OUTPUT_PRIORITY,
+            ),
+            (
+                LLMCallEvents.LLM_STREAM_INPUT,
+                self._on_llm_input_message_policy,
+                OUTPUT_PRIORITY,
+            ),
             (
                 LLMCallEvents.LLM_STREAM_OUTPUT,
                 self._on_llm_stream_output,
@@ -497,6 +508,15 @@ class RichTelemetryCallbacks:
                 for item in callbacks
             ):
                 return False
+            # LLM 输入另有 OUTPUT_PRIORITY 的 message-policy 回调，覆盖 AgentCore 明文。
+            if event in (
+                LLMCallEvents.LLM_INVOKE_INPUT,
+                LLMCallEvents.LLM_STREAM_INPUT,
+            ) and not any(
+                item["namespace"] == NAMESPACE and item["priority"] == OUTPUT_PRIORITY
+                for item in callbacks
+            ):
+                return False
         return True
 
     async def _on_llm_invoke_input(self, *args: Any, **kwargs: Any) -> None:
@@ -510,6 +530,62 @@ class RichTelemetryCallbacks:
             self._llm_input_payload(args, kwargs),
             streaming=True,
         )
+
+    async def _on_llm_input_message_policy(self, *args: Any, **kwargs: Any) -> None:
+        """AgentCore 写入后再次落实 log_messages / redact_prompts 策略。"""
+        await self._enforce_llm_input_message_policy(
+            self._llm_input_payload(args, kwargs)
+        )
+
+    async def _enforce_llm_input_message_policy(self, kwargs: dict[str, Any]) -> None:
+        warning = "LLM telemetry input message policy failed"
+        span = self._best_effort(warning, get_current_llm_span)
+        if span is None or not span.is_recording():
+            return
+        messages = kwargs.get("messages") or []
+        message_items = self._best_effort(
+            warning,
+            lambda: list(messages),
+            default=[],
+        )
+        if not self._config.log_messages:
+            self._best_effort(
+                warning,
+                lambda: self._clear_attribute(span, GEN_AI_INPUT_MESSAGES),
+            )
+            return
+        serializable_messages: list[Any] | None = message_items
+        if self._config.redact_prompts:
+            serializable_messages = self._best_effort(
+                warning,
+                lambda: [
+                    {"role": message_role(message), "content": "[REDACTED]"}
+                    for message in message_items
+                ],
+            )
+        if serializable_messages is None:
+            return
+        serialized_messages = self._best_effort(
+            warning,
+            lambda: serialize_input_messages(
+                serializable_messages,
+                max_chars=self._config.attribute_value_max_length,
+            ),
+        )
+        if serialized_messages is not None:
+            self._best_effort(
+                warning,
+                lambda: self._set_attribute(
+                    span,
+                    GEN_AI_INPUT_MESSAGES,
+                    serialized_messages,
+                ),
+            )
+        else:
+            self._best_effort(
+                warning,
+                lambda: self._clear_attribute(span, GEN_AI_INPUT_MESSAGES),
+            )
 
     async def _on_llm_stream_output(self, *args: Any, **kwargs: Any) -> Any:
         del args
@@ -703,9 +779,10 @@ class RichTelemetryCallbacks:
                 ),
             )
             if serialized_output is not None:
+                # 覆盖 AgentCore 可能已写入的、不含 reasoning/脱敏的版本。
                 self._best_effort(
                     warning,
-                    lambda: self._set_if_empty(
+                    lambda: self._set_attribute(
                         span,
                         GEN_AI_OUTPUT_MESSAGES,
                         serialized_output,
@@ -718,6 +795,17 @@ class RichTelemetryCallbacks:
                         {"content": serialized_output},
                     ),
                 )
+            else:
+                # 序列化失败时不应保留 AgentCore 预先写入的明文。
+                self._best_effort(
+                    warning,
+                    lambda: self._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES),
+                )
+        else:
+            self._best_effort(
+                warning,
+                lambda: self._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES),
+            )
         finish_reason = self._best_effort(
             warning,
             lambda: self._value(observation, "finish_reason"),
@@ -998,7 +1086,7 @@ class RichTelemetryCallbacks:
                 if arguments is not None:
                     self._best_effort(
                         warning,
-                        lambda: self._set_if_empty(
+                        lambda: self._set_attribute(
                             span,
                             GEN_AI_TOOL_ARGUMENTS,
                             arguments,
@@ -1080,7 +1168,7 @@ class RichTelemetryCallbacks:
                     if result is not None:
                         self._best_effort(
                             warning,
-                            lambda: self._set_if_empty(
+                            lambda: self._set_attribute(
                                 span,
                                 GEN_AI_TOOL_RESULT,
                                 result,
@@ -1417,6 +1505,10 @@ class RichTelemetryCallbacks:
                     ),
                 )
             if not self._config.log_messages:
+                self._best_effort(
+                    warning,
+                    lambda: self._clear_attribute(span, GEN_AI_INPUT_MESSAGES),
+                )
                 return
             serializable_messages: list[Any] | None = message_items
             if self._config.redact_prompts:
@@ -1438,11 +1530,16 @@ class RichTelemetryCallbacks:
                 if serialized_messages is not None:
                     self._best_effort(
                         warning,
-                        lambda: self._set_if_empty(
+                        lambda: self._set_attribute(
                             span,
                             GEN_AI_INPUT_MESSAGES,
                             serialized_messages,
                         ),
+                    )
+                else:
+                    self._best_effort(
+                        warning,
+                        lambda: self._clear_attribute(span, GEN_AI_INPUT_MESSAGES),
                     )
             if tools:
                 tool_definitions = self._best_effort(
@@ -1751,14 +1848,15 @@ class RichTelemetryCallbacks:
         if skill.version:
             self._set_if_empty(span, GEN_AI_SKILL_VERSION, skill.version)
         if skill.loaded:
-            self._set_if_empty(span, GEN_AI_OPERATION_NAME, "load_skill")
+            # AgentCore 可能已写入 execute_tool；技能生命周期需强制覆盖。
+            self._set_attribute(span, GEN_AI_OPERATION_NAME, "load_skill")
             if emit_events:
                 span.add_event(
                     "skill.loaded",
                     {"skill.name": skill.name, "skill.id": skill.skill_id},
                 )
         if skill.released:
-            self._set_if_empty(span, GEN_AI_OPERATION_NAME, "release_skill")
+            self._set_attribute(span, GEN_AI_OPERATION_NAME, "release_skill")
             if emit_events:
                 span.add_event(
                     "skill.released",
@@ -1934,14 +2032,40 @@ class RichTelemetryCallbacks:
         }
 
     @staticmethod
-    def _set_if_empty(span: Span, key: str, value: Any) -> None:
-        existing = span.attributes.get(key) if span.attributes is not None else None
-        if existing not in (None, "", (), []):
-            return
+    def _set_attribute(span: Span, key: str, value: Any) -> None:
+        """强制写入属性（覆盖 AgentCore 已写入的同名键）。"""
         try:
             span.set_attribute(key, value)
         except (TypeError, ValueError):
             return
+
+    @staticmethod
+    def _clear_attribute(span: Span, key: str) -> None:
+        """尽量删除属性；OTel 无公开 API 时回退改私有 _attributes。"""
+        attrs = getattr(span, "_attributes", None)
+        if isinstance(attrs, dict):
+            attrs.pop(key, None)
+            return
+        # BoundedAttributes 等实现：尝试映射删除
+        try:
+            if attrs is not None and hasattr(attrs, "pop"):
+                attrs.pop(key, None)  # type: ignore[call-arg]
+                return
+        except Exception:
+            pass
+        try:
+            raw = getattr(attrs, "_dict", None)
+            if isinstance(raw, dict):
+                raw.pop(key, None)
+        except Exception:
+            return
+
+    @staticmethod
+    def _set_if_empty(span: Span, key: str, value: Any) -> None:
+        existing = span.attributes.get(key) if span.attributes is not None else None
+        if existing not in (None, "", (), []):
+            return
+        RichTelemetryCallbacks._set_attribute(span, key, value)
 
     @staticmethod
     def _mirror_alias(span: Span, primary: str, alias: str) -> None:

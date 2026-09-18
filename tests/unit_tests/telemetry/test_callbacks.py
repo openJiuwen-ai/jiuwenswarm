@@ -255,10 +255,6 @@ async def telemetry_env() -> AsyncIterator[SimpleNamespace]:
         provider.shutdown()
 
 
-    def record(self, name, value, attributes=None):
-        del name, value, attributes
-
-
 @pytest.fixture
 async def unsampled_telemetry_env() -> AsyncIterator[SimpleNamespace]:
     shutdown_observability()
