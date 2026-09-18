@@ -20,6 +20,7 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 from jiuwenswarm.gateway.routing.agent_client import (
@@ -32,6 +33,16 @@ from jiuwenswarm.gateway.routing.agent_rest_map import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    """读进程级环境变量并转 int；非数字/≤0 时回退默认值。"""
+    try:
+        value = int(float(read_env(name, "").strip()))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
 
 _CONNECT_TIMEOUT_SECONDS = 10.0
 _PUSH_RETRY_SECONDS = 3.0
@@ -225,9 +236,11 @@ class HttpSseAgentServerClient(AgentServerClient):
     def _ensure_http(self) -> httpx.AsyncClient:
         if self._http is None:
             link_mtls = self._link_config()
+            max_conns = _env_int("GATEWAY_AGENT_HTTP_MAX_CONNECTIONS", 200)
+            max_keepalive = _env_int("GATEWAY_AGENT_HTTP_MAX_KEEPALIVE", 20)
             self._http = httpx.AsyncClient(
                 timeout=httpx.Timeout(self._timeout_s, connect=_CONNECT_TIMEOUT_SECONDS),
-                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+                limits=httpx.Limits(max_connections=max_conns, max_keepalive_connections=max_keepalive),
                 follow_redirects=False,
                 trust_env=False,
                 **link_mtls.client_kwargs(role="agentserver"),
