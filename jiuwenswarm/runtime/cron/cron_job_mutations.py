@@ -117,7 +117,15 @@ def migrate_work_mode_on_items(jobs_raw: list[Any]) -> tuple[list[Any], bool]:
     return jobs_raw, changed
 
 
-def parse_cron_jobs(jobs_raw: list[Any]) -> list[CronJob]:
+def parse_cron_jobs(jobs_raw: list[Any], *, source: str = "") -> list[CronJob]:
+    """Build jobs from raw records, dropping and reporting the ones that fail.
+
+    ``source`` names where the records came from -- the store file for the
+    local backend, the key prefix for etcd. It is part of the warning because
+    neither store is at a fixed location (the file follows the workspace, the
+    prefix is configurable), so without it the operator is told a record is
+    broken but not which file or key space to open.
+    """
     jobs: list[CronJob] = []
     for item in jobs_raw:
         if not isinstance(item, dict):
@@ -127,10 +135,14 @@ def parse_cron_jobs(jobs_raw: list[Any]) -> list[CronJob]:
         except Exception as exc:  # noqa: BLE001
             # Keep one corrupt entry from disabling the scheduler, but
             # make the rejected job and reason observable to operators.
+            # A missing id is itself one of the rejection reasons, so the id
+            # cannot be relied on to identify the entry and is spelled
+            # ``<missing>`` when it is absent rather than rendered as "".
             logger.warning(
-                "Ignoring invalid cron job id=%s: %s",
-                str(item.get("id") or ""),
+                "Ignoring invalid cron job id=%s: %s%s",
+                str(item.get("id") or "").strip() or "<missing>",
                 exc,
+                f" (in {source})" if source else "",
             )
             continue
     return sort_cron_jobs(jobs)
