@@ -857,6 +857,27 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
+        {/* Token usage summary */}
+        {!isUser && !isStreaming && message.usageSummary && message.usageSummary.total_tokens > 0 && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-text-muted mt-1 mb-0.5" data-testid="chat-panel-message-usage-summary">
+            <span>
+              {message.usageSummary.input_tokens.toLocaleString()} in /{' '}
+              {message.usageSummary.output_tokens.toLocaleString()} out /{' '}
+              {message.usageSummary.total_tokens.toLocaleString()} total
+            </span>
+            {message.usageSummary.total_cost != null && message.usageSummary.total_cost > 0 && (
+              <span>
+                provider-reported{' '}
+                {message.usageSummary.input_cost?.toFixed(4)} in /{' '}
+                {message.usageSummary.output_cost?.toFixed(4)} out /{' '}
+                {message.usageSummary.total_cost.toFixed(4)} total
+                {message.usageSummary.currency ? ` ${message.usageSummary.currency}` : ''}
+              </span>
+            )}
+          </div>
+        )}
+
+
         {!isStreaming && !hideMeta && (
           <div
             data-testid="chat-panel-message-meta"
