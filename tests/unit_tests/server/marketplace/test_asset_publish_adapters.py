@@ -124,6 +124,87 @@ def test_expert_model_and_subagent_validation(tmp_path):
         run(root, "agent_template")
 
 
+def test_agent_group_becomes_hub_expert_team_without_mutating_source(tmp_path):
+    root = package(
+        tmp_path,
+        "agent_group",
+        instruction="Coordinate the team",
+        agents=["leader", "reviewer"],
+        skills=["shared"],
+    )
+    write(
+        root,
+        "agents/leader/manifest.json",
+        {
+            "package_type": "agent_template",
+            "name": "Team Lead",
+            "description": "Leads the work",
+            "persona": {"dir": "."},
+        },
+    )
+    (root / "agents/leader/AGENT.md").write_text("# Lead")
+    write(
+        root,
+        "agents/reviewer/manifest.json",
+        {
+            "package_type": "agent_template",
+            "name": "Reviewer",
+            "description": "Reviews the work",
+            "persona": {"dir": "persona"},
+        },
+    )
+    (root / "agents/reviewer/persona").mkdir()
+    (root / "agents/reviewer/persona/reviewer.md").write_text("# Review")
+    (root / "skills/shared").mkdir(parents=True)
+    (root / "skills/shared/SKILL.md").write_text(
+        "---\nname: shared\ndescription: Shared team skill\n---\n# Shared"
+    )
+
+    result = run(
+        root,
+        "agent_group",
+        {"display_name": "Review Team", "description": "Published team"},
+    )
+
+    manifest = json.loads((root / "manifest.json").read_text())
+    reviewer = json.loads((root / "agents/reviewer/.subagent.json").read_text())
+    assert manifest["package_type"] == "agent_template"
+    assert manifest["name"] == "demo" and manifest["version"] == "1.0.0"
+    assert manifest["display_name"] == "Review Team"
+    assert manifest["persona"] == {"dir": "agents/leader"}
+    assert manifest["subagents"] == [{"dir": "agents/reviewer"}]
+    assert manifest["skills"] == [{"dir": "skills/shared", "mode": "all"}]
+    assert reviewer["agent_name"] == "reviewer"
+    assert reviewer["persona"] == {"dir": "persona"}
+    assert not (root / "agents/leader/manifest.json").exists()
+    assert not (root / "agents/reviewer/manifest.json").exists()
+    assert result["wrapper"] is None
+
+
+def test_agent_group_rejects_windows_absolute_member_reference(tmp_path):
+    root = package(
+        tmp_path,
+        "agent_group",
+        agents=["leader"],
+    )
+    write(
+        root,
+        "agents/leader/manifest.json",
+        {
+            "package_type": "agent_template",
+            "name": "Team Lead",
+            "description": "Leads the work",
+            "persona": {"dir": r"C:\\private"},
+        },
+    )
+
+    with pytest.raises(PublishValidationError) as error:
+        run(root, "agent_group")
+
+    assert error.value.code == "INVALID_REFERENCE"
+    assert error.value.field == "persona.dir"
+
+
 def mcp(tmp_path, server):
     root = package(
         tmp_path,

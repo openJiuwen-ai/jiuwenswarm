@@ -308,6 +308,150 @@ def _skill(root, identity, metadata):
     return {"normalizations": changes, "dependencies": [], "wrapper": wrapper}
 
 
+def _prefixed_reference(prefix: str, value: object, field: str) -> str:
+    text = _text(value, field).replace("\\", "/")
+    relative = Path(text)
+    if relative.is_absolute() or PureWindowsPath(text).drive or ".." in relative.parts:
+        _fail("INVALID_REFERENCE", field, "Reference must stay inside the package")
+    suffix = relative.as_posix()
+    while suffix.startswith("./"):
+        suffix = suffix[2:]
+    return prefix if suffix in {"", "."} else f"{prefix}/{suffix}"
+
+
+def _rebase_expert_references(data: dict, prefix: str) -> dict:
+    rebased = dict(data)
+    for field, reference in (("persona", "dir"), ("model", "file")):
+        value = rebased.get(field)
+        if isinstance(value, dict) and reference in value:
+            rebased[field] = {
+                **value,
+                reference: _prefixed_reference(
+                    prefix, value[reference], f"{field}.{reference}"
+                ),
+            }
+    for field in ("skills", "tools", "rails", "mcps", "memories", "rubrics"):
+        value = rebased.get(field)
+        if not isinstance(value, list):
+            continue
+        entries = []
+        for entry in value:
+            if not isinstance(entry, dict):
+                _fail(field=field, message="Capability declarations must be an array of objects")
+            item = dict(entry)
+            for reference in ("dir", "file"):
+                if reference in item:
+                    item[reference] = _prefixed_reference(
+                        prefix, item[reference], f"{field}.{reference}"
+                    )
+            entries.append(item)
+        rebased[field] = entries
+    return rebased
+
+
+def _agent_group(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
+    """Convert a private AgentGroup snapshot into Hub's AgentTemplate team shape."""
+    group = _json(root / "manifest.json")
+    if group.get("package_type") != "agent_group":
+        _fail(field="package_type", message="Package type does not match the publishing type")
+    old_name = _text(group.get("name"), "name")
+    agents = group.get("agents")
+    if not isinstance(agents, list) or not agents:
+        _fail(field="agents", message="Expert Team requires unique members and a leader")
+    if any(
+        not isinstance(name, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name)
+        for name in agents
+    ):
+        _fail(field="agents", message="Expert Team requires unique members and a leader")
+    if len(set(agents)) != len(agents) or "leader" not in agents:
+        _fail(field="agents", message="Expert Team requires unique members and a leader")
+    instruction = group.get("instruction", "")
+    if not isinstance(instruction, str):
+        _fail(field="instruction", message="Expert Team instruction must be text")
+    shared_skills = group.get("skills", [])
+    if not isinstance(shared_skills, list) or any(
+        not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name)
+        for name in shared_skills
+    ):
+        _fail(field="skills", message="Expert Team skills must be package identifiers")
+
+    member_manifests = {}
+    for agent_name in agents:
+        directory = _path(root, f"agents/{agent_name}", "agents", directory=True)
+        member = _json(_path(directory, "manifest.json", "agents.manifest"))
+        if member.get("package_type") != "agent_template":
+            _fail(field="package_type", message="Every Expert Team member must be an expert")
+        member_manifests[agent_name] = member
+
+    leader_manifest = member_manifests.get("leader")
+    if leader_manifest is None:
+        _fail(field="agents", message="Expert Team requires unique members and a leader")
+    leader = _rebase_expert_references(leader_manifest, "agents/leader")
+    leader.pop("id", None)
+    leader["package_type"] = "agent_template"
+    leader["name"] = identity.package_name
+    leader["version"] = identity.version
+    leader["description"] = (
+        metadata.get("description")
+        or group.get("description")
+        or leader.get("description")
+    )
+    if "display_name" in metadata:
+        leader["display_name"] = metadata["display_name"]
+    if "tags" in metadata:
+        leader["tags"] = metadata["tags"]
+    leader["subagents"] = [{"dir": f"agents/{name}"} for name in agents if name != "leader"]
+    embedded_skills = (
+        list(leader.get("skills", []))
+        if isinstance(leader.get("skills", []), list)
+        else []
+    )
+    embedded_skills.extend(
+        {"dir": f"skills/{name}", "mode": "all"} for name in shared_skills
+    )
+    if embedded_skills:
+        leader["skills"] = embedded_skills
+    if instruction.strip():
+        prompt_sections = leader.get("prompt_sections", [])
+        if not isinstance(prompt_sections, list):
+            _fail(field="prompt_sections")
+        leader["prompt_sections"] = [
+            *prompt_sections,
+            {
+                "name": "agent_group_instruction",
+                "content": {"cn": instruction.strip(), "en": instruction.strip()},
+                "priority": 20,
+            },
+        ]
+
+    for agent_name, member in member_manifests.items():
+        manifest_path = root / "agents" / agent_name / "manifest.json"
+        manifest_path.unlink()
+        if agent_name == "leader":
+            continue
+        child = dict(member)
+        child.pop("package_type", None)
+        display_name = child.pop("name", None)
+        child["agent_name"] = agent_name
+        if isinstance(display_name, str) and display_name:
+            child.setdefault("display_name", display_name)
+        (manifest_path.parent / ".subagent.json").write_text(
+            json.dumps(child, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+    (root / "manifest.json").write_text(
+        json.dumps(leader, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    dependencies = []
+    _expert(root, leader, metadata, dependencies)
+    changes = ["manifest.package_type: agent_group -> agent_template"]
+    if old_name != identity.package_name:
+        changes.append("manifest.name")
+    changes.extend(("manifest.version", "manifest.subagents"))
+    return {"normalizations": changes, "dependencies": dependencies, "wrapper": None}
+
+
 def normalize_and_validate(
     snapshot: Path, identity: PublishIdentity, metadata: dict[str, object]
 ) -> dict[str, object]:
@@ -326,6 +470,8 @@ def normalize_and_validate(
         _fail(field="package_name", message="Publish name must be a machine identifier")
     if identity.kind == "skill":
         return _skill(root, identity, metadata)
+    if identity.kind == "agent_group":
+        return _agent_group(root, identity, metadata)
     if len(list(root.rglob("manifest.json"))) != 1:
         _fail(
             "MULTIPLE_MANIFESTS",

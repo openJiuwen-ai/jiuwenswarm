@@ -45,7 +45,7 @@ export type AgentDetail = AgentCatalogItem & {
   pendingConnectors: string[];
 };
 
-export type AgentGroupSource = 'builtin' | 'local';
+export type AgentGroupSource = 'builtin' | 'local' | 'hub';
 
 export type AgentGroupMember = {
   id: string;

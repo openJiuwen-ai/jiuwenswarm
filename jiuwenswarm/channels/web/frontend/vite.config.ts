@@ -5,7 +5,6 @@ import svgr from 'vite-plugin-svgr'
 import { spawn, spawnSync, type ChildProcess } from 'child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import https from 'node:https'
 import type { ServerResponse } from 'http'
 import path from 'path'
 import fs from 'fs'
@@ -796,94 +795,6 @@ function devFileContentApi(): Plugin {
         shareImageJobs.clear()
       })
 
-      // GitCode API 代理（手动实现，支持 GET/POST）
-      server.middlewares.use('/gitcode-api', (req, res) => {
-        const proxyPath = (req.url || '').replace(/^\/gitcode-api/, '');
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-        req.on('end', () => {
-          const body = Buffer.concat(chunks);
-          const proxyReq = https.request({
-            method: req.method,
-            hostname: 'gitcode.com',
-            path: proxyPath,
-            headers: { ...req.headers, host: 'gitcode.com' },
-          }, (proxyRes) => {
-            res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-            proxyRes.pipe(res);
-          });
-          proxyReq.on('error', (err: Error) => {
-            console.error('[vite] gitcode-api proxy error:', err.message);
-            res.writeHead(502, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message }));
-          });
-          if (body.length > 0) proxyReq.write(body);
-          proxyReq.end();
-        });
-      });
-
-      // GitHub OAuth token 兑换代理 → github.com（支持 GET/POST）
-      // 用于 POST /login/oauth/access_token（code → access_token）
-      server.middlewares.use('/github-oauth', (req, res) => {
-        const proxyPath = (req.url || '').replace(/^\/github-oauth/, '');
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-        req.on('end', () => {
-          const body = Buffer.concat(chunks);
-          const proxyReq = https.request({
-            method: req.method,
-            hostname: 'github.com',
-            path: proxyPath,
-            headers: {
-              ...req.headers,
-              host: 'github.com',
-              accept: 'application/json',
-            },
-          }, (proxyRes) => {
-            res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-            proxyRes.pipe(res);
-          });
-          proxyReq.on('error', (err: Error) => {
-            console.error('[vite] github-oauth proxy error:', err.message);
-            res.writeHead(502, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message }));
-          });
-          if (body.length > 0) proxyReq.write(body);
-          proxyReq.end();
-        });
-      });
-
-      // GitHub API 代理 → api.github.com（支持 GET/POST）
-      // 用于 GET /user（access_token → 用户信息）
-      server.middlewares.use('/github-api', (req, res) => {
-        const proxyPath = (req.url || '').replace(/^\/github-api/, '');
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-        req.on('end', () => {
-          const body = Buffer.concat(chunks);
-          const proxyReq = https.request({
-            method: req.method,
-            hostname: 'api.github.com',
-            path: proxyPath,
-            headers: {
-              ...req.headers,
-              host: 'api.github.com',
-              accept: 'application/json',
-              'user-agent': 'jiuwenswarm-web',
-            },
-          }, (proxyRes) => {
-            res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-            proxyRes.pipe(res);
-          });
-          proxyReq.on('error', (err: Error) => {
-            console.error('[vite] github-api proxy error:', err.message);
-            res.writeHead(502, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message }));
-          });
-          if (body.length > 0) proxyReq.write(body);
-          proxyReq.end();
-        });
-      });
       server.middlewares.use('/share-api/snapshot', (req, res) => {
         const writeJson = (statusCode: number, payload: unknown) => {
           res.statusCode = statusCode
@@ -1514,6 +1425,9 @@ function portFromEnv(name: string, fallback: number): number {
 const frontendPort = portFromEnv('FRONTEND_PORT', 5173)
 const webPort = portFromEnv('WEB_PORT', 19000)
 const webTarget = `http://127.0.0.1:${webPort}`
+// In Vite development, reuse the Python OAuth receiver instead of maintaining
+// a second in-memory handoff implementation.
+const hubOAuthBroker = process.env.JIUWENSWARM_HUB_OAUTH_BROKER_URL
 
 const isElectronBuild = process.env.ELECTRON === 'true'
 
@@ -1538,6 +1452,10 @@ export default defineConfig({
     port: frontendPort,
     strictPort: true,
     proxy: {
+      ...(hubOAuthBroker ? {
+        '/marketplace-oauth/hub': { target: hubOAuthBroker },
+        '/oauth/hub': { target: hubOAuthBroker },
+      } : {}),
       '/api': {
         target: webTarget,
         changeOrigin: true,
