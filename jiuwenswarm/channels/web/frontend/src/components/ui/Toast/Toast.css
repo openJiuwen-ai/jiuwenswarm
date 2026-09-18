@@ -39,6 +39,17 @@
   max-width: min(520px, calc(100vw - 32px));
 }
 
+/* 长文案提示按条加宽（调用方传 wide: true），不影响其他 toast 的默认宽度 */
+.ui-toast--wide {
+  width: min(420px, calc(100vw - 32px));
+}
+
+/* 加宽后仍放不下时换行兜底，保证「请先手动停止」这类操作指引能读完 */
+.ui-toast--wide .ui-toast__content {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 @keyframes ui-toast-rise {
   from {
     opacity: 0;
