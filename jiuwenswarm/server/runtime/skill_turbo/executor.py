@@ -932,8 +932,10 @@ class SkillTurboExecutor:
     def _build_permission_rail(self) -> Any | None:
         """构建 PermissionInterruptRail；权限被禁用或构建失败时返回 None。
 
-        复用 DeepAgent 的 ``build_permission_rail`` 工厂，配置取自
-        ``environment.config['permissions']``，model 句柄取 ``model_client``。
+        复用 DeepAgent 的 ``build_permission_rail`` 工厂。专属 body 取自
+        ``environment.config['permissions']``（Adapter 注入的 yaml
+        ``agents[id]`` / 企业模板）；未注入则回落生效全局段。
+        ``permissions_persist_target_agent_id`` 在 rail 构建时钉住落盘目标。
         """
         try:
             from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
@@ -960,8 +962,22 @@ class SkillTurboExecutor:
             model_name = None
             logger.debug("[SkillTurboExecutor] read model_name failed", exc_info=True)
 
+        perm_body = cfg.get("permissions") if isinstance(cfg.get("permissions"), dict) else None
+        persist_target = cfg.get("permissions_persist_target_agent_id")
+        persist_target_id = (
+            str(persist_target).strip() if persist_target is not None and str(persist_target).strip() else None
+        )
+
         try:
-            return build_permission_rail(cfg, llm=model, model_name=model_name)
+            return build_permission_rail(
+                cfg,
+                llm=model,
+                model_name=model_name,
+                permission_config=perm_body,
+                persist_target_agent_id_provider=(
+                    (lambda: persist_target_id) if persist_target_id else None
+                ),
+            )
         except Exception as exc:
             logger.warning(
                 "[SkillTurboExecutor] build_permission_rail failed: %s", exc

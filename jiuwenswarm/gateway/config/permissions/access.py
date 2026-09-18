@@ -174,31 +174,59 @@ async def delete_permissions_approval_override_in_config(override_id: str) -> bo
 
 
 async def get_permissions_body_in_config() -> dict[str, Any]:
-    """读取整段 ``permissions`` body。"""
+    """读取全局 ``permissions`` body（剥掉保留键 ``agents``）。"""
+    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+        strip_permissions_agents,
+    )
+
     repo = get_permissions_config_repository()
     if repo is None:
         from jiuwenswarm.common.config import get_config
 
         raw = (get_config() or {}).get("permissions")
-        return dict(raw) if isinstance(raw, dict) else {}
-    return await repo.get_body()
+        return strip_permissions_agents(raw if isinstance(raw, dict) else {})
+    body = await repo.get_body()
+    return strip_permissions_agents(body if isinstance(body, dict) else {})
 
 
 async def replace_permissions_in_config(body: dict[str, Any]) -> None:
-    """整段替换 ``permissions``（EE Manager upsert 语义）。"""
+    """整段替换 ``permissions`` 全局字段，保留已有 ``agents`` 表。"""
     if not isinstance(body, dict):
         raise ValueError("permissions body must be an object")
+    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+        PERMISSIONS_AGENTS_KEY,
+        strip_permissions_agents,
+    )
+    from jiuwenswarm.edition import is_enterprise
+
+    incoming = strip_permissions_agents(body)
     repo = get_permissions_config_repository()
     if repo is None:
         from jiuwenswarm.common.config import update_config
 
         def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-            data["permissions"] = dict(body)
+            existing = data.get("permissions")
+            agents_table = None
+            if (
+                not is_enterprise()
+                and isinstance(existing, dict)
+                and isinstance(existing.get(PERMISSIONS_AGENTS_KEY), dict)
+            ):
+                agents_table = existing[PERMISSIONS_AGENTS_KEY]
+            stored = dict(incoming)
+            if agents_table is not None:
+                stored[PERMISSIONS_AGENTS_KEY] = agents_table
+            data["permissions"] = stored
             return data
 
         update_config(_mutate)
         return
-    await repo.replace(body)
+
+    if not is_enterprise():
+        existing = await repo.get_body()
+        if isinstance(existing, dict) and isinstance(existing.get(PERMISSIONS_AGENTS_KEY), dict):
+            incoming[PERMISSIONS_AGENTS_KEY] = existing[PERMISSIONS_AGENTS_KEY]
+    await repo.replace(incoming)
 
 
 async def delete_permissions_in_config() -> bool:

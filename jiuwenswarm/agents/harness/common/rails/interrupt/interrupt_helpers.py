@@ -418,6 +418,7 @@ def build_permission_rail(
     model_name: str | None = None,
     permission_config: dict[str, Any] | None = None,
     resolve_workspace_dir: Any | None = None,
+    persist_target_agent_id_provider: Any | None = None,
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
@@ -425,10 +426,14 @@ def build_permission_rail(
         config: Agent config dict containing permissions section
         llm: LLM instance for risk assessment
         model_name: Model name for risk assessment
-        permission_config: Optional Agent-level permissions body (enterprise template).
-            When omitted, falls back to effective/global permissions config.
+        permission_config: Optional Agent-level permissions body (enterprise template
+            or standard yaml ``agents[id]``). When omitted, falls back to
+            effective/global permissions config.
         resolve_workspace_dir: Optional workspace root resolver for file_guard.
             Defaults to process-level ``get_workspace_dir``.
+        persist_target_agent_id_provider: Callable returning the yaml ``agents``
+            persist target (agent_id or None). Captured at rail build; read on
+            each persist so Adapter can refresh after yaml 命中变化.
 
     Returns:
         PermissionInterruptRail instance or None if disabled
@@ -515,47 +520,37 @@ def build_permission_rail(
 
             openjiuwen PermissionInterruptRail calls this when user selects "always allow".
 
-            Instead of replacing the entire ``permissions`` section with the
-            in-memory snapshot (which may contain stale entries that were
-            already deleted from config.yaml), we first re-read the current
-            on-disk permissions, then merge only the *approval_overrides*、
-            *file_guard*（及过渡期 *external_directory*）deltas from
-            ``permissions`` into it.
-            This prevents re-creating tool-level entries (e.g. ``bash: ask``)
-            that the user has already removed via the webui.
+            Mutate only approval_overrides / file_guard / external_directory on the
+            persist target body (yaml ``agents[id]`` when hit, else global). Do not
+            replace the entire on-disk section — that would recreate deleted tools
+            or drop the ``agents`` table.
             """
             try:
                 from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-                    get_base_permissions_config,
                     persist_permissions_mutate,
                 )
-                from jiuwenswarm.common.config import _load_yaml_round_trip
 
-                yaml_path = get_config_file()
-                data = _load_yaml_round_trip(yaml_path)
-                if not isinstance(data, dict):
-                    data = {}
-
-                on_disk_perms = data.get("permissions")
-                if not isinstance(on_disk_perms, dict):
-                    on_disk_perms = get_base_permissions_config() if is_enterprise() else {}
-
-                merged = dict(on_disk_perms)
-                overrides_new = permissions.get("approval_overrides")
-                if overrides_new is not None:
-                    merged["approval_overrides"] = overrides_new
-                fg_new = permissions.get("file_guard")
-                if fg_new is not None:
-                    merged["file_guard"] = fg_new
-                ext_dir_new = permissions.get("external_directory")
-                if ext_dir_new is not None:
-                    merged["external_directory"] = ext_dir_new
+                persist_target = None
+                if callable(persist_target_agent_id_provider):
+                    persist_target = persist_target_agent_id_provider()
 
                 def mutate(perms: dict[str, Any]) -> None:
-                    perms.clear()
-                    perms.update(copy.deepcopy(merged))
+                    overrides_new = permissions.get("approval_overrides")
+                    if overrides_new is not None:
+                        perms["approval_overrides"] = copy.deepcopy(overrides_new)
+                    fg_new = permissions.get("file_guard")
+                    if fg_new is not None:
+                        perms["file_guard"] = copy.deepcopy(fg_new)
+                    ext_dir_new = permissions.get("external_directory")
+                    if ext_dir_new is not None:
+                        perms["external_directory"] = copy.deepcopy(ext_dir_new)
 
-                persist_permissions_mutate(mutate)
+                persist_permissions_mutate(
+                    mutate,
+                    persist_scope="base",
+                    persist_target_agent_id=persist_target,
+                    source="persist_allow_rule",
+                )
                 return True
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
@@ -745,9 +740,8 @@ def build_permission_rail(
             if not principal_user_id or not channel_id:
                 return None
 
-            perm_cfg = get_config()
-            perm_all = perm_cfg.get("permissions") if isinstance(perm_cfg, dict) else {}
-            owner_scopes = perm_all.get("owner_scopes") if isinstance(perm_all, dict) else None
+            perm_cfg = get_effective_permissions_config()
+            owner_scopes = perm_cfg.get("owner_scopes") if isinstance(perm_cfg, dict) else None
             if not isinstance(owner_scopes, dict) or not owner_scopes:
                 return None
 
@@ -771,7 +765,7 @@ def build_permission_rail(
             # 会回落 yaml（常为 enabled:false）并覆盖模板配置。
             # 返回 None → 使用 _static_config（请求开头 _update_permission_rail
             # 与 persist 的 update_config 会刷新它）。
-            if is_enterprise() and config_source == "agent_template":
+            if config_source == "agent_template":
                 return None
             return get_effective_permissions_config()
 

@@ -328,6 +328,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
     reset_permissions_agent_base,
     reset_permissions_session_scope,
     resolve_permissions_body_from_enterprise,
+    resolve_yaml_agent_permissions_body,
     setup_permissions_agent_base,
     setup_permissions_session_scope,
 )
@@ -2352,6 +2353,7 @@ class JiuWenSwarmDeepAdapter:
         self._ask_user_rail: StructuredAskUserRail | None = None
         self._permission_rail: Any = None
         self._agent_permissions_body: dict[str, Any] | None = None
+        self._permissions_persist_agent_id: str | None = None
         self._skill_active_state_rail: SkillActiveStateRail | None = None
         self._skill_credential_injection_rail: SkillCredentialInjectionRail | None = None
         self._avatar_rail: Any = None
@@ -5486,6 +5488,7 @@ class JiuWenSwarmDeepAdapter:
             self._enterprise_resource_id_from_request(request) or None
         )
         self._agent_permissions_body = resolve_permissions_body_from_enterprise(loaded)
+        self._permissions_persist_agent_id = None
         if loaded is not None and self._skill_manager is not None:
             try:
                 await self._skill_manager.apply_skill_source_configs(
@@ -9459,6 +9462,7 @@ class JiuWenSwarmDeepAdapter:
                 else "gpt-4",
                 permission_config=self._agent_permissions_body,
                 resolve_workspace_dir=self._permission_workspace_dir,
+                persist_target_agent_id_provider=self._permissions_persist_target,
             )
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
@@ -9548,7 +9552,45 @@ class JiuWenSwarmDeepAdapter:
             model_name=model_name,
             permission_config=self._agent_permissions_body,
             resolve_workspace_dir=self._permission_workspace_dir,
+            persist_target_agent_id_provider=self._permissions_persist_target,
         )
+
+    def _permissions_persist_target(self) -> str | None:
+        return getattr(self, "_permissions_persist_agent_id", None)
+
+    def _lookup_permissions_agent_id(self, request: Any | None = None) -> str | None:
+        """标准版 permissions 查找键：request.agent_id（进池后的 extract_ids）或 Manager id。"""
+        if request is not None:
+            try:
+                from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+
+                agent_id, _service_id, _workspace_key = TenantAgentPool.extract_ids(request)
+                if agent_id:
+                    return str(agent_id).strip() or None
+            except Exception:  # noqa: BLE001
+                raw = getattr(request, "agent_id", None)
+                if raw is not None and str(raw).strip():
+                    return str(raw).strip()
+        env_id = getattr(self, "_env_agent_id", None)
+        if env_id is not None and str(env_id).strip():
+            return str(env_id).strip()
+        aid = getattr(self, "_agent_id", None)
+        if aid is not None and str(aid).strip():
+            return str(aid).strip()
+        return "default"
+
+    def _refresh_standard_agent_permissions_body(self, request: Any | None = None) -> None:
+        """标准版：按 agent_id 绑定 yaml ``permissions.agents[id]``；未命中清空 Agent base。"""
+        if is_enterprise():
+            return
+        agent_id = self._lookup_permissions_agent_id(request)
+        body = resolve_yaml_agent_permissions_body(agent_id)
+        if body is not None:
+            self._agent_permissions_body = body
+            self._permissions_persist_agent_id = agent_id
+            return
+        self._agent_permissions_body = None
+        self._permissions_persist_agent_id = None
 
     def _bind_agent_permissions_base(self) -> Any:
         """将 Agent 模板 permissions body 绑定到当前 Task（供 snapshot/生效读路径）。"""
@@ -10192,6 +10234,8 @@ class JiuWenSwarmDeepAdapter:
             bootstrap_request = self._instance_overrides.pop("request", None)
             if bootstrap_request is not None and is_enterprise():
                 await self._load_enterprise_config(bootstrap_request)
+            if not is_enterprise():
+                self._refresh_standard_agent_permissions_body(bootstrap_request)
             config_base = merge_memory_config_into_config(config_base)
             config_base = self._merge_enterprise_models_into_config(config_base)
             # 与模型槽位一致：Agent 级 permissions 模板在构建 rail 前绑定到 Task
@@ -12254,7 +12298,7 @@ class JiuWenSwarmDeepAdapter:
 
         fallback_handler = self._create_skill_turbo_fallback_handler()
 
-        return {
+        cfg: dict[str, Any] = {
             "skill_codes_dir": "jiuwenswarm.server.runtime.skill_turbo.skill_codes",
             "tool_cards": tool_cards,
             "model_client": self._model,
@@ -12267,6 +12311,13 @@ class JiuWenSwarmDeepAdapter:
             "image_gen_enabled": bool(self._image_gen_model_config),
             "sys_operation": self._sys_operation,
         }
+        body = getattr(self, "_agent_permissions_body", None)
+        if isinstance(body, dict):
+            cfg["permissions"] = copy.deepcopy(body)
+            persist_target = getattr(self, "_permissions_persist_agent_id", None)
+            if persist_target:
+                cfg["permissions_persist_target_agent_id"] = str(persist_target)
+        return cfg
 
     def _create_skill_turbo_fallback_handler(self) -> Any:
         """创建 SkillTurbo 节点级 fallback handler。"""
@@ -17748,6 +17799,8 @@ class JiuWenSwarmDeepAdapter:
             token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
             token_perm = setup_permission_context(request)
             token_perm_sid = setup_permissions_session_scope(session_id)
+            if not is_enterprise():
+                self._refresh_standard_agent_permissions_body(request)
             token_perm_agent = self._bind_agent_permissions_base()
             try:
                 self._update_permission_rail(
@@ -18817,6 +18870,8 @@ class JiuWenSwarmDeepAdapter:
             token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
             token_perm = setup_permission_context(request)
             token_perm_sid = setup_permissions_session_scope(session_id)
+            if not is_enterprise():
+                self._refresh_standard_agent_permissions_body(request)
             token_perm_agent = self._bind_agent_permissions_base()
             try:
                 self._update_permission_rail(
