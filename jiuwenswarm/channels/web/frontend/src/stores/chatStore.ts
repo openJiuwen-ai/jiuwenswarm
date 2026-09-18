@@ -64,10 +64,26 @@ function resolveExecutionStatus(result: ToolResult): ToolExecutionStatus {
   return result.success ? 'completed' : 'error';
 }
 
+type TaskInputStatus = 'queued' | 'sending' | 'failed' | 'unknown';
+
+export interface TaskInputReceipt {
+  taskId: string;
+  content: string;
+  requestId?: string;
+  status: 'sending' | 'accepted' | 'failed' | 'unknown';
+  error?: string;
+  errorCode?: string;
+  /** Stable UI anchor for the execution receiving this input, independent of subsequent turns. */
+  anchorMessageId?: string;
+}
+
 interface TaskItem {
   id: string;
   content: string;
   timestamp: number;
+  status: TaskInputStatus;
+  requestId?: string;
+  error?: string;
   /** Persisted attachments (images/documents, incl. PDF); dispatched with the message when the queued task is sent */
   mediaItems?: MediaItem[];
 }
@@ -104,6 +120,7 @@ export interface ReasoningSegment {
 export interface ChatRuntime {
   messages: Message[];
   isProcessing: boolean;
+  activeExecutionId: string | null;
   executionError: string | null;
   isThinking: boolean;
   isLoadingHistory: boolean;
@@ -135,6 +152,10 @@ export interface ChatRuntime {
     toolResultDedupDropped: number;
   };
   taskQueue: TaskItem[];
+  /** Keep request ownership even after a receipt is dismissed, to isolate late ACK/errors. */
+  taskInputRequests: Record<string, { taskId: string; content: string }>;
+  /** Message-level feedback survives removal from the executable queue. */
+  taskInputReceipts: Record<string, TaskInputReceipt>;
   queuePaused: boolean;
   pendingQuestions: AskUserQuestionPayload[];
   /**
@@ -153,6 +174,7 @@ function createEmptyRuntime(): ChatRuntime {
   return {
     messages: [],
     isProcessing: false,
+    activeExecutionId: null,
     executionError: null,
     isThinking: false,
     isLoadingHistory: false,
@@ -181,6 +203,8 @@ function createEmptyRuntime(): ChatRuntime {
       toolResultDedupDropped: 0,
     },
     taskQueue: [],
+    taskInputRequests: {},
+    taskInputReceipts: {},
     queuePaused: false,
     pendingQuestions: [],
     pendingGoalObjectiveBubble: null as ChatRuntime['pendingGoalObjectiveBubble'],
@@ -260,6 +284,7 @@ interface ChatState {
   bumpThinkingAnchor: (sessionId: string) => void;
   setExecutionError: (sessionId: string, error: string | null) => void;
   setProcessing: (sessionId: string, status: boolean) => void;
+  setActiveExecutionId: (sessionId: string, executionId: string) => void;
   setThinking: (sessionId: string, status: boolean) => void;
   setLoadingHistory: (sessionId: string, status: boolean) => void;
   setHistoryPagerMeta: (sessionId: string, meta: HistoryPagerMeta | null) => void;
@@ -289,6 +314,17 @@ interface ChatState {
   clearCurrentTurnData: (sessionId: string, requestId?: string) => void;
   prependMessages: (sessionId: string, olderFirst: Message[]) => void;
   addToTaskQueue: (sessionId: string, content: string, mediaItems?: MediaItem[]) => void;
+  claimQueuedTask: (sessionId: string, taskId?: string) => TaskItem | undefined;
+  claimTaskInput: (sessionId: string, taskId: string) => TaskItem | undefined;
+  bindTaskInputRequest: (sessionId: string, taskId: string, requestId: string) => void;
+  settleTaskInput: (
+    sessionId: string,
+    taskId: string,
+    requestId: string | undefined,
+    status: 'accepted' | 'failed' | 'unknown',
+    error?: string,
+    errorCode?: string,
+  ) => void;
   clearTaskQueue: (sessionId: string) => void;
   removeFromTaskQueue: (sessionId: string, id: string) => void;
   reorderTaskQueue: (sessionId: string, fromIndex: number, toIndex: number) => void;
@@ -787,6 +823,16 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
+  setActiveExecutionId: (sessionId, executionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.activeExecutionId === executionId) return state;
+      return {
+        runtimes: { ...state.runtimes, [sessionId]: { ...runtime, activeExecutionId: executionId } },
+      };
+    });
+  },
+
   setProcessing: (sessionId, status) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -799,6 +845,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             isProcessing: status,
+            ...(!status ? { activeExecutionId: null } : {}),
             executionError: status ? null : runtime.executionError,
             ...(status ? { error: null } : {}),
             ...(turnStart ? { thinkingAnchorAt: Date.now() } : {}),
@@ -1456,6 +1503,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolResultDedupDropped: 0,
             },
             taskQueue: [],
+            taskInputReceipts: {},
             pendingQuestions: [],
             pendingGoalObjectiveBubble: null,
           },
@@ -1479,9 +1527,139 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
                 id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
                 content,
                 timestamp: Date.now(),
+                status: 'queued',
                 ...(mediaItems && mediaItems.length > 0 ? { mediaItems } : {}),
               },
             ],
+          },
+        },
+      };
+    });
+  },
+
+  claimQueuedTask: (sessionId, taskId) => {
+    let claimed: TaskItem | undefined;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (
+        !runtime ||
+        runtime.isProcessing ||
+        runtime.isPaused ||
+        runtime.pendingQuestions.length ||
+        runtime.taskQueue.some((task) => task.status === 'sending')
+      )
+        return state;
+      const task = runtime.taskQueue.find((item) =>
+        taskId ? item.id === taskId && ['queued', 'failed'].includes(item.status) : item.status === 'queued',
+      );
+      if (!task) return state;
+      claimed = task;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            taskQueue: runtime.taskQueue.filter((item) => item.id !== task.id),
+          },
+        },
+      };
+    });
+    return claimed;
+  },
+
+  claimTaskInput: (sessionId, taskId) => {
+    let claimed: TaskItem | undefined;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (
+        !runtime?.isProcessing ||
+        runtime.isPaused ||
+        runtime.isLoadingHistory ||
+        runtime.switchingMode ||
+        runtime.pendingQuestions.length
+      )
+        return state;
+      const task = runtime.taskQueue.find((item) => item.id === taskId);
+      if (!task || !['queued', 'failed'].includes(task.status) || !task.content.trim() || task.mediaItems?.length)
+        return state;
+      claimed = task;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            taskQueue: runtime.taskQueue.map((item) =>
+              item.id === taskId ? { ...item, status: 'sending', requestId: undefined, error: undefined } : item,
+            ),
+            taskInputReceipts: {
+              ...runtime.taskInputReceipts,
+              [taskId]: {
+                taskId,
+                content: task.content,
+                status: 'sending',
+                anchorMessageId:
+                  runtime.messages.slice().reverse().find((message) => message.role === 'user')?.id ??
+                  runtime.currentStreamId ??
+                  undefined,
+              },
+            },
+          },
+        },
+      };
+    });
+    return claimed;
+  },
+
+  bindTaskInputRequest: (sessionId, taskId, requestId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      const receipt = runtime?.taskInputReceipts[taskId];
+      if (!runtime || !receipt || receipt.status !== 'sending') return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            taskInputRequests: {
+              ...runtime.taskInputRequests,
+              [requestId]: {
+                taskId,
+                content: runtime.taskQueue.find((task) => task.id === taskId)?.content ?? '',
+              },
+            },
+            taskQueue: runtime.taskQueue.map((task) =>
+              task.id === taskId && task.status === 'sending' ? { ...task, requestId } : task,
+            ),
+            taskInputReceipts: {
+              ...runtime.taskInputReceipts,
+              [taskId]: { ...receipt, requestId },
+            },
+          },
+        },
+      };
+    });
+  },
+
+  settleTaskInput: (sessionId, taskId, requestId, status, error, errorCode) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      const receipt = runtime?.taskInputReceipts[taskId];
+      // Late responses can settle unknown delivery, but cannot affect an accepted or retried item.
+      if (!runtime || !receipt || receipt.requestId !== requestId || !['sending', 'unknown'].includes(receipt.status))
+        return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            taskQueue:
+              status === 'accepted'
+                ? runtime.taskQueue.filter((item) => item.id !== taskId)
+                : runtime.taskQueue.map((item) => (item.id === taskId ? { ...item, status, error } : item)),
+            taskInputReceipts: {
+              ...runtime.taskInputReceipts,
+              [taskId]: { ...receipt, status, error, errorCode },
+            },
           },
         },
       };
@@ -1495,7 +1673,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, taskQueue: [], queuePaused: false },
+          [sessionId]: {
+            ...runtime,
+            taskQueue: runtime.taskQueue.filter((task) => ['sending', 'unknown'].includes(task.status)),
+            queuePaused: false,
+          },
         },
       };
     });
@@ -1510,7 +1692,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
-            taskQueue: runtime.taskQueue.filter((task) => task.id !== id),
+            taskQueue: runtime.taskQueue.filter((task) => task.id !== id || task.status === 'sending'),
           },
         },
       };

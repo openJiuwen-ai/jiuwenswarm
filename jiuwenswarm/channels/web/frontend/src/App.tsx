@@ -1024,6 +1024,7 @@ function AppContent({
     persistMedia,
     persistDocuments,
     sendMessage,
+    steerQueuedTask,
     sendStructuredChatContent,
     pause,
     cancel,
@@ -3734,6 +3735,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     chat={(
                       <ChatPanel
                         onSendMessage={handleSendMessage}
+                        onSteerTask={steerQueuedTask}
                         onEnsureSession={ensureApplicationPluginSession}
                         onNewSession={handleNewSession}
                         onForkSession={handleForkSession}

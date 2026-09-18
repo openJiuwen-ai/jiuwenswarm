@@ -14,6 +14,7 @@ import { useTranslation } from 'react-i18next';
 import { Message, ToolExecution } from '../../types';
 import { MessageItem } from './MessageItem';
 import { ToolGroupDisplay } from './ToolGroupDisplay';
+import { TaskInputFeedback } from './TaskInputFeedback';
 import { useNow, formatDurationPrecise } from './chatTimelineClock';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import WaitingStatusIcon from '../../assets/work-mode/status-waiting.svg?react';
@@ -21,7 +22,7 @@ import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import type { TeamLeaderIdentity } from '../../features/teamLeaderIdentity';
-import type { ReasoningSegment } from '../../stores/chatStore';
+import type { ReasoningSegment, TaskInputReceipt } from '../../stores/chatStore';
 import {
   filterPublishedHistoryBatch,
   shiftBoundedTimelineRange,
@@ -296,6 +297,7 @@ export function TurnElapsed({
   teamLayout,
   teamLeaderIdentity,
   teamGroupIdentity,
+  feedback,
 }: {
   startMs: number;
   endMs: number;
@@ -306,6 +308,7 @@ export function TurnElapsed({
   teamLayout: boolean;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  feedback?: ReactNode;
 }) {
   const { t } = useTranslation();
   const active = isLastTurn && isProcessing;
@@ -320,7 +323,7 @@ export function TurnElapsed({
         : Math.max(0, endMs - startMs)
       : rawElapsed;
   const showActive = active && rawElapsed <= MAX_PLAUSIBLE_TURN_MS;
-  if (!showActive && elapsed <= 0) {
+  if (!showActive && elapsed <= 0 && !feedback) {
     return null;
   }
   // 不带头像的独立时间行（如成员消息轮次）：team 模式下与 920px 栅格对齐。
@@ -339,6 +342,7 @@ export function TurnElapsed({
       <span className="turn-elapsed__value" data-testid="chat-panel-turn-elapsed-value">
         {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
       </span>
+      {feedback}
     </div>
   );
   if (!showAvatar) {
@@ -372,6 +376,7 @@ function CompletedWorkChip({
   agentTemplateName,
   teamLeaderIdentity,
   teamGroupIdentity,
+  feedback,
 }: {
   variant: 'turn' | 'streak';
   thinkingCount?: number;
@@ -385,6 +390,7 @@ function CompletedWorkChip({
   agentTemplateName?: string;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  feedback?: ReactNode;
 }) {
   const { t } = useTranslation();
   // 耗时并入 turn 折叠条文案（原底部 TurnElapsed 已移除），位置唯一不再打架。
@@ -427,6 +433,7 @@ function CompletedWorkChip({
           <path strokeLinecap="round" strokeLinejoin="round" d="m8 6 4 4-4 4" />
         </svg>
       </span>
+      {feedback}
     </button>
   );
 
@@ -477,6 +484,7 @@ function ReasoningSegmentBlock({
   teamLayout,
   teamLeaderIdentity,
   teamGroupIdentity,
+  feedback,
 }: {
   segment: ReasoningSegment;
   agentTemplateName?: string;
@@ -484,6 +492,7 @@ function ReasoningSegmentBlock({
   teamLayout: boolean;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
+  feedback?: ReactNode;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(!segment.closed);
@@ -555,6 +564,7 @@ function ReasoningSegmentBlock({
               <path strokeLinecap="round" strokeLinejoin="round" d="m8 6 4 4-4 4" />
             </svg>
           </span>
+          {feedback}
         </span>
       </button>
       <div className={clsx('reasoning-panel__collapse', open && 'is-open')}>
@@ -687,6 +697,36 @@ export function ChatTimelineList({
     () => deriveTimelineItems(derivationInput),
     [derivationInput]
   );
+  const inputReceipts = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.taskInputReceipts);
+  const receiptsByTurn = useMemo(() => {
+    const grouped = new Map<number, TaskInputReceipt[]>();
+    if (staticTimeline || isTeamMode) return grouped;
+    const anchorTurns = new Map<string, number>();
+    let userMessageId: string | undefined;
+    for (const item of renderItems) {
+      if (item.type === 'message' && item.message.role === 'user') {
+        userMessageId = item.message.id;
+      } else if (item.turnId >= 0) {
+        if (userMessageId && !anchorTurns.has(userMessageId)) anchorTurns.set(userMessageId, item.turnId);
+        if (item.type === 'message') anchorTurns.set(item.message.id, item.turnId);
+      }
+    }
+    for (const receipt of Object.values(inputReceipts ?? {})) {
+      const turnId = receipt.anchorMessageId ? anchorTurns.get(receipt.anchorMessageId) : undefined;
+      if (turnId === undefined) continue;
+      const items = grouped.get(turnId) ?? [];
+      items.push(receipt);
+      grouped.set(turnId, items);
+    }
+    return grouped;
+  }, [inputReceipts, renderItems, staticTimeline, isTeamMode]);
+  const lastReasoningKeyByTurn = useMemo(() => {
+    const keys = new Map<number, string>();
+    for (const item of renderItems) {
+      if (item.type === 'reasoning' && item.segment.text.trim()) keys.set(item.turnId, item.key);
+    }
+    return keys;
+  }, [renderItems]);
   const agentTemplateNameByTurn = useMemo(() => {
     const names = new Map<number, string>();
     for (const item of renderItems) {
@@ -709,8 +749,10 @@ export function ChatTimelineList({
     const initial = initialAdmission(renderItems, timelineScope);
     return new Map([[timelineScope, initial]]);
   });
-  const admission = admissionByScope.get(timelineScope)
-    ?? { scope: timelineScope, firstKey: '', lastKey: null };
+  const admission = useMemo(
+    () => admissionByScope.get(timelineScope) ?? { scope: timelineScope, firstKey: '', lastKey: null },
+    [admissionByScope, timelineScope],
+  );
   const resolvedAdmission = useMemo(
     () => resolveTimelineAdmission(renderItems, timelineScope, admission, virtualized),
     [admission, renderItems, timelineScope, virtualized],
@@ -1164,6 +1206,9 @@ export function ChatTimelineList({
         }
 
         if (item.type === 'reasoning' || item.type === 'toolGroup') {
+          const reasoningKey = lastReasoningKeyByTurn.get(item.turnId);
+          const receipts = receiptsByTurn.get(item.turnId);
+          const feedback = receipts ? <TaskInputFeedback receipts={receipts} /> : undefined;
           const turnKey = stableTurnKeyById.get(item.turnId) ?? item.key;
           const meta = turnWorkMeta.get(item.turnId);
           const turnFoldable = Boolean(meta?.completed && meta.hasWork);
@@ -1199,6 +1244,7 @@ export function ChatTimelineList({
                 agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
                 teamLeaderIdentity={teamLeaderIdentity}
                 teamGroupIdentity={teamGroupIdentity}
+                feedback={!turnOpen || !reasoningKey ? feedback : undefined}
               />
             );
           }
@@ -1222,6 +1268,7 @@ export function ChatTimelineList({
                 agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
                 teamLeaderIdentity={teamLeaderIdentity}
                 teamGroupIdentity={teamGroupIdentity}
+                feedback={!streakOpen && reasoningKey && streak.keys.has(reasoningKey) ? feedback : undefined}
               />
             );
           }
@@ -1258,6 +1305,7 @@ export function ChatTimelineList({
             item.type === 'reasoning' ? (
               <ReasoningSegmentBlock
                 segment={item.segment}
+                feedback={contentOpen && item.key === reasoningKey ? feedback : undefined}
                 agentTemplateName={item.segment.agentTemplateName ?? agentTemplateNameByTurn.get(item.turnId)}
                 showAvatar={hideAvatar ? false : item.showAvatar}
                 teamLayout={isTeamMode}
@@ -1321,6 +1369,11 @@ export function ChatTimelineList({
               teamLayout={isTeamMode}
               teamLeaderIdentity={teamLeaderIdentity}
               teamGroupIdentity={teamGroupIdentity}
+              feedback={
+                !lastReasoningKeyByTurn.has(item.turnId) && receiptsByTurn.has(item.turnId) ? (
+                  <TaskInputFeedback receipts={receiptsByTurn.get(item.turnId)!} />
+                ) : undefined
+              }
             />
           );
         }

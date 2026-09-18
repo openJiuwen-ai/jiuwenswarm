@@ -97,6 +97,7 @@ export interface ChatHistoryPagerProps {
 
 interface ChatPanelProps {
   onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
+  onSteerTask?: (sessionId: string, taskId: string) => Promise<void>;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
   onNewSession: () => void;
   onForkSession: (
@@ -255,12 +256,14 @@ function ActiveTeamGroupEntry({
 }
 
 /** 单 Agent 模式的消息队列卡片，展示在输入框上方 */
-function AgentActivityCard({
+export function AgentActivityCard({
   isProcessing: _isProcessing,
   onSendTask,
+  onSteerTask,
 }: {
   isProcessing: boolean;
   onSendTask?: (content: string, mediaItems?: MediaItem[]) => void;
+  onSteerTask?: (sessionId: string, taskId: string) => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -309,10 +312,8 @@ function AgentActivityCard({
     if (!sid) return;
     setQueuePaused(sid, false);
     // 触发下一条队列任务
-    const runtime = useChatStore.getState().getRuntime(sid);
-    const nextTask = runtime?.taskQueue[0];
+    const nextTask = onSendTask && useChatStore.getState().claimQueuedTask(sid);
     if (nextTask) {
-      removeFromTaskQueue(sid, nextTask.id);
       onSendTask?.(nextTask.content, nextTask.mediaItems);
     }
   };
@@ -329,6 +330,8 @@ function AgentActivityCard({
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
     if (sid) {
+      const task = useChatStore.getState().getRuntime(sid)?.taskQueue.find((item) => item.id === taskId);
+      if (!task || task.status === 'sending') return;
       // Editing restores only the text into the input; attachments cannot follow
       // and will be removed together with the task — confirm first.
       if (mediaItemCount > 0 && !window.confirm(t('chat.editTaskDropAttachments', { count: mediaItemCount }))) {
@@ -340,13 +343,16 @@ function AgentActivityCard({
     }
   };
 
-  const handleSendTask = (e: React.MouseEvent, taskId: string, content: string, mediaItems?: MediaItem[]) => {
+  const handleSendTask = (e: React.MouseEvent, taskId: string, _content: string, _mediaItems?: MediaItem[]) => {
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
-    if (sid) {
-      removeFromTaskQueue(sid, taskId);
+    if (!sid) return;
+    if (useChatStore.getState().getRuntime(sid)?.isProcessing) {
+      void onSteerTask?.(sid, taskId);
+    } else if (onSendTask) {
+      const task = useChatStore.getState().claimQueuedTask(sid, taskId);
+      if (task) onSendTask(task.content, task.mediaItems);
     }
-    onSendTask?.(content, mediaItems);
   };
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
@@ -958,6 +964,7 @@ function BeeBanner({
  */
 export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
+  onSteerTask,
   onEnsureSession,
   onNewSession,
   onForkSession,
@@ -1918,7 +1925,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   </>
                 )}
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
+                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onSteerTask={onSteerTask} />
                 <InterruptResultBubble />
                 <InteractionSlot onSubmit={onUserAnswer} />
                 <InputArea
@@ -1986,7 +1993,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       {hasConversation && (
         <div className="chat-compose" data-testid="chat-panel-compose">
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
+          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onSteerTask={onSteerTask} />
           <InterruptResultBubble />
           <InteractionSlot onSubmit={onUserAnswer} />
           {onSetGoal && onPauseGoal && onResumeGoal && onClearGoal && (

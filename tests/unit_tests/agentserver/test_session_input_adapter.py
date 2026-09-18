@@ -3,6 +3,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from contextlib import asynccontextmanager, nullcontext
 
 import pytest
 
@@ -10,6 +11,8 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 from jiuwenswarm.server.runtime.agent_adapter.session_input import (
     SessionInputDeliveryUnknown, SessionInputGuard,
 )
+from jiuwenswarm.runtime.context import reset_runtime_context, set_runtime_context
+from jiuwenswarm.runtime.session.model import SessionExecutionState
 
 
 @pytest.mark.asyncio
@@ -79,3 +82,102 @@ async def test_guard_install_failure_is_retryable_and_reload_replaces_registrati
     await adapter.install_session_input_guard(reload=True)
     instance.unregister_rail.assert_awaited_once_with(guard)
     assert instance.register_rail.await_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("race", ["accepted", "ended", "changed_round", "cancelled", "other_session", "missing_queue"])
+async def test_bound_steer_checks_target_at_sdk_enqueue_without_idle_dispatch(race):
+    from openjiuwen.harness.task_loop.loop_queues import LoopQueues
+    from openjiuwen.harness.task_loop.task_loop_controller import TaskLoopController
+
+    queues = LoopQueues()
+    controller = TaskLoopController()
+    controller.set_event_handler(SimpleNamespace(interaction_queues=queues))
+    instance = SimpleNamespace(
+        active_round=object(), has_output_stream=lambda: True,
+        loop_controller=controller, send_input=AsyncMock(),
+    )
+    execution = SimpleNamespace(
+        session_id="session", state=SessionExecutionState.RUNNING, cancellation_requested=False,
+    )
+    guard = SessionInputGuard(instance)
+    guard.accepting = True
+
+    async def prepare(*_args):
+        # The task can finish/change during awaited permission preparation.
+        if race == "ended":
+            execution.state = SessionExecutionState.SUCCEEDED
+        elif race == "changed_round":
+            instance.active_round = object()
+        elif race == "cancelled":
+            execution.cancellation_requested = True
+        elif race == "other_session":
+            execution.session_id = "another-session"
+        elif race == "missing_queue":
+            controller.event_handler.interaction_queues = None
+        return {"query": "supplement"}
+
+    async def permission_send(sdk_request, *, send):
+        await send(sdk_request)
+
+    adapter = SimpleNamespace(
+        _instance=instance, _session_input_guard=guard,
+        _stream_completion_state=lambda **kwargs: "completed",
+        _prepare_root_input_dispatch=prepare,
+        _permission_inputs_for_dispatch=lambda _req, prepared, _mode: prepared,
+        _send_input_with_permission_resume_guard=permission_send,
+        _permission_dispatch=SimpleNamespace(finalize=Mock()),
+    )
+    request = SimpleNamespace(
+        params={"input_mode": "steer", "expected_execution_id": "execution-A"},
+        request_id="supplement-request", session_id="session",
+    )
+    runtime = SimpleNamespace(get_session_execution=Mock(return_value=execution))
+    token = set_runtime_context(runtime, None)
+    try:
+        if race == "accepted":
+            assert await JiuWenSwarmDeepAdapter.deliver_active_session_input(adapter, request, {})
+            assert queues.drain_steering() == ["supplement"]
+        else:
+            with pytest.raises(RuntimeError, match="not sent"):
+                await JiuWenSwarmDeepAdapter.deliver_active_session_input(adapter, request, {})
+            assert queues.drain_steering() == []
+        assert queues.drain_follow_up() == []
+        instance.send_input.assert_not_awaited()
+        runtime.get_session_execution.assert_called_once_with("execution-A")
+        adapter._permission_dispatch.finalize.assert_called_once()
+    finally:
+        reset_runtime_context(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_stream", [False, True])
+async def test_bound_input_cannot_fall_back_after_sdk_round_ends(monkeypatch, is_stream):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    @asynccontextmanager
+    async def admission(*_args):
+        yield
+
+    monkeypatch.setattr(interface_deep, "setup_permission_context", Mock())
+    monkeypatch.setattr(interface_deep, "cleanup_permission_context", Mock())
+    adapter = SimpleNamespace(
+        _is_session_scoped_adapter=True, _parent_session_id="session", _instance=None,
+        _session_adapter_key=lambda value: value,
+        _register_session_agent_task=Mock(), _unregister_session_agent_task=Mock(),
+        _permission_request_admission=admission,
+        validate_auto_permission_workspace_request=Mock(),
+        _bind_permission_request_context=lambda _request: nullcontext(),
+        deliver_active_session_input=AsyncMock(return_value=False),
+        process_message_impl=AsyncMock(), process_message_stream_impl=Mock(),
+    )
+    request = SimpleNamespace(
+        params={"input_mode": "steer", "expected_execution_id": "execution-A"},
+        session_id="session", is_stream=is_stream,
+    )
+    with pytest.raises(RuntimeError, match="targeted execution has ended"):
+        async for _chunk in JiuWenSwarmDeepAdapter.deliver_session_input_impl(adapter, request, {}):
+            pytest.fail("An ended target must not emit accepted or output")
+    adapter.process_message_impl.assert_not_awaited()
+    adapter.process_message_stream_impl.assert_not_called()
+    adapter._unregister_session_agent_task.assert_called_once_with("session")

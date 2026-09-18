@@ -6,7 +6,38 @@ from typing import Any
 from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.harness.schema.interaction import InputDispatchMode
 
-from jiuwenswarm.runtime.session_input import resolve_session_input_mode
+from jiuwenswarm.runtime.context import get_current_runtime
+from jiuwenswarm.runtime.session.model import SessionExecutionState
+from jiuwenswarm.runtime.session_input import SessionInputTargetError, resolve_session_input_mode
+
+
+def enqueue_bound_session_input(instance, target_round, request, sdk_request) -> None:
+    """Check and enqueue synchronously: the SDK send_input idle fallback is forbidden.
+
+    Use the same public queue API as DeepAgent.send_input's active STEER
+    branch. No await may separate the target check from enqueueing, including
+    SDK send/control lock acquisition, which could otherwise start fresh work.
+    Permission admission still belongs to the adapter's existing transaction.
+    """
+    runtime = get_current_runtime()
+    execution = runtime.get_session_execution(request.params["expected_execution_id"]) if runtime else None
+    if (
+        execution is None
+        or execution.session_id != request.session_id
+        or execution.state is not SessionExecutionState.RUNNING
+        or execution.cancellation_requested
+        or instance.active_round is not target_round
+        or target_round is None
+        or not instance.has_output_stream()
+    ):
+        raise SessionInputTargetError(
+            "the targeted execution has ended or changed; supplemental input was not sent"
+        )
+    controller = instance.loop_controller
+    handler = controller.event_handler if controller is not None else None
+    if getattr(handler, "interaction_queues", None) is None:
+        raise RuntimeError("active execution has no steering queue; supplemental input was not sent")
+    controller.enqueue_steer(str(sdk_request.inputs["query"]))
 
 
 class SessionInputDeliveryUnknown(RuntimeError):
