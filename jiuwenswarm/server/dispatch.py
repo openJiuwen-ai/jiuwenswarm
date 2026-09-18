@@ -18,6 +18,7 @@ from jiuwenswarm.server.handlers import chat as chat_handlers
 from jiuwenswarm.server.handlers import commands as commands_handlers
 from jiuwenswarm.server.handlers import extensions as extensions_handlers
 from jiuwenswarm.server.handlers import file_transfer as file_transfer_handlers
+from jiuwenswarm.server.handlers import long_horizon as long_horizon_handlers
 from jiuwenswarm.server.handlers import mcp as mcp_handlers
 from jiuwenswarm.server.handlers import mcp_servers as mcp_servers_handlers
 from jiuwenswarm.server.handlers import ops as ops_handlers
@@ -178,6 +179,7 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     # --- 运维 ---
     # 整域实现在 handlers/ops.py。
     ReqMethod.PROACTIVE_TICK: HandlerSpec(fn=ops_handlers.handle_proactive_tick),
+    ReqMethod.LONG_HORIZON: HandlerSpec(fn=long_horizon_handlers.handle_long_horizon),
     ReqMethod.BROWSER_RUNTIME_RESTART: HandlerSpec(fn=ops_handlers.handle_browser_runtime_restart),
     ReqMethod.CONFIG_CACHE_CLEAR: HandlerSpec(fn=ops_handlers.handle_config_cache_clear),
     ReqMethod.AGENT_RELOAD_CONFIG: HandlerSpec(fn=ops_handlers.handle_agent_reload_config),

@@ -3001,6 +3001,26 @@ class MessageHandler(FileTransferMixin, ABC):
                 metadata=bus_metadata,
             )
             return
+        if isinstance(chunk.payload, dict):
+            et = str(chunk.payload.get("event_type") or chunk.payload.get("type") or "")
+            if et == "long_horizon.schedule_intent":
+                await self._handle_long_horizon_schedule_intent(
+                    payload=dict(chunk.payload),
+                    request_id=rid,
+                    metadata=bus_metadata,
+                )
+                return
+            if et == "long_horizon.stage_due":
+                from jiuwenswarm.gateway.long_horizon.agent_call import (
+                    broadcast_stage_due,
+                )
+
+                await broadcast_stage_due(
+                    self,
+                    dict(chunk.payload),
+                    channel_id=str(chunk.channel_id or "web"),
+                )
+                return
         if self._is_terminal_stream_chunk(chunk):
             logger.debug(
                 "[MessageHandler] 忽略 server_push 终止 chunk: request_id=%s",
@@ -3286,6 +3306,73 @@ class MessageHandler(FileTransferMixin, ABC):
 
     def set_cron_registry(self, registry: Any) -> None:
         self._cron_registry = registry
+
+    async def _handle_long_horizon_schedule_intent(
+        self,
+        *,
+        payload: dict[str, Any],
+        request_id: str,
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        """I2a: AgentServer schedule_intent → apply onto the live tenant CronController."""
+        try:
+            from jiuwenswarm.gateway.long_horizon.cron_backend import (
+                CronControllerBackend,
+                resolve_live_cron_controller,
+            )
+            from jiuwenswarm.gateway.long_horizon.schedule_intent import (
+                ScheduleIntent,
+                apply_schedule_intent,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[MessageHandler] long_horizon schedule_intent import failed "
+                "request_id=%s: %s",
+                request_id,
+                exc,
+            )
+            return
+        try:
+            intent = ScheduleIntent.from_dict(payload)
+            controller = await resolve_live_cron_controller(self, metadata)
+            if controller is None:
+                logger.warning(
+                    "[MessageHandler] long_horizon schedule_intent skipped "
+                    "request_id=%s: cron controller unavailable",
+                    request_id,
+                )
+                return
+            await apply_schedule_intent(
+                intent, CronControllerBackend(controller)
+            )
+            reload = getattr(controller, "reload_scheduler", None)
+            if callable(reload):
+                try:
+                    await reload()
+                except Exception as exc:
+                    logger.debug(
+                        "[MessageHandler] long_horizon scheduler reload skipped "
+                        "request_id=%s: %s",
+                        request_id,
+                        exc,
+                    )
+            logger.info(
+                "[MessageHandler] long_horizon schedule_intent applied "
+                "request_id=%s task_id=%s op=%s jobs=%s remove=%s",
+                request_id,
+                intent.task_id,
+                intent.op,
+                len(intent.jobs),
+                len(intent.remove_job_ids),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[MessageHandler] long_horizon schedule_intent failed "
+                "request_id=%s: %s",
+                request_id,
+                exc,
+                exc_info=True,
+            )
 
     async def _handle_cron_push_payload(
         self,

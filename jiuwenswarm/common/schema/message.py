@@ -267,6 +267,9 @@ class ReqMethod(Enum):
     ISSUE_DELETE = "issue.delete"
     ISSUE_MATRIX = "issue.matrix"
 
+    # Long-horizon control (Gateway → AgentServer). Agent owns task JSON.
+    LONG_HORIZON = "long_horizon"
+
 
 class EventType(Enum):
     CONNECTION_ACK = "connection.ack"

@@ -4161,8 +4161,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 置顶会话已从项目分组剥离,不计入任何项目统计
             if s.get("pinned"):
                 continue
-            # cron 会话不计入项目统计(由 project.get_cron_sessions 独立获取)
-            if s.get("cron_id"):
+            # cron 会话不计入项目统计；长程执行会话 longhorizon_* 仍算普通对话
+            if s.get("cron_id") and not str(s.get("session_id") or "").startswith(
+                "longhorizon_"
+            ):
                 continue
             # 归属: 仅按 project_id 匹配,不命中归默认项目(按 session work_mode 分桶)
             key = _attribute_session_project(s, visible_by_id_full)
@@ -4344,12 +4346,21 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
 
             sessions = collect_all_sessions_metadata()
-        # 仅非置顶普通会话(cron_id 为空) + 归属匹配 + web 渠道
-        # cron 会话由 get_cron_sessions 返回
-        matched = [
-            s for s in sessions
-            if not s.get("pinned") and _belongs(s) and not s.get("cron_id") and s.get("channel_id") == "web"
-        ]
+        # 仅非置顶普通会话 + 归属匹配 + web 渠道。
+        # cron_id 非空的普通定时执行会话走 get_cron_sessions；
+        # 长程专用会话 longhorizon_* 即使曾被打上 cron_id 也留在对话列表。
+        matched = []
+        for s in sessions:
+            if s.get("pinned"):
+                continue
+            if not _belongs(s):
+                continue
+            if s.get("channel_id") != "web":
+                continue
+            sid = str(s.get("session_id") or "")
+            if s.get("cron_id") and not sid.startswith("longhorizon_"):
+                continue
+            matched.append(s)
 
         def _lum(s: dict[str, Any]) -> float:
             v = s.get("last_user_message_at")
@@ -4475,6 +4486,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if not _belongs(s):
                 continue
             if not s.get("cron_id"):
+                continue
+            # 长程执行会话归对话列表，不进定时任务会话组
+            if str(s.get("session_id") or "").startswith("longhorizon_"):
                 continue
             if cron_id_filter and s.get("cron_id") != cron_id_filter:
                 continue
@@ -4924,7 +4938,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         for s in sessions:
             if s.get("channel_id") != "web":
                 continue
-            if s.get("pinned") or s.get("cron_id"):
+            if s.get("pinned"):
+                continue
+            if s.get("cron_id") and not str(s.get("session_id") or "").startswith(
+                "longhorizon_"
+            ):
                 continue
             if _attribute_session_project(s, visible_by_id) == project_id:
                 session_count += 1
@@ -7391,6 +7409,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("cron.job.toggle", _cron_job_toggle)
     channel.register_method("cron.job.preview", _cron_job_preview)
     channel.register_method("cron.job.run_now", _cron_job_run_now)
+
+    from jiuwenswarm.gateway.channel_manager.web.long_horizon_web_rpc import (
+        register_long_horizon_web_methods,
+    )
+
+    # Toast / Cron「稍后」reschedule must hit the same CronController the panel lists.
+    try:
+        channel.cron_controller = cron_controller
+    except Exception:
+        pass
+    try:
+        channel.agent_client = _resolve(agent_client)
+    except Exception:
+        channel.agent_client = agent_client
+    try:
+        channel.message_handler = _resolve(message_handler)
+    except Exception:
+        channel.message_handler = message_handler
+    register_long_horizon_web_methods(channel)
 
     # 数字分身 — permissions.owner_scopes：仅 Web 网关直连 config（不经 E2A / config_rpc）。
     # 其余 permissions.*（tools / rules / approval_overrides）走 _forward_permissions_to_agent。

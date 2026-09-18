@@ -570,6 +570,7 @@ react:
       - todo_create
       - todo_list
       - todo_modify
+      - long_horizon_task
       - task_tool                   # 常驻可见，否则 ProgressiveToolRail 会滤掉，主 agent 无法委派 subagent
     enable_for_models:             # 模型白名单（空=全部启用）
       - glm

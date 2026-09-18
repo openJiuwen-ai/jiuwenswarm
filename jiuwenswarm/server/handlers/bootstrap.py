@@ -297,7 +297,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 project_id=project_id,
                 work_mode=final_work_mode,
                 cron_id=str(params.get("cron_id") or "").strip(),
-                sessions_root=_sessions_dir_for_request(request),
+                sessions_root=_sessions_dir_for_request(request, params=params),
             )
             ctx.services.agent_manager.activate_session_prewarm(session_id)
 
