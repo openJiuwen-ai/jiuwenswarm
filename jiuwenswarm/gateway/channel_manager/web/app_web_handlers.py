@@ -1459,6 +1459,9 @@ async def _enterprise_models_list_payload(
     enterprise = await load_effective_enterprise_config(
         request,
         {TemplateRefSlot.DEFAULT_MODEL},
+        # Manager writes may land on another Gateway. Display current database
+        # configuration without invalidating AgentServer's process caches.
+        use_cache=False,
     )
     entities = (
         enterprise.models.get(TemplateRefSlot.DEFAULT_MODEL.value, [])

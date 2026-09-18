@@ -305,8 +305,13 @@ def invalidate_enterprise_config_caches() -> None:
 async def _fetch_slot_entities(
     slot: str,
     template_ids: list[str],
+    *,
+    use_cache: bool = True,
 ) -> list[dict[str, Any]]:
-    entities = await _template_entity_cache.get_by_ids(slot, template_ids)
+    entities = (
+        await _template_entity_cache.get_by_ids(slot, template_ids)
+        if use_cache else await db_queries.fetch_templates_by_slot(slot, template_ids)
+    )
     requested = {str(tid or "").strip() for tid in template_ids} - {""}
     id_field = (
         "policy_id"
@@ -324,7 +329,9 @@ async def _fetch_slot_entities(
     return entities
 
 
-async def _fetch_instance_agent_resource(resource_id: str) -> dict[str, Any] | None:
+async def _fetch_instance_agent_resource(
+    resource_id: str, *, use_cache: bool = True,
+) -> dict[str, Any] | None:
     rid = str(resource_id or "").strip()
     if not rid:
         return None
@@ -336,10 +343,12 @@ async def _fetch_instance_agent_resource(resource_id: str) -> dict[str, Any] | N
         )
         return rows[0] if rows else None
 
-    return await _resource_row_cache.get_or_fetch(f"iar:{rid}", _load)
+    return await _resource_row_cache.get_or_fetch(f"iar:{rid}", _load) if use_cache else await _load()
 
 
-async def _fetch_agent_template_row(template_id: str) -> dict[str, Any] | None:
+async def _fetch_agent_template_row(
+    template_id: str, *, use_cache: bool = True,
+) -> dict[str, Any] | None:
     tid = str(template_id or "").strip()
     if not tid:
         return None
@@ -351,7 +360,7 @@ async def _fetch_agent_template_row(template_id: str) -> dict[str, Any] | None:
         )
         return rows[0] if rows else None
 
-    return await _agent_template_cache.get_or_fetch(f"at:{tid}", _load)
+    return await _agent_template_cache.get_or_fetch(f"at:{tid}", _load) if use_cache else await _load()
 
 
 def _literal_slot_template_id_map(
@@ -374,11 +383,14 @@ def _literal_slot_template_id_map(
 async def load_effective_enterprise_config(
     request: AgentRequest | Any,
     slots: Collection[TemplateRefSlot],
+    *,
+    use_cache: bool = True,
 ) -> EffectiveEnterpriseConfig | None:
     """按 ``request.bot_id``（即 ``instance_agent_resource.resource_id``）加载 Agent 实例生效配置。
 
     读取实例 Agent 资源 → ``agent_template`` → 按 ``template_ref`` 中的
     ``template_id`` 加载模型等模板实体。
+    ``use_cache=False`` 直接读完整引用链，不读写进程缓存，供 Gateway 配置展示使用。
     """
     if not is_enterprise():
         return None
@@ -397,7 +409,7 @@ async def load_effective_enterprise_config(
 
     load_slots = frozenset(slot.value for slot in slots)
 
-    resource_row = await _fetch_instance_agent_resource(rid)
+    resource_row = await _fetch_instance_agent_resource(rid, use_cache=use_cache)
     if resource_row is None:
         logger.warning(
             "[enterprise_config] instance_agent_resource not found or disabled: "
@@ -414,7 +426,7 @@ async def load_effective_enterprise_config(
         )
         return None
 
-    agent_template_row = await _fetch_agent_template_row(ref_template_id)
+    agent_template_row = await _fetch_agent_template_row(ref_template_id, use_cache=use_cache)
     if agent_template_row is None:
         logger.warning(
             "[enterprise_config] agent_template not found or disabled: "
@@ -463,7 +475,7 @@ async def load_effective_enterprise_config(
 
     for slot, template_ids in slot_template_id_map.items():
         try:
-            entities = await _fetch_slot_entities(slot, template_ids)
+            entities = await _fetch_slot_entities(slot, template_ids, use_cache=use_cache)
         except Exception as exc:
             if slot != TemplateRefSlot.A2A_ACCESS_POLICY:
                 raise

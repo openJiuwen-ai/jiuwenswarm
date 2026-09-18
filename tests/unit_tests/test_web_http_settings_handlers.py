@@ -5,6 +5,10 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import asyncio
+from copy import deepcopy
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -130,7 +134,8 @@ def test_settings_config_models_locale_roundtrip():
 def test_enterprise_models_list_uses_bot_header_and_hides_api_key(monkeypatch):
     captured: dict[str, object] = {}
 
-    async def fake_load(request, slots):
+    async def fake_load(request, slots, *, use_cache):
+        assert use_cache is False
         captured["metadata"] = request.metadata
         captured["slots"] = slots
         return SimpleNamespace(
@@ -198,8 +203,78 @@ def test_enterprise_models_list_uses_bot_header_and_hides_api_key(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("change", [
+    "model_update", "model_delete", "model_disabled", "agent_ref", "resource_ref",
+    "resource_disabled", "agent_delete",
+])
+def test_enterprise_models_list_reads_current_rows_despite_warm_caches(monkeypatch, change):
+    from jiuwenswarm.server.runtime.enterprise_config import loader
+
+    rows = {
+        "instance_agent_resource": [
+            {"resource_id": "bot-1", "ref_template_id": "agent-1", "enabled": True},
+        ],
+        "agent_template": [
+            {"template_id": "agent-1", "template_ref": {"default_model": ["m1"]}, "enabled": True},
+            {"template_id": "agent-2", "template_ref": {"default_model": ["m2"]}, "enabled": True},
+        ],
+        "model_template": [
+            {"template_id": "m1", "model_id": "Qwen3.8-Flash", "enabled": True, "api_key": "secret"},
+            {"template_id": "m2", "model_id": "GLM-5.3-Flash", "enabled": True, "api_key": "secret"},
+        ],
+    }
+
+    async def list_records(table, *, filters=None, **kwargs):
+        return deepcopy([
+            row for row in rows[table]
+            if all(row.get(k) in v if isinstance(v, list) else row.get(k) == v
+                   for k, v in (filters or {}).items())
+        ])
+
+    monkeypatch.setattr(app_web_handlers, "is_enterprise", lambda: True)
+    monkeypatch.setattr(loader, "is_enterprise", lambda: True)
+    monkeypatch.setattr(loader.db_queries, "list_records", list_records)
+    monkeypatch.setattr(loader, "_template_entity_cache", loader.TemplateEntityCache())
+    monkeypatch.setattr(loader, "_resource_row_cache", loader._TtlSingleFlightCache(600))
+    monkeypatch.setattr(loader, "_agent_template_cache", loader._TtlSingleFlightCache(600))
+    request = SimpleNamespace(metadata={"routing": {"bot_id": "bot-1"}})
+    slots = {loader.TemplateRefSlot.DEFAULT_MODEL}
+    cached = asyncio.run(loader.load_effective_enterprise_config(request, slots))
+    assert cached.models["default_model"][0]["model_id"] == "Qwen3.8-Flash"
+
+    # Simulate committed writes on another Gateway; no local invalidation event.
+    expected = "GLM-5.3-Flash"
+    if change == "model_update":
+        rows["model_template"][0]["model_id"] = expected
+    elif change == "agent_ref":
+        rows["agent_template"][0]["template_ref"] = {"default_model": ["m2"]}
+    elif change == "resource_ref":
+        rows["instance_agent_resource"][0]["ref_template_id"] = "agent-2"
+    else:
+        expected = ""
+        if change == "model_delete":
+            rows["model_template"].pop(0)
+        elif change == "model_disabled":
+            rows["model_template"][0]["enabled"] = False
+        elif change == "resource_disabled":
+            rows["instance_agent_resource"][0]["enabled"] = False
+        elif change == "agent_delete":
+            rows["agent_template"].pop(0)
+
+    response = _client_with_cron(_FakeCron()).get(
+        "/api/v1/models", headers={"X-Bot-Id": "bot-1"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["active_model"] == expected
+    assert "secret" not in response.text
+    # Listing does not invalidate caches used by other configuration consumers.
+    cached = asyncio.run(loader.load_effective_enterprise_config(request, slots))
+    assert cached.models["default_model"][0]["model_id"] == "Qwen3.8-Flash"
+
+
 def test_enterprise_models_list_does_not_fallback_to_local_config(monkeypatch):
-    async def fake_load(_request, _slots):
+    async def fake_load(_request, _slots, *, use_cache):
+        assert use_cache is False
         return None
 
     def fail_local_config_read():
