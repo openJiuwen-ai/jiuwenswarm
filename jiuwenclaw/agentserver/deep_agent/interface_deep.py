@@ -340,6 +340,7 @@ from jiuwenclaw.agentserver.tools import SendFileToolkit, SkillToolkit
 from jiuwenclaw.agentserver.tools.ask_user_question_tool import get_ask_user_question_tool
 from jiuwenclaw.agentserver.tools.acp_output_tools import get_tools as get_acp_output_tools
 from jiuwenclaw.agentserver.tools.acp_output_tools import get_acp_output_manager
+from jiuwenclaw.agentserver.tools.client_tool import get_client_tool, normalize_tool_definitions
 from jiuwenclaw.agentserver.tools.deepresearch_tools import (
     push_deepresearch_route,
     reset_deepresearch_route,
@@ -5864,6 +5865,74 @@ class JiuWenClawDeepAdapter:
                 ability_names,
             )
 
+    def _refresh_client_runtime_tool(
+            self,
+            session_id: str | None,
+            request_id: str | None,
+            channel_id: str | None,
+            request_metadata: dict[str, Any] | None,
+    ) -> None:
+        """Register a request-scoped browser executor only after an explicit ready sync."""
+        for existing in list(self._instance.ability_manager.list() or []):
+            if getattr(existing, "name", "") == "custom_tool":
+                self._instance.ability_manager.remove_ability(existing.name)
+
+        context = (
+            request_metadata.get("custom_tool_context")
+            if isinstance(request_metadata, dict)
+            else None
+        )
+        if not isinstance(context, dict) or context.get("enabled") is not True:
+            return
+        provider_id = str(context.get("provider_id") or "").strip()
+        client_session_id = str(context.get("client_session_id") or "").strip()
+        resource = context.get("resource")
+        tools = normalize_tool_definitions(context.get("tools"))
+        resource_id = str(resource.get("id") or "").strip() if isinstance(resource, dict) else ""
+        resource_type = str(resource.get("type") or "").strip() if isinstance(resource, dict) else ""
+        resource_version = resource.get("version") if isinstance(resource, dict) else None
+        invalid_context = (
+            not session_id
+            or not request_id
+            or not provider_id
+            or len(provider_id) > 128
+            or not client_session_id
+            or len(client_session_id) > 256
+            or not isinstance(resource, dict)
+            or not resource_id
+            or len(resource_id) > 512
+            or not resource_type
+            or len(resource_type) > 128
+            or isinstance(resource_version, bool)
+            or (
+                resource_version is not None
+                and not isinstance(resource_version, (str, int))
+            )
+            or not tools
+        )
+        if invalid_context:
+            logger.warning(
+                "[JiuWenClawDeepAdapter] invalid custom_tool_context: request_id=%s",
+                request_id,
+            )
+            return
+        context = {**context, "tools": tools}
+        tool = get_client_tool(
+            session_id=session_id,
+            request_id=request_id,
+            channel_id=str(channel_id or "web"),
+            context=context,
+        )
+        Runner.resource_mgr.add_tool(tool)
+        self._instance.ability_manager.add(tool.card)
+        logger.info(
+            "[JiuWenClawDeepAdapter] custom_tool registered: request_id=%s provider_id=%s resource_id=%s tools=%s",
+            request_id,
+            provider_id,
+            resource.get("id"),
+            [item["name"] for item in tools],
+        )
+
     def _update_prompt_for_mode(self, mode: str, resolved_language: str) -> None:
         """同步 system_prompt_builder 的语言。"""
         if self._instance.system_prompt_builder is not None:
@@ -6015,6 +6084,12 @@ class JiuWenClawDeepAdapter:
         await self._update_tools_for_mode(params.mode, params.session_id, params.request_id)
         await self._update_session_tools(params.session_id, params.request_id, channel_id=params.channel_id)
         self._refresh_acp_runtime_tools(
+            params.session_id,
+            params.request_id,
+            params.channel_id,
+            params.request_metadata,
+        )
+        self._refresh_client_runtime_tool(
             params.session_id,
             params.request_id,
             params.channel_id,

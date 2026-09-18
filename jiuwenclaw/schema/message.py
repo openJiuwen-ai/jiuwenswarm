@@ -10,6 +10,7 @@ from typing import Any, Literal
 class ReqMethod(Enum):
     INITIALIZE = "initialize"
     ACP_TOOL_RESPONSE = "acp.tool_response"
+    CLIENT_TOOL_RESPONSE = "client.tool_response"
 
     CHAT_SEND = "chat.send"
     CHAT_RESUME = "chat.resume"
