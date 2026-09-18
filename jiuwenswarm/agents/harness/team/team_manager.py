@@ -185,17 +185,19 @@ def sync_team_observability() -> None:
         was_active = _observability_active
         _observability_active = True
         if not was_active and not provider_existed:
-            if cfg.get("exporter", "otlp_grpc") == "file":
+            # Log the resolved config, not the yaml: the two once diverged
+            # silently and this line hid it.
+            if obs_cfg.exporter == "file":
                 logger.info(
                     "[TeamObservability] enabled: exporter=%s traces_dir=%s",
-                    cfg.get("exporter", "otlp_grpc"),
-                    traces_dir,
+                    obs_cfg.exporter,
+                    obs_cfg.traces_dir,
                 )
             else:
                 logger.info(
                     "[TeamObservability] enabled: exporter=%s endpoint=%s",
-                    cfg.get("exporter", "otlp_grpc"),
-                    cfg.get("endpoint", "http://localhost:4317"),
+                    obs_cfg.exporter,
+                    obs_cfg.endpoint,
                 )
     except Exception as exc:
         _observability_active = False
@@ -327,6 +329,10 @@ class TeamManager:
         self._runner_team_agents: dict[str, TeamAgent] = {}
         self._team_monitors: dict[str, TeamMonitorHandler] = {}
         self._stream_tasks: dict[str, asyncio.Task] = {}
+        # session_id → request_ids of Team turns that entered the adapter but
+        # have not reached a released round yet.  Covers the preparation window
+        # (spec assembly, runtime activation) that precedes the round marker.
+        self._inflight_requests: dict[str, set[str]] = {}
         self._held_idle: dict[str, dict[str, Any]] = {}
         self._background_task_controllers: dict[str, BackgroundTaskController] = {}
         self._bootstrap_lock = asyncio.Lock()
@@ -396,6 +402,29 @@ class TeamManager:
 
     def pop_stream_task(self, session_id: str) -> asyncio.Task | None:
         return self._stream_tasks.pop(session_id, None)
+
+    def begin_request(self, session_id: str, request_id: str) -> None:
+        """Mark a Team turn as in flight before its round exists.
+
+        The adapter admits a Team request long before ``begin_round`` runs
+        (spec assembly, MCP preflight, runtime activation).  Without this
+        marker the Session looks idle for that whole window.
+        """
+        self._inflight_requests.setdefault(session_id, set()).add(
+            str(request_id or "")
+        )
+
+    def end_request(self, session_id: str, request_id: str) -> None:
+        """Release one in-flight Team turn.  Idempotent."""
+        requests = self._inflight_requests.get(session_id)
+        if requests is None:
+            return
+        requests.discard(str(request_id or ""))
+        if not requests:
+            self._inflight_requests.pop(session_id, None)
+
+    def has_inflight_request(self, session_id: str) -> bool:
+        return bool(self._inflight_requests.get(session_id))
 
     def is_session_initialized(self, session_id: str) -> bool:
         """Return whether the session has ever initialized a team runtime."""
@@ -692,6 +721,9 @@ class TeamManager:
         if current is None or current.request_id != request_id:
             return False
         self._active_rounds.pop(session_id, None)
+        # The round terminal ends the turn's in-flight window as well, so the
+        # archive guard stops treating a finished Team Session as running.
+        self.end_request(session_id, request_id)
         completion_task = current.completion_task
         if (
             completion_task is not None
@@ -976,6 +1008,7 @@ class TeamManager:
         session_id: str,
         *,
         requested_model_name: str | None = None,
+        login_model_entry: dict[str, Any] | None = None,
         template_id: str | None = None,
         template_snapshot: dict[str, Any] | None = None,
         strict_template: bool = False,
@@ -1005,6 +1038,7 @@ class TeamManager:
         spec_dict = load_team_spec_dict(
             config_base=config_base,
             requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
             template_id=template_id,
             template_snapshot=template_snapshot,
             strict_template=strict_template,
@@ -1014,11 +1048,12 @@ class TeamManager:
             spec_dict = TeamManager._normalize_distributed_transport_fields(config_base, spec_dict)
 
         # Populate the pool from valid configured entries plus the effective
-        # page-selected model. The latter may be an in-memory Zen model that
-        # is intentionally absent from config.yaml.
+        # page-selected model. The latter may be an in-memory Zen model or a
+        # login model, both intentionally absent from config.yaml.
         effective_models = get_effective_team_model_entries(
             config_base,
             requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
         )
         if effective_models:
             from openjiuwen.agent_teams.schema.team import ModelPoolEntry
@@ -1100,11 +1135,14 @@ class TeamManager:
         session_id: str,
         *,
         requested_model_name: str | None = None,
+        login_model_entry: dict[str, Any] | None = None,
     ) -> tuple[TeamAgentSpec, bool]:
         team_name, template_id, template_snapshot = self._lookup_bound_team_identity(session_id)
         load_kwargs: dict[str, Any] = {}
         if requested_model_name is not None:
             load_kwargs["requested_model_name"] = requested_model_name
+        if login_model_entry is not None:
+            load_kwargs["login_model_entry"] = login_model_entry
         if template_id is not None:
             load_kwargs["template_id"] = template_id
             load_kwargs["strict_template"] = template_snapshot is None
@@ -1129,6 +1167,7 @@ class TeamManager:
         channel_id: str | None = None,
         request_metadata: dict[str, Any] | None = None,
         requested_model_name: str | None = None,
+        login_model_entry: dict[str, Any] | None = None,
         agent_group_name: str | None = None,
         swarmflow_config: dict | None = None,
     ) -> TeamAgentSpec:
@@ -1147,6 +1186,9 @@ class TeamManager:
             channel_id: Raw channel id from the request, if any.
             request_metadata: Request metadata mapping.
             agent_group_name: Optional AgentGroup package bound to the session.
+            login_model_entry: Model entry for a page-selected login model,
+                built from the request's forwarded credentials (placeholder
+                api_key; the real token is swapped in per HTTP request).
 
         Returns:
             The enriched ``TeamAgentSpec`` ready to build (``build_context`` set;
@@ -1160,6 +1202,7 @@ class TeamManager:
         spec, has_binding = self._load_session_team_spec(
             session_id,
             requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
         )
         if not has_binding:
             self._apply_session_scoped_team_name(spec, session_id=session_id)
@@ -3071,13 +3114,20 @@ _team_manager: TeamManager | None = None
 
 
 def is_team_session_running(session_id: str) -> bool:
-    """Inspect existing team state without creating or stopping a runtime."""
+    """Inspect existing team state without creating or stopping a runtime.
+
+    Only an admitted turn counts: an in-flight request still preparing, or an
+    active interaction round.  The persistent stream task and the pooled
+    runtime deliberately outlive the round, so keying on them kept a finished
+    Session "running" until the runtime was torn down.
+    """
     manager = _team_manager
-    return bool(manager and (
-        manager.has_stream_task(session_id)
-        or manager.is_runtime_active(session_id)
-        or manager.is_runtime_pending(session_id)
-    ))
+    if manager is None:
+        return False
+    return bool(
+        manager.has_inflight_request(session_id)
+        or manager.is_round_active(session_id)
+    )
 
 
 def get_team_manager(channel_id: str | None = None) -> TeamManager:

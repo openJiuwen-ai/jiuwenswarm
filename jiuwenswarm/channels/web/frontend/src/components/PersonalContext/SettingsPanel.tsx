@@ -16,7 +16,8 @@ import { Switch } from '../Switch';
 import ModelPicker from '../ModelPicker';
 import { usePersonalContextStore } from '../../stores';
 import { useSessionStore } from '../../stores';
-import { STRATEGY_OPTIONS } from '../../services/personalContextApi';
+import { STRATEGY_OPTIONS, isFetchTaskRunningError } from '../../services/personalContextApi';
+import { toast } from '../../components/ui/Toast/toastStore';
 import './SettingsPanel.css';
 import feishuLogo from '../../assets/settings/channels/feishu.svg';
 import githubLogo from '../../assets/settings/channels/GitHub.svg';
@@ -98,6 +99,10 @@ export function PersonalContextSettingsPanel({
         return;
       }
       void setStrategyProfile(profile).catch((e: unknown) => {
+        if (isFetchTaskRunningError(e)) {
+          toast.open({ content: t('personalContext.services.fetchTaskRunning'), variant: 'warning' });
+          return;
+        }
         setError(e instanceof Error ? e.message : String(e));
       });
     },
@@ -108,10 +113,14 @@ export function PersonalContextSettingsPanel({
     (index: number) => {
       setError(null);
       void selectModel(index).catch((e: unknown) => {
+        if (isFetchTaskRunningError(e)) {
+          toast.open({ content: t('personalContext.services.fetchTaskRunning'), variant: 'warning' });
+          return;
+        }
         setError(e instanceof Error ? e.message : String(e));
       });
     },
-    [selectModel],
+    [selectModel, t],
   );
 
   const handleFeishuAuthorize = useCallback(() => {

@@ -72,6 +72,11 @@ export interface TrajectoryCell {
   /** Real request-message slot represented by this SYSTEM row. */
   promptSystemMessageIndex?: number
   outputDetail?: string
+  /**
+   * What a tool invocation returned, before the harness rendered it into the
+   * tool message the model reads. A tool row's outputDetail is that message.
+   */
+  rawOutputDetail?: string
   /** Structured schema-v2 compaction payload shown independently from Markdown output. */
   compactionDetail?: Readonly<Record<string, unknown>>
   thinkingDetail?: string

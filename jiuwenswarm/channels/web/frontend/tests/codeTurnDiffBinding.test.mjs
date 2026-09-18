@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { bindTurnDiffsToMessages } from '../node_modules/.cache/code-turn-diff-binding/features/code-mode/codeTurnDiffBinding.js';
+import { bindTurnDiffsToMessages, resolveTurnCardAnchors } from '../node_modules/.cache/code-turn-diff-binding/features/code-mode/codeTurnDiffBinding.js';
 
 const turn = (overrides = {}) => ({
   kind: 'conversation_turn',
@@ -180,4 +180,55 @@ test('an off-screen editing turn never borrows a paginated conversation bubble',
   const latest = turn({ turn_index: 2, timestamp: '2026-07-23T10:02:01.000Z', user_message_id: 'user-2', assistant_message_id: 'assistant-2' });
   const messages = [chatMessages(5), chatMessages(6), chatMessages(7)].flat();
   assert.equal(bindTurnDiffsToMessages(messages, [latest]).size, 0);
+});
+
+test('only the anchor message renders the card when one turn spans several finals', () => {
+  // Backend persists every event of a request under one id
+  // (`<request_id>:assistant`), and each `chat.final` becomes its own message,
+  // so a single bound id matches several messages.
+  const latest = turn({ assistant_message_id: 'assistant-2' });
+  const firstFinal = { id: 'assistant-2', role: 'assistant', content: 'step one', timestamp: '2026-07-23T10:00:02.000Z' };
+  const secondFinal = { id: 'assistant-2', role: 'assistant', content: 'step two', timestamp: '2026-07-23T10:00:03.000Z' };
+  const lastFinal = { id: 'assistant-2', role: 'assistant', content: 'done', timestamp: '2026-07-23T10:00:04.000Z' };
+  const messages = [
+    { id: 'user-2', role: 'user', content: 'write code', timestamp: '2026-07-23T10:00:00.000Z' },
+    firstFinal,
+    secondFinal,
+    lastFinal,
+  ];
+
+  const turnsByMessageId = bindTurnDiffsToMessages(messages, [latest]);
+  assert.deepEqual([...turnsByMessageId], [['assistant-2', [latest]]]);
+
+  const anchors = resolveTurnCardAnchors(messages, turnsByMessageId);
+  assert.equal(anchors.size, 1);
+  assert.equal(anchors.has(lastFinal), true);
+  assert.equal(anchors.has(firstFinal), false);
+  assert.equal(anchors.has(secondFinal), false);
+});
+
+test('anchor resolution keeps distinct anchors for distinct bound ids', () => {
+  const older = turn({ turn_index: 1, change_set_id: 'cs-1', assistant_message_id: 'assistant-1' });
+  const newer = turn({ turn_index: 2, change_set_id: 'cs-2', assistant_message_id: 'assistant-3' });
+  const messages = [
+    { id: 'user-1', role: 'user', content: 'a', timestamp: '2026-07-23T10:00:00.000Z' },
+    { id: 'assistant-1', role: 'assistant', content: 'one', timestamp: '2026-07-23T10:00:01.000Z' },
+    { id: 'user-3', role: 'user', content: 'b', timestamp: '2026-07-23T10:00:02.000Z' },
+    { id: 'assistant-3', role: 'assistant', content: 'two', timestamp: '2026-07-23T10:00:03.000Z' },
+  ];
+  // Build the binding map by hand: the helper must resolve one anchor per
+  // bound id, not just one anchor overall.
+  const bound = new Map([
+    ['assistant-1', [older]],
+    ['assistant-3', [newer]],
+  ]);
+  const anchors = resolveTurnCardAnchors(messages, bound);
+  assert.equal(anchors.size, 2);
+  assert.equal(anchors.has(messages[1]), true);
+  assert.equal(anchors.has(messages[3]), true);
+});
+
+test('anchor resolution is empty when nothing is bound', () => {
+  const messages = chatMessages(1);
+  assert.equal(resolveTurnCardAnchors(messages, new Map()).size, 0);
 });

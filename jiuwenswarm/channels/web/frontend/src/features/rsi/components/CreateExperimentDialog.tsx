@@ -16,8 +16,6 @@ import { useSessionStore } from '../../../stores/sessionStore';
 import { ModelProviderIcon } from '../../../components/ModelProviderIcon';
 import TipIcon from '../../../assets/tip.svg?react';
 import type { ModelEntry } from '../../../types';
-import { pluginPackagesApi } from '../../../services/pluginPackagesApi';
-import { localizedText, type PluginPackageSummary } from '../../../types/pluginPackage';
 
 const RSI_DATASET_FIELD_SCHEMA = `{
   "cases": [
@@ -72,6 +70,8 @@ interface CreateExperimentDialogProps {
 
 type Branch = 'HARNESS' | 'PAPER' | 'PROGRAM';
 
+const DEFAULT_RSI_PACKAGE_ID = '';
+
 interface FormState {
   name: string;
   scenario: RsiScenario;
@@ -79,7 +79,6 @@ interface FormState {
   optimizer: string;
   tester: string;
   datasetFile: string;
-  packageId: string;
   evaluationMethod: string;
   maxIterations: number;
   optimizationInstruction: string;
@@ -95,7 +94,6 @@ function defaultForm(): FormState {
     optimizer: '',
     tester: '',
     datasetFile: '',
-    packageId: '',
     evaluationMethod: 'agent',
     maxIterations: 2,
     optimizationInstruction: '',
@@ -105,9 +103,7 @@ function defaultForm(): FormState {
 }
 
 export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExperimentDialogProps) {
-  const { t, i18n } = useTranslation();
-  const [plugins, setPlugins] = useState<PluginPackageSummary[]>([]);
-  const [pluginError, setPluginError] = useState('');
+  const { t } = useTranslation();
   const [form, setForm] = useState<FormState>(defaultForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -116,23 +112,6 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
 
   const branch: Branch = form.scenario === 'HARNESS' ? 'HARNESS' : form.artifactType;
   const isArtifact = form.scenario === 'ARTIFACT';
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    setPluginError('');
-    void pluginPackagesApi
-      .list()
-      .then((items) => {
-        if (!cancelled) setPlugins(items.filter((item) => item.installed));
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setPluginError(error instanceof Error ? error.message : String(error));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
 
   // 选择数据集路径后自动校验
   useEffect(() => {
@@ -261,7 +240,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
           ? {
               scenario: 'HARNESS',
               input_file: form.datasetFile,
-              ...(form.packageId ? { package_id: form.packageId } : {}),
+              package_id: DEFAULT_RSI_PACKAGE_ID,
               name: form.name.trim(),
               model_refs: {
                 optimizer: form.optimizer,
@@ -415,27 +394,6 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
           <Field label={t('rsi.createDialog.testerModelLabel')}>
             <ModelSelect value={form.tester} onChange={(v) => update('tester', v)} />
             {errors.tester && <Err text={errors.tester} />}
-          </Field>
-        )}
-
-        {branch === 'HARNESS' && (
-          <Field label={t('rsi.createDialog.pluginLabel')}>
-            <RsiSelect
-              value={form.packageId}
-              onChange={(v) => update('packageId', v)}
-              options={[
-                { value: '', label: t('rsi.createDialog.pluginDefault') },
-                ...plugins.map((plugin) => ({
-                  value: plugin.id,
-                  label: localizedText(plugin.displayName, i18n.language),
-                  disabled: plugin.connectionState !== 'connected',
-                })),
-              ]}
-              placeholder={t('rsi.createDialog.pluginDefault')}
-              ariaLabel={t('rsi.createDialog.pluginLabel')}
-              disabled={submitting}
-            />
-            {pluginError && <Err text={pluginError} />}
           </Field>
         )}
 

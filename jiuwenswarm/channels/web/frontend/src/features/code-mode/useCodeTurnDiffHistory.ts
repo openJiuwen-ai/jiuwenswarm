@@ -4,7 +4,7 @@ import { gitClient } from './gitClient';
 import { gitWatchClient } from './gitWatchClient';
 import { latestModifiedTurn, turnChangeErrorMessage, turnDiffKey, updateTurnChangeStatus } from './turnChangeState';
 import type { GitDiscardTurnChangesResult, GitRedoTurnChangesResult, GitTurnChangeAction, GitTurnDiff } from './types';
-import { bindTurnDiffsToMessages } from './codeTurnDiffBinding';
+import { bindTurnDiffsToMessages, resolveTurnCardAnchors } from './codeTurnDiffBinding';
 import { emitCodeTurnChange } from './codeTurnChangeEvents';
 export { bindTurnDiffsToMessages } from './codeTurnDiffBinding';
 
@@ -75,6 +75,12 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
   }, [isProcessing, loadHistory]);
 
   const turnsByMessageId = useMemo(() => bindTurnDiffsToMessages(messages, turns), [messages, turns]);
+  // 一个 id 可能命中同轮的多条消息（每轮可能有多条 chat.final），卡片只在
+  // 锚点消息上渲染，避免同一轮重复出卡。
+  const turnCardAnchors = useMemo(
+    () => resolveTurnCardAnchors(messages, turnsByMessageId),
+    [messages, turnsByMessageId]
+  );
   const latestTurn = turns[0] ?? null;
   const latestTurnKey = latestTurn ? turnDiffKey(latestTurn) : null;
 
@@ -135,6 +141,7 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
   return {
     turns,
     turnsByMessageId,
+    turnCardAnchors,
     loading,
     error,
     reload: loadHistory,

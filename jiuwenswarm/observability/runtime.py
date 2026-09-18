@@ -14,13 +14,13 @@ from jiuwenswarm.observability.config import (
 )
 from jiuwenswarm.observability.gateway_hints import trajectory_gateway_hint_bridge
 from jiuwenswarm.observability.session_delete import (
+    set_trajectory_session_database_root,
     set_trajectory_session_delete_backend,
 )
 from jiuwenswarm.observability.sink import (
     CommitCallback,
     TrajectorySessionSinkRouter,
 )
-from jiuwenswarm.observability.updates import trajectory_update_broker
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,7 @@ def start_trajectory_runtime(
                 logger.exception("Trajectory runtime startup cleanup failed")
             raise
         set_trajectory_session_delete_backend(sink)
+        set_trajectory_session_database_root(resolved.database_path)
         _runtime_sink = sink
         _runtime_processor = processor
         _runtime_settings = resolved
@@ -200,7 +201,6 @@ def _create_sink(
 
 def _combined_commit_callback(on_commit: CommitCallback | None) -> CommitCallback:
     def _publish(updates) -> None:
-        trajectory_update_broker.publish(updates)
         trajectory_gateway_hint_bridge.publish(updates)
         if on_commit is not None:
             on_commit(updates)

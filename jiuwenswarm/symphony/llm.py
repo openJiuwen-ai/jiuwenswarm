@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from collections import defaultdict
@@ -14,6 +13,9 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Dict, Iterator, List, Optional
 
+from jiuwenswarm.common.model_config_validation import (
+    probe_model_connection as probe_configured_model_connection,
+)
 from jiuwenswarm.common.reasoning_injector import inject_reasoning_params
 
 LLM_IDENTITY_SCHEMA_VERSION = "JiuwenSwarm-llm-identity-v1"
@@ -437,19 +439,18 @@ def create_llm_client(config: LLMConfig) -> "JiuwenSwarmChatClient":
 
 
 async def probe_model_connection(config: LLMConfig) -> None:
-    """Verify the configured model with one bounded, low-cost request."""
+    """Verify Symphony's configured model and preserve its error contract."""
 
     from openjiuwen.core.common.exception.codes import StatusCode
     from openjiuwen.core.common.exception.errors import BaseError, build_error
 
     try:
-        await asyncio.wait_for(
-            config.create_model().invoke(
-                messages=[{"role": "user", "content": "Hi"}],
-                max_tokens=_MODEL_CONNECTION_PROBE_MAX_TOKENS,
-                timeout=_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS,
-            ),
-            timeout=_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS,
+        await probe_configured_model_connection(
+            config.create_model(),
+            token_limits=(_MODEL_CONNECTION_PROBE_MAX_TOKENS,),
+            invoke_kwargs={"timeout": _MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS},
+            timeout_seconds=_MODEL_CONNECTION_PROBE_TIMEOUT_SECONDS,
+            log_context="symphony model connection probe",
         )
     except BaseError:
         raise

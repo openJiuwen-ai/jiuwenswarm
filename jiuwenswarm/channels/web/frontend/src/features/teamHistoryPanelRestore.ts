@@ -291,10 +291,13 @@ function extractShutdownMemberFromToolResult(record: Record<string, unknown>): s
   const payload = extractTeamEvent(record) || record;
   const toolResult = isRecord(payload.tool_result) ? payload.tool_result : payload;
   const toolName = pickString(toolResult, ['tool_name', 'name']) || pickString(payload, ['tool_name', 'name']);
+  // The member name is in the text the model read (`rendered_result`); `result`
+  // is the compatibility string kept for records written before that field.
+  const text = parseShutdownMemberName(toolResult.rendered_result) || parseShutdownMemberName(toolResult.result);
   if (toolName !== 'shutdown_member') {
-    return parseShutdownMemberName(toolResult.result);
+    return text;
   }
-  return parseShutdownMemberName(toolResult.result) || parseShutdownMemberName(toolResult.summary);
+  return text || parseShutdownMemberName(toolResult.summary);
 }
 
 function extractTracerInput(record: Record<string, unknown>): {
@@ -599,7 +602,9 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
           const toolResult = isRecord(payload.tool_result) ? payload.tool_result : payload;
           const toolName = pickString(toolResult, ['tool_name', 'name']) || pickString(payload, ['tool_name', 'name']) || 'unknown';
           const toolCallId = pickString(toolResult, ['tool_call_id', 'toolCallId']) || pickString(payload, ['tool_call_id', 'toolCallId']);
-          const content = pickString(toolResult, ['summary', 'result', 'data', 'error']) || compactString(toolResult.result);
+          const content =
+            pickString(toolResult, ['summary', 'rendered_result', 'result', 'data', 'error']) ||
+            compactString(toolResult.result);
           const id = eventId('hist-tool-result', record.id, memberId, toolCallId, timestamp);
           executionEvents.set(id, {
             id,

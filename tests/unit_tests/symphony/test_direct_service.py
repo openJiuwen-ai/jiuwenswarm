@@ -41,6 +41,7 @@ from jiuwenswarm.symphony.service import (
     _BuildProcessLogger,
     _OrderedProgressDispatcher,
     _build_progress,
+    _graph_needs_build,
 )
 from jiuwenswarm.symphony.graph_storage import latest_incomplete_build, graph_exists
 
@@ -1420,8 +1421,11 @@ async def test_swarm_auxiliary_prepare_failure_preserves_current(
 
     assert (graph_dir / "current.json").read_bytes() == current_before
     resume_from = latest_incomplete_build(graph_dir)
-    assert resume_from is not None
-    assert (resume_from / "artifacts").is_dir()
+    if isinstance(failure, asyncio.CancelledError):
+        assert resume_from is None
+    else:
+        assert resume_from is not None
+        assert (resume_from / "artifacts").is_dir()
 
 
 @pytest.mark.asyncio
@@ -2192,6 +2196,93 @@ async def test_cancel_build_aborts_blocked_progress_and_releases_guard(
     assert build_result["build_status"] == "cancelled"
     assert service._active_build_task is None
     assert not _named_progress_tasks()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_build_marks_checkpoint_and_is_not_resumable(
+    monkeypatch,
+    tmp_path,
+):
+    config = symphony_config_from_dict(
+        {
+            "paths": {
+                "skills_root": str(tmp_path / "skills"),
+                "graph_dir": str(tmp_path / "graph"),
+            }
+        }
+    )
+    writer = CapabilityFingerprint(
+        capability_type="skill",
+        capability_id="writer",
+        name="Writer",
+        description="Write markdown.",
+        content_hash="writer-hash",
+    )
+    runtime_factory = _FakeGraphBuildRuntimeFactory([(writer,)])
+    entered = asyncio.Event()
+
+    async def blocked_fingerprint_build(
+        self,
+        *,
+        force=False,
+        progress_callback=None,
+    ):
+        del self
+        del force, progress_callback
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        _FakeFingerprintService,
+        "build",
+        blocked_fingerprint_build,
+    )
+
+    task = asyncio.create_task(
+        build_graph(
+            config.paths.skills_root,
+            config.paths.graph_dir,
+            llm_config=LLMConfig(model="test-model"),
+            force=True,
+            symphony_config=config,
+            runtime_factory=runtime_factory,
+        )
+    )
+    await entered.wait()
+    task.cancel("test.cancelled_build")
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    checkpoints = list((config.paths.graph_dir / ".build_runs").glob("*/checkpoint.json"))
+    assert len(checkpoints) == 1
+    payload = json.loads(checkpoints[0].read_text(encoding="utf-8"))
+    assert payload["status"] == "cancelled"
+    assert payload["stage"] == "update.cancelled"
+    assert latest_incomplete_build(config.paths.graph_dir) is None
+
+
+def test_cancelled_graph_build_keeps_the_last_published_graph_for_planning():
+    assert _graph_needs_build(
+        {
+            "exists": True,
+            "stale": True,
+            "added_count": 1,
+            "changed_count": 0,
+            "removed_count": 0,
+            "build_progress": {"status": "cancelled"},
+        }
+    ) is False
+    assert _graph_needs_build(
+        {
+            "exists": True,
+            "stale": True,
+            "added_count": 1,
+            "changed_count": 0,
+            "removed_count": 0,
+            "build_progress": {"status": "running"},
+        }
+    ) is True
 
 
 @pytest.mark.asyncio

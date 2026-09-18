@@ -445,11 +445,16 @@
   align-items: center;
   gap: 4px;
   overflow: hidden;
+  min-width: 150px;
   max-width: 168px;
   font-size: 12px;
   line-height: 18px;
   color: #808080;
   white-space: nowrap;
+}
+
+.pc-services__card-last-run--empty {
+  visibility: hidden;
 }
 
 .pc-services__card-last-run > span:last-child {

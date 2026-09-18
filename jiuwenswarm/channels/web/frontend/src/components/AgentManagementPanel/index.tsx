@@ -21,6 +21,7 @@ import {
 
   createAgentManagementClient,
   type AgentCatalogItem,
+  type AgentDetail,
   type AgentDraft,
   type AgentGroupCatalogItem,
   type AgentGroupDetail,
@@ -33,15 +34,16 @@ import {
   agentManagementReducer,
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
-  findFirstPreviewableFile,
   initialAgentManagementState,
   isPreviewableFile,
   mergeAgentDetailWithCatalog,
   mergeAgentGroupDetailWithCatalog,
 } from '../../features/agentManagement';
+import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
+import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
-import { PageHeader, PageToolbarSearch, Tabs } from '../ui';
+import { CategoryTabs, PageHeader, PageToolbarSearch, Tabs } from '../ui';
 
 type PanelView = 'catalog' | 'teams' | 'mine' | 'detail' | 'group-detail' | 'create' | 'group-create';
 
@@ -53,6 +55,10 @@ type AgentManagementPanelProps = {
   onUseAgentGroup?: (id: string) => void;
   onUseGroupPrompt?: (id: string, prompt: string) => void;
   onCreateGroupViaChat?: () => void;
+  navigationRequest?: {
+    target: 'agent' | 'group';
+    requestId: number;
+  } | null;
   onViewChange?: (view: PanelView) => void;
 };
 
@@ -81,6 +87,25 @@ const EMPTY_GROUP_DRAFT: AgentGroupDraft = {
   skillRefs: [],
   suggestedPrompts: [],
 };
+
+function detailToDraft(detail: AgentDetail): AgentDraft {
+  const presetIds = new Set<string>(AGENT_TAG_OPTIONS.map((option) => option.id));
+  const tagIds = detail.tags
+    .map((tag) => tag.id)
+    .filter((id): id is string => presetIds.has(id));
+  const customTags = detail.tags.filter((tag) => !presetIds.has(tag.id)).map((tag) => tag.label);
+  return {
+    id: detail.id,
+    name: detail.displayName,
+    description: detail.description,
+    persona: detail.persona,
+    tagIds,
+    customTags,
+    skillRefs: detail.skills.map((skill) => skill.id),
+    mcpRefs: detail.mcps.map((mcp) => mcp.id),
+    suggestedPrompts: detail.suggestedPrompts,
+  };
+}
 
 function getErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -197,6 +222,7 @@ export function AgentManagementPanel({
   onUseAgentGroup,
   onUseGroupPrompt,
   onCreateGroupViaChat,
+  navigationRequest,
   onViewChange,
 }: AgentManagementPanelProps) {
   const { t } = useTranslation();
@@ -228,6 +254,7 @@ export function AgentManagementPanel({
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [connectorFlowId, setConnectorFlowId] = useState<string | null>(null);
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
@@ -271,11 +298,29 @@ export function AgentManagementPanel({
   const groupDetailRevisionRef = useRef(0);
   const groupFilesRevisionRef = useRef(0);
   const groupFileRevisionRef = useRef(0);
+  const lastNavigationRequestIdRef = useRef<number | null>(null);
   const actionNoticeTimerRef = useRef<number | null>(null);
   const installFlowTargetRef = useRef<string | null>(null);
   const reconnectFlowTargetRef = useRef<string | null>(null);
   const connectorError = useConnectorStore((state) => state.error);
   const clearConnectorError = useConnectorStore((state) => state.clearError);
+  useEffect(() => {
+    const request = navigationRequest;
+    if (!request || request.requestId === lastNavigationRequestIdRef.current) return;
+    lastNavigationRequestIdRef.current = request.requestId;
+    setCreateMenuOpen(false);
+    setActionError(null);
+    setActionNotice(null);
+    setView('mine');
+    setMineKind(request.target);
+    if (request.target === 'group') {
+      setGroupMineQuery('');
+      setGroupMinePage(1);
+    } else {
+      setMineQuery('');
+      setMinePage(1);
+    }
+  }, [navigationRequest]);
   const formatActionError = useCallback(
     (error: unknown, fallback: string) => getFriendlyErrorMessage(error, fallback, t),
     [t],
@@ -492,8 +537,8 @@ export function AgentManagementPanel({
     setDetailTab(tab);
     if (tab === 'files' && selectedId && state.filesStatus === 'idle') {
       void loadFiles(selectedId).then((files) => {
-        const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
-        if (firstPreviewableFile) void handleSelectFile(firstPreviewableFile);
+        const defaultFile = files ? findDefaultDefinitionFile(files) : null;
+        if (defaultFile) void handleSelectFile(defaultFile);
       });
     }
   };
@@ -581,8 +626,8 @@ export function AgentManagementPanel({
     setGroupDetailTab(tab);
     if (tab === 'files' && groupSelectedId && groupFilesStatus === 'idle') {
       void loadGroupFiles(groupSelectedId).then(files => {
-        const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
-        if (firstPreviewableFile) void handleSelectGroupFile(firstPreviewableFile);
+        const defaultFile = files ? findDefaultDefinitionFile(files) : null;
+        if (defaultFile) void handleSelectGroupFile(defaultFile);
       });
     }
   };
@@ -824,6 +869,7 @@ export function AgentManagementPanel({
     setCreateMenuOpen(false);
     setMineKind('agent');
     setDraft(EMPTY_DRAFT);
+    setEditingId(null);
     setCreateError(null);
     setActionError(null);
     setActionNotice(null);
@@ -844,14 +890,35 @@ export function AgentManagementPanel({
     if (state.skillsStatus === 'idle') void loadSkills();
   };
 
+  const handleEdit = async (id: string) => {
+    setActionError(null);
+    setActionNotice(null);
+    setCreateError(null);
+    try {
+      const detail = state.detail?.id === id ? state.detail : await client.getDefinition(id);
+      setDraft(detailToDraft(detail));
+      setEditingId(id);
+      setView('create');
+      if (state.skillsStatus === 'idle') void loadSkills();
+      void loadMcps();
+    } catch (error) {
+      setActionError(formatActionError(error, t('agentManagement.states.detailError')));
+    }
+  };
+
   const handleCreate = async () => {
     setSaving(true);
     setCreateError(null);
     setActionError(null);
     setActionNotice(null);
     try {
-      await client.createAgent({ ...draft, id: draft.id || deriveAgentId(draft.name) });
+      if (editingId) {
+        await client.updateAgent({ ...draft, id: editingId });
+      } else {
+        await client.createAgent({ ...draft, id: draft.id || deriveAgentId(draft.name) });
+      }
       await loadCatalog();
+      setEditingId(null);
       setMineQuery('');
         setMinePage(1);
       setView('mine');
@@ -869,6 +936,7 @@ export function AgentManagementPanel({
       setActionNotice(null);
       try {
         const result = await groupClient.createGroup({ ...groupDraft, id: groupDraft.id || deriveAgentGroupId(groupDraft.name) });
+        await groupClient.installGroup(result.id);
         await loadGroups('mine');
       setGroupMineQuery('');
       setGroupMinePage(1);
@@ -879,6 +947,23 @@ export function AgentManagementPanel({
       setGroupCreateError(formatActionError(error, t('agentManagement.group.form.saveError')));
     } finally {
       setGroupSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    const confirmed = window.confirm(t('agentManagement.confirm.deleteMessage', { name }));
+    if (!confirmed) return;
+    setBusyId(id);
+    setActionError(null);
+    setActionNotice(null);
+    try {
+      await client.deleteDefinition(id);
+      await loadCatalog();
+      setView('mine');
+    } catch (error) {
+      setActionError(formatActionError(error, t('agentManagement.states.actionError')));
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -912,6 +997,7 @@ export function AgentManagementPanel({
         ? await groupClient.importGroup(path)
         : await client.importAgentTemplate(path);
       if (kind === 'group') {
+        await groupClient.installGroup(result.id);
         await loadGroups('mine');
         setMineKind('group');
         setGroupMineQuery('');
@@ -1026,12 +1112,10 @@ export function AgentManagementPanel({
 
             />
             {isMine ? (
-              <Tabs
-                role="tablist"
-                ariaLabel={t('agentManagement.tabs.mineLabel')}
+              <CategoryTabs
                 wrapperTestId="agent-management-secondary-tabs"
                 itemTestId="agent-management-secondary-tab"
-                className="agent-management-secondary-tabs text-base"
+                className="agent-management-secondary-tabs"
                 value={mineKind}
                 onChange={(nextKind) => setMineKind(nextKind as 'agent' | 'group')}
                 items={[
@@ -1160,7 +1244,6 @@ export function AgentManagementPanel({
               onOpen={openGroupDetail}
               onUse={handleUseGroup}
               onInstall={handleInstallGroup}
-              onUninstall={handleUninstallGroup}
               onCreate={openGroupCreate}
             />
           ) : (
@@ -1209,8 +1292,8 @@ export function AgentManagementPanel({
             selectedId &&
             (state.detail?.source === 'local' || state.detail?.installed === true) &&
             void loadFiles(selectedId).then(files => {
-              const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
-              if (firstPreviewableFile) void handleSelectFile(firstPreviewableFile);
+              const defaultFile = files ? findDefaultDefinitionFile(files) : null;
+              if (defaultFile) void handleSelectFile(defaultFile);
             })
           }
           onSelectFile={handleSelectFile}
@@ -1220,12 +1303,14 @@ export function AgentManagementPanel({
           onReconnect={handleReconnect}
           onInstall={handleInstall}
           onUninstall={handleUninstall}
-
+          onDelete={handleDelete}
+          onEdit={handleEdit}
         />
       )}
       {view === 'create' && (
         <AgentEditor
           draft={draft}
+          mode={editingId ? 'edit' : 'create'}
           skillOptions={state.skillOptions}
           skillsStatus={state.skillsStatus}
           mcpOptions={mcpOptions}
@@ -1237,6 +1322,8 @@ export function AgentManagementPanel({
           onReloadMcps={loadMcps}
           onCreateGroup={openGroupCreate}
           onCancel={() => {
+            setEditingId(null);
+            setDraft(EMPTY_DRAFT);
             setActionError(null);
             setActionNotice(null);
             setView('mine');
@@ -1263,7 +1350,7 @@ export function AgentManagementPanel({
           onBack={goBackToGroupCatalog}
           onRetry={() => groupSelectedId && void openGroupDetail(groupSelectedId)}
           onTabChange={handleGroupTabChange}
-          onRetryFiles={() => groupSelectedId && void loadGroupFiles(groupSelectedId).then(files => { const first = files ? findFirstPreviewableFile(files) : null; if (first) void handleSelectGroupFile(first); })}
+          onRetryFiles={() => groupSelectedId && void loadGroupFiles(groupSelectedId).then(files => { const defaultFile = files ? findDefaultDefinitionFile(files) : null; if (defaultFile) void handleSelectGroupFile(defaultFile); })}
           onSelectFile={handleSelectGroupFile}
           onUse={handleUseGroup}
           onUsePrompt={handleUseGroupPrompt}

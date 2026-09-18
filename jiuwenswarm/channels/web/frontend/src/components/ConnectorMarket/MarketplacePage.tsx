@@ -8,7 +8,6 @@ import { Plus, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { localizedText } from '../../types/pluginPackage';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { MarketCard } from './MarketCard';
 import { MyMarketCard } from './MyMarketCard';
 import { ConnectTokenModal } from './ConnectTokenModal';
@@ -630,7 +629,7 @@ export function MarketplacePage({
 
 <CatalogCacheNotice cache={catalogCacheOf(topTab === 'my' ? (myKind === 'mcp' ? myConnectors : localPackages) : topTab === 'mcp' ? builtinConnectors : packages)} />
 <div ref={scrollRef} className="page-scroll min-h-0 flex-1 overflow-y-auto">
-<div className="card-grid-auto" style={{ padding: '16px 0' }} data-testid="connector-market-card-list">
+<div className="card-grid-auto" data-testid="connector-market-card-list">
         {topTab === 'my'
           ? myKind === 'mcp'
             ? paginatedConnectors.map((connector) => {
@@ -643,7 +642,6 @@ export function MarketplacePage({
                     key={connector.id}
                     title={connector.displayName}
                     description={connector.description ?? ''}
-                    avatar={getSkillAvatar(connector.displayName)}
                     iconUrl={connector.icon ?? undefined}
                     state={cs}
                     busyKind={busyMap[connector.id] ?? busyMap[connector.runtimePackageName]}
@@ -664,7 +662,6 @@ export function MarketplacePage({
                     title={localizedText(pkg.displayName, i18n.language)}
                     tags={(pkg.tags ?? []).map(tag => localizedText(tag, i18n.language))}
                     description={localizedText(pkg.displayDescription, i18n.language)}
-                    avatar={getSkillAvatar(localizedText(pkg.displayName, i18n.language))}
                     iconUrl={pkg.avatar || undefined}
                     state={pluginInstallingIds[pkg.id] ? 'connecting' : pluginInstalled ? 'connected' : 'idle'}
                     busyKind="install"
@@ -691,7 +688,6 @@ export function MarketplacePage({
                     key={connector.id}
                     title={connector.displayName}
                     description={connector.description ?? ''}
-                    avatar={getSkillAvatar(connector.displayName)}
                     iconUrl={connector.icon ?? undefined}
                     state={cs}
                     busyKind={busyMap[connector.id] ?? busyMap[connector.runtimePackageName]}
@@ -712,7 +708,6 @@ export function MarketplacePage({
                     title={localizedText(pkg.displayName, i18n.language)}
                     tags={(pkg.tags ?? []).map(tag => localizedText(tag, i18n.language))}
                     description={localizedText(pkg.displayDescription, i18n.language)}
-                    avatar={getSkillAvatar(localizedText(pkg.displayName, i18n.language))}
                     iconUrl={pkg.avatar || undefined}
                     state={pluginInstallingIds[pkg.id] ? 'connecting' : pluginInstalled ? 'connected' : 'idle'}
                     busyKind="install"

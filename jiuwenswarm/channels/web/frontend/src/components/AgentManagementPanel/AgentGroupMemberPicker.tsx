@@ -3,10 +3,12 @@ import { useMemo, useRef, useState, type RefObject } from 'react';
 import { Check, Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
+  getAgentAvatarUrl,
   isAgentGroupAgentSelectable,
   resolveAgentGroupSelectionId,
   type AgentCatalogItem,
 } from '../../features/agentManagement';
+import { PageCard } from '../ui';
 import { useDialogFocusTrap } from './useDialogFocusTrap';
 
 export function AgentOptionAvatar({ agent }: { agent: AgentCatalogItem }) {
@@ -62,7 +64,7 @@ export function AgentGroupMemberPicker({
             agent.id === selectedLeaderId;
       if (!selectable && !selected) return false;
       if (!normalized) return true;
-      return `${agent.id} ${agent.runtimePackageName} ${agent.displayName} ${agent.description} ${agent.category}`
+      return `${agent.id} ${agent.runtimePackageName} ${agent.displayName} ${agent.description} ${agent.category} ${agent.tags.map((tag) => tag.label).join(' ')}`
         .toLocaleLowerCase()
         .includes(normalized);
     });
@@ -148,32 +150,33 @@ export function AgentGroupMemberPicker({
                   (mode === 'member'
                     ? selectionId === selectedLeaderId || agent.id === selectedLeaderId
                     : selectedMemberIds.includes(selectionId) || selectedMemberIds.includes(agent.id));
-                const category =
-                  agent.tags[0]?.label ||
-                  t(`agentManagement.categories.${agent.category}`, {
-                    defaultValue: agent.category || t('agentManagement.categoryOther'),
-                  });
+                const categoryTags = agent.tags.length > 0 ? agent.tags.map((tag) => tag.label) : undefined;
+                const description = agent.description || t('agentManagement.unknownDescription');
                 return (
-                  <button
+                  <PageCard
                     key={agent.id}
-                    type="button"
-                    data-testid="agent-group-member-picker-item"
-                    data-variant={selectionId}
-                    aria-pressed={selected}
-                    aria-disabled={disabled}
+                    className={`agent-management-selection-card agent-management-selection-card--expert${selected ? ' is-selected' : ''}${disabled ? ' is-disabled' : ''}`}
+                    testId="agent-group-member-picker-item"
+                    variant={selectionId}
+                    interactive
+                    selected={selected}
                     disabled={disabled}
-                    className={`agent-management-selection-card${selected ? ' is-selected' : ''}${disabled ? ' is-disabled' : ''}`}
+                    ariaLabel={agent.displayName}
                     onClick={() => toggle(selectionId, agent.id)}
-                  >
-                    <AgentOptionAvatar agent={agent} />
-                    <span>
-                      <strong title={agent.displayName}>{agent.displayName}</strong>
-                      <small>{category}</small>
-                    </span>
-                    <span className="agent-management-selection-card__action" aria-hidden="true">
-                      {selected ? <Check size={12} strokeWidth={2.5} /> : null}
-                    </span>
-                  </button>
+                    avatar={{
+                      name: agent.displayName,
+                      iconUrl: getAgentAvatarUrl(agent),
+                      testId: 'agent-group-member-picker-avatar',
+                    }}
+                    title={agent.displayName}
+                    label={categoryTags}
+                    description={description}
+                    actionSlot={(
+                      <span className="agent-management-selection-card__action" aria-hidden="true">
+                        {selected ? <Check size={12} strokeWidth={2.5} /> : null}
+                      </span>
+                    )}
+                  />
                 );
               })}
             </div>

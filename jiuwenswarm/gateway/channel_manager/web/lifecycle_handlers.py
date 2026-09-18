@@ -48,7 +48,11 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                             continue
                         for ws in clients:
                             await channel.send_event(ws, entry["event"], payload)
-                            if entry["completed"]:
+                            if entry["completed"] and not (
+                                entry["kind"] == "delete"
+                                and entry["event"].startswith("project.")
+                                and not entry["result"].get("deleted")
+                            ):
                                 suffix = {
                                     "archive": "archived",
                                     "unarchive": "unarchived",
@@ -268,7 +272,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                     for item in payload.get("results", [payload]):
                         if item.get("ok", True) and item.get("session_id"):
                             await channel.send_event(ws, event, item)
-                elif "operation_id" not in payload:
+                elif "operation_id" not in payload and (method != "project.delete" or payload.get("deleted")):
                     await channel.send_event(ws, event, payload)
 
         return handle

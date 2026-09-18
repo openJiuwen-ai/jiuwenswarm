@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -164,6 +165,7 @@ class SymphonyGraphBuilder:
     ) -> None:
         self.runtime_factory = runtime_factory or GraphBuildRuntimeFactory()
         self.state_builder = state_builder or GraphStateBuilder()
+        self._active_checkpoint: _BuildCheckpoint | None = None
 
     def status(
         self,
@@ -287,6 +289,7 @@ class SymphonyGraphBuilder:
             force=force,
             resume_from=str(resume_from) if resume_from is not None else "",
         )
+        self._active_checkpoint = checkpoint
         if resume_from is not None:
             _record_build_log(
                 build_log,
@@ -531,6 +534,26 @@ class SymphonyGraphBuilder:
             version=graph_build.version,
         )
 
+    def cancel_active_checkpoint(self, *, reason: str = "cancelled") -> bool:
+        """Mark this builder's in-flight checkpoint cancelled after task abort."""
+
+        checkpoint = self._active_checkpoint
+        if checkpoint is None or not checkpoint.path.is_file():
+            return False
+        try:
+            payload = json.loads(checkpoint.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if str(payload.get("status") or "") != "running":
+            return False
+        checkpoint.record("update.cancelled", status="cancelled", reason=reason)
+        return True
+
+    def clear_active_checkpoint(self) -> None:
+        """Release the checkpoint reference once the public build call ends."""
+
+        self._active_checkpoint = None
+
 
 def graph_status(
     skills_root: str | Path,
@@ -565,17 +588,24 @@ async def build_graph(
     """Build or refresh the offline Symphony graph."""
 
     del workers
-    return await SymphonyGraphBuilder(
+    builder = SymphonyGraphBuilder(
         runtime_factory=runtime_factory,
-    ).build(
-        skills_root,
-        graph_dir,
-        llm_config,
-        force=force,
-        build_log=build_log,
-        symphony_config=symphony_config,
-        resume=resume,
     )
+    try:
+        return await builder.build(
+            skills_root,
+            graph_dir,
+            llm_config,
+            force=force,
+            build_log=build_log,
+            symphony_config=symphony_config,
+            resume=resume,
+        )
+    except asyncio.CancelledError:
+        builder.cancel_active_checkpoint()
+        raise
+    finally:
+        builder.clear_active_checkpoint()
 
 
 def _public_progress_adapter(

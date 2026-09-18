@@ -232,10 +232,10 @@
   flex-shrink: 0;
 }
 .rsi-detail__actions .rsi-btn {
-  width: 96px;
   height: 32px;
   padding: 0;
   border-radius: 9999px;
+  padding: 0px 14px;
 }
 .rsi-detail__actions .rsi-btn--ghost {
   background: #ffffff;
@@ -245,7 +245,6 @@
   color: #ffffff;
 }
 .rsi-detail__actions .rsi-detail__action--delete {
-  width: 52px;
   background: transparent;
   border-color: transparent;
   color: #191919;
@@ -1473,7 +1472,6 @@
   color: #191919;
 }
 .rsi-intro__create {
-  width: 96px;
   height: 32px;
   border: none;
   border-radius: 8px;
@@ -1483,6 +1481,7 @@
   line-height: 22px;
   font-weight: 400;
   cursor: pointer;
+  padding: 0px 14px;
 }
 .rsi-intro__create:hover {
   opacity: 0.85;

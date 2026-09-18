@@ -1,11 +1,10 @@
 .model-provider-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 16px;
   height: 16px;
   border-radius: 3px;
   flex-shrink: 0;
+  vertical-align: middle;
+  transform: translateZ(0);
 }
 
 .model-provider-icon--img {

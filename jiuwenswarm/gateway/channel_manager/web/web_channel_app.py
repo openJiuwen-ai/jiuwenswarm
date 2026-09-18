@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""FastAPI app for WebChannel: WebSocket now, optional HTTP routes later (same port)."""
+"""FastAPI app for WebChannel: WebSocket and HTTP on the same port."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _FORBIDDEN_ORIGIN_BODY = "Forbidden: Origin not allowed\n"
+_UNAUTHORIZED_BODY = "Unauthorized\n"
 _GIT_WS_PATH = "/ws/git"
 
 
@@ -42,11 +43,11 @@ def normalize_web_ws_path(path: str | None) -> str:
 
 
 def build_web_channel_app(channel: WebChannel) -> FastAPI:
-    """Build the dual-protocol capable app bound to one WebChannel instance.
+    """Build the same-port HTTP+WS app bound to one WebChannel instance.
 
-    Phase 1: WebSocket endpoints for ``channel.config.path`` (default ``/ws``)
-    and hard-coded ``/ws/git``. Later: register HTTP routes on the same ``app``
-    without changing existing WS JSON-RPC methods.
+    WebSocket endpoints for ``channel.config.path`` (default ``/ws``) and
+    hard-coded ``/ws/git``. HTTP routes (e.g. ``/file-api``) register on the
+    same ``app`` without changing existing WS JSON-RPC methods.
     """
     app = FastAPI(
         title="JiuwenSwarm WebChannel",
@@ -57,8 +58,6 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
     app.state.web_channel = channel
     plugin_registry = getattr(channel, "application_plugin_registry", None)
 
-    # Extension point for future same-port HTTP (e.g. container file API).
-    # Keep unused in Phase 1 so WS behavior stays the sole surface.
     register_http_routes(app, channel)
     mount_application_plugin_http_routes(app, plugin_registry)
 
@@ -67,7 +66,7 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await _serve_channel_websocket(channel, websocket)
 
-    # Honor WEB_PATH / --web-path (same as legacy handle_connection path check).
+    # Honor WEB_PATH / --web-path (same as handle_connection path check).
     app.add_api_websocket_route(main_path, websocket_endpoint)
     reserved_paths = {main_path, _GIT_WS_PATH}
     for plugin_id, route in iter_websocket_routes(plugin_registry):
@@ -122,13 +121,18 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
         attach_trajectory_routes,
     )
+    from jiuwenswarm.gateway.channel_manager.web.web_http_auth import register_auth_routes
 
     attach_container_file_routes(app, channel)
     attach_trajectory_routes(app, channel)
+    # register auth http routes for huawei account login
+    register_auth_routes(app)
 
 
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:
     if await _reject_disallowed_origin(websocket):
+        return
+    if await _reject_unauthorized_handshake(channel, websocket):
         return
 
     adapter = StarletteWsAdapter(websocket)
@@ -137,7 +141,7 @@ async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) ->
         await channel.handle_connection(adapter, path=adapter.path)
     except Exception:  # noqa: BLE001 — connection-level isolation
         logger.exception(
-            "WebChannel dual-protocol WS handler crashed path=%s remote=%s",
+            "WebChannel WS handler crashed path=%s remote=%s",
             adapter.path,
             adapter.remote_address,
         )
@@ -177,6 +181,37 @@ async def _reject_disallowed_origin(websocket: WebSocket) -> bool:
     )
     await websocket.send_denial_response(
         PlainTextResponse(_FORBIDDEN_ORIGIN_BODY, status_code=403),
+    )
+    return True
+
+
+def _websocket_handshake_path(websocket: WebSocket) -> str:
+    path = str(websocket.url.path or "")
+    query = str(websocket.url.query or "")
+    return f"{path}?{query}" if query else path
+
+
+async def _reject_unauthorized_handshake(channel: WebChannel, websocket: WebSocket) -> bool:
+    """Return True when IAM rejected the Upgrade (HTTP 401, no WS)."""
+    remote = ""
+    client = getattr(websocket, "client", None)
+    if client is not None:
+        host = getattr(client, "host", "") or ""
+        port = getattr(client, "port", "")
+        remote = f"{host}:{port}" if host else ""
+    if not await channel.handshake_auth_denied(
+        path=_websocket_handshake_path(websocket),
+        headers=websocket.headers,
+        remote=remote,
+        channel="web",
+    ):
+        return False
+    logger.warning(
+        "WebChannel 握手拒绝 path=%s reason=unauthorized",
+        websocket.url.path,
+    )
+    await websocket.send_denial_response(
+        PlainTextResponse(_UNAUTHORIZED_BODY, status_code=401),
     )
     return True
 

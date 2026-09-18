@@ -149,8 +149,8 @@ interface ChatPanelProps {
   autoFocusKey?: string | null;
   /** 跳转到技能管理页 */
   onNavigateToSkills?: () => void;
-  /** 跳转到智能体管理页 */
-  onNavigateToAgents?: () => void;
+  /** 跳转到专家管理页，可指定“我的专家”下的资产类型 */
+  onNavigateToAgents?: (target?: 'agent' | 'group') => void;
   /** 切换右侧紧缩面板展开状态，传 null 表示隐藏面板 */
   onToggleTeamArea?: (expanded: boolean | null) => void;
   /** 打开右侧面板并切换到代码审核 Tab */
@@ -905,8 +905,19 @@ function scrollToBottom(el: HTMLDivElement): void {
 }
 
 const BEE_ANIMATION_DURATION = 4536;
+const WELCOME_BUBBLE_HIDE_DELAY = 3000;
 
-function BeeBanner({ className, altText, onTrigger }: { className: string; altText: string; onTrigger: () => void }) {
+function BeeBanner({
+  className,
+  altText,
+  onTrigger,
+  onLeave,
+}: {
+  className: string;
+  altText: string;
+  onTrigger: () => void;
+  onLeave: () => void;
+}) {
   const [isPlaying, setIsPlaying] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -935,6 +946,7 @@ function BeeBanner({ className, altText, onTrigger }: { className: string; altTe
       alt={altText}
       data-testid="chat-panel-welcome-banner"
       onMouseEnter={handleMouseEnter}
+      onMouseLeave={onLeave}
     />
   );
 }
@@ -1056,6 +1068,31 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const [bubbleVisible, setBubbleVisible] = useState(false);
+  const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleBubbleShow = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+      bubbleHideTimerRef.current = null;
+    }
+    setBubbleVisible(true);
+  }, []);
+  const handleBubbleLeave = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+    }
+    bubbleHideTimerRef.current = setTimeout(() => {
+      bubbleHideTimerRef.current = null;
+      setBubbleVisible(false);
+    }, WELCOME_BUBBLE_HIDE_DELAY);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (bubbleHideTimerRef.current) {
+        clearTimeout(bubbleHideTimerRef.current);
+        bubbleHideTimerRef.current = null;
+      }
+    };
+  }, []);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
   const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const handlePluginConversationItem = useCallback((sid: string, role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => {
@@ -1147,6 +1184,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, []);
   const {
     turnsByMessageId: codeTurnsByMessageId,
+    turnCardAnchors: codeTurnCardAnchors,
     loading: codeTurnHistoryLoading,
     reload: reloadCodeTurnHistory,
     latestTurnKey: latestCodeTurnKey,
@@ -1165,6 +1203,9 @@ export const ChatPanel = React.memo(function ChatPanel({
     (message: Message) => {
       const turns = codeTurnsByMessageId.get(message.id);
       if (!turns?.length) return null;
+      // 同一轮的多条消息共享同一个 id（后端每个 chat.final 一条记录、同一个
+      // `<request_id>:assistant`），只在锚点消息上出卡片，避免重复渲染多张。
+      if (!codeTurnCardAnchors.has(message)) return null;
       return turns.map((turn) => {
         const turnKey = turnDiffKey(turn);
         const isLatest = turnKey === latestCodeTurnKey;
@@ -1186,6 +1227,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       });
     },
     [
+      codeTurnCardAnchors,
       codeTurnHistoryLoading,
       codeTurnsByMessageId,
       discardLatestTurn,
@@ -1583,7 +1625,8 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   const ingestDesktopLocalFiles = useCallback(
     (detail: DesktopLocalFilesEventDetail | null | undefined, files: LocalFilePick[]) => {
-      if (detail?.source && detail.source !== 'drop') return;
+      // Native drop bridge uses source=drop; context-menu paste uses source=paste.
+      if (detail?.source && detail.source !== 'drop' && detail.source !== 'paste') return;
       if (!files.length) {
         clearDesktopFileDropZone();
         return;
@@ -1869,7 +1912,8 @@ export const ChatPanel = React.memo(function ChatPanel({
                     <BeeBanner
                       className="chat-welcome__banner chat-welcome__banner--bee"
                       altText={t('chat.welcomeLogoAlt')}
-                      onTrigger={() => setBubbleVisible(true)}
+                      onTrigger={handleBubbleShow}
+                      onLeave={handleBubbleLeave}
                     />
                   </>
                 )}

@@ -95,6 +95,18 @@ export function isFetchStopTimeoutError(
   );
 }
 
+/**
+ * 采集任务运行时后端拒绝配置修改的错误码（host_api._apply_configuration_locked 的
+ * CONTEXT_PROACTIVE_STATE_INVALID = 154001，见 openjiuwen/.../status_codes.py）。
+ * 前端捕获此码时用简短提示（alert）替代持久错误条。
+ */
+export const FETCH_TASK_RUNNING_ERROR_CODE = 154001;
+
+/** 判断某个请求错误是否由「采集任务正在运行，配置修改被拒绝」触发。 */
+export function isFetchTaskRunningError(error: unknown): boolean {
+  return String((error as { code?: unknown })?.code ?? '') === String(FETCH_TASK_RUNNING_ERROR_CODE);
+}
+
 // ── runtime.get_config / patch / select_model 返回的 stored config ─────────
 export type StrategyProfile = 'rules' | 'balanced' | 'agent';
 

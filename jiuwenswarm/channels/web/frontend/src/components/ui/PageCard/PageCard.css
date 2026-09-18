@@ -30,6 +30,15 @@
   outline-offset: 2px;
 }
 
+.page-card--disabled {
+  cursor: not-allowed;
+}
+
+.page-card--disabled:hover,
+.page-card--disabled:focus-within {
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
+}
+
 @media (min-width: 1600px) {
   .page-card {
     max-width: 456px;

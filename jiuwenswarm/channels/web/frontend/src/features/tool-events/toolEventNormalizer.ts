@@ -304,9 +304,18 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     typeof rawOutputRecord?.output === 'string'
       ? rawOutputRecord.output
       : undefined;
+  // `rendered_result` is the text the model read for the call. `result` is the
+  // compatibility str() of the structured tool result; it is only a fallback
+  // for events that predate `rendered_result` and is removed once the UI reads
+  // structured data.
+  const renderedResult =
+    typeof toolResultPayload.rendered_result === 'string'
+      ? toolResultPayload.rendered_result
+      : undefined;
   const result =
     rawOutputResult ||
     nestedDataResult ||
+    renderedResult ||
     (typeof toolResultPayload.result === 'string' &&
       toolResultPayload.result) ||
     directDataResult ||

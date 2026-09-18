@@ -92,6 +92,16 @@ def session_database_path(database_root: Path, session_id: str) -> Path:
     return Path(database_root) / digest[:2] / f"{digest}.sqlite3"
 
 
+def database_files(database_path: Path) -> tuple[Path, Path, Path]:
+    """Return a SQLite database file and the WAL sidecars that belong to it.
+
+    Deleting a database means deleting all three: a WAL left behind would be
+    replayed into whatever database is later created at the same path.
+    """
+    path = Path(database_path)
+    return path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")
+
+
 def load_trajectory_store_settings(
     config: Mapping[str, Any] | None = None,
     *,
@@ -137,6 +147,7 @@ __all__ = [
     "DEFAULT_DETAIL_MAX_BYTES",
     "DEFAULT_SESSION_DATABASE_DIRECTORY",
     "TrajectoryStoreSettings",
+    "database_files",
     "load_trajectory_store_settings",
     "session_database_path",
 ]

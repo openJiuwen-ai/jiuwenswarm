@@ -13,11 +13,15 @@ import sqlite3
 import time
 import uuid
 import zlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 import aiosqlite
+from openjiuwen.extensions.observability.content_addressing import (
+    parse_sequence_reference,
+    rebuild_value,
+)
 
 from jiuwenswarm.common.mode_matrix import (
     SINGLE_AGENT_CANONICAL_MODES,
@@ -25,6 +29,7 @@ from jiuwenswarm.common.mode_matrix import (
 )
 from jiuwenswarm.observability.config import (
     DEFAULT_DETAIL_MAX_BYTES,
+    database_files,
     session_database_path,
 )
 from jiuwenswarm.observability.models import (
@@ -33,14 +38,13 @@ from jiuwenswarm.observability.models import (
     TraceRecordData,
     WriteBatchResult,
 )
-from jiuwenswarm.observability.projection import (
-    TrajectoryScope,
-    project_trajectory_scope,
-)
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 3
+# A database written under any other version is discarded, not migrated:
+# trajectories are diagnostic data with a retention window of days, and every
+# migration kept here was code that outlived the data it existed for.
+_SCHEMA_VERSION = 4
 _BUSY_TIMEOUT_MS = 5000
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
 _MAX_JSON_NESTING_DEPTH = 256
@@ -168,35 +172,6 @@ CREATE INDEX IF NOT EXISTS idx_trajectory_current_subject_change
 CREATE INDEX IF NOT EXISTS idx_trajectory_current_trace_change
     ON trajectory_current_records(trace_id, change_seq);
 
-CREATE TABLE IF NOT EXISTS trajectory_changes (
-    change_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    trace_id TEXT NOT NULL,
-    span_id TEXT NOT NULL,
-    parent_span_id TEXT,
-    session_id TEXT,
-    request_id TEXT,
-    run_id TEXT,
-    agent_mode TEXT,
-    lifecycle TEXT NOT NULL,
-    record_revision INTEGER NOT NULL,
-    operation TEXT NOT NULL,
-    start_time_unix_nano INTEGER NOT NULL,
-    observed_time_unix_nano INTEGER NOT NULL,
-    end_time_unix_nano INTEGER NOT NULL,
-    schema_version TEXT NOT NULL,
-    source TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    has_error INTEGER NOT NULL DEFAULT 0,
-    raw_json BLOB NOT NULL,
-    raw_sha256 TEXT NOT NULL,
-    update_kind TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_trajectory_changes_session_change
-    ON trajectory_changes(session_id, change_seq);
-CREATE INDEX IF NOT EXISTS idx_trajectory_changes_trace_change
-    ON trajectory_changes(trace_id, change_seq);
-
 -- The span a run of frames came from, named once instead of on every frame.
 -- One streaming turn emits hundreds of frames from a single span, and a
 -- 32-character trace id plus a 16-character span id on each of them cost
@@ -292,18 +267,13 @@ _FRAME_KIND_NAMES: dict[int, str] = {code: kind for kind, code in _FRAME_KIND_CO
 # A final span's payload already lives in otlp_span_records, so
 # trajectory_current_records stores it only while the span is still running and
 # leaves an empty BLOB once it ends. Reads resolve the two sources through this
-# join. NULLIF keeps rows written before the column existed working unchanged:
-# they still carry their own payload, so the fallback never applies to them and
-# no backfill is needed.
+# join: the empty BLOB is what marks a row whose payload is in the archive.
 _CURRENT_ARCHIVE_JOIN = """
     LEFT JOIN otlp_span_records AS archive
         ON archive.trace_id = current.trace_id
        AND archive.span_id = current.span_id
 """
 _CURRENT_RAW_JSON = "COALESCE(NULLIF(current.raw_json, X''), archive.raw_json)"
-# Pre-migration rows default to 0 here, so fall back to measuring the payload
-# they still hold.
-_CURRENT_RAW_SIZE = "COALESCE(NULLIF(current.raw_size_bytes, 0), LENGTH(current.raw_json))"
 
 # OTLP JSON repeats its key names on every span, event and attribute, so it
 # compresses several-fold. Level 3 sits at the knee of the curve for this data:
@@ -311,14 +281,8 @@ _CURRENT_RAW_SIZE = "COALESCE(NULLIF(current.raw_size_bytes, 0), LENGTH(current.
 # level 6 spends 1.35 ms to reach 4.1x. Decompression costs 0.07 ms either way.
 # SQLite's default bound-variable limit is 999; stay well inside it when
 # fetching the elements one page of records refers to.
-# The reference format Agent Core writes in place of a restated attribute.
-_SEQUENCE_REFERENCE_PREFIX = "@oj-seq"
-_SEQUENCE_REFERENCE_VERSION = "1"
 _SEQUENCE_FETCH_CHUNK = 400
 _PAYLOAD_COMPRESSION_LEVEL = 3
-# Every uncompressed payload is a JSON object, so its first byte distinguishes
-# it from a zlib stream without a version column or a migration.
-_JSON_OBJECT_START = 0x7B
 
 
 def _encode_payload(raw_json: bytes) -> bytes:
@@ -327,24 +291,14 @@ def _encode_payload(raw_json: bytes) -> bytes:
 
 
 def _decode_payload(stored: bytes | None) -> bytes:
-    """Return the original payload, whether or not it was stored compressed.
+    """Return the original payload of one stored, compressed BLOB.
 
-    Rows written before compression begin with ``{`` and are handed back
-    untouched, so an existing database keeps working without a migration.
+    An empty BLOB is the marker of a final row whose payload lives in the
+    archive table, and decodes to nothing.
     """
     if not stored:
         return b""
-    raw = bytes(stored)
-    if raw[0] == _JSON_OBJECT_START:
-        return raw
-    try:
-        return zlib.decompress(raw)
-    except zlib.error:
-        return raw
-
-
-class TrajectoryCursorError(ValueError):
-    """Raised when an opaque trajectory cursor is malformed."""
+    return zlib.decompress(bytes(stored))
 
 
 class TrajectoryStore:
@@ -360,30 +314,46 @@ class TrajectoryStore:
         if self._connection is not None:
             return
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(str(self.database_path), timeout=_BUSY_TIMEOUT_MS / 1000)
-        connection.row_factory = sqlite3.Row
+        connection = self._open_writer_connection()
         try:
-            connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if version not in (0, _SCHEMA_VERSION):
+                connection.close()
+                self._discard_incompatible_database(version)
+                connection = self._open_writer_connection()
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=NORMAL")
-            self._drop_superseded_frame_table(connection)
             connection.executescript(_SCHEMA_SQL)
-            self._ensure_store_state_columns(connection)
-            self._ensure_current_record_columns(connection)
-            removed = self._remove_missing_final_current(connection)
-            migrated = self._migrate_final_current(connection)
-            self._abandon_running_current(connection)
-            team_modes_backfilled = self._backfill_inferred_team_modes(connection)
             connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             self._initialize_store_state(connection)
-            if migrated or removed or team_modes_backfilled:
-                self._rotate_store_epoch(connection)
+            self._abandon_running_current(connection)
             connection.commit()
         except Exception:
             connection.close()
             raise
         self._connection = connection
+
+    def _open_writer_connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(str(self.database_path), timeout=_BUSY_TIMEOUT_MS / 1000)
+        connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        return connection
+
+    def _discard_incompatible_database(self, version: int) -> None:
+        """Delete a database written under another schema version.
+
+        The file and its WAL sidecars go together: a WAL left behind would be
+        replayed into the empty database that replaces them.
+        """
+        logger.warning(
+            "Trajectory database schema %s is not %s; discarding it: path=%s",
+            version,
+            _SCHEMA_VERSION,
+            self.database_path,
+        )
+        for path in database_files(self.database_path):
+            path.unlink(missing_ok=True)
 
     def close(self) -> None:
         """Commit and close the writer connection if it is open."""
@@ -675,44 +645,7 @@ class TrajectoryStore:
         resolved_has_error = (
             _record_has_error(record.raw_json) if has_error is None else has_error
         )
-        cursor = connection.execute(
-            """
-            INSERT INTO trajectory_changes (
-                trace_id, span_id, parent_span_id, session_id, request_id,
-                run_id, agent_mode, lifecycle, record_revision, operation,
-                start_time_unix_nano, observed_time_unix_nano,
-                end_time_unix_nano, schema_version, source, created_at,
-                has_error, raw_json, raw_sha256, update_kind
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'upsert', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.trace_id,
-                record.span_id,
-                record.parent_span_id,
-                record.session_id,
-                record.request_id,
-                record.run_id,
-                record.agent_mode,
-                record.lifecycle,
-                record.record_revision,
-                record.start_time_unix_nano,
-                record.observed_time_unix_nano,
-                record.end_time_unix_nano,
-                record.schema_version,
-                record.source,
-                record.created_at,
-                int(resolved_has_error),
-                # The change journal is a revision index, not a second payload
-                # store. Detail reads load the complete snapshot from
-                # trajectory_current_records, while final archives use
-                # otlp_span_records. Keeping the full BLOB here multiplied
-                # every streaming revision into unbounded write amplification.
-                sqlite3.Binary(b""),
-                record.raw_sha256,
-                record.update_kind,
-            ),
-        )
-        change_seq = int(cursor.lastrowid)
+        change_seq = _next_change_seq(connection)
         # A final span is already archived in otlp_span_records under the same
         # identity, so storing the payload again here doubled the database for
         # no recoverable information. Running spans have no archive row yet and
@@ -829,10 +762,7 @@ class TrajectoryStore:
             # every record that referenced the content here, so a reader
             # resuming from an earlier revision is never told it already has
             # something it does not.
-            row = connection.execute(
-                "SELECT COALESCE(MAX(change_seq), 0) AS seq FROM trajectory_changes"
-            ).fetchone()
-            batch_change_seq = int(row["seq"]) if row is not None else 0
+            batch_change_seq = _stored_max_change_seq(connection)
             connection.executemany(
                 """
                 INSERT INTO trajectory_blobs (
@@ -866,90 +796,6 @@ class TrajectoryStore:
             )
 
     @staticmethod
-    def _migrate_final_current(connection: sqlite3.Connection) -> int:
-        rows = connection.execute(
-            """
-            SELECT records.*
-            FROM otlp_span_records AS records
-            LEFT JOIN trajectory_current_records AS current
-              ON current.trace_id = records.trace_id AND current.span_id = records.span_id
-            WHERE current.trace_id IS NULL
-            ORDER BY records.ingest_seq ASC
-            """
-        ).fetchall()
-        for row in rows:
-            record = TraceRecordData(
-                raw_json=_decode_payload(row["raw_json"]),
-                raw_sha256=str(row["raw_sha256"]),
-                trace_id=str(row["trace_id"]),
-                span_id=str(row["span_id"]),
-                parent_span_id=row["parent_span_id"],
-                start_time_unix_nano=int(row["start_time_unix_nano"]),
-                end_time_unix_nano=int(row["end_time_unix_nano"]),
-                session_id=row["session_id"],
-                request_id=row["request_id"],
-                run_id=row["run_id"],
-                agent_mode=row["agent_mode"],
-                schema_version=str(row["schema_version"]),
-                source=str(row["source"]),
-                created_at=int(row["created_at"]),
-                execution_subject_id=str(row["execution_subject_id"] or "main"),
-                execution_subject_display_name=row["execution_subject_display_name"],
-                execution_subject_kind=row["execution_subject_kind"],
-                execution_subject_parent_id=row["execution_subject_parent_id"],
-                lifecycle="final",
-                record_revision=1,
-                observed_time_unix_nano=int(row["end_time_unix_nano"]),
-                update_kind="completed",
-            )
-            TrajectoryStore._upsert_current_record(
-                connection,
-                record,
-                has_error=bool(row["has_error"]),
-            )
-        return len(rows)
-
-    @staticmethod
-    def _remove_missing_final_current(connection: sqlite3.Connection) -> int:
-        rows = connection.execute(
-            """
-            SELECT current.trace_id, current.span_id
-            FROM trajectory_current_records AS current
-            LEFT JOIN otlp_span_records AS records
-              ON records.trace_id = current.trace_id AND records.span_id = current.span_id
-            WHERE current.lifecycle = 'final' AND records.trace_id IS NULL
-            """
-        ).fetchall()
-        for row in rows:
-            identity = (str(row["trace_id"]), str(row["span_id"]))
-            connection.execute(
-                "DELETE FROM trajectory_current_records WHERE trace_id = ? AND span_id = ?",
-                identity,
-            )
-            connection.execute(
-                "DELETE FROM trajectory_changes WHERE trace_id = ? AND span_id = ?",
-                identity,
-            )
-            # The span this frame stream described is gone, so its frames
-            # describe nothing any reader can reach. The name goes with them:
-            # nothing else refers to a span once its frames are gone.
-            connection.execute(
-                """
-                DELETE FROM trajectory_stream_frames
-                WHERE span_ref IN (
-                    SELECT span_ref FROM trajectory_frame_spans
-                    WHERE trace_id = ? AND span_id = ?
-                )
-                """,
-                identity,
-            )
-            connection.execute(
-                "DELETE FROM trajectory_frame_spans WHERE trace_id = ? AND span_id = ?",
-                identity,
-            )
-        return len(rows)
-
-    @staticmethod
     def _abandon_running_current(connection: sqlite3.Connection) -> int:
         rows = connection.execute(
             """
@@ -962,35 +808,6 @@ class TrajectoryStore:
         observed_time = time.time_ns()
         created_at = int(time.time())
         for row in rows:
-            cursor = connection.execute(
-                """
-                INSERT INTO trajectory_changes (
-                    trace_id, span_id, parent_span_id, session_id, request_id,
-                    run_id, agent_mode, lifecycle, record_revision, operation,
-                    start_time_unix_nano, observed_time_unix_nano,
-                    end_time_unix_nano, schema_version, source, created_at,
-                    has_error, raw_json, raw_sha256, update_kind
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'abandoned', ?, 'upsert', ?, ?, 0, ?, ?, ?, ?, ?, ?, 'recovered')
-                """,
-                (
-                    row["trace_id"],
-                    row["span_id"],
-                    row["parent_span_id"],
-                    row["session_id"],
-                    row["request_id"],
-                    row["run_id"],
-                    row["agent_mode"],
-                    row["record_revision"],
-                    row["start_time_unix_nano"],
-                    observed_time,
-                    row["schema_version"],
-                    row["source"],
-                    created_at,
-                    row["has_error"],
-                    sqlite3.Binary(b""),
-                    row["raw_sha256"],
-                ),
-            )
             connection.execute(
                 """
                 UPDATE trajectory_current_records
@@ -1002,7 +819,7 @@ class TrajectoryStore:
                 WHERE trace_id = ? AND span_id = ?
                 """,
                 (
-                    int(cursor.lastrowid),
+                    _next_change_seq(connection),
                     observed_time,
                     created_at,
                     row["trace_id"],
@@ -1010,78 +827,6 @@ class TrajectoryStore:
                 ),
             )
         return len(rows)
-
-    @staticmethod
-    def _backfill_inferred_team_modes(connection: sqlite3.Connection) -> int:
-        """Repair mode-less Team traces produced before the Team routing fix.
-
-        Raw OTLP remains immutable. Only the derived routing column is filled,
-        and only when an authoritative Team scope exists and the trace has no
-        conflicting non-Team mode.
-        """
-        rows = connection.execute(
-            f"""
-            SELECT current.trace_id AS trace_id,
-                   {_CURRENT_RAW_JSON} AS raw_json
-            FROM trajectory_current_records AS current
-            {_CURRENT_ARCHIVE_JOIN}
-            WHERE current.agent_mode IS NULL OR TRIM(current.agent_mode) = ''
-            ORDER BY current.change_seq ASC
-            """
-        ).fetchall()
-        inferred_trace_ids: set[str] = set()
-        for row in rows:
-            trace_id = str(row["trace_id"])
-            if trace_id in inferred_trace_ids:
-                continue
-            try:
-                payload = json.loads(_decode_payload(row["raw_json"]))
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(payload, Mapping):
-                continue
-            scope = project_trajectory_scope(payload)
-            if scope.team_id is not None or scope.team_name is not None:
-                inferred_trace_ids.add(trace_id)
-
-        repaired = 0
-        allowed_team_modes = tuple(sorted(TEAM_CANONICAL_MODES))
-        mode_placeholders = ",".join("?" for _ in allowed_team_modes)
-        for trace_id in sorted(inferred_trace_ids):
-            conflict = connection.execute(
-                f"""
-                SELECT 1
-                FROM trajectory_current_records
-                WHERE trace_id = ?
-                  AND agent_mode IS NOT NULL
-                  AND TRIM(agent_mode) <> ''
-                  AND LOWER(TRIM(agent_mode)) NOT IN ({mode_placeholders})
-                LIMIT 1
-                """,
-                (trace_id, *allowed_team_modes),
-            ).fetchone()
-            if conflict is not None:
-                logger.warning(
-                    "Trajectory Team mode backfill skipped conflicting trace: trace_id=%s",
-                    trace_id,
-                )
-                continue
-            for table in (
-                "otlp_span_records",
-                "trajectory_current_records",
-                "trajectory_changes",
-            ):
-                connection.execute(
-                    f"""
-                    UPDATE {table}
-                    SET agent_mode = 'team'
-                    WHERE trace_id = ?
-                      AND (agent_mode IS NULL OR TRIM(agent_mode) = '')
-                    """,
-                    (trace_id,),
-                )
-            repaired += 1
-        return repaired
 
     def delete_expired(self, *, now: int | None = None) -> int:
         """Delete records older than the configured retention window."""
@@ -1095,10 +840,6 @@ class TrajectoryStore:
             )
             current_cursor = connection.execute(
                 "DELETE FROM trajectory_current_records WHERE created_at < ?",
-                (cutoff,),
-            )
-            connection.execute(
-                "DELETE FROM trajectory_changes WHERE created_at < ?",
                 (cutoff,),
             )
             connection.execute(
@@ -1198,8 +939,14 @@ class TrajectoryStore:
 
     @staticmethod
     def _initialize_store_state(connection: sqlite3.Connection) -> None:
+        """Create the state row, or rotate the epoch if it no longer holds.
+
+        ``max_change_seq`` is the revision counter itself, not a summary of
+        some table, so it is only checked against what it must bound: no
+        stored record may carry a later revision than the counter handed out.
+        """
         current_max = _current_max_ingest_seq(connection)
-        current_change_max = _current_max_change_seq(connection)
+        highest_record_change = _highest_record_change_seq(connection)
         row = connection.execute(
             """
             SELECT store_epoch, max_ingest_seq, max_change_seq
@@ -1217,7 +964,7 @@ class TrajectoryStore:
                     max_change_seq
                 ) VALUES (1, ?, ?, ?)
                 """,
-                (_new_store_epoch(), current_max, current_change_max),
+                (_new_store_epoch(), current_max, highest_record_change),
             )
             return
         try:
@@ -1228,79 +975,33 @@ class TrajectoryStore:
             stored_epoch = ""
             stored_max = -1
             stored_change_max = -1
-        stored_state_invalid = not stored_epoch or stored_max < 0 or stored_change_max < 0
-        watermark_regressed = (
-            current_max < stored_max or current_change_max < stored_change_max
+        stored_state_invalid = (
+            not stored_epoch
+            or stored_max < 0
+            or stored_change_max < highest_record_change
         )
-        if stored_state_invalid or watermark_regressed:
-            TrajectoryStore._rotate_store_epoch(connection)
-            return
-        if current_max > stored_max or current_change_max > stored_change_max:
+        if stored_state_invalid or current_max < stored_max:
             connection.execute(
                 """
                 UPDATE trajectory_store_state
-                SET max_ingest_seq = ?, max_change_seq = ?
+                SET store_epoch = ?, max_ingest_seq = ?, max_change_seq = ?
                 WHERE singleton = 1
                 """,
-                (current_max, current_change_max),
+                (
+                    _new_store_epoch(),
+                    current_max,
+                    max(stored_change_max, highest_record_change),
+                ),
             )
-
-    @staticmethod
-    def _ensure_store_state_columns(connection: sqlite3.Connection) -> None:
-        columns = {
-            str(row["name"])
-            for row in connection.execute("PRAGMA table_info(trajectory_store_state)").fetchall()
-        }
-        if "max_change_seq" not in columns:
-            connection.execute(
-                "ALTER TABLE trajectory_store_state ADD COLUMN max_change_seq INTEGER NOT NULL DEFAULT 0"
-            )
-
-    @staticmethod
-    def _ensure_current_record_columns(connection: sqlite3.Connection) -> None:
-        """Add the payload-size column an older database predates.
-
-        Existing rows keep the 0 default and their own payload, which
-        ``_CURRENT_RAW_SIZE`` measures directly, so no backfill is required.
-        """
-        rows = connection.execute("PRAGMA table_info(trajectory_current_records)").fetchall()
-        columns = {str(row["name"]) for row in rows}
-        if "raw_size_bytes" not in columns:
-            connection.execute(
-                "ALTER TABLE trajectory_current_records"
-                " ADD COLUMN raw_size_bytes INTEGER NOT NULL DEFAULT 0"
-            )
-
-    @staticmethod
-    def _drop_superseded_frame_table(connection: sqlite3.Connection) -> None:
-        """Discard a frame table that names a span on every one of its rows.
-
-        Frames are the one thing here with a short life: retention clears them
-        within days, and a reader that loses them resumes from the records,
-        which are untouched. Carrying the old shape forward would mean moving
-        every row of it to buy back something that expires on its own.
-
-        A reader holding a watermark from the discarded table sees one beyond
-        what the file now has and starts over, which is the same path it takes
-        for any rebuilt database.
-
-        This runs before the schema script, which cannot create an index on a
-        column the old table does not have.
-        """
-        rows = connection.execute("PRAGMA table_info(trajectory_stream_frames)").fetchall()
-        columns = {str(row["name"]) for row in rows}
-        if "trace_id" in columns:
-            connection.execute("DROP TABLE trajectory_stream_frames")
+            return
+        if current_max > stored_max:
+            TrajectoryStore._sync_max_ingest_seq(connection)
 
     @staticmethod
     def _sync_max_ingest_seq(connection: sqlite3.Connection) -> None:
         connection.execute(
-            """
-            UPDATE trajectory_store_state
-            SET max_ingest_seq = ?, max_change_seq = ?
-            WHERE singleton = 1
-            """,
-            (_current_max_ingest_seq(connection), _current_max_change_seq(connection)),
+            "UPDATE trajectory_store_state SET max_ingest_seq = ? WHERE singleton = 1",
+            (_current_max_ingest_seq(connection),),
         )
 
     @staticmethod
@@ -1308,14 +1009,10 @@ class TrajectoryStore:
         connection.execute(
             """
             UPDATE trajectory_store_state
-            SET store_epoch = ?, max_ingest_seq = ?, max_change_seq = ?
+            SET store_epoch = ?, max_ingest_seq = ?
             WHERE singleton = 1
             """,
-            (
-                _new_store_epoch(),
-                _current_max_ingest_seq(connection),
-                _current_max_change_seq(connection),
-            ),
+            (_new_store_epoch(), _current_max_ingest_seq(connection)),
         )
 
     @staticmethod
@@ -1433,17 +1130,6 @@ class TrajectoryStore:
                 connection.execute(
                     """
                     UPDATE trajectory_current_records
-                    SET session_id = COALESCE(session_id, ?),
-                        request_id = COALESCE(request_id, ?),
-                        run_id = COALESCE(run_id, ?),
-                        agent_mode = COALESCE(agent_mode, ?)
-                    WHERE trace_id = ? AND (session_id IS NULL OR session_id = ?)
-                    """,
-                    (session_id, request_id, run_id, agent_mode, trace_id, session_id),
-                )
-                connection.execute(
-                    """
-                    UPDATE trajectory_changes
                     SET session_id = COALESCE(session_id, ?),
                         request_id = COALESCE(request_id, ?),
                         run_id = COALESCE(run_id, ?),
@@ -1808,7 +1494,7 @@ class AsyncTrajectoryReader:
                        current.lifecycle AS lifecycle,
                        'upsert' AS operation,
                        current.observed_time_unix_nano AS observed_time_unix_nano,
-                       {_CURRENT_RAW_SIZE} AS raw_size_bytes
+                       current.raw_size_bytes AS raw_size_bytes
                 FROM trajectory_current_records AS current
                 INNER JOIN eligible_traces
                     ON eligible_traces.trace_id = current.trace_id
@@ -1859,7 +1545,7 @@ class AsyncTrajectoryReader:
                            current.lifecycle AS lifecycle,
                            'upsert' AS operation,
                            current.observed_time_unix_nano AS observed_time_unix_nano,
-                           {_CURRENT_RAW_SIZE} AS raw_size_bytes,
+                           current.raw_size_bytes AS raw_size_bytes,
                            {_CURRENT_RAW_JSON} AS raw_json
                     FROM trajectory_current_records AS current
                     {_CURRENT_ARCHIVE_JOIN}
@@ -2155,6 +1841,13 @@ class AsyncTrajectoryReader:
         connection.row_factory = aiosqlite.Row
         await connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         await connection.execute("PRAGMA query_only=ON")
+        version_row = await _fetch_one(connection, "PRAGMA user_version", ())
+        if version_row is None or int(version_row[0]) != _SCHEMA_VERSION:
+            # A database from another schema version is discarded when its
+            # writer next opens it; until then it reads as absent, never as
+            # rows this reader would misinterpret.
+            await connection.close()
+            return None
         return connection
 
 
@@ -2201,11 +1894,39 @@ def _current_max_ingest_seq(connection: sqlite3.Connection) -> int:
     return int(row["max_ingest_seq"]) if row is not None else 0
 
 
-def _current_max_change_seq(connection: sqlite3.Connection) -> int:
+def _highest_record_change_seq(connection: sqlite3.Connection) -> int:
     row = connection.execute(
-        "SELECT COALESCE(MAX(change_seq), 0) AS max_change_seq FROM trajectory_changes"
+        "SELECT COALESCE(MAX(change_seq), 0) AS change_seq FROM trajectory_current_records"
+    ).fetchone()
+    return int(row["change_seq"]) if row is not None else 0
+
+
+def _stored_max_change_seq(connection: sqlite3.Connection) -> int:
+    row = connection.execute(
+        "SELECT max_change_seq FROM trajectory_store_state WHERE singleton = 1"
     ).fetchone()
     return int(row["max_change_seq"]) if row is not None else 0
+
+
+def _next_change_seq(connection: sqlite3.Connection) -> int:
+    """Hand out the next revision inside the caller's write transaction.
+
+    Revisions are what readers resume from, so they only ever grow -- also
+    across retention, which deletes records but never rewinds this counter.
+    The bump and the read are two statements rather than ``UPDATE ... RETURNING``
+    because ``RETURNING`` needs SQLite 3.35+, newer than some supported Python
+    builds link against. The caller's write transaction keeps them atomic.
+    """
+    cursor = connection.execute(
+        """
+        UPDATE trajectory_store_state
+        SET max_change_seq = max_change_seq + 1
+        WHERE singleton = 1
+        """
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("Trajectory store state is missing")
+    return _stored_max_change_seq(connection)
 
 
 def _new_store_epoch() -> str:
@@ -2251,79 +1972,6 @@ async def _session_revision_watermark(
         ),
     )
     return int(row["revision_ingest_seq"]) if row is not None else 0
-
-
-def _encode_cursor_payload(payload: dict[str, Any]) -> str:
-    raw_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    cursor = base64.urlsafe_b64encode(raw_payload).decode("ascii").rstrip("=")
-    if len(cursor) > 512:
-        raise TrajectoryCursorError("trajectory cursor is too large")
-    return cursor
-
-
-def _decode_cursor_payload(cursor: str) -> dict[str, Any]:
-    if not isinstance(cursor, str) or not cursor or len(cursor) > 512:
-        raise TrajectoryCursorError("invalid trajectory cursor")
-    if cursor != cursor.strip() or len(cursor) % 4 == 1:
-        raise TrajectoryCursorError("invalid trajectory cursor")
-    if any(
-        character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-        for character in cursor
-    ):
-        raise TrajectoryCursorError("invalid trajectory cursor")
-    padding = "=" * (-len(cursor) % 4)
-    try:
-        encoded = cursor.encode("ascii")
-        decoded = base64.b64decode(
-            encoded + padding.encode("ascii"),
-            altchars=b"-_",
-            validate=True,
-        )
-        if base64.urlsafe_b64encode(decoded).rstrip(b"=") != encoded:
-            raise TrajectoryCursorError("invalid trajectory cursor")
-        payload = json.loads(decoded, object_pairs_hook=_unique_cursor_object)
-    except TrajectoryCursorError:
-        raise
-    except (RecursionError, TypeError, ValueError) as exc:
-        raise TrajectoryCursorError("invalid trajectory cursor") from exc
-    if not isinstance(payload, dict):
-        raise TrajectoryCursorError("invalid trajectory cursor")
-    return payload
-
-
-def _unique_cursor_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in payload:
-            raise TrajectoryCursorError("invalid trajectory cursor")
-        payload[key] = value
-    return payload
-
-
-def _cursor_text(value: object) -> str:
-    if not isinstance(value, str) or not value:
-        raise TrajectoryCursorError("invalid trajectory cursor")
-    return value
-
-
-def _cursor_sequence(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TrajectoryCursorError("invalid trajectory cursor sequence")
-    if value < 0 or value > _MAX_SQLITE_INTEGER:
-        raise TrajectoryCursorError("invalid trajectory cursor sequence")
-    return value
-
-
-def _decode_cursor_sequence(value: object) -> int:
-    if not isinstance(value, str) or not value:
-        raise TrajectoryCursorError("invalid trajectory cursor sequence")
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise TrajectoryCursorError("invalid trajectory cursor sequence") from exc
-    if value != str(parsed):
-        raise TrajectoryCursorError("invalid trajectory cursor sequence")
-    return _cursor_sequence(parsed)
 
 
 def _record_has_error(raw_json: bytes) -> bool:
@@ -2477,36 +2125,6 @@ def _cumulative_request_usage(
     return result
 
 
-def _trace_summary_from_row(row: aiosqlite.Row) -> dict[str, Any]:
-    return {
-        "trace_id": str(row["trace_id"]),
-        "revision": int(row["revision"]),
-        "start_time_unix_nano": int(row["start_time_unix_nano"]),
-        "end_time_unix_nano": int(row["end_time_unix_nano"]),
-        "span_count": int(row["span_count"]),
-        "request_id": row["request_id"],
-        "run_id": row["run_id"],
-        "agent_mode": row["agent_mode"],
-        "has_error": bool(row["has_error"]),
-    }
-
-
-def _parse_sequence_reference(value: object) -> tuple[str, int] | None:
-    """Return the chain a stored attribute names, or None for a plain value."""
-    if not isinstance(value, str) or not value.startswith(_SEQUENCE_REFERENCE_PREFIX):
-        return None
-    parts = value.split(":")
-    if len(parts) != 4 or parts[1] != _SEQUENCE_REFERENCE_VERSION:
-        return None
-    try:
-        depth = int(parts[3])
-    except ValueError:
-        return None
-    if not parts[2] or depth < 0:
-        return None
-    return parts[2], depth
-
-
 def _rebuilt_sequence_value(elements: list[str], blobs: dict[str, str]) -> str | None:
     """Return the attribute value a chain states, or None if an element is gone.
 
@@ -2521,7 +2139,7 @@ def _rebuilt_sequence_value(elements: list[str], blobs: dict[str, str]) -> str |
         parts.append(content)
     if not parts:
         return None
-    return "[" + ",".join(parts) + "]"
+    return rebuild_value(parts)
 
 
 def _rehydrate_payload(
@@ -2567,7 +2185,7 @@ def _rehydrate_payload(
                     value = attribute.get("value")
                     if not isinstance(value, dict):
                         continue
-                    parsed = _parse_sequence_reference(value.get("stringValue"))
+                    parsed = parse_sequence_reference(value.get("stringValue"))
                     if parsed is None:
                         continue
                     elements = chains.get(parsed[0])
@@ -2608,7 +2226,7 @@ def _record_sequence_references(otlp: Any) -> dict[str, dict[str, Any]]:
                     value = attribute.get("value")
                     if not isinstance(value, dict):
                         continue
-                    parsed = _parse_sequence_reference(value.get("stringValue"))
+                    parsed = parse_sequence_reference(value.get("stringValue"))
                     if parsed is None:
                         continue
                     references[str(attribute.get("key") or "")] = {
@@ -2790,6 +2408,5 @@ def _validate_json_nesting(raw_json: bytes) -> None:
 
 __all__ = [
     "AsyncTrajectoryReader",
-    "TrajectoryCursorError",
     "TrajectoryStore",
 ]

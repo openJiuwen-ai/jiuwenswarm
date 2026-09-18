@@ -1,8 +1,6 @@
 import './ConnectorMarket.css';
-import { useState } from 'react';
 import { Loader2, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AvatarStyle } from '../../utils/skillAvatar';
 import { PageCard } from '../ui';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { McpCardState } from './mcpState';
@@ -13,7 +11,6 @@ interface MarketCardProps {
   title: string;
   tags?: string[];
   description: string;
-  avatar: AvatarStyle;
   iconUrl?: string;
   state: McpCardState;
   busyKind?: McpBusyKind;
@@ -29,7 +26,6 @@ export function MarketCard({
   title,
   tags = [],
   description,
-  avatar,
   iconUrl,
   state,
   busyKind,
@@ -41,12 +37,9 @@ export function MarketCard({
   onUse,
 }: MarketCardProps) {
   const { t } = useTranslation();
-  const [imgFailed, setImgFailed] = useState(false);
   const { tooltip: errorTooltip, handlers: errorTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
 
-  const avatarProp = iconUrl && !imgFailed
-    ? <img src={iconUrl} alt="" onError={() => setImgFailed(true)} />
-    : avatar;
+  const avatarProp = { name: title, iconUrl, testId: 'connector-market-card-avatar' };
 
   const titleEndNode = state === 'error' ? (
     <>

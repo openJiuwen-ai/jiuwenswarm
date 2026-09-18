@@ -16,7 +16,7 @@
             { "key": "agentteam.session.id", "value": { "stringValue": "team-conflict" } },
             { "key": "gen_ai.operation.name", "value": { "stringValue": "invoke_agent" } },
             { "key": "openjiuwen.trace.root", "value": { "boolValue": true } },
-            { "key": "openjiuwen.trace.schema_version", "value": { "stringValue": "1" } },
+            { "key": "openjiuwen.trajectory.schema_version", "value": { "stringValue": "2" } },
             { "key": "openjiuwen.trace.complete", "value": { "boolValue": true } },
             { "key": "openjiuwen.trace.forced_close", "value": { "boolValue": true } },
             { "key": "openjiuwen.request.id", "value": { "stringValue": "web-request-1" } },
@@ -80,7 +80,7 @@
             { "key": "openjiuwen.request.number", "value": { "intValue": "1" } },
             { "key": "openjiuwen.request.purpose", "value": { "stringValue": "assistant" } },
             { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } },
-            { "key": "openjiuwen.trace.schema_version", "value": { "stringValue": "1" } },
+            { "key": "openjiuwen.trajectory.schema_version", "value": { "stringValue": "2" } },
             { "key": "openjiuwen.gen_ai.usage.input_cost", "value": { "doubleValue": 0 } },
             { "key": "openjiuwen.gen_ai.usage.output_cost", "value": { "doubleValue": 0.02 } },
             { "key": "openjiuwen.gen_ai.usage.total_cost", "value": { "doubleValue": 0.02 } },
@@ -94,15 +94,6 @@
             { "key": "langfuse.observation.output", "value": { "stringValue": "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Langfuse conflict\"},\"finish_reason\":\"langfuse-conflict\"}],\"usage\":{\"input_tokens\":77,\"output_tokens\":66,\"total_tokens\":143}}" } }
           ],
           "events": [
-            {
-              "timeUnixNano": "2500000000",
-              "name": "dsh.stream.chunk",
-              "attributes": [
-                { "key": "dsh.event.sequence", "value": { "intValue": "0" } },
-                { "key": "dsh.stream.kind", "value": { "stringValue": "text-delta" } },
-                { "key": "dsh.stream.text", "value": { "stringValue": "DSH conflict" } }
-              ]
-            },
             {
               "timeUnixNano": "2500000001",
               "name": "openjiuwen.stream.chunk",

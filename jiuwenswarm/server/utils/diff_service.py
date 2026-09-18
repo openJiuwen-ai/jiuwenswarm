@@ -1565,6 +1565,13 @@ class DiffService:
 
         这些状态下工作区包含 incoming 改动（非用户意图编辑），
         应跳过 diff 计算以避免显示误导性内容。
+
+        rebase 的判据是 ``rebase-merge`` / ``rebase-apply`` 目录，**不能**用
+        ``REBASE_HEAD``：后者在 rebase 成功收尾（``--continue`` / ``--skip`` /
+        ``--quit``）后会被 Git 遗留在 ``.git`` 下，此时 rebase 已经结束。
+        若把它当瞬态信号，仓库会永久性地算不出工作区 diff（``get_git_diff``
+        恒返回 None），且不报错——只表现为前端"变更"栏恒为 ``+0 -0``。
+        标记集合与 ``project_git._is_transient_state`` 保持一致。
         """
         import subprocess
 
@@ -1585,13 +1592,14 @@ class DiffService:
         except Exception:
             return False
 
-        transient_files = [
+        transient_markers = [
             "MERGE_HEAD",
-            "REBASE_HEAD",
+            "rebase-merge",
+            "rebase-apply",
             "CHERRY_PICK_HEAD",
             "REVERT_HEAD",
         ]
-        return any((git_dir / name).exists() for name in transient_files)
+        return any((git_dir / name).exists() for name in transient_markers)
 
     @staticmethod
     def _parse_git_numstat(output: str) -> dict[str, dict[str, int | bool]]:

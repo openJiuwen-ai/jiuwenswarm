@@ -22,7 +22,13 @@
     "expandMore": "Show {{count}} more",
     "optional": "(optional)",
     "processing": "Processing…",
-    "retry": "Retry"
+    "retry": "Retry",
+    "editMenu": {
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "selectAll": "Select All"
+    }
   },
   "a2ui": {
     "generating": "Generating A2UI interface...",
@@ -44,7 +50,7 @@
     "settings": "Settings",
     "logs": "Logs",
     "update": "Updates",
-    "personalContext": "Personal\nContext"
+    "personalContext": "Context"
   },
   "applicationPlugins": {
     "title": "Application plugins",
@@ -58,13 +64,22 @@
   },
   "settingsPanel": {
     "title": "Settings",
+    "freeModels": {
+      "title": "Limited-time free models",
+      "loginTitle": "Sign in with Huawei Cloud",
+      "loginDescription": "Sign in with your Huawei Cloud account to get JiuwenSwarm's limited-time free models",
+      "quotaTitle": "Free credits",
+      "quotaLoggedOut": "Sign in to view",
+      "signedIn": "Signed in",
+      "loggedInDescription": "Limited-time free models are now available in the chat model dropdown"
+    },
     "categories": {
       "general": "General",
       "models": "Models",
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
-      "personalContext": "Personal Context",
+      "personalContext": "Context",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
@@ -320,6 +335,7 @@
       "rsi": "RSI · Recursive self-improvement",
       "trajectoryUi": "Trajectory UI",
       "kvCacheAffinity": "Compute affinity",
+      "skillPack": "Skill Packs",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
@@ -366,6 +382,10 @@
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",
         "description": "Control automatic evolution and retention of local skills."
+      },
+      "symphony_evolution_enabled": {
+        "title": "Skill Pack Discovery",
+        "description": "Distill skill combinations from execution experience after tasks finish and discover skill packs automatically."
       },
       "skill_retrieval_enabled": {
         "title": "Automatic Skill Retrieval",
@@ -706,6 +726,7 @@
   "chat": {
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
+    "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
     "placeholderAwaitingApproval": "Please respond to the pending confirmation above",
     "placeholderProcessing": "Processing, enter to interrupt...",
     "placeholderProcessingQueue": "Processing, new input will join the queue...",
@@ -749,6 +770,7 @@
     "addImageDisabled": "Cannot add images while processing or recording",
     "addFile": "Add file",
     "addFileDisabled": "Cannot add files while processing or recording",
+    "unsupportedImagePaste": "Unsupported file format. You can only paste PNG, JPG/JPEG, WebP, and GIF images.",
     "addFileTooltip": "Add files, experts, skills, connectors",
     "addAttachment": "Add attachment",
     "removeImage": "Remove image",
@@ -770,6 +792,8 @@
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
       "configured": "Configured Models",
+      "free": "Limited-time Free Models",
+      "getFreeModels": "Get limited-time free models",
       "addModel": "Add Custom Model",
       "empty": "No models available. Add a model in Settings first.",
       "placeholder": "Select Model"
@@ -886,8 +910,6 @@
       "permission": {
         "default": "Default",
         "defaultDesc": "Always ask when editing external files or accessing the internet",
-        "automatic": "Smart Approval",
-        "automaticDesc": "Reviews tool requests against your task and permissions, asking you when needed",
         "fullAccess": "Full Access",
         "fullAccessDesc": "Unrestricted access to the internet and any files on your computer",
         "fullAccessWarning": {
@@ -1810,7 +1832,8 @@
       "statKnowledge": "Context Nodes",
       "statCollecting": "Collecting",
       "knowledgeSource": "Context Source",
-      "lastRun": "Last Run"
+      "lastRun": "Last Run",
+      "fetchTaskRunning": "A fetch task is currently running. Please wait for it to complete before changing settings."
     },
     "addContent": {
       "title": "Add content",
@@ -2643,7 +2666,12 @@
       "createByUpload": "Create from file",
       "uploading": "Uploading…",
       "createViaChatPrompt": "Help me create an xxx Expert who is good at xxx",
-      "back": "Back"
+      "back": "Back",
+      "edit": "Edit",
+      "updating": "Saving…"
+    },
+    "confirm": {
+      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone."
     },
     "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}", "moreTagsTooltip": "More tags: {{tags}}" },
     "states": {
@@ -2713,6 +2741,7 @@
     },
     "form": {
       "title": "Create manually",
+      "editTitle": "Edit Expert",
       "subtitle": "Create a reusable Expert definition",
       "createOnly": "Create only",
       "createTabsLabel": "Creation type",
@@ -2801,7 +2830,7 @@
         "createFirst": "Create manually",
         "createByChat": "Create via chat",
         "createByUpload": "Create from file",
-        "createViaChatPrompt": "Help me create an XXX Expert Team, skilled at XXXXX. My experience is: [please add your industry background and relevant experience]",
+        "createViaChatPrompt": "Help me create an xxx Expert Team, skilled at xxx",
         "install": "Install",
         "installing": "Installing…",
         "use": "Use",
@@ -3335,10 +3364,15 @@
       "archiveView": "View",
       "archiveUndo": "Undo",
       "deleteProject": "Delete project",
-      "deleteProjectDescription": "Permanently delete “<name>{{projectName}}</name>” and all its conversations and cron jobs, including active conversations. Running tasks will stop. The working directory will be kept. This cannot be undone.",
+      "deleteProjectDescription": "Delete the cron jobs and idle conversations in “<name>{{projectName}}</name>”. Running ordinary conversations will be skipped and the project kept until you stop them and retry. The working directory stays. Deleted content cannot be recovered.",
+      "projectDeletedSummary": "Project deleted: {{sessions}} conversation(s), {{crons}} cron job(s)",
+      "deleteFailedSummary": "Project deletion incomplete: deleted {{sessions}} conversation(s) and {{crons}} cron job(s).",
+      "deleteSkippedRunning": "Deleted {{sessions}} conversation(s) and {{crons}} cron job(s). Skipped {{count}} running conversation(s) and kept the project. Stop them manually, then retry deletion.",
       "archiveSessions": "Archive all conversations",
-      "archiveSessionsDescription": "Archive all ordinary conversations in “<name>{{projectName}}</name>”. Running conversations will remain active and report a failure. Cron jobs stay unchanged.",
+      "archiveSessionsDescription": "Archive all ordinary conversations in “<name>{{projectName}}</name>”. Running conversations will remain active and be skipped. Cron jobs stay unchanged.",
       "sessionsArchived": "Archived {{count}} conversations",
+      "archiveSkippedRunning": "{{count}} conversation(s) are running and were skipped",
+      "archiveSkippedRunningWithSuccess": "Archived {{succeeded}} conversation(s); {{count}} running conversation(s) were skipped",
       "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed. Failed items can be retried.",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
@@ -3347,7 +3381,8 @@
         "nameExists": "This project name already exists. Please choose another name.",
         "pathMissing": "Project directory does not exist. Choose an existing directory.",
         "projectUnavailable": "Project unavailable. Refresh and retry.",
-        "archiveSessionBusy": "The session is running. Stop it before archiving.",
+        "archiveSessionBusy": "This conversation is running and cannot be archived. Stop it manually, then try again.",
+        "deleteSessionBusy": "This conversation is running and cannot be deleted. Stop it manually, then try again.",
         "archiveForbidden": "This task does not support archiving.",
         "archiveNotFound": "The resource no longer exists or has changed. Refresh and try again.",
         "archiveFailed": "The archive operation failed. Please try again later."
@@ -3697,7 +3732,56 @@
     "loginFailed": "Sign-in failed, please retry later",
     "authRequired": "Sign-in required to access",
     "secureHint": "You'll stay signed in after login",
-    "logout": "Sign out"
+    "logout": "Sign out",
+    "huawei": {
+      "title": "Sign in with HUAWEI ID",
+      "subtitle": "Sign in to use the models your account provides — no API key needed.",
+      "accountTitle": "HUAWEI ID",
+      "reasonModel": "This model requires signing in with a HUAWEI ID.",
+      "reasonExpired": "Your session has expired. Please sign in again.",
+      "login": "Sign in",
+      "loggingIn": "Signing in…",
+      "logout": "Sign out",
+      "cancel": "Cancel",
+      "close": "Close",
+      "done": "Done",
+      "modelsTitle": "Models from this account",
+      "modelsWhere": "Pick these from the model dropdown in chat",
+      "browserHint": "Opens the HUAWEI ID sign-in page in your browser — come back here when you're done",
+      "loginSuccessToast": "Signed in with HUAWEI ID",
+      "statusStarting": "Preparing sign-in…",
+      "statusWaiting": "Sign-in page opened in your browser — come back here when you're done…",
+      "checkLogin": "I've signed in",
+      "popupBlocked": "The browser blocked the new tab. Copy this URL and open it manually:",
+      "modelError": {
+        "loginRequired": "Your sign-in for the free models has expired. Sign in to your HUAWEI ID again and retry.",
+        "rateLimited": "Too many requests to the free models. Please try again shortly.",
+        "unavailable": "The free model service is temporarily unavailable. Retry later, or switch to a configured model."
+      },
+      "quota": {
+        "loading": "Checking…",
+        "unknown": "Usage unknown",
+        "exhausted": "Used up",
+        "remaining": "Left",
+        "unit": "credits",
+        "used": "Used",
+        "total": "Total",
+        "meteringHint": "Credits are deducted by actual model usage.",
+        "exhaustedHint": "Your free credits are used up. Switch to a configured model.",
+        "exhaustedUntil": "Your free credits are used up. They refresh {{date}}.",
+        "lowBalanceHint": "Running low",
+        "resetDaily": "Credits refresh daily at {{time}}.",
+        "resetWeekly": "Credits refresh every {{weekday}} at {{time}}.",
+        "resetMonthly": "Credits refresh monthly on day {{day}} at {{time}}.",
+        "resetEveryDays": "Credits refresh every {{count}} days. Next refresh: {{date}}.",
+        "resetEveryDaysPlain": "Credits refresh every {{count}} days.",
+        "resetEveryHours": "Credits refresh every {{count}} hours. Next refresh: {{date}}.",
+        "resetEveryHoursPlain": "Credits refresh every {{count}} hours.",
+        "resetEveryMonths": "Credits refresh every {{count}} months. Next refresh: {{date}}.",
+        "resetEveryMonthsPlain": "Credits refresh every {{count}} months.",
+        "resetNext": "Next credit refresh: {{date}}."
+      }
+    }
   },
   "heartbeat": {
     "status": {
@@ -3857,8 +3941,6 @@
       "subtypePaper": "Paper",
       "subtypeProgram": "Program",
       "optimizerModelLabel": "Optimizer model",
-      "pluginLabel": "Initial plugin",
-      "pluginDefault": "Current Harness (native baseline when none is active)",
       "evaluationMethodLabel": "Evaluation method",
       "evaluationMethodAgent": "Agent evaluation",
       "evaluationMethodScript": "Script evaluation",

@@ -132,6 +132,10 @@ export interface ModelEntry {
   is_agentos?: boolean;
   /** RSI 模型目录中的免费模型标识；仅用于前端展示分组。 */
   is_free?: boolean;
+  /** 模型来源。登录后自动获得的模型为 "huawei-maas-login"；用户自配的不带此字段。 */
+  source?: string;
+  /** 登录来源的模型是只读的：改了也不会写进 config.yaml（服务端会过滤）。 */
+  read_only?: boolean;
 }
 
 export interface VendorPreset {

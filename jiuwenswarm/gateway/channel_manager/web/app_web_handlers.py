@@ -45,6 +45,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
     OpenAIAccountModelListError,
 )
 
+from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
@@ -52,6 +53,7 @@ from jiuwenswarm.common.config import (
     SWARMFLOW_ENABLED_CONFIG_PATH,
     get_config,
     get_config_raw,
+    get_available_models,
     get_default_models,
     replace_teams_in_config,
     update_default_models_in_config,
@@ -113,6 +115,7 @@ from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
 )
+from jiuwenswarm.common.model_config_validation import probe_model_connection
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_env_file,
@@ -845,6 +848,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "agent_templates.file.list",
     "agent_templates.file.read",
     "agent_templates.create",
+    "agent_templates.update",
+    "agent_templates.delete",
     "agent_templates.import_local",
     "agent_templates.install",
     "agent_templates.uninstall",
@@ -1026,6 +1031,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "agent_templates.file.list",
     "agent_templates.file.read",
     "agent_templates.create",
+    "agent_templates.update",
+    "agent_templates.delete",
     "agent_templates.import_local",
     "agent_templates.install",
     "agent_templates.uninstall",
@@ -1201,7 +1208,7 @@ _DEFAULT_EXTERNAL_CLI_PUBLISH_HOST = "127.0.0.1"
 _DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
 _EXTERNAL_CLI_PUBLISH_PATH = "/ws"
 _UNSUPPORTED_WINDOWS_CLI_SUFFIXES = {".bat", ".cmd", ".ps1"}
-_PERMISSIONS_PROFILES = frozenset({"default", "automatic", "full_access"})
+_PERMISSIONS_PROFILES = frozenset({"default", "full_access"})
 
 
 def _permission_profile(permission_config: object) -> str:
@@ -1262,6 +1269,7 @@ def _validate_wechat_numeric_params(params: dict) -> str | None:
 
 _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "symphony_enabled": (("enabled",), "bool", False),
+    "symphony_evolution_enabled": (("evolution", "enabled"), "bool", False),
 }
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
@@ -2765,6 +2773,148 @@ def _persist_media_locally(
         return False, {"error": str(exc), "code": "UPLOAD_FAILED"}
 
 
+async def _upload_document_item_via_http(
+    item: dict[str, Any],
+    data: bytes,
+    *,
+    session_id: str | None,
+    index: int,
+    agent_client: Any,
+    user_id: str | None,
+) -> dict[str, Any] | None:
+    """把单个浏览器 base64 文档经 HTTP bridge 上传到 AgentServer 注入目录。
+
+    与 ``_upload_media_item_via_http`` 对称：落盘路径与 AgentServer 侧
+    ``_store_document_item`` 一致（``agent/sessions/<safe_session_id>/uploads``），
+    返回带 ``_persisted`` 标记的落盘记录，AgentServer 侧直接透传、不重复解码。
+    上传失败返回 ``None``（调用方保留原 base64 项）。
+    """
+    from jiuwenswarm.gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
+    from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
+    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+        is_forbidden_document,
+    )
+    from jiuwenswarm.server.runtime.attachments.upload_storage import (
+        safe_session_dirname,
+        safe_upload_filename,
+    )
+
+    filename = safe_upload_filename(
+        str(item.get("filename") or f"document-{index + 1}"),
+        fallback=f"document-{index + 1}",
+    )
+    if is_forbidden_document(filename=filename):
+        logger.warning("[document.persist] forbidden document skipped: %s", filename)
+        return None
+    safe_session_id = safe_session_dirname(session_id)
+    rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
+    if is_agentos_routing_client(agent_client):
+        ok, payload = await upload_file_bytes_via_e2a(
+            data,
+            rel_path,
+            agent_client=agent_client,
+            user_id=user_id,
+            channel_id="web",
+            session_id=session_id,
+        )
+    else:
+        # Legacy single-user mode: the AgentServer has no HTTP upload listener.
+        # Write directly to the shared user directory using the same path the
+        # AgentServer ``_store_document_item`` would use.
+        ok, payload = _persist_media_locally(data, safe_session_id, filename)
+    if not ok:
+        logger.warning("[document.persist] 大文档上传失败: %s", payload.get("error"))
+        return None
+    return {
+        "type": "document",
+        "filename": filename,
+        "mime_type": str(item.get("mimeType") or item.get("mime_type") or "")
+        .lower()
+        .strip()
+        or "application/octet-stream",
+        "path": str(payload.get("path") or ""),
+        "original_path": str(payload.get("path") or ""),
+        "size_bytes": len(data),
+        "_persisted": True,
+    }
+
+
+async def _pre_persist_large_documents(
+    params: dict[str, Any], *, session_id: str | None, agent_client: Any, user_id: str | None
+) -> dict[str, Any]:
+    """转发 document.persist 前，把超预算的 base64 文档改为 HTTP bridge 上传。
+
+    小文档保留 base64 走 E2A（AgentServer 注入目录落盘）；大文档在 Gateway 侧
+    解码后经 HTTP 上传并标记 ``_persisted``，AgentServer 侧直接透传落盘记录，
+    避免超内部 WS 帧限制。返回处理后的 params（原对象就地修改）。
+
+    扫描范围与 AgentServer 侧 ``_collect_document_items`` 对齐：同时处理
+    ``documents`` 列表和 ``media_items`` 中 ``type == "document"`` 的 base64 项，
+    否则走 media_items 通道的大文档不会被 HTTP 预上传，原 base64 随 E2A 转发
+    可能超内部 WS 帧限制。
+    """
+    from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
+    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+        _strip_data_uri_prefix,
+    )
+
+    try:
+        base_payload = {k: v for k, v in params.items() if k not in ("documents", "media_items")}
+        overhead = len(json.dumps(base_payload, ensure_ascii=False, default=str))
+    except Exception:  # noqa: BLE001
+        overhead = 4096
+    remaining = E2A_PAYLOAD_MAX_BYTES - overhead
+
+    async def _maybe_upload(item: dict[str, Any], index: int) -> dict[str, Any]:
+        """超预算的 base64 文档走 HTTP 上传；否则原样返回并扣减预算。"""
+        nonlocal remaining
+        raw = item.get("base64Data") or item.get("base64_data")
+        if not isinstance(raw, str) or not raw.strip():
+            return item
+        try:
+            data = base64.b64decode(_strip_data_uri_prefix(raw), validate=True)
+        except Exception:  # noqa: BLE001
+            return item
+        if not data:
+            return item
+        if len(data) > remaining:
+            persisted = await _upload_document_item_via_http(
+                item,
+                data,
+                session_id=session_id,
+                index=index,
+                agent_client=agent_client,
+                user_id=user_id,
+            )
+            if persisted is not None:
+                return persisted
+            # 上传失败：保留原 base64（若仍超帧限制，由下游链路返回可重试错误）
+            return item
+        remaining -= len(data)
+        return item
+
+    items = params.get("documents")
+    if isinstance(items, list):
+        new_items: list[Any] = []
+        for index, item in enumerate(items):
+            if isinstance(item, dict):
+                new_items.append(await _maybe_upload(item, index))
+            else:
+                new_items.append(item)
+        params["documents"] = new_items
+
+    media_items = params.get("media_items")
+    if isinstance(media_items, list):
+        new_media: list[Any] = []
+        for index, item in enumerate(media_items):
+            if isinstance(item, dict) and item.get("type") == "document":
+                new_media.append(await _maybe_upload(item, index))
+            else:
+                new_media.append(item)
+        params["media_items"] = new_media
+    return params
+
+
 async def _upload_media_item_via_http(
     item: dict[str, Any],
     data: bytes,
@@ -2845,6 +2995,9 @@ async def _pre_persist_large_media(
     import json as _json
 
     from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
+    from jiuwenswarm.server.runtime.attachments.document_attachments import (
+        _strip_data_uri_prefix,
+    )
 
     try:
         base_payload = {k: v for k, v in params.items() if k != "media_items"}
@@ -2862,7 +3015,7 @@ async def _pre_persist_large_media(
             new_items.append(item)
             continue
         try:
-            data = base64.b64decode(raw, validate=True)
+            data = base64.b64decode(_strip_data_uri_prefix(raw), validate=True)
         except Exception:  # noqa: BLE001
             new_items.append(item)
             continue
@@ -3521,7 +3674,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         return True
 
     def _build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]:
-        if not isinstance(raw_models, list) or not raw_models:
+        if not isinstance(raw_models, list):
+            raise _ConfigBadRequest("models must be a non-empty list")
+        # 登录送的模型是运行时叠加的，前端回传时要去掉，不能写进 config.yaml：
+        # 它们的凭据会过期，换账号后模型也该跟着变。
+        raw_models = [item for item in raw_models if not is_login_model(item)]
+        if not raw_models:
             raise _ConfigBadRequest("models must be a non-empty list")
 
         available_model_providers = [p.value for p in ProviderType]
@@ -3714,8 +3872,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
         """Send a minimal chat completion (user message \"Hi\") using draft default-model fields.
 
-        Tries ``max_tokens=infimum_max_tokens`` first to limit cost; if the API rejects it (e.g. minimum output length),
-        retries with ``max_tokens=supremum_max_tokens``.
+        Tries ``max_tokens=infimum_max_tokens`` first to limit cost. If the API
+        rejects it or returns no content, retries with
+        ``max_tokens=supremum_max_tokens``.
         """
         if max_tokens_bounds is None:
             max_tokens_bounds = {
@@ -3815,66 +3974,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
         llm = Model(model_config=model_request_config, model_client_config=model_client_config)
 
-        async def test_invoke(max_tokens: int):
-            return await llm.invoke(
-                [{"role": "user", "content": "Hi"}],
-                max_tokens=max_tokens,
-            )
-
         try:
-            try:
-                resp = await test_invoke(infimum_max_tokens)
-            except Exception as first_exc:  # noqa: BLE001
-                logger.info(
-                    "[config.validate_model] max_tokens=%d failed, retrying with %d: %s",
-                    infimum_max_tokens,
-                    supremum_max_tokens,
-                    first_exc,
-                )
-                try:
-                    resp = await test_invoke(supremum_max_tokens)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[config.validate_model] Testing LLM failed: %s", exc)
-                    await channel.send_response(
-                        ws, req_id, ok=False,
-                        error=str(exc).strip() or "LLM request failed",
-                        code="LLM_ERROR",
-                    )
-                    return
+            await probe_model_connection(
+                llm,
+                token_limits=(infimum_max_tokens, supremum_max_tokens),
+                log_context="config.validate_model",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[config.validate_model] LLM probe failed: %s", exc)
             await channel.send_response(
                 ws, req_id, ok=False,
                 error=str(exc).strip() or "LLM request failed",
-                code="LLM_ERROR",
-            )
-            return
-
-        if hasattr(resp, "content"):
-            content = resp.content
-        elif isinstance(resp, dict):
-            content = resp.get("content", "")
-        else:
-            content = str(resp)
-        # For reasoning models (e.g. deepseek-v4-flash), the model may put all
-        # tokens into reasoning_content while leaving content empty.  Treat a
-        # non-empty reasoning_content as a valid response as well.
-        reasoning_content = getattr(resp, "reasoning_content", None) if hasattr(resp, "reasoning_content") else None
-        # Some backends report thinking in a field the client does not map at
-        # all (e.g. Ollama's "reasoning"), leaving both content and
-        # reasoning_content empty.  Generated-token usage still proves the
-        # endpoint, credentials, and model name are all valid.
-        usage = getattr(resp, "usage_metadata", None)
-        output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else getattr(usage, "output_tokens", None)
-        has_valid_response = (
-            (isinstance(content, str) and content)
-            or (isinstance(reasoning_content, str) and reasoning_content)
-            or (isinstance(output_tokens, (int, float)) and output_tokens > 0)
-        )
-        if not has_valid_response:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error="Empty response from model",
                 code="LLM_ERROR",
             )
             return
@@ -3891,10 +4001,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         每条带 ``origin_index`` 指向 ``models.defaults`` 中的位置，配合 replace_all
         在保存时识别"未编辑字段"并保留原 YAML 占位符（如 ``${API_KEY}``）。
+
+        **登录会话 id 必须从这条连接上取。** 免费模型是「这个登录用户」的模型，
+        不传的话 ``get_available_models`` 只能退回「当前唯一登录会话」的假设——
+        一旦机器上存在两个活跃会话（换个浏览器再登一次就够了），那个假设会拒绝
+        猜是谁，于是登录了却一个免费模型都列不出来。
         """
         try:
             config = get_config()
-            models = get_default_models(config)
+            auth_session = getattr(ws, "_jiuwen_auth_session", "") or None
+            # 放到线程池里跑：目录缓存过期或凭据要续期时这里会同步请求 APIG（超时 10～15 秒），
+            # 在事件循环上跑会让整个 Gateway 的连接陪着等。
+            models = await asyncio.to_thread(get_available_models, config, auth_session)
             result = []
             active_model = ""
             for idx, entry in enumerate(models):
@@ -3908,7 +4026,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     "model_id": entry.get("model_id", ""),
                     "model_name": model_name,
                     "api_base": mcc.get("api_base", ""),
-                    "api_key": mcc.get("api_key", ""),
+                    # 凭据绝不能随列表下发到浏览器
+                    "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
                     "temperature": mco.get("temperature"),
                     "reasoning_level": _reasoning_level_display(mco.get("reasoning_level")),
@@ -3917,6 +4036,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     # 注入。前端据此区分 defaults / agentos，置灰只读展示 agentos、
                     # 并让 agentos 进 ModelSelector 下拉（is_default!==false || is_agentos）
                     "is_agentos": bool(mco.get("_source") == "agentos"),
+                    # 免费模型标记：前端据此归进「免费模型」分组、并从设置页的模型配置里滤掉。
+                    # 下面追加 Zen 模型那段设的是同一个字段，**两处必须一致**。
+                    "is_free": bool(entry.get("is_free")),
                     "alias": entry.get("alias", ""),
                     "origin_index": idx,
                     "vendor_key": mcc.get("vendor_key") or entry.get("vendor_key") or "",
@@ -3931,6 +4053,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         parse_positive_int(mco.get("context_window"))
                         or DEFAULT_CONTEXT_WINDOW_TOKENS
                     )
+                if is_login_model(entry):
+                    # 登录送的模型：前端据此置灰编辑
+                    result_entry.update(source=entry.get("source"), read_only=True)
                 result.append(result_entry)
             # Zen 免费模型仅存在于进程内缓存，不能写回 models.defaults；但需要
             # 与普通模型一同出现在会话选择器中。is_default 保持 None（而不是
@@ -5548,13 +5673,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _document_persist(ws, req_id, params, session_id, user_id=None):
-        """文档附件路径黑名单校验（E2A 转发，路径判定由 AgentServer 注入目录执行）。"""
+        """文档附件落盘（E2A 转发；base64 小文档由 AgentServer 注入目录落盘，
+        大文档在 Gateway 侧解码后经受认证 HTTP bridge 上传，避免超内部 WS 帧限制）。"""
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
 
+        real_client = _resolve(agent_client)
+        if isinstance(params, dict):
+            params = await _pre_persist_large_documents(
+                params,
+                session_id=session_id,
+                agent_client=real_client,
+                user_id=user_id,
+            )
+
         await proxy_unary_request(
             channel=channel,
-            agent_client=_resolve(agent_client),
+            agent_client=real_client,
             ws=ws,
             req_id=req_id,
             params=params,
@@ -6682,7 +6817,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST",
             )
             return
-        deleted = await cc.delete_job(job_id)
+        try:
+            deleted = await cc.delete_job(job_id)
+        except Exception as exc:
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code="DELETE_FAILED"
+            )
+            return
         if not deleted:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -7594,7 +7735,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("harness.export", _harness_export_handler)
 
     real_agent_client = _resolve(agent_client)
-    # Container file transfer is HTTP on the WebChannel port (dual_protocol),
+    # Container file transfer is HTTP on the WebChannel port, not WS JSON-RPC.
     # not WS JSON-RPC. Bind any client that already exposes the container-file
     # methods so build_web_channel_app can mount /file-api/* at channel.start().
     # Do not import AgentOSRouterClient here: this module must not depend on extensions.

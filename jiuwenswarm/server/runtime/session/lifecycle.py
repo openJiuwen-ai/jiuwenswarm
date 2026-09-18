@@ -322,33 +322,54 @@ def raw_metadata(session_id: str) -> dict:
     return read_json(path / "metadata.json")
 
 
-def project_id_for(meta: dict) -> str:
+def build_project_lookup() -> tuple[
+    dict[str, list[tuple[str, str]]], dict[str, str]
+]:
+    """Build the legacy project-directory lookup once for a batch operation.
+
+    Session inventories can contain many old metadata files without a
+    ``project_id``.  Rebuilding this mapping per session turns that compatible
+    fallback into an N+1 read of ``projects.json``.  Callers that enumerate
+    sessions should build it lazily and pass it to :func:`project_id_for`.
+    """
+    from jiuwenswarm.server.runtime.session.project_store import (
+        list_projects,
+        _normalize_path_for_match,
+    )
+
+    projects = list_projects(include_hidden=True, cache_bust=True)
+    by_directory: dict[str, list[tuple[str, str]]] = {}
+    for project in projects:
+        if project.project_dir:
+            by_directory.setdefault(
+                _normalize_path_for_match(project.project_dir), []
+            ).append((project.project_id, project.work_mode))
+    return (
+        by_directory,
+        {project.project_id: project.work_mode for project in projects},
+    )
+
+
+def project_id_for(
+    meta: dict,
+    *,
+    project_lookup: tuple[dict[str, list[tuple[str, str]]], dict[str, str]]
+    | None = None,
+) -> str:
     if not meta.get("project_id") and meta.get("project_dir"):
         # Legacy list queries infer this association without writing it back.
         # Archive checks and cascade inventories must use the same association.
         from jiuwenswarm.server.runtime.session.session_metadata import (
             _apply_metadata_defaults_with_inference,
         )
-        from jiuwenswarm.server.runtime.session.project_store import (
-            list_projects,
-            _normalize_path_for_match,
-        )
 
-        projects = list_projects(include_hidden=True, cache_bust=True)
-        by_directory: dict[str, list[tuple[str, str]]] = {}
-        for project in projects:
-            if project.project_dir:
-                by_directory.setdefault(
-                    _normalize_path_for_match(project.project_dir), []
-                ).append((project.project_id, project.work_mode))
+        by_directory, id_to_work_mode = project_lookup or build_project_lookup()
         meta = _apply_metadata_defaults_with_inference(
             str(meta.get("session_id") or ""),
             dict(meta),
             enable_writeback=False,
             dir_to_projects=by_directory,
-            id_to_work_mode={
-                project.project_id: project.work_mode for project in projects
-            },
+            id_to_work_mode=id_to_work_mode,
         )
     return str(
         meta.get("project_id")
@@ -356,8 +377,22 @@ def project_id_for(meta: dict) -> str:
     )
 
 
-def projection(kind: str, resource_id: str, *, project_id: str = "") -> dict:
-    value = state(kind, resource_id)
+def projection(
+    kind: str,
+    resource_id: str,
+    *,
+    project_id: str = "",
+    value: dict | None = None,
+    project_value: dict | None = None,
+) -> dict:
+    """Lifecycle projection of one resource.
+
+    Callers that just read the state file (e.g. event_snapshots) can pass it
+    via ``value`` — and the parent project's state via ``project_value`` — so
+    the same files are not read again per session entry.
+    """
+    if value is None:
+        value = state(kind, resource_id)
     operation = value.get("operation")
     if operation and operation["status"] == "completed":
         operation = None
@@ -365,7 +400,7 @@ def projection(kind: str, resource_id: str, *, project_id: str = "") -> dict:
     if kind == "session":
         blocked = blocked or session_paths(resource_id)[1].exists()
         if project_id:
-            parent = projection("project", project_id)
+            parent = projection("project", project_id, value=project_value)
             blocked = blocked or parent["execution_blocked"]
             operation = operation or parent["lifecycle_operation"]
     keys = (
@@ -569,6 +604,10 @@ def event_snapshots() -> list[dict]:
     """Internal Gateway refresh feed. Resource revisions survive restarts."""
     directory = get_agent_root_dir() / "lifecycle" / "resources"
     result = []
+    # Sessions share few projects: cache each project state once per poll and
+    # hand every entry its own already-loaded value instead of letting
+    # projection() re-read the same resource file.
+    project_states: dict[str, dict] = {}
     for path in directory.glob("*.json") if directory.exists() else ():
         value = read_json(path)
         operation = value.get("operation")
@@ -580,13 +619,22 @@ def event_snapshots() -> list[dict]:
         project_id = operation.get(
             "project_id", resource_id if kind == "project" else "default"
         )
+        project_value = None
+        if kind == "session":
+            if project_id not in project_states:
+                project_states[project_id] = state("project", project_id)
+            project_value = project_states[project_id]
         payload = dict(
             resource_id=resource_id,
             operation_id=operation["operation_id"],
             revision=value["revision"],
             project_id=project_id,
             **projection(
-                kind, resource_id, project_id=project_id if kind == "session" else ""
+                kind,
+                resource_id,
+                project_id=project_id if kind == "session" else "",
+                value=value,
+                project_value=project_value,
             ),
         )
         if kind == "session":

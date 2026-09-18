@@ -29,6 +29,7 @@ export { Tabs, type TabsItem, type TabsProps } from './Tabs/Tabs';
 export { FilePreviewPanel, type FilePreviewPanelProps } from './FilePreviewPanel/FilePreviewPanel';
 export {
   FilePreviewTree,
+  findDefaultPreviewFile,
   type FilePreviewTreeNode,
   type FilePreviewTreeLabels,
   type FilePreviewTreeProps,
@@ -54,11 +55,14 @@ export {
 export { MarkdownPane, type MarkdownPaneProps } from './MarkdownPane/MarkdownPane';
 export {
   EntityHeader,
+  EntityTagList,
   type EntityHeaderProps,
   type EntityHeaderAvatar,
+  type EntityImageAvatar,
   type EntityHeaderTag,
   type EntityHeaderTagItem,
 } from './EntityHeader/EntityHeader';
 export { DetailSection, type DetailSectionProps } from './DetailSection/DetailSection';
+export { EntityAvatar, type EntityAvatarProps } from './EntityAvatar/EntityAvatar';
 export { DetailPromptChip, type DetailPromptChipProps } from './DetailPromptChip/DetailPromptChip';
 export { PageCard, type PageCardProps, type PageCardActionProps } from './PageCard/PageCard';

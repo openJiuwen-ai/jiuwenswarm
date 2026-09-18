@@ -124,6 +124,47 @@ class _FakeModelsResponse:
         }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_failure", ["exception", "empty"])
+async def test_config_validate_model_retries_failed_probe_with_more_tokens(
+    monkeypatch, first_failure
+):
+    channel = FakeWebChannel()
+    max_tokens_calls = []
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def invoke(self, *args, **kwargs):
+            max_tokens_calls.append(kwargs["max_tokens"])
+            if len(max_tokens_calls) == 1:
+                if first_failure == "exception":
+                    raise RuntimeError("token budget too small")
+                return {"content": "", "reasoning_content": ""}
+            return {"content": "hello"}
+
+    monkeypatch.setattr(app_web_handlers, "Model", FakeModel)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(app_web_handlers, "get_default_models", lambda _config: [])
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.validate_model"](
+        object(),
+        "req-validate-retry",
+        {
+            "model_provider": "openai",
+            "model": "gpt-4.1",
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "secret",
+        },
+        "sess-1",
+    )
+
+    assert max_tokens_calls == [3, 16]
+    assert channel.responses[-1]["ok"] is True
+
+
 class _CapturingSessionListAgentClient:
     """捕获 E2A 信封并返回标准 session.list 响应（供 Web 转发断言）。"""
 
@@ -947,8 +988,8 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(
         app_web_handlers,
-        "get_default_models",
-        lambda _config: [{
+        "get_available_models",
+        lambda _config, _auth_session=None: [{
             "model_client_config": {
                 "model_name": "qwen3.8-max",
                 # Reserved test-only endpoint and synthetic credential.
@@ -983,8 +1024,8 @@ async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(
         app_web_handlers,
-        "get_default_models",
-        lambda _config: [{
+        "get_available_models",
+        lambda _config, _auth_session=None: [{
             "model_client_config": {
                 "model_name": "",
                 "api_base": "",
@@ -1007,12 +1048,38 @@ async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_available(config, auth_session=None):
+        try:
+            asyncio.get_running_loop()
+            seen["on_event_loop"] = True
+        except RuntimeError:
+            seen["on_event_loop"] = False
+        seen["auth_session"] = auth_session
+        return [{"model_client_config": {"model_name": "m", "api_key": "k"}, "model_config_obj": {}}]
+
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(app_web_handlers, "get_available_models", fake_available)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    ws = SimpleNamespace(_jiuwen_auth_session="auth-sess-1")
+
+    await channel.methods["models.list"](ws, "req-models", {}, "session-1")
+
+    assert channel.responses[-1]["ok"] is True
+    assert seen["on_event_loop"] is False, "get_available_models 不能在事件循环线程上执行"
+    assert seen["auth_session"] == "auth-sess-1", "登录会话仍要按这条连接传进去"
+
+
+@pytest.mark.asyncio
 async def test_models_list_includes_cached_zen_free_models(monkeypatch) -> None:
     """Free models are in-memory entries but must remain selectable in new sessions."""
     from jiuwenswarm.server.runtime import opencode_zen
 
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
-    monkeypatch.setattr(app_web_handlers, "get_default_models", lambda _config: [])
+    monkeypatch.setattr(app_web_handlers, "get_available_models", lambda _config, _auth_session=None: [])
     monkeypatch.setattr(
         opencode_zen,
         "get_zen_free_model_entries",
@@ -1661,7 +1728,7 @@ async def test_media_capability_provider_identity_round_trips_through_config_rpc
     ("permissions", "expected_profile", "expected_enabled"),
     [
         ({"enabled": True, "mode": "manual"}, "default", "true"),
-        ({"enabled": True, "mode": "auto"}, "automatic", "true"),
+        ({"enabled": True, "mode": "auto"}, "default", "true"),
         ({"enabled": False, "mode": "auto"}, "full_access", "false"),
         ({"enabled": True, "mode": "future"}, "default", "true"),
     ],
@@ -1715,9 +1782,9 @@ async def test_config_set_rejects_invalid_permission_facade(monkeypatch, params)
     ("params", "saved_profile", "canonical"),
     [
         (
-            {"permissions_profile": "automatic"},
-            "automatic",
-            {"permissions_profile": "automatic", "permissions_enabled": "true"},
+            {"permissions_profile": "default"},
+            "default",
+            {"permissions_profile": "default", "permissions_enabled": "true"},
         ),
         (
             {"permissions_enabled": "false"},
@@ -1833,7 +1900,7 @@ async def test_permission_profile_write_failure_returns_no_canonical_success(
     await channel.methods["config.set"](
         object(),
         "req-profile-write-failure",
-        {"permissions_profile": "automatic"},
+        {"permissions_profile": "default"},
         "sess-profile",
     )
 
@@ -1888,7 +1955,7 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
         object(),
         "req-save-all-invalid-kvc",
         {
-            "config": {"permissions_profile": "automatic"},
+            "config": {"permissions_profile": "default"},
             "models": [
                 {
                     "model_name": "model-one",
@@ -2458,18 +2525,18 @@ async def test_config_set_starts_codex_dependency_install_without_saving_codex(m
         {
             "external_cli_agent_codex_enabled": "true",
             "external_cli_agent_codex_use_builtin": "true",
-            "permissions_profile": "automatic",
+            "permissions_profile": "default",
         },
         "sess-codex-installing",
     )
 
     assert updates == [([], "ws://127.0.0.1:19000/ws")]
-    assert saved_profiles == ["automatic"]
+    assert saved_profiles == ["default"]
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["codex_dependency_install"]["status"] == "running"
     assert channel.responses[-1]["payload"]["external_cli_dependency_installs"]["codex"]["status"] == "running"
     assert channel.responses[-1]["payload"]["canonical_config"] == {
-        "permissions_profile": "automatic",
+        "permissions_profile": "default",
         "permissions_enabled": "true",
     }
 
@@ -3165,12 +3232,18 @@ def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
     flat = _flatten_symphony_for_config_panel(raw)
 
     assert flat["symphony_enabled"] == "true"
+    assert flat["symphony_evolution_enabled"] == "false"
     assert "symphony_dynamic_graph_enabled" not in flat
     assert "symphony_orchestration_mode" not in flat
     assert flat["skill_retrieval_enabled"] == "true"
     assert flat["skill_retrieval_index_enabled"] == "true"
     assert flat["skill_retrieval_max_results"] == "17"
     assert "skill_retrieval_build_branching_factor" not in flat
+
+    missing = _flatten_symphony_for_config_panel(
+        {"symphony": {"enabled": True}}
+    )
+    assert missing["symphony_evolution_enabled"] == "false"
 
 
 @pytest.mark.asyncio
@@ -3204,13 +3277,14 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
         {
             "symphony_enabled": "true",
             "symphony_dynamic_graph_enabled": "false",
+            "symphony_evolution_enabled": "true",
             "skill_retrieval_enabled": "false",
             "skill_retrieval_index_enabled": "true",
         },
         "sess-3",
     )
 
-    assert recorded_symphony == [{"enabled": True}]
+    assert recorded_symphony == [{"enabled": True, "evolution": {"enabled": True}}]
     assert recorded_skill_retrieval == [
         {"enabled": False, "index": {"enabled": True}}
     ]
@@ -3220,6 +3294,7 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
         "payload": {
             "updated": [
                 "symphony_enabled",
+                "symphony_evolution_enabled",
                 "skill_retrieval_enabled",
                 "skill_retrieval_index_enabled",
             ],

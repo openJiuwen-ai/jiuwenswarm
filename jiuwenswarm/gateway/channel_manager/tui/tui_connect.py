@@ -23,9 +23,11 @@ from openjiuwen.core.foundation.llm.schema.config import (
 )
 from openjiuwen.rsi.harness_rsi.auto_harness.schema import load_auto_harness_config
 
+from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     get_config,
     get_config_raw,
+    get_available_models,
     get_default_models,
     resolve_env_vars,
     update_auto_recap_enabled_in_config,
@@ -48,6 +50,7 @@ from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
 )
+from jiuwenswarm.common.model_config_validation import probe_model_connection
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -318,6 +321,8 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "agent_templates.file.list",
         "agent_templates.file.read",
         "agent_templates.create",
+        "agent_templates.update",
+        "agent_templates.delete",
         "agent_templates.import_local",
         "agent_templates.install",
         "agent_templates.uninstall",
@@ -448,6 +453,8 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "agent_templates.file.list",
         "agent_templates.file.read",
         "agent_templates.create",
+        "agent_templates.update",
+        "agent_templates.delete",
         "agent_templates.import_local",
         "agent_templates.install",
         "agent_templates.uninstall",
@@ -1398,22 +1405,12 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             model_client_config=model_client_config,
         )
 
-        async def _probe(max_tokens: int):
-            return await llm.invoke(
-                [{"role": "user", "content": "Hi"}],
-                max_tokens=max_tokens,
-                temperature=0,
-            )
-
         try:
-            try:
-                response = await _probe(3)
-            except Exception as first_exc:  # noqa: BLE001
-                logger.info(
-                    "[cli config.validate_model] max_tokens=3 failed, retrying with 16: %s",
-                    first_exc,
-                )
-                response = await _probe(16)
+            probe = await probe_model_connection(
+                llm,
+                invoke_kwargs={"temperature": 0},
+                log_context="cli config.validate_model",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[cli config.validate_model] LLM probe failed: %s", exc)
             await channel.send_response(
@@ -1425,27 +1422,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
-        if hasattr(response, "content"):
-            content = response.content
-        elif isinstance(response, dict):
-            content = response.get("content", "")
-        else:
-            content = str(response)
-        reasoning_content = getattr(response, "reasoning_content", None) if hasattr(response,
-                                                                                    "reasoning_content") else None
-        has_valid_response = (isinstance(content, str) and content) or (
-                isinstance(reasoning_content, str) and reasoning_content
-        )
-        if not has_valid_response:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="Empty response from model",
-                code="LLM_ERROR",
-            )
-            return
-
         await channel.send_response(
             ws,
             req_id,
@@ -1453,7 +1429,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             payload={
                 "provider": model_provider,
                 "model": model,
-                "response": content.strip(),
+                "response": probe.content.strip(),
             },
         )
 
@@ -3423,7 +3399,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     async def _models_list(ws, req_id, params, session_id):
         try:
             config = get_config()
-            models = get_default_models(config)
+            # 放到线程池里跑：免费模型目录缓存过期、或凭据要续期时会同步请求 APIG，
+            # 在事件循环上跑会卡住同一个Gateway上的所有连接
+            models = await asyncio.to_thread(get_available_models, config)
             result = []
             for entry in models:
                 mcc = entry.get("model_client_config", {})
@@ -3432,7 +3410,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 result_entry = {
                     "model_name": model_name,
                     "api_base": mcc.get("api_base", ""),
-                    "api_key": mcc.get("api_key", ""),
+                    # 登录模型的api_key不下发
+                    "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
                     "temperature": mco.get("temperature"),
                     "reasoning_level": "off" if mco.get("reasoning_level") is False else mco.get("reasoning_level", ""),
@@ -3443,6 +3422,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         parse_positive_int(mco.get("context_window"))
                         or DEFAULT_CONTEXT_WINDOW_TOKENS
                     )
+                if is_login_model(entry):
+                    # 登录送的模型：前端据此置灰编辑
+                    result_entry.update(source=entry.get("source"), read_only=True)
                 result.append(result_entry)
             active_model = result[0]["model_name"] if result else ""
             await channel.send_response(ws, req_id, ok=True, payload={
@@ -3465,6 +3447,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             result = await third_agent.thirdagent_list(
                 user_id=uid,
                 current_agent_type=current,
+                access_mode="tui",
             )
         except Exception as exc:
             logger.warning("[3rdagent.list] %s", exc)

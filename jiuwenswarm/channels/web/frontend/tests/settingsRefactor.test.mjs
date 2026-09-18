@@ -1110,6 +1110,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'asr_api_base',
     'asr_api_key',
     'asr_model',
+    'symphony_evolution_enabled',
     'kv_cache_affinity_enabled',
     'proactive_recommendation_enabled',
   ]);
@@ -1129,6 +1130,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
     'rsi_enabled',
+    'symphony_evolution_enabled',
     'task_full_duplex_enabled',
     'trajectory_ui_enabled',
   ]);
@@ -1210,10 +1212,15 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   }
 });
 
-test('model settings no longer expose or persist the free-model switch', () => {
-  assert.doesNotMatch(source('src/features/settings/services/settingsContract.ts'), /enable_free_models/);
-  assert.doesNotMatch(source('src/features/settings/modules/models/definition.ts'), /free-models|enable_free_models/);
-  assert.doesNotMatch(source('src/App.tsx'), /enable_free_models|handleSettingsConfigSaved/);
+test('free-model Opencode Zen switch is removed; login models refresh via auth-changed', () => {
+  const modelsDefinition = source('src/features/settings/modules/models/definition.ts');
+  const settingsContract = source('src/features/settings/services/settingsContract.ts');
+  const app = source('src/App.tsx');
+  assert.doesNotMatch(modelsDefinition, /id: 'free-models'|enable_free_models|enable-free-models/);
+  assert.doesNotMatch(settingsContract, /enable_free_models/);
+  assert.doesNotMatch(app, /enable_free_models|handleSettingsConfigSaved/);
+  assert.match(app, /jiuwen:auth-changed/);
+  assert.match(app, /handleModelsRefresh/);
 });
 
 test('Settings form dialogs share the same dirty-close contract without disabling save', () => {
@@ -1608,7 +1615,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   );
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
-  assert.doesNotMatch(modelsDefinition, /id: 'free-models'/);
+  assert.doesNotMatch(modelsDefinition, /id: 'free-models'|enable_free_models/);
   assert.match(channelsDefinition, /id: 'channels',[\s\S]{0,80}separatedRows: true/);
   assert.match(modelsSettings, /<SettingsSection[\s\S]{0,120}separatedRows/);
   assert.match(channelList, /<SettingsSection separatedRows>/);

@@ -49,6 +49,22 @@ def test_effective_team_models_include_selected_zen_without_configured_defaults(
     assert entries == [zen_entry]
 
 
+def test_effective_team_models_include_selected_login_without_configured_defaults(monkeypatch):
+    """A page-selected login model becomes the only effective candidate."""
+    for variable_name in ("API_BASE", "API_KEY", "MODEL_NAME", "MODEL_PROVIDER"):
+        monkeypatch.delenv(variable_name, raising=False)
+
+    entries = get_effective_team_model_entries(
+        {"models": {"defaults": []}},
+        requested_model_name="glm-5",
+        login_model_entry=_login_model_entry(),
+    )
+
+    assert len(entries) == 1
+    assert entries[0]["model_client_config"]["model_name"] == "glm-5"
+    assert entries[0]["model_client_config"]["api_base"] == "https://apig.example.com/v1"
+
+
 def test_effective_team_models_preserve_distinct_credentials():
     """Pool assembly deduplicates exact entries without merging credentials."""
     first = {
@@ -177,6 +193,141 @@ def test_team_manager_builds_pool_for_single_selected_zen_model(monkeypatch):
     assert len(spec.model_pool) == 1
     assert spec.model_pool[0].model_name == "zen-free"
     assert spec.model_pool[0].api_provider == "OpenAI"
+
+
+def test_team_manager_builds_pool_for_single_selected_login_model(monkeypatch):
+    """A selected login model creates a one-entry pool even with zero defaults."""
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    config = {
+        "models": {"defaults": []},
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}, "teammate": {}},
+                }
+            }
+        ),
+    }
+    monkeypatch.setattr(team_manager_module, "get_config", lambda: config)
+    for variable_name in ("API_BASE", "API_KEY", "MODEL_NAME", "MODEL_PROVIDER"):
+        monkeypatch.delenv(variable_name, raising=False)
+
+    spec = TeamManager._load_team_spec(
+        "session-one",
+        requested_model_name="glm-5",
+        login_model_entry=_login_model_entry(),
+    )
+
+    assert spec.model_pool_strategy == "by_model_name"
+    assert len(spec.model_pool) == 1
+    assert spec.model_pool[0].model_name == "glm-5"
+    assert spec.model_pool[0].api_provider == "OpenAI"
+
+
+_CONFIGURED_ENTRY = {
+    "model_client_config": {
+        "api_base": "https://models.example/v1",
+        "api_key": "model-key",
+        "model_name": "configured-model",
+        "client_provider": "OpenAI",
+    },
+    "model_config_obj": {},
+}
+
+
+def _login_model_entry():
+    from jiuwenswarm.common.auth import login_credentials
+    from jiuwenswarm.common.auth.login_credentials import build_login_model_entry
+    from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+
+    login_credentials.reset_for_test()
+    params = {
+        E2A_MODEL_AUTH_PARAM_KEY: {
+            "api_base": "https://apig.example.com/v1",
+            "api_key": "real-id-token",
+            "credential_ref": "abe633f3a47a2758174eabe9160daf36",
+        }
+    }
+    return build_login_model_entry(params, "glm-5")
+
+
+def _config_with_team(agents: dict) -> dict:
+    return {
+        "models": {"defaults": [deepcopy(_CONFIGURED_ENTRY)]},
+        **_wrap_modes_team({"demo_team": {"team_name": "demo_team", "agents": agents}}),
+    }
+
+
+def test_selected_login_model_drives_members_instead_of_the_first_configured_model():
+    entry = _login_model_entry()
+    spec = load_team_spec_dict(
+        config_base=_config_with_team({"leader": {}, "teammate": {}}),
+        requested_model_name="glm-5",
+        login_model_entry=entry,
+    )
+    for member in ("leader", "teammate"):
+        mcc = spec["agents"][member]["model"]["model_client_config"]
+        assert mcc["model_name"] == "glm-5"
+        assert mcc["api_base"] == "https://apig.example.com/v1"
+        assert mcc["api_key"].startswith("jiuwen-login:")
+
+
+def test_login_model_does_not_override_an_explicit_member_model():
+    explicit = {
+        "model_client_config": {
+            "api_base": "https://member.example/v1",
+            "api_key": "member-key",
+            "model_name": "member-model",
+            "client_provider": "OpenAI",
+        },
+        "model_config_obj": {},
+    }
+    spec = load_team_spec_dict(
+        config_base=_config_with_team({"leader": {}, "teammate": {"model": explicit}}),
+        requested_model_name="glm-5",
+        login_model_entry=_login_model_entry(),
+    )
+    assert spec["agents"]["leader"]["model"]["model_client_config"]["model_name"] == "glm-5"
+    assert spec["agents"]["teammate"]["model"]["model_client_config"]["model_name"] == "member-model"
+
+
+def test_configured_model_wins_over_login_entry_with_the_same_name():
+    login_entry = deepcopy(_CONFIGURED_ENTRY)
+    login_entry["model_client_config"] = {
+        **login_entry["model_client_config"],
+        "api_base": "https://apig.example.com/v1",
+        "api_key": "jiuwen-login:placeholder",
+    }
+    spec = load_team_spec_dict(
+        config_base=_config_with_team({"leader": {}, "teammate": {}}),
+        requested_model_name="configured-model",
+        login_model_entry=login_entry,
+    )
+    mcc = spec["agents"]["leader"]["model"]["model_client_config"]
+    assert mcc["model_name"] == "configured-model"
+    assert mcc["api_base"] == "https://models.example/v1"
+    assert mcc["api_key"] == "model-key"
+
+
+def test_team_pool_carries_the_login_model_without_the_real_token(monkeypatch):
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    config = _config_with_team({"leader": {}, "teammate": {}})
+    monkeypatch.setattr(team_manager_module, "get_config", lambda: config)
+
+    spec = TeamManager._load_team_spec(
+        "session-one", requested_model_name="glm-5", login_model_entry=_login_model_entry()
+    )
+
+    pool = {entry.model_name: entry for entry in spec.model_pool}
+    assert set(pool) == {"configured-model", "glm-5"}
+    assert pool["glm-5"].api_base_url == "https://apig.example.com/v1"
+    assert pool["glm-5"].api_key.startswith("jiuwen-login:")
+    assert "real-id-token" not in spec.model_dump_json()
 
 
 @pytest.mark.parametrize(

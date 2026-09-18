@@ -129,6 +129,18 @@ export function FilePreview({
           <img src={url} alt={artifact.name} className="h-full w-full object-contain" data-testid="artifact-image-preview" />
         </div>
       );
+    case 'video':
+      return (
+        <div className="flex h-full min-h-0 w-full items-center justify-center overflow-hidden" data-testid="artifact-video-preview-frame">
+          <video
+            src={url}
+            controls
+            preload="metadata"
+            className="block h-full min-h-0 w-full object-contain"
+            data-testid="artifact-video-preview"
+          />
+        </div>
+      );
     case 'pdf':
       return <iframe title={artifact.name} src={url} className="block h-full min-h-full w-full border-0 bg-transparent" data-testid="artifact-pdf-preview" />;
     case 'docx':

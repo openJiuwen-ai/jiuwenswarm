@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 import yaml  # type: ignore[import-untyped]
-import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
 from openjiuwen.harness.rails.evolution import (  # type: ignore[import-untyped]
     CapabilityIdentity,
 )
@@ -120,14 +119,15 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+class SkillPackNotInstallableError(ValueError):
+    """A reviewed recipe cannot be represented by an SDD-0010 SkillPack."""
+
+
 class JiuwenSwarmSkillAdapter:
-    """Render the Core Skill package with JiuwenSwarm-compatible frontmatter."""
+    """Render a reviewed Core recipe as an SDD-0010 SkillPack root."""
 
     @staticmethod
     def render(package: dict[str, Any], artifact_dir: str | Path) -> list[Path]:
-        outputs = core_symphony.flow.SkillAdapter.render(package, artifact_dir)
-        skill_md = Path(artifact_dir) / "SKILL.md"
-        body = skill_md.read_text(encoding="utf-8")
         materials = package.get("materials")
         materials = materials if isinstance(materials, dict) else {}
         recipe = materials.get("recipe")
@@ -139,20 +139,159 @@ class JiuwenSwarmSkillAdapter:
             applicability.get("task_description")
             or "由 Symphony 成功执行经验生成的组合 Skill"
         ).strip()
+        structure = recipe.get("combination_structure")
+        structure = structure if isinstance(structure, dict) else {}
+        members, edges = _skill_chain(structure)
+        narrative = str(recipe.get("execution_narrative") or "").strip()
+        if not narrative:
+            raise SkillPackNotInstallableError("execution_narrative is empty")
+
         frontmatter = yaml.safe_dump(
             {
                 "name": name,
+                "kind": "skillpack",
                 "description": description,
-                "kind": "swarm-skill",
+                "skills": members,
             },
             allow_unicode=True,
-            sort_keys=True,
+            sort_keys=False,
         ).strip()
+        trigger = str(applicability.get("trigger_conditions") or "").strip()
+        when_to_use = description
+        if trigger and trigger != description:
+            when_to_use = f"{description}\n\n触发条件：{trigger}"
+        workflow_graph = {
+            "graph": {
+                "id": f"{name}-workflow",
+                "type": "skillpack_workflow",
+                "label": description,
+                "directed": True,
+                "nodes": {
+                    member: {
+                        "label": member,
+                        "metadata": {"skill": member},
+                    }
+                    for member in members
+                },
+                "edges": edges,
+            }
+        }
+        graph_json = json.dumps(workflow_graph, ensure_ascii=False, indent=2)
+        body = "\n".join(
+            [
+                f"# {name}",
+                "",
+                "## When to use",
+                "",
+                when_to_use,
+                "",
+                "## Do not use",
+                "",
+                "仅需要其中一个成员 Skill 的单项能力时，不使用本技能包。",
+                "",
+                "## Required inputs",
+                "",
+                "执行前确认用户目标及各成员 Skill 要求的必要输入；缺失时先询问用户。",
+                "",
+                "## Side effects and confirmation",
+                "",
+                "遵循各成员 Skill 的权限与确认要求，不扩大其工具权限或副作用范围。",
+                "",
+                "## Included Skills",
+                "",
+                *[f"- `{member}`" for member in members],
+                "",
+                "## Execution Process",
+                "",
+                narrative,
+                "",
+                "## Failure handling",
+                "",
+                "成员执行失败时停止依赖该结果的后续步骤，并返回已有结果与明确失败原因。",
+                "",
+                "## Final output",
+                "",
+                "返回组合流程的最终结果，并说明任何失败、跳过或不完整部分。",
+                "",
+                "## Workflow Graph",
+                "",
+                "```json",
+                graph_json,
+                "```",
+                "",
+            ]
+        )
+        artifact_root = Path(artifact_dir)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        skill_md = artifact_root / "SKILL.md"
         skill_md.write_text(
             f"---\n{frontmatter}\n---\n\n{body}",
             encoding="utf-8",
         )
-        return outputs
+        return [skill_md]
 
 
-__all__ = ["JiuwenSwarmSkillAdapter", "PublishedCapabilitySnapshotProvider"]
+def _skill_chain(
+    structure: dict[str, Any],
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Validate an experience recipe's Skill chain for SkillPack rendering.
+
+    Private helper for ``JiuwenSwarmSkillAdapter.render`` that consumes the
+    Core recipe's ``combination_structure``; it does not generate experiences.
+    Return member IDs in execution order and normalized ``can_feed`` edges
+    for the SkillPack's ``skills`` frontmatter and display-only Workflow Graph.
+    Raise ``SkillPackNotInstallableError`` for malformed structures, non-Skill
+    nodes, or graphs that are not a single linear chain (e.g. branches or cycles).
+    """
+    nodes = structure.get("nodes")
+    raw_edges = structure.get("edges")
+    if not isinstance(nodes, dict) or len(nodes) < 2 or not isinstance(raw_edges, list):
+        raise SkillPackNotInstallableError("recipe is not a Skill chain")
+
+    member_ids = {str(node_id) for node_id in nodes}
+    indegree = {member: 0 for member in member_ids}
+    adjacency: dict[str, str] = {}
+    edges: list[dict[str, str]] = []
+    for node_id, node in nodes.items():
+        metadata = node.get("metadata") if isinstance(node, dict) else None
+        capability_type = (
+            str(metadata.get("capability_type") or "").strip().casefold()
+            if isinstance(metadata, dict)
+            else ""
+        )
+        if capability_type != "skill":
+            raise SkillPackNotInstallableError(f"capability {node_id!s} is not a Skill")
+    for raw_edge in raw_edges:
+        if not isinstance(raw_edge, dict):
+            raise SkillPackNotInstallableError("recipe edge is invalid")
+        source = str(raw_edge.get("source") or "")
+        target = str(raw_edge.get("target") or "")
+        relation = str(raw_edge.get("relation") or "can_feed")
+        if source not in member_ids or target not in member_ids or source == target:
+            raise SkillPackNotInstallableError("recipe is not a simple Skill chain")
+        if relation != "can_feed" or source in adjacency:
+            raise SkillPackNotInstallableError("recipe is not a simple Skill chain")
+        adjacency[source] = target
+        indegree[target] += 1
+        edges.append({"source": source, "target": target, "relation": "can_feed"})
+
+    starts = [member for member, degree in indegree.items() if degree == 0]
+    if len(edges) != len(member_ids) - 1 or len(starts) != 1:
+        raise SkillPackNotInstallableError("recipe is not a simple Skill chain")
+    ordered: list[str] = []
+    current = starts[0]
+    while current not in ordered:
+        ordered.append(current)
+        if current not in adjacency:
+            break
+        current = adjacency[current]
+    if len(ordered) != len(member_ids):
+        raise SkillPackNotInstallableError("recipe is not a simple Skill chain")
+    return ordered, edges
+
+
+__all__ = [
+    "JiuwenSwarmSkillAdapter",
+    "PublishedCapabilitySnapshotProvider",
+    "SkillPackNotInstallableError",
+]

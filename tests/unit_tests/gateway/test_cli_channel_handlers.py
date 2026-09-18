@@ -879,6 +879,54 @@ async def test_config_validate_model_handler_uses_local_probe(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_failure", ["exception", "empty"])
+async def test_config_validate_model_retries_failed_probe_with_more_tokens(
+    monkeypatch, first_failure
+):
+    server = FakeGatewayServer()
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=None,
+            message_handler=None,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+    max_tokens_calls = []
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def invoke(self, *args, **kwargs):
+            max_tokens_calls.append(kwargs["max_tokens"])
+            if len(max_tokens_calls) == 1:
+                if first_failure == "exception":
+                    raise RuntimeError("token budget too small")
+                return {"content": "", "reasoning_content": ""}
+            return {"content": "hello"}
+
+    monkeypatch.setattr(tui_connect_module, "Model", FakeModel)
+
+    await server.local_handlers["/tui"]["config.validate_model"](
+        object(),
+        "req-validate-retry",
+        {
+            "model_provider": "openai",
+            "model": "gpt-4.1",
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "secret",
+        },
+        "sess-1",
+    )
+
+    assert max_tokens_calls == [3, 16]
+    assert server.responses[-1]["ok"] is True
+    assert server.responses[-1]["payload"]["response"] == "hello"
+
+
+@pytest.mark.asyncio
 async def test_command_model_switch_sends_scoped_agent_reload(monkeypatch):
     server = FakeGatewayServer()
     sent_envs = []
@@ -1721,3 +1769,34 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
     assert patch["project_id"] == "user-proj-1"
     assert patch["work_mode"] == "code"
     assert patch["_agentos_project_binding_verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch):
+    server = FakeGatewayServer()
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=None,
+            message_handler=None,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+    seen = {}
+
+    def fake_available(_config=None):
+        try:
+            asyncio.get_running_loop()
+            seen["on_event_loop"] = True
+        except RuntimeError:
+            seen["on_event_loop"] = False
+        return [{"model_client_config": {"model_name": "m", "api_key": "k"}}]
+
+    monkeypatch.setattr(tui_connect_module, "get_config", lambda: {})
+    monkeypatch.setattr(tui_connect_module, "get_available_models", fake_available)
+
+    await server.local_handlers["/tui"]["models.list"](object(), "req-models", {}, "sess-1")
+
+    assert server.responses[-1]["ok"] is True
+    assert seen["on_event_loop"] is False, "get_available_models 不能在事件循环线程上执行"

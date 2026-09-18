@@ -511,6 +511,10 @@ body.workspace-resize-active iframe {
   .page-scroll {
     scrollbar-gutter: stable;
     scrollbar-gutter: stable both-edges;
+    /* 顶部 16px 用 margin：让出滚动容器之外，滚动条/滚动区从工具栏下方开始（原各页面 card-grid-auto 内联 paddingTop 收编于此）；
+       底部 32px 用 padding：滚动内容末尾呼吸空间，最后一张卡/区块不贴滚动容器底缘 */
+    margin-top: 16px;
+    padding-bottom: 32px;
   }
 
   /* 滚动列/详情滚动体的内层限宽：滚动容器两侧已各让出 8px 滚动条槽，
@@ -534,7 +538,7 @@ body.workspace-resize-active iframe {
     gap: 32px;
     scrollbar-gutter: stable;
     scrollbar-gutter: stable both-edges;
-    padding-top: 25px;
+    padding-top: 16px;
   }
 
   .detail-body>* {
@@ -578,7 +582,7 @@ body.workspace-resize-active iframe {
     width: min(1400px, calc(100% - 96px));
     margin-right: auto;
     margin-left: auto;
-    margin-bottom: 10px;
+    margin-bottom: 16px;
     flex-shrink: 0;
   }
 
@@ -2562,10 +2566,9 @@ body.workspace-resize-active iframe {
   box-sizing: border-box;
   max-width: 320px;
   padding: 7px 16px;
-  border: 1px solid var(--color-border-default);
   border-radius: 6px;
   background: var(--color-surface-popover);
-  box-shadow: var(--effect-shadow-lg);
+  box-shadow: var(--effect-chat-tooltip-shadow);
   color: var(--color-text-primary);
   font-size: 12px;
   line-height: 18px;

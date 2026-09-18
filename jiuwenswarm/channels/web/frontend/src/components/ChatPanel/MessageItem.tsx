@@ -4,7 +4,7 @@
  * 单条消息显示，支持 TTS 朗读
  */
 
-import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
+import { useState, useCallback, useContext, useEffect, useRef, useMemo, memo } from 'react';
 import type { ReactNode } from 'react';
 import {
   Check,
@@ -25,6 +25,7 @@ import {
   WebError,
 } from '../../types';
 import { StreamingContent } from './StreamingContent';
+import { FileDownloadMediaPreviewContext } from './FileDownloadMediaPreviewContext';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { ToolCallDisplay } from './ToolCallDisplay';
 import { MediaRenderer, stripUploadDocumentBlocks } from './MediaRenderer';
@@ -1023,6 +1024,7 @@ function FileDownloadList({
 }) {
   const { t } = useTranslation();
   const [expiredSet, setExpiredSet] = useState<Set<number>>(new Set());
+  const mediaPreviewEnabled = useContext(FileDownloadMediaPreviewContext);
   const [savingIndex, setSavingIndex] = useState<number | null>(null);
   const [savedIndex, setSavedIndex] = useState<Set<number>>(new Set());
   const [saveSuccessIndex, setSaveSuccessIndex] = useState<number | null>(null);
@@ -1139,8 +1141,8 @@ function FileDownloadList({
         const isSaved = savedIndex.has(index);
         const isImage = !isSkill && Boolean(file.mime_type && file.mime_type.startsWith('image/')) && Boolean(file.download_url);
         const isVideo = !isSkill && Boolean(file.mime_type && file.mime_type.startsWith('video/')) && Boolean(file.download_url);
-        const showImagePreview = isImage && !expired;
-        const showVideoPreview = isVideo && !expired;
+        const showImagePreview = mediaPreviewEnabled && isImage && !expired;
+        const showVideoPreview = mediaPreviewEnabled && isVideo && !expired;
         const showPreview = showImagePreview || showVideoPreview;
         return (
           <div

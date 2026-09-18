@@ -120,15 +120,17 @@ export function getProjectSessionMenuItems(isPinned: boolean, translate: Transla
 export function getConversationMenuItems(
   isPinned: boolean,
   translate: Translate,
-  options: { archivable?: boolean } = {},
+  options: { archivable?: boolean; deletable?: boolean } = {},
 ): SidebarMenuItem[] {
   const items = buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.conversation, translate, {
     archiveLabel: translate('multiSession.project.archiveConversation'),
   });
   // cron/heartbeat 触发会话被后端禁止单独归档，不提供必然失败的菜单项。
-  return options.archivable === false
+  const visible = options.archivable === false
     ? items.filter((item) => item.action !== 'archive')
     : items;
+  if (options.deletable) visible.push({ action: 'delete', label: translate('multiSession.delete'), danger: true });
+  return visible;
 }
 
 export function sortSessionsForSidebar<T extends SessionLike>(sessions: T[]): T[] {
