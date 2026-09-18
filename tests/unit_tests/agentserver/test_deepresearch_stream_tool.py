@@ -2500,7 +2500,31 @@ def test_build_deepresearch_config_maps_only_required_values():
     assert config["WEB_SEARCH_ENGINE_NAME"] == "bocha"
     assert config["WEB_SEARCH_API_KEY"] == "search-key"
     assert config["TOOL_SSL_VERIFY"] == "true"
+    # SSRF 旁路开关：默认值为 "true"
+    assert config["SEARCH_SERVICE_ALLOW_UNSAFE_URL"] == "true"
     assert "UNRELATED_SECRET" not in config
+
+
+def test_build_deepresearch_config_ssrf_bypass_can_be_disabled():
+    """验证 SEARCH_SERVICE_ALLOW_UNSAFE_URL 可通过环境变量关闭"""
+    import os
+    source = {
+        "MODEL_NAME": "model",
+        "API_BASE": "https://llm.invalid/v1",
+        "API_KEY": "llm-key",
+        "BOCHA_API_KEY": "search-key",
+    }
+    # 测试环境变量设置为 "false" 时
+    original = os.environ.get("SEARCH_SERVICE_ALLOW_UNSAFE_URL")
+    try:
+        os.environ["SEARCH_SERVICE_ALLOW_UNSAFE_URL"] = "false"
+        config = dt._build_deepresearch_config(source)
+        assert config["SEARCH_SERVICE_ALLOW_UNSAFE_URL"] == "false"
+    finally:
+        if original is None:
+            os.environ.pop("SEARCH_SERVICE_ALLOW_UNSAFE_URL", None)
+        else:
+            os.environ["SEARCH_SERVICE_ALLOW_UNSAFE_URL"] = original
 
 
 @pytest.mark.parametrize(
