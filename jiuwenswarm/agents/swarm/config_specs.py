@@ -881,6 +881,10 @@ def build_member_deep_agent_spec(
         enable_permissions=enable_permissions,
     )
 
+    react_cfg = (config or {}).get("react", {})
+    react_cfg = react_cfg if isinstance(react_cfg, dict) else {}
+    subagents_cfg = react_cfg.get("subagents", {})
+
     merged_rails = list(base_spec.rails or [])
     merged_rails.extend(rails_specs)
     merged_tools = list(base_spec.tools or [])
@@ -897,6 +901,15 @@ def build_member_deep_agent_spec(
         "tools": merged_tools,
         "mcps": merged_mcps,
         "kv_cache_affinity_config": _kv_cache_affinity_config(config),
+        # general-purpose has no registry factory_name of its own (agent-core's
+        # factory synthesizes it inline from the member's own resolved
+        # rails/tools/mcps, see openjiuwen.harness.factory._inject_general_purpose_subagent),
+        # so it is applied as a DeepAgentSpec flag rather than appended to
+        # `subagents` like the sub-agents built below.
+        "add_general_purpose_agent": (
+            isinstance(subagents_cfg, dict)
+            and _is_subagent_enabled(subagents_cfg.get("general_agent"))
+        ),
     }
     if role == "leader":
         # Leaders use the team task board (create_task / view_task / update_task).
@@ -917,11 +930,6 @@ def build_member_deep_agent_spec(
     # so this branch only runs for non-code modes.
     team_browser_spec: SubAgentSpec | None = None
     if not _is_code_mode(mode):
-        react_cfg = (config or {}).get("react", {})
-        react_cfg = react_cfg if isinstance(react_cfg, dict) else {}
-        subagents_cfg = (
-            react_cfg.get("subagents", {}) if isinstance(react_cfg, dict) else {}
-        )
         if isinstance(subagents_cfg, dict) and _is_subagent_enabled(
             subagents_cfg.get("browser_agent")
         ):

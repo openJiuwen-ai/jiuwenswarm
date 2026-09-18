@@ -2370,6 +2370,29 @@ def test_leader_deep_agent_spec_forces_enable_task_planning_off(mode: str) -> No
     assert teammate_spec.enable_task_planning is True
 
 
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.normal", "team.plan.code"])
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_general_agent_flag_gates_add_general_purpose_agent(mode: str, role: str) -> None:
+    """react.subagents.general_agent.enabled drives DeepAgentSpec's own flag.
+
+    general-purpose has no registry factory_name (agent-core's factory
+    synthesizes it inline from the member's resolved rails/tools/mcps), so it
+    must be surfaced via the DeepAgentSpec flag rather than a SubAgentSpec.
+    """
+    base = DeepAgentSpec()
+
+    enabled_config = {"react": {"subagents": {"general_agent": {"enabled": True}}}}
+    disabled_config = {"react": {"subagents": {"general_agent": {"enabled": False}}}}
+
+    enabled_spec = build_member_deep_agent_spec(enabled_config, mode, role, base)
+    disabled_spec = build_member_deep_agent_spec(disabled_config, mode, role, base)
+    absent_spec = build_member_deep_agent_spec({}, mode, role, base)
+
+    assert enabled_spec.add_general_purpose_agent is True
+    assert disabled_spec.add_general_purpose_agent is False
+    assert absent_spec.add_general_purpose_agent is False
+
+
 def test_code_subagent_specs_use_factory_names() -> None:
     """Code modes declare explore/plan (+ gated code) sub-agents via factory_name."""
     register_swarm_providers()
