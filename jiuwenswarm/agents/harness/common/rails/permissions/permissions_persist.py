@@ -207,7 +207,7 @@ def persist_permission_allow_rule(tool_name: str, tool_args: dict | str) -> bool
         perms.clear()
         perms.update(merged)
 
-    persist_permissions_mutate(mutate)
+    persist_permissions_mutate(mutate, persist_scope="base")
     return True
 
 
@@ -238,8 +238,20 @@ def persist_external_directory_allow(
             access_list.append((path_str, act))
         merged, wrote = merge_file_guard_access_allows(permissions, access_list)
         if wrote:
+            agents_table = permissions.get("agents")
+            if isinstance(agents_table, dict) and "agents" not in merged:
+                merged = dict(merged)
+                merged["agents"] = agents_table
             data["permissions"] = merged
             _dump_config_yaml_round_trip(yaml_path, data)
+            try:
+                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                    clear_permissions_config_cache,
+                )
+
+                clear_permissions_config_cache()
+            except Exception:
+                pass
         return
     except ImportError:
         pass
@@ -266,6 +278,14 @@ def persist_external_directory_allow(
             wrote = True
     if wrote:
         _dump_config_yaml_round_trip(yaml_path, data)
+        try:
+            from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                clear_permissions_config_cache,
+            )
+
+            clear_permissions_config_cache()
+        except Exception:
+            pass
 
 
 def persist_cli_trusted_directory(raw_path: str) -> dict[str, Any]:
@@ -291,6 +311,14 @@ def persist_cli_trusted_directory(raw_path: str) -> dict[str, Any]:
         permissions, dir_norm, read="allow", write="allow", exec_="ask",
     )
     _dump_config_yaml_round_trip(yaml_path, data)
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+            clear_permissions_config_cache,
+        )
+
+        clear_permissions_config_cache()
+    except Exception:
+        pass
     logger.info(
         "[PermissionPersist] cli_add_dir.file_guard path=%s read=allow write=allow exec=ask",
         dir_norm,
@@ -350,6 +378,14 @@ def persist_cli_trusted_directory_with_overrides(raw_path: str) -> dict[str, Any
         )
 
     _dump_config_yaml_round_trip(yaml_path, data)
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+            clear_permissions_config_cache,
+        )
+
+        clear_permissions_config_cache()
+    except Exception:
+        pass
     return {
         "ok": True,
         "normalized": dir_norm,

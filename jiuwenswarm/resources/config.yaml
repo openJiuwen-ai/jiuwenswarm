@@ -1101,6 +1101,18 @@ channels:
 # 内置参数规则 > 用户 rules；整工具存在则不用 defaults；详见 tiered_policy 模块说明。
 #
 # 三种动作: allow / ask / deny
+#
+# 标准版保留键 agents：按 agent_id 精确分桶的完整 permissions body（不是工具名）。
+# 命中 permissions.agents[id] 时该 Agent 整段替换使用该 body，不与全局字段合并；
+# 未命中使用下方全局段。Gateway/UI 读写全局时会剥离并保留 agents 表。
+# 企业版忽略 yaml agents，只用 Agent template_ref.permissions。
+# 示例（Excel 插件 Agent office-excel 专属策略）：
+#   agents:
+#     office-excel:
+#       enabled: true
+#       schema: tiered_policy
+#       permission_mode: normal
+#       tools: { bash: ask }
 permissions:
   enabled: false
   schema: tiered_policy

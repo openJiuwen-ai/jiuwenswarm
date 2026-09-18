@@ -16,7 +16,8 @@
 ```mermaid
 flowchart TB
     subgraph sources [配置来源]
-        YAML["config.yaml::permissions<br/>标准版 / 无模板时 fallback"]
+        YAML["config.yaml::permissions 全局段<br/>标准版未命中 agents[id]"]
+        AGENTS["config.yaml::permissions.agents[id]<br/>标准版精确命中整段替换"]
         TPL[("permissions_template.body<br/>企业 Agent 级基线")]
         OVL["session overlay<br/>企业会话内存叠加"]
     end
@@ -37,6 +38,7 @@ flowchart TB
     end
 
     TPL --> AGENT
+    AGENTS --> AGENT
     AGENT --> BASE
     YAML --> BASE
     BASE --> GET
@@ -64,8 +66,8 @@ flowchart TB
 
 | 模式 | 判定条件 | 读取来源 | 写入目标 |
 | --- | --- | --- | --- |
-| **标准版 / 单机** | `JIUWENSWARM_EDITION` 非 `enterprise` | `config.yaml::permissions` | 写回 `config.yaml` |
-| **企业版** | `JIUWENSWARM_EDITION=enterprise` | Agent 模板 `permissions` 槽位 body 优先；无模板回落 yaml；可叠加会话 overlay | 改策略写 `permissions_template`；会话 overlay 仅内存；base persist 不再写实例表 |
+| **标准版 / 单机** | `JIUWENSWARM_EDITION` 非 `enterprise` | 精确命中 `permissions.agents[agent_id]` 用该完整 body；未命中用全局段（剥掉 `agents`） | 命中写 `agents[id]`；未命中写全局并保留 `agents` 表 |
+| **企业版** | `JIUWENSWARM_EDITION=enterprise` | Agent 模板 `permissions` 槽位 body 优先；无模板回落 yaml；可叠加会话 overlay。**忽略** yaml `agents` | 改策略写 `permissions_template`；会话 overlay 仅内存；base persist 不再写实例表 |
 
 
 **核心入口**：`jiuwenswarm/agents/harness/common/rails/permissions/config_loader.py`
@@ -73,13 +75,15 @@ flowchart TB
 
 | 函数 | 职责 |
 | --- | --- |
-| `setup_permissions_agent_base()` | 绑定当前 Task 的 Agent 级模板 body |
+| `setup_permissions_agent_base()` | 绑定当前 Task 的 Agent 级 body（企业模板或标准版 yaml `agents[id]`） |
+| `resolve_yaml_agent_permissions_body()` | 标准版精确匹配 `permissions.agents[agent_id]`；企业版恒为未命中 |
 | `resolve_permissions_body_from_enterprise()` | 从企业配置 `permissions` 槽位取首个启用模板 body |
-| `get_base_permissions_config()` | Agent base 优先，否则 yaml（**不再读实例级 permissions_config 表**） |
+| `get_global_permissions_config()` | 标准版全局策略段（yaml 去掉 `agents`），不读 Agent base |
+| `get_base_permissions_config()` | Agent base 优先，否则全局 yaml（**不再读实例级 permissions_config 表**） |
 | `get_effective_permissions_config()` | 企业版：base + 会话 overlay；其他：yaml/base |
 | `apply_permissions_config_payload()` | 刷新进程缓存（显式 body 或 yaml fallback） |
-| `reload_permissions_from_gateway_db()` | 冷启动：仅刷新为 yaml fallback（模板在请求路径注入） |
-| `persist_permissions_mutate()` | 标准版写 yaml；企业 session 写 overlay；企业 base 仅内存 |
+| `reload_permissions_from_gateway_db()` | 冷启动：仅刷新为 yaml fallback（模板 / `agents[id]` 在请求路径注入） |
+| `persist_permissions_mutate()` | 标准版：`persist_target_agent_id` 命中则写 `agents[id]`，否则写全局并保留 `agents`；企业 session 写 overlay；企业 base 仅内存 |
 | `clear_permissions_config_cache()` | 清进程缓存 |
 
 
@@ -92,7 +96,7 @@ flowchart TB
 | --- | --- | --- |
 | **企业配置存储** | `permissions_template` 行 | Manager / Gateway 模板表；经 Agent `template_ref.permissions` 引用 |
 | **标准配置存储** | 进程 yaml | `config.yaml::permissions`（Gateway store 名仍可能叫 `permissions_config`） |
-| **Agent 基线** | 每个 Agent 实例 | `interface_deep` 解析模板 body → `setup_permissions_agent_base` / `_agent_permissions_body` |
+| **Agent 基线** | 每个 Agent 实例 | 企业：`template_ref.permissions`；标准版：yaml `permissions.agents[id]` 命中 → `setup_permissions_agent_base` / `_agent_permissions_body` |
 | **会话 overlay** | 企业版 `session_id` | 内存叠加，不写实例表 |
 | **实际拦截** | 仅 AgentServer | `PermissionInterruptRail` → `check_permission()` |
 
@@ -133,7 +137,20 @@ permissions:
     trusted_exec_directory: []
     tool_bindings: {}
   external_directory: {...}    # 旧键，加载时自动迁移到 file_guard.global
+  agents:                      # 标准版保留键，不是工具名；Gateway GET 会剥离
+    office-excel:              # 精确匹配 runtime agent_id；整段替换，不与全局合并
+      enabled: true
+      tools: {...}
 ```
+
+`permissions.agents` 只在标准版生效：
+
+- **精确命中** `agents[agent_id]` 且 value 为 dict：该 Agent 使用该完整 body（内层再嵌套 `agents` 忽略）。
+- **未命中**：使用全局段；不 copy-on-write、不自动建桶。
+- **Web RPC** 带 `request.agent_id` 且命中时读写 `agents[id]`；无 `agent_id` 保持全局（不要把 `extract_ids` 的默认 `"default"` 当成命中）。
+- **HITL 落盘** 在 `build_permission_rail` 时钉住 `persist_target_agent_id`（supervisor Task 不继承 ContextVar）。
+- **snapshot**：专属 body / 企业模板 rail 必须返回 `None`，使用构建时的 `_static_config`。
+- **企业版**：不解析 yaml `agents`，只用 `template_ref.permissions`。
 
 ### 企业表 `permissions_template`（替代已废弃的 `permissions_config`）
 
@@ -449,10 +466,10 @@ FileOperation(
 
 | 模块 | 路径 | 功能 |
 | --- | --- | --- |
-| **配置加载器** | `jiuwenswarm/agents/harness/common/rails/permissions/config_loader.py` | Agent 模板 base / yaml fallback；会话 overlay；持久化 |
-| **权限 Rail 构建** | `jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py` | `build_permission_rail`；企业模板注入 |
-| **Agent 适配** | `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` | 解析 `template_ref.permissions` → Task 绑定 |
-| **RPC 入口** | `jiuwenswarm/agents/harness/common/rails/permissions/permissions_config_rpc.py` | Web/Agent `permissions.*` 方法 |
+| **配置加载器** | `jiuwenswarm/agents/harness/common/rails/permissions/config_loader.py` | Agent 模板 / yaml `agents[id]` base；全局段剥 `agents`；会话 overlay；按 persist target 落盘 |
+| **权限 Rail 构建** | `jiuwenswarm/agents/harness/common/rails/interrupt/interrupt_helpers.py` | `build_permission_rail`；Agent body 注入；`persist_target_agent_id_provider` |
+| **Agent 适配** | `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` | 企业模板或标准版 `agents[id]` → Task 绑定；SkillTurbo 注入同一 body |
+| **RPC 入口** | `jiuwenswarm/agents/harness/common/rails/permissions/permissions_config_rpc.py` | Web/Agent `permissions.*`；命中 `agent_id` 读写 `agents[id]` |
 | **审批持久化** | `jiuwenswarm/agents/harness/common/rails/permissions/permissions_persist.py` | 「总是允许」等写回 |
 | **yaml 段仓库** | `jiuwenswarm/gateway/config/permissions/` | store 名 `permissions_config` → `/permissions`（非实例表） |
 | **Manager 模板** | `manager_server/core/template/permissions_template.py` | `permissions_template` CRUD / 推送 |
@@ -541,4 +558,4 @@ Manager REST ──HTTP──► Gateway Receiver ──► gateway.db
 
 ## 十一、一句话总结
 
-**企业版**：策略存在 `permissions_template`，经 Agent `template_ref.permissions` 绑定到具体 Agent，请求路径注入 `PERMISSIONS_AGENT_BASE`（可叠加会话 overlay）。**标准版 / 单机**：只读写 `config.yaml::permissions`。**执行层**仅在 AgentServer 由 PermissionRail / 引擎做 allow/ask/deny。实例级 `permissions_config` 表与对应 REST/WS 推送已废弃并移除。
+**企业版**：策略存在 `permissions_template`，经 Agent `template_ref.permissions` 绑定到具体 Agent，请求路径注入 `PERMISSIONS_AGENT_BASE`（可叠加会话 overlay）。**标准版 / 单机**：`config.yaml::permissions` 全局段 + 可选 `permissions.agents[agent_id]` 精确整段替换（如 Excel `office-excel`）；未命中共享全局。**执行层**仅在 AgentServer 由 PermissionRail / 引擎做 allow/ask/deny。实例级 `permissions_config` 表与对应 REST/WS 推送已废弃并移除。

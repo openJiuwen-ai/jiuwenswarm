@@ -1310,6 +1310,7 @@ def get_permissions_defaults_level() -> str:
 
 def build_permissions_tools_list_view(
     catalog_by_name: dict[str, dict[str, str]] | None = None,
+    permissions_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the permissions list from runtime and explicitly configured tools."""
     from jiuwenswarm.server.runtime.tool_catalog import (
@@ -1318,10 +1319,17 @@ def build_permissions_tools_list_view(
     )
 
     runtime_catalog = dict(catalog_by_name or {})
-    configured_tools = get_permissions_tools().get("tools")
+    if isinstance(permissions_body, dict):
+        configured_tools = permissions_body.get("tools")
+        default_level = (
+            normalize_permissions_tool_level(permissions_body.get("defaults", "guard"))
+            or "ask"
+        )
+    else:
+        configured_tools = get_permissions_tools().get("tools")
+        default_level = get_permissions_defaults_level()
     if not isinstance(configured_tools, dict):
         configured_tools = {}
-    default_level = get_permissions_defaults_level()
     preferred_language = str(
         (get_config() or {}).get("preferred_language", "")
     ).lower()

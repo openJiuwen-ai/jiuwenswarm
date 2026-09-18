@@ -54,8 +54,6 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _resolve_instance_config_base,
     parse_int,
 )
-from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
-from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
 from jiuwenswarm.agents.harness.code.rails import (
@@ -647,7 +645,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
             _RailBuildInfo(
                 "_permission_rail",
-                build_permission_rail,
+                self._build_permission_rail_for_agent,
                 {
                     "config": config_base,
                     "llm": self._model,

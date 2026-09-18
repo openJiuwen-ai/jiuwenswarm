@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Callable
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
@@ -82,40 +83,129 @@ def _hot_reload_permissions_config_cache() -> None:
     clear_permissions_config_cache()
 
 
-def _permissions_body() -> dict[str, Any]:
+def _rpc_agent_id(request: AgentRequest) -> str | None:
+    raw = getattr(request, "agent_id", None)
+    if raw is not None and str(raw).strip():
+        try:
+            from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+
+            return TenantAgentPool.extract_ids(request)[0]
+        except Exception:  # noqa: BLE001
+            return str(raw).strip()
+    channel = str(getattr(request, "channel_id", "") or "").strip()
+    if channel == "acp":
+        return "acp"
+    return None
+
+
+def _rpc_persist_target(request: AgentRequest) -> str | None:
+    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+        resolve_yaml_agent_permissions_body,
+    )
+
+    agent_id = _rpc_agent_id(request)
+    if resolve_yaml_agent_permissions_body(agent_id) is None:
+        return None
+    return agent_id
+
+
+def _permissions_body(request: AgentRequest | None = None) -> dict[str, Any]:
+    if request is not None:
+        target = _rpc_persist_target(request)
+        if target:
+            from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                resolve_yaml_agent_permissions_body,
+            )
+
+            body = resolve_yaml_agent_permissions_body(target)
+            return dict(body) if isinstance(body, dict) else {}
     body = run_awaitable(get_permissions_body_in_config())
     return dict(body) if isinstance(body, dict) else {}
 
 
-def _permissions_tools_view() -> dict[str, Any]:
-    tools = _permissions_body().get("tools")
+def _write_agent_permissions(request: AgentRequest, mutate_fn: Callable[[dict[str, Any]], None]) -> bool:
+    """命中 yaml ``agents[id]`` 时写入专属 body。返回是否已处理。"""
+    target = _rpc_persist_target(request)
+    if not target:
+        return False
+    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+        persist_permissions_mutate,
+    )
+
+    persist_permissions_mutate(
+        mutate_fn,
+        persist_scope="base",
+        persist_target_agent_id=target,
+        source="permissions_config_rpc",
+    )
+    return True
+
+
+def _permissions_tools_view(request: AgentRequest | None = None) -> dict[str, Any]:
+    tools = _permissions_body(request).get("tools")
     if not isinstance(tools, dict):
         return {"tools": {}}
     return {"tools": dict(tools)}
 
 
-def _permissions_rules_view() -> dict[str, Any]:
-    rules = _permissions_body().get("rules")
+def _permissions_rules_view(request: AgentRequest | None = None) -> dict[str, Any]:
+    rules = _permissions_body(request).get("rules")
     if not isinstance(rules, list):
         return {"rules": []}
     return {"rules": [r for r in rules if isinstance(r, dict)]}
 
 
-def _permissions_approval_overrides_view() -> dict[str, Any]:
-    raw = _permissions_body().get("approval_overrides")
+def _permissions_approval_overrides_view(request: AgentRequest | None = None) -> dict[str, Any]:
+    raw = _permissions_body(request).get("approval_overrides")
     if not isinstance(raw, list):
         return {"approval_overrides": []}
     return {"approval_overrides": [x for x in raw if isinstance(x, dict)]}
 
 
-def _permissions_file_guard_workspace_rw_enabled() -> bool:
-    fg = _permissions_body().get("file_guard")
+_WORKSPACE_ACCESS_AXES: tuple[str, ...] = ("read", "write", "exec")
+_WORKSPACE_ACCESS_LEVELS: frozenset[str] = frozenset({"allow", "ask", "deny"})
+
+
+def _permissions_file_guard_workspace_rw_enabled(request: AgentRequest | None = None) -> bool:
+    fg = _permissions_body(request).get("file_guard")
     if not isinstance(fg, dict):
         return True
     ws = fg.get("workspace")
     if not isinstance(ws, dict):
         return True
     return bool(ws.get("rw_enabled", True))
+
+
+def _workspace_access_view(request: AgentRequest | None = None) -> dict[str, str]:
+    fg = _permissions_body(request).get("file_guard")
+    if not isinstance(fg, dict):
+        return {axis: "ask" for axis in _WORKSPACE_ACCESS_AXES}
+    ws = fg.get("workspace")
+    if not isinstance(ws, dict):
+        return {axis: "ask" for axis in _WORKSPACE_ACCESS_AXES}
+    result: dict[str, str] = {}
+    for axis in _WORKSPACE_ACCESS_AXES:
+        raw = ws.get(axis, "ask")
+        if not isinstance(raw, str) or raw not in _WORKSPACE_ACCESS_LEVELS:
+            result[axis] = "ask"
+        else:
+            result[axis] = raw
+    return result
+
+
+def _normalize_workspace_access_patch(axis: dict[str, Any]) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for axis_name in _WORKSPACE_ACCESS_AXES:
+        if axis_name not in axis:
+            continue
+        val = axis[axis_name]
+        if val not in _WORKSPACE_ACCESS_LEVELS:
+            raise ValueError(
+                f"workspace.{axis_name} must be one of "
+                f"{sorted(_WORKSPACE_ACCESS_LEVELS)}, got {val!r}"
+            )
+        normalized[axis_name] = str(val)
+    return normalized
 
 
 def _err(request: AgentRequest, message: str, *, code: str = "BAD_REQUEST") -> AgentResponse:
@@ -157,7 +247,7 @@ def dispatch_permissions_config_request(
 
     try:
         if m == ReqMethod.PERMISSIONS_ENABLED_GET:
-            enabled = bool(_permissions_body().get("enabled", True))
+            enabled = bool(_permissions_body(request).get("enabled", True))
             return _ok(request, {"enabled": enabled})
 
         if m == ReqMethod.PERMISSIONS_ENABLED_SET:
@@ -166,7 +256,8 @@ def dispatch_permissions_config_request(
             value = params.get("enabled")
             if not isinstance(value, bool):
                 return _err(request, "enabled must be boolean")
-            run_awaitable(update_permissions_enabled_in_config(value))
+            if not _write_agent_permissions(request, lambda perms: perms.__setitem__("enabled", value)):
+                run_awaitable(update_permissions_enabled_in_config(value))
             try:
                 _hot_reload_permissions_config_cache()
             except Exception as e:
@@ -174,7 +265,7 @@ def dispatch_permissions_config_request(
             return _ok(request, {"enabled": value})
 
         if m == ReqMethod.PERMISSIONS_WORKSPACE_ENABLE_GET:
-            rw_enabled = _permissions_file_guard_workspace_rw_enabled()
+            rw_enabled = _permissions_file_guard_workspace_rw_enabled(request)
             return _ok(request, {"rw_enabled": rw_enabled})
 
         if m == ReqMethod.PERMISSIONS_WORKSPACE_ENABLE_SET:
@@ -183,9 +274,22 @@ def dispatch_permissions_config_request(
             value = params.get("rw_enabled")
             if not isinstance(value, bool):
                 return _err(request, "rw_enabled must be boolean")
-            run_awaitable(
-                update_permissions_file_guard_workspace_rw_enabled_in_config(value)
-            )
+
+            def _mutate_rw(perms: dict[str, Any]) -> None:
+                fg = perms.get("file_guard")
+                if not isinstance(fg, dict):
+                    fg = {}
+                    perms["file_guard"] = fg
+                ws = fg.get("workspace")
+                if not isinstance(ws, dict):
+                    ws = {}
+                    fg["workspace"] = ws
+                ws["rw_enabled"] = bool(value)
+
+            if not _write_agent_permissions(request, _mutate_rw):
+                run_awaitable(
+                    update_permissions_file_guard_workspace_rw_enabled_in_config(value)
+                )
             try:
                 _hot_reload_permissions_config_cache()
             except Exception as e:
@@ -193,8 +297,9 @@ def dispatch_permissions_config_request(
             return _ok(request, {"rw_enabled": value})
 
         if m == ReqMethod.PERMISSIONS_WORKSPACE_ACCESS_GET:
-            access = get_permissions_file_guard_workspace_access()
-            return _ok(request, access)
+            if _rpc_persist_target(request):
+                return _ok(request, _workspace_access_view(request))
+            return _ok(request, get_permissions_file_guard_workspace_access())
 
         if m == ReqMethod.PERMISSIONS_WORKSPACE_ACCESS_SET:
             if not isinstance(params, dict):
@@ -203,9 +308,29 @@ def dispatch_permissions_config_request(
             if not isinstance(axis, dict):
                 return _err(request, "access must be object with read/write/exec")
             try:
-                updated = update_permissions_file_guard_workspace_access_in_config(axis)
+                normalized = _normalize_workspace_access_patch(axis)
             except ValueError as e:
                 return _err(request, str(e))
+
+            def _mutate_access(perms: dict[str, Any]) -> None:
+                fg = perms.get("file_guard")
+                if not isinstance(fg, dict):
+                    fg = {}
+                    perms["file_guard"] = fg
+                ws = fg.get("workspace")
+                if not isinstance(ws, dict):
+                    ws = {}
+                    fg["workspace"] = ws
+                for axis_name, val in normalized.items():
+                    ws[axis_name] = val
+
+            if _write_agent_permissions(request, _mutate_access):
+                updated = _workspace_access_view(request)
+            else:
+                try:
+                    updated = update_permissions_file_guard_workspace_access_in_config(axis)
+                except ValueError as e:
+                    return _err(request, str(e))
             try:
                 _hot_reload_permissions_config_cache()
             except Exception as e:
@@ -213,14 +338,15 @@ def dispatch_permissions_config_request(
             return _ok(request, updated)
 
         if m == ReqMethod.PERMISSIONS_TOOLS_GET:
-            return _ok(request, dict(_permissions_tools_view()))
+            return _ok(request, dict(_permissions_tools_view(request)))
 
         if m == ReqMethod.PERMISSIONS_TOOLS_LIST:
             catalog = (get_runtime_tools_catalog or (lambda: {}))()
             return _ok(
                 request,
                 build_permissions_tools_list_view(
-                    catalog if isinstance(catalog, dict) else None
+                    catalog if isinstance(catalog, dict) else None,
+                    permissions_body=_permissions_body(request),
                 ),
             )
 
@@ -228,7 +354,8 @@ def dispatch_permissions_config_request(
             if not isinstance(params, dict):
                 return _err(request, "params must be object")
             tools = params.get("tools")
-            run_awaitable(replace_permissions_tools_in_config(tools))
+            if not _write_agent_permissions(request, lambda perms: perms.__setitem__("tools", tools)):
+                run_awaitable(replace_permissions_tools_in_config(tools))
             _hot_reload_permissions_config_cache()
             return _ok(request, {"ok": True})
 
@@ -240,9 +367,20 @@ def dispatch_permissions_config_request(
                 return _err(request, "tool is required")
             if "level" not in params:
                 return _err(request, "level is required")
-            payload = run_awaitable(
-                update_permissions_tool_in_config(tool, params.get("level"))
-            )
+
+            def _mutate_tool(perms: dict[str, Any]) -> None:
+                existing = perms.get("tools")
+                if not isinstance(existing, dict):
+                    existing = {}
+                    perms["tools"] = existing
+                existing[tool] = params.get("level")
+
+            if _write_agent_permissions(request, _mutate_tool):
+                payload = {"tools": dict(_permissions_tools_view(request).get("tools") or {})}
+            else:
+                payload = run_awaitable(
+                    update_permissions_tool_in_config(tool, params.get("level"))
+                )
             _hot_reload_permissions_config_cache()
             return _ok(request, dict(payload))
 
@@ -252,14 +390,28 @@ def dispatch_permissions_config_request(
             tool = str(params.get("tool") or params.get("name") or "").strip()
             if not tool:
                 return _err(request, "tool is required")
-            ok_del = run_awaitable(delete_permissions_tool_in_config(tool))
+            deleted = {"value": False}
+
+            def _mutate_del_tool(perms: dict[str, Any]) -> None:
+                tools_map = perms.get("tools")
+                if not isinstance(tools_map, dict) or tool not in tools_map:
+                    return
+                perms["tools"] = {
+                    key: value for key, value in tools_map.items() if key != tool
+                }
+                deleted["value"] = True
+
+            if _write_agent_permissions(request, _mutate_del_tool):
+                ok_del = deleted["value"]
+            else:
+                ok_del = run_awaitable(delete_permissions_tool_in_config(tool))
             if not ok_del:
                 return _err(request, "tool not found in permissions.tools", code="NOT_FOUND")
             _hot_reload_permissions_config_cache()
-            return _ok(request, dict(_permissions_tools_view()))
+            return _ok(request, dict(_permissions_tools_view(request)))
 
         if m == ReqMethod.PERMISSIONS_RULES_GET:
-            return _ok(request, dict(_permissions_rules_view()))
+            return _ok(request, dict(_permissions_rules_view(request)))
 
         if m == ReqMethod.PERMISSIONS_RULES_CREATE:
             if not isinstance(params, dict):
@@ -267,7 +419,21 @@ def dispatch_permissions_config_request(
             rule = params.get("rule")
             if not isinstance(rule, dict):
                 return _err(request, "rule must be object")
-            stored = run_awaitable(create_permissions_rule_in_config(rule))
+            if _rpc_persist_target(request):
+                stored = dict(rule)
+                if not str(stored.get("id") or "").strip():
+                    stored["id"] = f"ui_rule_{uuid.uuid4().hex[:12]}"
+
+                def _mutate_rule(perms: dict[str, Any]) -> None:
+                    rules_list = perms.get("rules")
+                    if not isinstance(rules_list, list):
+                        rules_list = []
+                        perms["rules"] = rules_list
+                    rules_list.append(dict(stored))
+
+                _write_agent_permissions(request, _mutate_rule)
+            else:
+                stored = run_awaitable(create_permissions_rule_in_config(rule))
             _hot_reload_permissions_config_cache()
             return _ok(request, {"rule": stored})
 
@@ -278,28 +444,91 @@ def dispatch_permissions_config_request(
             patch = params.get("patch")
             if not isinstance(patch, dict):
                 return _err(request, "patch must be object")
-            merged = run_awaitable(update_permissions_rule_in_config(str(rid or ""), patch))
+            merged_holder: dict[str, Any] = {}
+
+            def _mutate_rule_update(perms: dict[str, Any]) -> None:
+                rules_list = perms.get("rules")
+                if not isinstance(rules_list, list):
+                    raise ValueError(f"rule not found: {rid}")
+                idx = None
+                for i, item in enumerate(rules_list):
+                    if isinstance(item, dict) and str(item.get("id") or "").strip() == str(rid or "").strip():
+                        idx = i
+                        break
+                if idx is None:
+                    raise ValueError(f"rule not found: {rid}")
+                merged = dict(rules_list[idx])
+                merged.update({k: v for k, v in patch.items() if k != "id"})
+                merged["id"] = str(rid or "").strip()
+                rules_list[idx] = merged
+                merged_holder.clear()
+                merged_holder.update(merged)
+
+            if _write_agent_permissions(request, _mutate_rule_update):
+                merged = dict(merged_holder)
+            else:
+                merged = run_awaitable(update_permissions_rule_in_config(str(rid or ""), patch))
             _hot_reload_permissions_config_cache()
             return _ok(request, {"rule": merged})
 
         if m == ReqMethod.PERMISSIONS_RULES_DELETE:
             if not isinstance(params, dict):
                 return _err(request, "params must be object")
-            ok_del = run_awaitable(delete_permissions_rule_in_config(str(params.get("id") or "")))
+            rid = str(params.get("id") or "")
+            deleted = {"value": False}
+
+            def _mutate_rule_del(perms: dict[str, Any]) -> None:
+                rules_list = perms.get("rules")
+                if not isinstance(rules_list, list):
+                    return
+                new_rules = [
+                    item
+                    for item in rules_list
+                    if not (isinstance(item, dict) and str(item.get("id") or "").strip() == rid.strip())
+                ]
+                if len(new_rules) == len(rules_list):
+                    return
+                perms["rules"] = new_rules
+                deleted["value"] = True
+
+            if _write_agent_permissions(request, _mutate_rule_del):
+                ok_del = deleted["value"]
+            else:
+                ok_del = run_awaitable(delete_permissions_rule_in_config(rid))
             if not ok_del:
                 return _err(request, "rule not found", code="NOT_FOUND")
             _hot_reload_permissions_config_cache()
             return _ok(request, {"ok": True})
 
         if m == ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET:
-            return _ok(request, dict(_permissions_approval_overrides_view()))
+            return _ok(request, dict(_permissions_approval_overrides_view(request)))
 
         if m == ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_DELETE:
             if not isinstance(params, dict):
                 return _err(request, "params must be object")
-            ok_del = run_awaitable(
-                delete_permissions_approval_override_in_config(str(params.get("id") or ""))
-            )
+            oid = str(params.get("id") or "")
+            deleted = {"value": False}
+
+            def _mutate_override_del(perms: dict[str, Any]) -> None:
+                overrides = perms.get("approval_overrides")
+                if not isinstance(overrides, list):
+                    return
+                new_list = [
+                    item
+                    for item in overrides
+                    if not (isinstance(item, dict) and str(item.get("id") or "").strip() == oid.strip())
+                ]
+                if len(new_list) == len(overrides):
+                    return
+                perms["approval_overrides"] = new_list
+                deleted["value"] = True
+
+            if _write_agent_permissions(request, _mutate_override_del):
+                ok_del = deleted["value"]
+            else:
+                ok_del = run_awaitable(
+                    delete_permissions_approval_override_in_config(oid)
+                )
             if not ok_del:
                 return _err(request, "approval_override not found", code="NOT_FOUND")
             _hot_reload_permissions_config_cache()

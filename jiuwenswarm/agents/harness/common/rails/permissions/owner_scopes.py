@@ -112,7 +112,9 @@ async def check_avatar_permission(
     """
     from openjiuwen.harness.security.core import PermissionEngine as OJPermissionEngine
     from openjiuwen.harness.security.models import PermissionLevel as OJPermissionLevel
-    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+        get_effective_permissions_config,
+    )
     from jiuwenswarm.common.utils import get_workspace_dir
 
     perm_ctx = TOOL_PERMISSION_CONTEXT.get()
@@ -120,7 +122,7 @@ async def check_avatar_permission(
         logger.info("[check_avatar_permission] perm_ctx is None or no principal_user_id")
         return "deny"
 
-    perm_cfg = get_config().get("permissions") if isinstance(get_config(), dict) else {}
+    perm_cfg = get_effective_permissions_config()
     if not isinstance(perm_cfg, dict):
         perm_cfg = {}
     engine = OJPermissionEngine(config=perm_cfg, workspace_root=get_workspace_dir())
