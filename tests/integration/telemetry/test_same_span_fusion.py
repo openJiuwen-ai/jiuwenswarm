@@ -32,6 +32,7 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.runner.callback import LLMCallEvents, ToolCallEvents
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
+    AgentCallbackEvent,
     TaskIterationInputs,
 )
 
@@ -129,6 +130,32 @@ def _assert_no_duplicate_enterprise_spans(spans: list[object]) -> None:
     ]
 
 
+async def _invoke_observability_task_iteration(
+    rail: ObservabilityRail,
+    context: AgentCallbackContext,
+    *,
+    phase: str,
+) -> None:
+    """Run task-iteration hooks the same way DeepAgent mounts rails.
+
+    Newer openjiuwen wraps team + agent rails behind an ``ObservabilityRail``
+    facade whose ``before_task_iteration`` / ``after_task_iteration`` methods
+    are DeepAgentRail no-ops; the real work lives in ``get_callbacks()``.
+    Older releases still override the methods directly. Prefer callbacks, then
+    fall back to the method so both layouts keep working.
+    """
+    event = (
+        AgentCallbackEvent.BEFORE_TASK_ITERATION
+        if phase == "before"
+        else AgentCallbackEvent.AFTER_TASK_ITERATION
+    )
+    callback = rail.get_callbacks().get(event)
+    if callback is not None:
+        await callback(context)
+        return
+    await getattr(rail, f"{phase}_task_iteration")(context)
+
+
 @pytest.mark.asyncio
 async def test_code_agent_tree_keeps_core_spans_and_adds_rich_attributes(
     fusion_env: SimpleNamespace,
@@ -179,7 +206,7 @@ async def test_code_agent_tree_keeps_core_spans_and_adds_rich_attributes(
         ),
     )
     try:
-        await rail.before_task_iteration(context)
+        await _invoke_observability_task_iteration(rail, context, phase="before")
         await fusion_env.framework.trigger(
             LLMCallEvents.LLM_INVOKE_INPUT,
             messages=[{"role": "user", "content": "weather in Paris"}],
@@ -205,7 +232,7 @@ async def test_code_agent_tree_keeps_core_spans_and_adds_rich_attributes(
             result=business_result,
         )
         inputs.result = {"output": "sunny"}
-        await rail.after_task_iteration(context)
+        await _invoke_observability_task_iteration(rail, context, phase="after")
     finally:
         agent_observability.close_agent_run_span(
             handle,
@@ -489,7 +516,13 @@ async def test_real_team_runner_uses_same_provider_and_has_no_orphans(
     spans = list(fusion_env.exporter.get_finished_spans())
     gateway_spans = [span for span in spans if span.name == "channel.request"]
     team_spans = [span for span in spans if span.name == f"team.{team_name}"]
-    agent_spans = [span for span in spans if span.name.startswith("agent.")]
+    # Tip agent-core also emits agent.*.react_iteration.* under the outer
+    # task_iteration; keep asserting the single outer agent span.
+    agent_spans = [
+        span
+        for span in spans
+        if span.name.startswith("agent.") and ".task_iteration." in span.name
+    ]
     member_spans = [span for span in spans if span.name.startswith("member.")]
     task_spans = [span for span in spans if span.name.startswith("task.")]
     message_spans = [span for span in spans if span.name.startswith("msg.")]
@@ -558,8 +591,12 @@ async def test_real_team_runner_uses_same_provider_and_has_no_orphans(
     assert task_created.parent.span_id == task_root.context.span_id
     assert all(span.parent.span_id == team_span_id for span in message_spans)
     assert all(span.parent.span_id == team_span_id for span in agent_spans)
-    agent_ids = {span.context.span_id for span in agent_spans}
-    assert all(span.parent.span_id in agent_ids for span in llm_spans + tool_spans)
+    # Tip agent-core nests llm/tool under react_iteration spans; older builds
+    # nest them directly under the outer task_iteration span.
+    agent_tier_ids = {
+        span.context.span_id for span in spans if span.name.startswith("agent.")
+    }
+    assert all(span.parent.span_id in agent_tier_ids for span in llm_spans + tool_spans)
     _assert_parent_chain(spans)
     _assert_no_duplicate_enterprise_spans(spans)
     assert fusion_env.span_registry.active_count() == 0
