@@ -32,6 +32,10 @@ from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
 
+from jiuwenswarm.server.runtime.session.history_io import (
+    run_history_io, run_stream_parser, stream_chunk_writes_history,
+)
+
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
 from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
@@ -1570,6 +1574,8 @@ async def _broadcast_event(
 
 
 def _approval_chunk_from_event(evt: Any) -> dict[str, Any] | None:
+    if stream_chunk_writes_history(evt):
+        return None
     parsed = parse_stream_chunk(evt)
     if not isinstance(parsed, dict) or parsed.get("event_type") != "chat.ask_user_question":
         return None
@@ -1617,7 +1623,7 @@ async def _broadcast_team_state_snapshot(
                     "new_status": m["status"],
                 },
             }
-            _persist_team_history_event(channel_id, session_id, event)
+            await run_history_io(_persist_team_history_event, channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
 
         # Broadcast task status snapshot
@@ -1639,7 +1645,7 @@ async def _broadcast_team_state_snapshot(
                     "content_original_size": t.get("content_original_size"),
                 },
             }
-            _persist_team_history_event(channel_id, session_id, event)
+            await run_history_io(_persist_team_history_event, channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
     except Exception:
         logger.debug(
@@ -1753,7 +1759,7 @@ async def _announce_team_roster(
                     "cli_agent": member.get("cli_agent"),
                 },
             }
-            _persist_team_history_event(channel_id, session_id, event)
+            await run_history_io(_persist_team_history_event, channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
         logger.info(
             "[TeamHelpers] announced team roster: channel_id=%s session_id=%s members=%s",
@@ -3290,7 +3296,7 @@ async def _consume_stream_with_query(
             # _is_leader_output returns True.
             if _team_hide_teammate_enabled() and not is_leader:
                 continue
-            parsed = parse_stream_chunk(chunk)
+            parsed = await run_stream_parser(parse_stream_chunk, chunk)
             if parsed is not None:
                 # Time to first token: the first frame actually produced by a
                 # model (reasoning counts — on a thinking model it comes first).
@@ -3654,7 +3660,7 @@ async def _consume_monitor_events(
             session_id,
         )
         async for event in monitor_handler.events():
-            _persist_team_history_event(channel_id, session_id, event)
+            await run_history_io(_persist_team_history_event, channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
 
         logger.info(
@@ -3991,7 +3997,7 @@ async def _consume_workflow_events(
             for team_ev in _workflow_updated_to_team_events(
                 event, session_id, seen_phase, seen_agent, spawned_members
             ):
-                _persist_team_history_event(channel_id, session_id, team_ev)
+                await run_history_io(_persist_team_history_event, channel_id, session_id, team_ev)
                 await _broadcast_event(channel_id, session_id, team_ev)
 
             # ── 非 TUI: 检测 waiting_for_human → chat.ask_user_question ──

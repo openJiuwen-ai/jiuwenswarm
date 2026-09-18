@@ -459,7 +459,7 @@ def test_late_user_final_stays_terminal_after_goal_round_started() -> None:
     }
 
 
-def test_user_to_goal_content_injects_bubble_split_final() -> None:
+async def test_user_to_goal_content_injects_bubble_split_final() -> None:
     goals = _FakeGoals()
     goals.record = GoalRecord.create(session_id="session-1", objective="ship the feature")
     adapter = _adapter(goals)
@@ -467,13 +467,13 @@ def test_user_to_goal_content_injects_bubble_split_final() -> None:
     adapter._instance.interaction_started = True
     adapter._stream_content_run_kind = "user"
 
-    boundary = adapter._begin_visible_chat_content()
+    boundary = await adapter._begin_visible_chat_content()
 
     assert boundary == {"event_type": "chat.final", "content": ""}
     assert adapter._stream_content_run_kind == "goal"
 
 
-def test_round_kind_latch_keeps_user_tail_when_goal_round_already_started() -> None:
+async def test_round_kind_latch_keeps_user_tail_when_goal_round_already_started() -> None:
     """Queued user tail must stay user output, so its own final closes bubble A.
 
     Output is drained from a queue: the scheduler can start the goal round while
@@ -489,13 +489,13 @@ def test_round_kind_latch_keeps_user_tail_when_goal_round_already_started() -> N
     adapter._instance.active_round = SimpleNamespace(run_kind="user")
 
     adapter._track_round_output_boundary(_delta_chunk("hello"))
-    assert adapter._begin_visible_chat_content(True) is None
+    assert await adapter._begin_visible_chat_content(True) is None
     assert adapter._stream_content_run_kind == "user"
 
     # Goal round starts at the producer; the user tail is still queued here.
     adapter._instance.active_round = SimpleNamespace(run_kind="goal")
     adapter._track_round_output_boundary(_delta_chunk(" world"))
-    assert adapter._begin_visible_chat_content(True) is None
+    assert await adapter._begin_visible_chat_content(True) is None
 
     adapter._track_round_output_boundary(_answer_chunk("hello world"))
     assert adapter._adapt_goal_intermediate_final(
@@ -507,7 +507,7 @@ def test_round_kind_latch_keeps_user_tail_when_goal_round_already_started() -> N
     # Next round re-samples: goal output opens its own bubble and its
     # attempt-boundary final stays intermediate.
     adapter._track_round_output_boundary(_delta_chunk("goal step"))
-    assert adapter._begin_visible_chat_content(True) == {
+    assert await adapter._begin_visible_chat_content(True) == {
         "event_type": "chat.final",
         "content": "",
     }
@@ -521,7 +521,7 @@ def test_round_kind_latch_keeps_user_tail_when_goal_round_already_started() -> N
     }
 
 
-def test_round_kind_latch_keeps_goal_attempts_in_one_bubble() -> None:
+async def test_round_kind_latch_keeps_goal_attempts_in_one_bubble() -> None:
     """Attempt boundaries must not inject a split final between goal attempts."""
     goals = _FakeGoals()
     goals.record = GoalRecord.create(session_id="session-1", objective="ship the feature")
@@ -530,11 +530,11 @@ def test_round_kind_latch_keeps_goal_attempts_in_one_bubble() -> None:
     adapter._instance.active_round = SimpleNamespace(run_kind="goal")
 
     adapter._track_round_output_boundary(_delta_chunk("attempt 1"))
-    adapter._begin_visible_chat_content(True)
+    await adapter._begin_visible_chat_content(True)
     adapter._track_round_output_boundary(_answer_chunk("attempt 1"))
 
     adapter._track_round_output_boundary(_delta_chunk("attempt 2"))
-    assert adapter._begin_visible_chat_content(True) is None
+    assert await adapter._begin_visible_chat_content(True) is None
     assert adapter._stream_content_run_kind == "goal"
 
 
@@ -760,7 +760,7 @@ def test_stream_end_skips_final_when_already_emitted() -> None:
     )
 
 
-def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     from collections import Counter
 
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
@@ -787,7 +787,7 @@ def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.Monk
         params={"mode": "agent"},
     )
     # 本用例只钉 flags；defer=False 表示空闲立刻落盘（忙碌推迟另有 defer 单测）
-    adapter._record_goal_set_history_if_needed(
+    await adapter._record_goal_set_history_if_needed(
         req,
         action="set",
         result_type="goal_stream",
@@ -801,7 +801,7 @@ def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.Monk
     assert captured[0]["extra"]["goal_id"] == "g1"
 
     captured.clear()
-    adapter._record_goal_set_history_if_needed(
+    await adapter._record_goal_set_history_if_needed(
         req,
         action="pause",
         result_type="ok",
@@ -811,7 +811,7 @@ def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.Monk
     assert captured == []
 
 
-def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict] = []
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.append_history_record",
@@ -821,7 +821,7 @@ def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyP
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.load_history_records",
         lambda _sid: [],
     )
-    JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
+    await JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
         session_id="s1",
         channel_id="web",
         channel_metadata=None,
@@ -848,7 +848,7 @@ def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyP
         ],
     )
     captured.clear()
-    JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
+    await JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
         session_id="s1",
         channel_id="web",
         channel_metadata=None,
@@ -857,7 +857,7 @@ def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyP
     )
     assert captured == []
 
-    JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
+    await JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
         session_id="s1",
         channel_id="web",
         channel_metadata=None,
