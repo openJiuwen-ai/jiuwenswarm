@@ -113,3 +113,4 @@ def test_render_prefixes_interaction_context():
     rendered = turn.render()
 
     assert rendered.startswith("\n上一轮被中断\n\n")
+

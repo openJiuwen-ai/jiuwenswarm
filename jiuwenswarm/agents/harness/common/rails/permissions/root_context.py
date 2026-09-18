@@ -408,7 +408,6 @@ HOST_USER_ORIGIN_INTERNAL = "internal_dispatch"
 _REQUIRED_ENVELOPE_KEYS = frozenset(
     {
         "source",
-        "timezone",
         "timestamp",
         "preferred_response_language",
         "content",
@@ -418,7 +417,7 @@ _REQUIRED_ENVELOPE_KEYS = frozenset(
     }
 )
 _OPTIONAL_ENVELOPE_KEYS = frozenset(
-    {"skills_to_use", "trusted_dirs", "sender", "chat_type"}
+    {"skills_to_use", "trusted_dirs", "sender", "chat_type", "timezone"}
 )
 
 
@@ -462,7 +461,7 @@ def _parse_permission_user_content(
         return None, False
     if any(
         not isinstance(envelope.get(name), str) or not envelope[name].strip()
-        for name in ("timezone", "timestamp", "preferred_response_language")
+        for name in ("timestamp", "preferred_response_language")
     ):
         return None, False
     if not _is_json_object_string(envelope.get("files_updated_by_user")):
