@@ -1927,8 +1927,8 @@ body.workspace-resize-active iframe {
   .completed-work-chip .tool-tree-item__disclosure {
     opacity: 0.7;
     transition:
-      transform 0.22s ease,
-      opacity 0.18s ease;
+      transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .reasoning-col {
@@ -1961,11 +1961,14 @@ body.workspace-resize-active iframe {
     padding: 2px 0;
   }
 
-  /* 思考正文：用 grid rows 做高度过渡，避免 open 切换时硬切跳变。 */
+  /* 思考正文保留高度过渡；任务执行区即时进入布局，只做内容反馈。 */
   .reasoning-panel__collapse,
   .timeline-collapse {
     display: grid;
     grid-template-rows: 0fr;
+  }
+
+  .reasoning-panel__collapse {
     transition: grid-template-rows 0.3s ease;
   }
 
@@ -2024,27 +2027,16 @@ body.workspace-resize-active iframe {
     width: auto;
     visibility: visible;
     pointer-events: auto;
-    animation: timeline-collapse-open 0.3s ease;
   }
 
   .timeline-collapse.is-open>.timeline-collapse-inner>* {
-    animation: timeline-collapse-drop 0.22s ease;
-  }
-
-  @keyframes timeline-collapse-open {
-    from {
-      grid-template-rows: 0fr;
-    }
-
-    to {
-      grid-template-rows: 1fr;
-    }
+    animation: timeline-collapse-drop 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   @keyframes timeline-collapse-drop {
     from {
       opacity: 0;
-      transform: translateY(-4px);
+      transform: translateY(-2px);
     }
 
     to {
