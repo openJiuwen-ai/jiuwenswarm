@@ -12,11 +12,11 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import (
 )
 
 
-def test_qwen_tool_definition_exposes_only_jiuwen_delegate() -> None:
+def test_qwen_tool_definition_exposes_delegate_and_task_controls() -> None:
     tools = qwen_omni_tools()
 
-    assert len(tools) == 1
-    function = tools[0]["function"]
+    assert {t["function"]["name"] for t in tools} == {"jiuwen_delegate", "jiuwen_task_query", "jiuwen_task_cancel", "jiuwen_task_modify"}
+    function = next(t["function"] for t in tools if t["function"]["name"] == QWEN_OMNI_DELEGATE_TOOL_NAME)
     assert tools[0]["type"] == "function"
     assert function["name"] == QWEN_OMNI_DELEGATE_TOOL_NAME
     assert function["parameters"]["required"] == ["task"]

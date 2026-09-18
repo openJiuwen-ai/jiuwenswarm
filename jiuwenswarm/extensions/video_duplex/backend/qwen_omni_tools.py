@@ -10,7 +10,8 @@ from typing import Any
 QWEN_OMNI_DELEGATE_TOOL_NAME = "jiuwen_delegate"
 QWEN_OMNI_RESEARCH_TOOL_NAME = "jiuwen_research"
 _MAX_CALL_ID_CHARS = 200
-_MAX_TASK_CHARS = 2_000
+_MAX_TASK_CHARS = 16_000
+_TASK_TOOLS = {"jiuwen_task_query", "jiuwen_task_cancel", "jiuwen_task_modify"}
 _DELEGATE_ARGUMENT_NAMES = ("task", "query", "instruction", "request")
 
 
@@ -29,7 +30,7 @@ class QwenOmniToolCall:
 
 def qwen_omni_tools() -> list[dict[str, Any]]:
     """Return fresh Qwen-compatible tool definitions for each session."""
-    return [
+    return task_management_tools() + [
         {
             "type": "function",
             "function": {
@@ -65,7 +66,7 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         raise ValueError("tool call must be an object")
 
     name = str(value.get("name") or "").strip()
-    if name not in {QWEN_OMNI_DELEGATE_TOOL_NAME, QWEN_OMNI_RESEARCH_TOOL_NAME}:
+    if name not in {QWEN_OMNI_DELEGATE_TOOL_NAME, QWEN_OMNI_RESEARCH_TOOL_NAME} | _TASK_TOOLS:
         raise ValueError(f"unsupported Qwen tool: {name or '<empty>'}")
 
     call_id = str(value.get("call_id") or "").strip()
@@ -84,6 +85,17 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         raise ValueError("arguments must be a JSON object")
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be a JSON object")
+    if name in _TASK_TOOLS:
+        schema = next(t["function"]["parameters"] for t in task_management_tools() if t["function"]["name"] == name)
+        if set(arguments) - set(schema["properties"]) or set(schema["required"]) - set(arguments):
+            raise ValueError("Invalid task tool arguments")
+        for key, item in arguments.items():
+            if key in {"revision", "offset"}:
+                if type(item) is not int or item < (1 if key == "revision" else 0):
+                    raise ValueError(f"Invalid {key}")
+            elif not isinstance(item, str) or not item.strip() or len(item) > (4000 if key == "instruction" else 256):
+                raise ValueError(f"Invalid {key}")
+        return QwenOmniToolCall(name, call_id, arguments, "")
     if len(arguments) != 1:
         raise ValueError("arguments must contain exactly one task field")
     if name == QWEN_OMNI_DELEGATE_TOOL_NAME:
@@ -107,3 +119,19 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         arguments=arguments,
         task=task,
     )
+
+
+def task_management_tools():
+    specs = [
+        ("jiuwen_task_query", "Find tasks and their results in this conversation. Query before selecting an ambiguous task; use exact returned job_id and revision for controls.",
+         {"job_id": {"type": "string"}, "query": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}}, []),
+        ("jiuwen_task_cancel", "Request cancellation of the exact task. Accepted does not mean stopped. Query for the final state.",
+         {"job_id": {"type": "string"}}, ["job_id"]),
+        ("jiuwen_task_modify", "Change the exact task's requirements. Queued input is updated; running changes wait for a model checkpoint; finished work creates a linked revision. Receipt never proves the requirement is satisfied.",
+         {"job_id": {"type": "string"}, "revision": {"type": "integer", "minimum": 1}, "instruction": {"type": "string", "maxLength": 4000}},
+         ["job_id", "revision", "instruction"]),
+    ]
+    return [{"type": "function", "function": {"name": name, "description": description,
+             "parameters": {"type": "object", "properties": properties, "required": required,
+                            "additionalProperties": False}}}
+            for name, description, properties, required in specs]

@@ -908,7 +908,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 task: call.task,
                 turn_id: latestInstruction.turnId,
               });
-              void webRequest<AgentAction & { call_id?: string }>(
+              void webRequest<AgentAction & { call_id?: string; tool_result?: unknown }>(
                 'video.qwen.tool',
                 {
                   name: call.name,
@@ -922,6 +922,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 { timeoutMs: 10_000 },
               )
                 .then((action) => {
+                  if (action.tool_result !== undefined) {
+                    if (mediaGeneration === mediaGenerationRef.current)
+                      session.enqueueOperationResult(call.callId, action.tool_result);
+                    return;
+                  }
                   const jobId = action.search_job?.id?.trim() || '';
                   if (!jobId) throw new Error('Jiuwen Core Agent did not create a search job');
                   rememberSearchJob(
@@ -932,33 +937,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 })
                 .catch((toolError) => {
                   const message = toolError instanceof Error ? toolError.message : 'Jiuwen Core Agent request failed';
-                  if (headless) {
-                    onCoreAgentProgress?.('failed', {
-                      job_id: `qwen-tool-error-${call.callId}`,
-                      search_session_id: searchSessionId,
-                      question: originalInstruction,
-                      error: message,
-                      status: 'failed',
-                      tool_call_id: call.callId,
-                    });
-                    return;
-                  }
                   if (mediaGeneration !== mediaGenerationRef.current) return;
-                  appendChat('assistant', `Jiuwen Core Agent 未能启动任务：${message}`, 'tool_result');
-                  const queued = session.enqueueToolResult({
-                    jobId: `qwen-tool-error-${call.callId}`,
-                    question: originalInstruction,
-                    brief: {
-                      status: 'failed',
-                      result_kind: 'generic',
-                      summary: '任务未能启动，错误信息已经显示在界面中。',
-                      displayed_in_ui: true,
-                      response_mode: 'acknowledge',
-                      source: 'fallback',
-                    },
-                    callId: call.callId,
-                  });
-                  if (!queued) setError(message);
+                  setError(message);
+                  session.enqueueOperationResult(call.callId, { state: 'rejected', error: message });
                 });
             },
             onDiagnostic: (event) => {

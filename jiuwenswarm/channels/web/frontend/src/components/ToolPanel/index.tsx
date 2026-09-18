@@ -283,6 +283,7 @@ export function ToolPanel({
       running: t('chat.applicationTasks.running'),
       completed: t('chat.applicationTasks.completed'),
       failed: t('chat.applicationTasks.failed'),
+      unknown: '状态待核对',
       cancelling: t('chat.applicationTasks.cancelling'),
       cancelled: t('chat.applicationTasks.cancelled'),
     }),

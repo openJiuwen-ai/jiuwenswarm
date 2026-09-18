@@ -1,6 +1,7 @@
 export const QWEN_OMNI_DELEGATE_TOOL_NAME = 'jiuwen_delegate';
 const QWEN_OMNI_LEGACY_RESEARCH_TOOL_NAME = 'jiuwen_research';
 export const QWEN_OMNI_TOOL_INSTRUCTIONS = [
+  'Use jiuwen_task_query to find an existing task, jiuwen_task_cancel to stop it, and jiuwen_task_modify to change it. Use exact returned job_id and revision. Accepted or context_written does not mean completed or verified. Never delegate a duplicate just to query or modify work.',
   'The jiuwen_delegate function delegates work to the full Jiuwen Core Agent, which may use all tools and capabilities available in Jiuwen.',
   'Answer directly only when the request can be completed from the current audio, video, conversation, or an earlier Jiuwen result.',
   'If you cannot directly complete a request, MUST call jiuwen_delegate in the same turn instead of refusing, claiming that you lack a capability, asking the user to use another application, or merely saying that a tool is needed.',
@@ -37,16 +38,19 @@ export function parseQwenOmniFunctionCall(event: Record<string, unknown>): QwenO
     typeof argumentsValue === 'string' ? argumentsValue.trim() : JSON.stringify(argumentsValue || {});
   const isDelegate = name === QWEN_OMNI_DELEGATE_TOOL_NAME;
   const isLegacyResearch = name === QWEN_OMNI_LEGACY_RESEARCH_TOOL_NAME;
-  if ((!isDelegate && !isLegacyResearch) || !callId || callId.length > 200 || !rawArguments) return null;
+  const isManagement = ['jiuwen_task_query', 'jiuwen_task_cancel', 'jiuwen_task_modify'].includes(name);
+  if ((!isDelegate && !isLegacyResearch && !isManagement) || !callId || callId.length > 200 || !rawArguments) return null;
   try {
     const argumentsObject = asRecord(typeof argumentsValue === 'string' ? JSON.parse(rawArguments) : argumentsValue);
-    if (!argumentsObject || Object.keys(argumentsObject).length !== 1) return null;
+    if (!argumentsObject) return null;
+    if (isManagement) return { name, callId, arguments: rawArguments, task: name };
+    if (Object.keys(argumentsObject).length !== 1) return null;
     const argumentName = isDelegate
       ? QWEN_OMNI_DELEGATE_ARGUMENT_NAMES.find((key) => typeof argumentsObject[key] === 'string')
       : 'query';
     if (!argumentName || typeof argumentsObject[argumentName] !== 'string') return null;
     const task = argumentsObject[argumentName].trim();
-    if (!task || task.length > 2_000) return null;
+    if (!task || task.length > 16_000) return null;
     return { name, callId, arguments: rawArguments, task };
   } catch {
     return null;

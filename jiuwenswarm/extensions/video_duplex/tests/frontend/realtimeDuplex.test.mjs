@@ -708,3 +708,18 @@ test('remote disconnect releases media resources and pending receipts without lo
   assert.equal(texts.at(-1), '已经收到的回答');
   assert.equal(states.at(-1), 'closed');
 });
+
+
+test('task operation receipts wait for the active response and retain accepted semantics', () => {
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'speaking' } });
+  session.enqueueOperationResult('modify-call', { task_id: 'task-a', state: 'pending' });
+  assert.equal(sent.length, 0);
+  session.handleEvent({ type: 'response.done', response_id: 'speaking' });
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.equal(sent[0].item.call_id, 'modify-call');
+  assert.equal(JSON.parse(sent[0].item.output).state, 'pending');
+  session.enqueueOperationResult('modify-call', { state: 'pending' });
+  assert.equal(sent.length, 2);
+  assert.equal(sent.some(e => JSON.stringify(e).includes('completed')), false);
+});
