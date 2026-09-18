@@ -516,6 +516,9 @@ def _build_deepresearch_config(source: dict[str, str]) -> dict[str, str]:
             break
     config["LLM_SSL_VERIFY"] = str(source.get("LLM_SSL_VERIFY", "false"))
     config["TOOL_SSL_VERIFY"] = str(source.get("TOOL_SSL_VERIFY", "false"))
+    config["SEARCH_SERVICE_ALLOW_UNSAFE_URL"] = os.environ.get(
+        "SEARCH_SERVICE_ALLOW_UNSAFE_URL", "true"
+    )
     return config
 
 
