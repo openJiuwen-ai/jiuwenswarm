@@ -156,17 +156,19 @@ def _is_space_or_punctuation(category: int) -> bool:
     return bool(category & (_WHITESPACE | _PUNCTUATION))
 
 
-def _cjk_scan_delims(self: StateInline, start: int, canSplitWord: bool) -> Scanned:
+def _cjk_scan_delims(self: StateInline, start: int, can_split_word: bool) -> Scanned:
     """CJK-friendly replacement for StateInline.scanDelims.
 
-    ``canSplitWord`` is kept for signature compatibility; the branches below
-    key off the marker character, mirroring how the micromark forks define
-    separate attention ('*'/'_') and strikethrough ('~') tokenizers.
+    ``can_split_word`` is kept for signature compatibility (markdown-it-py
+    names it ``canSplitWord``; both callers pass it positionally); the
+    branches below key off the marker character, mirroring how the micromark
+    forks define separate attention ('*'/'_') and strikethrough ('~')
+    tokenizers.
     """
     marker = self.src[start]
     if marker not in _ATTENTION_MARKERS:
         # Unknown delimiter rule (third-party): keep stock markdown-it behavior.
-        return _stock_scan_delims(self, start, canSplitWord)
+        return _stock_scan_delims(self, start, can_split_word)
 
     pos = start
     maximum = self.posMax
@@ -229,7 +231,7 @@ def _cjk_scan_delims(self: StateInline, start: int, canSplitWord: bool) -> Scann
     )
     if marker == "*":
         return Scanned(open_, close_, count)
-    # '_' intraword rule (emphasis.tokenize passes canSplitWord=False for '_').
+    # '_' intraword rule (emphasis.tokenize passes can_split_word=False for '_').
     can_open = open_ and (_is_space_or_punctuation(before_primary) or not close_)
     can_close = close_ and (_is_space_or_punctuation(after_category) or not open_)
     return Scanned(can_open, can_close, count)

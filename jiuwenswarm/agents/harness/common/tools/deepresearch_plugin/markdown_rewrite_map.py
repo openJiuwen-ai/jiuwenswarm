@@ -342,13 +342,15 @@ def _decode_entity_at(raw: str, index: int) -> tuple[str, int] | None:
         return None
     tail = raw[index:]
     if len(tail) > 1 and tail[1] == "#":
-        if match := _ENTITY_DIGITAL_RE.match(tail):
+        match = _ENTITY_DIGITAL_RE.match(tail)
+        if match is not None:
             digits = match.group(1)
             code = int(digits[1:], 16) if digits[0].lower() == "x" else int(digits, 10)
             char = fromCodePoint(code) if isValidEntityCode(code) else fromCodePoint(0xFFFD)
             return char, match.end()
     else:
-        if (match := _ENTITY_NAMED_RE.match(tail)) and match.group(1) in entities:
+        match = _ENTITY_NAMED_RE.match(tail)
+        if match is not None and match.group(1) in entities:
             return entities[match.group(1)], match.end()
     return None
 
