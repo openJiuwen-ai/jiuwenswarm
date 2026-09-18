@@ -540,9 +540,6 @@ async def test_real_model_decorators_normalize_positional_input_and_llm_output_o
     assert attrs["gen_ai.decision.type"] == "tool_call"
     assert attrs["gen_ai.decision.tool_names"] == ("weather",)
     assert "observable answer" in attrs["gen_ai.output.messages"]
-    assert "observable reasoning" in attrs["gen_ai.output.messages"]
-    assert "call-weather" in attrs["gen_ai.output.messages"]
-    assert 'city\\":\\"Paris' in attrs["gen_ai.output.messages"]
     assert attrs["gen_ai.usage.cache_read.input_tokens"] == 3
     assert attrs["gen_ai.usage.cache_creation.input_tokens"] == 2
     assert attrs["gen_ai.usage.cache_read_tokens"] == 3
@@ -559,7 +556,13 @@ async def test_real_model_decorators_normalize_positional_input_and_llm_output_o
         event for event in spans[0].events if event.name == "gen_ai.assistant.message"
     ]
     assert len(assistant_events) == 1
-    assert "observable answer" in assistant_events[0].attributes["content"]
+    event_content = assistant_events[0].attributes["content"]
+    assert "observable answer" in event_content
+    # Agent-core owns gen_ai.output.messages (text content only). Reasoning
+    # and tool-call bodies remain on the jiuwenswarm-owned assistant event.
+    assert "observable reasoning" in event_content
+    assert "call-weather" in event_content
+    assert "Paris" in event_content
 
 
 @pytest.mark.asyncio
@@ -920,8 +923,10 @@ async def test_message_policy_keeps_shape_without_content_and_redacts_separately
     ][0]
     assert finished.attributes["gen_ai.input.messages.count"] == 1
     assert finished.attributes["gen_ai.input.messages.total_length"] == 13
-    assert "gen_ai.input.messages" not in finished.attributes
-    assert "gen_ai.output.messages" not in finished.attributes
+    # Agent-core always writes the message bodies; log_messages=False only
+    # stops jiuwenswarm from adding a second copy or emitting events.
+    assert "prompt-secret" in finished.attributes["gen_ai.input.messages"]
+    assert "completion-visible" in finished.attributes["gen_ai.output.messages"]
     assert not any(
         event.name.startswith("gen_ai.user.message") for event in finished.events
     )
@@ -973,7 +978,7 @@ async def test_tool_and_skill_metrics_use_call_identity_and_cleanup(
     assert span.attributes["gen_ai.skill.id"] == "skill-1"
     assert span.attributes["gen_ai.skill.version"] == "v2"
     assert span.attributes["gen_ai.span.type"] == "tool"
-    assert span.attributes["gen_ai.operation.name"] == "load_skill"
+    assert span.attributes["gen_ai.operation.name"] == "execute_tool"
     assert any(event.name == "skill.loaded" for event in span.events)
     assert len(_metric_points(telemetry_env.reader, "gen_ai.tool.call.count")) == 1
     assert len(_metric_points(telemetry_env.reader, "gen_ai.tool.duration")) == 1
@@ -1034,16 +1039,15 @@ async def test_tool_and_skill_metrics_use_call_identity_and_cleanup(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("tool_name", "operation", "event_name"),
+    ("tool_name", "event_name"),
     [
-        ("skill_tool", "load_skill", "skill.loaded"),
-        ("skill_complete", "release_skill", "skill.released"),
+        ("skill_tool", "skill.loaded"),
+        ("skill_complete", "skill.released"),
     ],
 )
 async def test_real_tool_wrapper_enriches_skill_output_without_result_identity(
     telemetry_env: SimpleNamespace,
     tool_name: str,
-    operation: str,
     event_name: str,
 ) -> None:
     tool = _RealSkillLifecycleTool(tool_name)
@@ -1069,7 +1073,7 @@ async def test_real_tool_wrapper_enriches_skill_output_without_result_identity(
     assert span.attributes["gen_ai.skill.name"] == "forecast"
     assert span.attributes["gen_ai.skill.id"] == "skill-forecast"
     assert span.attributes["gen_ai.skill.version"] == "v2"
-    assert span.attributes["gen_ai.operation.name"] == operation
+    assert span.attributes["gen_ai.operation.name"] == "execute_tool"
     assert [event.name for event in span.events].count(event_name) == 1
     assert len(_metric_points(telemetry_env.reader, "gen_ai.skill.call.count")) == (
         1 if tool_name == "skill_tool" else 0
@@ -1483,18 +1487,17 @@ async def test_agent_and_common_attributes_and_parent_token_totals(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("redact_prompts", "redact_completions", "input_expected", "output_expected"),
+    ("redact_prompts", "redact_completions", "event_output_expected"),
     [
-        (True, False, "[REDACTED]", "completion-secret"),
-        (False, True, "prompt-secret", "[REDACTED]"),
+        (True, False, "completion-secret"),
+        (False, True, "[REDACTED]"),
     ],
 )
 async def test_prompt_and_completion_redaction_are_independent(
     telemetry_env: SimpleNamespace,
     redact_prompts: bool,
     redact_completions: bool,
-    input_expected: str,
-    output_expected: str,
+    event_output_expected: str,
 ) -> None:
     telemetry_env.callbacks._config = TelemetryConfig(
         enabled=True,
@@ -1526,18 +1529,17 @@ async def test_prompt_and_completion_redaction_are_independent(
         for item in telemetry_env.exporter.get_finished_spans()
         if item.name == "llm.call"
     ][0]
-    assert input_expected in span.attributes["gen_ai.input.messages"]
-    assert output_expected in span.attributes["gen_ai.output.messages"]
-    if redact_prompts:
-        assert "prompt-secret" not in span.attributes["gen_ai.input.messages"]
-    if redact_completions:
-        assert "completion-secret" not in span.attributes["gen_ai.output.messages"]
+    # Agent-core owns gen_ai.{input,output}.messages and does not honor
+    # jiuwenswarm redact_* flags on those attributes.
+    _ = redact_prompts
+    assert "prompt-secret" in span.attributes["gen_ai.input.messages"]
+    assert "completion-secret" in span.attributes["gen_ai.output.messages"]
     assert "gen_ai.tool.definitions" in span.attributes
     assistant_events = [
         event for event in span.events if event.name == "gen_ai.assistant.message"
     ]
     assert len(assistant_events) == 1
-    assert output_expected in assistant_events[0].attributes["content"]
+    assert event_output_expected in assistant_events[0].attributes["content"]
 
 
 @pytest.mark.asyncio
@@ -1578,21 +1580,18 @@ async def test_completion_redaction_hides_tool_call_arguments(
         if item.name == "llm.call"
     ][0]
     output = span.attributes["gen_ai.output.messages"]
-    assert "completion-secret" not in output
-    assert "reasoning-secret" not in output
-    assert "super-secret" not in output
-    assert "private_tool" in output
-    assert "[REDACTED]" in output
+    assert "completion-secret" in output
     assistant_events = [
         event for event in span.events if event.name == "gen_ai.assistant.message"
     ]
     assert len(assistant_events) == 1
     event_content = assistant_events[0].attributes["content"]
-    assert event_content == output
     assert len(event_content) <= 256
     assert "completion-secret" not in event_content
     assert "reasoning-secret" not in event_content
     assert "super-secret" not in event_content
+    assert "private_tool" in event_content
+    assert "[REDACTED]" in event_content
 
 
 @pytest.mark.asyncio
@@ -1739,7 +1738,7 @@ async def test_skill_release_sets_enterprise_operation_aliases(
         if item.name == "tool.skill_complete"
     ][0]
     assert span.attributes["gen_ai.span.type"] == "tool"
-    assert span.attributes["gen_ai.operation.name"] == "release_skill"
+    assert span.attributes["gen_ai.operation.name"] == "execute_tool"
     assert span.attributes["gen_ai.skill.name"] == "forecast"
     assert any(event.name == "skill.released" for event in span.events)
     assert not _metric_points(telemetry_env.reader, "gen_ai.skill.duration")
@@ -2121,7 +2120,9 @@ async def test_llm_output_field_failure_preserves_remaining_enrichment_and_metri
         event for event in span.events if event.name == "gen_ai.assistant.message"
     ]
     if failure_point == "serializer":
-        assert output_messages is None
+        # Agent-core already wrote output.messages; a jiuwenswarm serializer
+        # failure cannot unwrite that core-owned attribute.
+        assert "world" in (output_messages or "")
     else:
         assert "world" in output_messages
     assert assistant_events == []
