@@ -26,7 +26,7 @@ from jiuwenswarm.agents.harness.common.tools.web_file_download import (
 )
 from jiuwenswarm.channels.web import app_web
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
-from jiuwenswarm.channels.web import agent_http_base
+from jiuwenswarm.common.client import agent_http_bridge
 from jiuwenswarm.server.agent_ws_server import _parse_single_byte_range
 
 
@@ -301,7 +301,7 @@ def test_agent_http_bases_use_trusted_resolver(
     download_token = web_file_download.generate_file_download_token("/tmp/a.txt", "s1")
     upload_token = web_file_download.generate_file_upload_token("agent/workspace/a.txt", "s1")
     monkeypatch.setattr(
-        agent_http_base,
+        agent_http_bridge,
         "_agent_http_base_resolver",
         lambda payload, endpoint: (
             "http://agent-a:18092" if endpoint == "download" else "http://agent-a:18093"
@@ -337,7 +337,7 @@ def test_agent_http_base_does_not_trust_unsigned_token_payload(
 ) -> None:
     """Client-controlled bridge URLs must not redirect Gateway requests."""
     monkeypatch.setenv("JIUWENSWARM_AGENT_HTTP_BASE", "http://trusted-agent:18092")
-    monkeypatch.setattr(agent_http_base, "_agent_http_base_resolver", None)
+    monkeypatch.setattr(agent_http_bridge, "_agent_http_base_resolver", None)
     token = web_file_download.generate_file_download_token("/tmp/a.txt", "s1")
     payload = WebFileDownloadManager.get_instance().validate_token(token)
     assert payload is not None

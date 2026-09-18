@@ -34,11 +34,10 @@ from urllib.parse import ParseResult, parse_qs, quote, unquote, urlencode, urlpa
 from jiuwenswarm.dotenv_early import parse_dotenv_early
 parse_dotenv_early("jiuwenswarm-web")
 
-# AgentServer HTTP bridge 基址解析与上传执行统一收口的本地副本
-# （gateway 拆分：原实现位于 gateway/routing，纯静态逻辑允许两仓临时重复），
+# AgentServer HTTP bridge 基址解析与上传执行统一收口在 common/client 公共模块，
 # 供 Web 静态服务 / IM 附件落盘钩子 / Web media.persist 大图分流共用（避免各处
 # 重复推导）。此处保留私有别名兼容既有调用点，并 re-export 扩展点。
-from jiuwenswarm.channels.web.agent_http_base import (
+from jiuwenswarm.common.client.agent_http_bridge import (
     resolve_agent_http_base,
     resolve_agent_http_base_for_token,
     resolve_agent_upload_base,

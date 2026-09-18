@@ -18,8 +18,8 @@ if TYPE_CHECKING:
         ApplicationPluginExtension,
     )
     from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
-    from jiuwenswarm.gateway import AgentServerClient
-    from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
+    from jiuwenswarm.common.client.agent_client import AgentServerClient
+    from jiuwenswarm.common.client.third_agent import ThirdAgent
 else:
     # Keep runtime type-hint introspection valid without importing Gateway and
     # transport adapters into a Runtime-direct process.

@@ -257,7 +257,9 @@ async def _run(host: str, port: int) -> None:
         registry=extension_registry,
     )
     log_startup_stage("extension_manager_created")
-    await extension_manager.load_all_extensions()
+    # AgentServer 为运行时直连进程，不加载传输类扩展（agentos / agent_client 等），
+    # 与 runtime/service.py 的加载策略保持一致；北向传输能力由独立 Gateway 承担。
+    await extension_manager.load_all_extensions(include_transport_extensions=False)
     logger.info(
         "[AgentServer] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
         len(extension_manager.list_extensions()),

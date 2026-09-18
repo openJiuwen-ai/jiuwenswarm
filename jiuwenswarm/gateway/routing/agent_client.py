@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
-from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from typing import Any, AsyncIterator
@@ -103,53 +102,9 @@ def _build_ws_origin(uri: str) -> str | None:
     return f"{scheme}://{parsed.netloc}"
 
 
-class AgentServerClient(ABC):
-    """AgentServer WebSocket 客户端接口."""
-
-    @abstractmethod
-    async def connect(self, uri: str) -> None:
-        """建立与 AgentServer 的 WebSocket 连接."""
-        ...
-
-    @abstractmethod
-    async def disconnect(self) -> None:
-        """断开连接."""
-        ...
-
-    @abstractmethod
-    def set_or_update_server_config(
-        self,
-        *,
-        config: dict[str, Any],
-        env: dict[str, str] | None = None,
-    ) -> None:
-        """缓存或更新服务端配置快照，供自定义 client 后续使用."""
-        ...
-
-    @abstractmethod
-    async def send_request(
-        self,
-        envelope: E2AEnvelope,
-        *,
-        timeout: float | None = None,
-    ) -> AgentResponse:
-        """发送 E2A 信封，等待完整响应.
-
-        Args:
-            envelope: E2A 信封.
-            timeout: 等待响应的上限（秒）。``None`` 时使用客户端默认值
-                （``_UNARY_REQUEST_TIMEOUT_SECONDS``，600s）。调用方可传入
-                更大的值以覆盖默认上限（例如 cron 任务的 ``timeout_seconds``），
-                使任务自身的超时真正生效，而非被内层默认值提前截断.
-        """
-        ...
-
-    @abstractmethod
-    async def send_request_stream(
-        self, envelope: E2AEnvelope
-    ) -> AsyncIterator[AgentResponseChunk]:
-        """发送 E2A 信封，流式接收响应."""
-        ...
+# AgentServerClient 抽象契约已下沉 ``jiuwenswarm.common.client.agent_client``
+# （保留侧与 Gateway 仓共用契约）。此处 re-export 保持既有 import 路径兼容。
+from jiuwenswarm.common.client.agent_client import AgentServerClient  # noqa: F401
 
 
 def _e2a_to_wire(envelope: E2AEnvelope) -> dict[str, Any]:
