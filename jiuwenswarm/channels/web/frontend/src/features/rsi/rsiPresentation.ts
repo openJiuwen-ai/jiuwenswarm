@@ -676,12 +676,13 @@ export function formatArtifactScore(score: number | null, artifactType?: RsiArti
   return formatScore(score * scoreScale(artifactType), scoreDigits(artifactType));
 }
 
-// 提升百分比：↑ 5.2% / ↓ 2.1%，null 显示空串
-export function formatGain(gain: number | null): { text: string; kind: 'up' | 'down' | 'none' } {
+// Score differences use the same scale as the displayed score, not relative growth.
+export function formatGain(gain: number | null, artifactType?: RsiArtifactType | null): { text: string; kind: 'up' | 'down' | 'none' } {
   if (gain == null || Number.isNaN(gain)) return { text: '', kind: 'none' };
-  const pct = gain * 100;
-  if (pct >= 0) return { text: `${pct.toFixed(1)}% ↑`, kind: 'up' };
-  return { text: `${Math.abs(pct).toFixed(1)}% ↓`, kind: 'down' };
+  const delta = gain * scoreScale(artifactType);
+  if (delta === 0) return { text: '', kind: 'none' };
+  if (delta > 0) return { text: `${delta.toFixed(1)} ↑`, kind: 'up' };
+  return { text: `${Math.abs(delta).toFixed(1)} ↓`, kind: 'down' };
 }
 
 // token 用量格式化：万 tokens
