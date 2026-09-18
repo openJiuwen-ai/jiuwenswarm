@@ -253,9 +253,14 @@ gateway_start_nohup() {
     exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
     local log_dir_prefix="AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
 
-    local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+    # nohup 的 stdout/stderr 与进程自己写的 gateway.log 一起放在这个目录，不写共享
+    # 临时目录：`>` 会跟随符号链接，网关以 root 拉起，任何能写临时目录的账号都可以
+    # 事先在固定名字上放一个链接，把输出重定向到别处并覆盖任意文件。
+    local nohup_log="${gateway_log_dir}/gateway-nohup.log"
+
+    local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > ${nohup_log} 2>&1 &"
     if [ -n "${instance_name}" ]; then
-        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} ${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} ${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > ${nohup_log} 2>&1 &"
     fi
 
     info "Starting jiuwenswarm-gateway on ${master_host} (nohup)..."
@@ -283,7 +288,7 @@ gateway_start_nohup() {
 
     warning "netstat -ltn on ${master_host} (ports ${gw_port}/${web_port}):"
     exec_on_host "${master_host}" "netstat -ltn 2>/dev/null | grep -E ':(${gw_port}|${web_port})\\b' || true"
-    error "Gateway process failed to start on ${master_host} (proc=${gw_proc}, ports ${gw_port}=${gw_listen}/${web_port}=${web_listen}). Check: /tmp/jiuwenswarm-gateway.log"
+    error "Gateway process failed to start on ${master_host} (proc=${gw_proc}, ports ${gw_port}=${gw_listen}/${web_port}=${web_listen}). Check: ${nohup_log}"
 }
 
 # 本机是否属于 config.yaml 的 cluster.master_nodes；返回 0 表示属于。
