@@ -8386,13 +8386,21 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
             BrowserTaskPromptRail,
         )
-        from jiuwenswarm.agents.harness.common.tools.subagent_compat import (
-            install_subagent_control_compat_patch,
-        )
 
         enable_runtime = self._resolve_enable_subagent_runtime(config_base)
         try:
+            from jiuwenswarm.agents.harness.common.tools.subagent_compat import (
+                install_subagent_control_compat_patch,
+            )
+
             install_subagent_control_compat_patch()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent control compat skipped: %s",
+                exc,
+            )
+            enable_runtime = False
+        try:
             subagent_rail = BrowserTaskPromptRail(
                 enable_subagent_runtime=enable_runtime,
             )

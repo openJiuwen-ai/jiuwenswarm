@@ -7,6 +7,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+
+pytest.importorskip("openjiuwen.harness.subagent_runtime")
+
 from openjiuwen.harness.subagent_runtime.control import SubagentControl
 from openjiuwen.harness.subagent_runtime.models import (
     ResumeResult,
