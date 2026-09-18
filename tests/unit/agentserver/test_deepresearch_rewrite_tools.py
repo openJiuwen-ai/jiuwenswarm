@@ -13,6 +13,13 @@ from jiuwenclaw.agentserver.tools import deepresearch_tools as dt
 from jiuwenclaw.agentserver.tools.deepresearch import rewrite_tools as rt
 
 
+_BASE_REVISION = {
+    "document_id": "doc_test",
+    "revision_id": "rev_parent",
+    "content_sha256": "a" * 64,
+}
+
+
 def _document(root: Path, citation_artifacts: dict[str, str] | None = None):
     body = "原句。\n"
     report = root / "report.md"
@@ -117,6 +124,7 @@ def test_rewrite_tool_schemas_expose_only_protocol_v2_contract():
         "action",
         "selection",
         "instruction",
+        "base_revision",
     ]
     assert list(inspect.signature(rt.deepresearch_commit_rewrite._func).parameters) == [
         "context_token",
@@ -128,6 +136,7 @@ def test_rewrite_tool_schemas_expose_only_protocol_v2_contract():
         "action",
         "selection",
         "instruction",
+        "base_revision",
     ]
     assert "Protocol v2" in prepare_card.description
     assert "UTF-8" in prepare_card.description
@@ -164,6 +173,25 @@ def test_rewrite_tool_schemas_expose_only_protocol_v2_contract():
     assert selection_schema["properties"]["source_sha256"] == {
         "type": "string",
         "pattern": "^[0-9a-f]{64}$",
+    }
+    assert prepare_schema["properties"]["base_revision"] == {
+        "type": "object",
+        "properties": {
+            "document_id": {
+                "type": "string",
+                "pattern": "^doc_[A-Za-z0-9_-]{1,128}$",
+            },
+            "revision_id": {
+                "type": "string",
+                "pattern": "^rev_[A-Za-z0-9_-]{1,128}$",
+            },
+            "content_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+        },
+        "required": ["document_id", "revision_id", "content_sha256"],
+        "additionalProperties": False,
     }
     commit_card = rt.deepresearch_commit_rewrite._card
     assert list(commit_card.input_params["properties"]) == [
@@ -322,6 +350,26 @@ async def test_top_level_parse_errors_return_safe_json_inside_lifecycle(
         ("action", "delete", "BAD_REQUEST"),
         ("selection_extra", "sensitive extra", "BAD_REQUEST"),
         ("protocol_version", 1, "SELECTION_PROTOCOL_UNSUPPORTED"),
+        (
+            "base_revision",
+            {**_BASE_REVISION, "extra": "sensitive extra"},
+            "BAD_REQUEST",
+        ),
+        (
+            "base_revision",
+            {
+                key: value
+                for key, value in _BASE_REVISION.items()
+                if key != "revision_id"
+            },
+            "BAD_REQUEST",
+        ),
+        ("base_revision", "rev_parent", "BAD_REQUEST"),
+        (
+            "base_revision",
+            {**_BASE_REVISION, "content_sha256": "A" * 64},
+            "BAD_REQUEST",
+        ),
     ],
 )
 async def test_prepare_invoke_rejects_contract_violations_before_core(
@@ -352,6 +400,35 @@ async def test_prepare_invoke_rejects_contract_violations_before_core(
     assert json.loads(raw)["error_code"] == error_code
     assert "原句" not in raw
     assert "/sensitive/report.md" not in raw
+    core.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base_revision",
+    [
+        {**_BASE_REVISION, "extra": "not allowed"},
+        {
+            key: value
+            for key, value in _BASE_REVISION.items()
+            if key != "content_sha256"
+        },
+        123,
+        {**_BASE_REVISION, "content_sha256": "A" * 64},
+    ],
+)
+async def test_prepare_func_rejects_invalid_base_revision_before_core(base_revision):
+    with patch.object(
+        rt, "prepare_rewrite", side_effect=AssertionError("core called")
+    ) as core:
+        raw = await rt.deepresearch_prepare_rewrite._func(
+            report_path="/workspace/report.md",
+            action="polish",
+            selection=_selection(),
+            base_revision=base_revision,
+        )
+
+    assert json.loads(raw)["error_code"] == "BAD_REQUEST"
     core.assert_not_called()
 
 
@@ -664,7 +741,10 @@ async def test_commit_transport_failure_does_not_mask_completed_revision(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_prepare_passes_protocol_v2_selection_to_core_unchanged(tmp_path):
+@pytest.mark.parametrize("base_revision", [_BASE_REVISION, None])
+async def test_prepare_passes_protocol_v2_contract_to_core_unchanged(
+    tmp_path, base_revision
+):
     report, _ = _document(tmp_path)
     selection = _selection()
     prepared = {"context_token": "T1", "units": []}
@@ -675,10 +755,12 @@ async def test_prepare_passes_protocol_v2_selection_to_core_unchanged(tmp_path):
             report_path=str(report),
             action="polish",
             selection=selection,
+            base_revision=base_revision,
         )
 
     assert json.loads(raw) == {"status": "prepared", **prepared}
     assert core_prepare.call_args.kwargs["selection"] is selection
+    assert core_prepare.call_args.kwargs.get("base_revision") is base_revision
 
 
 @pytest.mark.asyncio
