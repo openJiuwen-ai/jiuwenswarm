@@ -1,0 +1,18 @@
+#!/bin/sh
+# 复制为 ohos-env.local.sh 并按本机修改（install 脚本与 source activate 会自动加载）
+#
+# cp scripts/ohos/ohos-env.local.sh.example scripts/ohos/ohos-env.local.sh
+
+# export OFFICE_CLAW=/storage/Users/currentUser/officeClaw
+# export OHOS_STORAGE_ROOT=/storage/Users/currentUser
+# export OHOS_USR_LOCAL=$OHOS_STORAGE_ROOT/usr/local
+# export OHOS_REAL_PYTHON=$OHOS_USR_LOCAL/bin/python3.12
+# export WHEEL_DIR=$OFFICE_CLAW/jiuwenswarm/wheels
+# export OPENSSL_DIR=$OHOS_USR_LOCAL
+# export OHOS_HNP_ROOT=/data/service/hnp
+# export OHOS_HNP_BIN=$OHOS_HNP_ROOT/bin
+# export OHOS_LLVM_BIN=$OHOS_HNP_ROOT/ohos-sdk.org/ohos-sdk_26.0.0.18/ohos/native/llvm/bin
+# export OHOS_RUST_BIN=$HOME/usr/rust-1.95.0-aarch64-unknown-linux-ohos/bin
+# export OHOS_GIT_SEARCH_PATHS="$OHOS_HNP_BIN/git $HOME/usr/local/bin/git"
+# export AGENT_CORE_PATH=$OFFICE_CLAW/agent-core
+# export USE_LOCAL_OPENJIUWEN=1

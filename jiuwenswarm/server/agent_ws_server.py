@@ -26,6 +26,7 @@ from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
+from jiuwenswarm.common.platform import is_ohos_runtime, sandbox_supported
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
     get_config_file,
@@ -617,6 +618,17 @@ class AgentWebSocketServer:
                 logger.info(
                     "[sandbox_lifecycle] enterprise: sandbox 由 jiuwenbox "
                     "sidecar 提供, skipping internal jiuwenbox auto-start"
+                )
+                return
+            # OHOS (HNP) 运行时: 无 jiuwenbox 宿主能力, 直接跳过 auto-start,
+            # 与 sandbox_supported()=False 的平台判定保持一致。
+            if is_ohos_runtime() or not sandbox_supported():
+                logger.info(
+                    "[sandbox_lifecycle] skipping jiuwenbox auto-start: "
+                    "sandbox is unsupported on runtime platform %r",
+                    os.environ.get("JIUWENSWARM_RUNTIME_PLATFORM")
+                    or os.environ.get("JIUWENCLAW_RUNTIME_PLATFORM")
+                    or sys.platform,
                 )
                 return
             # 非 Linux/Windows 平台直接跳过 auto-start: jiuwenbox 依赖平台专属

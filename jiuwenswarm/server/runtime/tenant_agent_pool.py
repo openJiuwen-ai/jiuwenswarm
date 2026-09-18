@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from collections.abc import Hashable, Iterable
 from typing import Any, ClassVar
@@ -58,6 +59,68 @@ def filter_cached_agent_managers(values: Iterable[Any]) -> list[Any]:
                 type(value).__name__,
             )
     return managers
+
+
+def _build_sync_modes_team(
+    teams: dict[str, Any] | None, service_id: str
+) -> dict[str, Any] | None:
+    """Translate the relay ``teams`` payload into a ``modes.team`` mapping.
+
+    Returns ``None`` when the payload is absent or unusable — callers treat
+    ``None`` as "leave the agent config untouched" (relay semantics: no
+    ``teams`` field → sidecar's hand-written modes.team survives). A payload
+    with an empty ``team[]`` returns ``{}`` (relay semantics: clear).
+
+    Why this matters (2026-09-16 OHOS incident OA.05000090): relay pushes the
+    preset/user team topology through sync_agents_configs ``params.teams``,
+    but before this change nothing consumed it. Team handlers resolve config
+    via ``_effective_config_for_request`` → tenant ``spec.config``, which only
+    carried ``{memory, react}`` — ``list_team_template_summaries`` found no
+    templates and every team entry point died with
+    "no team template configured".
+    """
+    if teams is None:
+        return None
+    from jiuwenswarm.common.config import _build_modes_team_mapping
+
+    try:
+        mapping = _build_modes_team_mapping(teams)
+    except Exception as exc:  # noqa: BLE001 — team topology must not break sync
+        logger.warning(
+            "[TenantAgentPool] sync teams payload rejected (agent sync "
+            "continues without modes.team injection): service_id=%s error=%s",
+            service_id,
+            exc,
+        )
+        return None
+    logger.info(
+        "[TenantAgentPool] sync teams payload consumed: service_id=%s templates=%d",
+        service_id,
+        len(mapping),
+    )
+    return mapping
+
+
+def _inject_sync_modes_team(
+    config: Any, modes_team: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Merge the sync-derived ``modes.team`` mapping into an agent config.
+
+    ``modes_team=None`` → config returned untouched (payload absent/invalid).
+    Otherwise ``modes.team`` is replaced wholesale (relay semantics:
+    non-empty → full-table replace, empty → clear) while the rest of
+    ``modes`` is preserved.
+    """
+    if modes_team is None:
+        return config
+    base = config if isinstance(config, dict) else {}
+    modes = base.get("modes") if isinstance(base.get("modes"), dict) else {}
+    next_modes = {**modes}
+    if modes_team:
+        next_modes["team"] = copy.deepcopy(modes_team)
+    else:
+        next_modes.pop("team", None)
+    return {**base, "modes": next_modes}
 
 
 class TenantAgentPool:
@@ -670,6 +733,7 @@ class TenantAgentPool:
                     len(shared_env),
                     service_id,
                 )
+            modes_team = _build_sync_modes_team(validated.get("teams"), service_id)
 
             registry = TenantCatalogRegistry.get_instance()
 
@@ -706,7 +770,7 @@ class TenantAgentPool:
                 spec = build_agent_spec(
                     service_id=service_id,
                     agent_id=agent_id,
-                    config=entry["config"],
+                    config=_inject_sync_modes_team(entry["config"], modes_team),
                     env=entry["env"],
                     runtime=entry["runtime"],
                     revision=revision,

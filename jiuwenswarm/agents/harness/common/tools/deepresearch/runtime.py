@@ -111,6 +111,7 @@ def build_child_env(executable: Path) -> dict[str, str]:
     python = Path(executable)
     bin_dir = python.parent
     venv_root = _virtualenv_root(python)
+    parent_pythonpath = os.environ.get("PYTHONPATH", "")
     child_env = export_spawn_environ()
 
     for key in _FORBIDDEN_INHERITED_KEYS:
@@ -130,6 +131,15 @@ def build_child_env(executable: Path) -> dict[str, str]:
     )
     if venv_root is None:
         child_env.pop("VIRTUAL_ENV", None)
+        # Non-venv interpreters (OHOS HNP python, system python) resolve
+        # openjiuwen*/deepsearch deps via PYTHONPATH injected by the parent
+        # runtime — stripping it makes the child die on the first SDK import
+        # (observed as "no terminal marker" after the started line, 2026-09-15).
+        # Venv interpreters keep PYTHONPATH stripped for isolation: their
+        # site-packages resolve dependencies natively.
+        child_env.pop("PYTHONHOME", None)
+        if parent_pythonpath:
+            child_env["PYTHONPATH"] = parent_pythonpath
     else:
         child_env["VIRTUAL_ENV"] = str(venv_root)
     return child_env

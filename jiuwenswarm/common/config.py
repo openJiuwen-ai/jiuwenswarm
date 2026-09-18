@@ -1979,6 +1979,24 @@ def _resolve_front_team_agent_spec(
     return _transform_front_team_agent_spec(resolved_key, agents_raw[resolved_key], config_data)
 
 
+def _front_team_member_agent_ref(member_raw: dict[str, Any]) -> str:
+    """Resolve a roster member's agents-template reference key.
+
+    Two protocols reference entries of the ``agents`` template library:
+
+    - legacy (web team editor): ``agent_key``;
+    - relay sync payload (relay-claw 91e1fa6c0, 2026-08-07): ``agent_id`` —
+      the catalog agent id, same name as the sync ``agents[].agent_id``.
+
+    ``agent_key`` wins when both are present; output is always normalized to
+    ``agent_key`` so downstream modes.team consumers keep a single field name.
+    """
+    raw = member_raw.get("agent_key")
+    if raw is None or not str(raw).strip():
+        raw = member_raw.get("agent_id")
+    return str(raw or "").strip()
+
+
 def _build_modes_team_mapping(
     front_payload: dict[str, Any],
     config_data: dict[str, Any] | None = None,
@@ -2013,10 +2031,10 @@ def _build_modes_team_mapping(
             for key in ("member_name", "display_name", "persona")
             if key in leader_raw
         }
-        transformed_team["leader"]["agent_key"] = leader_raw.get("agent_key", "")
+        transformed_team["leader"]["agent_key"] = _front_team_member_agent_ref(leader_raw)
         leader_agent_spec = _resolve_front_team_agent_spec(
             agents_raw,
-            leader_raw.get("agent_key"),
+            transformed_team["leader"]["agent_key"],
             field_name=f"team[{team_index}].leader.agent_key",
             config_data=config_data,
         )
@@ -2025,13 +2043,14 @@ def _build_modes_team_mapping(
         teammate_agent_spec: dict[str, Any] | None = None
         if teammate_raw is not None:
             teammate_raw = _require_dict(teammate_raw, f"team[{team_index}].teammate")
+            teammate_agent_key = _front_team_member_agent_ref(teammate_raw)
             teammate_agent_spec = _resolve_front_team_agent_spec(
                 agents_raw,
-                teammate_raw.get("agent_key"),
+                teammate_agent_key,
                 field_name=f"team[{team_index}].teammate.agent_key",
                 config_data=config_data,
             )
-            transformed_team["teammate"] = {"agent_key": teammate_raw.get("agent_key", "")}
+            transformed_team["teammate"] = {"agent_key": teammate_agent_key}
 
         predefined_members_raw = team_raw.get("predefined_members", [])
         if predefined_members_raw is None:
@@ -2059,15 +2078,16 @@ def _build_modes_team_mapping(
             seen_member_names.add(member_name)
             transformed_member = {
                 key: member[key]
-                for key in ("member_name", "display_name", "role_type", "persona", "prompt_hint", "agent_key")
+                for key in ("member_name", "display_name", "role_type", "persona", "prompt_hint")
                 if key in member
             }
             transformed_member["member_name"] = member_name
+            transformed_member["agent_key"] = _front_team_member_agent_ref(member)
             transformed_members.append(transformed_member)
 
             member_agent_spec = _resolve_front_team_agent_spec(
                 agents_raw,
-                member.get("agent_key"),
+                transformed_member["agent_key"],
                 field_name=f"team[{team_index}].predefined_members[{member_index}].agent_key",
                 config_data=config_data,
             )

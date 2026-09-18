@@ -1,0 +1,22 @@
+# 鸿蒙安装链全局 pip constraints（2026-09-14 B6 真机实测）
+#
+# 用途：install-ohos-all-deps.sh / install-ohos-agentserver.sh 按包逐个调
+# pip install，单次调用里的 requirements 钉版互相不可见——实测两例：
+#   1) sqlmodel>=0.0.37 自行解析最新 pydantic 2.13.5 → pydantic-core 2.46.5
+#      无 musl wheel → maturin 源码构建失败（INSTALL_FAIL）
+#   2) fastmcp>=2.3.0（未加上限）解析 4.x → 新依赖链触发 native 构建
+# 本文件经 PIP_CONSTRAINT 注入全部 pip 子调用，使约束对每次解析全局生效。
+#
+# 钉版依据：wheels/ 预编 wheel 的精确配对 + 真机验证版本。
+# 修改此处需同步 requirements-harmony.txt。
+#
+# 注意：google-genai 故意不进本文件——a2ui-agent-sdk→google-adk 需要
+# genai>=2.19，若在此钉 1.75.0 会让 a2ui 安装整体失败（ResolutionImpossible）。
+# 处理方式：install 脚本 phase 1 后置 harmonize 步骤降级（容忍 google-adk
+# 的 pip check 报错，真机验证状态即如此）。
+
+pydantic==2.13.4
+pydantic-core==2.46.4
+fastmcp<3
+openai<3
+mcp<2

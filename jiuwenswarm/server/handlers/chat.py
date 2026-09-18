@@ -425,6 +425,121 @@ async def handle_chat_cancel_dispatch(ctx: RequestContext) -> None:
 #: 按 session 串行化自动建队。弱引用持有，一次性会话不累积进程级状态。
 
 
+def _bind_requested_team(
+    request: AgentRequest,
+    *,
+    session_id: str,
+    team_name: str,
+    canonical_mode: str,
+    user_content: Any,
+    sessions_root: Any,
+) -> Any | None:
+    """Bind ``session_id`` to the explicitly requested ``team_name``.
+
+    Resolution order (first hit wins):
+    1. existing binding in the binding store — reused (multi-session teams);
+    2. ``modes.team`` template of the same name (relay preset/user teams are
+       pushed via the sync teams payload with ``team_name = oc_team_<id>``)
+       — a binding is created from that template;
+    3. miss → ``None`` → caller falls back to description-based generation
+       (legacy free-form team sessions and older relays).
+
+    Failures are contained: any store/template error returns ``None`` so the
+    generated-binding fallback still gets a chance instead of failing the chat.
+    """
+    from jiuwenswarm.agents.harness.team import (
+        TeamManager,
+        list_team_template_summaries,
+    )
+    from jiuwenswarm.server.handlers.team import _create_team_binding_from_template
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        update_session_metadata,
+    )
+    from jiuwenswarm.server.runtime.team_binding_store import (
+        TeamBindingStoreError,
+        get_team_binding_store,
+    )
+
+    def _write_team_identity(bound: Any) -> None:
+        # Record the bound team into session metadata on every path that
+        # successfully binds (normal and CONFLICT-race alike) — the team
+        # stream resolves its identity from there first. The caller binds
+        # the tenant env ns so this write lands in the same session
+        # metadata root the team stream reads (agent_<agent_id>).
+        update_session_metadata(
+            session_id=session_id,
+            channel_id=request.channel_id or None,
+            user_content=user_content,
+            mode=canonical_mode,
+            team_name=bound.team_name,
+            runtime_team_name=TeamManager.build_session_scoped_team_name(
+                bound.team_name,
+                session_id,
+            ),
+            team_template_id=bound.template_id,
+            touch_last_message_at=False,
+            sync_write=True,
+            sessions_root=sessions_root,
+        )
+
+    try:
+        binding_store = get_team_binding_store()
+        binding = binding_store.get(team_name)
+        if binding is None:
+            config_base = _effective_config_for_request(request)
+            template_ids = {
+                str(item.get("template_id") or "")
+                for item in list_team_template_summaries(config_base)
+            }
+            if team_name not in template_ids:
+                return None
+            binding = _create_team_binding_from_template(
+                team_name=team_name,
+                template_id=team_name,
+                config_base=config_base,
+            )
+        binding = binding_store.bind_session(
+            team_name=binding.team_name,
+            session_id=session_id,
+        )
+        _write_team_identity(binding)
+        return binding
+    except TeamBindingStoreError as exc:
+        if str(exc.code) == "CONFLICT":
+            # Raced another session creating the same team — re-read, bind,
+            # and record the identity exactly like the normal path.
+            try:
+                binding_store = get_team_binding_store()
+                binding = binding_store.get(team_name)
+                if binding is None:
+                    return None
+                binding = binding_store.bind_session(
+                    team_name=binding.team_name,
+                    session_id=session_id,
+                )
+                _write_team_identity(binding)
+                return binding
+            except Exception:  # noqa: BLE001 — fall back to generation
+                return None
+        logger.warning(
+            "[AgentWebSocketServer] requested team bind failed, falling back "
+            "to generated binding: session_id=%s team_name=%s error=%s",
+            session_id,
+            team_name,
+            exc,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001 — must not fail the chat
+        logger.warning(
+            "[AgentWebSocketServer] requested team bind failed, falling back "
+            "to generated binding: session_id=%s team_name=%s error=%s",
+            session_id,
+            team_name,
+            exc,
+        )
+        return None
+
+
 # chat.send的自动team绑定
 async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any | None:
     """Create and bind a team before the first team chat without consuming its query."""
@@ -438,6 +553,40 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
     if not session_id:
         return None
 
+    from jiuwenswarm.common.local_env_config import (
+        bind_agent_env_ns,
+        reset_agent_env_ns,
+    )
+    from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+
+    # Session metadata roots resolve through the bound env ns: unbound here
+    # (handler dispatch context) they land in agent_default, while the team
+    # stream (deep-adapter stream context binds ns to this agent) reads
+    # agent_<agent_id>. A binding written to the wrong root is invisible to
+    # the team stream, which then falls back to templates[0] (2026-09-16:
+    # exam-prep request ran software-dev). Bind the tenant ns for the whole
+    # auto-binding window so reads/writes hit the same root as the stream.
+    tenant_agent_id, tenant_service_id, _ = TenantAgentPool.extract_ids(request)
+    ns_token = bind_agent_env_ns(tenant_service_id, tenant_agent_id)
+    try:
+        return await _ensure_auto_team_binding_for_chat_ns_bound(
+            ctx,
+            request,
+            params=params,
+            session_id=session_id,
+        )
+    finally:
+        reset_agent_env_ns(ns_token)
+
+
+async def _ensure_auto_team_binding_for_chat_ns_bound(
+    ctx,
+    request: AgentRequest,
+    *,
+    params: dict,
+    session_id: str,
+) -> Any | None:
+    """Auto team binding with the tenant env ns already bound by the caller."""
     from jiuwenswarm.server.runtime.session.session_metadata import (
         get_session_metadata,
         update_session_metadata,
@@ -488,6 +637,39 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
 
         from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
         from jiuwenswarm.server.runtime.team_entity_store import get_team_entity_store
+
+        # Relay preset/user teams arrive as an explicit params.team_name that
+        # references a modes.team template (oc_team_<teamId>) pushed by
+        # sync_agents_configs teams payload. Prefer binding the requested team
+        # exactly; fall back to description-based generation for free-form
+        # team sessions (and older relays that send no team_name). Templates
+        # absent (relay without teams payload) → both lookups miss → generated
+        # path, i.e. legacy behaviour is fully preserved.
+        requested_team_name = str(params.get("team_name") or "").strip()
+        binding = None
+        if requested_team_name:
+            binding = _bind_requested_team(
+                request,
+                session_id=session_id,
+                team_name=requested_team_name,
+                canonical_mode=canonical_mode,
+                user_content=query,
+                sessions_root=sessions_root,
+            )
+        if binding is not None:
+            logger.info(
+                "[AgentWebSocketServer] bound requested team before chat: "
+                "session_id=%s team_name=%s template_id=%s",
+                session_id,
+                binding.team_name,
+                binding.template_id,
+            )
+            params["team_name"] = binding.team_name
+            params["team_template_id"] = binding.template_id
+            request.metadata = dict(request.metadata or {})
+            request.metadata["team_name"] = binding.team_name
+            request.metadata["team_template_id"] = binding.template_id
+            return binding.team_name
 
         binding, _template = await _create_generated_team_binding(
             description=query,
