@@ -733,6 +733,24 @@ tools:
   - todo
   - skill
 
+# ============================================================
+# Shell command output limits
+# ============================================================
+# Applies to both the jiuwenswarm mcp_exec_command tool and, via the
+# BASH_TOOL_* / POWER_SHELL_TOOL_* environment variables exported at
+# startup, the openjiuwen BashTool / PowerShellTool (agent-core).
+# max_chars: max total characters returned to the model per command.
+#   0 = no limit; default 20000 (~200 lines). For BashTool / PowerShellTool
+#   this is a ceiling on their own per-call max_output_chars.
+# head_ratio: fraction of the budget kept from the beginning of output
+#   (the remainder is kept from the end / tail).
+#   Default 0.6 (60% head, 40% tail). Errors appear at the end, so a
+#   40% tail ensures failure messages are never lost to truncation.
+# ============================================================
+shell_output:
+  max_chars: 20000
+  head_ratio: 0.6
+
 email_settings:
   email_address: ${EMAIL_ADDRESS}
   token: ${EMAIL_TOKEN}
