@@ -19,11 +19,41 @@ import {
   initialAgentManagementState,
 } from '../node_modules/.cache/agent-management/state.js';
 import { resolveAgentTagPayload } from '../node_modules/.cache/agent-management/tagOptions.js';
+import { isSkillVisibleInSourceTab, sortInstalledFirst } from '../node_modules/.cache/agent-management/selection.js';
 import {
   buildCatalogViewModel,
   findFirstPreviewableFile,
   mergeAgentDetailWithCatalog,
 } from '../node_modules/.cache/agent-management/viewModel.js';
+
+test('selection pickers share installed-first and label sorting', () => {
+  const items = [
+    { id: 'expert-z', displayName: 'Zulu', installed: true },
+    { id: 'expert-a', displayName: 'alpha', installed: true },
+    { id: 'skill-z', name: 'Zulu', installed: false },
+    { id: 'skill-a', name: 'Alpha', installed: false },
+  ];
+
+  assert.deepEqual(sortInstalledFirst(items).map((item) => item.id), [
+    'expert-a',
+    'expert-z',
+    'skill-a',
+    'skill-z',
+  ]);
+});
+
+test('skill source tabs keep marketplace and local visibility semantics', () => {
+  const marketplace = { source: 'hub', installed: false };
+  const installedMarketplace = { source: 'hub', installed: true };
+  const local = { source: 'local', installed: false };
+
+  assert.equal(isSkillVisibleInSourceTab(marketplace, 'market'), true);
+  assert.equal(isSkillVisibleInSourceTab(marketplace, 'local'), false);
+  assert.equal(isSkillVisibleInSourceTab(installedMarketplace, 'market'), true);
+  assert.equal(isSkillVisibleInSourceTab(installedMarketplace, 'local'), true);
+  assert.equal(isSkillVisibleInSourceTab(local, 'market'), false);
+  assert.equal(isSkillVisibleInSourceTab(local, 'local'), true);
+});
 
 test('normalizes interface source variants and bilingual display fields', () => {
   assert.equal(normalizeAgentSource('built-in'), 'builtin');
