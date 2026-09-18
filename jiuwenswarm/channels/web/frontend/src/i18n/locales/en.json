@@ -2828,6 +2828,9 @@
       "selectSkill": "Select skills",
       "mySkills": "My skills",
       "skillMarket": "Skill market",
+      "skillSourceTabsLabel": "Skill sources",
+      "installSkill": "Install",
+      "installingSkill": "Installing…",
       "selectedCount": "{{count}} selected",
       "refreshSkills": "Refresh skills",
       "skillsError": "Unable to load the skill list. Try again.",
@@ -2839,9 +2842,13 @@
       "selectMcp": "Select connectors",
       "myMcp": "My connectors",
       "mcpMarket": "Connector market",
+      "mcpSourceTabsLabel": "Connector sources",
+      "installConnector": "Install",
+      "installingConnector": "Installing…",
+      "connectConnector": "Connect",
+      "connectingConnector": "Connecting…",
       "selectionSearchPlaceholder": "Search by keyword",
-      "mcpTypeFilter": "Connector type",
-      "mcpTypeAll": "All types",
+      "selectionPaginationLabel": "Selection list pagination",
       "mcpError": "Unable to load the connector list. Try again.",
       "mcpEmpty": "No connectors available",
       "promptsLabel": "Try asking me (optional)",
@@ -2942,7 +2949,19 @@
           "leaderRequired": "Choose a leader Expert"
         }
       },
-      "picker": { "leaderTitle": "Choose a leader", "memberTitle": "Choose members", "empty": "No matching Experts", "selectedCount": "{{count}} selected" }
+      "picker": {
+        "leaderTitle": "Choose a leader",
+        "memberTitle": "Choose members",
+        "empty": "No matching Experts",
+        "selectedCount": "{{count}} selected",
+        "localTab": "Local",
+        "marketTab": "Marketplace",
+        "sourceTabsLabel": "Expert sources",
+        "skillSourceTabsLabel": "Team skill sources",
+        "install": "Install",
+        "installing": "Installing…",
+        "loading": "Loading Expert information…"
+      }
     }
   },
   "fileViewer": {

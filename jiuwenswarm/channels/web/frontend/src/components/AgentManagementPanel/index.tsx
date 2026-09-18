@@ -11,6 +11,8 @@ import { AgentGroupEditor } from './AgentGroupEditor';
 import { AgentGroupDetailPage } from './AgentGroupDetailPage';
 import { DefinitionUploadDialog } from './AgentGroupUploadDialog';
 import { GroupCatalogPage, GROUP_PAGE_SIZE } from './GroupCatalogPage';
+import { CliAuthModal } from '../ConnectorMarket/CliAuthModal';
+import { ConnectTokenModal } from '../ConnectorMarket/ConnectTokenModal';
 import { PendingConnectorModals, usePendingConnectorFlow } from '../ConnectorMarket/usePendingConnectorFlow';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { seedAgentCatalog } from '../../stores/agentCatalogStore';
@@ -30,6 +32,7 @@ import {
   type AgentManagementClient,
   type DefinitionFileEntry,
   type McpOption,
+  type SkillOption,
   type RequestStatus,
   agentManagementReducer,
   buildCatalogViewModel,
@@ -43,6 +46,7 @@ import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
+import type { ConnectorConnectResponse } from '../../types/connector';
 import { CategoryTabs, PageHeader, PageToolbarSearch, Tabs } from '../ui';
 
 type PanelView = 'catalog' | 'teams' | 'mine' | 'detail' | 'group-detail' | 'create' | 'group-create';
@@ -248,11 +252,16 @@ export function AgentManagementPanel({
   const [groupCatalogPage, setGroupCatalogPage] = useState(1);
   const [groupMinePage, setGroupMinePage] = useState(1);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [busySkillId, setBusySkillId] = useState<string | null>(null);
+  const [busyMcpId, setBusyMcpId] = useState<string | null>(null);
   const [detailOrigin, setDetailOrigin] = useState<'catalog' | 'mine'>('catalog');
   const [groupDetailOrigin, setGroupDetailOrigin] = useState<'teams' | 'mine'>('teams');
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [connectorFlowId, setConnectorFlowId] = useState<string | null>(null);
+  const [mcpConnectId, setMcpConnectId] = useState<string | null>(null);
+  const [mcpTokenTarget, setMcpTokenTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
+  const [mcpAuthTarget, setMcpAuthTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -301,9 +310,11 @@ export function AgentManagementPanel({
   const lastNavigationRequestIdRef = useRef<number | null>(null);
   const actionNoticeTimerRef = useRef<number | null>(null);
   const installFlowTargetRef = useRef<string | null>(null);
+  const installFlowModeRef = useRef<'catalog' | 'group-picker'>('catalog');
   const reconnectFlowTargetRef = useRef<string | null>(null);
   const connectorError = useConnectorStore((state) => state.error);
   const clearConnectorError = useConnectorStore((state) => state.clearError);
+  const installMcpPackage = useConnectorStore((state) => state.installPackage);
   useEffect(() => {
     const request = navigationRequest;
     if (!request || request.requestId === lastNavigationRequestIdRef.current) return;
@@ -381,6 +392,7 @@ export function AgentManagementPanel({
   const loadCatalog = useCallback(async (options: { includeTeamCompatibility?: boolean } = {}) => {
     const revision = ++catalogRevisionRef.current;
     const requestScope = catalogScope();
+    if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loading' });
     dispatch({ type: 'catalog.loading' });
     try {
       const compatibilityOptions = options.includeTeamCompatibility
@@ -391,19 +403,22 @@ export function AgentManagementPanel({
         client.listCatalog({ filter: equipmentListFilter('agent', 'mine'), ...compatibilityOptions }),
       ]);
       if (requestScope !== catalogScope()) return;
-      scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(); }, () => catalogRevisionRef.current === revision);
+      scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
       const catalog = Array.from(
         new Map([...mineCatalog, ...marketplaceCatalog].map((item) => [item.id, item])).values(),
       );
       if (revision !== catalogRevisionRef.current) return;
       withCatalogCache(catalog, marketplaceCatalog.cache);
       catalogRef.current = catalog;
+      if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
       seedAgentCatalog(catalog);
       dispatch({ type: 'catalog.loaded', catalog });
     } catch (error) {
       if (revision !== catalogRevisionRef.current) return;
-      dispatch({ type: 'catalog.error', message: formatActionError(error, t('agentManagement.states.loadError')) });
+      const message = formatActionError(error, t('agentManagement.states.loadError'));
+      if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.error', message });
+      dispatch({ type: 'catalog.error', message });
     }
   }, [client, formatActionError, t]);
 
@@ -450,6 +465,89 @@ export function AgentManagementPanel({
     }
   }, [client]);
 
+  const handleInstallSkill = useCallback(
+    async (skill: SkillOption, setError: (message: string | null) => void = setCreateError) => {
+      setBusySkillId(skill.id);
+      setError(null);
+      try {
+        await client.installSkill(skill);
+        await loadSkills();
+      } catch (error) {
+        setError(formatActionError(error, t('agentManagement.states.actionError')));
+      } finally {
+        setBusySkillId(null);
+      }
+    },
+    [client, formatActionError, loadSkills, t],
+  );
+
+  const handleMcpFlowCompleted = useCallback(() => {
+    setMcpConnectId(null);
+    void loadMcps();
+  }, [loadMcps]);
+
+  const handleMcpFlowAborted = useCallback(
+    (reason: 'failed' | 'cancelled') => {
+      setMcpConnectId(null);
+      if (reason === 'failed') {
+        const error = useConnectorStore.getState().error;
+        setActionError(formatActionError(error, t('agentManagement.states.actionError')));
+      }
+    },
+    [formatActionError, t],
+  );
+
+  const mcpConnectFlow = usePendingConnectorFlow(handleMcpFlowCompleted, handleMcpFlowAborted);
+
+  const handleConnectMcp = useCallback(
+    (mcp: McpOption) => {
+      const runtimeName = mcp.runtimePackageName || mcp.id;
+      clearConnectorError();
+      setActionError(null);
+      setMcpConnectId(mcp.id);
+      mcpConnectFlow.start([runtimeName]);
+    },
+    [clearConnectorError, mcpConnectFlow, mcpConnectFlow.start],
+  );
+
+  const handleInstallMcp = useCallback(
+    async (mcp: McpOption) => {
+      const assetId = mcp.hubAssetId || mcp.id;
+      setBusyMcpId(mcp.id);
+      setActionError(null);
+      clearConnectorError();
+      try {
+        const response = await installMcpPackage(assetId);
+        await loadMcps();
+        const connectResult = response?.connect;
+        const runtimeName = connectResult?.name || mcp.runtimePackageName || mcp.id;
+        if (connectResult?.credentialsRequired) {
+          setMcpTokenTarget({ name: runtimeName, response: connectResult });
+        } else if (connectResult?.type === 'auth_required') {
+          setMcpAuthTarget({ name: runtimeName, response: connectResult });
+        } else if (!response) {
+          setActionError(
+            formatActionError(
+              useConnectorStore.getState().error,
+              t('agentManagement.states.actionError'),
+            ),
+          );
+        }
+      } catch (error) {
+        setActionError(formatActionError(error, t('agentManagement.states.actionError')));
+      } finally {
+        setBusyMcpId(null);
+      }
+    },
+    [clearConnectorError, formatActionError, installMcpPackage, loadMcps, t],
+  );
+
+  const handleMcpConnected = useCallback(() => {
+    setMcpTokenTarget(null);
+    setMcpAuthTarget(null);
+    void loadMcps();
+  }, [loadMcps]);
+
   // 切换到专家页面时刷新目录（面板常驻挂载、切走仅隐藏，聊天里新建的专家
   // 不会主动通知前端），沿用 SkillPanel 的激活转换检测；首次挂载也走此入口，
   // 避免与旧的 mount-only 请求重复。
@@ -458,10 +556,10 @@ export function AgentManagementPanel({
     const isInitialMount = !panelMountedRef.current;
     panelMountedRef.current = true;
     if (isActive && (!prevIsActive || isInitialMount)) {
-      void loadCatalog();
+      void loadCatalog(view === 'group-create' ? { includeTeamCompatibility: true } : {});
     }
     panelPrevActiveRef.current = isActive;
-  }, [isActive, loadCatalog]);
+  }, [isActive, loadCatalog, view]);
 
   useEffect(() => {
     if (view === 'teams') void loadGroups('catalog');
@@ -669,14 +767,19 @@ export function AgentManagementPanel({
       setActionError(null);
       try {
         await client.installDefinition(id);
-        await refreshAfterAction(id);
+        if (installFlowModeRef.current === 'group-picker') {
+          await loadCatalog({ includeTeamCompatibility: true });
+        } else {
+          await refreshAfterAction(id);
+        }
       } catch (error) {
         setActionError(formatActionError(error, t('agentManagement.states.actionError')));
       } finally {
         setBusyId(null);
+        installFlowModeRef.current = 'catalog';
       }
     },
-    [client, refreshAfterAction, t],
+    [client, formatActionError, loadCatalog, refreshAfterAction, t],
   );
 
   const refreshAfterReconnect = useCallback(
@@ -736,17 +839,22 @@ export function AgentManagementPanel({
     t,
   ]);
 
-  const handleInstall = async (id: string) => {
+  const handleInstall = async (id: string, options: { includeTeamCompatibility?: boolean } = {}) => {
     setBusyId(id);
     setActionError(null);
     setActionNotice(null);
     clearConnectorError();
+    installFlowModeRef.current = options.includeTeamCompatibility ? 'group-picker' : 'catalog';
     try {
       const result = await client.installDefinition(id);
       if (result.kind === 'auth_required') {
         throw new Error(t('agentManagement.states.authRequired'));
       }
-      await refreshAfterAction(id);
+      if (options.includeTeamCompatibility) {
+        await loadCatalog({ includeTeamCompatibility: true });
+      } else {
+        await refreshAfterAction(id);
+      }
     } catch (error) {
       if (error instanceof AgentInstallPendingError) {
         installFlowTargetRef.current = id;
@@ -756,7 +864,10 @@ export function AgentManagementPanel({
       }
       setActionError(formatActionError(error, t('agentManagement.states.actionError')));
     } finally {
-      if (installFlowTargetRef.current !== id) setBusyId(null);
+      if (installFlowTargetRef.current !== id) {
+        setBusyId(null);
+        installFlowModeRef.current = 'catalog';
+      }
     }
   };
 
@@ -1036,6 +1147,25 @@ export function AgentManagementPanel({
     <>
       <PendingConnectorModals flow={installFlow} />
       <PendingConnectorModals flow={reconnectFlow} />
+      <PendingConnectorModals flow={mcpConnectFlow} />
+      {mcpTokenTarget ? (
+        <ConnectTokenModal
+          name={mcpTokenTarget.name}
+          displayName={mcpOptions.find((item) => item.id === mcpTokenTarget.name)?.name || mcpTokenTarget.name}
+          iconUrl={mcpOptions.find((item) => item.id === mcpTokenTarget.name)?.icon || undefined}
+          response={mcpTokenTarget.response}
+          onCancel={() => setMcpTokenTarget(null)}
+          onConnected={handleMcpConnected}
+        />
+      ) : null}
+      {mcpAuthTarget ? (
+        <CliAuthModal
+          name={mcpAuthTarget.name}
+          initial={mcpAuthTarget.response}
+          onCancel={() => setMcpAuthTarget(null)}
+          onConnected={handleMcpConnected}
+        />
+      ) : null}
     </>
   );
 
@@ -1317,9 +1447,16 @@ export function AgentManagementPanel({
           mcpStatus={mcpStatus}
           saving={saving}
           error={createError}
+          selectionError={actionError || createError}
           onChange={setDraft}
           onReloadSkills={loadSkills}
           onReloadMcps={loadMcps}
+          onInstallSkill={handleInstallSkill}
+          installingSkillId={busySkillId}
+          onConnectMcp={handleConnectMcp}
+          connectingMcpId={mcpConnectId}
+          onInstallMcp={handleInstallMcp}
+          installingMcpId={busyMcpId}
           onCreateGroup={openGroupCreate}
           onCancel={() => {
             setEditingId(null);
@@ -1362,14 +1499,20 @@ export function AgentManagementPanel({
         <AgentGroupEditor
           draft={groupDraft}
           agentOptions={catalogRef.current}
-          agentsStatus={state.catalogStatus}
+          agentsStatus={state.catalogCompatibilityStatus}
+          agentsError={state.catalogCompatibilityError}
           skillOptions={state.skillOptions}
           skillsStatus={state.skillsStatus}
           saving={groupSaving}
           error={groupCreateError}
+          selectionError={actionError || groupCreateError}
           onChange={setGroupDraft}
           onReloadAgents={() => { void loadCatalog({ includeTeamCompatibility: true }); }}
           onReloadSkills={loadSkills}
+          onInstallSkill={(skill) => handleInstallSkill(skill, setActionError)}
+          installingSkillId={busySkillId}
+          onInstallAgent={(id) => handleInstall(id, { includeTeamCompatibility: true })}
+          installingAgentId={busyId}
           onCreateAgent={openCreate}
           onCancel={() => { setActionError(null); setActionNotice(null); setView('mine'); setMineKind('group'); }}
           onSave={handleGroupCreate}

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildAgentGroupCreatePayload,
   buildAgentGroupSelectionPayloadForMode,
+  dedupeAgentGroupOptions,
   isAgentGroupAgentSelectable,
   resolveAgentGroupSelectionId,
 } from '../node_modules/.cache/agent-group-management/port.js';
@@ -97,6 +98,37 @@ test('uses the installed Hub runtime identity for group selection', () => {
     isAgentGroupAgentSelectable({ ...hubAgent, teamCompatible: undefined }, 'member'),
     false,
   );
+  assert.equal(
+    isAgentGroupAgentSelectable(
+      { ...hubAgent, source: 'local', installed: false, teamCompatible: undefined },
+      'leader',
+    ),
+    false,
+  );
+  assert.equal(
+    isAgentGroupAgentSelectable(
+      { ...hubAgent, source: 'local', installed: true, teamCompatible: undefined },
+      'member',
+    ),
+    true,
+  );
+});
+
+test('deduplicates Team options by runtime identity and keeps the installed entry', () => {
+  const uninstalled = {
+    id: 'hub-asset-123',
+    runtimePackageName: 'engineering-quality-mentor',
+    source: 'hub',
+    installed: false,
+  };
+  const installed = {
+    id: 'engineering-quality-mentor',
+    runtimePackageName: 'engineering-quality-mentor',
+    source: 'local',
+    installed: true,
+  };
+  assert.deepEqual(dedupeAgentGroupOptions([uninstalled, installed]), [installed]);
+  assert.deepEqual(dedupeAgentGroupOptions([installed, uninstalled]), [installed]);
 });
 
 test('only an unbound Team selection creates the first group payload', () => {

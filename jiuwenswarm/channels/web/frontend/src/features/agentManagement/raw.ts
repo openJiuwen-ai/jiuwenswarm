@@ -137,6 +137,11 @@ export type RawSkillOption = {
   description?: string;
   source?: string;
   installed?: boolean;
+  kind?: string;
+  skill_type?: string;
+  marketplace?: string;
+  spec?: string;
+  install_spec?: string;
 };
 
 export type RawSkillListPayload = {

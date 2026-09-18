@@ -221,9 +221,22 @@ export function normalizeAgentFileContent(raw: RawAgentFileReadPayload): AgentFi
 
 export function normalizeSkillOption(raw: RawSkillOption): SkillOption {
   const name = raw.name || raw.display_name || '';
+  const source = raw.source?.trim() || '';
+  const installed = raw.installed === true;
+  const marketplace = raw.marketplace?.trim() || (source && source !== 'builtin' ? source : undefined);
+  const installSpec =
+    raw.install_spec?.trim() ||
+    raw.spec?.trim() ||
+    (installed ? undefined : source === 'builtin' ? name : marketplace ? `${name}@${marketplace}` : undefined);
   return {
     id: name,
     name: raw.display_name || name,
     description: raw.description || '',
+    source,
+    installed,
+    ...(raw.kind?.trim() ? { kind: raw.kind.trim() } : {}),
+    ...(raw.skill_type?.trim() ? { skillType: raw.skill_type.trim() } : {}),
+    ...(marketplace ? { marketplace } : {}),
+    ...(installSpec ? { installSpec } : {}),
   };
 }
