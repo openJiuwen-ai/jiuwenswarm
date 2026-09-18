@@ -1109,6 +1109,7 @@ class AgentWebSocketServer:
         self._agent_manager = self._runtime.agent_manager
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
+        self._runtime_services_started = False
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
         # Optional production Provider injection point.  The concrete class is
@@ -1323,24 +1324,51 @@ class AgentWebSocketServer:
                 exc,
             )
 
-    async def start(self) -> None:
-        """启动或恢复面向 Gateway 的 WebSocket 服务端。
+    def attach_gateway_connection(self, ws: Any, send_lock: asyncio.Lock) -> None:
+        """Publish the Front-owned Gateway socket for send_push / ACP caps."""
+        self._current_ws = ws
+        self._current_send_lock = send_lock
 
-        ``AgentRuntime`` 实例本身是一次性的，但 AgentServer 保持原有的可重启
-        服务契约：一次 ``stop()`` 完成后，后续 ``start()`` 使用 stop 阶段准备的
-        全新 Runtime/AgentManager，重新开放同一 WebSocket 传输并后台预热 Runtime。
-        TUI、Web、IM、A2A 等远程 Channel 的 Gateway/Server 调用模式不变。
+    async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
+        """Runtime-side cleanup when Front drops the Gateway connection."""
+        if self._current_ws is ws:
+            self._current_ws = None
+            self._current_send_lock = None
+        self._clear_ws_acp_client_capabilities(ws)
+        try:
+            await self._execution_runtime().cancel_all_inflight_work(
+                reason=f"[gateway ws closed {remote}] ",
+                exclude_session_ids=(
+                    self._heartbeat_runtime.execution.active_session_ids()
+                ),
+            )
+        except Exception:
+            logger.exception("[AgentWebSocketServer] cancel_all_inflight_work failed")
+        try:
+            await self._stop_scheduler()
+        except Exception:
+            logger.exception("[AgentWebSocketServer] scheduler stop failed")
+        try:
+            await self._execution_runtime().cancel_all_team_stream_tasks(
+                reason=f"[gateway ws closed {remote}] ",
+                exclude_session_ids=(
+                    self._heartbeat_runtime.execution.active_session_ids()
+                ),
+            )
+        except Exception:
+            logger.exception("[AgentWebSocketServer] team stream cancel failed")
+        self._session_stream_tasks.clear()
 
-        优先使用 legacy.server.serve 以与 Gateway 的 legacy client 握手兼容.
+    async def start(self, *, bind_transport: bool = True) -> None:
+        """启动 Runtime 服务；默认仍绑定 WebSocket，供测试与直连路径使用。
 
-        注: persistent checkpointer 的初始化历史在 ``legacy_serve`` 之前同步 await,
-        首次约耗时 ~14s (sqlite 文件 + openjiuwen 工厂反射), 期间 WS 端口未 listen,
-        是 Gateway connect 重试 (头两次必失败, 白等 ~6s) 的元凶。现改为 ``legacy_serve``
-        之后后台预热 (fire-and-forget), 让端口尽快开放; 首条 chat 请求若赶在预热完成前
-        到达, 走 ``_ensure_persistent_checkpointer_response`` 兜底等待, 不影响握手.
+        AgentServer Front 持有端口时传入 ``bind_transport=False``，避免二次 listen。
         """
-        if self._server is not None:
+        if bind_transport and self._server is not None:
             logger.warning("[AgentWebSocketServer] 服务端已在运行")
+            return
+        if not bind_transport and self._runtime_services_started:
+            logger.warning("[AgentWebSocketServer] Runtime 服务已在运行")
             return
 
         owner = self._kv_cache_application_owner
@@ -1353,28 +1381,32 @@ class AgentWebSocketServer:
         # Reset harness package state to native on service startup
         reset_harness_packages_state()
 
-        try:
-            from websockets.legacy.server import serve as legacy_serve
-            self._server = await legacy_serve(
-                self._connection_handler,
-                self._host,
-                self._port,
-                process_request=self._process_request,
-                ping_interval=self._ping_interval,
-                ping_timeout=self._ping_timeout,
-                max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-            )
-        except ImportError:
-            import websockets
-            self._server = await websockets.serve(
-                self._connection_handler,
-                self._host,
-                self._port,
-                process_request=self._process_request,
-                ping_interval=self._ping_interval,
-                ping_timeout=self._ping_timeout,
-                max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-            )
+        if bind_transport:
+            try:
+                from websockets.legacy.server import serve as legacy_serve
+                self._server = await legacy_serve(
+                    self._connection_handler,
+                    self._host,
+                    self._port,
+                    process_request=self._process_request,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                )
+            except ImportError:
+                import websockets
+                self._server = await websockets.serve(
+                    self._connection_handler,
+                    self._host,
+                    self._port,
+                    process_request=self._process_request,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                )
+        else:
+            self._server = None
+        self._runtime_services_started = True
         self._runtime_push_handler = self.send_push
         self._previous_runtime_push_handler = install_runtime_push_handler(
             self._runtime_push_handler
@@ -1851,6 +1883,7 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] image modality refresh cancel failed: %s", exc
                 )
         had_server = self._server is not None
+        runtime_only = self._runtime_services_started and not had_server
         if had_server:
             self._server.close()
             await self._server.wait_closed()
@@ -1933,7 +1966,7 @@ class AgentWebSocketServer:
             )
             self._runtime_push_handler = None
 
-        if not had_server:
+        if not had_server and not runtime_only:
             if runtime_close_error is not None and (
                 not isinstance(runtime_close_error, Exception)
                 or not closing_runtime.closed
@@ -1949,6 +1982,7 @@ class AgentWebSocketServer:
             or not closing_runtime.closed
         ):
             raise runtime_close_error
+        self._runtime_services_started = False
         logger.info("[AgentWebSocketServer] 已停止")
 
     async def _suspend_kv_cache(self) -> None:
@@ -2245,9 +2279,12 @@ class AgentWebSocketServer:
             request.channel_id,
             request.is_stream,
         )
+        await self.dispatch_parsed_request(ws, request, send_lock)
 
-        # First touch point of frontend chat input inside AgentServer: record it through the
-        # agent-core logging system so it lands in the unified agent log stream.
+    async def dispatch_parsed_request(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
         if request.req_method == ReqMethod.CHAT_SEND:
             server_logger.info(
                 "[AgentServer] chat input received: request_id=%s session_id=%s channel_id=%s query=%s",

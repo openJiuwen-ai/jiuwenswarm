@@ -1496,13 +1496,21 @@ def _ensure_mcp_builtins(
         pass  # 仅登记到 diff 摘要，文件已解压就位
 
 
-def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
+def prepare_runtime_workspace(
+    *,
+    cleanup_stale_descs: bool = True,
+    migrate_config: bool = True,
+) -> None:
     """Perform the idempotent workspace work required before runtime children start.
 
     Desktop and the ``jiuwenswarm.app`` supervisor call this once before they
     launch AgentServer and Gateway.  The children can then skip the same disk
     work via ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``.  Standalone child
     entrypoints intentionally retain this function as their fallback.
+
+    AgentServer Front skips ``cleanup_stale_descs`` and ``migrate_config``
+    because both import OpenJiuwen / ``common.config``. Runtime backend
+    completes those steps after the port is listening.
     """
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
@@ -1527,7 +1535,8 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     if workspace_preparation_needed:
         prepare_workspace(overwrite=False, workspace_dir=workspace_dir)
 
-    ensure_config_migrated_from_template(workspace_dir)
+    if migrate_config:
+        ensure_config_migrated_from_template(workspace_dir)
     ensure_default_builtin_skills()
 
 
