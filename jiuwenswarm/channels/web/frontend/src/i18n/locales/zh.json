@@ -2819,6 +2819,9 @@
       "selectSkill": "选择技能",
       "mySkills": "我的技能",
       "skillMarket": "技能广场",
+      "skillSourceTabsLabel": "技能来源",
+      "installSkill": "安装",
+      "installingSkill": "安装中…",
       "selectedCount": "已选 {{count}} 个",
       "refreshSkills": "刷新技能",
       "skillsError": "技能列表加载失败，请重试。",
@@ -2830,9 +2833,13 @@
       "selectMcp": "选择连接器",
       "myMcp": "我的连接器",
       "mcpMarket": "连接器广场",
+      "mcpSourceTabsLabel": "连接器来源",
+      "installConnector": "安装",
+      "installingConnector": "安装中…",
+      "connectConnector": "连接",
+      "connectingConnector": "连接中…",
       "selectionSearchPlaceholder": "请输入关键字搜索",
-      "mcpTypeFilter": "连接器类型",
-      "mcpTypeAll": "全部类型",
+      "selectionPaginationLabel": "选择列表分页",
       "mcpError": "连接器列表加载失败，请重试。",
       "mcpEmpty": "暂无可用连接器",
       "promptsLabel": "这样问我试试看（可选）",
@@ -2933,7 +2940,18 @@
           "leaderRequired": "请选择负责人"
         }
       },
-      "picker": { "leaderTitle": "选择负责人", "memberTitle": "选择成员", "empty": "没有匹配的专家", "selectedCount": "已选 {{count}} 个" }
+      "picker": {
+        "leaderTitle": "选择负责人",
+        "memberTitle": "选择成员",
+        "empty": "没有匹配的专家",
+        "selectedCount": "已选 {{count}} 个",
+        "localTab": "本地",
+        "marketTab": "广场",
+        "sourceTabsLabel": "专家来源",
+        "skillSourceTabsLabel": "专家团技能来源",
+        "install": "安装",
+        "installing": "安装中…"
+      }
     }
   },
   "fileViewer": {
