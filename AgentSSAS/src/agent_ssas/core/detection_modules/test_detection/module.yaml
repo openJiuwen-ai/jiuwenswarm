@@ -1,0 +1,14 @@
+name: test_detection
+display_name: "测试检测模块"
+enabled: false
+event_version: "1.0"
+subscribed_events: ["*"]
+analytic_type_id: 1
+
+plugins:
+  - type: data_modeling
+    name: BlankDataModeler
+    model_type: blank
+  - type: threat_analysis
+    name: BlankThreatAnalyzer
+    expected_model_type: blank
