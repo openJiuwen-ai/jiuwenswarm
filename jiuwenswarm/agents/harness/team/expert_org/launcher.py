@@ -199,13 +199,18 @@ class JiuwenExpertTeamLauncher:
         entry = await runtime.pool.get(team_id)
         spec = getattr(getattr(entry, "agent", None), "spec", None)
         spec_metadata = getattr(spec, "metadata", None)
-        if (
-            entry is None
-            or entry.current_session_id != session_id
-            or not isinstance(spec_metadata, dict)
-            or spec_metadata.get("expert_team") is not True
-        ):
+        if entry is None or entry.current_session_id != session_id:
             return False
+        if not isinstance(spec_metadata, dict) or spec_metadata.get("expert_team") is not True:
+            if source == "org_expert_direct":
+                return False
+            # The Organization runner serves both ordinary Root Teams and
+            # launched expert Teams; only the latter need this launcher's relay.
+            return await runtime.run_organization_turn(
+                team_name=team_id,
+                session_id=session_id,
+                inputs=inputs,
+            )
         resolved_channel_id = (
             str(channel_id or "").strip()
             or self._team_channels.get((session_id, team_id))
@@ -348,7 +353,6 @@ class JiuwenExpertTeamLauncher:
             _enrich_teammate_event,
             _is_leader_output,
             _is_teammate_output,
-            _tag_team_output_origin,
             _truncate_team_tool_result_event,
         )
         from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk

@@ -393,3 +393,33 @@ async def test_launch_reflects_metadata_capabilities_from_build(
         session_id="sess-1",
     )
     assert launched.capabilities == ("finance", "risk")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_expert", [False, True])
+async def test_organization_turn_routes_root_team_to_core_runtime(is_expert: bool) -> None:
+    """An installed expert runner executes both ordinary and expert Root Team follow-ups."""
+    calls = []
+    agent = SimpleNamespace(spec=SimpleNamespace(metadata={"expert_team": is_expert}))
+    entry = SimpleNamespace(agent=agent, current_session_id="sess-1")
+
+    class _Pool:
+        async def get(self, team_id):
+            return entry if team_id == "ordinary-team" else None
+
+    async def run_organization_turn(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    runtime = SimpleNamespace(pool=_Pool(), run_organization_turn=run_organization_turn)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+    assert await launcher.run_organization_turn("ordinary-team", "sess-1", {"query": "review children"})
+    assert calls == [{
+        "team_name": "ordinary-team",
+        "session_id": "sess-1",
+        "inputs": {"query": "review children"},
+    }]
+    if not is_expert:
+        assert not await launcher.run_organization_turn(
+            "ordinary-team", "sess-1", {"query": "review children"}, source="org_expert_direct"
+        )
