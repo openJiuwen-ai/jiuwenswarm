@@ -836,15 +836,22 @@
   flex: 0 0 auto;
 }
 
+.agent-management-detail__actions .agent-management-button {
+  min-height: 28px;
+  border-radius: var(--radius-full);
+}
+
 .agent-management-detail-action--install {
   min-width: 56px;
   min-height: 28px;
+  padding: 0 28px;
   border-radius: var(--radius-full);
 }
 
 .agent-management-detail-action--use {
   min-width: 56px;
   min-height: 28px;
+  padding: 0 28px;
   border-radius: var(--radius-full);
 }
 
@@ -3765,4 +3772,14 @@
   .agent-group-member-card {
     width: 100%;
   }
+}
+
+.agent-management-detail-action--use {
+  border-color: var(--color-text-strong);
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+}
+
+.agent-management-detail-action--use:hover:not(:disabled) {
+  background: var(--color-text-primary);
 }
