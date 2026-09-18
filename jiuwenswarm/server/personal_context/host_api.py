@@ -404,6 +404,29 @@ def _is_runtime_active(status: object) -> bool:
     return getattr(status, "state", None) in {"STARTING", "RUNNING"}
 
 
+def _has_active_fetch(status: object, *, service_id: str | None = None) -> bool:
+    """Whether a fetch round is actively running (not merely auto-collection enabled).
+
+    ``fetch_service_states`` reflects the *scheduler* state (a service with
+    auto-collection enabled stays ``RUNNING`` even between rounds), so it must not
+    gate config changes. The actual "is collecting right now" signal is
+    ``fetch_run_progress[*].run_state`` in ``{"running", "stopping"}``.
+    """
+
+    progress = getattr(status, "fetch_run_progress", None)
+    if not isinstance(progress, dict):
+        return False
+    for sid, record in progress.items():
+        if service_id is not None and sid != service_id:
+            continue
+        if isinstance(record, dict) and record.get("run_state") in {
+            "running",
+            "stopping",
+        }:
+            return True
+    return False
+
+
 def _resolve_model_reference(
     model_index: object,
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -676,6 +699,7 @@ class PersonalContextHostAPI:
         *,
         known_previous_active: bool | None = None,
         known_status: object | None = None,
+        guard_service_id: str | None = None,
     ) -> None:
         """Apply one validated complete configuration while the Host lock is held."""
 
@@ -690,9 +714,8 @@ class PersonalContextHostAPI:
         if previous is not None:
             if known_status is not None:
                 previous_active = _is_runtime_active(known_status)
-                has_active_fetch = any(
-                    s in {"RUNNING", "STOPPING"}
-                    for s in getattr(known_status, "fetch_service_states", {}).values()
+                has_active_fetch = _has_active_fetch(
+                    known_status, service_id=guard_service_id
                 )
             elif known_previous_active is not None:
                 previous_active = known_previous_active
@@ -700,9 +723,8 @@ class PersonalContextHostAPI:
                 try:
                     status = await self._personal_context.snapshot()
                     previous_active = _is_runtime_active(status)
-                    has_active_fetch = any(
-                        s in {"RUNNING", "STOPPING"}
-                        for s in getattr(status, "fetch_service_states", {}).values()
+                    has_active_fetch = _has_active_fetch(
+                        status, service_id=guard_service_id
                     )
                 except asyncio.CancelledError:
                     raise
@@ -1150,12 +1172,11 @@ class PersonalContextHostAPI:
                     exc,
                     "PersonalContext runtime status could not be read",
                 ) from None
-            states = getattr(status, "fetch_service_states", {})
-            fetch_state = states.get(normalized_id)
-            if fetch_state != "STOPPED":
-                if fetch_state in {"STARTING", "RUNNING", "STOPPING"}:
-                    _raise_host_error("PersonalContext 抓取服务正在执行，无法删除")
-                _raise_host_error("PersonalContext 抓取服务尚未停止，请先停止后再删除")
+            if _has_active_fetch(status, service_id=normalized_id):
+                _raise_host_error(
+                    "PersonalContext 抓取服务正在执行，无法删除",
+                    status_name="CONTEXT_PROACTIVE_STATE_INVALID",
+                )
             try:
                 cursor_payload = self._personal_context.remove_fetch_cursor(
                     normalized_id
@@ -1173,15 +1194,26 @@ class PersonalContextHostAPI:
                 history_payload = self._personal_context.remove_fetch_run_history(
                     normalized_id
                 )
+                _, original_candidate = _prepare_stored_config(stored)
+                removed_service = next(
+                    service
+                    for service in original_candidate.fetch_services
+                    if service.service_id == normalized_id
+                )
                 stored["fetch_services"] = [
                     item for item in services if item["service_id"] != normalized_id
                 ]
                 stored, candidate = _prepare_stored_config(stored)
-                await self._apply_configuration_locked(
+                await self._apply_live_update_locked(
                     candidate,
                     stored,
                     _serialize_config(stored),
-                    known_status=status,
+                    apply=lambda: self._personal_context._remove_fetch_service_config(  # pylint: disable=protected-access
+                        normalized_id
+                    ),
+                    rollback=lambda: self._personal_context._append_fetch_service_config(  # pylint: disable=protected-access
+                        removed_service
+                    ),
                 )
             except BaseException as exc:
                 restore_error: BaseException | None = None
@@ -1247,20 +1279,47 @@ class PersonalContextHostAPI:
             )
             if target is None:
                 _raise_host_error("unknown PersonalContext fetch service")
+            try:
+                status = await self._personal_context.snapshot()
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                raise _as_host_error(
+                    exc,
+                    "PersonalContext runtime status could not be read",
+                ) from None
+            if _has_active_fetch(status, service_id=normalized_id):
+                _raise_host_error(
+                    "PersonalContext 抓取服务正在执行，无法修改配置",
+                    status_name="CONTEXT_PROACTIVE_STATE_INVALID",
+                )
+            _, original_candidate = _prepare_stored_config(stored)
+            original_service = next(
+                service
+                for service in original_candidate.fetch_services
+                if service.service_id == normalized_id
+            )
             target.update(deepcopy(patch))
             stored, candidate = _prepare_stored_config(stored)
-            await self._apply_configuration_locked(
+            updated_service = next(
+                service
+                for service in candidate.fetch_services
+                if service.service_id == normalized_id
+            )
+            await self._apply_live_update_locked(
                 candidate,
                 stored,
                 _serialize_config(stored),
-            )
-            updated_services = cast(
-                list[dict[str, object]],
-                stored["fetch_services"],
+                apply=lambda: self._personal_context._update_fetch_service_config(  # pylint: disable=protected-access
+                    updated_service
+                ),
+                rollback=lambda: self._personal_context._update_fetch_service_config(  # pylint: disable=protected-access
+                    original_service
+                ),
             )
             updated = next(
                 service
-                for service in updated_services
+                for service in cast(list[dict[str, object]], stored["fetch_services"])
                 if service["service_id"] == normalized_id
             )
             return _project_service(updated)
