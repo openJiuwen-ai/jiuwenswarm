@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
+from jiuwenswarm.common.security import base_crypto
 from jiuwenswarm.common.security.base_crypto import CryptoProvider
 from jiuwenswarm.extensions.callback_compat import unregister_callback_sync
 from jiuwenswarm.extensions.sdk.crypto_utility import CryptoUtility
@@ -27,6 +28,28 @@ else:
     ThirdAgentExtension = Any
     AgentServerClient = Any
     ThirdAgent = Any
+
+
+class _RegistryCryptoBridge:
+    """把 ExtensionRegistry 的 crypto 扩展桥接到 ``common.security.base_crypto`` 全局钩子。
+
+    common（如 config 的 api_key 解密）不能 import 扩展框架（gateway 拆分约束），
+    改经 base_crypto 钩子获取 provider。按调用时点解析 registry 实例与 crypto
+    扩展（未就绪时原样返回/由调用方回退原文），与原 ``sys.modules`` 软查找的
+    惰性语义一致。
+    """
+
+    def _provider(self) -> CryptoProvider | None:
+        ext = ExtensionRegistry.get_instance()._crypto_tool
+        return ext.get_crypto() if ext is not None else None
+
+    def encrypt(self, plaintext: str, **kwargs) -> str:
+        provider = self._provider()
+        return provider.encrypt(plaintext, **kwargs) if provider is not None else plaintext
+
+    def decrypt(self, ciphertext: str, **kwargs) -> str:
+        provider = self._provider()
+        return provider.decrypt(ciphertext, **kwargs) if provider is not None else ciphertext
 
 
 class _ApplicationPluginChannel:
@@ -96,11 +119,15 @@ class ExtensionRegistry:
             config=config,
             logger=logger,
         )
+        # 桥接 crypto 扩展到 common 全局钩子（common/config 的 api_key 解密入口）。
+        base_crypto.set_crypto_provider(_RegistryCryptoBridge())
         return cls._instance
 
     @classmethod
     def reset_instance(cls) -> None:
         cls._instance = None
+        # registry 实例重置后，common 侧不得再持有旧实例的 crypto 桥接
+        base_crypto.set_crypto_provider(None)
 
     def register_agent_server_client(self, extension: AgentServerClientExtension) -> None:
         self._agent_server_client = extension
