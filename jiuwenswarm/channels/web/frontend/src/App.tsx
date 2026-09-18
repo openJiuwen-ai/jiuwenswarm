@@ -402,9 +402,6 @@ function AppContent({
   );
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
-  const kvCacheAffinityEnabled = normalizeConfigBoolean(
-    serverConfig?.kv_cache_affinity_enabled,
-  );
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -540,8 +537,8 @@ function AppContent({
   const sideConversationRef = useRef<SideConversationState | null>(null);
   const sessionIdRef = useRef(sessionId);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const kvcViewIdRef = useRef(generateUuidV4());
-  const kvcPreparedInputSessionRef = useRef<string | null>(null);
+  const sessionViewIdRef = useRef(generateUuidV4());
+  const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
   const historyRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
   const subagentHistoryRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
@@ -583,9 +580,9 @@ function AppContent({
   useEffect(() => {
     sessionIdRef.current = sessionId;
     // A new foreground visit gets one fresh input-intent opportunity. Merely
-    // switching to the Session still does not prefetch; the first real editor
-    // insertion below does.
-    kvcPreparedInputSessionRef.current = null;
+    // switching to the Session does not publish input intent; the first real
+    // editor insertion below does.
+    inputIntentSessionRef.current = null;
     setHistoryLoadingMore(false);
     // Background cursor prefetch does not mutate the published timeline.  Treating
     // it as a visible prepend leaves a revisited Session unable to reveal batches
@@ -598,9 +595,9 @@ function AppContent({
     // Session is used elsewhere. In that case `sessionId` never changes, so
     // the per-visit input latch above would otherwise remain consumed by the
     // Session's initial turn. Re-arm only when this page returns to the
-    // foreground; focus/visibility alone still does not issue a prefetch.
+    // foreground; focus/visibility alone still does not publish input intent.
     const rearmInputIntent = () => {
-      kvcPreparedInputSessionRef.current = null;
+      inputIntentSessionRef.current = null;
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -2656,24 +2653,20 @@ function AppContent({
     enterNewConversation(targetMode);
   }, [enterNewConversation, setMode]);
 
-  const handleKVCInputIntent = useCallback((targetSessionId: string) => {
-    // OFF must remain the ordinary JiuwenSwarm path: do not emit even the
-    // best-effort prepare control request. AgentServer keeps its own gate as
-    // a fail-closed boundary for stale or non-Web clients.
-    if (!kvCacheAffinityEnabled) return;
+  const handleSessionInputIntent = useCallback((targetSessionId: string) => {
     if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return;
-    if (kvcPreparedInputSessionRef.current === targetSessionId) return;
+    if (inputIntentSessionRef.current === targetSessionId) return;
 
-    // Leading-edge intent: start prefetch on the first real insertion instead
-    // of waiting until the user stops typing. InputArea reports beforeinput,
-    // paste and input as browser-compatible fallbacks; this latch collapses
-    // them into one control request for the current foreground visit.
-    kvcPreparedInputSessionRef.current = targetSessionId;
+    // Publish on the first real insertion instead of waiting until the user
+    // stops typing. InputArea reports beforeinput, paste and input as browser-
+    // compatible fallbacks; this latch collapses them into one lifecycle
+    // notification for the current foreground visit.
+    inputIntentSessionRef.current = targetSessionId;
     const runtime = useSessionStore.getState().getRuntime(targetSessionId);
-    void request<{ scheduled?: boolean; outcome?: string }>('session.kvc.prepare', {
+    void request<{ scheduled?: boolean; outcome?: string }>('session.input.intent', {
       session_id: targetSessionId,
       intent_id: generateUuidV4(),
-      view_id: kvcViewIdRef.current,
+      view_id: sessionViewIdRef.current,
       mode: resolvePlanWireMode(
         runtime?.mode ?? mode,
         usePlanStore.getState().isActive(targetSessionId),
@@ -2681,18 +2674,18 @@ function AppContent({
       ),
     }).then((response) => {
       if (response?.outcome === 'failed'
-          && kvcPreparedInputSessionRef.current === targetSessionId) {
-        kvcPreparedInputSessionRef.current = null;
+          && inputIntentSessionRef.current === targetSessionId) {
+        inputIntentSessionRef.current = null;
       }
     }).catch((error) => {
       // Allow the next editor event to retry when the control request itself
-      // could not reach AgentServer. KVC remains an optional optimization.
-      if (kvcPreparedInputSessionRef.current === targetSessionId) {
-        kvcPreparedInputSessionRef.current = null;
+      // could not reach AgentServer. Lifecycle extensions remain optional.
+      if (inputIntentSessionRef.current === targetSessionId) {
+        inputIntentSessionRef.current = null;
       }
-      console.debug('session.kvc.prepare skipped:', error);
+      console.debug('session.input.intent skipped:', error);
     });
-  }, [kvCacheAffinityEnabled, mode, request]);
+  }, [mode, request]);
 
   const handleUseAgent = useCallback((agentId: string) => {
     enterNewConversation('agent', { forceMode: 'agent' });
@@ -2739,7 +2732,7 @@ function AppContent({
         is_swarm: runtimeSettings.mode === 'team',
         title: createConversationTitle(initialTitle).slice(0, 100),
         work_mode: workContext.work_mode,
-        view_id: kvcViewIdRef.current,
+        view_id: sessionViewIdRef.current,
         persist_session: false,
       };
       const previousSession = newConversationPreviousSessionRef.current;
@@ -2870,7 +2863,7 @@ function AppContent({
           is_swarm: runtimeSettings.mode === 'team',
           title: createConversationTitle(messageContent).slice(0, 100),
           work_mode: workContext.work_mode,
-          view_id: kvcViewIdRef.current,
+          view_id: sessionViewIdRef.current,
           persist_session: runtimeSettings.persistSession,
         };
         const previousSession = newConversationPreviousSessionRef.current;
@@ -3158,7 +3151,7 @@ function AppContent({
             previous_session_id: previousSessionId,
             previous_mode: previousMode,
             mode: resolvedMode,
-            view_id: kvcViewIdRef.current,
+            view_id: sessionViewIdRef.current,
           });
         } catch (error) {
           if (isTeamAgentMode(resolvedMode)) {
@@ -3740,7 +3733,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onStartSideConversation={handleStartSideConversation}
                         continuedFromSessionId={continuedFromSessionId}
                         onOpenContinuedFromSession={handleOpenContinuedFromSession}
-                        onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
+                        onInputIntent={handleSessionInputIntent}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}
                         onInterrupt={handleInterrupt}

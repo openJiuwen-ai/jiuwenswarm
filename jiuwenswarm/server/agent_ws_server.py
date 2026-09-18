@@ -2349,8 +2349,8 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.SESSION_PLAN_STATUS:
                 await self._handle_session_plan_status(ws, request, send_lock)
                 return
-            if request.req_method == ReqMethod.SESSION_KVC_PREPARE:
-                await self._handle_session_kvc_prepare(ws, request, send_lock)
+            if request.req_method == ReqMethod.SESSION_INPUT_INTENT:
+                await self._handle_session_input_intent(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.SESSION_REWIND:
                 await self._handle_session_rewind_full(ws, request, send_lock)
@@ -4417,13 +4417,13 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    async def _handle_session_kvc_prepare(
+    async def _handle_session_input_intent(
         self,
         ws: Any,
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        """Record typing intent; prefetch remains best-effort and asynchronous."""
+        """Publish a user input intent without naming optional consumers."""
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()
         intent_id = str(params.get("intent_id") or request.request_id or "").strip()
@@ -4437,12 +4437,12 @@ class AgentWebSocketServer:
             )
         else:
             try:
-                outcome = await self._execution_runtime().record_session_prepare(
+                outcome = await self._execution_runtime().record_session_input_intent(
                     request,
                     view_id=str(params.get("view_id") or "default-view"),
                 )
                 logger.info(
-                    "[AgentWebSocketServer] session.kvc.prepare processed: "
+                    "[AgentWebSocketServer] session.input.intent processed: "
                     "session_id=%s intent_id=%s outcome=%s",
                     session_id,
                     intent_id,
@@ -4461,7 +4461,7 @@ class AgentWebSocketServer:
                 )
             except Exception as exc:
                 logger.warning(
-                    "[AgentWebSocketServer] session.kvc.prepare failed closed: "
+                    "[AgentWebSocketServer] session.input.intent failed closed: "
                     "session_id=%s error=%s",
                     session_id,
                     exc,
