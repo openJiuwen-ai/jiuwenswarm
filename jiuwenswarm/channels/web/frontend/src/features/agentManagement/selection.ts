@@ -1,4 +1,4 @@
-import type { McpOption, SkillOption } from './types';
+import type { AgentCatalogItem, McpOption, RequestStatus, SkillOption } from './types';
 
 export type SelectionSourceTab = 'local' | 'market';
 
@@ -51,16 +51,42 @@ function selectionLabel(item: SortableSelection): string {
   return item.displayName?.trim() || item.name?.trim() || item.id?.trim() || '';
 }
 
+function compareSelectionLabels(left: SortableSelection, right: SortableSelection): number {
+  const labelOrder = selectionLabel(left).localeCompare(selectionLabel(right), undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  });
+  return labelOrder || (left.id || '').localeCompare(right.id || '', undefined, { numeric: true });
+}
+
 export function sortInstalledFirst<T extends SortableSelection>(items: T[]): T[] {
   return [...items].sort((left, right) => {
     const installedOrder = Number(right.installed === true) - Number(left.installed === true);
     if (installedOrder !== 0) return installedOrder;
 
-    const labelOrder = selectionLabel(left).localeCompare(selectionLabel(right), undefined, {
-      numeric: true,
-      sensitivity: 'base',
-    });
-    return labelOrder || (left.id || '').localeCompare(right.id || '', undefined, { numeric: true });
+    return compareSelectionLabels(left, right);
+  });
+}
+
+export function isAgentGroupAgentCompatibilityLoading(
+  agent: Pick<AgentCatalogItem, 'source' | 'teamCompatible'> & { installed?: boolean },
+  status: RequestStatus,
+): boolean {
+  return status === 'loading' && agent.installed === true && agent.source === 'hub' && !agent.teamCompatible;
+}
+
+export function sortAgentGroupOptions<
+  T extends SortableSelection & Pick<AgentCatalogItem, 'source' | 'teamCompatible'>,
+>(items: T[], status: RequestStatus): T[] {
+  const stateOrder = (item: T) => {
+    if (item.installed === true && isAgentGroupAgentCompatibilityLoading(item, status)) return 1;
+    return item.installed === true ? 0 : 2;
+  };
+
+  return [...items].sort((left, right) => {
+    const agentStateOrder = stateOrder(left) - stateOrder(right);
+    if (agentStateOrder !== 0) return agentStateOrder;
+    return compareSelectionLabels(left, right);
   });
 }
 
@@ -75,10 +101,6 @@ export function sortMcpOptions<T extends SortableSelection & Pick<McpOption, 'co
     const mcpStateOrder = stateOrder[getMcpSelectionState(left)] - stateOrder[getMcpSelectionState(right)];
     if (mcpStateOrder !== 0) return mcpStateOrder;
 
-    const labelOrder = selectionLabel(left).localeCompare(selectionLabel(right), undefined, {
-      numeric: true,
-      sensitivity: 'base',
-    });
-    return labelOrder || (left.id || '').localeCompare(right.id || '', undefined, { numeric: true });
+    return compareSelectionLabels(left, right);
   });
 }

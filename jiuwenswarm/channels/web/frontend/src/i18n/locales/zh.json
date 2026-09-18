@@ -2907,7 +2907,8 @@
         "sourceTabsLabel": "专家来源",
         "skillSourceTabsLabel": "专家团技能来源",
         "install": "安装",
-        "installing": "安装中…"
+        "installing": "安装中…",
+        "loading": "专家信息加载中…"
       }
     }
   },
