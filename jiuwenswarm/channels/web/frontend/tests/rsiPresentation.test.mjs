@@ -10,7 +10,18 @@ import {
   presentRsiNode,
   scoreScale,
   actionsForStatus,
+  taskProgressPercent,
 } from '../node_modules/.cache/rsi-presentation/rsiPresentation.mjs';
+
+test('completed tasks show full progress even when they finish before the iteration limit', () => {
+  assert.equal(taskProgressPercent('COMPLETED', 1, 5), 100);
+  assert.equal(taskProgressPercent('COMPLETED', 0, 0), 100);
+  for (const status of ['RUNNING', 'PAUSED', 'FAILED', 'TERMINATED']) {
+    assert.equal(taskProgressPercent(status, 1, 5), 20);
+  }
+  assert.equal(taskProgressPercent('QUEUED', 0, 0), 0);
+  assert.equal(taskProgressPercent('RUNNING', 6, 5), 100);
+});
 
 const context = (scenario, artifactType, nodes, taskRunning = false) => ({
   scenario,

@@ -14,6 +14,11 @@ import type {
 // 节点类型 → 展示用状态色类名（对应 rsi.css 的 bar--* 与图例 dot）
 export type NodeStatusKind = 'best-path' | 'evaluated' | 'pending' | 'failed' | 'pruned';
 
+export function taskProgressPercent(status: RsiTaskStatus, iteration: number, total: number): number {
+  if (status === 'COMPLETED') return 100;
+  return total > 0 ? Math.min(100, Math.round((iteration / total) * 100)) : 0;
+}
+
 // 节点 type → 状态色映射（对齐样式概要：最优路径/已评测/待评测/已剪枝）
 // adopted/root → best-path；rejected → evaluated；provisional → pending；pruned → pruned
 export function nodeTypeToStatusKind(type: RsiNodeType): NodeStatusKind {
