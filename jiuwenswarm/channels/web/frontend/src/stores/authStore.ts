@@ -16,6 +16,7 @@ import {
   AuthStatus,
   ModelQuota,
   authorize,
+  cancelLogin as cancelLoginRequest,
   claim,
   fetchQuota,
   logout as logoutRequest,
@@ -81,8 +82,17 @@ function stopWaiting(): void {
   detachTriggers = null;
 }
 
-/** 挂上三个"授权可能已完成"的触发点（见文件头）。 */
-function attachTriggers(onTrigger: () => void): () => void {
+/** 放弃正在等待的登录：除了本地收尾，还要通知Gateway停止向鉴权服务认领。 */
+function abandonWaiting(): void {
+  if (pendingLogin) void cancelLoginRequest(pendingLogin.state, pendingLogin.claimToken);
+  stopWaiting();
+}
+
+/**
+ * 挂上三个"授权可能已完成"的触发点（见文件头），以及页面关闭：`claimToken` 只在内存里，
+ * 页面一关这次登录就不可能再被认领了。
+ */
+function attachTriggers(onTrigger: () => void, onLeave: () => void): () => void {
   // BroadcastChannel 只在同源页面之间传递，别的网站发不进来；消息不带数据，认领要出示 claimToken
   let channel: BroadcastChannel | null = null;
   try {
@@ -98,10 +108,16 @@ function attachTriggers(onTrigger: () => void): () => void {
   };
   window.addEventListener('focus', onTrigger);
   document.addEventListener('visibilitychange', onVisible);
+  // 进了bfcache（persisted）的页面还会回来，内存里的claimToken也还在，不算离开
+  const onPageHide = (event: PageTransitionEvent) => {
+    if (!event.persisted) onLeave();
+  };
+  window.addEventListener('pagehide', onPageHide);
   return () => {
     channel?.close();
     window.removeEventListener('focus', onTrigger);
     document.removeEventListener('visibilitychange', onVisible);
+    window.removeEventListener('pagehide', onPageHide);
   };
 }
 
@@ -195,11 +211,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ phase: 'idle', error: messageOf(error, '无法获取授权地址，请稍后重试') });
       return;
     }
-    // 取授权地址期间用户点了取消 / 又发起了一次新登录：这一轮作废，别再替他开浏览器
-    if (run !== loginRun) return;
+    // 取授权地址期间用户点了取消 / 登出：这一轮作废，别再替他开浏览器；
+    // Gateway已经开始替它向鉴权服务认领，也通知它停下
+    if (run !== loginRun) {
+      void cancelLoginRequest(request.state, request.claimToken);
+      return;
+    }
 
     pendingLogin = { state: request.state, claimToken: request.claimToken };
-    detachTriggers = attachTriggers(() => void get().checkLogin());
+    detachTriggers = attachTriggers(
+      () => void get().checkLogin(),
+      () => get().cancelLogin(),
+    );
     const authorizeWindow = openAuthorizeUrl(request.authorizeUrl);
     set({
       phase: 'waiting',
@@ -241,13 +264,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   cancelLogin() {
-    stopWaiting();
+    abandonWaiting();
     // 连同上一次的报错一起清掉：取消就是重新开始，再打开登录框不该还挂着旧错误
     set({ phase: 'idle', pendingAuthorizeUrl: null, error: null });
   },
 
   async logout() {
-    stopWaiting();
+    abandonWaiting();
     await logoutRequest();
     set({
       islogin: false,
