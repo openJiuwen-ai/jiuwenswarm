@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 PreserveFileSharingMode = Literal["mount"]
 _PRESERVE_FILE_SHARING_MODE: PreserveFileSharingMode = "mount"
 
+# Windows 沙箱 create_sandbox 超时 (env JIUWENBOX_CREATE_TIMEOUT_SECONDS 可调).
+# vendored 的 create_sandbox 是同步 httpx POST, 跑在事件循环线程上, 用此值作 client 级
+# 超时 (该 POST 无 per-request 超时). 需 > apply_sandbox_acl 递归 grant 的 ~50s, 否则
+# POST 必超时 → sandbox_id 不进 _shared_sandbox_ids 缓存 → 每次工具调用都重建沙箱 →
+# 孤儿 runner churn. 默认 120s 让首次建沙箱等满 ACL 后成功返回并缓存, 后续工具调用秒回;
+# exec 走 per-request 超时 max(t or 30, 30) 不受影响.
+_SANDBOX_CREATE_TIMEOUT_SECONDS = int(
+    os.environ.get("JIUWENBOX_CREATE_TIMEOUT_SECONDS", "120") or 120
+)
+
 
 def _normalize_fs_entry(entry: Any) -> dict[str, str] | None:
     if entry is None:
@@ -702,6 +712,7 @@ def create_sandbox_sysop_card(
             extra_params["idle_check_interval"] = idle_check_interval
 
         isolation_custom_id = _sandbox_isolation_custom_id(project_dir, shared_dir=shared_dir)
+        # create_sandbox 超时见模块级 _SANDBOX_CREATE_TIMEOUT_SECONDS (止血: 等满 ~50s ACL).
         gateway_config = SandboxGatewayConfig(
             isolation=SandboxIsolationConfig(
                 container_scope=ContainerScope.CUSTOM,
@@ -713,6 +724,7 @@ def create_sandbox_sysop_card(
                 idle_ttl_seconds=idle_ttl_seconds,
                 extra_params=extra_params,
             ),
+            timeout_seconds=_SANDBOX_CREATE_TIMEOUT_SECONDS,
         )
         sysop_card = SysOperationCard(
             mode=OperationMode.SANDBOX,
