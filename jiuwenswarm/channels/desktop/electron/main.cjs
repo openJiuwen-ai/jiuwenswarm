@@ -2295,9 +2295,12 @@ function createStartupDiagnosticsSession() {
     startupDiagnosticsDir = preferred;
   } catch (error) {
     console.warn('[electron] failed to create startup diagnostics dir', error);
-    const fallback = path.join(os.tmpdir(), 'jiuwenswarm-startup', startupId);
-    fsSync.mkdirSync(fallback, { recursive: true });
-    startupDiagnosticsDir = fallback;
+    // 与 DesktopRuntime.__init__ 的回退一致: 共享临时目录下的固定父目录
+    // jiuwenswarm-startup 可被别的账号预先占住或换成符号链接, mkdirSync 的
+    // recursive 会跟随它。mkdtempSync 建出 0700、名字不可预测的新目录。
+    startupDiagnosticsDir = fsSync.mkdtempSync(
+      path.join(os.tmpdir(), `jiuwenswarm-startup-${startupId}-`),
+    );
   }
   doctorOutputPath = path.join(startupDiagnosticsDir, 'doctor.json');
 }
