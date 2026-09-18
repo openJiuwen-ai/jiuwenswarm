@@ -1,0 +1,13 @@
+id: flash_todo
+name: FlashTodo
+version: 0.1.0
+description: Unified 3-in-1 todo tool (action dispatch create/list/modify) replacing the stock TaskPlanningRail todo toolset
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.3"
+dependencies: {}
+config_schema:
+  type: object
+  properties:
+    FLASH_TODO_ENABLED:
+      type: string
+      description: "Set to 1 to enable the unified todo tool (default off)"

@@ -1,0 +1,13 @@
+id: flash_memory
+name: FlashMemory
+version: 0.1.0
+description: Unified 5-in-1 memory tool (mode dispatch write/edit/read/search) replacing the stock MemoryRail toolset
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.3"
+dependencies: {}
+config_schema:
+  type: object
+  properties:
+    FLASH_MEMORY_ENABLED:
+      type: string
+      description: "Set to 1 to enable the unified memory tool (default off)"
