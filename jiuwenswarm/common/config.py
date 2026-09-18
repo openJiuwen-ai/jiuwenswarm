@@ -27,6 +27,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     set_default_model_provider_in_entries,
     validate_affinity_invariant,
 )
+from jiuwenswarm.common.security.base_crypto import get_crypto_provider
 from jiuwenswarm.common.utils import (
     get_config_dir,
     get_config_file,
@@ -76,12 +77,10 @@ def resolve_env_vars(value: Any) -> Any:
             default = match.group(2)
             current = os.getenv(var_name)
             is_need_decrypt = ("api_key" in var_name.lower() or "token" in var_name.lower()) and current
-            reg_mod = sys.modules.get("jiuwenswarm.extensions.registry")
-            if reg_mod is not None and hasattr(reg_mod, "ExtensionRegistry"):
+            if is_need_decrypt:
                 try:
-                    reg = reg_mod.ExtensionRegistry.get_instance()
-                    crypto = reg.get_crypto_provider()
-                    if is_need_decrypt and crypto:
+                    crypto = get_crypto_provider()
+                    if crypto:
                         current = crypto.decrypt(current)
                 except Exception:
                     logger.debug(
@@ -1438,17 +1437,15 @@ def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]
 
     result = copy.deepcopy(entries)
 
-    reg_mod = sys.modules.get("jiuwenswarm.extensions.registry")
     crypto = None
-    if reg_mod is not None and hasattr(reg_mod, "ExtensionRegistry"):
-        try:
-            crypto = reg_mod.ExtensionRegistry.get_instance().get_crypto_provider()
-        except Exception:
-            logger.debug(
-                "Crypto provider unavailable while decrypting model entries; "
-                "api_key fields will be returned as stored",
-                exc_info=True,
-            )
+    try:
+        crypto = get_crypto_provider()
+    except Exception:
+        logger.debug(
+            "Crypto provider unavailable while decrypting model entries; "
+            "api_key fields will be returned as stored",
+            exc_info=True,
+        )
 
     for entry in result:
         mcc = entry.get("model_client_config")
