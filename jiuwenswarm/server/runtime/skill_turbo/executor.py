@@ -465,13 +465,6 @@ class SkillTurboExecutor:
         self._stream_event_rail = JiuSwarmStreamEventRail()
         self._artifact_rail = SkillTurboArtifactRail(self)
 
-        # 复用 DeepAgent 已有的 PermissionInterruptRail（基于权限引擎做 ALLOW/DENY/ASK）。
-        # ASK 决策会抛出 AbortError(cause=ToolInterruptException(request, tool_call))，
-        # 由 _run_rail_hook → use_tool 透传出去，最终被 adapter 转成 HITL 三件套 chunk。
-        permission_rail = self._build_permission_rail()
-        # 保存引用：replay-skip 路径需跳过权限 rail，但保留事件发射类 rail
-        self._permission_rail = permission_rail
-
         # 结构化 ask_user rail：拦截 skill_code 的 call_tool("ask_user", questions=...)，
         # 首次调用抛 AbortError 触发 HITL（前端弹 ask_user_question 卡片），
         # resume 时把用户作答按前端 answers 结构回填给 skill_code。
@@ -482,11 +475,11 @@ class SkillTurboExecutor:
         self._llm_retry_rail = self._build_llm_retry_rail()
 
         # Rail列表（按优先级排序）
+        # 审批职责已收口外层 skill_acceleration_exec 工具（config: skill_turbo: ask
+        # 下 DeepAgent 层一次性授权内部工具），内层不再挂权限 rail。
         self._rails = [self._stream_event_rail]
         if self._ask_user_rail is not None:
             self._rails.append(self._ask_user_rail)
-        if permission_rail is not None:
-            self._rails.append(permission_rail)
         if self._llm_retry_rail is not None:
             self._rails.append(self._llm_retry_rail)
         self._rails.append(self._artifact_rail)
@@ -1078,22 +1071,14 @@ class SkillTurboExecutor:
         self,
         hook_name: str,
         ctx: AgentCallbackContext,
-        *,
-        skip_rails: set[Any] | None = None,
     ) -> None:
         """按 Rail 优先级执行 hook。
 
         关键：``AbortError``（PermissionInterruptRail HITL 中断）必须向上抛出，
         否则护栏会被悄悄吞掉，前端永远收不到审批请求。
         其它普通 ``Exception`` 仍按"单 Rail 失败不影响主链"打 warning 后继续。
-
-        ``skip_rails``：需跳过的 rail 实例集合。replay-skip 路径用此参数
-        跳过 ``PermissionInterruptRail``，但仍执行事件发射类 rail 的 ``before_tool_call``，
-        以补发 ``chat.tool_call`` / ``chat.tool_update`` 事件。
         """
         for rail in self._rails:
-            if skip_rails and rail in skip_rails:
-                continue
             hook = getattr(rail, hook_name, None)
             if hook is None:
                 continue
@@ -1724,20 +1709,11 @@ class SkillTurboExecutor:
             )
 
             # skill_turbo 外层统一审批：审批已在 deepagent 层对 skill_turbo 工具
-            # 整体完成（config: skill_turbo: ask），内部工具调用不再逐个审批，
-            # 始终跳过 PermissionInterruptRail，直接放行。
-            # 仍执行事件发射类 rail（stream_event_rail 等）的 before_tool_call，
+            # 整体完成（config: skill_turbo: ask），内层不再逐个审批。
+            # 事件发射类 rail（stream_event_rail 等）的 before_tool_call 仍执行，
             # 以补发 chat.tool_call / chat.tool_update 事件，避免前端工具结果
             # 凭空出现、缺调用上下文。
-            await self._run_rail_hook(
-                "before_tool_call",
-                ctx,
-                skip_rails=(
-                    {self._permission_rail}
-                    if self._permission_rail is not None
-                    else None
-                ),
-            )
+            await self._run_rail_hook("before_tool_call", ctx)
 
             # rail 通过 _skip_tool 标记 reject，已经在 ctx.inputs.tool_result 写入结果
             if ctx.extra.get("_skip_tool"):

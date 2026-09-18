@@ -40,28 +40,33 @@ _SKILL_ACCELERATION_TOOL = "skill_acceleration_exec"
 
 def _build_skill_turbo_guide_text(language: str, skill_names: list[str]) -> str:
     """生成技能加速指南文本；skill_names 为当前请求可见的技能清单（与工具描述同源）。"""
+    from jiuwenswarm.server.runtime.skill_turbo.region_edit import (
+        region_edit_keyword_summary,
+    )
+
+    keywords = region_edit_keyword_summary()
     if language == "cn":
         names = "、".join(skill_names)
         return f"""## 技能加速通道（skill_acceleration_exec）
 
-⚠️ **默认优先**：当用户意图匹配 `skill_acceleration_exec`（当前支持的技能清单以该工具描述中的"当前内部支持"为准，当前：{names}），你的**第一个工具调用必须是 `skill_acceleration_exec`**——它内部会自行完成规划+研究+生成+推送全流程。**唯一例外**：用户**显式**要求先执行某项 `skill_acceleration_exec` 不会自行处理的前置操作，则必须先完成该操作再调用 `skill_acceleration_exec`。搜索、读文件等研究类操作它内部会自己完成，**不构成**例外；其他技能类操作（如加载独立技能流程）它不会自行处理，**构成**例外。
+⚠️ **默认优先**：当用户意图匹配 `skill_acceleration_exec`（当前支持的技能清单以该工具描述中的"当前内部支持"为准，当前：{names}），你的**第一个工具调用必须是 `skill_acceleration_exec`**——它内部会自行完成规划+研究+生成+推送全流程。**唯一例外**：用户**显式**要求先执行某项 `skill_acceleration_exec` 不会自行处理的前置操作，则必须先完成该操作再调用 `skill_acceleration_exec`。搜索、读文件等研究类操作它内部会自己完成，**不构成**例外；其他技能类操作（如加载独立技能流程）它不会自行处理，**构成**例外。**同样例外**：本回合 tool_result 明确提示『检测到上一轮留下的已完成产物』时，不要调用 `skill_acceleration_exec`，改用 skill_tool 或直接编辑产物文件继续。
 
 若你已先调用了 `skill_tool` 加载了对应技能正文（即**不属于**上述例外，只是误触），**仍须立即调用 `skill_acceleration_exec`**——不要因"已经加载了 SKILL.md"或"已经做了研究"而放弃加速通道。
 
 若 `skill_acceleration_exec` 返回成功（产物已生成），**禁止**再用 `skill_tool` 重复同一任务——直接向用户总结结果即可。若 `skill_acceleration_exec` 返回失败或未处理，**必须**继续用 `skill_tool` 加载对应技能走标准流程完成用户任务。
 
-🚫 **选区/编辑已有 PPT 排除（重要例外，仅适用于 PPT 类任务）**：当用户消息出现"PPT选区/选区原文/选区类型/选区位置/选区容器/选区 class/修改要求"等选区字段，或意图是**编辑、修改已有 PPT 文件的局部内容**（如改字体颜色、改某段文案、调某页样式、替换某区域）而非从零生成整套演示文稿时，**禁止调用 `skill_acceleration_exec`**——它只会从流水线 Stage 1 重新生成全新 PPT，无法复用已有文件做局部修改。此类请求请改用 `skill_tool` 加载 pptx-craft 标准流程（支持编辑已有 PPT），或直接用 `edit_file`/读写 pptx 的普通工具完成局部修改。本条仅约束 PPT 局部编辑类请求，不适用于从零生成新产物的任务。
+🚫 **选区/编辑已有 PPT 排除（重要例外，仅适用于 PPT 类任务）**：当用户消息出现"{keywords}"等选区字段，或意图是**编辑、修改已有 PPT 文件的局部内容**（如改字体颜色、改某段文案、调某页样式、替换某区域）而非从零生成整套演示文稿时，**禁止调用 `skill_acceleration_exec`**——它只会从流水线 Stage 1 重新生成全新 PPT，无法复用已有文件做局部修改。此类请求请改用 `skill_tool` 加载 pptx-craft 标准流程（支持编辑已有 PPT），或直接用 `edit_file`/读写 pptx 的普通工具完成局部修改。本条仅约束 PPT 局部编辑类请求，不适用于从零生成新产物的任务。
 """
     names = ", ".join(skill_names)
     return f"""## Skill Acceleration Channel (skill_acceleration_exec)
 
-⚠️ **Default priority**: When the user's intent matches `skill_acceleration_exec` (see the "当前内部支持 / currently supported" list in that tool's description; currently: {names}), your **FIRST tool call MUST be `skill_acceleration_exec`** — it handles planning + research + generation + delivery internally. **Only exception**: the user **explicitly** asks to first perform a preceding action that `skill_acceleration_exec` does not handle internally; then you must complete that action before calling `skill_acceleration_exec`. Research-style actions like `web_search` and file reading are handled internally — they do **NOT** constitute an exception; other skill-type actions (e.g. loading a separate skill flow) are not handled internally and **DO** constitute an exception.
+⚠️ **Default priority**: When the user's intent matches `skill_acceleration_exec` (see the "当前内部支持 / currently supported" list in that tool's description; currently: {names}), your **FIRST tool call MUST be `skill_acceleration_exec`** — it handles planning + research + generation + delivery internally. **Only exception**: the user **explicitly** asks to first perform a preceding action that `skill_acceleration_exec` does not handle internally; then you must complete that action before calling `skill_acceleration_exec`. Research-style actions like `web_search` and file reading are handled internally — they do **NOT** constitute an exception; other skill-type actions (e.g. loading a separate skill flow) are not handled internally and **DO** constitute an exception. **Also excepted**: when this turn's tool_result explicitly indicates completed artifacts from a previous run were detected, do NOT call `skill_acceleration_exec`; continue with skill_tool or by editing the artifact files directly.
 
 If you have already mistakenly called `skill_tool` to load the corresponding skill body (i.e. this does **NOT** fall under the exception above - it was just a misfire), **you MUST still call `skill_acceleration_exec` immediately** - do NOT abandon the acceleration channel because "SKILL.md is already loaded" or "research is already done."
 
 If `skill_acceleration_exec` returns success (the artifact is already generated), you are **forbidden** from calling `skill_tool` again for the same task — just summarize the result to the user. If `skill_acceleration_exec` returns failure or is not handled, you **MUST** fall back to `skill_tool` to load the corresponding skill and complete the user's task via the standard flow.
 
-🚫 **PPT region/edit-existing exclusion (critical exception, PPT tasks only)**: When the user message contains selection fields such as "PPT选区/选区原文/选区类型/选区位置/选区容器/选区 class/修改要求", or the intent is to **edit or modify a local part of an existing PPT file** (e.g. change font color, rewrite a paragraph, restyle a slide, replace a region) rather than generating a full deck from scratch, you are **FORBIDDEN from calling `skill_acceleration_exec`** — it only regenerates a brand-new PPT from pipeline Stage 1 and cannot reuse an existing file for local edits. For such requests, use `skill_tool` to load the pptx-craft standard flow (which supports editing existing PPTs), or directly use `edit_file` / pptx read-write tools to make the local change. This clause applies ONLY to local edits of existing PPTs, not to creating new artifacts from scratch.
+🚫 **PPT region/edit-existing exclusion (critical exception, PPT tasks only)**: When the user message contains selection fields such as "{keywords}", or the intent is to **edit or modify a local part of an existing PPT file** (e.g. change font color, rewrite a paragraph, restyle a slide, replace a region) rather than generating a full deck from scratch, you are **FORBIDDEN from calling `skill_acceleration_exec`** — it only regenerates a brand-new PPT from pipeline Stage 1 and cannot reuse an existing file for local edits. For such requests, use `skill_tool` to load the pptx-craft standard flow (which supports editing existing PPTs), or directly use `edit_file` / pptx read-write tools to make the local change. This clause applies ONLY to local edits of existing PPTs, not to creating new artifacts from scratch.
 """
 
 
@@ -114,9 +119,9 @@ class SkillTurboPromptRail(DeepAgentRail):
         existing = self.system_prompt_builder.get_section(name)
         return existing.priority if existing is not None else default_priority
 
-    @staticmethod
-    def _resolve_language() -> str:
-        return "cn"
+    def _resolve_language(self) -> str:
+        lang = getattr(self.system_prompt_builder, "language", None) or "cn"
+        return lang if lang in ("cn", "en") else "cn"
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         # Bridge path: ctx.agent is the inner ReActAgent. Refresh the prompt
