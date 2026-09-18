@@ -11,21 +11,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from openjiuwen.core.foundation.llm import ProviderType
 
 from jiuwenswarm.common.config import (
     get_config,
-    get_config_raw,
-    get_default_models,
-    resolve_env_vars,
 )
 from jiuwenswarm.common.config_panel import tui_models_handlers
-from jiuwenswarm.common.config_panel.tui_models_handlers import (
-    CLI_CONFIG_SET_ENV_MAP as _CLI_CONFIG_SET_ENV_MAP,
-    get_auto_harness_config as _get_auto_harness_config,
-)
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
-from jiuwenswarm.common.version import __version__
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
     send_agent_request_with_timeout,
@@ -420,113 +411,6 @@ class ForwardRewindE2AParams:
     user_id: str | None = None
 
 
-def _build_config_schema() -> list[dict]:
-    """构建配置项 Schema，供前端渲染交互界面。与 config.yaml 结构对齐。"""
-    available_providers = [p.value for p in ProviderType]
-    # 显式使用 ProviderType.OpenAI 作为默认供应商，避免依赖枚举声明顺序
-    default_provider = (
-        ProviderType.OpenAI.value
-        if hasattr(ProviderType, "OpenAI")
-        else (available_providers[0] if available_providers else "")
-    )
-    empty = ""
-    return [
-        # Model
-        {"key": "model", "label": "默认模型", "group": "Model", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "model_provider", "label": "模型供应商", "group": "Model", "type": "select",
-         "options": available_providers, "source": "env", "default": default_provider},
-        {"key": "api_base", "label": "API 地址", "group": "Model", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "api_key", "label": "API Key", "group": "Model", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Vision
-        {"key": "vision_model", "label": "视觉模型", "group": "Vision", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "vision_provider", "label": "视觉供应商", "group": "Vision", "type": "select",
-         "options": available_providers, "source": "env", "default": default_provider},
-        {"key": "vision_api_base", "label": "视觉API地址", "group": "Vision", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "vision_api_key", "label": "视觉API Key", "group": "Vision", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Video
-        {"key": "video_model", "label": "视频模型", "group": "Video", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "video_provider", "label": "视频供应商", "group": "Video", "type": "select",
-         "options": available_providers, "source": "env", "default": default_provider},
-        {"key": "video_api_base", "label": "视频API地址", "group": "Video", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "video_api_key", "label": "视频API Key", "group": "Video", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Audio
-        {"key": "audio_model", "label": "音频模型", "group": "Audio", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "audio_provider", "label": "音频供应商", "group": "Audio", "type": "select",
-         "options": available_providers, "source": "env", "default": default_provider},
-        {"key": "audio_api_base", "label": "音频API地址", "group": "Audio", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "audio_api_key", "label": "音频API Key", "group": "Audio", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Embedding
-        {"key": "embed_api_key", "label": "嵌入API Key", "group": "Embedding", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "embed_api_base", "label": "嵌入API地址", "group": "Embedding", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "embed_model", "label": "嵌入模型", "group": "Embedding", "type": "string",
-         "source": "env", "default": empty},
-        # Search & External
-        {"key": "jina_api_key", "label": "Jina API Key", "group": "Search & External", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "serper_api_key", "label": "Serper API Key", "group": "Search & External", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "perplexity_api_key", "label": "Perplexity API Key", "group": "Search & External", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "github_token", "label": "GitHub Token", "group": "Search & External", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # TeamSkills
-        {"key": "teamskills_market_url", "label": "TeamSkills Hub 地址", "group": "TeamSkills", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "teamskills_user_token", "label": "TeamSkills 用户Token", "group": "TeamSkills", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {"key": "teamskills_system_token", "label": "TeamSkills 系统Token", "group": "TeamSkills", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        {
-         "key": "teamskills_allowed_download_hosts",
-         "label": "TeamSkills 下载白名单Hosts(逗号分隔)",
-         "group": "TeamSkills",
-         "type": "string",
-         "source": "env", "default": empty},
-        # Email
-        {"key": "email_address", "label": "邮箱地址", "group": "Email", "type": "string",
-         "source": "env", "default": empty},
-        {"key": "email_token", "label": "邮箱Token", "group": "Email", "type": "password",
-         "sensitive": True, "source": "env", "default": empty},
-        # Features
-        {"key": "context_engine_enabled", "label": "上下文压缩", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "false"},
-        {"key": "permissions_enabled", "label": "权限管控", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "false"},
-        {"key": "memory_forbidden_enabled", "label": "敏感信息过滤", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "false"},
-        {"key": "preferred_language", "label": "显示语言", "group": "Features", "type": "select",
-         "options": ["zh", "en"], "source": "yaml", "default": "zh"},
-        {"key": "auto_recap_enabled", "label": "自动回顾", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "true"},
-        {"key": "skill_evolution", "label": "技能演进与创建", "group": "Features",
-         "type": "toggle", "source": "yaml", "default": "false"},
-        # Auto-Harness (定时任务配置) - 合并为三项
-        {"key": "auto_harness_git_user_name", "label": "用户名", "group": "Auto-Harness",
-         "type": "string", "source": "yaml", "default": empty,
-         "description": "GitCode用户名，用于 git commit、创建 PR"},
-        {"key": "auto_harness_git_user_email", "label": "邮箱", "group": "Auto-Harness",
-         "type": "string", "source": "yaml", "default": empty,
-         "description": "GitCode用户邮箱，用于 git commit"},
-        {"key": "auto_harness_gitcode_access_token", "label": "GitCode Access Token", "group": "Auto-Harness",
-         "type": "password", "sensitive": True, "source": "yaml", "default": empty,
-         "description": "GitCode Access token，也可通过环境变量 GITCODE_ACCESS_TOKEN 配置"},
-    ]
-
-
 def resolve_tui_session_project_path(session: dict[str, Any] | None) -> str:
     """解析 TUI session 的项目路径，供 /resume current-dir 过滤与展示。
 
@@ -628,132 +512,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     harmonyos_dev_init_tasks: dict[tuple[int, str], asyncio.Task[Any]] = {}
 
     async def _config_get(ws, req_id, params, session_id):
-        payload = {
-            param_key: (os.getenv(env_key) or "")
-            for param_key, env_key in _CLI_CONFIG_SET_ENV_MAP.items()
-        }
-        payload["app_version"] = __version__
-        try:
-            raw = get_config_raw()
-            for key, val in payload.items():
-                from jiuwenswarm.extensions import ExtensionRegistry
-
-                crypto_provider = ExtensionRegistry.get_instance().get_crypto_provider()
-                if (
-                    "api_key" in key.lower() or "token" in key.lower()
-                ) and crypto_provider:
-                    payload[key] = crypto_provider.decrypt(val)
-            ctx_cfg = (raw.get("react") or {}).get("context_engine_config") or {}
-            payload["context_engine_enabled"] = (
-                "true" if ctx_cfg.get("enabled", False) else "false"
-            )
-            perm_cfg = raw.get("permissions") or {}
-            payload["permissions_enabled"] = (
-                "true" if perm_cfg.get("enabled", False) else "false"
-            )
-            mem_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
-            payload["memory_forbidden_enabled"] = (
-                "true" if mem_cfg.get("enabled", False) else "false"
-            )
-            payload["preferred_language"] = raw.get("preferred_language") or "zh"
-            auto_recap_cfg = raw.get("auto_recap") or {}
-            payload["auto_recap_enabled"] = (
-                "true" if auto_recap_cfg.get("enabled", True) else "false"
-            )
-            # swarmflow toggle lives at modes.team.jiuwen_team.enable_swarmflow
-            _team_cfg = (raw.get("modes") or {}).get("team") or {}
-            _jiuwen_team_cfg = _team_cfg.get("jiuwen_team") or {}
-            _swarmflow_enabled = bool(_jiuwen_team_cfg.get("enable_swarmflow", False))
-            payload["enable_swarmflow"] = "true" if _swarmflow_enabled else "false"
-            # swarmflow budget ceiling (integer token limit; absent/None → unbounded)
-            _swarmflow_budget = _jiuwen_team_cfg.get("swarmflow_budget")
-            if _swarmflow_budget is not None:
-                payload["swarmflow_budget"] = str(_swarmflow_budget)
-            evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
-            payload["skill_evolution"] = (
-                "true" if evolution_cfg.get("skill_evolution", False) else "false"
-            )
-
-            # Resolve model-related fields from config.yaml.
-            # When models.defaults list is in use, it is the canonical source
-            # for the current model. Environment variables may be stale if the
-            # model was switched via /model or Web UI without restarting gateway.
-            try:
-                _default_models = get_default_models()
-                if _default_models:
-                    _current = _default_models[0]
-                    _mcc = _current.get("model_client_config") or {}
-                    _model_overrides = {
-                        "model": _mcc.get("model_name"),
-                        "model_provider": _mcc.get("client_provider"),
-                        "api_base": _mcc.get("api_base"),
-                        "api_key": _mcc.get("api_key"),
-                    }
-                    for _k, _v in _model_overrides.items():
-                        if _v:
-                            payload[_k] = str(_v)
-            except Exception as e:
-                logger.warning("[config.get] Failed to resolve default model config: %s", e)
-
-            # Resolve multimodal model configs (vision, video, audio)
-            _multimodal_sections = {
-                "vision": {
-                    "vision_model": "model_name",
-                    "vision_provider": "client_provider",
-                    "vision_api_base": "api_base",
-                    "vision_api_key": "api_key",
-                },
-                "video": {
-                    "video_model": "model_name",
-                    "video_provider": "client_provider",
-                    "video_api_base": "api_base",
-                    "video_api_key": "api_key",
-                },
-                "audio": {
-                    "audio_model": "model_name",
-                    "audio_provider": "client_provider",
-                    "audio_api_base": "api_base",
-                    "audio_api_key": "api_key",
-                },
-            }
-            for _section_name, _key_map in _multimodal_sections.items():
-                try:
-                    _section = (raw.get("models") or {}).get(_section_name)
-                    if isinstance(_section, dict):
-                        _smcc = _section.get("model_client_config") or {}
-                        for _pk, _yk in _key_map.items():
-                            if not payload.get(_pk):
-                                _resolved = resolve_env_vars(str(_smcc.get(_yk, ""))) if _smcc.get(_yk) else ""
-                                if _resolved:
-                                    payload[_pk] = _resolved
-                except Exception as e:
-                    logger.warning("[config.get] Failed to resolve %s model config: %s", _section_name, e)
-        except Exception:
-            payload.setdefault("auto_recap_enabled", "true")
-            payload.setdefault("context_engine_enabled", "false")
-            payload.setdefault("permissions_enabled", "false")
-            payload.setdefault("memory_forbidden_enabled", "false")
-            payload.setdefault("preferred_language", "zh")
-            payload.setdefault("skill_evolution", "false")
-        
-        # Auto-Harness config values (from ~/.jiuwenswarm/auto-harness/config.yaml)
-        # 合并显示：用户名、邮箱、Access Token 三项
-        try:
-            ah_config = _get_auto_harness_config()
-            git_cfg = ah_config.get("git") or {}
-            gitcode_cfg = ah_config.get("gitcode") or {}
-            payload["auto_harness_git_user_name"] = git_cfg.get("user_name") or ""
-            payload["auto_harness_git_user_email"] = git_cfg.get("user_email") or ""
-            # Check env var first for access_token
-            ah_token = os.getenv("GITCODE_ACCESS_TOKEN") or gitcode_cfg.get("access_token") or ""
-            payload["auto_harness_gitcode_access_token"] = ah_token
-        except Exception:
-            payload.setdefault("auto_harness_git_user_name", "")
-            payload.setdefault("auto_harness_git_user_email", "")
-            payload.setdefault("auto_harness_gitcode_access_token", "")
-
-        payload["schema"] = _build_config_schema()
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
+        """config.get 实现已下沉 ``common.config_panel.tui_models_handlers``。"""
+        await tui_models_handlers.config_get_handler(
+            channel, ws, req_id, params, session_id
+        )
 
     async def _config_set(ws, req_id, params, session_id):
         """config.set 实现已下沉 ``common.config_panel.tui_models_handlers``。"""
@@ -767,7 +529,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     async def _config_validate_model(ws, req_id, params, session_id):
         """config.validate_model 实现已下沉（TUI 契约与 Web 侧分模块保留）。"""
         await tui_models_handlers.config_validate_model_handler(
-            channel, ws, req_id, params, session_id
+            channel, ws, req_id, params
         )
 
     async def _session_list(ws, req_id, params, session_id, user_id=None):

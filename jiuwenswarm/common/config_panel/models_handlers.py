@@ -517,7 +517,6 @@ async def config_validate_model_handler(
     ws: Any,
     req_id: Any,
     params: Any,
-    session_id: Any,
     max_tokens_bounds: dict[str, Any] | None = None,
 ) -> None:
     """Send a minimal chat completion (user message "Hi") using draft default-model fields.
@@ -891,11 +890,11 @@ def register_models_handlers(
     """
 
     async def _config_validate_model(ws, req_id, params, session_id):
-        await config_validate_model_handler(channel, ws, req_id, params, session_id)
+        await config_validate_model_handler(channel, ws, req_id, params)
 
     async def _models_validate(ws, req_id, params, session_id):
         """测试指定模型配置是否可用（复用 config.validate_model 逻辑）。"""
-        await config_validate_model_handler(channel, ws, req_id, params, session_id)
+        await config_validate_model_handler(channel, ws, req_id, params)
 
     async def _models_list(ws, req_id, params, session_id):
         await models_list_handler(channel, ws, req_id, params, session_id)

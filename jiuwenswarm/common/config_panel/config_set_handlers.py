@@ -84,7 +84,12 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     set_default_model_provider_in_entries,
 )
 from jiuwenswarm.common.utils import get_env_file
-from jiuwenswarm.server.runtime.a2ui.integration import validate_a2ui_config_update
+from jiuwenswarm.common.version import __version__
+from jiuwenswarm.server.runtime.a2ui.integration import (
+    get_a2ui_config_payload,
+    get_default_a2ui_config_payload,
+    validate_a2ui_config_update,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1370,6 +1375,115 @@ async def apply_config_change_set(
 # --------------------------------------------------------------------------- #
 # handler 实现（channel 语义与 app_web_handlers 原实现一致）
 # --------------------------------------------------------------------------- #
+async def config_get_handler(
+    channel: Any,
+    ws: Any,
+    req_id: Any,
+    params: Any,
+    session_id: Any,
+) -> None:
+    """返回 CONFIG_SET_ENV_MAP 里所有键对应的环境变量当前值（Web 契约）。"""
+    payload = {
+        param_key: (os.getenv(env_key) or "")
+        for param_key, env_key in CONFIG_SET_ENV_MAP.items()
+    }
+    payload["app_version"] = __version__
+    runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
+    payload["runtime_platform"] = runtime_platform
+    payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
+    # 合并 config.yaml 中的配置项
+    try:
+        raw = get_config_raw()
+        setup_guide_cfg = raw.get("setup_guide") or {}
+        payload["setup_guide_enabled"] = (
+            "true" if setup_guide_cfg.get("enabled", True) else "false"
+        )
+        rsi_cfg = raw.get("rsi") or {}
+        payload["rsi_enabled"] = "true" if rsi_cfg.get("enabled", True) else "false"
+        crypto_provider = _get_crypto_provider()
+        if crypto_provider is not None:
+            for key, val in list(payload.items()):
+                if "api_key" in key.lower() or "token" in key.lower():
+                    payload[key] = crypto_provider.decrypt(val)
+        react_cfg = raw.get("react") or {}
+        ctx_cfg = react_cfg.get("context_engine_config") or {}
+        payload["context_engine_enabled"] = "true" if ctx_cfg.get("enabled", False) else "false"
+        payload["kv_cache_affinity_enabled"] = (
+            "true" if is_affinity_enabled(raw) else "false"
+        )
+        perm_cfg = raw.get("permissions") or {}
+        payload.update(canonical_permission_facade(permission_profile(perm_cfg)))
+        # Skill evolution is controlled solely by the canonical nested YAML key.
+        evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
+        payload["skill_evolution"] = "true" if evolution_cfg.get("skill_evolution", False) else "false"
+        memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
+        payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
+        memory_desc = memory_cfg.get("description") or {}
+        payload["memory_forbidden_description"] = memory_desc
+        payload.update(get_a2ui_config_payload(raw))
+        trajectory_cfg = raw.get("trajectory_ui") or {}
+        payload["trajectory_ui_enabled"] = (
+            "true" if trajectory_cfg.get("enabled", False) else "false"
+        )
+        experimental_cfg = raw.get("experimental") or {}
+        payload["task_full_duplex_enabled"] = (
+            "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
+        )
+        payload["task_asr_enabled"] = (
+            "true" if experimental_cfg.get("task_asr_enabled", False) else "false"
+        )
+        payload.update(flatten_swarmflow_for_config_panel(raw))
+        payload.update(flatten_external_cli_agents_for_config_panel(raw))
+        payload.update(flatten_symphony_for_config_panel(raw))
+        if not payload.get("free_search_ddg_enabled"):
+            payload["free_search_ddg_enabled"] = "false"
+        if not payload.get("free_search_bing_enabled"):
+            payload["free_search_bing_enabled"] = "false"
+        payload.update(flatten_modes_team_for_config_panel(raw))
+        # Proactive recommendation — use resolved config (env vars expanded)
+        resolved = get_config()
+        proactive_cfg = resolved.get("proactive_recommendation") or {}
+        payload["proactive_recommendation_enabled"] = "true" if proactive_cfg.get("enabled", False) else "false"
+        payload["proactive_recommendation_max_recommend_per_day"] = str(
+            proactive_cfg.get("max_recommend_per_day", 10))
+        payload["proactive_recommendation_max_rounds_per_tick"] = str(
+            proactive_cfg.get("max_rounds_per_tick", 20))
+        models_cfg = resolved.get("models") or {}
+        payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
+    except Exception:  # noqa: BLE001
+        payload.setdefault("context_engine_enabled", "false")
+        payload.setdefault("kv_cache_affinity_enabled", "false")
+        payload.setdefault("permissions_enabled", "false")
+        payload.setdefault("rsi_enabled", "true")
+        payload.setdefault("permissions_profile", "full_access")
+        payload.setdefault("setup_guide_enabled", "true")
+        payload.setdefault("skill_evolution", "false")
+        payload.setdefault("memory_forbidden_enabled", "false")
+        payload.setdefault("memory_forbidden_description", "")
+        payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")
+        for key, value in get_default_a2ui_config_payload().items():
+            payload.setdefault(key, value)
+        payload.setdefault("trajectory_ui_enabled", "false")
+        payload.setdefault("task_full_duplex_enabled", "false")
+        payload.setdefault("task_asr_enabled", "false")
+        for key, (_, value_type, default) in {
+            **SYMPHONY_CONFIG_SPECS,
+            **SKILL_RETRIEVAL_CONFIG_SPECS,
+        }.items():
+            if value_type == "bool":
+                default_text = "true" if default else "false"
+            else:
+                default_text = str(default)
+            payload.setdefault(key, default_text)
+        payload.setdefault("free_search_ddg_enabled", "false")
+        payload.setdefault("free_search_bing_enabled", "false")
+        payload.setdefault("proactive_recommendation_enabled", "false")
+        payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
+        payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
+        payload.setdefault("enable_free_models", "false")
+    await channel.send_response(ws, req_id, ok=True, payload=payload)
+
+
 async def config_set_handler(
     channel: Any,
     ws: Any,
@@ -1609,6 +1723,9 @@ def register_config_set_handlers(
     包装；ConfigAdapter 直接本地执行。两侧注册入口各自调用本函数。
     """
 
+    async def _config_get(ws, req_id, params, session_id):
+        await config_get_handler(channel, ws, req_id, params, session_id)
+
     async def _config_set(ws, req_id, params, session_id):
         await config_set_handler(
             channel, ws, req_id, params, session_id,
@@ -1627,5 +1744,6 @@ def register_config_set_handlers(
             ensure_claude_dependency=ensure_claude_dependency,
         )
 
+    channel.register_method("config.get", _config_get)
     channel.register_method("config.set", _config_set)
     channel.register_method("config.save_all", _config_save_all)

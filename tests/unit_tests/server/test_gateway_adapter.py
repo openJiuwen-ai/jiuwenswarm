@@ -1171,20 +1171,15 @@ async def test_config_adapter_command_model_forces_local_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The AgentServer-side command must not proxy to Gateway a second time."""
-    from jiuwenswarm.gateway.channel_manager.tui import tui_connect
+    from jiuwenswarm.common.config_panel import tui_models_handlers
 
-    def fake_register(bind) -> None:
-        assert bind.force_local_config is True
+    async def fake_handler(channel, ws, req_id, params, session_id, **kwargs):
+        _ = (params, session_id, kwargs)
+        await channel.send_response(
+            ws, req_id, ok=True, payload={"type": "switched", "current": "m1"}
+        )
 
-        async def handler(ws, req_id, params, session_id):
-            _ = (params, session_id)
-            await bind.channel.send_response(
-                ws, req_id, ok=True, payload={"type": "switched", "current": "m1"}
-            )
-
-        bind.channel.register_local_handler("/tui", ReqMethod.COMMAND_MODEL.value, handler)
-
-    monkeypatch.setattr(tui_connect, "register_cli_handlers", fake_register)
+    monkeypatch.setattr(tui_models_handlers, "command_model_handler", fake_handler)
 
     response = await ConfigAdapter().handle(
         _request(ReqMethod.COMMAND_MODEL, {"model": "m1"}, channel_id="tui")

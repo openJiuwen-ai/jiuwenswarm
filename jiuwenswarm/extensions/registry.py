@@ -38,17 +38,16 @@ class _RegistryCryptoBridge:
     扩展（未就绪时原样返回/由调用方回退原文），与原 ``sys.modules`` 软查找的
     惰性语义一致。
     """
-
-    def _provider(self) -> CryptoProvider | None:
-        ext = ExtensionRegistry.get_instance()._crypto_tool
-        return ext.get_crypto() if ext is not None else None
-
-    def encrypt(self, plaintext: str, **kwargs) -> str:
-        provider = self._provider()
+    @staticmethod
+    def encrypt(plaintext: str, **kwargs) -> str:
+        ext = ExtensionRegistry.get_instance().get_crypto_utility_extension()
+        provider = ext.get_crypto() if ext is not None else None
         return provider.encrypt(plaintext, **kwargs) if provider is not None else plaintext
 
-    def decrypt(self, ciphertext: str, **kwargs) -> str:
-        provider = self._provider()
+    @staticmethod
+    def decrypt(ciphertext: str, **kwargs) -> str:
+        ext = ExtensionRegistry.get_instance().get_crypto_utility_extension()
+        provider = ext.get_crypto() if ext is not None else None
         return provider.decrypt(ciphertext, **kwargs) if provider is not None else ciphertext
 
 
