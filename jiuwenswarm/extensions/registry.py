@@ -18,8 +18,8 @@ if TYPE_CHECKING:
         ApplicationPluginExtension,
     )
     from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
-    from jiuwenswarm.gateway import AgentServerClient
-    from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
+    from jiuwenswarm.common.client.agent_client import AgentServerClient
+    from jiuwenswarm.common.client.third_agent import ThirdAgent
 else:
     # Keep runtime type-hint introspection valid without importing Gateway and
     # transport adapters into a Runtime-direct process.
@@ -38,17 +38,16 @@ class _RegistryCryptoBridge:
     扩展（未就绪时原样返回/由调用方回退原文），与原 ``sys.modules`` 软查找的
     惰性语义一致。
     """
-
-    def _provider(self) -> CryptoProvider | None:
-        ext = ExtensionRegistry.get_instance()._crypto_tool
-        return ext.get_crypto() if ext is not None else None
-
-    def encrypt(self, plaintext: str, **kwargs) -> str:
-        provider = self._provider()
+    @staticmethod
+    def encrypt(plaintext: str, **kwargs) -> str:
+        ext = ExtensionRegistry.get_instance().get_crypto_utility_extension()
+        provider = ext.get_crypto() if ext is not None else None
         return provider.encrypt(plaintext, **kwargs) if provider is not None else plaintext
 
-    def decrypt(self, ciphertext: str, **kwargs) -> str:
-        provider = self._provider()
+    @staticmethod
+    def decrypt(ciphertext: str, **kwargs) -> str:
+        ext = ExtensionRegistry.get_instance().get_crypto_utility_extension()
+        provider = ext.get_crypto() if ext is not None else None
         return provider.decrypt(ciphertext, **kwargs) if provider is not None else ciphertext
 
 

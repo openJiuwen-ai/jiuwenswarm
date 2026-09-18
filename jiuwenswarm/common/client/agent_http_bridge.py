@@ -1,12 +1,17 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
-"""Web 进程侧的 AgentServer HTTP bridge 基址解析（gateway 拆分本地副本）。
+"""目标 AgentServer 的受认证 HTTP bridge 基址解析与上传执行。
 
-原实现位于 ``jiuwenswarm.gateway.routing.agent_http_bridge``，为 Web 静态服务
-（``app_web``）提供统一的下载/上传基址推导。gateway 拆分后 Web 进程不再
-import gateway 模块，此处保留纯静态解析逻辑的本地副本（允许临时重复）：
-- 环境变量优先级、端口推导规则与 gateway 侧保持一致；
-- ``set_agent_http_base_resolver`` 扩展点按进程独立注册（Web 进程经
-  ``app_web`` re-export，gateway 进程走 gateway 仓自己的副本）。
+下载端点由 AgentServer 在 WS 端口上拦截（``agent_ws_server._process_request``）。
+上传端点在 AgentOS 部署时由路由/扩展层注入 ``JIUWENSWARM_AGENT_UPLOAD_HTTP_BASE``
+环境变量提供；单机模式下 AgentServer 不启动独立 HTTP 上传监听器，``media.persist``
+大图在 Gateway 侧直接写入共享用户目录。
+
+本模块为**保留侧多个调用方**（Web 静态服务 ``channels/web/app_web``）提供基址解析与
+上传执行，避免各处重复推导。E2A 分片上传变体（``upload_file_bytes_via_e2a``）依赖
+Gateway 的 E2A 路由，留在 ``jiuwenswarm/gateway/routing/agent_http_bridge.py``。
+
+传输取舍：大文件走受认证 HTTP bridge（Gateway 仅鉴权转发、不落盘），避免大 base64
+帧压垮 Gateway ↔ AgentServer 内部 WebSocket（``AGENT_WS_MAX_MESSAGE_BYTES`` 帧限制）；
+小附件与文本内容走 E2A。
 """
 
 from __future__ import annotations
@@ -18,14 +23,18 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+#: 上传 HTTP 请求超时（秒）。大附件可达数十 MB，放宽到 300s。
+UPLOAD_TIMEOUT_SECONDS = 300
+
 
 def resolve_agent_host_port() -> tuple[str, str, str]:
-    """返回 (http_scheme, host, ws_port)，与 AgentServer WS 地址解析一致。
+    """返回 (http_scheme, host, ws_port)，与 Gateway WS 客户端地址解析一致。
 
-    AgentServer 地址优先级为 ``AGENT_SERVER_URL`` 优先于
-    ``AGENT_SERVER_HOST`` + ``AGENT_SERVER_PORT``。下载端点由 AgentServer 在
-    WS 端口上拦截（``agent_ws_server._process_request``），因此下载 HTTP 基址
-    应与 WS 地址同 host/port，仅把 ``ws``/``wss`` 换成 ``http``/``https``。
+    Gateway 的 AgentServer 地址优先级为 ``AGENT_SERVER_URL`` 优先于
+    ``AGENT_SERVER_HOST`` + ``AGENT_SERVER_PORT``（见 app_gateway 的
+    ``agent_server_url`` 推导）。下载端点由 AgentServer 在 WS 端口上拦截
+    （``agent_ws_server._process_request``），因此下载 HTTP 基址应与 WS 地址
+    同 host/port，仅把 ``ws``/``wss`` 换成 ``http``/``https``。
     """
     url = os.getenv("AGENT_SERVER_URL")
     if url:
@@ -131,8 +140,71 @@ def resolve_agent_http_base_for_token(token: str, *, endpoint: str) -> str:
             except TypeError:
                 base = resolver(payload)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[agent_http_base] agent http base resolver failed: %s", exc)
+            logger.warning("[agent_http_bridge] agent http base resolver failed: %s", exc)
             base = None
         if base:
             return str(base).rstrip("/")
     return ""
+
+
+def upload_file_bytes(content: bytes, target_rel_path: str) -> tuple[bool, dict[str, Any]]:
+    """把文件字节经受认证 HTTP bridge 上传到目标 AgentServer，返回 ``(ok, payload)``。
+
+    - ``target_rel_path`` 为相对用户目录根的目标路径（如
+      ``agent/workspace/feishu_files/downloads/images/a.png``），与
+      ``generate_file_upload_token`` 的 payload 语义一致；
+    - AgentServer 校验 token 后按注入目录落盘并做目录边界校验；本函数不落盘
+      Gateway 本地；
+    - 失败返回 ``(False, {error, code})``，调用方按可重试错误处理，不做本地
+      fallback 落盘。
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+    from urllib.parse import quote
+
+    from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+        generate_file_upload_token,
+    )
+
+    token = generate_file_upload_token(str(target_rel_path))
+    base = (
+        resolve_agent_http_base_for_token(token, endpoint="upload")
+        or resolve_agent_upload_base()
+    )
+    url = f"{base}/file-api/upload?token={quote(token, safe='')}"
+    req = urllib.request.Request(
+        url,
+        data=content,
+        method="POST",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(len(content)),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=UPLOAD_TIMEOUT_SECONDS) as upstream:  # noqa: S310
+            status = int(getattr(upstream, "status", 200))
+            raw = upstream.read()
+    except urllib.error.HTTPError as exc:
+        raw = b""
+        try:
+            raw = exc.read()
+        except Exception:  # noqa: BLE001
+            raw = b""
+        message = raw.decode("utf-8", errors="replace").strip() or f"upload failed: {exc.code}"
+        return False, {"error": message, "code": "UPLOAD_FAILED"}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[agent_http_bridge] upload 转发失败: %s", exc)
+        return False, {"error": str(exc), "code": "SERVICE_UNAVAILABLE"}
+
+    if status != 200:
+        message = raw.decode("utf-8", errors="replace").strip() or f"upload failed: {status}"
+        return False, {"error": message, "code": "UPLOAD_FAILED"}
+    try:
+        payload = _json.loads(raw.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return False, {"error": "invalid upload response", "code": "UPLOAD_FAILED"}
+    if not isinstance(payload, dict) or not str(payload.get("path") or "").strip():
+        return False, {"error": "upload response missing path", "code": "UPLOAD_FAILED"}
+    return True, payload
