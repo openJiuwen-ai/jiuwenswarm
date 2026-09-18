@@ -24,11 +24,11 @@ test('completed tasks show full progress even when they finish before the iterat
   assert.equal(taskProgressPercent('RUNNING', 6, 5), 100);
 });
 
-test('score gains are absolute differences in the displayed score scale', () => {
-  assert.deepEqual(formatGain(1 - 0.6), { text: '0.4 ↑', kind: 'up' });
-  assert.deepEqual(formatGain(0.4 - 0), { text: '0.4 ↑', kind: 'up' });
-  assert.deepEqual(formatGain(0.6 - 1), { text: '0.4 ↓', kind: 'down' });
-  assert.deepEqual(formatGain(1 - 0.6, 'PROGRAM'), { text: '40.0 ↑', kind: 'up' });
+test('score gains display the absolute normalized difference as a percentage', () => {
+  assert.deepEqual(formatGain(1 - 0.6), { text: '40% ↑', kind: 'up' });
+  assert.deepEqual(formatGain(0.4 - 0), { text: '40% ↑', kind: 'up' });
+  assert.deepEqual(formatGain(0.6 - 1), { text: '40% ↓', kind: 'down' });
+  assert.deepEqual(formatGain(0.123), { text: '12.3% ↑', kind: 'up' });
   for (const value of [null, NaN, 0]) {
     assert.deepEqual(formatGain(value), { text: '', kind: 'none' });
   }

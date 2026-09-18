@@ -77,7 +77,7 @@ export function RsiSelectedInfo({ taskId }: RsiSelectedInfoProps) {
           })
         : changes.map((change) => ({ text: nodeChangeDisplayLabel(change), inherited: false }));
 
-  const scoreDelta = formatGain(presentation.scoreDelta, task.artifact_type);
+  const scoreDelta = formatGain(presentation.scoreDelta);
 
   return (
     <>

@@ -30,7 +30,7 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
   const score = liveProgress?.score ?? task.progress?.score ?? report?.best_score ?? null;
   const baseline = liveProgress?.baseline ?? task.progress?.baseline ?? report?.baseline ?? null;
   const gain = score != null && baseline != null ? score - baseline : null;
-  const gainFmt = formatGain(gain, task.artifact_type);
+  const gainFmt = formatGain(gain);
   const bestArtifactId = task.best_artifact?.artifact_id ?? report?.best_artifact?.artifact_id ?? null;
   const bestNode =
     tree?.nodes.find((node) => bestArtifactId != null && node.snapshot_artifact_id === bestArtifactId) ??
