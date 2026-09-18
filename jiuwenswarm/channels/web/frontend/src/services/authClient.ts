@@ -29,9 +29,18 @@ export interface AuthorizeResponse {
   expiresIn?: number;
 }
 
+/**
+ * 活动状态，决定界面显示什么对应：`campaign_state`：
+ * `active` 正常；`ended` 活动已结束；`unavailable` 拉不到配置；
+ * `off` 本地关掉了，什么都不显示。老版本 Gateway 不返回这个字段。
+ */
+export type CampaignState = 'active' | 'ended' | 'unavailable' | 'off';
+
 export interface AuthStatus {
   islogin: boolean;
   enabled: boolean;
+  state?: CampaignState;
+  accountCenterUrl?: string;
   provider?: string;
   userId?: string | null;
   userName?: string | null;
@@ -162,6 +171,18 @@ export async function cancelLogin(state: string, claimToken: string): Promise<vo
   } catch {
     /* 见上 */
   }
+}
+
+export function openExternal(url: string): Window | null {
+  const opened = window.open(url, '_blank');
+  if (opened) {
+    try {
+      opened.opener = null;
+    } catch {
+      /* 个别 WebView 不允许改写 */
+    }
+  }
+  return opened;
 }
 
 /** 查询当前登录状态。后端未开启登录时返回 `enabled: false`。 */

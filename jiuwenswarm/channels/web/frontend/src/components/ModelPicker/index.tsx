@@ -2,6 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSPropert
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
+import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import { requestLogin } from '../../stores/authStore';
 import { useFreeModelsCampaign } from '../../features/free-models/campaign';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -30,7 +31,7 @@ export default function ModelPicker({
 }: ModelPickerProps): JSX.Element {
   const { t } = useTranslation();
   const models = useSessionStore((state) => state.chatAvailableModels);
-  const campaignActive = useFreeModelsCampaign();
+  const campaign = useFreeModelsCampaign();
   const { tooltip, handlers } = useAdaptiveTooltip();
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties | null>(null);
@@ -46,7 +47,7 @@ export default function ModelPicker({
     },
     { id: 'free', label: t('chat.modelSelector.free'), models: freeModels },
   ];
-  const showFreeModelsCta = campaignActive && freeModels.length === 0;
+  const showFreeModelsCta = freeModels.length === 0 && campaign.state !== 'off';
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -181,7 +182,8 @@ export default function ModelPicker({
                       data-testid={`${testIdPrefix}-free-cta`}
                       onClick={() => {
                         setOpen(false);
-                        requestLogin();
+                        if (campaign.state === 'active') requestLogin();
+                        else requestSettingsModule('models');
                       }}
                     >
                       <span className="model-select__free-cta-main">

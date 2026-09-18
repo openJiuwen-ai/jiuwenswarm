@@ -24,6 +24,7 @@ from jiuwenswarm.common.auth.account_kit import (
     STATE_TTL_S,
     AccountKitFlow,
     OAuthError,
+    campaign_state,
     login_enabled,
     mask,
 )
@@ -216,7 +217,12 @@ class AuthService:
         return self._store.get(session_id)
 
     def status(self, session_id: str | None = None) -> dict[str, Any]:
-        base: dict[str, Any] = {"enabled": self.enabled, "provider": "huawei-account"}
+        base: dict[str, Any] = {
+            "enabled": self.enabled,
+            "provider": "huawei-account",
+            "state": campaign_state(),
+            "accountCenterUrl": self._flow.config.account_center_url,
+        }
         session = self.resolve_session(session_id)
         if session is None:
             return {**base, "islogin": False, "userId": None}

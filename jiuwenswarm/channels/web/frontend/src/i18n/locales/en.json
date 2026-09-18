@@ -71,7 +71,9 @@
       "quotaTitle": "Free credits",
       "quotaLoggedOut": "Sign in to view",
       "signedIn": "Signed in",
-      "loggedInDescription": "Limited-time free models are now available in the chat model dropdown"
+      "loggedInDescription": "Limited-time free models are now available in the chat model dropdown",
+      "endedTitle": "Campaign ended",
+      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part."
     },
     "categories": {
       "general": "General",
@@ -3778,6 +3780,10 @@
       "login": "Sign in",
       "loggingIn": "Signing in…",
       "logout": "Sign out",
+      "switchAccount": "Switch account",
+      "switchSignOutHint": "You are still signed in to your Huawei account in the browser, so the previous account would be used again. We opened your Huawei account page — sign out there, then come back and continue.",
+      "switchContinue": "Signed out, continue",
+      "switchSameAccount": "Still the same account. Sign out of your Huawei account in the browser, then switch again.",
       "cancel": "Cancel",
       "close": "Close",
       "done": "Done",

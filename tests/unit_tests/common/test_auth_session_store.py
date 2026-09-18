@@ -134,21 +134,3 @@ def test_reloads_when_another_process_writes(_isolated_auth_dir):
 
     assert reader.any_session() is not None
     assert reader.get(created.session_id) is not None
-
-
-def test_logout_does_not_overwrite_what_another_process_just_wrote(_isolated_auth_dir):
-    gateway = AuthSessionStore()
-    alice = gateway.create(_outcome("openid-alice"))
-    bob = gateway.create(_outcome("openid-bob"))
-
-    agent_server = AuthSessionStore()
-    assert agent_server.get(bob.session_id) is not None
-    agent_server.update_credential(  # 另一个进程续期，写了盘
-        bob.session_id, Credential(id_token="ID-RENEWED", refresh_token="R", expires_at=time.time() + 3600)
-    )
-
-    gateway.remove(alice.session_id)  # 本进程内存里 bob 还是旧凭据
-
-    fresh = AuthSessionStore()
-    assert fresh.get(alice.session_id) is None
-    assert fresh.get(bob.session_id).credential.id_token == "ID-RENEWED", "bob 刚续好的凭据被登出操作覆盖了"

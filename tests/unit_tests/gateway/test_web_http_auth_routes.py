@@ -188,6 +188,20 @@ def test_status_without_session_is_logged_out(client):
     assert fresh_client.get("/api/v1/auth/status").json()["islogin"] is False
 
 
+def test_status_reports_the_campaign_state(client):
+    body = client.get("/api/v1/auth/status").json()
+    assert body["enabled"] is True and body["state"] == "active"
+    assert body["accountCenterUrl"] == account_kit.DEFAULT_ACCOUNT_CENTER_URL
+
+
+def test_status_reports_a_finished_campaign(client):
+    from jiuwenswarm.common.auth import remote_config
+
+    remote_config.set_config_for_test(remote_config.parse_config({"is_effective": False}))
+    body = client.get("/api/v1/auth/status").json()
+    assert body["enabled"] is False and body["state"] == "ended"
+
+
 def test_wrong_claim_token_is_rejected_without_burning_the_login(client):
     started = _authorize(client)
     _callback(client, started["state"], code="c")
