@@ -367,6 +367,12 @@ class TestCronLastSessionId:
 
         assert info["run_id"].startswith(f"{job.id}:")
         assert info["session_id"] == "cron_agentserver_allocated"
+        # 执行会话创建即带任务名标题；否则 run 在首条用户消息落盘前失败/被
+        # 跳过会永久空标题，前端显示「未命名对话」。
+        create_env = next(
+            env for env in agent.unary_requests if env.method == "session.create"
+        )
+        assert create_env.params["title"] == job.name
         state = svc.runs[info["run_id"]]
         assert state.exec_session_id == info["session_id"]
         assert state.exec_user_id == "run-now-owner"
