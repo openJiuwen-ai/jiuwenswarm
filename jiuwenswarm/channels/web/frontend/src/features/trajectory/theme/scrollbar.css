@@ -1,0 +1,107 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
+
+/* Scrollbar skin: the sole consumer of the four --dsw-alias-scrollbar-*
+ * tokens. Without it every scrolling region renders the UA scrollbar, which
+ * ignores the theme — a light native bar over the dark palette.
+ *
+ * The migrated rules sit on the trajectory host and its portal surface.
+ * design-platform.css declares the --dsw-alias-* tokens on those same scoped
+ * roots, so custom properties never alter unrelated JiuwenSwarm surfaces.
+ *
+ * Surfaces pick their elevation by rebinding --dsh-scrollbar-thumb{,-hover}:
+ * the l1 pair here is the base-surface default, and an elevated surface
+ * (menu, popover, dialog) rebinds to the l2 pair on its own container. Both
+ * rendering paths below read the indirection, so one rebind reaches whichever
+ * path the engine took. */
+
+.jiuwenTrajectoryTheme,
+.jiuwenTrajectoryPortal {
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l1);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l1);
+  /* The WebKit bar's layout width, mirrored by the ::-webkit-scrollbar rule
+     below. A surface that must align itself beside a space-consuming bar
+     (ConversationRoot's overlay composer seat) reads this instead of
+     hardcoding the number. */
+  --dsh-scrollbar-width: 8px;
+}
+
+/* The two paths are mutually exclusive, and the gate is load-bearing rather
+   than defensive. A non-`auto` `scrollbar-width` or `scrollbar-color` makes
+   Chromium and Safari drop every `::-webkit-scrollbar*` rule for that
+   element, including `::-webkit-scrollbar-thumb:hover` — measured in chromium
+   as an 8px `::-webkit-scrollbar` width taking effect on its own and being
+   ignored as soon as `scrollbar-width: thin` is added. Declaring both
+   unconditionally therefore leaves the hover tokens with no rendering at all,
+   because the engines that implement the hover pseudo-element are exactly the
+   ones the standard properties silence, and Firefox has no hover
+   pseudo-element to fall back on.
+
+   `not selector(::-webkit-scrollbar)` is true only where the pseudo-element
+   is unimplemented, so Firefox takes the standard path and WebKit-based
+   engines take the pseudo-element path. An engine too old for the
+   `selector()` function makes the condition invalid, which evaluates false
+   and selects the pseudo-element path — the correct side for the pre-16.4
+   Safari that is the realistic case. */
+@supports not selector(::-webkit-scrollbar) {
+  /* Declared on every element rather than inherited from the host. Inheriting
+     would pass down the COLOUR already substituted at the host, so a descendant
+     rebinding --dsh-scrollbar-thumb could not change it; re-declaring makes
+     each element substitute the variable as it sees it, which is what gives
+     an elevated surface a working rebind. `scrollbar-width` is not an
+     inherited property at all, so it needs the per-element declaration
+     regardless.
+
+     No hover counterpart exists on this path: `scrollbar-color` states one
+     thumb colour and the engine derives its own hover treatment. */
+  .jiuwenTrajectoryTheme,
+  .jiuwenTrajectoryTheme *,
+  .jiuwenTrajectoryPortal,
+  .jiuwenTrajectoryPortal * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--dsh-scrollbar-thumb) transparent;
+  }
+}
+
+/* Not gated in turn: an engine that does not implement these pseudo-elements
+   drops the rules as unknown selectors, so the gate would only restate what
+   selector matching already does. The selectors remain explicitly scoped. */
+.jiuwenTrajectoryTheme::-webkit-scrollbar,
+.jiuwenTrajectoryTheme *::-webkit-scrollbar,
+.jiuwenTrajectoryPortal::-webkit-scrollbar,
+.jiuwenTrajectoryPortal *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+/* Track stays transparent so the thumb reads against whatever surface scrolls
+   under it; only the thumb carries a token colour. */
+.jiuwenTrajectoryTheme::-webkit-scrollbar-track,
+.jiuwenTrajectoryTheme *::-webkit-scrollbar-track,
+.jiuwenTrajectoryPortal::-webkit-scrollbar-track,
+.jiuwenTrajectoryPortal *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.jiuwenTrajectoryTheme::-webkit-scrollbar-thumb,
+.jiuwenTrajectoryTheme *::-webkit-scrollbar-thumb,
+.jiuwenTrajectoryPortal::-webkit-scrollbar-thumb,
+.jiuwenTrajectoryPortal *::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--dsh-scrollbar-thumb);
+}
+
+.jiuwenTrajectoryTheme::-webkit-scrollbar-thumb:hover,
+.jiuwenTrajectoryTheme *::-webkit-scrollbar-thumb:hover,
+.jiuwenTrajectoryPortal::-webkit-scrollbar-thumb:hover,
+.jiuwenTrajectoryPortal *::-webkit-scrollbar-thumb:hover {
+  background: var(--dsh-scrollbar-thumb-hover);
+}
+
+/* Both scrollbars meeting in a corner: no separate token, so the corner
+   matches the transparent track rather than the UA's opaque default. */
+.jiuwenTrajectoryTheme::-webkit-scrollbar-corner,
+.jiuwenTrajectoryTheme *::-webkit-scrollbar-corner,
+.jiuwenTrajectoryPortal::-webkit-scrollbar-corner,
+.jiuwenTrajectoryPortal *::-webkit-scrollbar-corner {
+  background: transparent;
+}

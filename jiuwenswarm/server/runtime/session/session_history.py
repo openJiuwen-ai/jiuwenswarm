@@ -1109,6 +1109,7 @@ def append_history_record(
     mode: str | None = None,
     sessions_root: str | Path | None = None,
     task_id: str | None = None,
+    subagent_id: str | None = None,
 ) -> None:
     """向指定 session 的 history.json 追加一条 JSONL 记录（可合并事件先缓冲）。"""
     sid = (session_id or "default").strip() or "default"
@@ -1143,6 +1144,8 @@ def append_history_record(
         item["event_type"] = event_type
     if task_id:
         item["task_id"] = task_id
+    if subagent_id:
+        item["subagent_id"] = subagent_id
     if isinstance(extra, dict) and extra:
         serialized_extra, extra_changed = _serialize_value_with_flag(extra)
         if isinstance(serialized_extra, dict):
@@ -1197,7 +1200,10 @@ def append_history_record(
             user_content=content_text if role_norm == "user" else None,
             # 传入渠道元数据,首次写入时持久化
             channel_metadata=channel_metadata,
-            mode=mode,
+            # A subagent record carries its own history mode, but it belongs
+            # to the parent product Session and must not replace that Session's
+            # routing mode with the internal ``subagent`` label.
+            mode=None if subagent_id else mode,
             # 用户消息时刷新 last_user_message_at(用消息时间戳,比请求到达时刻更精确;
             # 与 AgentServer 的 _sync_chat_request_metadata 互补,覆盖所有记录用户消息的路径)
             last_user_message_at=float(timestamp) if role_norm == "user" else None,

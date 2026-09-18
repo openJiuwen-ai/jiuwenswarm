@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.foundation.tool import ToolCard
+from openjiuwen.extensions.observability.demand import (
+    get_trajectory_span_processor,
+)
 from openjiuwen.harness.rails import (
     SysOperationRail,
     HeartbeatRail,
@@ -38,9 +41,6 @@ from jiuwenswarm.common.config import (
     get_evolution_review_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
-)
-from jiuwenswarm.agents.harness.observability_runtime import (
-    get_trajectory_span_processor,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (

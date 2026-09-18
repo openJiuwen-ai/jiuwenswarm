@@ -316,7 +316,7 @@ async def test_agentserver_injects_provider_and_registers_callbacks(
     env = _install_runtime_fakes(monkeypatch)
     trajectory_processor = Mock(name="trajectory_span_processor")
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         Mock(return_value=trajectory_processor),
     )
     runtime = TelemetryRuntime()

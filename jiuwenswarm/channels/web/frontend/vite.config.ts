@@ -455,6 +455,10 @@ export default defineConfig({
         target: webHttpTarget,
         changeOrigin: true,
       },
+      '/api/trajectory': {
+        target: webHttpTarget,
+        changeOrigin: true,
+      },
       '/api': {
         target: webTarget,
         changeOrigin: true,

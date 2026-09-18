@@ -27,6 +27,7 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
+from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.utils import get_config_file, mask_sensitive
 from jiuwenswarm.common.version import __version__
@@ -405,24 +406,48 @@ async def handle_command_chrome(ctx: RequestContext) -> None:
 
 
 async def handle_command_compact(ctx: RequestContext) -> None:
+    from openjiuwen.harness.observability import close_agent_run_span, open_agent_run_span
+    from jiuwenswarm.agents.harness.agent_observability import sync_agent_observability
+
     request = ctx.request
+    run_span = None
     try:
         session_id = request.session_id or "default"
         params = request.params or {}
 
         channel_id = request.channel_id or "default"
-        mode, sub_mode, _ = resolve_agent_request_mode(params.get("mode", "agent"))
+        mode, sub_mode, canonical_mode = resolve_agent_request_mode(params.get("mode", "agent"))
         agent_mode = "agent" if mode == "auto_harness" else mode
-        agent = await ctx.services.agent_manager.get_agent(
-            channel_id=channel_id,
-            mode=agent_mode,
-            project_dir=resolve_request_project_dir(request),
-            sub_mode=sub_mode,
+        agent = ctx.services.agent_manager.get_agent_for_session_nowait(
+            channel_id, session_id
         )
+        if agent is None:
+            agent = await ctx.services.agent_manager.get_agent(
+                channel_id=channel_id,
+                mode=agent_mode,
+                project_dir=resolve_request_project_dir(request),
+                sub_mode=sub_mode,
+            )
 
         if agent is None:
             raise ValueError("Failed to get agent")
 
+        await agent.ensure_instance()
+        await asyncio.to_thread(sync_agent_observability)
+        execution_subject = None
+        if is_team_mode(canonical_mode):
+            from jiuwenswarm.agents.harness.team import get_team_manager
+
+            team_agent = get_team_manager(channel_id).get_team_agent(session_id)
+            if team_agent is not None:
+                execution_subject = team_agent.observability_execution_subject(session_id)
+        run_span = open_agent_run_span(
+            session_id=session_id,
+            mode=params.get("mode", "agent"),
+            request_id=request.request_id,
+            run_id=request.request_id,
+            execution_subject=execution_subject,
+        )
         result_data = await agent.compress_context(session_id=session_id, return_state=True)
 
         result = result_data.get("result")
@@ -508,6 +533,8 @@ async def handle_command_compact(ctx: RequestContext) -> None:
             ok=False,
             payload={"error": str(e)},
         )
+    finally:
+        close_agent_run_span(run_span, session_id=request.session_id or "default")
     wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
     await ctx.sink.send_wire(wire)
 

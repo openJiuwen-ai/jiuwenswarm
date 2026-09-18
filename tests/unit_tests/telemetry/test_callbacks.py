@@ -28,6 +28,7 @@ from openjiuwen.agent_teams.observability import (
     init_observability,
     shutdown_observability,
 )
+from openjiuwen.extensions.observability.setup import get_observability_runtime
 from openjiuwen.agent_teams.observability.span_context import (
     clear_team_span,
     set_current_agent_span,
@@ -540,9 +541,12 @@ async def test_real_model_decorators_normalize_positional_input_and_llm_output_o
     assert attrs["gen_ai.decision.type"] == "tool_call"
     assert attrs["gen_ai.decision.tool_names"] == ("weather",)
     assert "observable answer" in attrs["gen_ai.output.messages"]
-    assert "observable reasoning" in attrs["gen_ai.output.messages"]
-    assert "call-weather" in attrs["gen_ai.output.messages"]
-    assert 'city\\":\\"Paris' in attrs["gen_ai.output.messages"]
+    reasoning_spans = [
+        span for span in telemetry_env.exporter.get_finished_spans()
+        if span.name == "llm.reasoning"
+    ]
+    assert len(reasoning_spans) == 1
+    assert "observable reasoning" in reasoning_spans[0].attributes["gen_ai.output.messages"]
     assert attrs["gen_ai.usage.cache_read.input_tokens"] == 3
     assert attrs["gen_ai.usage.cache_creation.input_tokens"] == 2
     assert attrs["gen_ai.usage.cache_read_tokens"] == 3
@@ -892,7 +896,7 @@ async def test_enterprise_metric_labels_filter_empty_values_and_provider_is_unkn
 
 
 @pytest.mark.asyncio
-async def test_message_policy_keeps_shape_without_content_and_redacts_separately(
+async def test_host_message_policy_does_not_disable_sdk_trajectory_content(
     telemetry_env: SimpleNamespace,
 ) -> None:
     telemetry_env.callbacks._config = TelemetryConfig(
@@ -920,8 +924,10 @@ async def test_message_policy_keeps_shape_without_content_and_redacts_separately
     ][0]
     assert finished.attributes["gen_ai.input.messages.count"] == 1
     assert finished.attributes["gen_ai.input.messages.total_length"] == 13
-    assert "gen_ai.input.messages" not in finished.attributes
-    assert "gen_ai.output.messages" not in finished.attributes
+    # Develop's SDK owns the trajectory payload. The host-only
+    # telemetry.log_messages switch does not suppress SDK span content.
+    assert "prompt-secret" in finished.attributes["gen_ai.input.messages"]
+    assert "completion-visible" in finished.attributes["gen_ai.output.messages"]
     assert not any(
         event.name.startswith("gen_ai.user.message") for event in finished.events
     )
@@ -973,7 +979,7 @@ async def test_tool_and_skill_metrics_use_call_identity_and_cleanup(
     assert span.attributes["gen_ai.skill.id"] == "skill-1"
     assert span.attributes["gen_ai.skill.version"] == "v2"
     assert span.attributes["gen_ai.span.type"] == "tool"
-    assert span.attributes["gen_ai.operation.name"] == "load_skill"
+    assert span.attributes["gen_ai.operation.name"] == "execute_tool"
     assert any(event.name == "skill.loaded" for event in span.events)
     assert len(_metric_points(telemetry_env.reader, "gen_ai.tool.call.count")) == 1
     assert len(_metric_points(telemetry_env.reader, "gen_ai.tool.duration")) == 1
@@ -1034,16 +1040,15 @@ async def test_tool_and_skill_metrics_use_call_identity_and_cleanup(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("tool_name", "operation", "event_name"),
+    ("tool_name", "event_name"),
     [
-        ("skill_tool", "load_skill", "skill.loaded"),
-        ("skill_complete", "release_skill", "skill.released"),
+        ("skill_tool", "skill.loaded"),
+        ("skill_complete", "skill.released"),
     ],
 )
 async def test_real_tool_wrapper_enriches_skill_output_without_result_identity(
     telemetry_env: SimpleNamespace,
     tool_name: str,
-    operation: str,
     event_name: str,
 ) -> None:
     tool = _RealSkillLifecycleTool(tool_name)
@@ -1069,7 +1074,9 @@ async def test_real_tool_wrapper_enriches_skill_output_without_result_identity(
     assert span.attributes["gen_ai.skill.name"] == "forecast"
     assert span.attributes["gen_ai.skill.id"] == "skill-forecast"
     assert span.attributes["gen_ai.skill.version"] == "v2"
-    assert span.attributes["gen_ai.operation.name"] == operation
+    # Develop's SDK owns the generic operation name. Skill-specific semantics
+    # remain available through gen_ai.skill.* and the lifecycle event.
+    assert span.attributes["gen_ai.operation.name"] == "execute_tool"
     assert [event.name for event in span.events].count(event_name) == 1
     assert len(_metric_points(telemetry_env.reader, "gen_ai.skill.call.count")) == (
         1 if tool_name == "skill_tool" else 0
@@ -1485,8 +1492,8 @@ async def test_agent_and_common_attributes_and_parent_token_totals(
 @pytest.mark.parametrize(
     ("redact_prompts", "redact_completions", "input_expected", "output_expected"),
     [
-        (True, False, "[REDACTED]", "completion-secret"),
-        (False, True, "prompt-secret", "[REDACTED]"),
+        (True, False, "sha256:", "completion-secret"),
+        (False, True, "prompt-secret", "sha256:"),
     ],
 )
 async def test_prompt_and_completion_redaction_are_independent(
@@ -1501,6 +1508,17 @@ async def test_prompt_and_completion_redaction_are_independent(
         log_messages=True,
         redact_prompts=redact_prompts,
         redact_completions=redact_completions,
+    )
+    # The SDK owns the span payload on develop; keep its policy in sync with
+    # the host callback policy that this test changes after fixture setup.
+    sdk_runtime = get_observability_runtime()
+    sdk_handler = sdk_runtime._callback_handler
+    assert sdk_handler is not None
+    sdk_handler._config = sdk_handler._config.model_copy(
+        update={
+            "redact_prompts": redact_prompts,
+            "redact_completions": redact_completions,
+        }
     )
     await telemetry_env.framework.trigger(
         LLMCallEvents.LLM_INVOKE_INPUT,
@@ -1537,7 +1555,8 @@ async def test_prompt_and_completion_redaction_are_independent(
         event for event in span.events if event.name == "gen_ai.assistant.message"
     ]
     assert len(assistant_events) == 1
-    assert output_expected in assistant_events[0].attributes["content"]
+    event_expected = "[REDACTED]" if redact_completions else output_expected
+    assert event_expected in assistant_events[0].attributes["content"]
 
 
 @pytest.mark.asyncio
@@ -1549,6 +1568,12 @@ async def test_completion_redaction_hides_tool_call_arguments(
         log_messages=True,
         redact_completions=True,
         attribute_value_max_length=256,
+    )
+    sdk_runtime = get_observability_runtime()
+    sdk_handler = sdk_runtime._callback_handler
+    assert sdk_handler is not None
+    sdk_handler._config = sdk_handler._config.model_copy(
+        update={"redact_completions": True}
     )
     await telemetry_env.framework.trigger(
         LLMCallEvents.LLM_STREAM_INPUT,
@@ -1581,14 +1606,15 @@ async def test_completion_redaction_hides_tool_call_arguments(
     assert "completion-secret" not in output
     assert "reasoning-secret" not in output
     assert "super-secret" not in output
-    assert "private_tool" in output
-    assert "[REDACTED]" in output
+    # The SDK's structured output keeps the redacted answer in this field;
+    # tool-call metadata is recorded separately, not embedded in the answer.
+    assert "sha256:" in output
     assistant_events = [
         event for event in span.events if event.name == "gen_ai.assistant.message"
     ]
     assert len(assistant_events) == 1
     event_content = assistant_events[0].attributes["content"]
-    assert event_content == output
+    assert "[REDACTED]" in event_content
     assert len(event_content) <= 256
     assert "completion-secret" not in event_content
     assert "reasoning-secret" not in event_content
@@ -1739,7 +1765,7 @@ async def test_skill_release_sets_enterprise_operation_aliases(
         if item.name == "tool.skill_complete"
     ][0]
     assert span.attributes["gen_ai.span.type"] == "tool"
-    assert span.attributes["gen_ai.operation.name"] == "release_skill"
+    assert span.attributes["gen_ai.operation.name"] == "execute_tool"
     assert span.attributes["gen_ai.skill.name"] == "forecast"
     assert any(event.name == "skill.released" for event in span.events)
     assert not _metric_points(telemetry_env.reader, "gen_ai.skill.duration")
@@ -2120,10 +2146,9 @@ async def test_llm_output_field_failure_preserves_remaining_enrichment_and_metri
     assistant_events = [
         event for event in span.events if event.name == "gen_ai.assistant.message"
     ]
-    if failure_point == "serializer":
-        assert output_messages is None
-    else:
-        assert "world" in output_messages
+    # Even if the host serializer failed, develop's SDK still records its
+    # independently owned structured output on the same span.
+    assert "world" in output_messages
     assert assistant_events == []
     assert (
         len(_metric_points(telemetry_env.reader, "gen_ai.client.operation.count")) == 1

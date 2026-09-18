@@ -560,6 +560,108 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
     ("raw_config", "expected"),
     [
         ({}, "false"),
+        ({"trajectory_ui": {"enabled": True}}, "true"),
+        ({"trajectory_ui": {"enabled": False}}, "false"),
+    ],
+)
+async def test_config_get_returns_trajectory_ui_switch(monkeypatch, raw_config, expected):
+    channel = FakeWebChannel()
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](
+        object(),
+        "req-get-trajectory-ui",
+        {},
+        "sess-get-trajectory-ui",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["trajectory_ui_enabled"] == expected
+
+
+@pytest.mark.asyncio
+async def test_config_set_persists_trajectory_ui_without_runtime_reload(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    reload_options_seen: list[dict] = []
+
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {})
+    monkeypatch.setattr(
+        app_web_handlers,
+        "update_trajectory_ui_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+
+    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
+        del updated_keys, env_updates, config_payload
+        reload_options_seen.append(dict(reload_options))
+        return True
+
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, on_config_saved=on_config_saved)
+    )
+
+    await channel.methods["config.set"](
+        object(),
+        "req-trajectory-ui",
+        {"trajectory_ui_enabled": "true"},
+        "sess-trajectory-ui",
+    )
+
+    assert persisted == [True]
+    assert reload_options_seen == [{
+        "target_channel_id": "web",
+        "reload_scopes": ["web_ui"],
+    }]
+    assert channel.responses[-1]["payload"] == {
+        "updated": ["trajectory_ui_enabled"],
+        "applied_without_restart": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_config_save_all_persists_trajectory_ui(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {})
+    monkeypatch.setattr(
+        app_web_handlers,
+        "update_trajectory_ui_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+
+    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
+        del updated_keys, env_updates, config_payload
+        assert reload_options == {
+            "target_channel_id": "web",
+            "reload_scopes": ["web_ui"],
+        }
+        return True
+
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, on_config_saved=on_config_saved)
+    )
+    await channel.methods["config.save_all"](
+        object(),
+        "req-trajectory-ui-all",
+        {"config": {"trajectory_ui_enabled": "true"}},
+        "sess-trajectory-ui-all",
+    )
+
+    assert persisted == [True]
+    assert channel.responses[-1]["ok"] is True
+    assert "trajectory_ui_enabled" in channel.responses[-1]["payload"]["updated"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_config", "expected"),
+    [
+        ({}, "false"),
         ({"react": {"evolution": {"enabled": True}}}, "true"),
         ({"react": {"evolution": {"enabled": False}}}, "false"),
         ({"evolution": {"enabled": True}}, "true"),

@@ -1,0 +1,106 @@
+[
+  {
+    "resourceSpans": [
+      {
+        "resource": {
+          "attributes": [
+            { "key": "service.name", "value": { "stringValue": "jiuwenswarm" } }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": { "name": "openjiuwen.observability", "version": "1" },
+            "spans": [
+              {
+                "traceId": "11111111111111111111111111111111",
+                "spanId": "1111111111111111",
+                "name": "chat",
+                "kind": 3,
+                "startTimeUnixNano": "1000000000",
+                "endTimeUnixNano": "2000000000",
+                "attributes": [
+                  { "key": "gen_ai.conversation.id", "value": { "stringValue": "session-standard" } },
+                  { "key": "session.id", "value": { "stringValue": "session-legacy-conflict" } },
+                  { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+                  { "key": "gen_ai.provider.name", "value": { "stringValue": "fixture-provider" } },
+                  { "key": "gen_ai.request.model", "value": { "stringValue": "fixture-model" } },
+                  { "key": "gen_ai.system_instructions", "value": { "stringValue": "[{\"type\":\"text\",\"content\":\"standard system\"}]" } },
+                  { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"standard user\"}]}]" } },
+                  { "key": "gen_ai.prompt.0.role", "value": { "stringValue": "user" } },
+                  { "key": "gen_ai.prompt.0.content", "value": { "stringValue": "legacy input conflict" } },
+                  { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"reasoning\",\"content\":\"standard reasoning\"},{\"type\":\"text\",\"content\":\"standard answer\"},{\"type\":\"tool_call\",\"id\":\"call-standard\",\"name\":\"lookup\",\"arguments\":{\"query\":\"x\"}}]}]" } },
+                  { "key": "gen_ai.completion.0.role", "value": { "stringValue": "assistant" } },
+                  { "key": "gen_ai.completion.0.content", "value": { "stringValue": "legacy output conflict" } },
+                  { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [{ "stringValue": "stop" }] } } },
+                  { "key": "gen_ai.response.time_to_first_chunk", "value": { "doubleValue": 0 } },
+                  { "key": "gen_ai.response.time_to_first_token_ms", "value": { "doubleValue": 900 } },
+                  { "key": "gen_ai.usage.input_tokens", "value": { "intValue": "0" } },
+                  { "key": "gen_ai.usage.prompt_tokens", "value": { "intValue": "99" } },
+                  { "key": "gen_ai.usage.output_tokens", "value": { "intValue": "5" } },
+                  { "key": "gen_ai.usage.reasoning.output_tokens", "value": { "intValue": "2" } },
+                  { "key": "gen_ai.usage.cache_read.input_tokens", "value": { "intValue": "0" } },
+                  { "key": "dsh.session.source_sequence", "value": { "intValue": "0" } },
+                  { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+                  { "key": "dsh.turn.number", "value": { "intValue": "9" } },
+                  { "key": "openjiuwen.step.number", "value": { "intValue": "1" } },
+                  { "key": "dsh.step.number", "value": { "intValue": "9" } },
+                  { "key": "openjiuwen.request.number", "value": { "intValue": "1" } },
+                  { "key": "dsh.request.retry_count", "value": { "intValue": "0" } },
+                  { "key": "dsh.request.max_retries", "value": { "intValue": "0" } },
+                  { "key": "openjiuwen.request.purpose", "value": { "stringValue": "assistant" } },
+                  { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+                ],
+                "events": [
+                  {
+                    "timeUnixNano": "1500000000",
+                    "name": "openjiuwen.stream.chunk",
+                    "attributes": [
+                      { "key": "openjiuwen.event.sequence", "value": { "intValue": "0" } },
+                      { "key": "openjiuwen.stream.kind", "value": { "stringValue": "text-delta" } },
+                      { "key": "openjiuwen.stream.text", "value": { "stringValue": "standard answer" } }
+                    ]
+                  }
+                ],
+                "status": { "code": 1 }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "resourceSpans": [
+      {
+        "scopeSpans": [
+          {
+            "spans": [
+              {
+                "traceId": "11111111111111111111111111111111",
+                "spanId": "2222222222222222",
+                "parentSpanId": "1111111111111111",
+                "name": "tool.lookup",
+                "startTimeUnixNano": "2100000000",
+                "endTimeUnixNano": "2300000000",
+                "attributes": [
+                  { "key": "gen_ai.operation.name", "value": { "stringValue": "execute_tool" } },
+                  { "key": "gen_ai.tool.name", "value": { "stringValue": "lookup" } },
+                  { "key": "gen_ai.tool.call.id", "value": { "stringValue": "call-standard" } },
+                  { "key": "gen_ai.tool.id", "value": { "stringValue": "call-legacy-conflict" } },
+                  { "key": "gen_ai.tool.call.arguments", "value": { "stringValue": "{\"query\":\"x\"}" } },
+                  { "key": "gen_ai.tool.input", "value": { "stringValue": "{\"query\":\"legacy-conflict\"}" } },
+                  { "key": "gen_ai.tool.call.result", "value": { "stringValue": "{\"result\":\"y\"}" } },
+                  { "key": "gen_ai.tool.output", "value": { "stringValue": "{\"result\":\"legacy-conflict\"}" } },
+                  { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+                  { "key": "openjiuwen.step.number", "value": { "intValue": "1" } },
+                  { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "tool" } }
+                ],
+                "status": { "code": 1 }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

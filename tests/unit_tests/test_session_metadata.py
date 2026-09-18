@@ -2098,6 +2098,68 @@ class TestLazyMigrationOnRead:
         assert "last_user_message_at" in data
 
     @staticmethod
+    def test_repairs_subagent_mode_leaked_into_web_parent(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_CACHE,
+            get_session_metadata,
+        )
+
+        session_dir = sessions_dir / "web_parent"
+        session_dir.mkdir()
+        (session_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "web_parent",
+                    "channel_id": "web",
+                    "mode": "subagent",
+                    "team_name": "",
+                    "work_mode": "work",
+                }
+            ),
+            encoding="utf-8",
+        )
+        _METADATA_CACHE.pop("web_parent", None)
+
+        metadata = get_session_metadata(
+            "web_parent",
+            cache_bust=True,
+            enable_writeback=False,
+        )
+
+        assert metadata["mode"] == "agent.work.normal"
+
+    @staticmethod
+    def test_keeps_standalone_subagent_channel_mode(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_CACHE,
+            get_session_metadata,
+        )
+
+        session_dir = sessions_dir / "subagent_session"
+        session_dir.mkdir()
+        (session_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "subagent_session",
+                    "channel_id": "subagent",
+                    "mode": "subagent",
+                    "team_name": "",
+                    "work_mode": "work",
+                }
+            ),
+            encoding="utf-8",
+        )
+        _METADATA_CACHE.pop("subagent_session", None)
+
+        metadata = get_session_metadata(
+            "subagent_session",
+            cache_bust=True,
+            enable_writeback=False,
+        )
+
+        assert metadata["mode"] == "subagent"
+
+    @staticmethod
     def test_last_user_message_at_uses_last_message_at_when_present(sessions_dir):
         """有 last_message_at 时优先用它，不被 or 短路跳过 0.0。"""
         from jiuwenswarm.server.runtime.session.session_metadata import (
