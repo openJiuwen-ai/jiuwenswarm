@@ -462,7 +462,7 @@ function MemberOverviewPanel({
       >
         {members.length === 0 ? (
           <div className="py-12 text-center text-sm text-text-muted" data-testid="team-area-member-overview-empty">
-            {t('team.noMemberData')}
+            {t('team.noMembers')}
           </div>
         ) : (
           <div className="flex flex-col gap-4" data-testid="team-area-member-overview-grid">
