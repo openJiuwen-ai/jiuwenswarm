@@ -1,0 +1,59 @@
+rules:
+  - id: no-except-pass
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Silent exception swallow. Log the exception (with traceback via
+      logger.exception / exc_info=True) and re-raise or convert to a typed
+      JiuwenError subclass (jiuwenswarm.common.errors).
+    pattern-either:
+      - pattern: |
+          try:
+              ...
+          except $EXC:
+              pass
+      - pattern: |
+          try:
+              ...
+          except $EXC as $E:
+              pass
+      - pattern: |
+          try:
+              ...
+          except $EXC:
+              continue
+      - pattern: |
+          try:
+              ...
+          except $EXC as $E:
+              continue
+
+  - id: broad-except-outside-boundary
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Broad `except Exception` outside a designated boundary. Catch specific
+      exception types, or raise/convert to a typed JiuwenError subclass. Broad
+      catches are allowed only in the boundary files listed in this rule's
+      exclude list (agent step executor, gateway/a2a handlers, scheduler).
+    pattern-either:
+      - pattern: |
+          try:
+              ...
+          except Exception:
+              ...
+      - pattern: |
+          try:
+              ...
+          except Exception as $E:
+              ...
+    paths:
+      exclude:
+        # Designated boundaries: broad catch is legal here (log + convert + re-raise).
+        - jiuwenswarm/server/runtime/agent_adapter/interface.py
+        - jiuwenswarm/gateway/app_gateway.py
+        - jiuwenswarm/gateway/channel_manager/protocol/a2a/a2a_connect.py
+        - jiuwenswarm/agents/harness/common/auto_harness/scheduler.py
+        # Telemetry helper must never propagate.
+        - jiuwenswarm/common/errors.py
+        - tests/**
