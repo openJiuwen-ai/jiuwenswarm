@@ -11710,6 +11710,76 @@ class JiuWenSwarmDeepAdapter:
                 session_id, request_id, exc,
             )
 
+    def _snapshot_context_message_count(self, session_id: str) -> int | None:
+        """Return live context message count before this request mutates it."""
+        try:
+            if self._instance is None:
+                return None
+            react_agent = getattr(self._instance, "react_agent", None)
+            if react_agent is None:
+                return None
+            context_engine = getattr(react_agent, "context_engine", None)
+            if context_engine is None:
+                return None
+            ctx = context_engine.get_context(session_id=session_id)
+            if ctx is None:
+                return 0
+            return len(list(ctx.get_messages() or []))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[SENSITIVE-CTX] snapshot message count failed: session_id=%s error=%s",
+                session_id,
+                exc,
+            )
+            return None
+
+    async def _rollback_sensitive_turn_before_checkpoint(
+        self,
+        session_id: str,
+        request_id: str,
+        before_count: int,
+    ) -> bool:
+        """Drop this turn's poisoned tool tail before STREAM-CTX commit.
+
+        Keeps prior successful turns in the live context/checkpointer so the
+        user can retry in the same session instead of abandoning it.
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.sensitive_input_guard import (
+            rollback_context_to_message_count,
+        )
+
+        try:
+            if self._instance is None:
+                return False
+            react_agent = getattr(self._instance, "react_agent", None)
+            if react_agent is None:
+                return False
+            context_engine = getattr(react_agent, "context_engine", None)
+            if context_engine is None:
+                return False
+            ctx = context_engine.get_context(session_id=session_id)
+            if ctx is None:
+                return False
+            popped = rollback_context_to_message_count(ctx, before_count=before_count)
+            logger.info(
+                "[SENSITIVE-CTX] rolled back poisoned turn before checkpoint: "
+                "session_id=%s request_id=%s before_count=%s popped=%s",
+                session_id,
+                request_id,
+                before_count,
+                popped,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[SENSITIVE-CTX] rollback before checkpoint failed: "
+                "session_id=%s request_id=%s error=%s",
+                session_id,
+                request_id,
+                exc,
+            )
+            return False
+
     def _init_skill_turbo_tool(self) -> None:
         """Initialize skill_turbo tool for SkillTurbo integration."""
         if self._instance is None:
@@ -18395,6 +18465,25 @@ class JiuWenSwarmDeepAdapter:
         interaction_stream_abort = True
         perf_summary_status = "ok"
         hitl_pending_stream = False
+        # Sensitive-input (ModelArts.81011) recovery: snapshot before send_input,
+        # capture chat.error text, then roll back poisoned tool tail before checkpoint.
+        context_msg_count_before: int | None = None
+        last_stream_error_text = ""
+        emitted_chat_error = False
+        run_failure: tuple[str, str] | None = None
+
+        def note_stream_error(payload: dict[str, Any] | str | None = None) -> None:
+            nonlocal emitted_chat_error, last_stream_error_text
+            emitted_chat_error = True
+            if isinstance(payload, dict):
+                text = str(payload.get("error") or payload.get("content") or "")
+            elif payload is None:
+                text = ""
+            else:
+                text = str(payload)
+            if text.strip():
+                last_stream_error_text = text
+
         try:
             self._runtime_cron_tool_context.remember_current_binding()
             token_cid = TOOL_PERMISSION_CHANNEL_ID.set((request.channel_id or "").strip())
@@ -18808,6 +18897,9 @@ class JiuWenSwarmDeepAdapter:
                     (time.monotonic() - stream_impl_started_at) * 1000,
                     preview_text(inputs.get("query", "")),
                 )
+                # Snapshot before send_input so a mid-turn ModelArts.81011 failure
+                # can pop this turn's user/tool messages before STREAM-CTX commit.
+                context_msg_count_before = self._snapshot_context_message_count(session_id)
                 await self._instance.send_input(
                     SendInputRequest(
                         request_id=rid,
@@ -18815,8 +18907,6 @@ class JiuWenSwarmDeepAdapter:
                         mode=self._resolve_input_dispatch_mode(request.params),
                     )
                 )
-            run_failure: tuple[str, str] | None = None
-            emitted_chat_error = False
             # HITL 暂停标志：本轮有 ask_user 卡片发出时置位，收尾据此发
             # chat.invocation_paused 终结帧（而非普通完成帧），避免前端把"等待用户
             # 输入"误判为"任务完成"。镜像 vendor(clowder-ai) 的 _detect_hitl_pause。
@@ -18916,7 +19006,7 @@ class JiuWenSwarmDeepAdapter:
                         if parsed.get("event_type") == "chat.final":
                             self._stream_content_run_kind = None
                         if parsed.get("event_type") == "chat.error":
-                            emitted_chat_error = True
+                            note_stream_error(parsed)
                         yield AgentResponseChunk(
                             request_id=rid,
                             channel_id=cid,
@@ -19079,7 +19169,7 @@ class JiuWenSwarmDeepAdapter:
                             if parsed.get("event_type") == "chat.final":
                                 self._stream_content_run_kind = None
                             if parsed.get("event_type") == "chat.error":
-                                emitted_chat_error = True
+                                note_stream_error(parsed)
                             yield AgentResponseChunk(
                                 request_id=rid,
                                 channel_id=cid,
@@ -19119,7 +19209,7 @@ class JiuWenSwarmDeepAdapter:
                         if parsed.get("event_type") == "chat.final":
                             self._stream_content_run_kind = None
                         if parsed.get("event_type") == "chat.error":
-                            emitted_chat_error = True
+                            note_stream_error(parsed)
                         yield AgentResponseChunk(
                             request_id=rid,
                             channel_id=cid,
@@ -19190,7 +19280,7 @@ class JiuWenSwarmDeepAdapter:
                     if parsed.get("event_type") == "chat.final":
                         self._stream_content_run_kind = None
                     if parsed.get("event_type") == "chat.error":
-                        emitted_chat_error = True
+                        note_stream_error(parsed)
                     yield AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
@@ -19213,7 +19303,7 @@ class JiuWenSwarmDeepAdapter:
                     }),
                     is_complete=False,
                 )
-                emitted_chat_error = True
+                note_stream_error(error_message)
 
             # 守卫用 suppress_stream_after_hitl（当前是否处于 HITL 抑制中）：
             # ask_user 暂停中为 True 跳过；in-place 续跑后为 False 放行（此时
@@ -19351,6 +19441,7 @@ class JiuWenSwarmDeepAdapter:
                 session_id,
                 reason="task_error",
             )
+            note_stream_error(str(exc))
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
@@ -19515,6 +19606,21 @@ class JiuWenSwarmDeepAdapter:
             # 等非 cron 普通会话。失败不阻断清理（仅记 cleanup_error），对齐周围姿势。
             if initialization_complete:
                 try:
+                    from jiuwenswarm.server.runtime.agent_adapter.sensitive_input_guard import (
+                        is_content_policy_error,
+                    )
+                    sensitive_hit = is_content_policy_error(last_stream_error_text)
+                    if not sensitive_hit and run_failure is not None:
+                        sensitive_hit = is_content_policy_error(run_failure[1])
+                    if (
+                        sensitive_hit
+                        and context_msg_count_before is not None
+                    ):
+                        await self._rollback_sensitive_turn_before_checkpoint(
+                            session_id,
+                            rid,
+                            context_msg_count_before,
+                        )
                     await self._persist_session_checkpoint(session_id, rid)
                 except BaseException as exc:
                     if cleanup_error is None:
