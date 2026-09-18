@@ -886,6 +886,15 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
+  # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
+  # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
+  circuit_breaker:
+    enabled: false
+    warning_threshold: 10
+    critical_threshold: 20
+    global_breaker_threshold: 30
+    unknown_tool_threshold: 10
 
 # Agent RAS 整体配置
 agent_ras:

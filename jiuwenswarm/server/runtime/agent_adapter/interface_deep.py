@@ -276,6 +276,10 @@ from jiuwenswarm.agents.harness.common.tools.todo_compat import (
 from jiuwenswarm.common.openjiuwen_rail_compat import install_evolution_rail_kwargs_compat
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import build_agent_identity_prompt
 from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
+from jiuwenswarm.agents.harness.common.rails.execution_guard import (
+    CircuitBreakerConfig,
+    CircuitBreakerRail,
+)
 from jiuwenswarm.agents.harness.common.rails import (
     DeepResearchExecutionRail,
     JiuSwarmStreamEventRail,
@@ -2345,6 +2349,7 @@ class JiuWenSwarmDeepAdapter:
         # 延时重索引任务（debounce）：连续改多次 embedding 只在最后一次后跑一次。
         self._memory_reindex_task: asyncio.Task | None = None
         self._llm_retry_rail: LLMRetryRail | None = None
+        self._circuit_breaker_rail: CircuitBreakerRail | None = None
         self._heartbeat_rail: HeartbeatRail | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
@@ -3010,6 +3015,17 @@ class JiuWenSwarmDeepAdapter:
                         "[JiuWenSwarmDeepAdapter] cleanup_session(%s) failed: %s",
                         sid, exc,
                     )
+            if cleanup_rail:
+                circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
+                if circuit_breaker_rail is not None:
+                    try:
+                        circuit_breaker_rail.cleanup_session(sid)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] circuit_breaker cleanup_session(%s) failed: %s",
+                            sid,
+                            exc,
+                        )
         else:
             self._active_session_ids[sid] = count - 1
 
@@ -8505,6 +8521,38 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] LLMRetryRail create failed: %s", exc)
             return None
 
+    def _build_circuit_breaker_rail(self) -> CircuitBreakerRail | None:
+        """Build develop's loop-detection rail. Default off; dest-stable RAS stays on."""
+        try:
+            guard_cfg = (get_config() or {}).get("execution_guard") or {}
+            cb_cfg = guard_cfg.get("circuit_breaker") if isinstance(guard_cfg, dict) else {}
+            if not isinstance(cb_cfg, dict):
+                cb_cfg = {}
+            if cb_cfg.get("enabled", False) is not True:
+                logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail disabled by config")
+                return None
+            defaults = CircuitBreakerConfig()
+            config = CircuitBreakerConfig(
+                warning_threshold=cb_cfg.get(
+                    "warning_threshold", defaults.warning_threshold
+                ),
+                critical_threshold=cb_cfg.get(
+                    "critical_threshold", defaults.critical_threshold
+                ),
+                global_breaker_threshold=cb_cfg.get(
+                    "global_breaker_threshold", defaults.global_breaker_threshold
+                ),
+                unknown_tool_threshold=cb_cfg.get(
+                    "unknown_tool_threshold", defaults.unknown_tool_threshold
+                ),
+            )
+            rail = CircuitBreakerRail(config, language=self._resolve_runtime_language())
+            logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
+            return None
+
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
         try:
@@ -8846,6 +8894,7 @@ class JiuWenSwarmDeepAdapter:
                 self._build_llm_retry_rail,
                 {"config_base": config_base},
             ),
+            _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_subagent_rail", self._build_subagent_rail),
             _RailBuildInfo(
@@ -11371,6 +11420,9 @@ class JiuWenSwarmDeepAdapter:
         )
         stage_timer.mark("cwd_seed")
 
+        circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
+        if circuit_breaker_rail is not None:
+            circuit_breaker_rail.set_language(resolved_language)
         if self._runtime_prompt_rail:
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
