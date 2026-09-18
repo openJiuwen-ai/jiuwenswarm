@@ -14331,6 +14331,30 @@ class JiuWenSwarmDeepAdapter:
             params
         )
 
+    def _should_steal_output_lease(self, params: Any, *, req_method: Any = None) -> bool:
+        """Whether a fresh chat.send may take over another host's output lease.
+
+        Exclusive attach is correct for Goal attach, steer/follow_up, HITL
+        resume, proactive recommendation, and team turns. Ordinary user turns
+        must steal so a second Gateway replica can replace an in-flight stream
+        instead of returning runtime.accepted and ending the frontend SSE.
+        """
+        method = getattr(req_method, "value", req_method)
+        if str(method or "") == "command.goal":
+            return False
+        if self._should_inject_into_existing_interaction(params):
+            return False
+        if self._wants_attach_goal(params):
+            return False
+        if not isinstance(params, dict):
+            return True
+        if str(params.get("source") or "").strip() == "proactive_recommendation":
+            return False
+        mode = str(params.get("mode") or "").strip().lower()
+        if mode in {"team", "code.team", "team.plan"}:
+            return False
+        return True
+
     @staticmethod
     def _structured_goal_op_from_request(
         request: AgentRequest,
@@ -17927,7 +17951,13 @@ class JiuWenSwarmDeepAdapter:
                     )
                 )
             else:
-                interaction_stream = await self._instance.attach_output()
+                steal_output = self._should_steal_output_lease(
+                    request.params, req_method=request.req_method
+                )
+                if steal_output:
+                    interaction_stream = await self._instance.attach_output(steal=True)
+                else:
+                    interaction_stream = await self._instance.attach_output()
                 if interaction_stream is not None:
                     await self._instance.send_input(
                         SendInputRequest(
@@ -19206,7 +19236,13 @@ class JiuWenSwarmDeepAdapter:
                     interaction_stream_abort = False
                     return
             else:
-                interaction_stream = await self._instance.attach_output()
+                steal_output = self._should_steal_output_lease(
+                    request.params, req_method=request.req_method
+                )
+                if steal_output:
+                    interaction_stream = await self._instance.attach_output(steal=True)
+                else:
+                    interaction_stream = await self._instance.attach_output()
                 if interaction_stream is None:
                     async for chunk in _yield_runtime_accepted():
                         yield chunk

@@ -524,7 +524,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         description: value.description.trim(),
         cron_expr: value.cronExpr.trim(),
         timezone: value.timezone,
-        targets: value.targets.trim() || 'web',
+        targets: isEnterprise() ? 'web' : value.targets.trim() || 'web',
         enabled: value.enabled,
         wake_offset_seconds: normalizeWakeOffsetSeconds(value.wakeOffsetSeconds),
         // 始终显式带上 project_dir（未选项目传空串），不能省略这个 key——后端
@@ -580,7 +580,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             description: value.description.trim(),
             cron_expr: value.cronExpr.trim(),
             timezone: value.timezone,
-            targets: value.targets.trim() || 'web',
+            targets: isEnterprise() ? 'web' : value.targets.trim() || 'web',
             enabled: value.enabled,
             wake_offset_seconds: normalizeWakeOffsetSeconds(value.wakeOffsetSeconds),
             // 企业版不支持用户选择模型，不提交 model_name（同 handleCreateSubmit）。
