@@ -61,7 +61,7 @@ export function GroupCatalogPage({
   const { t } = useTranslation();
   const isMine = scope === 'mine';
   const isEmpty = status === 'success' && totalItems === 0;
-  const hasQuery = query.trim().length > 0 || Boolean(category) || (scope === 'catalog' && installation !== 'all');
+  const hasQuery = query.trim().length > 0 || Boolean(category) || installation !== 'all';
 
   return (
     <>

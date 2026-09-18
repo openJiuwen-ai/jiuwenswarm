@@ -62,6 +62,22 @@ test('Expert Team plaza filters installed state before pagination', () => {
   assert.equal(installed.page, 1);
 });
 
+test('My Expert Teams filters install state before pagination', () => {
+  const items = [
+    { id: 'local-installed', source: 'local', installed: true, category: '', tags: [], name: 'local-installed', displayName: 'Local installed', description: '' },
+    { id: 'local-pending', source: 'local', installed: false, category: '', tags: [], name: 'local-pending', displayName: 'Local pending', description: '' },
+    { id: 'hub-installed', source: 'hub', installed: true, category: '', tags: [], name: 'hub-installed', displayName: 'Hub installed', description: '' },
+  ];
+  const options = { scope: 'mine', category: '', query: '', page: 2, pageSize: 1 };
+  const installed = buildGroupCatalogViewModel(items, { ...options, installation: 'installed' });
+  const uninstalled = buildGroupCatalogViewModel(items, { ...options, installation: 'uninstalled' });
+  assert.deepEqual(installed.items.map(item => item.id), ['hub-installed']);
+  assert.equal(installed.totalItems, 2);
+  assert.deepEqual(uninstalled.items.map(item => item.id), ['local-pending']);
+  assert.equal(uninstalled.totalItems, 1);
+  assert.equal(uninstalled.page, 1);
+});
+
 test('normalizes interface source variants and bilingual display fields', () => {
   assert.equal(normalizeAgentSource('built-in'), 'builtin');
   assert.equal(normalizeAgentSource('builtin-in'), 'builtin');

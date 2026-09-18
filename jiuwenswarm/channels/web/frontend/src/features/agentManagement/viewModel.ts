@@ -166,7 +166,7 @@ export function buildGroupCatalogViewModel(
   const filtered = catalog.filter(item => {
     if (options.scope === 'catalog' && item.source !== 'builtin' && item.source !== 'hub') return false;
     if (options.scope === 'mine' && item.source !== 'local' && !item.installed) return false;
-    if (options.scope === 'catalog' && options.installation && options.installation !== 'all'
+    if (options.installation && options.installation !== 'all'
       && item.installed !== (options.installation === 'installed')) return false;
     if (options.scope === 'catalog' && !matchesGroupCategory(options.category, item.category)) return false;
     if (!query) return true;

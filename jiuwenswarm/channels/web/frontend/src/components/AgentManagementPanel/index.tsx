@@ -373,10 +373,11 @@ export function AgentManagementPanel({
       scope: 'mine',
       category: '',
       query: groupMineQuery,
+      installation: groupInstallationFilter,
       page: groupMinePage,
       pageSize: GROUP_PAGE_SIZE,
     }),
-    [groupMine, groupMineQuery, groupMinePage],
+    [groupMine, groupMineQuery, groupInstallationFilter, groupMinePage],
 
   );
 
@@ -1135,7 +1136,7 @@ export function AgentManagementPanel({
             ) : null}
             <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
               {!isGroupView && <InstallationFilterSelect value={installationFilter} onChange={value => { setInstallationFilter(value); setCatalogPage(1); setMinePage(1); }} />}
-              {view === 'teams' && <InstallationFilterSelect value={groupInstallationFilter} onChange={value => { setGroupInstallationFilter(value); setGroupCatalogPage(1); }} />}
+              {isGroupView && <InstallationFilterSelect value={groupInstallationFilter} onChange={value => { setGroupInstallationFilter(value); setGroupCatalogPage(1); setGroupMinePage(1); }} />}
               <PageToolbarSearch
                 wrapperTestId="agent-management-search"
                 inputTestId="agent-management-search-input"
@@ -1245,7 +1246,7 @@ export function AgentManagementPanel({
               totalPages={view === 'teams' ? groupCatalogView.totalPages : groupMineView.totalPages}
               query={view === 'teams' ? groupCatalogQuery : groupMineQuery}
               category={view === 'teams' ? groupCategory : ''}
-              installation={view === 'teams' ? groupInstallationFilter : 'all'}
+              installation={groupInstallationFilter}
               status={view === 'teams' ? groupCatalogStatus : groupMineStatus}
               error={view === 'teams' ? groupCatalogError : groupMineError}
               busyId={busyId}
