@@ -90,6 +90,11 @@ import {
   toUploadDocumentHints,
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
+import {
+  ingestStageDueEvent,
+  restoreRemindersFromInbox,
+} from '../features/longHorizon/reminderState';
+import type { LongHorizonInboxItem } from '../types/longHorizon';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 
@@ -537,6 +542,11 @@ interface UseWebSocketReturn {
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[]) => Promise<boolean>;
+  sendLongHorizonKick: (
+    sessionId: string,
+    query: string,
+    extra?: { taskId?: string; stageId?: string }
+  ) => Promise<boolean>;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
     sessionId: string,
@@ -1077,6 +1087,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
       useChatStore.getState().setGlobalTaskRunning(Boolean(ackPayload.task_running));
       onConnectRef.current?.(ackPayload);
+      void (async () => {
+        try {
+          const inboxPayload = await webClient.request<{
+            inbox?: LongHorizonInboxItem[];
+          }>('long_horizon_inbox');
+          restoreRemindersFromInbox(
+            Array.isArray(inboxPayload?.inbox) ? inboxPayload.inbox : []
+          );
+        } catch {
+          // Inbox restore is best-effort on connect/reconnect.
+        }
+      })();
     },
     [setAvailableTools, setConnected]
   );
@@ -1658,6 +1680,72 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       setConnectionStats,
       t,
     ]
+  );
+
+  const sendLongHorizonKick = useCallback(
+    async (
+      sessionId: string,
+      query: string,
+      extra?: { taskId?: string; stageId?: string }
+    ): Promise<boolean> => {
+      if (!query.trim() || !sessionId.trim()) return false;
+
+      resetContextCompressionTurn(sessionId);
+      userInputVersionRef.current += 1;
+      stopAllTts();
+
+      // Same as normal sendMessage: show the kick text as a user bubble so the
+      // timeline is not "agent-only".
+      useChatStore.getState().addMessage(sessionId, {
+        id: `user-lh-${Date.now()}`,
+        role: 'user',
+        content: query,
+        timestamp: new Date().toISOString(),
+      });
+
+      if (getWebTransport() === 'http') {
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+      }
+
+      useChatStore.getState().setProcessing(sessionId, true);
+      useChatStore.getState().setThinking(sessionId, true);
+      localSendPendingRef.current.add(sessionId);
+
+      const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+      const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
+      const workContext = getSessionWorkContext(sessionId);
+      if (currentMode === 'auto_harness') {
+        useHarnessStore.getState().reset(sessionId);
+      }
+      try {
+        // Normal agent chat — do NOT tag as proactive_recommendation
+        // (that path renders the unwanted 技能推荐 card).
+        await request('chat.send', {
+          session_id: sessionId,
+          content: query,
+          query,
+          mode: currentMode || 'agent',
+          ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...workContext,
+          source: 'long_horizon',
+          stage_event: 'start',
+          ...(extra?.taskId ? { task_id: extra.taskId } : {}),
+          ...(extra?.stageId ? { stage_id: extra.stageId } : {}),
+        });
+        return true;
+      } catch (error) {
+        const webError = error as WebError;
+        localSendPendingRef.current.delete(sessionId);
+        setConnectionStats({ lastError: webError.message });
+        useChatStore.getState().setProcessing(sessionId, false);
+        useChatStore.getState().setThinking(sessionId, false);
+        const errorMsg = webError.message || t('network.sendMessageFailed');
+        onErrorRef.current?.(errorMsg);
+        return false;
+      }
+    },
+    [flushPendingStreamDelta, request, resetContextCompressionTurn, setConnectionStats, t]
   );
 
   const sendStructuredChatContent = useCallback(
@@ -3804,6 +3892,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           reason: proactiveReason,
         });
       }),
+      webClient.on('long_horizon.stage_due', ({ payload }) => {
+        if (!payload || typeof payload !== 'object') return;
+        ingestStageDueEvent(payload as Record<string, unknown>);
+      }),
       webClient.on('team.event', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -4358,6 +4450,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     persistMedia,
     persistDocuments,
     sendMessage,
+    sendLongHorizonKick,
     sendStructuredChatContent,
     interrupt,
     pause,

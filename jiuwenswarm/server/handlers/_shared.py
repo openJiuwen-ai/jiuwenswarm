@@ -246,8 +246,13 @@ def _is_team_metadata_mode(metadata: dict[str, Any]) -> bool:
     return mode in {"team", "team.plan", "code.team"}
 
 
-def _sessions_dir_for_request(request: AgentRequest) -> Path:
-    """Resolve tenant ``<tenant_root>/agent/sessions`` for an AgentRequest."""
+def _sessions_dir_for_request(
+    request: AgentRequest,
+    *,
+    params: dict | None = None,
+) -> Path:
+    """Resolve tenant sessions root. Cron and long-horizon stay on the tenant tree."""
+    _ = params
     agent_id, service_id, workspace_key = TenantAgentPool.extract_ids(request)
     return resolve_tenant_sessions_dir(
         workspace_key,

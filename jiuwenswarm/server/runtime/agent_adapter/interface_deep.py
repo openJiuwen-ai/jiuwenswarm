@@ -426,6 +426,9 @@ from jiuwenswarm.agents.harness.common.rails.a2a_outbound_toolkit_rail import (
 )
 from jiuwenswarm.symphony.config import load_symphony_config
 from jiuwenswarm.agents.harness.common.tools.wiki_tools import wiki_ingest, wiki_query, wiki_lint
+from jiuwenswarm.agents.harness.common.long_horizon.tools import (
+    get_decorated_tools as get_long_horizon_tools,
+)
 from jiuwenswarm.agents.harness.common.tools.harness_named_web_tools import (
     build_jiuwen_harness_named_web_tools,
 )
@@ -9870,6 +9873,20 @@ class JiuWenSwarmDeepAdapter:
         for wtool in [wiki_ingest, wiki_query, wiki_lint]:
             registered = self._register_shared_tool(wtool)
             tool_cards.append(registered.card)
+
+        if not is_enterprise():
+            try:
+                for lh_tool in get_long_horizon_tools(
+                    language=self._resolve_runtime_language()
+                ):
+                    registered = self._register_shared_tool(lh_tool)
+                    tool_cards.append(registered.card)
+                logger.info("[JiuWenSwarmDeepAdapter] long_horizon_task tool registered")
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] long_horizon_task tool registration failed: %s",
+                    exc,
+                )
 
         from jiuwenswarm.agents.harness.common.tools.web_search.content_cache import (
             get_agent_cache_registry,

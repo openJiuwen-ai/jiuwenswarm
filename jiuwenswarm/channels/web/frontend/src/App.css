@@ -46,6 +46,17 @@
   justify-content: center;
 }
 
+.app-toast-wrapper--bottom-right {
+  left: auto;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  transform: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
 .app-connection-toast {
   border-radius: 0.5rem;
   background: var(--color-feedback-danger);

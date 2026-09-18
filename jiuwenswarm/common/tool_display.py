@@ -41,6 +41,7 @@ _VERB_BY_TOOL: dict[str, str] = {
     "run_python": "运行代码", "python": "运行代码", "execute_python": "运行代码",
     "run_code": "运行代码", "execute_code": "运行代码", "code_interpreter": "运行代码", "code": "运行代码",
     "todo_create": "创建待办", "todo_modify": "更新待办", "todo_list": "查看待办", "todo_get": "读取待办",
+    "long_horizon_task": "长程任务",
     "skill_tool": "查看技能",
     # team tools often omit call_goal
     "spawn_member": "创建成员", "spawn_teammate": "创建成员",
@@ -54,6 +55,7 @@ _QUERY_VERBS = frozenset(["搜索", "查找", "联网搜索"])
 _COMMAND_VERBS = frozenset(["执行", "运行代码"])
 _SKILL_VERBS = frozenset(["查看技能"])
 _TODO_VERBS = frozenset(["创建待办", "更新待办", "查看待办", "读取待办"])
+_LONG_HORIZON_VERBS = frozenset(["长程任务"])
 
 _FILE_ARG_KEYS = (
     "target_file", "file_path", "filepath", "filePath", "path",
@@ -274,6 +276,16 @@ def build_tool_display_name(name: str, arguments: Any) -> str:
             return f"{verb} {action.strip()}"
         return verb
     if verb in _TODO_VERBS:
+        return verb
+    if verb in _LONG_HORIZON_VERBS:
+        title = _first_string(args, ("title",))
+        action = _first_string(args, ("action",))
+        if title and action:
+            return f"{verb} {action} {_truncate(title, 32)}"
+        if title:
+            return f"{verb} {_truncate(title, 40)}"
+        if action:
+            return f"{verb} {action}"
         return verb
 
     fallback = (
