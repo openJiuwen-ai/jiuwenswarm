@@ -37,3 +37,46 @@ test('Team timeline summary keeps the existing leader identity', () => {
   assert.match(markup, /team_leader avatar/);
   assert.equal(markup.includes('chat-panel-agent-avatar-name'), false);
 });
+
+test('expert Team timeline summary uses the frozen leader identity', () => {
+  const markup = renderToStaticMarkup(
+    createElement(TurnElapsed, {
+      startMs: 1_700_000_000_000,
+      endMs: 1_700_000_001_000,
+      isLastTurn: false,
+      showAvatar: true,
+      teamLayout: true,
+      teamLeaderIdentity: {
+        agentTemplateId: 'leader-template',
+        displayName: '专家团负责人',
+      },
+    }),
+  );
+
+  assert.match(markup, /专家团负责人/);
+  assert.equal(markup.includes('team_leader avatar'), false);
+});
+
+test('Expert Team timeline surface uses the selected group identity', () => {
+  const markup = renderToStaticMarkup(
+    createElement(TurnElapsed, {
+      startMs: 1_700_000_000_000,
+      endMs: 1_700_000_001_000,
+      isLastTurn: false,
+      showAvatar: true,
+      teamLayout: true,
+      teamLeaderIdentity: {
+        agentTemplateId: 'leader-template',
+        displayName: '专家团负责人',
+      },
+      teamGroupIdentity: {
+        id: 'reply-confirmation',
+        displayName: '只会回复好的收到',
+        avatarUrl: null,
+      },
+    }),
+  );
+
+  assert.match(markup, /只会回复好的收到/);
+  assert.doesNotMatch(markup, /专家团负责人/);
+});

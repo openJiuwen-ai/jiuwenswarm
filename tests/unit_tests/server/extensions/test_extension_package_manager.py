@@ -261,6 +261,52 @@ class TestAgentGroupResolution:
         assert "connection_state" not in card
         assert "path" not in json.dumps(card, ensure_ascii=False)
 
+    def test_group_card_uses_manifest_display_name_and_resolves_package_avatars(
+        self,
+        extension_workspace: Path,
+    ) -> None:
+        package = _seed_valid_agent_group(
+            extension_workspace,
+            "localized-review",
+            under="local",
+        )
+        group_manifest_path = package / "manifest.json"
+        group_manifest = json.loads(group_manifest_path.read_text(encoding="utf-8"))
+        group_manifest["avatar"] = "avatars/group.png"
+        group_manifest_path.write_text(
+            json.dumps(group_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (package / "avatars").mkdir()
+        (package / "avatars" / "group.png").write_bytes(b"group-avatar")
+
+        member_manifest_path = package / "agents" / "reviewer" / "manifest.json"
+        member_manifest = json.loads(member_manifest_path.read_text(encoding="utf-8"))
+        member_manifest["display_name"] = {
+            "zh": "质量复核专家",
+            "en": "Quality Reviewer",
+        }
+        member_manifest["avatar"] = "avatars/member.png"
+        member_manifest_path.write_text(
+            json.dumps(member_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (package / "agents" / "reviewer" / "avatars").mkdir()
+        (package / "agents" / "reviewer" / "avatars" / "member.png").write_bytes(
+            b"member-avatar"
+        )
+
+        card = catalog.show_agent_group("localized-review")
+
+        assert card is not None
+        assert card["avatar"].startswith("data:image/png;base64,")
+        reviewer = next(member for member in card["members"] if member["id"] == "reviewer")
+        assert reviewer["displayName"] == {
+            "zh": "质量复核专家",
+            "en": "Quality Reviewer",
+        }
+        assert reviewer["avatar"].startswith("data:image/png;base64,")
+
     def test_show_agent_group_returns_none_when_missing(
         self,
         extension_workspace: Path,
@@ -1201,6 +1247,33 @@ class TestListShowAndFileRead:
         assert [c["id"] for c in catalog.list_plugin_packages({"filter": "builtin"})] == [
             "preset-pl"
         ]
+
+    def test_agent_template_team_compatibility_is_opt_in(
+        self, monkeypatch: pytest.MonkeyPatch, extension_workspace: Path
+    ) -> None:
+        seed_package(extension_workspace, AGENT_TEMPLATES, "mine")
+        calls: list[Path] = []
+        monkeypatch.setattr(
+            catalog,
+            "_agent_template_team_compatibility",
+            lambda package_dir: calls.append(package_dir) or {"leader": True, "member": True},
+        )
+
+        default_card = next(
+            card for card in catalog.list_agent_templates() if card["id"] == "mine"
+        )
+        assert "teamCompatible" not in default_card
+        assert calls == []
+
+        group_card = next(
+            card
+            for card in catalog.list_agent_templates(
+                {"include_team_compatibility": True}
+            )
+            if card["id"] == "mine"
+        )
+        assert group_card["teamCompatible"] == {"leader": True, "member": True}
+        assert len(calls) == 1
 
     def test_show_pending_connectors_and_resources_shelf(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extension_workspace: Path

@@ -10,6 +10,8 @@ import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import WaitingStatusIcon from '../../assets/work-mode/status-waiting.svg?react';
 import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
+import type { AgentGroupIdentity } from '../../features/agentManagement';
+import type { TeamLeaderIdentity } from '../../features/teamLeaderIdentity';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import {
   buildTimelineItems,
@@ -34,6 +36,8 @@ const EMPTY_REASONING: ReasoningSegment[] = [];
 interface MessageListProps {
   messages: Message[];
   renderAfterMessage?: (message: Message) => ReactNode;
+  teamLeaderIdentityOverride?: TeamLeaderIdentity | null;
+  teamGroupIdentityOverride?: AgentGroupIdentity | null;
 }
 
 interface ChatTimelineListProps {
@@ -48,6 +52,52 @@ interface ChatTimelineListProps {
   mode?: string;
   disableA2UIInteraction?: boolean;
   renderAfterMessage?: (message: Message) => ReactNode;
+  teamLeaderIdentityOverride?: TeamLeaderIdentity | null;
+  teamGroupIdentityOverride?: AgentGroupIdentity | null;
+}
+
+function TeamLeaderDisplay({
+  identity,
+  className,
+}: {
+  identity?: TeamLeaderIdentity | null;
+  className?: string;
+}) {
+  if (identity) {
+    return <AgentAvatar identityOverride={identity} alt="" className={className} showName />;
+  }
+  return (
+    <>
+      <TeamMemberAvatar member="team_leader" className={className} />
+      <span className="chat-avatar-name">Jiuwen</span>
+    </>
+  );
+}
+
+function TeamGroupDisplay({
+  identity,
+  leaderIdentity,
+  className,
+}: {
+  identity?: AgentGroupIdentity | null;
+  leaderIdentity?: TeamLeaderIdentity | null;
+  className?: string;
+}) {
+  if (identity) {
+    return (
+      <AgentAvatar
+        identityOverride={{
+          agentTemplateId: identity.id,
+          displayName: identity.displayName,
+          ...(identity.avatarUrl ? { avatar: identity.avatarUrl } : {}),
+        }}
+        alt=""
+        className={className}
+        showName
+      />
+    );
+  }
+  return <TeamLeaderDisplay identity={leaderIdentity} className={className} />;
 }
 
 function formatElapsedCoarse(ms: number): string {
@@ -70,6 +120,8 @@ export function TurnElapsed({
   showAvatar,
   agentTemplateName,
   teamLayout,
+  teamLeaderIdentity,
+  teamGroupIdentity,
 }: {
   startMs: number;
   endMs: number;
@@ -77,6 +129,8 @@ export function TurnElapsed({
   showAvatar?: boolean;
   agentTemplateName?: string;
   teamLayout: boolean;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
+  teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { t } = useTranslation();
   const isProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
@@ -123,10 +177,7 @@ export function TurnElapsed({
         {!teamLayout && agentTemplateName ? (
           <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
         ) : (
-          <>
-            <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
-            <span className="chat-avatar-name">Jiuwen</span>
-          </>
+          <TeamGroupDisplay identity={teamGroupIdentity} leaderIdentity={teamLeaderIdentity} className="h-7 w-7" />
         )}
       </div>
       {timeLine}
@@ -145,6 +196,8 @@ function CompletedWorkChip({
   teamLayout,
   elapsedMs = 0,
   agentTemplateName,
+  teamLeaderIdentity,
+  teamGroupIdentity,
 }: {
   variant: 'turn' | 'streak';
   thinkingCount?: number;
@@ -156,6 +209,8 @@ function CompletedWorkChip({
   teamLayout: boolean;
   elapsedMs?: number;
   agentTemplateName?: string;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
+  teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { t } = useTranslation();
   // 耗时并入 turn 折叠条文案（原底部 TurnElapsed 已移除），位置唯一不再打架。
@@ -212,8 +267,7 @@ function CompletedWorkChip({
       >
         {showAvatar ? (
           <div className="completed-work-col__avatar pt-0.5">
-            <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
-            <span className="chat-avatar-name">Jiuwen</span>
+            <TeamGroupDisplay identity={teamGroupIdentity} leaderIdentity={teamLeaderIdentity} className="h-7 w-7" />
           </div>
         ) : null}
         {chip}
@@ -233,10 +287,7 @@ function CompletedWorkChip({
           {agentTemplateName ? (
             <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
           ) : (
-            <>
-              <TeamMemberAvatar member="team_leader" className="h-7 w-7" />
-              <span className="chat-avatar-name">Jiuwen</span>
-            </>
+            <TeamLeaderDisplay identity={teamLeaderIdentity} className="h-7 w-7" />
           )}
         </div>
       ) : null}
@@ -250,11 +301,15 @@ function ReasoningSegmentBlock({
   agentTemplateName,
   showAvatar,
   teamLayout,
+  teamLeaderIdentity,
+  teamGroupIdentity,
 }: {
   segment: ReasoningSegment;
   agentTemplateName?: string;
   showAvatar: boolean;
   teamLayout: boolean;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
+  teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(!segment.closed);
@@ -358,8 +413,7 @@ function ReasoningSegmentBlock({
       >
         {showAvatar ? (
           <div className="reasoning-col__avatar pt-0.5">
-            <TeamMemberAvatar member="team_leader" />
-            <span className="chat-avatar-name">Jiuwen</span>
+            <TeamGroupDisplay identity={teamGroupIdentity} leaderIdentity={teamLeaderIdentity} />
           </div>
         ) : null}
         {content}
@@ -378,10 +432,7 @@ function ReasoningSegmentBlock({
           {agentTemplateName ? (
             <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
           ) : (
-            <>
-              <TeamMemberAvatar member="team_leader" />
-              <span className="chat-avatar-name">Jiuwen</span>
-            </>
+            <TeamLeaderDisplay identity={teamLeaderIdentity} />
           )}
         </div>
       ) : null}
@@ -398,9 +449,16 @@ export function ChatTimelineList({
   mode = 'default',
   disableA2UIInteraction = false,
   renderAfterMessage,
+  teamLeaderIdentityOverride,
+  teamGroupIdentityOverride,
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const runtimeTeamLeaderIdentity = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null
+  );
+  const teamLeaderIdentity = teamLeaderIdentityOverride ?? runtimeTeamLeaderIdentity;
+  const teamGroupIdentity = teamGroupIdentityOverride;
   const storeIsProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
   const isLoadingHistory = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isLoadingHistory ?? false);
   const storeReasoningSegments = useChatStore(
@@ -552,6 +610,8 @@ export function ChatTimelineList({
                 hideMeta={item.hideMeta}
                 disableA2UIInteraction={disableA2UIInteraction}
                 enableAssistantAvatar={!isTeamMode}
+                teamLeaderIdentityOverride={teamLeaderIdentity}
+                teamGroupIdentityOverride={teamGroupIdentity}
               />
               {renderAfterMessage?.(item.message)}
             </Fragment>
@@ -591,6 +651,8 @@ export function ChatTimelineList({
                 showAvatar
                 teamLayout={isTeamMode}
                 agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
+                teamLeaderIdentity={teamLeaderIdentity}
+                teamGroupIdentity={teamGroupIdentity}
               />
             );
           }
@@ -612,6 +674,8 @@ export function ChatTimelineList({
                 showAvatar={!turnFoldable && isTopStreakInTurn && streak.showAvatar}
                 teamLayout={isTeamMode}
                 agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
+                teamLeaderIdentity={teamLeaderIdentity}
+                teamGroupIdentity={teamGroupIdentity}
               />
             );
           }
@@ -629,6 +693,7 @@ export function ChatTimelineList({
                   teamLayout={isTeamMode}
                   collapseSkillTreeWhenContentStarts={false}
                   viewedSkillIds={[]}
+                  teamLeaderIdentity={teamLeaderIdentity}
                 />
               );
             }
@@ -650,6 +715,8 @@ export function ChatTimelineList({
                 agentTemplateName={item.segment.agentTemplateName ?? agentTemplateNameByTurn.get(item.turnId)}
                 showAvatar={hideAvatar ? false : item.showAvatar}
                 teamLayout={isTeamMode}
+                teamLeaderIdentity={teamLeaderIdentity}
+                teamGroupIdentity={teamGroupIdentity}
               />
             ) : (
               <ToolGroupDisplay
@@ -658,6 +725,7 @@ export function ChatTimelineList({
                 showAvatar={hideAvatar ? false : item.showAvatar}
                 teamLayout={isTeamMode}
                 agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
+                teamLeaderIdentity={teamLeaderIdentity}
                 collapseSkillTreeWhenContentStarts={item.collapseSkillTreeWhenContentStarts}
                 viewedSkillIds={item.viewedSkillIds}
               />
@@ -704,6 +772,8 @@ export function ChatTimelineList({
               showAvatar={item.showAvatar}
               agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
               teamLayout={isTeamMode}
+              teamLeaderIdentity={teamLeaderIdentity}
+              teamGroupIdentity={teamGroupIdentity}
             />
           );
         }
@@ -714,7 +784,7 @@ export function ChatTimelineList({
   );
 }
 
-export function MessageList({ messages, renderAfterMessage }: MessageListProps) {
+export function MessageList({ messages, renderAfterMessage, teamLeaderIdentityOverride, teamGroupIdentityOverride }: MessageListProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const toolExecutions = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutions ?? new Map());
   const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
@@ -732,6 +802,8 @@ export function MessageList({ messages, renderAfterMessage }: MessageListProps) 
       executions={executions}
       mode={mode}
       renderAfterMessage={renderAfterMessage}
+      teamLeaderIdentityOverride={teamLeaderIdentityOverride}
+      teamGroupIdentityOverride={teamGroupIdentityOverride}
     />
   );
 }

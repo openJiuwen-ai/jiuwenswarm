@@ -845,6 +845,19 @@ _PACKAGE_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.PLUGIN_PACKAGES_UNINSTALL: "uninstall_plugin_package",
 }
 
+_AGENT_GROUP_PACKAGE_METHODS: frozenset[ReqMethod] = frozenset(
+    {
+        ReqMethod.AGENT_GROUPS_LIST,
+        ReqMethod.AGENT_GROUPS_SHOW,
+        ReqMethod.AGENT_GROUPS_FILE_LIST,
+        ReqMethod.AGENT_GROUPS_FILE_READ,
+        ReqMethod.AGENT_GROUPS_CREATE,
+        ReqMethod.AGENT_GROUPS_IMPORT_LOCAL,
+        ReqMethod.AGENT_GROUPS_INSTALL,
+        ReqMethod.AGENT_GROUPS_UNINSTALL,
+    }
+)
+
 _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
 )
@@ -2258,11 +2271,17 @@ class JiuWenSwarm:
                 payload = {}
         except Exception as exc:
             logger.warning("[extension_package_manager] request %s failed: %s", method, exc)
+            error_code = getattr(exc, "code", None)
+            if method in _AGENT_GROUP_PACKAGE_METHODS and not isinstance(error_code, str):
+                error_code = "AGENT_GROUP_REQUEST_FAILED"
+            error_payload = {"error": str(exc)}
+            if isinstance(error_code, str) and error_code:
+                error_payload["code"] = error_code
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload=error_payload,
                 metadata=request.metadata,
             )
         return AgentResponse(

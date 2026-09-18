@@ -1,10 +1,64 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
+
+const panelSource = readFileSync(new URL('../src/components/AgentManagementPanel/index.tsx', import.meta.url), 'utf8');
+const groupCatalogSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/GroupCatalogPage.tsx', import.meta.url),
+  'utf8',
+);
+const catalogPageSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/CatalogPage.tsx', import.meta.url),
+  'utf8',
+);
+const groupCardSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/GroupCard.tsx', import.meta.url),
+  'utf8',
+);
+const agentManagementCss = readFileSync(
+  new URL('../src/components/AgentManagementPanel/agentManagement.css', import.meta.url),
+  'utf8',
+);
+const entityHeaderCss = readFileSync(
+  new URL('../src/components/ui/EntityHeader/EntityHeader.css', import.meta.url),
+  'utf8',
+);
+const groupEditorSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentGroupEditor.tsx', import.meta.url),
+  'utf8',
+);
+const agentDetailSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/DefinitionDetailPage.tsx', import.meta.url),
+  'utf8',
+);
+const groupDetailSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentGroupDetailPage.tsx', import.meta.url),
+  'utf8',
+);
+const memberPickerSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentGroupMemberPicker.tsx', import.meta.url),
+  'utf8',
+);
+const agentEditorSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentEditor.tsx', import.meta.url),
+  'utf8',
+);
+const selectionPaginationSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/SelectionPagination.tsx', import.meta.url),
+  'utf8',
+);
+const pageCardSource = readFileSync(new URL('../src/components/ui/PageCard/PageCard.tsx', import.meta.url), 'utf8');
+const groupUploadSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentGroupUploadDialog.tsx', import.meta.url),
+  'utf8',
+);
+const inputAreaSource = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 
 await i18next.use(initReactI18next).init({
   lng: 'zh',
@@ -53,7 +107,7 @@ test('expert catalog renders inside the standard page shell and toolbar', async 
   );
   assert.match(markup, /data-testid="common-page-header"/);
   assert.match(markup, /class="page-toolbar"[^>]*data-testid="page-toolbar"/);
-  assert.match(markup, /class="chat-picker-panel__tabs"[^>]*data-testid="agent-management-primary-tabs"/);
+  assert.match(markup, /class="tabs[^\"]*"[^>]*data-testid="agent-management-primary-tabs"/);
   assert.match(markup, /data-testid="agent-management-search"[^>]*class="relative flex-shrink-0"/);
 });
 
@@ -62,4 +116,262 @@ test('adaptive tooltips can wrap unbroken long descriptions', async () => {
   const rule = css.match(/\.adaptive-tooltip\s*\{([\s\S]*?)\}/)?.[1] ?? '';
 
   assert.match(rule, /overflow-wrap:\s*anywhere/);
+});
+
+test('Expert and Expert Team management keep the shared page shell and field limits', () => {
+  assert.match(panelSource, /<div className="page-shell flex-none"[^>]*>\s*<PageHeader/);
+  assert.match(groupCatalogSource, /className="page-shell agent-management-toolbar"/);
+  assert.match(groupCatalogSource, /className="page-scroll min-h-0 flex-1 overflow-y-auto"/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*className="agent-management-page-card agent-group-card"/);
+  assert.match(groupCardSource, /headerTestId="agent-group-card-open"/);
+  assert.match(groupCardSource, /className="agent-management-card__actions"/);
+  assert.match(groupEditorSource, /id="agent-management-group-name"[\s\S]*maxLength=\{AGENT_NAME_MAX_LENGTH\}/);
+  assert.match(
+    groupEditorSource,
+    /id="agent-management-group-description"[\s\S]*maxLength=\{AGENT_DESCRIPTION_MAX_LENGTH\}/,
+  );
+  assert.doesNotMatch(groupEditorSource, /detail-back mb-\[35px\]/);
+});
+
+test('empty manual definitions do not synthesize an Other domain tag', () => {
+  assert.doesNotMatch(catalogPageSource, /scope === 'mine'[\s\S]*categoryOther/);
+  assert.doesNotMatch(groupCardSource, /fallbackTag|categoryOther/);
+  assert.doesNotMatch(memberPickerSource, /categoryOther/);
+  assert.match(catalogPageSource, /const labelTags: string\[\] \| undefined = item\.tags\.length > 0/);
+  assert.match(groupCardSource, /const label = item\.tags\.length > 0[\s\S]*: undefined;/);
+  assert.match(memberPickerSource, /const categoryTags = [\s\S]*agent\.tags\.length > 0[\s\S]*: undefined;/);
+  assert.match(memberPickerSource, /label=\{categoryTags\}/);
+  assert.match(groupDetailSource, /const detailTags = detail\.tags;/);
+  assert.match(groupDetailSource, /\.\.\.\(categoryLabel \? \[categoryLabel\] : \[\]\)/);
+  assert.doesNotMatch(agentDetailSource, /categoryOther/);
+});
+
+test('group card actions keep uninstall in the detail page and install created groups before listing', () => {
+  assert.doesNotMatch(groupCardSource, /onUninstall|data-variant=\{item\.installed \? 'uninstall'/);
+  assert.doesNotMatch(groupCatalogSource, /onUninstall/);
+  assert.match(groupDetailSource, /data-variant="uninstall"/);
+  assert.match(panelSource, /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/);
+  assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
+});
+
+test('primary management tabs retain tab semantics and chat picker enforces mode locks', () => {
+  assert.match(panelSource, /<Tabs[\s\S]*ariaLabel=\{t\('agentManagement\.tabsLabel'\)\}/);
+  assert.match(panelSource, /\{ value: 'catalog', label: t\('agentManagement\.tabs\.catalog'\) \}/);
+  assert.match(panelSource, /\{ value: 'teams', label: t\('agentManagement\.tabs\.teams'\) \}/);
+  assert.match(panelSource, /\{ value: 'mine', label: t\('agentManagement\.tabs\.mine'\) \}/);
+  assert.match(
+    inputAreaSource,
+    /const existingTeamGroupSelectionDisabled = Boolean\([\s\S]*activeSessionId !== NEW_CONVERSATION_ID/,
+  );
+  assert.match(inputAreaSource, /const agentSelectionDisabled = isTeamMode;/);
+  assert.match(inputAreaSource, /const agentGroupSelectionDisabled = isAgentMode \|\| agentGroupPickerLocked;/);
+  assert.match(inputAreaSource, /aria-disabled=\{agentSelectionDisabled\}[\s\S]*disabled=\{agentSelectionDisabled\}/);
+  assert.match(
+    inputAreaSource,
+    /aria-disabled=\{agentGroupSelectionDisabled\}[\s\S]*disabled=\{agentGroupSelectionDisabled\}/,
+  );
+  assert.match(inputAreaSource, /chat\.agentOnlyInSingleAgentMode/);
+  assert.match(inputAreaSource, /chat\.agentGroupOnlyInTeamMode/);
+  assert.match(inputAreaSource, /if \(!activeSessionId \|\| agentSelectionDisabled\) return;/);
+  assert.match(inputAreaSource, /if \(agentGroupSelectionDisabled \|\| !activeSessionId\) return;/);
+  assert.match(inputAreaSource, /agentSelectionDisabled && 'is-locked'/);
+  assert.match(inputAreaSource, /agentGroupSelectionDisabled && 'is-locked'/);
+  assert.match(inputAreaSource, /!isTeamMode \? \([\s\S]*chat-panel-agent-picker-agent-tab/);
+  assert.match(inputAreaSource, /!isAgentMode \? \([\s\S]*chat-panel-agent-picker-agent-group-tab/);
+  assert.match(inputAreaSource, /t\(isTeamMode \? 'chat\.agentGroup' : 'chat\.agent'\)/);
+});
+
+test('single-mode picker removes its redundant title and More routes to the matching My Expert type', () => {
+  assert.match(
+    inputAreaSource,
+    /tabs=\{\s*!isAgentMode && !isTeamMode \?[\s\S]*chat-panel-agent-picker-agent-tab[\s\S]*chat-panel-agent-picker-agent-group-tab[\s\S]*: null/,
+  );
+  assert.match(inputAreaSource, /onNavigateToAgents\?\.\(isTeamMode \? 'group' : 'agent'\)/);
+  assert.match(panelSource, /navigationRequest\?: \{\s*target: 'agent' \| 'group';\s*requestId: number;/);
+  assert.match(panelSource, /setView\('mine'\)[\s\S]*setMineKind\(request\.target\)/);
+  assert.match(appSource, /onNavigateToAgents=\{handleNavigateToAgentManagement\}/);
+  assert.match(appSource, /navigationRequest=\{agentManagementNavigationRequest\}/);
+});
+
+test('leader and member picker cards include the shared Expert description', () => {
+  assert.match(memberPickerSource, /import \{ PageCard, Tabs \} from '\.\.\/ui';/);
+  assert.match(memberPickerSource, /<PageCard[\s\S]*className=\{`agent-management-selection-card agent-management-selection-card--expert/);
+  assert.match(memberPickerSource, /description=\{description\}/);
+  assert.match(
+    memberPickerSource,
+    /const description = agent\.description \|\| t\('agentManagement\.unknownDescription'\);/,
+  );
+  assert.match(
+    pageCardSource,
+    /selected\?: boolean;[\s\S]*disabled\?: boolean;/,
+  );
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card \.entity-header\s*\{\s*width: 100%;\s*min-width: 0;/,
+  );
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card \.page-card__body\s*\{[\s\S]*overflow-wrap: anywhere;[\s\S]*text-align: left;/,
+  );
+});
+
+test('management pickers expose source tabs and preserve install/connect actions', () => {
+  assert.match(memberPickerSource, /agent-group-member-picker-tabs/);
+  assert.match(memberPickerSource, /agent-group-member-picker-install/);
+  assert.match(memberPickerSource, /agent-group-member-picker-pagination/);
+  assert.match(memberPickerSource, /agent-group-member-picker-tab-market/);
+  assert.match(memberPickerSource, /agent-group-member-picker-tab-local/);
+  assert.match(memberPickerSource, /sortInstalledFirst\(sourceAgents\)/);
+  assert.match(
+    memberPickerSource,
+    /sourceTab === 'market' \? agent\.source !== 'local' : agent\.source === 'local' \|\| agent\.installed === true/,
+  );
+  assert.match(memberPickerSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.match(groupEditorSource, /isTeamSkillOption\(skill\)/);
+  assert.match(groupEditorSource, /isSkillVisibleInSourceTab\(skill, skillSourceTab\)/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-install/);
+  assert.match(groupEditorSource, /skillSourceTab/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tabs/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-pagination/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-market/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-local/);
+  assert.match(groupEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-tabs/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-pagination/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-tabs/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-pagination/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
+  assert.match(agentEditorSource, /sortMcpOptions\(\s*mcpOptions\.filter\([\s\S]*?mcpSourceTab/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-market/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-local/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-market/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-installed/);
+  assert.match(agentEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.doesNotMatch(agentEditorSource, /MCP_TYPE_OPTIONS|mcpTypeFilter|mcpTypeAll/);
+  assert.match(panelSource, /const \[busySkillId, setBusySkillId\] = useState<string \| null>\(null\)/);
+  assert.match(panelSource, /const \[busyMcpId, setBusyMcpId\] = useState<string \| null>\(null\)/);
+  assert.match(panelSource, /setBusySkillId\(skill\.id\)/);
+  assert.match(panelSource, /setBusyMcpId\(mcp\.id\)/);
+  assert.match(panelSource, /installingSkillId=\{busySkillId\}/);
+  assert.match(panelSource, /installingMcpId=\{busyMcpId\}/);
+  assert.match(selectionPaginationSource, /SELECTION_PAGE_SIZE = 10/);
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card\.page-card\.is-disabled[\s\S]*opacity: 1;/,
+  );
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card__install[\s\S]*color: var\(--color-action-primary\);/,
+  );
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card\.is-selected\s*\{[\s\S]*box-shadow: inset/,
+  );
+  assert.doesNotMatch(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card:hover,[\s\S]*\.agent-management-selection-card\.page-card:focus-within/,
+  );
+});
+
+test('Expert Team chat creation uses the standard new-chat welcome in Agent mode', () => {
+  const groupCreateNavigation = appSource.match(
+    /onCreateGroupViaChat=\{\(\) => requestSessionNavigation\('new', \{[\s\S]*?\}\)\}/,
+  )?.[0];
+  assert.ok(groupCreateNavigation);
+  assert.match(groupCreateNavigation, /initialSelectedSkills: \['agent-group-creator'\]/);
+  assert.match(groupCreateNavigation, /forceMode: 'agent'/);
+  assert.doesNotMatch(groupCreateNavigation, /welcomeVariant/);
+});
+
+test('MCP picker keeps installed but disconnected connectors out of selection', () => {
+  assert.match(agentEditorSource, /const selectable = installed && !unconnected;/);
+  assert.match(agentEditorSource, /disabled=\{unconnected \|\| \(!installed && !onInstallMcp\)\}/);
+  assert.match(agentEditorSource, /onClick=\{\s*selectable\s*\?/);
+});
+
+test('disabled picker tags retain a visible border', () => {
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card\.is-disabled \.entity-header__tag\s*\{\s*border: 1px solid var\(--color-border-default\);\s*\}/,
+  );
+});
+
+test('Expert chat creation always enters single-Agent mode', () => {
+  const expertCreateNavigation = appSource.match(
+    /onCreateViaChat=\{\(\) => requestSessionNavigation\('new', \{[\s\S]*?\}\)\}/,
+  )?.[0];
+  assert.ok(expertCreateNavigation);
+  assert.match(expertCreateNavigation, /initialSelectedSkills: \['agent-creator'\]/);
+  assert.match(expertCreateNavigation, /forceMode: 'agent'/);
+});
+
+test('Expert and Expert Team content details use the same full-width markdown layout', () => {
+  assert.match(agentDetailSource, /<MarkdownPane[\s\S]*testId="agent-management-detail-content"/);
+  assert.match(groupDetailSource, /<MarkdownPane[\s\S]*testId="agent-group-detail-content"/);
+});
+
+test('Expert Team cards and details reuse the Expert visual primitives', () => {
+  assert.match(catalogPageSource, /<PageCard[\s\S]*className="agent-management-page-card agent-definition-card(?:\s|")/);
+  assert.match(groupCardSource, /import \{ PageCard \} from '\.\.\/ui';/);
+  assert.match(groupCardSource, /className="agent-management-page-card agent-group-card"/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*interactive/);
+  assert.match(
+    groupCardSource,
+    /className="agent-management-card__actions"[\s\S]*onClick=\{\(event\) => event\.stopPropagation\(\)\}/,
+  );
+  assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__actions\s*\{\s*display: contents;/);
+  assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__identity\s*\{\s*flex: 1 1 auto;/);
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-page-card \.agent-management-card__actions\s*\{[\s\S]*position: absolute;/,
+  );
+  assert.match(
+    agentManagementCss,
+    /@media \(max-width: 800px\)[\s\S]*\.agent-management-page-card \.agent-management-card__actions\s*\{[\s\S]*top: auto;/,
+  );
+  assert.match(agentManagementCss, /\.agent-management-page-card:focus-within \.agent-management-card__actions/);
+  assert.match(entityHeaderCss, /\.entity-header__tags\s*\{[\s\S]*width: 100%;/);
+  assert.match(
+    agentManagementCss,
+    /@media \(min-width: 801px\)[\s\S]*\.agent-management-page-card:focus-within \.entity-header__identity/,
+  );
+  assert.match(groupDetailSource, /import \{[^}]*EntityHeader[^}]*\} from '\.\.\/ui';/);
+  assert.match(groupDetailSource, /import \{[^}]*DetailSection[^}]*\} from '\.\.\/ui';/);
+  assert.match(groupDetailSource, /import \{[^}]*Tabs[^}]*\} from '\.\.\/ui';/);
+  assert.match(groupDetailSource, /<EntityHeader[\s\S]*testId="agent-management-detail-header"/);
+  assert.match(groupDetailSource, /<DetailSection[\s\S]*testId="agent-management-detail-ability"/);
+  assert.match(groupDetailSource, /<PageToolbar[\s\S]*<Tabs[\s\S]*wrapperTestId="agent-group-detail-tabs"/);
+  assert.match(groupDetailSource, /className="detail-back"/);
+  assert.match(groupDetailSource, /className="detail-body flex-1 min-h-0 overflow-y-auto"/);
+  assert.doesNotMatch(groupDetailSource, /detail-back mb-\[35px\]/);
+  assert.doesNotMatch(groupDetailSource, /overflow-y-auto pb-\[72px\]/);
+  assert.doesNotMatch(groupDetailSource, /<header className="agent-management-detail__header">/);
+});
+
+test('Expert Team leader badge does not add a redundant status icon', () => {
+  assert.doesNotMatch(groupDetailSource, /import \{ Check \} from 'lucide-react';/);
+  assert.match(
+    groupDetailSource,
+    /<span\s+className="agent-group-member-card__badge"[^>]*>\s*\{t\('agentManagement\.group\.detail\.leader'\)\}\s*<\/span>/,
+  );
+});
+
+test('uninstalled local Expert Team details expose delete before install', () => {
+  assert.match(groupDetailSource, /const canDelete = detail\.source === 'local' && !detail\.installed;/);
+  const deleteAction = groupDetailSource.indexOf("t('agentManagement.actions.delete')");
+  const installAction = groupDetailSource.indexOf("t('agentManagement.group.actions.install')");
+  assert.ok(deleteAction >= 0 && installAction >= 0 && deleteAction < installAction);
+  assert.match(groupDetailSource, /onClick=\{\(\) => onUninstall\(detail\.id\)\}/);
+});
+
+test('Expert Team upload dialog puts Expert first and removes the reference link', () => {
+  const expertTab = groupUploadSource.indexOf("t('agentManagement.group.form.uploadAgentTab')");
+  const groupTab = groupUploadSource.indexOf("t('agentManagement.group.form.uploadGroupTab')");
+  assert.ok(expertTab >= 0 && groupTab >= 0 && expertTab < groupTab);
+  assert.match(
+    groupUploadSource,
+    /const typeHint = kind === 'group' \? t\('agentManagement\.group\.form\.uploadHint'\) : t\('agentManagement\.form\.uploadHint'\)/,
+  );
+  assert.doesNotMatch(groupUploadSource, /uploadHintReference|hint-reference/);
 });

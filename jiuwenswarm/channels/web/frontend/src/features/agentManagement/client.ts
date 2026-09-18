@@ -17,6 +17,7 @@ import {
   normalizeAgentTemplateListItem,
   normalizeSkillOption,
 } from './adapter';
+import type { McpOption } from './types';
 import type {
   RawAgentDetailPayload,
   RawAgentFileListPayload,
@@ -97,6 +98,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
       try {
         const payload = await requestEquipmentList<RawAgentListPayload>(webRequest, 'agent_templates.list', {
           ...(options.filter ? { filter: options.filter } : {}),
+          ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
         });
         const items = (payload.templates || []).map((item) =>
           normalizeAgentTemplateListItem(item, getAgentManagementLocale()),
@@ -140,7 +142,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
       try {
         const payload = await webRequest<RawSkillListPayload>('skills.list', { with_installed: true });
         return (payload.skills || [])
-          .filter((item) => item.installed === true && item.source !== 'mcp')
+          .filter((item) => item.source !== 'mcp')
           .map(normalizeSkillOption)
           .filter((item) => item.id.length > 0);
       } catch (error) {
@@ -149,18 +151,60 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async listMcpOptions() {
       try {
-        const local = await connectorApi.list('local');
-        return local
-          .map((item) => ({
-            id: item.name,
-            name: item.displayName || item.name,
+        const [marketplace, local] = await Promise.all([connectorApi.list('builtin'), connectorApi.list('local')]);
+        const byRuntimeName = new Map<string, McpOption>();
+        [...marketplace, ...local].forEach((item) => {
+          const runtimePackageName = item.runtimePackageName || item.name;
+          if (!runtimePackageName) return;
+          const next: McpOption = {
+            id: runtimePackageName,
+            name: item.displayName || runtimePackageName,
             description: item.description || '',
             category: item.category || '',
             integrationType: item.integrationType,
             connectionState: item.connectionState,
             source: item.source,
-          }))
-          .filter((item) => item.id.length > 0);
+            runtimePackageName,
+            ...(item.hubAssetId ? { hubAssetId: item.hubAssetId } : {}),
+            installed: item.installed,
+            icon: item.icon,
+          };
+          const previous = byRuntimeName.get(runtimePackageName);
+          byRuntimeName.set(
+            runtimePackageName,
+            previous
+              ? {
+                  ...previous,
+                  ...next,
+                  hubAssetId: next.hubAssetId || previous.hubAssetId,
+                }
+              : next,
+          );
+        });
+        return Array.from(byRuntimeName.values()).filter((item) => item.id.length > 0);
+      } catch (error) {
+        return rethrowAgentError(error);
+      }
+    },
+    async installSkill(option) {
+      try {
+        const spec = option.installSpec?.trim();
+        if (!spec) {
+          throw new AgentManagementError('Skill install specification is missing', 'skill_install_spec_missing', false);
+        }
+        const payload = await webRequest<{ success?: boolean; detail?: string }>(
+          'skills.install',
+          { spec },
+          { timeoutMs: 180000 },
+        );
+        if (payload?.success === false) {
+          throw new AgentManagementError(
+            payload.detail || 'Skill installation failed',
+            'skill_install_failed',
+            false,
+            payload,
+          );
+        }
       } catch (error) {
         return rethrowAgentError(error);
       }

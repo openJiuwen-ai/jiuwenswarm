@@ -19,6 +19,10 @@ export type RawAgentTemplateListItem = {
   tags?: RawAgentTag[];
   avatar?: string;
   version?: string;
+  teamCompatible?: {
+    leader?: boolean;
+    member?: boolean;
+  };
 };
 
 export type RawAgentCapability = {
@@ -43,6 +47,63 @@ export type RawAgentTemplateDetail = RawAgentTemplateListItem & {
   mcps?: RawAgentCapability[];
   quickInputs?: RawLocalizedText[];
   pending_connectors?: string[];
+};
+
+export type RawAgentGroupMember = {
+  id?: string;
+  agentTemplateId?: string;
+  displayName?: RawLocalizedText | string;
+  displayDescription?: RawLocalizedText | string;
+  role?: string;
+  avatar?: string;
+};
+
+export type RawAgentGroupCapabilities = {
+  canUse?: boolean;
+  canInstall?: boolean;
+  canUninstall?: boolean;
+  canPreviewFiles?: boolean;
+  canEdit?: boolean;
+  canPublish?: boolean;
+};
+
+export type RawAgentGroupListItem = {
+  id: string;
+  name?: string;
+  displayName?: RawLocalizedText | string;
+  displayDescription?: RawLocalizedText | string;
+  category?: string;
+  tags?: RawAgentTag[];
+  source?: string;
+  installed?: boolean;
+  avatar?: string;
+  memberCount?: number;
+  members?: RawAgentGroupMember[];
+  skills?: RawAgentCapability[];
+  capabilities?: RawAgentGroupCapabilities;
+  version?: string;
+  updatedAt?: string;
+  details?: string;
+  persona?: string;
+  leaderId?: string;
+  quickInputs?: RawLocalizedText[];
+};
+
+export type RawAgentGroupDetail = RawAgentGroupListItem & {
+  version?: string;
+  updatedAt?: string;
+  details?: string;
+  persona?: string;
+  leaderId?: string;
+  quickInputs?: RawLocalizedText[];
+};
+
+export type RawAgentGroupListPayload = {
+  agentGroups?: RawAgentGroupListItem[];
+};
+
+export type RawAgentGroupDetailPayload = {
+  group?: RawAgentGroupDetail;
 };
 
 export type RawAgentListPayload = {
@@ -76,6 +137,11 @@ export type RawSkillOption = {
   description?: string;
   source?: string;
   installed?: boolean;
+  kind?: string;
+  skill_type?: string;
+  marketplace?: string;
+  spec?: string;
+  install_spec?: string;
 };
 
 export type RawSkillListPayload = {

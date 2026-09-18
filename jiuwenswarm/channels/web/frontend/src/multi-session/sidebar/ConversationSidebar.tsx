@@ -65,6 +65,8 @@ export type NewConversationOptions = {
    * 见 App.tsx enterNewConversation。 */
   initialEnabledPlugins?: string[];
   initialEnabledMcps?: string[];
+  /** 专家团「通过聊天创建」入口使用 4.9 高保真欢迎态。 */
+  welcomeVariant?: 'group-create';
   /**
    * 强制新会话进入指定模式，覆盖"继承当前活动会话模式"的默认行为，也覆盖未发送的临时新会话
    * 草稿里残留的模式。用于扩展页"使用插件/使用 MCP/试试这样用"这类入口——插件/MCP 不支持

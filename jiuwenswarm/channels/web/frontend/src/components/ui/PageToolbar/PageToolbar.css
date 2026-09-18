@@ -1,0 +1,16 @@
+/* 页面工具栏行（ui/PageToolbar）：左右分布，页签条等上下文差异由调用方 children/className
+   组合（页签用 ui/Tabs）。本文件不分层（unlayered），优先级高于 index.css @layer components
+   里的同名 .page-toolbar（供未迁移的旧 div 使用），两者声明同值，叠加无冲突。 */
+
+.page-toolbar {
+  display: flex;
+}
+
+.page-toolbar.page-toolbar--page {
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin-top: 32px;
+  margin-bottom: 16px;
+}

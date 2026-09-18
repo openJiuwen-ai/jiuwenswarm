@@ -458,6 +458,48 @@ body.workspace-resize-active iframe {
     padding-bottom: 24px;
   }
 
+  /* Anchored dropdown menu (select, more-actions, etc.) */
+  .dropdown-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 50;
+    margin-top: 0.25rem;
+    border: 1px solid var(--color-border-default);
+    border-radius: 6px;
+    background: var(--color-surface-panel);
+    box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.16);
+    padding-block: 8px;
+    white-space: nowrap;
+  }
+
+  .dropdown-menu::before {
+    position: absolute;
+    top: -0.25rem;
+    right: 0;
+    left: 0;
+    height: 0.25rem;
+    content: '';
+  }
+
+  .dropdown-menu-item {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    border: 0;
+    background: none;
+    padding-inline: 16px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 32px;
+    text-align: left;
+    transition: background-color var(--duration-fast) var(--ease-out);
+  }
+
+  .dropdown-menu-item:hover {
+    background: var(--color-action-secondary);
+  }
+
   /* 限宽骨架：页面不滚动的固定区（header/toolbar 等）使用，
      与滚动列内层保持同一条 max 1400px 内容线（窄屏两侧至少留 48px） */
   .page-shell {
@@ -472,6 +514,8 @@ body.workspace-resize-active iframe {
   .page-scroll {
     scrollbar-gutter: stable;
     scrollbar-gutter: stable both-edges;
+    margin-top: 16px;
+    padding-bottom: 32px;
   }
 
   /* 滚动列/详情滚动体的内层限宽：滚动容器两侧已各让出 8px 滚动条槽，
@@ -486,8 +530,16 @@ body.workspace-resize-active iframe {
   /* 详情页统一滚动容器（agent/skill/connector detail）：同 .page-scroll 通栏滚动，
      子元素通过 > * 规则限宽 1400px 并居中 */
   .detail-body {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
     scrollbar-gutter: stable;
     scrollbar-gutter: stable both-edges;
+    padding-top: 16px;
+  }
+
+  .detail-body>* {
+    flex-shrink: 0;
   }
 
   /* 统一返回按钮（agent/skill/connector detail）。
@@ -507,6 +559,7 @@ body.workspace-resize-active iframe {
     width: min(1400px, calc(100% - 96px));
     margin-right: auto;
     margin-left: auto;
+    margin-bottom: 16px;
     flex-shrink: 0;
   }
 
@@ -517,6 +570,65 @@ body.workspace-resize-active iframe {
   .detail-back svg {
     width: 12px;
     height: 12px;
+  }
+
+  /* 统一详情页能力 chip 行（agent/connector detail 共用）：32px 药丸形态。 */
+  .detail-chip-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .detail-chip {
+    display: inline-flex;
+    min-height: 32px;
+    align-items: center;
+    gap: 6px;
+    border-radius: 4px;
+    background: var(--color-tag-surface);
+    color: var(--color-text-primary);
+    padding: 0 16px;
+    font-size: 14px;
+    line-height: 22px;
+  }
+
+  .detail-chip--link {
+    cursor: pointer;
+  }
+
+  .detail-chip--link:hover {
+    color: var(--color-chat-accent);
+    box-shadow: inset 0 0 0 1px var(--color-chat-accent);
+  }
+
+  .detail-prompt-list {
+    display: grid;
+    max-width: 696px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .detail-chip--spread {
+    justify-content: space-between;
+    gap: 16px;
+    text-align: left;
+  }
+
+  .detail-chip--spread > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .detail-chip__icon {
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    color: inherit;
   }
 
   .page-content .chat-picker-panel__tabs {
