@@ -30,6 +30,7 @@ import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '..
 import {
   AgentMode,
   MediaItem,
+  type ChatSendOptions,
   Message,
   UserAnswer,
   type MessageForkPoint,
@@ -96,8 +97,7 @@ export interface ChatHistoryPagerProps {
 }
 
 interface ChatPanelProps {
-  onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
-  onSteerTask?: (sessionId: string, taskId: string) => Promise<void>;
+  onSendMessage: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
   onNewSession: () => void;
   onForkSession: (
@@ -259,11 +259,9 @@ function ActiveTeamGroupEntry({
 export function AgentActivityCard({
   isProcessing: _isProcessing,
   onSendTask,
-  onSteerTask,
 }: {
   isProcessing: boolean;
-  onSendTask?: (content: string, mediaItems?: MediaItem[]) => void;
-  onSteerTask?: (sessionId: string, taskId: string) => Promise<void>;
+  onSendTask?: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -343,16 +341,11 @@ export function AgentActivityCard({
     }
   };
 
-  const handleSendTask = (e: React.MouseEvent, taskId: string, _content: string, _mediaItems?: MediaItem[]) => {
+  const handleSendTask = (e: React.MouseEvent, taskId: string, content: string, mediaItems?: MediaItem[]) => {
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
-    if (useChatStore.getState().getRuntime(sid)?.isProcessing) {
-      void onSteerTask?.(sid, taskId);
-    } else if (onSendTask) {
-      const task = useChatStore.getState().claimQueuedTask(sid, taskId);
-      if (task) onSendTask(task.content, task.mediaItems);
-    }
+    onSendTask?.(content, mediaItems, { queuedTaskId: taskId });
   };
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
@@ -964,7 +957,6 @@ function BeeBanner({
  */
 export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
-  onSteerTask,
   onEnsureSession,
   onNewSession,
   onForkSession,
@@ -1572,9 +1564,9 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   // 包装发送消息函数，添加滚动逻辑
   const handleSendMessage = useCallback(
-    (content: string, mediaItems?: MediaItem[]) => {
+    (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
       setIsSending(true);
-      onSendMessage(content, mediaItems);
+      onSendMessage(content, mediaItems, options);
     },
     [onSendMessage],
   );
@@ -1925,7 +1917,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   </>
                 )}
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onSteerTask={onSteerTask} />
+                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
                 <InterruptResultBubble />
                 <InteractionSlot onSubmit={onUserAnswer} />
                 <InputArea
@@ -1993,7 +1985,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       {hasConversation && (
         <div className="chat-compose" data-testid="chat-panel-compose">
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onSteerTask={onSteerTask} />
+          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
           <InterruptResultBubble />
           <InteractionSlot onSubmit={onUserAnswer} />
           {onSetGoal && onPauseGoal && onResumeGoal && onClearGoal && (

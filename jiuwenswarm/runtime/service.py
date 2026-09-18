@@ -1721,6 +1721,22 @@ class AgentRuntime:
                 return
             if work_kind is SessionWorkKind.SESSION_INPUT:
                 async def idle_input():
+                    from jiuwenswarm.runtime.events import RuntimeEvent
+
+                    # Web stream clients need the idle disposition before ordinary output.
+                    # Unary clients must retain their single final response.
+                    if request.is_stream:
+                        yield RuntimeEvent(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id or "default",
+                            session_id=request.session_id,
+                            payload={
+                                "event_type": "runtime.accepted",
+                                "request_id": request.request_id,
+                                "session_id": request.session_id,
+                                "input_delivery": "chat",
+                            },
+                        )
                     if not request.is_stream:
                         for event in await self._invoke_started(
                             request, trigger_hook=trigger_hook, on_control_event=on_control_event,

@@ -78,6 +78,7 @@ import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import {
   AgentMode,
   MediaItem,
+  type ChatSendOptions,
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
@@ -1024,7 +1025,6 @@ function AppContent({
     persistMedia,
     persistDocuments,
     sendMessage,
-    steerQueuedTask,
     sendStructuredChatContent,
     pause,
     cancel,
@@ -2821,9 +2821,13 @@ function AppContent({
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: groupId });
   }, [enterNewConversation]);
 
-  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
+  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
+    if (options?.queuedTaskId) {
+      await sendMessage(content, currentSessionId, mediaItems, options);
+      return;
+    }
     if (currentSessionId === NEW_CONVERSATION_ID) {
       const persistCommand = parsePersistSessionCommand(content);
       if (persistCommand.persistSession && !persistCommand.content) {
@@ -3735,7 +3739,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     chat={(
                       <ChatPanel
                         onSendMessage={handleSendMessage}
-                        onSteerTask={steerQueuedTask}
                         onEnsureSession={ensureApplicationPluginSession}
                         onNewSession={handleNewSession}
                         onForkSession={handleForkSession}

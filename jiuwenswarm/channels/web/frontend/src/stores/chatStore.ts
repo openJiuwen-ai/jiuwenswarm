@@ -153,7 +153,7 @@ export interface ChatRuntime {
   };
   taskQueue: TaskItem[];
   /** Keep request ownership even after a receipt is dismissed, to isolate late ACK/errors. */
-  taskInputRequests: Record<string, { taskId: string; content: string }>;
+  taskInputRequests: Record<string, { taskId: string; content: string; delivery?: 'chat' }>;
   /** Message-level feedback survives removal from the executable queue. */
   taskInputReceipts: Record<string, TaskInputReceipt>;
   queuePaused: boolean;
@@ -324,6 +324,7 @@ interface ChatState {
     status: 'accepted' | 'failed' | 'unknown',
     error?: string,
     errorCode?: string,
+    delivery?: 'chat',
   ) => void;
   clearTaskQueue: (sessionId: string) => void;
   removeFromTaskQueue: (sessionId: string, id: string) => void;
@@ -1572,7 +1573,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (
-        !runtime?.isProcessing ||
+        !runtime ||
         runtime.isPaused ||
         runtime.isLoadingHistory ||
         runtime.switchingMode ||
@@ -1642,14 +1643,20 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  settleTaskInput: (sessionId, taskId, requestId, status, error, errorCode) => {
+  settleTaskInput: (sessionId, taskId, requestId, status, error, errorCode, delivery) => {
+    let chatMessage: Message | undefined;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       const receipt = runtime?.taskInputReceipts[taskId];
       // Late responses can settle unknown delivery, but cannot affect an accepted or retried item.
       if (!runtime || !receipt || receipt.requestId !== requestId || !['sending', 'unknown'].includes(receipt.status))
         return state;
-      const acceptedMessages = status === 'accepted'
+      if (status === 'accepted' && delivery === 'chat') {
+        chatMessage = {
+          id: `user-steer-${taskId}`, role: 'user', content: receipt.content, timestamp: receipt.timestamp,
+        };
+      }
+      const acceptedMessages = status === 'accepted' && !chatMessage
         ? assignMessageRenderKeys(runtime, [{
             id: `user-steer-${taskId}`,
             role: 'user',
@@ -1663,6 +1670,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
+            ...(chatMessage && requestId ? {
+              taskInputRequests: {
+                ...runtime.taskInputRequests,
+                [requestId]: { ...runtime.taskInputRequests[requestId], delivery: 'chat' as const },
+              },
+            } : {}),
             ...(acceptedMessages ? {
               messages: [...runtime.messages, ...acceptedMessages.messages],
               messageRenderKeySeq: acceptedMessages.messageRenderKeySeq,
@@ -1679,6 +1692,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         },
       };
     });
+    if (chatMessage) {
+      // Ordinary chat uses the existing user-message boundary and lifecycle, only after Runtime admission.
+      get().addMessage(sessionId, chatMessage);
+      get().setProcessing(sessionId, true);
+      get().setThinking(sessionId, true);
+    }
   },
 
   clearTaskQueue: (sessionId) => {

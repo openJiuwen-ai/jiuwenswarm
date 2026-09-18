@@ -3165,7 +3165,6 @@
     "pauseFailed": "Pause failed",
     "cancelFailed": "Cancel failed",
     "supplementFailed": "Supplement failed",
-    "supplementTargetUnavailable": "The current task is not ready for supplemental input. Please try again once it starts.",
     "resumeFailed": "Resume failed",
     "submitAnswerFailed": "Failed to submit answer",
     "unknownError": "Unknown error",

@@ -161,6 +161,11 @@ export interface Message {
   crossSession?: CrossSessionMessageMetadata;
 }
 
+/** Selected queued message sent by the existing non-interrupting send button. */
+export interface ChatSendOptions {
+  queuedTaskId: string;
+}
+
 export interface MessageForkPoint {
   messageId: string;
   role: MessageRole;

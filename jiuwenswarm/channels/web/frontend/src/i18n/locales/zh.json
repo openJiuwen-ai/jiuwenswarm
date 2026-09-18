@@ -3146,7 +3146,6 @@
     "pauseFailed": "暂停失败",
     "cancelFailed": "取消失败",
     "supplementFailed": "补充失败",
-    "supplementTargetUnavailable": "当前任务尚未就绪，请在任务开始运行后重试补充。",
     "resumeFailed": "恢复失败",
     "submitAnswerFailed": "提交回答失败",
     "unknownError": "未知错误",

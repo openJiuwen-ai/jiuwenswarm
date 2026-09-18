@@ -475,6 +475,18 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
             assert "STEERING_WIRE_934" in str(model.messages[1])
             assert not tool.cancelled
             runtime._prepare_chat_turn.assert_awaited_once()
+            # Idle chat.send streams acknowledge ordinary admission before real SDK output.
+            # The unary wire path retains its single final response.
+            await gateway.publish_user_messages(message(
+                "idle-supplement", input_stream, input_mode="steer", query="IDLE_WIRE_935",
+            ))
+            if input_stream:
+                idle_ack = await receive("idle-supplement", "runtime.accepted")
+                assert idle_ack.payload["input_delivery"] == "chat"
+            idle_final = await receive("idle-supplement", "chat.final")
+            assert idle_final.payload["content"] == "original completed"
+            assert "IDLE_WIRE_935" in str(model.messages[-1])
+            assert runtime._prepare_chat_turn.await_count == 2
             await gateway.stop_forwarding()
             await client.disconnect()
     finally:

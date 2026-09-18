@@ -1,7 +1,6 @@
 import { useChatStore } from '../stores/chatStore';
 import { useSessionStore } from '../stores/sessionStore';
 import type { WebError, WebRequestOptions } from '../types/websocket';
-import i18n from '../i18n';
 
 type SendRequest = (method: string, params: Record<string, unknown>, options: WebRequestOptions) => Promise<unknown>;
 
@@ -30,10 +29,14 @@ export async function sendQueuedTaskInput(
   if (useSessionStore.getState().getRuntime(sessionId)?.mode !== 'agent') return;
   const task = useChatStore.getState().claimTaskInput(sessionId, taskId);
   if (!task) return;
+  const startedWhileIdle = !useChatStore.getState().getRuntime(sessionId)?.isProcessing;
+  if (startedWhileIdle) {
+    useChatStore.getState().setProcessing(sessionId, true);
+    useChatStore.getState().setThinking(sessionId, true);
+  }
   let requestId: string | undefined;
   try {
     const executionId = useChatStore.getState().getRuntime(sessionId)?.activeExecutionId;
-    if (!executionId) throw new Error(i18n.t('network.supplementTargetUnavailable'));
     await request(
       'chat.send',
       {
@@ -41,7 +44,7 @@ export async function sendQueuedTaskInput(
         session_id: sessionId,
         content: task.content,
         input_mode: 'steer',
-        expected_execution_id: executionId,
+        ...(executionId ? { expected_execution_id: executionId } : {}),
       },
       {
         awaitRuntimeAccepted: true,
@@ -64,6 +67,13 @@ export async function sendQueuedTaskInput(
         failure.message,
         failure.code,
       );
+    // Restore an idle send failure only if no actual execution has arrived in the meantime.
+    const store = useChatStore.getState();
+    const runtime = store.getRuntime(sessionId);
+    if (startedWhileIdle && runtime?.taskInputReceipts[taskId]?.status === 'failed' && !runtime.activeExecutionId) {
+      store.setProcessing(sessionId, false);
+      store.setThinking(sessionId, false);
+    }
   }
 }
 
@@ -76,9 +86,22 @@ export function handleTaskInputReceipt(event: string, payload: Record<string, un
   if (!owner) return false;
   const [sessionId, runtime] = owner;
   if (payload.session_id && payload.session_id !== sessionId) return true;
-  const { taskId } = runtime.taskInputRequests[requestId];
+  const { taskId, delivery } = runtime.taskInputRequests[requestId];
+  // Runtime admitted an unbound input as ordinary chat while idle. Its output owns a new turn.
+  if (delivery === 'chat') return event === 'runtime.accepted';
   if (event === 'runtime.accepted') {
-    store.settleTaskInput(sessionId, taskId, requestId, 'accepted');
+    store.settleTaskInput(
+      sessionId, taskId, requestId, 'accepted', undefined, undefined,
+      payload.input_delivery === 'chat' ? 'chat' : undefined,
+    );
+    const current = store.getRuntime(sessionId);
+    const receipt = current?.taskInputReceipts[taskId];
+    if (
+      receipt?.requestId === requestId && receipt.status === 'accepted' && current?.isProcessing &&
+      !current.activeExecutionId && typeof payload.execution_id === 'string'
+    ) {
+      store.setActiveExecutionId(sessionId, payload.execution_id);
+    }
   } else if (event === 'chat.error') {
     const error = new Error(
       typeof payload.error === 'string' ? payload.error : 'Supplemental input failed',

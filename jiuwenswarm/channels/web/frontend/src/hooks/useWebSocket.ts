@@ -19,6 +19,7 @@ import {
   EvolutionStatusPayload,
   UserAnswer,
   MediaItem,
+  type ChatSendOptions,
   AgentMode,
   Session,
   ToolResult,
@@ -699,8 +700,7 @@ interface UseWebSocketReturn {
   ) => Promise<T>;
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
-  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[]) => Promise<boolean>;
-  steerQueuedTask: (sessionId: string, taskId: string) => Promise<void>;
+  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => Promise<boolean>;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
     sessionId: string,
@@ -1628,9 +1628,51 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
    */
   const refreshGoal = useCallback((sessionId: string) => goalAction(sessionId, 'get'), [goalAction]);
 
+  /**
+   * 队列非空时主动尝试排空一次，供"入队那一刻本来就没有任务在处理"的场景兜底
+   * （典型是目标 active 但当前无聊天在跑时用户发消息——这条消息按设计要走排队，见
+   * InputArea.tsx 里 isGoalActive 相关注释，但常规的两处自动排空触发点——
+   * chat.processing_status 从 true→false、interrupt_result 完成——都要求"之前在
+   * processing"，这种场景两个都不会触发，消息会永久卡在队列里，只能靠用户手动点
+   * "恢复队列"）。isProcessing 为真时直接跳过，交给已有的 processing_status 处理器
+   * 在真正空闲下来时接管，不会重复发送。
+   */
+  const drainTaskQueueIfIdle = useCallback((sessionId: string) => {
+    const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+    if (currentMode !== 'agent') return;
+    const runtime = useChatStore.getState().getRuntime(sessionId);
+    if (runtime?.isProcessing || runtime?.queuePaused) return;
+    if (!sendMessageRef.current) return;
+    const nextTask = useChatStore.getState().claimQueuedTask(sessionId);
+    if (nextTask) {
+      sendMessageRef.current(nextTask.content, sessionId, nextTask.mediaItems ?? []);
+    }
+  }, []);
+
   // 发送聊天消息
   const sendMessage = useCallback(
-    async (content: string, sessionId: string, mediaItems: MediaItem[] = []): Promise<boolean> => {
+    async (content: string, sessionId: string, mediaItems: MediaItem[] = [], options?: ChatSendOptions): Promise<boolean> => {
+      const taskId = options?.queuedTaskId;
+      if (taskId) {
+        const store = useChatStore.getState();
+        // The button supplies input intent; Runtime decides whether it can steer the target.
+        // Keep this request's ACK/errors separate from the original chat's lifecycle.
+        await sendQueuedTaskInput(sessionId, taskId, request, {
+          mode: resolveOutgoingMode(sessionId, 'agent'),
+          ...getSessionWorkContext(sessionId),
+        });
+        const runtime = useChatStore.getState().getRuntime(sessionId);
+        const task = runtime?.taskQueue.find((item) => item.id === taskId);
+        if (task?.status === 'queued') {
+          store.setInterruptResult(sessionId, {
+            intent: 'supplement', success: false,
+            message: task.error || t('network.supplementFailed'),
+          });
+          return false;
+        }
+        drainTaskQueueIfIdle(sessionId);
+        return runtime?.taskInputReceipts[taskId]?.status === 'accepted';
+      }
       const hasMedia = mediaItems.length > 0;
       // Attachment-only payloads are allowed when mediaItems are present.
       // 【上传文档】-only text without any mediaItems is still blocked.
@@ -1821,6 +1863,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     },
     [
       closeActiveTeamLeaderMessages,
+      drainTaskQueueIfIdle,
       markPendingAgentGroupBinding,
       persistDocuments,
       persistMedia,
@@ -1918,48 +1961,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   useEffect(() => {
     sendMessageRef.current = sendMessage;
   }, [sendMessage]);
-
-  /**
-   * 队列非空时主动尝试排空一次，供"入队那一刻本来就没有任务在处理"的场景兜底
-   * （典型是目标 active 但当前无聊天在跑时用户发消息——这条消息按设计要走排队，见
-   * InputArea.tsx 里 isGoalActive 相关注释，但常规的两处自动排空触发点——
-   * chat.processing_status 从 true→false、interrupt_result 完成——都要求"之前在
-   * processing"，这种场景两个都不会触发，消息会永久卡在队列里，只能靠用户手动点
-   * "恢复队列"）。isProcessing 为真时直接跳过，交给已有的 processing_status 处理器
-   * 在真正空闲下来时接管，不会重复发送。
-   */
-  const drainTaskQueueIfIdle = useCallback((sessionId: string) => {
-    const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
-    if (currentMode !== 'agent') return;
-    const runtime = useChatStore.getState().getRuntime(sessionId);
-    if (runtime?.isProcessing || runtime?.queuePaused) return;
-    if (!sendMessageRef.current) return;
-    const nextTask = useChatStore.getState().claimQueuedTask(sessionId);
-    if (nextTask) {
-      sendMessageRef.current(nextTask.content, sessionId, nextTask.mediaItems ?? []);
-    }
-  }, []);
-
-  const steerQueuedTask = useCallback(
-    async (sessionId: string, taskId: string) => {
-      await sendQueuedTaskInput(sessionId, taskId, request, {
-        mode: resolveOutgoingMode(sessionId, 'agent'),
-        ...getSessionWorkContext(sessionId),
-      });
-      const store = useChatStore.getState();
-      const task = store.getRuntime(sessionId)?.taskQueue.find((item) => item.id === taskId);
-      if (task?.status === 'queued') {
-        // A local eligibility check refused to send. Actual request results have message-level feedback.
-        store.setInterruptResult(sessionId, {
-          intent: 'supplement',
-          success: false,
-          message: task.error || t('network.supplementFailed'),
-        });
-      }
-      drainTaskQueueIfIdle(sessionId);
-    },
-    [request, drainTaskQueueIfIdle, t],
-  );
 
   /**
    * Heartbeat 自动轮的会话级收口：chat.final/execution.error/chat.error 三个终态事件里
@@ -5136,7 +5137,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   }, []);
 
   return {
-    steerQueuedTask,
     isConnected,
     connectionState,
     request,

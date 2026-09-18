@@ -152,6 +152,11 @@ async def test_idle_input_owns_normal_execution_and_output(setup_runtime, unary)
     req = request()
     req.is_stream = not unary
     events = await runtime.invoke(req) if unary else await collect(runtime.stream(req))
+    if not unary:
+        assert events[0].event_type == "runtime.accepted"
+        assert events[0].payload["input_delivery"] == "chat"
+        assert events[0].request_id == req.request_id
+        assert events[0].payload["execution_id"] == events[-1].payload["execution_id"]
     assert events[-1].event_type == "chat.final"
     manager.get_agent_for_session_nowait.assert_not_called()
     runtime._prepare_chat_turn.assert_awaited_once()

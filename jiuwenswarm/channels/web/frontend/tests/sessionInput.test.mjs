@@ -129,8 +129,7 @@ async function mount(context) {
     return createElement(Fragment, null,
       createElement(TaskQueue, {
         isProcessing: true,
-        onSteerTask: api.steerQueuedTask,
-        onSendTask: (text, media) => api.sendMessage(text, sid, media),
+        onSendTask: (text, media, options) => api.sendMessage(text, sid, media, options),
         onDrainTaskQueueIfIdle: api.drainTaskQueueIfIdle,
       }),
       createElement(A2UIProvider, null,
@@ -208,7 +207,7 @@ test('two queued messages: only the selected item steers, locks double click, an
     assert.equal(button.closest('[data-variant]').outerHTML, originalMarkup, 'sending adds no UI state or controls');
     await c.click(second, 'send');
     await act(async () => {
-      void c.api().steerQueuedTask(c.sid, second);
+      void c.api().sendMessage('', c.sid, [], { queuedTaskId: second });
     });
     assert.equal(c.requests().length, 1);
     const request = c.requests()[0];
@@ -272,13 +271,57 @@ test('the same queue send button starts an ordinary task when idle', async (cont
     await c.click(second, 'send');
     assert.equal(c.requests().length, 1);
     assert.equal(c.requests()[0].params.content, 'send this ordinary task');
-    assert.equal(c.requests()[0].params.input_mode, undefined);
+    assert.equal(c.requests()[0].params.input_mode, 'steer');
+    assert.equal(c.requests()[0].params.expected_execution_id, undefined);
+    c.receive('runtime.accepted', { request_id: c.requests()[0].id, input_delivery: 'chat', execution_id: 'idle-chat' });
+    await c.flush();
     assert.deepEqual(
       c.runtime().taskQueue.map((item) => item.id),
       [first],
     );
     assert.ok(c.find(first, 'send'), 'the remaining item uses the same button while busy');
     act(() => c.socket.response(c.requests()[0].id));
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('stale idle UI still sends supplemental intent and lets the backend steer its running task', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+    const id = c.queue('supplement backend task');
+    c.queue('remain queued');
+    await c.click(id, 'send');
+    const req = c.requests()[0];
+    assert.equal(req.params.input_mode, 'steer');
+    assert.equal(req.params.expected_execution_id, undefined);
+    c.receive('runtime.accepted', { request_id: req.id, execution_id: 'backend-running' });
+    await c.flush();
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.runtime().activeExecutionId, 'backend-running');
+    assert.equal(c.requests().length, 1);
+    c.receive('chat.delta', { request_id: 'backend-task', content: 'continued backend output', execution_id: 'backend-running' });
+    await c.tick(16);
+    assert.ok(c.runtime().messages.some((msg) => msg.content.includes('continued backend output')));
+    assert.equal(c.runtime().taskQueue.length, 1);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('idle button rejection clears only its own pending state and leaves the item for manual retry', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+    const id = c.queue('rejected input');
+    await c.click(id, 'send');
+    c.receive('chat.error', { request_id: c.requests()[0].id, code: 'SESSION_CLOSED', error: 'session closed' });
+    await c.flush();
+    assert.equal(c.runtime().isProcessing, false);
+    assert.equal(c.runtime().taskQueue[0].status, 'failed');
+    assert.equal(c.receipt(id).error, 'session closed');
+    assert.ok(!c.runtime().messages.some((msg) => msg.id === `user-steer-${id}`));
   } finally {
     await c.dispose();
   }
@@ -414,7 +457,7 @@ test('attachments and pending interactions stay queued without changing the exis
     );
     assert.equal(c.find(text, 'send').disabled, false);
     await act(async () => {
-      void c.api().steerQueuedTask(c.sid, text);
+      void c.api().sendMessage('', c.sid, [], { queuedTaskId: text });
     });
     assert.equal(c.requests().length, 0);
     assert.deepEqual(c.runtime().taskQueue[0].mediaItems, media);
@@ -431,7 +474,7 @@ test('queue drain wins a race: the removed task cannot also be steered', async (
     const id = c.queue('ordinary only');
     c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
     await act(async () => {
-      void c.api().steerQueuedTask(c.sid, id);
+      void c.api().sendMessage('', c.sid, [], { queuedTaskId: id });
     });
     assert.equal(c.requests().length, 1);
     assert.equal(c.requests()[0].params.input_mode, undefined);
@@ -669,20 +712,64 @@ test('supplement events cannot end or replace a newer execution', async (context
   }
 });
 
-test('missing execution identity fails locally instead of sending an unbound steer', async (context) => {
+test('without execution identity the backend accepts steering and the original stream stays active', async (context) => {
   const c = await mount(context);
   try {
-    act(() => { c.store.setProcessing(c.sid, false); c.store.setProcessing(c.sid, true); });
-    const id = c.queue('wait for target identity');
+    act(() => c.store.setActiveExecutionId(c.sid, ''));
+    const streamId = c.runtime().currentStreamId;
+    const id = c.queue('use the current backend task');
     await c.click(id, 'send');
-    assert.equal(c.requests().length, 0);
-    assert.equal(c.runtime().taskQueue[0].status, 'failed');
+    const req = c.requests()[0];
+    assert.equal(req.method, 'chat.send');
+    assert.equal(req.params.input_mode, 'steer');
+    assert.equal(req.params.expected_execution_id, undefined);
+    c.receive('runtime.accepted', { request_id: req.id });
+    await c.flush();
+    assert.equal(c.receipt(id).status, 'accepted');
     assert.equal(c.runtime().isProcessing, true);
-    assert.match(c.receipt(id).error, /当前任务尚未就绪/);
+    assert.equal(c.runtime().currentStreamId, streamId);
+    assert.ok(c.runtime().messages.find((msg) => msg.id === `user-steer-${id}`).supplementalInput);
   } finally {
     await c.dispose();
   }
 });
+
+for (const terminal of ['chat.final', 'chat.error']) {
+  test(`backend idle admission turns an unbound input into ordinary chat: ${terminal}`, async (context) => {
+    const c = await mount(context);
+    try {
+      act(() => c.store.setActiveExecutionId(c.sid, ''));
+      const id = c.queue('unbound input');
+      c.queue('next queued task');
+      await c.click(id, 'send');
+      const req = c.requests()[0];
+      c.receive('chat.final', { request_id: 'original', content: 'old task completed' });
+      c.receive('chat.processing_status', { request_id: 'original', is_processing: false });
+      assert.equal(c.requests().length, 1, 'pending admission prevents ordinary draining');
+      const ack = { request_id: req.id, input_delivery: 'chat', execution_id: 'new-chat' };
+      c.receive('runtime.accepted', ack);
+      c.receive('runtime.accepted', ack);
+      await c.flush();
+      assert.equal(c.runtime().isProcessing, true);
+      assert.equal(c.runtime().activeExecutionId, 'new-chat');
+      const users = c.runtime().messages.filter((msg) => msg.id === `user-steer-${id}`);
+      assert.equal(users.length, 1);
+      assert.equal(users[0].supplementalInput, undefined, 'idle fallback starts a normal user turn');
+      assert.equal(c.requests().length, 1);
+      c.receive('chat.delta', { request_id: req.id, content: 'new response', execution_id: 'new-chat' });
+      await c.tick(16);
+      assert.ok(c.runtime().messages.some((msg) => msg.content === 'new response'));
+      c.receive(terminal, { request_id: req.id, content: 'new response', error: 'new chat failed' });
+      c.receive('chat.processing_status', { request_id: req.id, is_processing: false });
+      await c.flush();
+      assert.equal(c.requests().length, 2, 'normal completion resumes the remaining queue');
+      assert.equal(c.requests()[1].params.input_mode, undefined);
+      act(() => c.socket.response(c.requests()[1].id));
+    } finally {
+      await c.dispose();
+    }
+  });
+}
 
 test('manual retry uses a new request, ignores the previous ACK, and retains the message', async (context) => {
   const c = await mount(context);
