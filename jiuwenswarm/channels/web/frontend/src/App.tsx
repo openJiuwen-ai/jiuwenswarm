@@ -1416,6 +1416,8 @@ function AppContent({
       const store = useChatStore.getState();
       const current = store.runtimes[sid]?.reasoningSegments ?? [];
       const currentItems = current.map((segment) => ({
+        // 后台逐批恢复会反复合并该列表；沿用 ID，避免已发布的折叠节点被重新挂载。
+        id: segment.id,
         at: new Date(segment.startedAt + 1).toISOString(),
         text: segment.text,
         agentTemplateName: segment.agentTemplateName,

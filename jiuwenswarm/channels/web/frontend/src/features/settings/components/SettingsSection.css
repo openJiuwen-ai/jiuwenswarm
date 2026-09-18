@@ -1,7 +1,3 @@
-.settings-section + .settings-section {
-  margin-top: 36px;
-}
-
 .settings-section__heading {
   display: flex;
   align-items: flex-end;

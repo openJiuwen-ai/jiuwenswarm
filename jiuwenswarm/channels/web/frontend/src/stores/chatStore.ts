@@ -235,6 +235,7 @@ interface ChatState {
   restoreReasoningSegments: (
     sessionId: string,
     items: {
+      id?: string;
       at: string;
       text: string;
       agentTemplateName?: string;
@@ -572,7 +573,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ? replayUpdatedAt
             : startedAt;
         segments.push({
-          id: `hist-rsn-${sessionId}-${index}-${createReasoningSegmentId()}`,
+          id: item.id ?? `hist-rsn-${sessionId}-${index}-${createReasoningSegmentId()}`,
           text,
           startedAt,
           closed: true,
