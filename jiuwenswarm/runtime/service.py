@@ -2282,6 +2282,25 @@ class AgentRuntime:
 
         return is_team_session_running(session_id)
 
+    def has_parked_team_streams(self, session_id: str) -> bool:
+        """Whether every pending chat request is parked on a released Team round.
+
+        A Team first-request handler stays alive for the whole persistent
+        leader stream; once its round was released it no longer owns team
+        work, only the parked response stream.  Lifecycle actions may pass
+        such handlers and leave that stream alone.  A request still
+        preparing or mid-round has no released-round marker, so mixed states
+        keep the Session running.
+        """
+        requests = getattr(self, "_pending_chat_requests", {}).get(session_id)
+        if not requests:
+            return False
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            team_session_has_parked_request,
+        )
+
+        return team_session_has_parked_request(session_id, requests)
+
     async def stop_session_for_archive(
         self, *, channel_id: str, session_id: str
     ) -> None:
