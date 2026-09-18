@@ -44,6 +44,14 @@ const memberPickerSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupMemberPicker.tsx', import.meta.url),
   'utf8',
 );
+const agentEditorSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentEditor.tsx', import.meta.url),
+  'utf8',
+);
+const selectionPaginationSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/SelectionPagination.tsx', import.meta.url),
+  'utf8',
+);
 const pageCardSource = readFileSync(new URL('../src/components/ui/PageCard/PageCard.tsx', import.meta.url), 'utf8');
 const groupUploadSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupUploadDialog.tsx', import.meta.url),
@@ -186,7 +194,7 @@ test('single-mode picker removes its redundant title and More routes to the matc
 });
 
 test('leader and member picker cards include the shared Expert description', () => {
-  assert.match(memberPickerSource, /import \{ PageCard \} from '\.\.\/ui';/);
+  assert.match(memberPickerSource, /import \{ PageCard, Tabs \} from '\.\.\/ui';/);
   assert.match(memberPickerSource, /<PageCard[\s\S]*className=\{`agent-management-selection-card agent-management-selection-card--expert/);
   assert.match(memberPickerSource, /description=\{description\}/);
   assert.match(
@@ -207,14 +215,94 @@ test('leader and member picker cards include the shared Expert description', () 
   );
 });
 
-test('Expert Team chat creation uses the standard new-chat welcome in Agent mode', () => {
+test('management pickers expose source tabs and preserve install/connect actions', () => {
+  assert.match(memberPickerSource, /agent-group-member-picker-tabs/);
+  assert.match(memberPickerSource, /agent-group-member-picker-install/);
+  assert.match(memberPickerSource, /agent-group-member-picker-pagination/);
+  assert.match(memberPickerSource, /agent-group-member-picker-tab-market/);
+  assert.match(memberPickerSource, /agent-group-member-picker-tab-local/);
+  assert.match(memberPickerSource, /sortInstalledFirst\(sourceAgents\)/);
+  assert.match(
+    memberPickerSource,
+    /sourceTab === 'market' \? agent\.source !== 'local' : agent\.source === 'local' \|\| agent\.installed === true/,
+  );
+  assert.match(memberPickerSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.match(groupEditorSource, /isTeamSkillOption\(skill\)/);
+  assert.match(groupEditorSource, /isSkillVisibleInSourceTab\(skill, skillSourceTab\)/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-install/);
+  assert.match(groupEditorSource, /skillSourceTab/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tabs/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-pagination/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-market/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-local/);
+  assert.match(groupEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-tabs/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-pagination/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-tabs/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-pagination/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
+  assert.match(agentEditorSource, /sortInstalledFirst\(\s*mcpOptions\.filter\([\s\S]*?mcpSourceTab/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-market/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-local/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-market/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-installed/);
+  assert.match(agentEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.doesNotMatch(agentEditorSource, /MCP_TYPE_OPTIONS|mcpTypeFilter|mcpTypeAll/);
+  assert.match(panelSource, /const \[busySkillId, setBusySkillId\] = useState<string \| null>\(null\)/);
+  assert.match(panelSource, /const \[busyMcpId, setBusyMcpId\] = useState<string \| null>\(null\)/);
+  assert.match(panelSource, /setBusySkillId\(skill\.id\)/);
+  assert.match(panelSource, /setBusyMcpId\(mcp\.id\)/);
+  assert.match(panelSource, /installingSkillId=\{busySkillId\}/);
+  assert.match(panelSource, /installingMcpId=\{busyMcpId\}/);
+  assert.match(selectionPaginationSource, /SELECTION_PAGE_SIZE = 10/);
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card\.page-card\.is-disabled[\s\S]*opacity: 1;/,
+  );
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card__install[\s\S]*color: var\(--color-action-primary\);/,
+  );
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card\.is-selected\s*\{[\s\S]*box-shadow: inset/,
+  );
+  assert.doesNotMatch(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card:hover,[\s\S]*\.agent-management-selection-card\.page-card:focus-within/,
+  );
+});
+
+test('Expert Team chat creation uses the team welcome in Team mode', () => {
   const groupCreateNavigation = appSource.match(
     /onCreateGroupViaChat=\{\(\) => requestSessionNavigation\('new', \{[\s\S]*?\}\)\}/,
   )?.[0];
   assert.ok(groupCreateNavigation);
   assert.match(groupCreateNavigation, /initialSelectedSkills: \['agent-group-creator'\]/);
-  assert.match(groupCreateNavigation, /forceMode: 'agent'/);
-  assert.doesNotMatch(groupCreateNavigation, /welcomeVariant/);
+  assert.match(groupCreateNavigation, /forceMode: 'team'/);
+  assert.match(groupCreateNavigation, /welcomeVariant: 'group-create'/);
+});
+
+test('MCP picker keeps installed but disconnected connectors out of selection', () => {
+  assert.match(agentEditorSource, /const selectable = installed && !unconnected;/);
+  assert.match(agentEditorSource, /disabled=\{unconnected \|\| \(!installed && !onInstallMcp\)\}/);
+  assert.match(agentEditorSource, /onClick=\{\s*selectable\s*\?/);
+});
+
+test('disabled picker tags retain a visible border', () => {
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card\.is-disabled \.entity-header__tag\s*\{\s*border: 1px solid var\(--color-border-default\);\s*\}/,
+  );
+});
+
+test('Expert chat creation always enters single-Agent mode', () => {
+  const expertCreateNavigation = appSource.match(
+    /onCreateViaChat=\{\(\) => requestSessionNavigation\('new', \{[\s\S]*?\}\)\}/,
+  )?.[0];
+  assert.ok(expertCreateNavigation);
+  assert.match(expertCreateNavigation, /initialSelectedSkills: \['agent-creator'\]/);
+  assert.match(expertCreateNavigation, /forceMode: 'agent'/);
 });
 
 test('Expert and Expert Team content details use the same full-width markdown layout', () => {

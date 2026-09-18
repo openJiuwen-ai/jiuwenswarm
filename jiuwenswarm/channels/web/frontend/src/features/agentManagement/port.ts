@@ -65,6 +65,7 @@ export interface AgentManagementClient {
   getDefinitionFile(id: string, relativePath: string): Promise<AgentFileContent>;
   listSkillOptions(): Promise<SkillOption[]>;
   listMcpOptions(): Promise<McpOption[]>;
+  installSkill(option: SkillOption): Promise<void>;
   createAgent(draft: AgentDraft): Promise<void>;
   updateAgent(draft: AgentDraft): Promise<void>;
   deleteDefinition(id: string): Promise<void>;
@@ -133,11 +134,25 @@ export function resolveAgentGroupSelectionId(
   return agent.runtimePackageName.trim() || agent.id.trim();
 }
 
+/** Team selection is keyed by runtime package, even when catalog entries have different source IDs. */
+export function dedupeAgentGroupOptions(agents: AgentCatalogItem[]): AgentCatalogItem[] {
+  const bySelectionId = new Map<string, AgentCatalogItem>();
+  for (const agent of agents) {
+    const selectionId = resolveAgentGroupSelectionId(agent);
+    const previous = bySelectionId.get(selectionId);
+    if (!previous || (!previous.installed && agent.installed)) {
+      bySelectionId.set(selectionId, agent);
+    }
+  }
+  return Array.from(bySelectionId.values());
+}
+
 export function isAgentGroupAgentSelectable(
   agent: Pick<AgentCatalogItem, 'source' | 'installed' | 'teamCompatible'>,
   mode: 'leader' | 'member',
 ): boolean {
-  if (agent.source === 'hub' && (!agent.installed || !agent.teamCompatible)) return false;
+  if (!agent.installed) return false;
+  if (agent.source === 'hub' && !agent.teamCompatible) return false;
   return mode === 'leader'
     ? agent.teamCompatible?.leader !== false
     : agent.teamCompatible?.member !== false;
