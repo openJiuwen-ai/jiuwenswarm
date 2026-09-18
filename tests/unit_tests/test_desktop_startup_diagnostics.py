@@ -367,7 +367,7 @@ def test_failure_after_early_navigation_shows_diagnostics(
     class FakeWindow:
         def __init__(self) -> None:
             self.events = types.SimpleNamespace(
-                loaded=FakeEvent(), closed=FakeEvent()
+                loaded=FakeEvent(), closed=FakeEvent(), closing=FakeEvent()
             )
             self.loaded_html = None
 
@@ -383,6 +383,7 @@ def test_failure_after_early_navigation_shows_diagnostics(
         raising=False,
     )
     monkeypatch.setattr(runtime, "_clear_wkwebview_system_cache", lambda: None)
+    monkeypatch.setattr(runtime, "_start_tray", lambda: None)
     monkeypatch.setattr(
         runtime, "_should_run_startup_doctor", lambda _exc, _cf: False
     )
@@ -455,7 +456,9 @@ def test_service_failure_transitions_loading_state_without_worker_window_calls(
 
     class FakeWindow:
         def __init__(self) -> None:
-            self.events = types.SimpleNamespace(loaded=FakeEvent(), closed=FakeEvent())
+            self.events = types.SimpleNamespace(
+                loaded=FakeEvent(), closed=FakeEvent(), closing=FakeEvent()
+            )
 
     fake_window = FakeWindow()
     monkeypatch.setattr(desktop_app, "get_user_workspace_dir", lambda: tmp_path)
@@ -479,6 +482,7 @@ def test_service_failure_transitions_loading_state_without_worker_window_calls(
 
     monkeypatch.setattr(desktop_app.webview, "start", start_webview, raising=False)
     monkeypatch.setattr(runtime, "_clear_wkwebview_system_cache", lambda: None)
+    monkeypatch.setattr(runtime, "_start_tray", lambda: None)
     monkeypatch.setattr(runtime, "start_services", fail_services)
     doctor_calls = []
     monkeypatch.setattr(

@@ -3163,6 +3163,13 @@
     "unknownError": "Unknown error",
     "errorPrefix": "Error: {{message}}"
   },
+  "desktopTray": {
+    "heartbeatFinishedTitle": "Heartbeat task finished",
+    "heartbeatFailedTitle": "Heartbeat task failed",
+    "cronFinishedTitle": "Scheduled task finished",
+    "cronFailedTitle": "Scheduled task failed",
+    "needsApprovalTitle": "Task needs your input"
+  },
   "speech": {
     "recognitionUnsupported": "Speech recognition is not supported by this browser",
     "recordingUnsupported": "Microphone recording is not supported by this browser",
