@@ -321,9 +321,10 @@ async def test_interaction_supplement_clears_pending_ask_user_state() -> None:
 
     response = await adapter.process_interrupt(_build_supplement_request())
 
+    # resume_ctx 清理已收口至 ResumeContextManager.clear()（isolated 通道强制
+    # 落盘），不再经 loop_session 的 DeepAgent 键写 None——此处仅清 INTERRUPTION_KEY。
     assert loop_session.update_state.call_args_list == [
         call({INTERRUPTION_KEY: None}),
-        call({SKILL_TURBO_RESUME_CTX_KEY: None}),
     ]
     context.pop_messages.assert_called_once_with(1, with_history=True)
     context_engine.save_contexts.assert_awaited_once_with(loop_session)

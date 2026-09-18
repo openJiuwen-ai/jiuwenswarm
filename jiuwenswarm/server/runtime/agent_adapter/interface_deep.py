@@ -3412,43 +3412,23 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         """经 ``{card.id}__skill_turbo`` 隔离键清除 ``__skill_turbo_resume_ctx__``。
 
-        resume_ctx 由 executor 以 ``set_skill_turbo_id`` 的独立 session 落盘，
-        直接用 loop_session 清（DeepAgent 键）命不中存储位置。此处按
-        ``prepare_interrupt_artifacts_for_request`` 同一套 session 形态清理。
+        薄委托至 ResumeContextManager.clear（isolated 通道强制落盘已内置于 manager）。
+        方法名保留：守护测试 mock 该方法名，不得删除。
         """
         card = getattr(getattr(self, "_instance", None), "card", None)
         if card is None:
-            # card 缺失时无法打开 checkpointer 通道，clear 静默跳过会导致
-            # 残留 resume_ctx 触发任务重跑，提升到 warning 保证可观测。
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] skill_turbo resume ctx clear skipped: "
                 "card is None session_id=%s (stale resume_ctx may trigger task rerun)",
                 session_id,
             )
             return
-        from openjiuwen.core.session.agent import create_agent_session
-        from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
-            clear_resume_ctx,
-            set_skill_turbo_id,
+        from jiuwenswarm.server.runtime.skill_turbo.resume_context import (
+            ResumeContextManager,
         )
 
-        session = create_agent_session(session_id=session_id, card=card)
-        set_skill_turbo_id(session, card)
-        try:
-            await session.pre_run(inputs=None)
-            await clear_resume_ctx(session)
-        finally:
-            try:
-                await session.post_run()
-            except Exception:
-                # post_run 失败时 clear 不落盘，残留 resume_ctx 会触发任务重跑，
-                # 提升到 warning 保证可观测。
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] skill_turbo resume ctx clear "
-                    "post_run failed session_id=%s (stale resume_ctx may trigger task rerun)",
-                    session_id,
-                    exc_info=True,
-                )
+        # 按 session_id 构造 isolated clear 专用 manager（无 session 句柄）
+        await ResumeContextManager.for_isolated_clear(session_id, card).clear()
 
     def _is_deep_agent_executing_for_session(self, session_id: str) -> bool:
         """True when the shared DeepAgent still runs stream/task-loop work for *session_id*."""

@@ -24,23 +24,59 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 中立收尾
-_SKILL_TURBO_STOP_HINT_NEUTRAL = (
-    "\n\n[SYSTEM] The skill_acceleration_exec task has finished, but the internal "
-    "delivery pipeline did NOT confirm that the file(s) were generated and sent "
-    "to the user. You should now summarize this result to the user HONESTLY "
-    "based on the artifact summary above: clearly state which parts are "
-    "incomplete or failed and that the file has NOT been delivered. Do NOT "
-    "claim the file was sent. Do NOT call skill_acceleration_exec or skill_tool "
-    "again for this task unless the user asks for a retry. Do NOT call "
-    "send_file_to_user either; file delivery is handled by the internal pipeline."
-)
+# 中立收尾（按语言切换，语言源复用 request metadata；两份停止提示保持同语言）
+_SKILL_TURBO_STOP_HINT_NEUTRAL = {
+    "cn": (
+        "\n\n[SYSTEM] skill_acceleration_exec 任务已结束，但内部交付流水线未能确认"
+        "文件已生成并发送给用户。请基于上方产物摘要如实向用户总结：明确说明哪些部分"
+        "未完成或失败、文件尚未交付。不要声称文件已发送。除非用户明确要求重试，"
+        "不要再次调用 skill_acceleration_exec 或 skill_tool。也不要调用 "
+        "send_file_to_user；文件交付由内部流水线处理。"
+    ),
+    "en": (
+        "\n\n[SYSTEM] The skill_acceleration_exec task has finished, but the internal "
+        "delivery pipeline did NOT confirm that the file(s) were generated and sent "
+        "to the user. You should now summarize this result to the user HONESTLY "
+        "based on the artifact summary above: clearly state which parts are "
+        "incomplete or failed and that the file has NOT been delivered. Do NOT "
+        "claim the file was sent. Do NOT call skill_acceleration_exec or skill_tool "
+        "again for this task unless the user asks for a retry. Do NOT call "
+        "send_file_to_user either; file delivery is handled by the internal pipeline."
+    ),
+}
 
-_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT = (
-    "\n\n[SYSTEM] PPT 交付总结骨架将由系统在本工具结果之后通过流式通道发送给用户，"
-    "无需在本回合重复输出交付总结。禁止 tool_call，禁止再调 "
-    "send_file_to_user / skill_tool / skill_acceleration_exec。"
-)
+_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT = {
+    "cn": (
+        "\n\n[SYSTEM] PPT 交付总结骨架将由系统在本工具结果之后通过流式通道发送给用户，"
+        "无需在本回合重复输出交付总结。禁止 tool_call，禁止再调 "
+        "send_file_to_user / skill_tool / skill_acceleration_exec。"
+    ),
+    "en": (
+        "\n\n[SYSTEM] The PPT delivery summary skeleton will be streamed to the user "
+        "by the system after this tool result; do NOT repeat the delivery summary "
+        "in this turn. No further tool calls. Do NOT call send_file_to_user / "
+        "skill_tool / skill_acceleration_exec again."
+    ),
+}
+
+_EN_LANGUAGE_VALUES = frozenset({"en", "en-us", "english"})
+_CN_LANGUAGE_VALUES = frozenset({"zh", "cn", "zh-cn", "chinese"})
+
+
+def _resolve_stop_hint_language() -> str:
+    """停止提示语言：读 request metadata 的 language/preferred_language，默认中文。"""
+    try:
+        meta = get_current_request_metadata()
+    except Exception:
+        return "cn"
+    if isinstance(meta, dict):
+        for key in ("language", "preferred_language"):
+            raw = str(meta.get(key) or "").strip().lower()
+            if raw in _EN_LANGUAGE_VALUES:
+                return "en"
+            if raw in _CN_LANGUAGE_VALUES:
+                return "cn"
+    return "cn"
 
 # HITL 续跑没有外层 tool_result / DeliverySummaryRail；可见终稿用骨架或安全短句，
 # 禁止把产物摘要账本发给用户。
@@ -371,7 +407,13 @@ def set_interrupt_recovery_hint(request: Any, *, summary: str, skill: str = "") 
     """把一次性中断恢复 hint 挂到 request.metadata（仅注入产物摘要的请求调用）。"""
     metadata = getattr(request, "metadata", None)
     if not isinstance(metadata, dict):
-        # metadata 缺失时无处挂载：放弃 hint，守卫对本请求不生效（降级，不影响主流程）
+        # metadata 缺失时无处挂载：不静默降级——记 warning 保证可观测，
+        # 此时守卫不生效，LLM 只能靠指南条件句自行判断（同一信号、两处呼应）。
+        logger.warning(
+            "[SkillTurboTool] interrupt recovery hint dropped: request.metadata "
+            "missing (guard inactive for this request), summary_len=%d",
+            len(summary or ""),
+        )
         return
     metadata[SKILL_TURBO_INTERRUPT_RECOVERY_KEY] = {
         "summary": summary,
@@ -548,6 +590,7 @@ def _wrap_skill_turbo_result(
     artifact_text = _build_artifact_summary(artifact_holder or {})
     ppt_summary = _ppt_delivery_summary(artifact_holder)
     if result_dict.get("success"):
+        lang = _resolve_stop_hint_language()
         parts = [result_dict.get("result") or ""]
         if artifact_text:
             parts.append(artifact_text)
@@ -555,11 +598,11 @@ def _wrap_skill_turbo_result(
             # 骨架不进 tool_result 正文、也不在流水线内提前 chat.delta；
             # 挂到 ContextVar，由 after_tool_call 在外层 tool_result 之后流式发出。
             set_pending_ppt_delivery_summary(ppt_summary)
-            parts.append(_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT)
+            parts.append(_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT[lang])
         else:
             clear_pending_ppt_delivery_summary()
             # 无 P10 骨架 = 交付未确认，不宣称文件已发送。
-            parts.append(_SKILL_TURBO_STOP_HINT_NEUTRAL)
+            parts.append(_SKILL_TURBO_STOP_HINT_NEUTRAL[lang])
         result_dict["result"] = "\n\n".join(p for p in parts if p)
     else:
         clear_pending_ppt_delivery_summary()
@@ -574,7 +617,7 @@ def _wrap_skill_turbo_result(
     name="skill_acceleration_exec",
     description=(
         "技能加速模块。当用户意图涉及技能类任务（如生成 PPT、文档转换等结构化产出）时，"
-        "可优先尝试调用此工具以获得更快的生成流程。工具内部会二次判断是否真正匹配已支持的技能，"
+        "应优先调用此工具以获得更快的生成流程。工具内部会二次判断是否真正匹配已支持的技能，"
         "不匹配时自动降级为普通对话。当前内部支持 ppt-craft 技能（PPT 演示文稿制作）。"
         "【重要】每次调用仅处理一个独立任务。若用户要求生成多个同类产物（如多份不同主题的 PPT），"
         "必须为每个产物分别发起独立调用，且严格串行：等待前一次调用完全结束并收到返回结果后，"
@@ -635,13 +678,10 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
     # 忠实总结——多数选区请求会保留"选区"字样，但 LLM 偶尔会脑补成"生成 N 页 PPT"
     # （上述 case 即如此，query 变成"8页左右"）。因此本块是对"query 保留选区语义"的兜底；
     # 真正的主防线在 SkillTurboPromptRail 注入的排除提示词（LLM 调工具前能看到完整
-    # user message）。两层叠加降低误进概率。
+    # user message）。两层引用同一份关键词（region_edit.py），叠加降低误进概率。
     # 删除方式：待 pptx-craft 流水线支持"编辑已有 PPT"短路分支后，搜索 [REGION-EDIT-BYPASS] 删除本块。
-    region_keywords = (
-        "PPT选区", "选区原文", "选区类型", "选区位置", "选区容器",
-        "选区 class", "选区class", "修改要求", "选区字段", "布局优化", "选区优化", "内容优化"
-    )
-    if any(kw in query for kw in region_keywords):
+    from jiuwenswarm.server.runtime.skill_turbo.region_edit import REGION_EDIT_KEYWORDS
+    if any(kw in query for kw in REGION_EDIT_KEYWORDS):
         logger.info(
             "[SkillTurboTool] 检测到 PPT 选区/编辑已有 PPT 请求，跳过 skill 加速器，"
             "建议改用 skill_tool 走 pptx-craft 标准流程或直接编辑已有 PPT 文件"

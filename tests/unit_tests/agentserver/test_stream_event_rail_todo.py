@@ -6,11 +6,13 @@ from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from openjiuwen.harness.rails.interrupt.ask_user_rail import AskUserRequest
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
-    _bind_skill_turbo_outer_todo_token,
-    _reset_skill_turbo_outer_todo_token,
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
+)
+from jiuwenswarm.server.runtime.skill_turbo.context_binding import (
+    bind_skill_turbo_context,
+    reset_skill_turbo_context,
 )
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
     get_skill_turbo_outer_todo_active,
@@ -66,11 +68,13 @@ def test_outer_todo_display_ownership_rebinds_into_tool_context(
         extra={SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY: active}
     )
 
-    _bind_skill_turbo_outer_todo_token(ctx)
+    bind_skill_turbo_context(
+        ctx, outer_todo_active=active,
+    )
     try:
         assert get_skill_turbo_outer_todo_active() is active
     finally:
-        _reset_skill_turbo_outer_todo_token(ctx)
+        reset_skill_turbo_context(ctx)
 
     assert get_skill_turbo_outer_todo_active() is None
 

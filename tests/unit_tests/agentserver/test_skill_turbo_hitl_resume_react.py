@@ -904,7 +904,7 @@ async def test_fix_incomplete_tool_context_keeps_neutral_stop_hint_over_hitl_pla
     rail = JiuSwarmStreamEventRail()
     tool_call_id = "call_982d"
     neutral_msg = ToolMessage(
-        content="任务已完成" + _SKILL_TURBO_STOP_HINT_NEUTRAL,
+        content="任务已完成" + _SKILL_TURBO_STOP_HINT_NEUTRAL["en"],
         tool_call_id=tool_call_id,
     )
     ctx = SimpleNamespace(
