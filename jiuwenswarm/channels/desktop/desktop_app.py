@@ -44,7 +44,9 @@ APP_CHILD_FLAG = "--desktop-run-app"
 WEB_CHILD_FLAG = "--desktop-run-web"
 UPDATE_HELPER_FLAG = "--desktop-install-update"
 DESKTOP_ENV_FLAG = "JIUWENSWARM_DESKTOP"
-STARTUP_TIMEOUT_SECONDS = 45.0
+# 桌面启动等待上限: 暖缓存下 app/web 并行启动约 30s, 60s 足够覆盖;
+# 高负载冷启动可能更久, 失败时由 shutdown() 兜底清理子进程.
+STARTUP_TIMEOUT_SECONDS = 60.0
 PNG_DATA_URL_PREFIX = "data:image/png;base64,"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DesktopSaveResult = dict[str, bool]
@@ -670,13 +672,8 @@ class DesktopRuntime:
             "app", _build_child_command("app"), self.ports
         )
         _ensure_process_running("app", self.processes["app"])
-        _wait_for_tcp(
-            BACKEND_HOST,
-            self.backend_port,
-            STARTUP_TIMEOUT_SECONDS,
-            process=self.processes["app"],
-        )
-
+        # web 只是静态文件服务 + 反向代理, 启动阶段不依赖后端就绪
+        # (代理目标在收到请求时才连接), 与 app 并行拉起可省掉串行等待时间.
         web_command = _build_child_command(
             "web",
             [
@@ -690,6 +687,12 @@ class DesktopRuntime:
         )
         self.processes["web"] = _start_process("web", web_command, self.ports)
         _ensure_process_running("web", self.processes["web"])
+        _wait_for_tcp(
+            BACKEND_HOST,
+            self.backend_port,
+            STARTUP_TIMEOUT_SECONDS,
+            process=self.processes["app"],
+        )
         _wait_for_http(
             self.frontend_host,
             self.frontend_port,
@@ -1556,6 +1559,8 @@ nohup {q_executable} >/dev/null 2>&1 &
                     self.window.load_url(self.frontend_url)
             except Exception as exc:
                 logger.error("[desktop] service startup failed: %s", exc)
+                # 超时/失败时清理已拉起的子进程，避免残留进程占用端口导致下次启动失败
+                self.shutdown()
 
         threading.Thread(target=_start_services_and_navigate, daemon=True).start()
 
