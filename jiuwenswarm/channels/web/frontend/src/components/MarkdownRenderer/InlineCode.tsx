@@ -64,13 +64,14 @@ export function MarkdownInlineCode({ children, className, node: _node, ...props 
         : t('markdown.copyInlineCode');
 
   return (
-    <code
-      className={className ? `markdown-inline-code ${className}` : 'markdown-inline-code'}
-      {...props}
+    <span
+      className="markdown-inline-code"
       data-testid="markdown-inline-code"
       data-state={copyState}
     >
-      {children}
+      <code className={className} {...props}>
+        {children}
+      </code>
       <span
         role="button"
         tabIndex={0}
@@ -98,6 +99,6 @@ export function MarkdownInlineCode({ children, className, node: _node, ...props 
           <Copy className="markdown-inline-code__icon" strokeWidth={1.5} aria-hidden="true" />
         )}
       </span>
-    </code>
+    </span>
   );
 }

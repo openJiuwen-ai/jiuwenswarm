@@ -10,16 +10,19 @@
 
 /* Inline code one-click copy (#4360): hover-revealed affordance anchored to
    the code element; copies the full raw value while the visible text may be
-   truncated. Anchored to the right edge so wrapping/links keep their layout. */
+   truncated. The wrapper is inline-block so a wrapped (multi-line) code span
+   is one unfragmented box — an abs-positioned child of a plain inline element
+   anchors to a fragment-union box in Chrome and lands mid-text. */
 .markdown-inline-code {
   position: relative;
+  display: inline-block;
+  max-width: 100%;
 }
 
 .markdown-inline-code__copy {
   position: absolute;
   left: calc(100% + 4px);
-  top: 50%;
-  transform: translateY(-50%);
+  top: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -31,7 +34,7 @@
   cursor: pointer;
   opacity: 0;
   transition: opacity 120ms ease;
-  /* 不占据内容布局：锚定在 code 右侧外沿，避免撑开行内排版 */
+  /* 不占据内容布局：锚定在 code 右缘外沿，避免撑开行内排版 */
   z-index: 1;
 }
 
