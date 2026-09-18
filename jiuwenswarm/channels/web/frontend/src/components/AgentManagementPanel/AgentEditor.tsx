@@ -10,7 +10,9 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   isSkillVisibleInSourceTab,
+  isMcpSelectable,
   sortInstalledFirst,
+  sortMcpOptions,
   type AgentDraft,
   type McpOption,
   type RequestStatus,
@@ -107,7 +109,7 @@ export function AgentEditor({
         .includes(skillQuery.trim().toLocaleLowerCase());
     }),
   );
-  const filteredMcps = sortInstalledFirst(
+  const filteredMcps = sortMcpOptions(
     mcpOptions.filter((mcp) => {
       const isMarketplace = mcp.source === 'built_in' || mcp.source === 'hub';
       const isMine = mcp.installed === true || mcp.source === 'customize';
@@ -809,21 +811,22 @@ export function AgentEditor({
                           {pageMcps.map((mcp) => {
                             const selected = mcpDraft.includes(mcp.id);
                             const installed = mcp.installed === true;
-                            const unconnected = installed && mcp.connectionState !== 'connected';
+                            const selectable = isMcpSelectable(mcp);
+                            const unconnected = installed && !selectable;
                             const connecting = connectingMcpId === mcp.id || mcp.connectionState === 'connecting';
                             const installing = installingMcpId === mcp.id;
                             return (
                               <PageCard
                                 key={mcp.id}
-                                className={`agent-management-selection-card${selected ? ' is-selected' : ''}${!installed ? ' is-disabled' : ''}`}
+                                className={`agent-management-selection-card${selected ? ' is-selected' : ''}${!selectable ? ' is-disabled' : ''}`}
                                 testId="agent-editor-mcp-picker-item"
                                 variant={mcp.id}
-                                interactive={installed}
+                                interactive={selectable}
                                 selected={selected}
-                                disabled={!installed && !onInstallMcp}
+                                disabled={!selectable && !onInstallMcp && !onConnectMcp}
                                 ariaLabel={mcp.name}
                                 onClick={
-                                  installed
+                                  selectable
                                     ? () =>
                                         setMcpDraft((current) =>
                                           selected ? current.filter((id) => id !== mcp.id) : [...current, mcp.id],

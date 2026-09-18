@@ -1,4 +1,4 @@
-import type { SkillOption } from './types';
+import type { McpOption, SkillOption } from './types';
 
 export type SelectionSourceTab = 'local' | 'market';
 
@@ -33,6 +33,20 @@ type SortableSelection = {
   displayName?: string;
 };
 
+export type McpSelectionState = 'available' | 'pending-connection' | 'pending-install';
+
+export function getMcpSelectionState(
+  mcp: Pick<McpOption, 'installed' | 'connectionState'>,
+): McpSelectionState {
+  if (mcp.installed === true && mcp.connectionState === 'connected') return 'available';
+  if (mcp.installed === true) return 'pending-connection';
+  return 'pending-install';
+}
+
+export function isMcpSelectable(mcp: Pick<McpOption, 'installed' | 'connectionState'>): boolean {
+  return getMcpSelectionState(mcp) === 'available';
+}
+
 function selectionLabel(item: SortableSelection): string {
   return item.displayName?.trim() || item.name?.trim() || item.id?.trim() || '';
 }
@@ -41,6 +55,25 @@ export function sortInstalledFirst<T extends SortableSelection>(items: T[]): T[]
   return [...items].sort((left, right) => {
     const installedOrder = Number(right.installed === true) - Number(left.installed === true);
     if (installedOrder !== 0) return installedOrder;
+
+    const labelOrder = selectionLabel(left).localeCompare(selectionLabel(right), undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+    return labelOrder || (left.id || '').localeCompare(right.id || '', undefined, { numeric: true });
+  });
+}
+
+export function sortMcpOptions<T extends SortableSelection & Pick<McpOption, 'connectionState'>>(items: T[]): T[] {
+  const stateOrder: Record<McpSelectionState, number> = {
+    available: 0,
+    'pending-connection': 1,
+    'pending-install': 2,
+  };
+
+  return [...items].sort((left, right) => {
+    const mcpStateOrder = stateOrder[getMcpSelectionState(left)] - stateOrder[getMcpSelectionState(right)];
+    if (mcpStateOrder !== 0) return mcpStateOrder;
 
     const labelOrder = selectionLabel(left).localeCompare(selectionLabel(right), undefined, {
       numeric: true,
