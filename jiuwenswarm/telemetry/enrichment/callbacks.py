@@ -425,7 +425,6 @@ class RichTelemetryCallbacks:
                 OUTPUT_PRIORITY,
             ),
         )
-        self._install_agentcore_output_override()
         try:
             for event, callback, priority in pairs:
                 await framework.register(
@@ -709,22 +708,10 @@ class RichTelemetryCallbacks:
                 ),
             )
             if serialized_output is not None:
-                # 覆盖 AgentCore 可能已写入的、不含 reasoning/脱敏的版本。
+                # 覆盖 AgentCore 可能后写的、不含 reasoning/脱敏的版本。
                 self._best_effort(
                     warning,
-                    lambda: self._set_attribute(
-                        span,
-                        GEN_AI_OUTPUT_MESSAGES,
-                        serialized_output,
-                    ),
-                )
-                self._best_effort(
-                    warning,
-                    lambda: setattr(
-                        span,
-                        _OUTPUT_MESSAGES_OVERRIDE_ATTR,
-                        serialized_output,
-                    ),
+                    lambda: self._schedule_output_messages(span, serialized_output),
                 )
                 self._best_effort(
                     warning,
@@ -737,28 +724,12 @@ class RichTelemetryCallbacks:
                 # 序列化失败时不应保留 AgentCore 预先写入的明文。
                 self._best_effort(
                     warning,
-                    lambda: self._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES),
-                )
-                self._best_effort(
-                    warning,
-                    lambda: setattr(
-                        span,
-                        _OUTPUT_MESSAGES_OVERRIDE_ATTR,
-                        _OUTPUT_MESSAGES_CLEAR,
-                    ),
+                    lambda: self._schedule_output_messages(span, _OUTPUT_MESSAGES_CLEAR),
                 )
         else:
             self._best_effort(
                 warning,
-                lambda: self._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES),
-            )
-            self._best_effort(
-                warning,
-                lambda: setattr(
-                    span,
-                    _OUTPUT_MESSAGES_OVERRIDE_ATTR,
-                    _OUTPUT_MESSAGES_CLEAR,
-                ),
+                lambda: self._schedule_output_messages(span, _OUTPUT_MESSAGES_CLEAR),
             )
         finish_reason = self._best_effort(
             warning,
@@ -1986,37 +1957,38 @@ class RichTelemetryCallbacks:
         }
 
     @staticmethod
-    def _install_agentcore_output_override() -> None:
-        """在 AgentCore 写入 structured output 之后盖回我们的 messages。
+    def _arm_output_messages_guard(span: Span) -> None:
+        """拦截后续对本 span 的 output.messages 写入，落实我们的覆盖/清空意图。
 
-        回调优先级越高越先跑：我们 OUTPUT_PRIORITY=100 先于 AgentCore=0，
-        但 tip AgentCore 在关闭 llm span 时会再次写入 gen_ai.output.messages。
-        只能在它的 ``_record_structured_output`` 末尾再覆盖一次。
+        AgentCore 会在我们之后再次 ``set_attribute(gen_ai.output.messages, ...)``。
+        不碰对方类的受保护方法，只包装当前 span 实例的公开 ``set_attribute``。
         """
-        try:
-            from openjiuwen.extensions.observability.callback_handler import (
-                OtelCallbackHandler,
-            )
-        except ImportError:
+        if getattr(span, _AGENTCORE_OUTPUT_WRAP_ATTR, False):
             return
-        original = getattr(OtelCallbackHandler, "_record_structured_output", None)
-        if original is None or getattr(original, _AGENTCORE_OUTPUT_WRAP_ATTR, False):
+        bound_set = span.set_attribute
+
+        def _guarded_set_attribute(key: str, value: Any, *args: Any, **kwargs: Any) -> Any:
+            if key == GEN_AI_OUTPUT_MESSAGES:
+                override = getattr(span, _OUTPUT_MESSAGES_OVERRIDE_ATTR, None)
+                if override is _OUTPUT_MESSAGES_CLEAR:
+                    return None
+                if isinstance(override, str):
+                    value = override
+            return bound_set(key, value, *args, **kwargs)
+
+        span.set_attribute = _guarded_set_attribute  # type: ignore[method-assign]
+        setattr(span, _AGENTCORE_OUTPUT_WRAP_ATTR, True)
+
+    @staticmethod
+    def _schedule_output_messages(span: Span, value: str | object) -> None:
+        """记录 output.messages 覆盖意图，并立刻写到 span 上。"""
+        setattr(span, _OUTPUT_MESSAGES_OVERRIDE_ATTR, value)
+        RichTelemetryCallbacks._arm_output_messages_guard(span)
+        if value is _OUTPUT_MESSAGES_CLEAR:
+            RichTelemetryCallbacks._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES)
             return
-
-        def _wrapped(self: Any, span: Span, response: Any, *, fallback_text: str = "") -> None:
-            original(self, span, response, fallback_text=fallback_text)
-            override = getattr(span, _OUTPUT_MESSAGES_OVERRIDE_ATTR, None)
-            if override is _OUTPUT_MESSAGES_CLEAR:
-                RichTelemetryCallbacks._clear_attribute(span, GEN_AI_OUTPUT_MESSAGES)
-            elif isinstance(override, str):
-                RichTelemetryCallbacks._set_attribute(
-                    span,
-                    GEN_AI_OUTPUT_MESSAGES,
-                    override,
-                )
-
-        setattr(_wrapped, _AGENTCORE_OUTPUT_WRAP_ATTR, True)
-        OtelCallbackHandler._record_structured_output = _wrapped  # type: ignore[method-assign]
+        if isinstance(value, str):
+            RichTelemetryCallbacks._set_attribute(span, GEN_AI_OUTPUT_MESSAGES, value)
 
     @staticmethod
     def _set_attribute(span: Span, key: str, value: Any) -> None:
@@ -2032,32 +2004,14 @@ class RichTelemetryCallbacks:
 
     @staticmethod
     def _clear_attribute(span: Span, key: str) -> None:
-        """尽量删除属性；OTel 无公开 API 时回退改私有 _attributes。"""
+        """尽量删除属性；OTel 无公开删除 API，仅处理常见的 dict 型存储。"""
         attrs = getattr(span, "_attributes", None)
         if isinstance(attrs, dict):
             attrs.pop(key, None)
             return
-        # BoundedAttributes 等实现：尝试映射删除
-        try:
-            if attrs is not None and hasattr(attrs, "pop"):
-                attrs.pop(key, None)  # type: ignore[call-arg]
-                return
-        except Exception as exc:
-            _LOGGER.debug(
-                "span attribute pop failed: key=%s error=%s",
-                key,
-                exc,
-            )
-        try:
-            raw = getattr(attrs, "_dict", None)
-            if isinstance(raw, dict):
-                raw.pop(key, None)
-        except Exception as exc:
-            _LOGGER.debug(
-                "span attribute clear failed: key=%s error=%s",
-                key,
-                exc,
-            )
+        raw = getattr(attrs, "_dict", None) if attrs is not None else None
+        if isinstance(raw, dict):
+            raw.pop(key, None)
 
     @staticmethod
     def _set_if_empty(span: Span, key: str, value: Any) -> None:
