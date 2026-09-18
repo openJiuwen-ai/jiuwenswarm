@@ -15,8 +15,9 @@ parse_args() {
                 MODULES+=("${args[$i]}")
                 i=$((i+1))
                 ;;
-            --hosts)
-                DEPLOY_VARS["CLUSTER_HOSTS"]="${args[$((i+1))]}"
+            --ip)
+                BIND_IP="${args[$((i+1))]}"
+                export BIND_IP
                 i=$((i+2))
                 ;;
             -h|--help)
@@ -40,7 +41,7 @@ parse_args() {
     info "Executing command: $*"
     info "CMD=${CMD}"
     info "MODULES=${MODULES[@]}"
-    info "CLUSTER_HOSTS=${DEPLOY_VARS["CLUSTER_HOSTS"]}"
+    info "BIND_IP=${BIND_IP:-auto}"
 }
 
 print_help() {
@@ -53,32 +54,28 @@ Commands (Required):
   restart   Restart specified modules
 
 Modules (Optional, default: jiuwenswarm gateway web):
-  jiuwenswarm    Install jiuwenswarm on all hosts + register function on yr master
+  jiuwenswarm    Install jiuwenswarm on local host + register function on yr master
   gateway        jiuwenswarm gateway service (process-mode)
   web            jiuwenswarm web static server (serves frontend dist on WEB_STATIC_PORT, /ws proxies to gateway WEB_PORT)
 
 Options:
-  --hosts HOSTS      Comma-separated IP list for cluster hosts (default: local machine IP)
-                     Single machine: --hosts 192.168.1.1
-                     Multi-machine:  --hosts 192.168.1.1,192.168.1.2,192.168.1.3
-                     First IP is yr master node, others are agent nodes
-                     If not specified, defaults to local machine IP
-                     Can also be set in .env.custom via CLUSTER_HOSTS
+  --ip IP            Specify the local machine IP (required for multi-NIC environments).
+                     Overrides auto-detection. All modules use this IP.
   -h, --help         Display this help message and exit
 
 Prerequisites:
-  yuanrong must be already deployed on all hosts (use yuanrong_deploy.sh up --hosts ...)
+  yuanrong must be already deployed on this host (use yuanrong_deploy.sh up --ip ...)
 
 Examples:
-  ./$(basename "$0") up --hosts 192.168.1.1                          # Deploy all (jiuwenswarm + gateway + web)
-  ./$(basename "$0") up jiuwenswarm --hosts 192.168.1.1              # Deploy jiuwenswarm only
-  ./$(basename "$0") up gateway --hosts 192.168.1.1                  # Deploy gateway only
-  ./$(basename "$0") up web --hosts 192.168.1.1                      # Deploy web server only
-  ./$(basename "$0") up                                              # Deploy all on local machine
-  ./$(basename "$0") down --hosts 192.168.1.1                        # Stop all
-  ./$(basename "$0") down gateway --hosts 192.168.1.1                # Stop gateway only
-  ./$(basename "$0") down web --hosts 192.168.1.1                    # Stop web server only
-  ./$(basename "$0") restart --hosts 192.168.1.1                     # Restart all
+  ./$(basename "$0") up --ip 192.168.1.1                          # Deploy all (jiuwenswarm + gateway + web)
+  ./$(basename "$0") up jiuwenswarm --ip 192.168.1.1              # Deploy jiuwenswarm only
+  ./$(basename "$0") up gateway --ip 192.168.1.1                  # Deploy gateway only
+  ./$(basename "$0") up web --ip 192.168.1.1                      # Deploy web server only
+  ./$(basename "$0") up                                           # Deploy all on local machine (auto-detect IP)
+  ./$(basename "$0") down --ip 192.168.1.1                        # Stop all
+  ./$(basename "$0") down gateway --ip 192.168.1.1                # Stop gateway only
+  ./$(basename "$0") down web --ip 192.168.1.1                    # Stop web server only
+  ./$(basename "$0") restart --ip 192.168.1.1                     # Restart all
 EOF
     exit 0
 }

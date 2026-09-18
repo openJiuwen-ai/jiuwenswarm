@@ -21,13 +21,8 @@ set -euo >/dev/null 2>&1
 web_resolve_host() {
     local master_host="${DEPLOY_VARS["MASTER_NODE_IP"]:-}"
     if [ -z "${master_host}" ]; then
-        if [ -n "${DEPLOY_VARS["CLUSTER_HOSTS"]:-}" ]; then
-            IFS=',' read -ra _web_host_list <<< "${DEPLOY_VARS["CLUSTER_HOSTS"]}"
-            master_host="${_web_host_list[0]}"
-        else
-            master_host=$(get_local_ip)
-            info "MASTER_NODE_IP not set, defaulting to local: ${master_host}" >&2
-        fi
+        master_host="${BIND_IP:-$(_yr_consistent_local_ip)}"
+        info "MASTER_NODE_IP not set, defaulting to: ${master_host}" >&2
     fi
     echo "${master_host}"
 }

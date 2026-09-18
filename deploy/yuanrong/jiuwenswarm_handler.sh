@@ -1,54 +1,34 @@
 #!/usr/bin/env bash
 set -euo >/dev/null 2>&1
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+# _get_local_ips / get_local_ip 已在 check_handler.sh 中统一定义（先 source），
+# 此处不再重复，避免静默覆盖导致的认知陷阱。
 
-is_local_host() {
-    local host="$1"
-    if [ "${host}" = "127.0.0.1" ] || [ "${host}" = "localhost" ]; then
-        return 0
-    fi
-    local local_ips
-    local_ips=$(hostname -I 2>/dev/null || echo "")
-    for ip in ${local_ips}; do
-        if [ "${host}" = "${ip}" ]; then
-            return 0
-        fi
-    done
-    return 1
-}
-
+# 所有操作均在本机执行，host 参数保留仅为兼容旧调用签名，实际不使用
 exec_on_host() {
     local host="$1"
     shift
-    if is_local_host "${host}"; then
-        bash -c "$*"
-    else
-        ssh ${SSH_OPTS} root@${host} "$*"
-    fi
+    bash -c "$*"
 }
 
+# 所有操作均在本机执行，host 参数保留仅为兼容旧调用签名，实际不使用
 copy_to_host() {
     local host="$1"
     local src="$2"
     local dst="$3"
-    if is_local_host "${host}"; then
-        local src_real
-        src_real=$(realpath "${src}" 2>/dev/null || echo "${src}")
-        local dst_real
-        if [[ "${dst}" == */ ]]; then
-            dst_real=$(realpath "${dst}" 2>/dev/null || echo "${dst}")
-            dst_real="${dst_real}/$(basename "${src}")"
-        else
-            dst_real=$(realpath "${dst}" 2>/dev/null || echo "${dst}")
-        fi
-        if [ "${src_real}" = "${dst_real}" ]; then
-            return 0
-        fi
-        cp -r "${src}" "${dst}"
+    local src_real
+    src_real=$(realpath "${src}" 2>/dev/null || echo "${src}")
+    local dst_real
+    if [[ "${dst}" == */ ]]; then
+        dst_real=$(realpath "${dst}" 2>/dev/null || echo "${dst}")
+        dst_real="${dst_real}/$(basename "${src}")"
     else
-        scp ${SSH_OPTS} -r "${src}" "root@${host}:${dst}"
+        dst_real=$(realpath "${dst}" 2>/dev/null || echo "${dst}")
     fi
+    if [ "${src_real}" = "${dst_real}" ]; then
+        return 0
+    fi
+    cp -r "${src}" "${dst}"
 }
 
 # ===== 目标主机端口监听检查（gateway / web 等平级组件共用） =====
@@ -58,18 +38,6 @@ port_is_listening() {
     local host="$1"
     local port="$2"
     exec_on_host "${host}" "if command -v ss >/dev/null 2>&1; then ss -ltn 2>/dev/null | grep -qE ':${port}[[:space:]]'; else timeout 3 bash -c 'exec 3<>/dev/tcp/${host}/${port}' 2>/dev/null; fi" 2>/dev/null
-}
-
-jiuwenswarm_check_ssh() {
-    local host="$1"
-    if is_local_host "${host}"; then
-        return 0
-    fi
-    if ssh ${SSH_OPTS} root@${host} "echo ok" >/dev/null 2>&1; then
-        return 0
-    else
-        return 1
-    fi
 }
 
 jiuwenswarm_install() {
@@ -145,33 +113,16 @@ jiuwenswarm_ensure_func_code() {
 }
 
 deploy_jiuwenswarm() {
-    local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]}"
-    local master_host
-
-    IFS=',' read -ra JIUWENSWARM_HOST_LIST <<< "${hosts_str}"
-    master_host="${JIUWENSWARM_HOST_LIST[0]}"
+    local hosts_str="${BIND_IP:-$(_yr_consistent_local_ip)}"
+    local master_host="${hosts_str}"
 
     info "Deploying jiuwenswarm"
     info "Master host (yr master): ${master_host}"
-    info "Total hosts: ${#JIUWENSWARM_HOST_LIST[@]}"
-    info "Assuming yuanrong is already deployed on all hosts"
+    info "Assuming yuanrong is already deployed on this host"
 
-    info "Checking connectivity to all hosts..."
-    for host in "${JIUWENSWARM_HOST_LIST[@]}"; do
-        if is_local_host "${host}"; then
-            success "${host} is local host, skip SSH check"
-        elif jiuwenswarm_check_ssh "${host}"; then
-            success "SSH to ${host} OK"
-        else
-            error "SSH to ${host} failed! Please configure SSH key authentication first."
-        fi
-    done
-
-    for host in "${JIUWENSWARM_HOST_LIST[@]}"; do
-        jiuwenswarm_install "${host}"
-        jiuwenswarm_infer_func_code_dir "${host}"
-        jiuwenswarm_ensure_func_code "${host}"
-    done
+    jiuwenswarm_install "${master_host}"
+    jiuwenswarm_infer_func_code_dir "${master_host}"
+    jiuwenswarm_ensure_func_code "${master_host}"
 
     success "jiuwenswarm deployment completed!"
     echo ""
@@ -182,21 +133,13 @@ deploy_jiuwenswarm() {
     echo "  Func Code Dir: ${DEPLOY_VARS["YR_FUNC_CODE_DIR"]}"
     echo ""
     echo "  Next step: deploy gateway"
-    echo "    ./$(basename "$0") up gateway --hosts ${hosts_str}"
+    echo "    ./$(basename "$0") up gateway --ip ${hosts_str}"
     echo "=========================================="
 }
 
 uninstall_jiuwenswarm() {
-    local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]:-}"
-
-    if [ -z "${hosts_str}" ]; then
-        hosts_str=$(get_local_ip)
-        DEPLOY_VARS["CLUSTER_HOSTS"]="${hosts_str}"
-        warning "CLUSTER_HOSTS not set, using local IP: ${hosts_str}"
-    fi
-
-    IFS=',' read -ra JIUWENSWARM_HOST_LIST <<< "${hosts_str}"
-    local master_host="${JIUWENSWARM_HOST_LIST[0]}"
+    local hosts_str="${BIND_IP:-$(_yr_consistent_local_ip)}"
+    local master_host="${hosts_str}"
 
     # 注意: down 仅停止服务，不注销 function（注册已不再需要）。
     # pip 包卸载由 agentos uninstall 流程（module.sh 的 jiuwenswarm_uninstall 钩子）负责。

@@ -22,9 +22,36 @@ check_if_root() {
     fi
 }
 
+_get_local_ips() {
+    local ips
+    ips=$(hostname -I 2>/dev/null || true)
+    if [ -n "${ips}" ]; then
+        echo "${ips}"
+        return
+    fi
+    if command -v ip >/dev/null 2>&1; then
+        ip -4 addr show 2>/dev/null | grep -oE "inet [0-9.]+" | awk '{print $2}' | grep -v "^127\."
+        return
+    fi
+    local hname
+    hname=$(cat /etc/hostname 2>/dev/null || true)
+    if [ -n "${hname}" ]; then
+        grep -E "^[0-9.]+[[:space:]]+.*${hname}" /etc/hosts 2>/dev/null | awk '{print $1}'
+    fi
+    if command -v ifconfig >/dev/null 2>&1; then
+        ifconfig 2>/dev/null | grep -oE "inet [0-9.]+" | awk '{print $2}' | grep -v "^127\."
+    fi
+}
+
+# 本机 IP 探测：优先 BIND_IP（--ip / .env.custom），未指定时走多级回退链
+# （hostname -I → ip -4 addr → /etc/hosts → ifconfig），取首个非回环地址。
 get_local_ip() {
+    if [ -n "${BIND_IP:-}" ]; then
+        echo "${BIND_IP}"
+        return 0
+    fi
     local local_ips
-    local_ips=$(hostname -I 2>/dev/null || echo "")
+    local_ips=$(_get_local_ips)
     for ip in ${local_ips}; do
         if [ "${ip}" != "127.0.0.1" ] && [ "${ip}" != "localhost" ]; then
             echo "${ip}"
@@ -38,6 +65,10 @@ get_local_ip() {
 # values.host_ip（Python get_local_ip：UDP 出口探测 → hostname 解析 → 127.0.0.1）。
 # config.py 不可用（python 缺失 / ~/.agentos/deploy/config.yaml 缺失）时降级 bash get_local_ip。
 _yr_consistent_local_ip() {
+    if [ -n "${BIND_IP:-}" ]; then
+        echo "${BIND_IP}"
+        return 0
+    fi
     local cfg_py="${SCRIPT_DIR}/../scripts/config.py"
     local py yr_ip=""
     if [ -f "${cfg_py}" ]; then
@@ -115,50 +146,13 @@ check_cmds() {
     for cmd in python3 jq; do
         check_cmd ${cmd}
     done
-
-    local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]:-}"
-    local need_ssh=false
-    if [ -n "${hosts_str}" ]; then
-        IFS=',' read -ra _host_list <<< "${hosts_str}"
-        for h in "${_host_list[@]}"; do
-            if [ "${h}" != "127.0.0.1" ] && [ "${h}" != "localhost" ]; then
-                local local_ips
-                local_ips=$(hostname -I 2>/dev/null || echo "")
-                local is_local=false
-                for ip in ${local_ips}; do
-                    if [ "${h}" = "${ip}" ]; then
-                        is_local=true
-                        break
-                    fi
-                done
-                if [ "${is_local}" = "false" ]; then
-                    need_ssh=true
-                    break
-                fi
-            fi
-        done
-    fi
-    if [ "${need_ssh}" = "true" ]; then
-        check_cmd ssh
-    fi
 }
 
 check_jiuwenswarm_up_dependency() {
-    local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]}"
+    local hosts_str="${BIND_IP:-$(_yr_consistent_local_ip)}"
 
-    if [ -z "${hosts_str}" ]; then
-        hosts_str=$(_yr_consistent_local_ip)
-        DEPLOY_VARS["CLUSTER_HOSTS"]="${hosts_str}"
-        warning "CLUSTER_HOSTS not set, using yuanrong-consistent local IP: ${hosts_str}"
-    fi
-
-    IFS=',' read -ra HOST_LIST <<< "${hosts_str}"
-    if [ ${#HOST_LIST[@]} -eq 0 ]; then
-        error "CLUSTER_HOSTS is empty. Please specify at least one host IP"
-    fi
-
-    info "CLUSTER_HOSTS validated: ${hosts_str} (${#HOST_LIST[@]} host(s))"
-    info "Note: yuanrong is assumed to be already deployed on all hosts"
+    info "Using host IP: ${hosts_str}"
+    info "Note: yuanrong is assumed to be already deployed on this host"
 }
 
 check_gateway_up_dependency() {

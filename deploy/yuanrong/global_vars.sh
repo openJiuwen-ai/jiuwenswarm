@@ -13,6 +13,7 @@ GATEWAY_ENV_FILE="${SCRIPT_DIR}/conf/gateway.env"
 REG_FUNC_FILE="${SCRIPT_DIR}/../../jiuwenswarm/extensions/clawee.py"
 
 CMD=""
+BIND_IP="${BIND_IP:-}"
 
 declare -ga MODULES=()
 
@@ -24,7 +25,6 @@ declare -A DEPLOY_VARS=(
     ["MGR_MIN_INSTANCE"]="1"
     ["MGR_MAX_INSTANCE"]="10"
     ["MGR_CONCURRENT_NUM"]="10"
-    ["CLUSTER_HOSTS"]=""
     ["YR_PYTHON_VERSION"]="3.11"
     ["YR_FUNC_CODE_DIR"]=""
     ["JIUWENSWARM_PACKAGE_URL"]=""

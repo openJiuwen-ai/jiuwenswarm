@@ -65,6 +65,14 @@ read_env_from_file() {
     done < "$env_file"
 
     success "Loaded config: ${env_file}"
+
+    # BIND_IP 需同时回填到壳变量，才能被 get_local_ip / _yr_consistent_local_ip 消费。
+    # --ip 在 parse_args 中生效，优先级更高（parse_args 在 read_env_from_file 之后调用）。
+    if [ -z "${BIND_IP:-}" ] && [ -n "${target_array["BIND_IP"]:-}" ]; then
+        BIND_IP="${target_array["BIND_IP"]}"
+        export BIND_IP
+        info "BIND_IP loaded from config file: ${BIND_IP}"
+    fi
 }
 
 # ===== Writes sorted key-value pairs to .env.<Instance ID> file =====
