@@ -70,7 +70,11 @@ class RsiWorker:
         self._last_enqueued: str | None = None
         self._resume_task_ids: set[str] = set()
         self._control_tasks: dict[str, asyncio.Task[Any]] = {}
+        # ``_execution_tasks`` owns the slot supervisor; the actual provider
+        # coroutine is tracked separately so Harness cancellation reaches it.
         self._execution_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._execution_runners: dict[str, asyncio.Task[Any]] = {}
+        self._termination_requested: set[str] = set()
         self._execution_generations: dict[str, int] = {}
         # 请求 pause/terminate 时用来提前让出执行位；见 ``_run_until_slot_free``。
         self._slot_released: dict[str, asyncio.Future[None]] = {}
@@ -160,9 +164,11 @@ class RsiWorker:
                     return task.status
                 # Providers without a terminate hook (the production Harness
                 # engine) are stopped by cancelling the running coroutine.
-                exec_task = self._execution_tasks.get(task_id)
-                if exec_task is not None and not exec_task.done():
-                    exec_task.cancel()
+                if task.status == TaskStatus.RUNNING.value:
+                    self._termination_requested.add(task_id)
+                runner = self._execution_runners.get(task_id)
+                if runner is not None and not runner.done():
+                    runner.cancel()
                 self._mark_terminated(task_id)
                 return self.store.get(task_id).status
             result = self.store.update_status(
@@ -232,15 +238,12 @@ class RsiWorker:
                     )
                 )
                 self._execution_tasks[task_id] = exec_task
-                if self.store.get(task_id).status != TaskStatus.RUNNING.value:
-                    # A terminate request won the race between RUNNING and
-                    # task registration; cancel the fresh execution immediately.
-                    exec_task.cancel()
                 await exec_task
             except Exception:  # noqa: BLE001 - 单任务状态冲突/异常不拖垮 worker
                 logger.exception("[RSI] 任务执行异常 task=%s，跳过继续取下一个", task_id)
             finally:
                 self._execution_tasks.pop(task_id, None)
+                self._termination_requested.discard(task_id)
                 self._running_task_id = None
                 self._queue.task_done()
 
@@ -257,22 +260,45 @@ class RsiWorker:
         模型调用加一次评测。实测一次真实运行里这段是 2 分 34 秒，而这段时间执行位
         一直被占着，排在后面的任务只能等一件谁都不再要其结果的工作做完。
 
-        控制指令一发出就把执行位让出来，正在收尾的运行转到后台继续，队列接着走。
-        代价是这段时间里两个运行短暂重叠，收尾的那个仍在占 CPU——所以以墙钟为
-        指标的任务，那一次评测会偏慢一点。
+        Provider-control 指令一发出就把执行位让出来，正在收尾的运行转到后台继续，
+        队列接着走；这是 supports_terminate=True / supports_pause=True 的既有语义。
+        Harness 没有 terminate hook 时则取消实际 runner，并等待其清理完成后再继续，
+        避免旧执行与后续任务重叠。
         """
         runner = asyncio.create_task(
             self._execute_task(task_id, resume=resume, generation=generation)
         )
+        self._execution_runners[task_id] = runner
+        if (
+            task_id in self._termination_requested
+            or self.store.get(task_id).status != TaskStatus.RUNNING.value
+        ):
+            # A terminate request may arrive after worker.start but before the
+            # inner runner is registered.  Consume that intent at the actual
+            # execution boundary instead of cancelling the slot supervisor.
+            runner.cancel()
         released: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._slot_released[task_id] = released
         try:
             await asyncio.wait({runner, released}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             self._slot_released.pop(task_id, None)
+            if self._execution_runners.get(task_id) is runner:
+                self._execution_runners.pop(task_id, None)
             released.cancel()
         if runner.done():
-            await runner          # 异常照旧抛给 _run_loop 的处理分支
+            try:
+                await runner      # 异常照旧抛给 _run_loop 的处理分支
+            except asyncio.CancelledError:
+                # If termination won before the coroutine got its first
+                # scheduling turn, the Task is cancelled without entering
+                # ``_execute_task``.  Consume only that expected cancellation;
+                # external supervisor cancellation must still propagate.
+                if (
+                    task_id not in self._termination_requested
+                    and self.store.get(task_id).status != TaskStatus.TERMINATED.value
+                ):
+                    raise
             return
         # 后台收尾：留住引用，否则事件循环可能把这个 Task 回收掉。
         self._winding_down.add(runner)
