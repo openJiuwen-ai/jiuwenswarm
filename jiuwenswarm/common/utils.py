@@ -886,6 +886,14 @@ def ensure_config_migrated_from_template(
 
     版本号短路：用户 config.config_version == 程序 VERSION 时跳过迁移；
     不一致时迁移，迁移成功后由 migrate_config_from_template 把 config_version 写回程序版本。
+
+    合并为纯增量操作：只补齐模板新增项，不会删除用户 config.yaml 中
+    模板里没有的配置项（模板是示例文档而非 schema，其中本就包含留给
+    用户填写的开放式配置节）。因此本函数可以每次启动安全调用。
+
+    Merges newly added template keys into the user's config.yaml. The merge is
+    purely additive: keys the operator added that the template does not contain
+    are preserved, so this is safe to call on every start.
     """
     from jiuwenswarm.common.config import migrate_config_from_template, load_yaml_round_trip
     from jiuwenswarm.common._build_config import VERSION
