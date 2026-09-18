@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import uuid
+import webbrowser
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -630,6 +631,26 @@ class _WindowApi:
     def get_startup_status(self) -> dict[str, str]:
         """Return a snapshot consumed by the local Loading page."""
         return self._runtime.get_startup_status()
+
+    @staticmethod
+    def open_external_url(url: str) -> bool:
+        """Open SkillHub OAuth in the system browser, outside the desktop WebView."""
+        from urllib.parse import urlsplit
+
+        base = (
+            os.getenv("SKILLHUB_OAUTH_BASE_URL")
+            or os.getenv("TEAM_SKILLS_HUB_BASE_URL")
+            or "https://swarmskills.openjiuwen.com"
+        ).rstrip("/")
+        parsed, expected = urlsplit(url), urlsplit(base)
+        if (parsed.scheme, parsed.netloc) != (expected.scheme, expected.netloc):
+            return False
+        if parsed.path not in {
+            "/api/v1/auth/oauth/gitcode/start",
+            "/api/v1/auth/oauth/github/start",
+        }:
+            return False
+        return bool(webbrowser.open(url))
 
     def install_update(self, installer_path: str) -> bool:
         return self._runtime.install_update(installer_path)
