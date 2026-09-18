@@ -115,9 +115,8 @@ class TestStructuredAskUserToolSchema:
         assert EXTENDED_INPUT_PARAMS_CN["required"] == ["query"]
 
     @staticmethod
-    def test_questions_schema_limits_each_call_to_four():
+    def test_questions_schema_enforces_consistent_question_limit():
         """English and Chinese schemas must enforce the same question limit."""
-        assert MAX_STRUCTURED_QUESTIONS == 4
         assert (
             EXTENDED_INPUT_PARAMS_EN["properties"]["questions"]["maxItems"]
             == MAX_STRUCTURED_QUESTIONS

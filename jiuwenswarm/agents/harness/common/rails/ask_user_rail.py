@@ -41,7 +41,8 @@ from jiuwenswarm.common.schema.ask_user import (
 
 logger = logging.getLogger(__name__)
 
-MAX_STRUCTURED_QUESTIONS = 4
+# 上限 8：供再改改两轮卡一次发 5 题（不影响其它调用发更少题）。
+MAX_STRUCTURED_QUESTIONS = 8
 
 
 def _decode_questions_array(raw_questions: Any) -> tuple[Any, bool]:
@@ -140,7 +141,7 @@ EXTENDED_INPUT_PARAMS_EN: dict[str, Any] = {
             "description": (
                 "Structured questions with selectable options. "
                 "Use this when you want the user to choose from predefined options "
-                "instead of typing free text. Ask at most 4 questions per call. "
+                "instead of typing free text. Ask at most 8 questions per call. "
                 "Omit options for free-text input; otherwise provide 2-4 options. "
                 "The user can always select 'Other' for custom input."
             ),
@@ -171,7 +172,7 @@ EXTENDED_INPUT_PARAMS_CN: dict[str, Any] = {
             "type": "array",
             "description": (
                 "带选项的结构化问题。当希望用户从预定义选项中选择而非自由输入时使用。"
-                "每次调用最多询问 4 个问题。"
+                "每次调用最多询问 8 个问题。"
                 "自由输入题不提供选项；否则必须提供 2-4 个选项。"
                 "用户始终可以选择「其他」进行自定义输入。"
             ),
@@ -197,7 +198,7 @@ _EXTENDED_DESCRIPTION_EN: str = (
     "2. Structured questions (multi-choice): pass `query` + `questions` — "
     "the user selects from predefined options. "
     "Use `questions` when you want the user to choose between specific options "
-    "(e.g., 'Apply update' vs 'Skip'). Ask at most 4 questions per call. "
+    "(e.g., 'Apply update' vs 'Skip'). Ask at most 8 questions per call. "
     "Omit options for free-text input; otherwise provide 2-4 options. "
     "For single-select questions, an option may carry a `preview` (markdown, "
     "e.g. fenced code block ASCII mockup) shown beside it to compare concrete "
@@ -209,7 +210,7 @@ _EXTENDED_DESCRIPTION_CN: str = (
     "1. 纯文本查询：只传 `query` —— 用户自由输入回答。\n"
     "2. 结构化选项：传 `query` + `questions` —— 用户从预定义选项中选择。"
     "当你希望用户在特定选项间做选择时（如「应用更新」vs「跳过」）使用 `questions`。"
-    "每次调用最多询问 4 个问题。自由输入题不提供选项；否则必须提供 2-4 个选项。"
+    "每次调用最多询问 8 个问题。自由输入题不提供选项；否则必须提供 2-4 个选项。"
     "对于单选问题，选项可携带 `preview`（markdown，"
     "如带围栏代码块的 ASCII mockup）展示在选项旁，用于对比具体产物；"
     "仅在视觉对比有助于用户决策时使用。"

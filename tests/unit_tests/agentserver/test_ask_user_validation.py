@@ -189,6 +189,40 @@ async def test_explicit_skipped_keeps_readable_default():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("header", ["再改方向", "请选择"])
+async def test_skipped_answer_returns_plain_text_regardless_of_header(header):
+    """header 取值不触发任何答案改写——skipped 一律回原样文本，不叠 push。
+
+    回归守卫：防止有人再按 header（"再改方向"）加回软 push 改写答案。
+    """
+    rail = StructuredAskUserRail()
+    tc = _make_tool_call(
+        {
+            "query": "x",
+            "questions": [
+                {
+                    "question": "q?",
+                    "header": header,
+                    "options": [
+                        {"label": "A", "description": "a"},
+                        {"label": "B", "description": "b"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    decision = await rail.resolve_interrupt(
+        MagicMock(),
+        tc,
+        {"status": "skipped", "answers": []},
+    )
+
+    assert isinstance(decision, RejectResult)
+    assert decision.tool_result == "用户已跳过本次问答，未提供回答。"
+
+
+@pytest.mark.asyncio
 async def test_explicit_skipped_can_opt_in_to_compact_machine_state():
     rail = StructuredAskUserRail()
     tc = _make_tool_call(
