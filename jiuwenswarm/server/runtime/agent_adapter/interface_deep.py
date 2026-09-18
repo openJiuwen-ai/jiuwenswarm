@@ -19801,6 +19801,27 @@ class JiuWenSwarmDeepAdapter:
                                 "任务执行失败",
                             )
                         return {"event_type": "chat.error", "error": error or "任务执行失败"}
+                    if inner_val == "task_interaction":
+                        # native-harness ask_user interrupts
+                        # surface here without __interaction__ payloads reaching
+                        # the stream. Parse the embedded interrupt result so the
+                        # question card still reaches the frontend.
+                        from jiuwenswarm.server.utils.stream_utils import (
+                            parse_task_interaction_payload,
+                        )
+                        try:
+                            interaction_event = parse_task_interaction_payload(payload)
+                        except Exception:
+                            logger.exception(
+                                "[interface_deep] failed to parse task_interaction payload"
+                            )
+                            interaction_event = None
+                        if interaction_event is not None:
+                            return interaction_event
+                        logger.warning(
+                            "[interface_deep] task_interaction without parsable ask_user payload;"
+                            " no question card could be built"
+                        )
                     # Close the controller_output enum: HITL cards are emitted via
                     # ``__interaction__``; remaining types are control-plane metadata.
                     # Never fall through to ``str(payload)`` → chat.delta (ISSUE #3892).

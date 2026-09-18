@@ -1399,6 +1399,83 @@ def _is_duplicate_ask_user_question(
     return False
 
 
+# Chunk types that mean "the round made progress" — any of them cancels the
+# ask_user card resend watchdog. llm_usage is excluded:
+# usage frames accompany the interaction chunk itself, not a continuation.
+_TEAM_PROGRESS_CHUNK_TYPES = frozenset({
+    "llm_output", "llm_reasoning", "content_chunk", "tool_call",
+    "tool_update", "controller_output", "answer", "__interaction__",
+    "message", "team.runtime_ready", "team.completed",
+})
+
+_ASK_USER_RESEND_INTERVAL_S = max(
+    5.0,
+    float(os.environ.get("JIUWENSWARM_TEAM_ASK_USER_RESEND_INTERVAL_S", "60") or 60),
+)
+_ASK_USER_RESEND_MAX = max(
+    1, int(os.environ.get("JIUWENSWARM_TEAM_ASK_USER_RESEND_MAX", "5") or 5)
+)
+
+
+async def _resend_ask_user_loop(
+    channel_id: str | None,
+    session_id: str,
+    event: dict[str, Any],
+) -> None:
+    """Re-broadcast a chat.ask_user_question card while the round stays quiet.
+
+    Defense-in-depth for interaction-frame delivery loss:
+    if the frontend misses the card it can never answer and the server waits
+    forever. Resend the same request_id periodically; any real progress chunk
+    cancels the loop.
+    """
+    request_id = str(event.get("request_id") or "")
+    for attempt in range(1, _ASK_USER_RESEND_MAX + 1):
+        await asyncio.sleep(_ASK_USER_RESEND_INTERVAL_S)
+        logger.warning(
+            "[TeamHelpers] ask_user card not answered; resending:"
+            " channel_id=%s session_id=%s request_id=%s attempt=%s/%s",
+            _resolve_channel_id(channel_id),
+            session_id,
+            request_id,
+            attempt,
+            _ASK_USER_RESEND_MAX,
+        )
+        _broadcast_event(channel_id, session_id, dict(event))
+    logger.error(
+        "[TeamHelpers] ask_user card still unanswered after %s resends:"
+        " channel_id=%s session_id=%s request_id=%s",
+        _ASK_USER_RESEND_MAX,
+        _resolve_channel_id(channel_id),
+        session_id,
+        request_id,
+    )
+
+
+def _arm_ask_user_resend(
+    pending: dict[str, asyncio.Task],
+    channel_id: str | None,
+    session_id: str,
+    event: dict[str, Any],
+) -> None:
+    request_id = str(event.get("request_id") or "")
+    if not request_id:
+        return
+    existing = pending.pop(request_id, None)
+    if existing is not None and not existing.done():
+        existing.cancel()
+    pending[request_id] = asyncio.create_task(
+        _resend_ask_user_loop(channel_id, session_id, event)
+    )
+
+
+def _cancel_ask_user_resends(pending: dict[str, asyncio.Task]) -> None:
+    for task in pending.values():
+        if not task.done():
+            task.cancel()
+    pending.clear()
+
+
 def _team_processing_done_chunk(
     request_id: str,
     channel_id: str | None,
@@ -2411,6 +2488,9 @@ async def _consume_stream_with_query(
     received_chunks = 0
     first_model_output_at: float | None = None
     emitted_ask_user_request_ids: set[str] = set()
+    # request_id -> resend task; armed when a chat.ask_user_question card is
+    # broadcast, cancelled on any progress chunk or stream exit
+    pending_ask_user_resends: dict[str, asyncio.Task] = {}
     team_stream: Any = None
     # Reset the team-events flag at the start of a new round so chat.final
     # can correctly determine whether the team is active.
@@ -2466,6 +2546,10 @@ async def _consume_stream_with_query(
         )
         async for chunk in team_stream:
             received_chunks += 1
+            # Any progress chunk means the interaction was answered (or the
+            # round moved on) — stop resending outstanding question cards.
+            if pending_ask_user_resends and getattr(chunk, "type", None) in _TEAM_PROGRESS_CHUNK_TYPES:
+                _cancel_ask_user_resends(pending_ask_user_resends)
             # First event of any kind from the runner — usually a framework
             # control event (team.runtime_ready and friends), not model output.
             # It marks how long team startup took before the stream came alive.
@@ -2557,6 +2641,14 @@ async def _consume_stream_with_query(
                     # 不存在的会话（见 relay-claw docs/architecture/
                     # team-ask-user-question-lost-answer-analysis.md）。
                     parsed.setdefault("session_id", session_id)
+                    # arm the resend watchdog so a lost or
+                    # unrendered card cannot deadlock the round silently.
+                    _arm_ask_user_resend(
+                        pending_ask_user_resends,
+                        channel_id,
+                        session_id,
+                        parsed,
+                    )
                 if parsed.get("event_type") == "team.runtime_ready":
                     ready_team_name = str(parsed.get("team_name") or team_spec.team_name)
                     activation_kind = str(parsed.get("activation_kind") or "").strip()
@@ -2706,6 +2798,8 @@ async def _consume_stream_with_query(
                         ):
                             break
 
+        # Round over — no resends should outlive the stream loop.
+        _cancel_ask_user_resends(pending_ask_user_resends)
         # If stream ended without any chunks, broadcast an error event
         if received_chunks == 0:
             logger.warning(
@@ -2730,6 +2824,7 @@ async def _consume_stream_with_query(
                 received_chunks,
             )
     except asyncio.CancelledError:
+        _cancel_ask_user_resends(pending_ask_user_resends)
         logger.info(
             "[TeamHelpers] stream cancelled: channel_id=%s session_id=%s",
             _resolve_channel_id(channel_id),
@@ -2737,6 +2832,7 @@ async def _consume_stream_with_query(
         )
         raise
     except Exception as exc:
+        _cancel_ask_user_resends(pending_ask_user_resends)
         logger.error(
             "[TeamHelpers] stream failed: channel_id=%s session_id=%s error=%s",
             _resolve_channel_id(channel_id),
