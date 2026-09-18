@@ -30,6 +30,9 @@ SESSION_SOURCE = "jiuwenswarm.prompt_attachment.session"
 DEFAULT_MAX_FILE_CHARS = 12000
 _SAFE_SESSION_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _TEXT_SUFFIXES = frozenset({".md", ".txt"})
+# 进程内已 ensure 过的 root，避免每次 create_instance 重复读/写 README。
+_LAYOUT_READY: set[str] = set()
+_LAYOUT_READY_LOCK = threading.Lock()
 _README_TEXT = """# Prompt Attachment
 
 Files in this directory are injected as dynamic prompt attachments for model calls.
@@ -546,7 +549,11 @@ class PromptAttachmentLoader:
         return self.file_store.for_session(session_id)
 
     def ensure_layout(self) -> None:
-        """Create the root prompt attachment layout."""
+        """Create the root prompt attachment layout（同步；带进程级跳过缓存）。"""
+        root_key = str(self.root.resolve())
+        with _LAYOUT_READY_LOCK:
+            if root_key in _LAYOUT_READY:
+                return
 
         self.root.mkdir(parents=True, exist_ok=True)
         readme = self.root / "README.md"
@@ -554,11 +561,45 @@ class PromptAttachmentLoader:
         if readme.exists():
             try:
                 current = readme.read_text(encoding="utf-8")
-                should_write_readme = current != _README_TEXT or any(ord(char) >= 128 for char in current)
+                should_write_readme = current != _README_TEXT or any(
+                    ord(char) >= 128 for char in current
+                )
             except UnicodeDecodeError:
                 should_write_readme = True
         if should_write_readme:
             readme.write_text(_README_TEXT, encoding="utf-8")
+        with _LAYOUT_READY_LOCK:
+            _LAYOUT_READY.add(root_key)
+
+    async def ensure_layout_async(self) -> None:
+        """异步 ensure_layout：盘 IO 用 anyio，已就绪则跳过。"""
+        from jiuwenswarm.server.runtime.async_fs import (
+            async_exists,
+            async_mkdir,
+            async_read_text,
+            async_write_text,
+        )
+
+        root_key = str(self.root.resolve())
+        with _LAYOUT_READY_LOCK:
+            if root_key in _LAYOUT_READY:
+                return
+
+        await async_mkdir(self.root, parents=True, exist_ok=True)
+        readme = self.root / "README.md"
+        should_write_readme = True
+        if await async_exists(readme):
+            try:
+                current = await async_read_text(readme)
+                should_write_readme = current != _README_TEXT or any(
+                    ord(char) >= 128 for char in current
+                )
+            except UnicodeDecodeError:
+                should_write_readme = True
+        if should_write_readme:
+            await async_write_text(readme, _README_TEXT)
+        with _LAYOUT_READY_LOCK:
+            _LAYOUT_READY.add(root_key)
 
     def load_session_attachments(self, session_id: str) -> list[PromptAttachment]:
         """Load prompt attachments for one jiuwenswarm session."""

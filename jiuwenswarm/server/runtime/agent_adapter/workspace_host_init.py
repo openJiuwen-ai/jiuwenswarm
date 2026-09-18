@@ -1,18 +1,18 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""宿主机 workspace 初始化（纯盘 IO，供 ``asyncio.to_thread`` 调用）.
+"""宿主机 workspace 初始化（异步盘 IO + 进程级跳过缓存）.
 
 替代上游 DirectoryBuilder 经沙箱串行 mkdir/upload ``.workspace`` 的路径。
-本模块函数本身是同步的；调用方应丢到线程池，不要直接堵事件循环。
 
 策略：
-1. 根目录已有 ``.workspace`` marker → 直接跳过；
-2. 目标目录为空 → 进程级预置模板 + ``copytree``；
+1. 进程内已标记就绪 / 根目录已有 ``.workspace`` marker → 直接跳过；
+2. 目标目录为空 → 进程级预置模板 + 异步拷贝；
 3. 目标已有部分文件 → 就地 materialize（已存在文件不覆盖）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import shutil
@@ -22,10 +22,23 @@ import time
 from pathlib import Path
 from typing import Any
 
+import anyio
+
+from jiuwenswarm.server.runtime.async_fs import (
+    async_exists,
+    async_is_file,
+    async_iterdir,
+    async_mkdir,
+    async_write_text,
+)
+
 logger = logging.getLogger(__name__)
 
 _TPL_LOCK = threading.Lock()
 _TPL_CACHE: dict[str, Path] = {}
+# 本进程已确认就绪的 workspace 根路径（避免反复 stat / 重复 materialize）。
+_READY_ROOTS: set[str] = set()
+_READY_LOCK = threading.Lock()
 
 
 def _dirs_fingerprint(directories: list[dict[str, Any]]) -> str:
@@ -42,7 +55,6 @@ def _dirs_fingerprint(directories: list[dict[str, Any]]) -> str:
             content = node.get("default_content") or ""
             if not isinstance(content, str):
                 content = str(content)
-            # 必须哈希正文，否则同长度改文案会命中脏模板。
             h.update(content.encode("utf-8", errors="replace"))
             h.update(b"\0")
             walk(list(node.get("children") or []))
@@ -51,13 +63,71 @@ def _dirs_fingerprint(directories: list[dict[str, Any]]) -> str:
     return h.hexdigest()[:20]
 
 
+def _mark_ready(root: str | Path) -> None:
+    key = str(Path(root))
+    with _READY_LOCK:
+        _READY_ROOTS.add(key)
+
+
+def _is_ready(root: str | Path) -> bool:
+    key = str(Path(root))
+    with _READY_LOCK:
+        return key in _READY_ROOTS
+
+
+def clear_workspace_ready_cache() -> None:
+    """测试用：清空进程级就绪缓存。"""
+    with _READY_LOCK:
+        _READY_ROOTS.clear()
+
+
+async def _amaterialize_nodes(
+    root: Path,
+    nodes: list[dict[str, Any]],
+    *,
+    parent: Path | None = None,
+    yield_every: int = 8,
+) -> None:
+    """按 DirectoryBuilder 语义异步落盘；周期性让出事件循环。"""
+    ops = 0
+    for node in nodes or []:
+        relative_path = node.get("path", "") or ""
+        if parent is not None:
+            full_path = parent / relative_path if relative_path else parent
+        else:
+            full_path = root / relative_path if relative_path else root
+
+        is_file = bool(node.get("is_file", False))
+        if is_file:
+            if not await async_exists(full_path):
+                await async_mkdir(full_path.parent, parents=True, exist_ok=True)
+                content = node.get("default_content") or ""
+                if not isinstance(content, str):
+                    content = str(content)
+                await async_write_text(full_path, content)
+                ops += 1
+        else:
+            await async_mkdir(full_path, parents=True, exist_ok=True)
+            marker = full_path / ".workspace"
+            if not await async_exists(marker):
+                await async_write_text(marker, "")
+                ops += 1
+            children = list(node.get("children") or [])
+            if children:
+                await _amaterialize_nodes(
+                    root, children, parent=full_path, yield_every=yield_every
+                )
+        if ops and ops % yield_every == 0:
+            await asyncio.sleep(0)
+
+
 def _materialize_nodes(
     root: Path,
     nodes: list[dict[str, Any]],
     *,
     parent: Path | None = None,
 ) -> None:
-    """按 DirectoryBuilder 语义落盘：目录写 ``.workspace``，文件不存在才写。"""
+    """同步落盘（模板预热 / 兼容旧调用）。"""
     for node in nodes or []:
         relative_path = node.get("path", "") or ""
         if parent is not None:
@@ -116,6 +186,21 @@ def _ensure_workspace_template(
         return base
 
 
+async def _acopy_template_into(tpl: Path, dest: Path) -> None:
+    """异步把模板内容拷进 dest。"""
+    entries = await async_iterdir(tpl)
+    for item in entries:
+        name = item.name
+        target = dest / name
+        if await anyio.Path(item).is_dir():
+            await async_mkdir(target, parents=True, exist_ok=True)
+            await _acopy_template_into(Path(item), target)
+        else:
+            data = await anyio.Path(item).read_bytes()
+            await anyio.Path(target).write_bytes(data)
+        await asyncio.sleep(0)
+
+
 def _copy_template_into(tpl: Path, dest: Path) -> None:
     """把模板内容拷进空的 dest（dest 已存在且应为空）。"""
     for item in tpl.iterdir():
@@ -132,14 +217,13 @@ def host_init_workspace_sync(
     *,
     language: str = "cn",
 ) -> dict[str, Any]:
-    """同步初始化宿主机 workspace。
-
-    Returns:
-        状态字典：``status`` 为 skipped_marker / copytree / materialize。
-    """
+    """同步初始化宿主机 workspace（兼容旧调用 / 测试）。"""
     root_path = Path(root)
+    if _is_ready(root_path):
+        return {"status": "skipped_ready_cache", "path": str(root_path)}
     marker = root_path / ".workspace"
     if marker.exists():
+        _mark_ready(root_path)
         return {"status": "skipped_marker", "path": str(root_path)}
 
     dirs = list(directories or [])
@@ -160,8 +244,58 @@ def host_init_workspace_sync(
 
     if not marker.exists():
         marker.write_text("", encoding="utf-8")
+    _mark_ready(root_path)
     return {
         "status": status,
         "path": str(root_path),
         "dirs": len(dirs),
     }
+
+
+async def host_init_workspace(
+    root: str,
+    directories: list[dict[str, Any]] | None,
+    *,
+    language: str = "cn",
+) -> dict[str, Any]:
+    """异步初始化宿主机 workspace（推荐入口）。"""
+    root_path = Path(root)
+    if _is_ready(root_path):
+        return {"status": "skipped_ready_cache", "path": str(root_path)}
+    marker = root_path / ".workspace"
+    if await async_exists(marker):
+        _mark_ready(root_path)
+        return {"status": "skipped_marker", "path": str(root_path)}
+
+    dirs = list(directories or [])
+    await async_mkdir(root_path, parents=True, exist_ok=True)
+    try:
+        entries = await async_iterdir(root_path)
+        is_empty = not entries
+    except OSError:
+        is_empty = False
+
+    if is_empty and dirs:
+        tpl = _ensure_workspace_template(language, dirs)
+        await _acopy_template_into(tpl, root_path)
+        status = "copytree"
+    else:
+        if dirs:
+            await _amaterialize_nodes(root_path, dirs)
+        status = "materialize"
+
+    if not await async_exists(marker):
+        await async_write_text(marker, "")
+    _mark_ready(root_path)
+    return {
+        "status": status,
+        "path": str(root_path),
+        "dirs": len(dirs),
+    }
+
+
+__all__ = [
+    "clear_workspace_ready_cache",
+    "host_init_workspace",
+    "host_init_workspace_sync",
+]

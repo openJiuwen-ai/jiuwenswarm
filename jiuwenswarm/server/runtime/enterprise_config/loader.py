@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -288,6 +289,8 @@ class TemplateEntityCache:
 _template_entity_cache = TemplateEntityCache()
 _resource_row_cache = _TtlSingleFlightCache(ttl_seconds=600.0)
 _agent_template_cache = _TtlSingleFlightCache(ttl_seconds=600.0)
+# 按 resource_id + slots 缓存整份装配结果；命中后 deepcopy 再交给调用方，避免串味。
+_effective_config_cache = _TtlSingleFlightCache(ttl_seconds=600.0)
 
 
 def invalidate_template_entity_cache() -> None:
@@ -295,7 +298,8 @@ def invalidate_template_entity_cache() -> None:
 
 
 def invalidate_enterprise_config_caches() -> None:
-    """失效企业配置相关进程缓存（模板实体 + 实例/模板行）。"""
+    """失效企业配置相关进程缓存（装配结果 + 模板实体 + 实例/模板行）。"""
+    _effective_config_cache.invalidate()
     _template_entity_cache.invalidate()
     _resource_row_cache.invalidate()
     _agent_template_cache.invalidate()
@@ -371,32 +375,17 @@ def _literal_slot_template_id_map(
     return slot_template_id_map
 
 
-async def load_effective_enterprise_config(
-    request: AgentRequest | Any,
-    slots: Collection[TemplateRefSlot],
+def _effective_config_cache_key(resource_id: str, load_slots: frozenset[str]) -> str:
+    return f"eff:{resource_id}:{','.join(sorted(load_slots))}"
+
+
+async def _assemble_effective_enterprise_config(
+    *,
+    ctx: RoutingContext,
+    rid: str,
+    load_slots: frozenset[str],
 ) -> EffectiveEnterpriseConfig | None:
-    """按 ``request.bot_id``（即 ``instance_agent_resource.resource_id``）加载 Agent 实例生效配置。
-
-    读取实例 Agent 资源 → ``agent_template`` → 按 ``template_ref`` 中的
-    ``template_id`` 加载模型等模板实体。
-    """
-    if not is_enterprise():
-        return None
-
-    ctx = routing_context_from_request(request)
-    if not slots:
-        raise ValueError("slots must not be empty")
-
-    rid = str(ctx.bot_id or "").strip()
-    if not rid:
-        logger.warning(
-            "[enterprise_config] bot_id(resource_id) missing in request context %s",
-            ctx.as_dict(),
-        )
-        return None
-
-    load_slots = frozenset(slot.value for slot in slots)
-
+    """查库并装配一份生效配置（无装配结果缓存）。"""
     resource_row = await _fetch_instance_agent_resource(rid)
     if resource_row is None:
         logger.warning(
@@ -495,6 +484,51 @@ async def load_effective_enterprise_config(
         sorted(load_slots),
     )
     return result
+
+
+async def load_effective_enterprise_config(
+    request: AgentRequest | Any,
+    slots: Collection[TemplateRefSlot],
+) -> EffectiveEnterpriseConfig | None:
+    """按 ``request.bot_id``（即 ``instance_agent_resource.resource_id``）加载 Agent 实例生效配置。
+
+    读取实例 Agent 资源 → ``agent_template`` → 按 ``template_ref`` 中的
+    ``template_id`` 加载模型等模板实体。
+
+    同 ``resource_id`` + slots 在进程内单飞缓存；返回值为 deepcopy，避免调用方改脏缓存。
+    """
+    if not is_enterprise():
+        return None
+
+    ctx = routing_context_from_request(request)
+    if not slots:
+        raise ValueError("slots must not be empty")
+
+    rid = str(ctx.bot_id or "").strip()
+    if not rid:
+        logger.warning(
+            "[enterprise_config] bot_id(resource_id) missing in request context %s",
+            ctx.as_dict(),
+        )
+        return None
+
+    load_slots = frozenset(slot.value for slot in slots)
+    cache_key = _effective_config_cache_key(rid, load_slots)
+
+    async def _load() -> EffectiveEnterpriseConfig | None:
+        return await _assemble_effective_enterprise_config(
+            ctx=ctx,
+            rid=rid,
+            load_slots=load_slots,
+        )
+
+    loaded = await _effective_config_cache.get_or_fetch(cache_key, _load)
+    if loaded is None:
+        return None
+    # 路由三元组随请求变化，装配体按 resource_id 共享模板内容，再覆写本次 routing。
+    cloned = copy.deepcopy(loaded)
+    cloned.routing = ctx
+    return cloned
 
 
 __all__ = (

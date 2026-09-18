@@ -15,8 +15,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
@@ -303,8 +301,9 @@ class RuntimePromptRail(DeepAgentRail):
         runtime_state: dict[str, Any] = {}
         state_path = get_runtime_state_path(self._session_id)
         try:
-            with open(state_path, encoding="utf-8") as f:
-                runtime_state = yaml.safe_load(f) or {}
+            from jiuwenswarm.server.runtime.yaml_file_cache import load_yaml_file_cached
+
+            runtime_state = load_yaml_file_cached(state_path)
         except FileNotFoundError:
             pass
         except Exception as e:
