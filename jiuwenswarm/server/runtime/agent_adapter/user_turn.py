@@ -40,6 +40,19 @@ TEAM_USER_TURN_KEY = "_user_turn"
 _SYSTEM_CHANNELS = frozenset({"cron", "heartbeat"})
 
 
+def _render_timestamp(now: datetime, tz_name: str) -> str:
+    """Render ``now`` as a single timestamp carrying its own timezone.
+
+    Format: ``2026-09-18 10:21:00 (UTC+08:00, Asia/Shanghai)``. The offset and
+    the IANA zone name travel inside the timestamp so the model reads one time
+    value instead of translating two separate envelope fields into "北京时间
+    (Asia/Shanghai)" style double statements.
+    """
+    offset = now.strftime("%z")
+    offset_formatted = f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
+    return f"{now.strftime('%Y-%m-%d %H:%M:%S')} ({offset_formatted}, {tz_name})"
+
+
 @dataclass(frozen=True)
 class UserTurn:
     """A single inbound user message plus the context delivered with it.
@@ -123,8 +136,7 @@ class UserTurn:
         now = datetime.now(tz)
         envelope: dict[str, Any] = {
             "source": "system" if is_system else prompt_channel,
-            "timezone": tz_name,
-            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": _render_timestamp(now, tz_name),
             "preferred_response_language": self.language,
             "content": content,
             "type": (
