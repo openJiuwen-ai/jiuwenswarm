@@ -46,7 +46,7 @@ def test_build_user_prompt_if_a2ui_event_enabled_mentions_context(monkeypatch):
     monkeypatch.setattr(
         integration,
         "_build_a2ui_client_event_prompt",
-        lambda content, channel, language: (
+        lambda content, channel, language, clock=None: (
             f"{content['type']} on {channel}/{language}: context={content['userAction']['context']}"
         ),
     )
