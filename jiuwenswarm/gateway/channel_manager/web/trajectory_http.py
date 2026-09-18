@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -30,7 +29,7 @@ from jiuwenswarm.observability.config import (
     TrajectoryStoreSettings,
     load_trajectory_store_settings,
 )
-from jiuwenswarm.observability.store import AsyncTrajectoryReader, TrajectoryCursorError
+from jiuwenswarm.observability.store import AsyncTrajectoryReader
 from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
 
 if TYPE_CHECKING:
@@ -39,9 +38,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TRAJECTORY_API_PREFIX = "/api/trajectory"
+# Archive envelope version. Version 2 is the store's schema-v4 contract; the
+# viewer imports only content-addressed archives of this version.
+TRAJECTORY_ARCHIVE_VERSION = 2
 _TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
-_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 _NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
 # Frames are far smaller than records, so a catch-up page carries more of
@@ -162,10 +163,10 @@ class TrajectoryHttpService:
         Args:
             session_id: Session to export.
             addressed: Export references plus the dictionaries that resolve
-                them, rather than putting every restated attribute back. The
-                file stays self-contained and is far smaller, but only a
-                reader that understands the addressing can open it -- so the
-                default remains plain OTLP, which any tool can.
+                them, rather than putting every restated attribute back. This
+                is the self-contained, compact form the trajectory viewer
+                imports. Plain OTLP remains the default for other tools; it
+                is an interoperability export, not an importable archive.
         """
         settings = self.settings
         error = self._validate_access(session_id, settings)
@@ -191,7 +192,7 @@ class TrajectoryHttpService:
         response = _json_response(
             {
                 "format": "openjiuwen.trajectory.archive",
-                "archive_version": 1,
+                "archive_version": TRAJECTORY_ARCHIVE_VERSION,
                 "session_id": session_id,
                 "exported_at": datetime.now(timezone.utc).isoformat().replace(
                     "+00:00",

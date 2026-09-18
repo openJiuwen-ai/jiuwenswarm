@@ -431,6 +431,11 @@ def load_history_records(session_id: str, *, subagent_id: str | None = None) -> 
     return _read_history(path)
 
 
+def flush_history_writes() -> None:
+    """Wait until all history records queued before this call are durable."""
+    _WRITE_QUEUE.join()
+
+
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
     from jiuwenswarm.server.runtime.session import lifecycle as lc
     sid = _managed_history_session_id(path)

@@ -301,6 +301,81 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
     return _get_evolution_config(config).get("skill_evolution") is True
 
 
+def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether both Symphony and its evolution switch are enabled."""
+    if not isinstance(config, dict):
+        return False
+    symphony = config.get("symphony")
+    if not isinstance(symphony, dict):
+        return False
+    evolution = symphony.get("evolution")
+    if not isinstance(evolution, dict):
+        return False
+    enabled_values = {"1", "true", "yes", "on"}
+    return (
+        str(symphony.get("enabled")).strip().lower() in enabled_values
+        and str(evolution.get("enabled")).strip().lower() in enabled_values
+    )
+
+
+def coerce_config_bool(value: Any, default: bool) -> bool:
+    """Parse yaml/json/env booleans; treat ``"false"`` / ``"0"`` as False."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
+def _get_ttse_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the TTSE config block from a full yaml or a react-section cache."""
+    if not isinstance(config, dict):
+        return {}
+    react_config = config.get("react")
+    if isinstance(react_config, dict) and isinstance(react_config.get("ttse"), dict):
+        return react_config["ttse"]
+    ttse_config = config.get("ttse")
+    if isinstance(ttse_config, dict):
+        return ttse_config
+    return {}
+
+
+def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether TTSE (FACT/TIP) rail should be mounted.
+
+    Opt-in: missing / unset ``enabled`` is False.
+    Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
+    """
+    return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
+
+
+def get_ttse_embedding_config(config: dict[str, Any] | None) -> dict[str, str]:
+    """Return normalized ``react.ttse.embedding`` fields for TTSE retrieval.
+
+    Expects ``api_key`` / ``base_url`` / ``model``. Returns an empty dict when
+    the block is missing or any required field is blank after strip (caller
+    should leave embedding disabled and fall back to BM25 / whole-bank paths).
+    """
+    ttse = _get_ttse_config(config)
+    raw = ttse.get("embedding")
+    if not isinstance(raw, dict):
+        return {}
+    api_key = str(raw.get("api_key") or "").strip()
+    base_url = str(raw.get("base_url") or "").strip()
+    model = str(raw.get("model") or "").strip()
+    if not (api_key and base_url and model):
+        return {}
+    return {"api_key": api_key, "base_url": base_url, "model": model}
+
+
 def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return ``react.subagent_runtime.enabled`` for persistent subagent tools."""
     cfg = config or get_config()
@@ -804,7 +879,6 @@ def update_permissions_profile_in_config(profile: str) -> None:
     """Atomically persist the Web permission profile to runtime fields."""
     runtime_values = {
         "default": (True, "manual"),
-        "automatic": (True, "auto"),
         "full_access": (False, "manual"),
     }
     try:
@@ -860,7 +934,7 @@ def update_rsi_enabled_in_config(value: bool) -> None:
 
 
 def update_enable_free_models_in_config(value: bool) -> None:
-    """原子更新 models.enable_free_models（Opencode Zen 免费模型开关）。"""
+    """原子更新 models.enable_free_models（历史兼容；前端已不再暴露此开关）。"""
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
         section = data.get("models")
         if not isinstance(section, dict):
@@ -1476,6 +1550,55 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     entries = [entry]
     entries.extend(get_agentos_models(config))
     return entries
+
+
+def get_available_models(
+    config: dict[str, Any] | None = None, session_id: str | None = None
+) -> list[dict[str, Any]]:
+    """配置的模型 + 登录后自动获得的模型。
+
+    ``get_default_models`` 只读 config.yaml，是「写」的唯一真源；登录送的模型是
+    运行时叠加的一层，永远不落 config.yaml（凭据会过期、换账号会变）。所有**读**
+    模型清单的地方（模型缓存、models.list）都该用这个函数，**写**的地方仍用
+    ``get_default_models``。
+
+    登录模块不可用或未登录时，行为与 ``get_default_models`` 完全一致。
+
+    ``session_id`` 是**哪个用户**的登录会话。只有 Gateway 这类有请求上下文的调用方
+    （``models.list``，会话 id 在 WS 握手时拿到）才传；不传就只有配置的模型——
+    登录模型的凭据是按用户的，进程级的模型缓存（AgentServer）不能持有它们，
+    AgentServer 靠 Gateway 随请求带下来的凭据现造（见 common/auth/passthrough.py）。
+    """
+    configured = get_default_models(config)
+    if not session_id:
+        return configured
+    # 登录送的模型始终叠加进列表（不再受 enable_free_models / Opencode Zen 开关约束；
+    # Zen 已停用，免费模型来源就是登录）。
+    try:
+        from jiuwenswarm.common.auth.model_catalog import list_login_model_entries
+
+        login_entries = list_login_model_entries(session_id)
+    except Exception as exc:  # noqa: BLE001 — 登录模型拿不到不该影响已配置模型
+        logger.debug("Skip login-provided models: %s", exc)
+        return configured
+    if not login_entries:
+        return configured
+
+    # 同名以用户自配的为准。按**原样**比较，不做大小写归一：``GLM-5.2``（自配）和
+    # ``glm-5.2``（登录送的）是两个模型，归一化会把其中一个藏掉。
+    configured_names = {
+        str((entry.get("model_client_config") or {}).get("model_name") or "").strip()
+        for entry in configured
+        if isinstance(entry, dict)
+    }
+    extra = [
+        entry
+        for entry in login_entries
+        if str(entry["model_client_config"]["model_name"]).strip() not in configured_names
+    ]
+    # 登录模型只能追加在配置的模型**之后**：models.list 的 origin_index 就是这里的下标，
+    # 保存设置时拿它回查 models.defaults；排到前面会让配置模型的下标错开、保存时写串。
+    return [*configured, *extra]
 
 
 def update_default_models_in_config(models_list: list[dict[str, Any]]) -> None:

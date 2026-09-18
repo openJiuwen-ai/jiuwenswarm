@@ -14,8 +14,16 @@ export function mediaCapabilityProviderMetadataFields(modality: MediaCapabilityM
   return mediaCapabilityProviderMetadataSuffixes.map((suffix) => `${modality}_${suffix}`);
 }
 
+export function mediaCapabilityContextWindowField(modality: MediaCapabilityModality): string {
+  return `${modality}_context_window_tokens`;
+}
+
 export function mediaCapabilityPersistenceFields(modality: MediaCapabilityModality): string[] {
-  return [...mediaCapabilityConfigFields(modality), ...mediaCapabilityProviderMetadataFields(modality)];
+  return [
+    ...mediaCapabilityConfigFields(modality),
+    ...mediaCapabilityProviderMetadataFields(modality),
+    mediaCapabilityContextWindowField(modality),
+  ];
 }
 
 export function mediaCapabilityEnabledField(modality: MediaCapabilityModality): string {

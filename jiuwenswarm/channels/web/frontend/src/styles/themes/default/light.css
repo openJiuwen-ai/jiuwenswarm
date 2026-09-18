@@ -6,8 +6,6 @@
   --space-agent-group-upload-top: 100px;
   --space-agent-group-upload-inset: 24px;
   --size-agent-group-upload-dialog-width: 550px;
-  --size-agent-group-upload-dialog-height: 460px;
-  --size-agent-group-upload-hint-height: 52px;
   --size-agent-group-upload-drop-height: 200px;
   --size-agent-group-upload-button-width: 84px;
   --opacity-agent-disabled: 0.45;
@@ -54,6 +52,7 @@
   --color-text-placeholder: #808080;
   --color-text-meta: #808080;
   --color-text-meta-rgb: 128, 128, 128;
+  --color-text-disabled: #c2c2c2;
   --color-text-suggestion-label: #282828;
   --color-text-card: #18181b;
   --color-text-inverse: #ffffff;
@@ -164,6 +163,7 @@
   --effect-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
   --effect-shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04);
   --effect-shadow-xl: 0 24px 48px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --effect-card-hover: 0 8px 24px rgba(0, 0, 0, 0.16);
   --effect-shadow-glow: 0 0 24px var(--color-action-primary-glow);
   --effect-page-background: var(--color-surface-page);
   --effect-content-background: var(--color-surface-shell);
@@ -263,7 +263,7 @@
   --effect-chat-control-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
   --effect-chat-modal-shadow: 0 24px 72px rgba(15, 23, 42, 0.24);
   --effect-chat-select-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
-  --effect-chat-tooltip-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  --effect-chat-tooltip-shadow: 0 2px 12px rgba(0, 0, 0, 0.16);
   --effect-chat-toolbar-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   --effect-chat-menu-shadow: 0 1px 4px rgba(15, 23, 42, 0.14);
   --effect-chat-popover-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);

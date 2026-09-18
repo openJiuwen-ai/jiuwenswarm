@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import {
   applyTrajectoryDetailRecords,
+  changedTrajectoryUsageTraceIds,
   collectSubjectRefreshWindow,
   createTrajectoryOperationCoordinator,
   createTrajectoryTraceHintCoordinator,
@@ -13,6 +14,7 @@ import {
   sameTrajectoryUsageMap,
   selectSummariesNeedingLoad,
   shouldCatchUpAfterTrajectoryTerminalEvent,
+  shouldCatchUpStreamFrames,
   stageTrajectoryChainPages,
   trajectoryContentMode,
 } from '../node_modules/.cache/trajectory-window/trajectoryWindow.mjs';
@@ -31,6 +33,25 @@ test('unchanged cumulative usage does not require another trajectory publish', (
   assert.equal(sameTrajectoryUsageMap(previous, same), true);
   assert.equal(sameTrajectoryUsageMap(previous, changed), false);
   assert.equal(sameTrajectoryUsageMap(previous, new Map()), false);
+});
+
+test('changed usage names the traces whose projections it affects', () => {
+  const usage = total => ({ input: 10, cacheRead: 0, output: total - 10, reasoning: 0, total });
+  const previous = new Map([
+    ['trace-a\0inference-1', usage(13)],
+    ['trace-b\0inference-1', usage(20)],
+    ['trace-c\0inference-1', usage(30)],
+  ]);
+  const next = new Map([
+    ['trace-a\0inference-1', usage(13)],
+    ['trace-b\0inference-1', usage(21)],
+    ['trace-d\0inference-1', usage(40)],
+  ]);
+
+  assert.deepEqual(
+    [...changedTrajectoryUsageTraceIds(previous, next)].sort(),
+    ['trace-b', 'trace-c', 'trace-d'],
+  );
 });
 
 test('one hint flight chases the highest revision that arrives while loading', async () => {
@@ -246,19 +267,22 @@ function backendArchiveRecord({
   };
 }
 
-function backendArchive(records) {
+function backendArchive(records, dictionaries = {}) {
   return {
     format: 'openjiuwen.trajectory.archive',
-    archive_version: 1,
+    archive_version: 2,
     session_id: SESSION_ID,
     exported_at: '2026-08-21T00:00:00Z',
     store_epoch: STORE_EPOCH,
     revision: '9007199254740995',
+    content_addressed: true,
+    sequences: dictionaries.sequences ?? {},
+    blobs: dictionaries.blobs ?? {},
     records,
   };
 }
 
-test('frontend parses and replays the real backend Archive v1 wire payload', () => {
+test('frontend parses and replays the real backend Archive v2 wire payload', () => {
   const finalRecord = backendArchiveRecord();
   const invalidRecord = backendArchiveRecord({
     spanId: hexId(2, 16),
@@ -297,6 +321,43 @@ test('archive parser rejects frontend-only draft names and non-string cursors', 
   assert.throws(() => parseTrajectoryArchive(JSON.stringify(numericChangeSeq)), /invalid record/);
 });
 
+test('archive parser refuses version 1 and archives that are not content-addressed', () => {
+  const record = backendArchiveRecord();
+  const versionOne = { ...backendArchive([record]), archive_version: 1 };
+  const inline = { ...backendArchive([record]), content_addressed: undefined };
+
+  assert.throws(
+    () => parseTrajectoryArchive(JSON.stringify(versionOne)),
+    /version 1 is no longer supported/,
+  );
+  assert.throws(() => parseTrajectoryArchive(JSON.stringify(inline)), /not supported/);
+});
+
+test('an addressed archive rebuilds its references from its own dictionaries', () => {
+  const head = 'd'.repeat(64);
+  const record = backendArchiveRecord();
+  const span = record.otlp.resourceSpans[0].scopeSpans[0].spans[0];
+  span.attributes = [
+    ...(span.attributes ?? []),
+    { key: 'gen_ai.input.messages', value: { stringValue: `@oj-seq:1:${head}:2` } },
+  ];
+  const archive = parseTrajectoryArchive(JSON.stringify(backendArchive(
+    [{ ...record, sequences: { 'gen_ai.input.messages': { hash: head, depth: 2 } } }],
+    {
+      sequences: { [head]: ['e1', 'e2'] },
+      blobs: {
+        e1: JSON.stringify({ role: 'user', parts: [] }),
+        e2: JSON.stringify({ role: 'assistant', parts: [] }),
+      },
+    },
+  )));
+  const rebuilt = archive.records[0].otlp.resourceSpans[0].scopeSpans[0].spans[0].attributes
+    .find(attribute => attribute.key === 'gen_ai.input.messages').value.stringValue;
+
+  assert.equal(archive.records[0].incomplete_sequences, undefined);
+  assert.deepEqual(JSON.parse(rebuilt).map(message => message.role), ['user', 'assistant']);
+});
+
 test('archive export client downloads the backend session archive endpoint', async () => {
   const originalFetch = globalThis.fetch;
   const payload = backendArchive([backendArchiveRecord()]);
@@ -308,7 +369,7 @@ test('archive export client downloads the backend session archive endpoint', asy
   try {
     const text = await getTrajectoryArchive('session / one');
     assert.equal(parseTrajectoryArchive(text).records.length, 1);
-    assert.match(requestedUrl, /\/sessions\/session%20%2F%20one\/archive$/);
+    assert.match(requestedUrl, /\/sessions\/session%20%2F%20one\/archive\?format=addressed$/);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -608,70 +669,23 @@ test('an eligible-to-mixed epoch change yields reset and removes old trace state
 
 
 
-test('load-earlier has one panel-level flight for two synchronous entry points', async () => {
-  const coordinator = createTrajectoryOperationCoordinator();
-  const busy = [];
-  let calls = 0;
-  let resolveRequest;
-  const request = new Promise(resolve => {
-    resolveRequest = resolve;
-  });
-  const operation = async () => {
-    calls += 1;
-    return request;
-  };
-
-  const timelinePromise = coordinator.runLoadEarlier(operation, value => busy.push(value));
-  const tablePromise = coordinator.runLoadEarlier(operation, value => busy.push(value));
-
-  assert.equal(timelinePromise, tablePromise);
-  assert.equal(calls, 1);
-  assert.deepEqual(busy, [true]);
-  resolveRequest(true);
-  assert.equal(await timelinePromise, true);
-  assert.deepEqual(busy, [true, false]);
+test('a hinted refresh pages frames only when the hint is ahead of what is held', () => {
+  assert.equal(shouldCatchUpStreamFrames('ifBehind', 40, 41), true);
+  assert.equal(shouldCatchUpStreamFrames('ifBehind', 41, 41), false);
+  assert.equal(shouldCatchUpStreamFrames('ifBehind', 50, 41), false);
+  // Rebuilds, reconnects and terminal events cannot trust a hint.
+  assert.equal(shouldCatchUpStreamFrames('always', 50, 41), true);
 });
 
-
-test('generation invalidation restores busy and rejects stale load-earlier writes', async () => {
+test('generation invalidation marks earlier operations stale', () => {
   const coordinator = createTrajectoryOperationCoordinator();
-  const busy = [];
-  const state = populatedWindowState();
-  const controller = new AbortController();
-  let resolveOldRequest;
-  const oldRequest = new Promise(resolve => {
-    resolveOldRequest = resolve;
-  });
-  const oldPromise = coordinator.runLoadEarlier(async (generation) => {
-    const nextWatermark = await oldRequest;
-    if (controller.signal.aborted || !coordinator.isCurrent(generation)) return false;
-    state.watermark = nextWatermark;
-    return true;
-  }, value => busy.push(value));
+  const before = coordinator.currentGeneration();
 
-  controller.abort();
-  coordinator.invalidate(() => busy.push(false));
-  resetTrajectoryWindowState(state);
-  assert.deepEqual(busy, [true, false]);
+  const after = coordinator.invalidate();
 
-  let resolveNewRequest;
-  const newRequest = new Promise(resolve => {
-    resolveNewRequest = resolve;
-  });
-  const newPromise = coordinator.runLoadEarlier(
-    async () => newRequest,
-    value => busy.push(value),
-  );
-  assert.deepEqual(busy, [true, false, true]);
-
-  resolveOldRequest(99);
-  assert.equal(await oldPromise, false);
-  assert.equal(state.watermark, 0);
-  assert.deepEqual(busy, [true, false, true]);
-
-  resolveNewRequest(true);
-  assert.equal(await newPromise, true);
-  assert.deepEqual(busy, [true, false, true, false]);
+  assert.equal(coordinator.isCurrent(before), false);
+  assert.equal(coordinator.isCurrent(after), true);
+  assert.equal(coordinator.currentGeneration(), after);
 });
 
 
@@ -974,6 +988,9 @@ test('versioned upsert replaces one running identity with its terminal record', 
     recordRevision: 3,
   });
   assert.equal(completed.bucket.rawRecords.get(running.record_id).change_seq, 12);
+  // Only the page that finished the span names it for frame release.
+  assert.deepEqual(started.finishedSpanKeys, []);
+  assert.deepEqual(completed.finishedSpanKeys, [running.record_id]);
 });
 
 test('late running revisions cannot downgrade a terminal trajectory identity', () => {

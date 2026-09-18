@@ -20,7 +20,7 @@ import { Tabs } from '../ui';
 import { resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
 import { pruneEnabledExtensions } from '../../utils/enabledExtensions';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
-import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
+import { PickerSearchInput } from './PickerSearchInput';
 
 // 列表行高：与 ChatPanel.css 里 .chat-extension-picker__item 的 min-height: 44px 保持一致——
 // 用来按条目数反推列表的"自然高度"。一次最多同时显示 5 条，超出的靠列表自身 overflow-y:auto
@@ -258,18 +258,12 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
           />
         }
         search={
-          <div className="chat-picker-panel__search">
-            <div className="chat-picker-panel__search-inner">
-              <SearchIcon aria-hidden="true" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t('chat.extensionSearchPlaceholder')}
-                data-testid="chat-panel-extension-picker-search-input"
-              />
-            </div>
-          </div>
+          <PickerSearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder={t('chat.extensionSearchPlaceholder')}
+            inputTestId="chat-panel-extension-picker-search-input"
+          />
         }
         footer={{ label: t('chat.extensionMore'), onClick: handleManageClick }}
       >

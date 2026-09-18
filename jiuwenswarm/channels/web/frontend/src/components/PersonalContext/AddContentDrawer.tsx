@@ -34,6 +34,7 @@ import {
   MAX_ITEMS_MIN,
   PROVIDER_LABEL_KEYS,
   PROVIDER_ORDER,
+  isFetchTaskRunningError,
   parseGithubRepoUrl,
   parseGitcodeRepoUrl,
   validateServiceId,
@@ -41,6 +42,7 @@ import {
   validateZhihuColumnUrl,
 } from '../../services/personalContextApi';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
+import { toast } from '../../components/ui/Toast/toastStore';
 import type { WebError } from '../../types/websocket';
 import localFilesIcon from '../../assets/settings/channels/local-files.svg';
 import edgeBookmarksIcon from '../../assets/settings/channels/edge-bookmarks.svg';
@@ -376,6 +378,10 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
       }
       onCreated();
     } catch (e) {
+      if (isFetchTaskRunningError(e)) {
+        toast.open({ content: t('personalContext.services.fetchTaskRunning'), variant: 'warning' });
+        return;
+      }
       setError(
         isRequestTimeout(e)
           ? t('personalContext.addContent.createTimeout')

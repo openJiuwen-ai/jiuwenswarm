@@ -484,7 +484,9 @@ class TestCronJobLazyMigration:
             ],
         )
 
-        with patch(f"{CronJobStore.__module__}.logger.warning") as warning_mock:
+        with patch(
+            "jiuwenswarm.runtime.cron.cron_job_mutations.logger.warning"
+        ) as warning_mock:
             jobs = await CronJobStore(path=store_path).list_jobs()
 
         assert [job.id for job in jobs] == ["valid"]
@@ -533,7 +535,7 @@ class TestCronJobLazyMigration:
 
         # mock _build_cron_project_lookup 验证不被调用
         with patch(
-            "jiuwenswarm.gateway.cron.store._build_cron_project_lookup"
+            "jiuwenswarm.runtime.cron.cron_job_mutations.build_cron_project_lookup"
         ) as mock_lookup:
             jobs = await store.list_jobs()
             mock_lookup.assert_not_called()

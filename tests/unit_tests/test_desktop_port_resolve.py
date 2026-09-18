@@ -12,7 +12,9 @@ import pytest
 
 from jiuwenswarm.dotenv_early import (
     CLI_PORTS_ENV_FLAG,
+    DESKTOP_BROWSER_PRESERVED_ENV_KEYS,
     DESKTOP_PRESERVED_ENV_KEYS,
+    ELECTRON_ENV_FLAG,
     load_dotenv_runtime,
 )
 from jiuwenswarm.instance_manager.config import BASE_PORTS, calculate_instance_ports
@@ -75,6 +77,62 @@ def test_load_dotenv_runtime_drops_stale_agent_server_url(tmp_path: Path, monkey
 
     assert os.environ["AGENT_SERVER_PORT"] == "19092"
     assert "AGENT_SERVER_URL" not in os.environ
+
+
+def test_load_dotenv_runtime_preserves_electron_browser_target(
+    tmp_path: Path, monkeypatch
+):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "BROWSER_DRIVER=managed\n"
+        "PLAYWRIGHT_MCP_COMMAND=stale-command\n"
+        "PLAYWRIGHT_MCP_ARGS=-y @playwright/mcp@latest\n"
+        "PLAYWRIGHT_MCP_CDP_ENDPOINT=http://127.0.0.1:9222\n"
+        "PLAYWRIGHT_MCP_TARGET_ID=stale-target\n"
+        "PLAYWRIGHT_MCP_TARGET_RESOLVER=http://127.0.0.1:9223\n"
+        'PLAYWRIGHT_MCP_ENV_JSON={"PLAYWRIGHT_MCP_TARGET_ID":"stale-target"}\n',
+        encoding="utf-8",
+    )
+    injected = {
+        "BROWSER_DRIVER": "remote",
+        "BROWSER_SHARED_CONTROL": "1",
+        "PLAYWRIGHT_MCP_COMMAND": "npx",
+        "PLAYWRIGHT_MCP_ARGS": (
+            '["-y","--package","@playwright/mcp@0.0.78",'
+            '"node","target_mcp_wrapper.cjs"]'
+        ),
+        "PLAYWRIGHT_MCP_CDP_ENDPOINT": "http://127.0.0.1:43123",
+        "PLAYWRIGHT_MCP_TARGET_ID": "sideview-target",
+        "PLAYWRIGHT_MCP_TARGET_RESOLVER": "http://127.0.0.1:43124",
+        "PLAYWRIGHT_MCP_ENV_JSON": '{"PLAYWRIGHT_MCP_TARGET_ID":"sideview-target"}',
+    }
+
+    monkeypatch.setenv("JIUWENSWARM_DESKTOP", "1")
+    monkeypatch.setenv(ELECTRON_ENV_FLAG, "1")
+    monkeypatch.delenv(CLI_PORTS_ENV_FLAG, raising=False)
+    for key, value in injected.items():
+        monkeypatch.setenv(key, value)
+
+    load_dotenv_runtime(env_file, override=True)
+
+    assert DESKTOP_BROWSER_PRESERVED_ENV_KEYS == tuple(injected)
+    for key, value in injected.items():
+        assert os.environ[key] == value
+
+
+def test_load_dotenv_runtime_pywebview_allows_browser_override(
+    tmp_path: Path, monkeypatch
+):
+    env_file = tmp_path / ".env"
+    env_file.write_text("BROWSER_DRIVER=managed\n", encoding="utf-8")
+
+    monkeypatch.setenv("JIUWENSWARM_DESKTOP", "1")
+    monkeypatch.delenv(ELECTRON_ENV_FLAG, raising=False)
+    monkeypatch.setenv("BROWSER_DRIVER", "remote")
+
+    load_dotenv_runtime(env_file, override=True)
+
+    assert os.environ["BROWSER_DRIVER"] == "managed"
 
 
 def test_load_dotenv_runtime_non_desktop_keeps_agent_server_url(

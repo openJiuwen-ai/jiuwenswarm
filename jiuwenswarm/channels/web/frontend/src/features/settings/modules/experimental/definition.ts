@@ -50,6 +50,17 @@ export const experimentalModule: SettingsModuleDefinition = {
       items: [{ id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting }],
     },
     {
+      id: 'skill-pack',
+      titleKey: 'settingsPanel.experimental.skillPack',
+      items: [
+        {
+          id: 'discover-skill-pack-enabled',
+          component: 'switch',
+          key: 'symphony_evolution_enabled',
+        },
+      ],
+    },
+    {
       id: 'kv-cache-affinity',
       titleKey: 'settingsPanel.experimental.kvCacheAffinity',
       items: [

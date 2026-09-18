@@ -83,10 +83,9 @@ MODELS_DEV_URL = "https://models.opencode.ai/api.json"
 _WARM_TOTAL_TIMEOUT_SECONDS = 15.0
 _FETCH_TIMEOUT_SECONDS = 10.0
 
-# Conservative context window for free models; used only for display in the
-# frontend dropdown, not for truncation logic. models.dev may carry the real
-# ``limit.context``; we fall back to this when it is missing.
-_ZEN_FREE_CONTEXT_WINDOW = 200000
+# Fixed context window for free models; do not derive it from remote catalog
+# metadata so the UI and runtime use the same deterministic default.
+_ZEN_FREE_CONTEXT_WINDOW = 256 * 1024
 
 # 用户自配的默认模型仍为 .env 占位符（首次启动）时，回退使用的免费模型。
 # 已确认 deepseek-v4-flash-free 长期匿名免费服务（models.dev cost.input==0），
@@ -298,16 +297,7 @@ def _fetch_zen_free_models() -> list[dict[str, Any]]:
         if mid not in live_ids:
             continue  # free in catalog but not currently served by Zen
         name = str(meta.get("name") or mid).strip()
-        context = _ZEN_FREE_CONTEXT_WINDOW
-        limit = meta.get("limit")
-        if isinstance(limit, dict):
-            try:
-                ctx = int(limit.get("context", 0) or 0)
-                if ctx > 0:
-                    context = ctx
-            except (TypeError, ValueError):
-                pass
-        free.append({"id": mid, "name": name, "context": context})
+        free.append({"id": mid, "name": name, "context": _ZEN_FREE_CONTEXT_WINDOW})
 
     if not free:
         logger.info(
@@ -505,9 +495,9 @@ def get_zen_free_model_entries() -> list[dict[str, Any]]:
     Returns an empty list when fetching is disabled, failed, or found nothing.
     The entries are in-memory only (never written to config.yaml).
 
-    Honors the live toggle: when ``models.enable_free_models`` is ``false``,
-    returns ``[]`` immediately even if a previously-warmed cache exists, so
-    disabling via ``config.set`` takes effect without a restart.
+    Honors the live toggle: when Zen is disabled (always, after login models
+    replaced it), returns ``[]`` immediately even if a previously-warmed cache
+    exists.
     """
     if not _zen_free_models_enabled():
         return []

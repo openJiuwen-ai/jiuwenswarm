@@ -22,7 +22,13 @@
     "expandMore": "Show {{count}} more",
     "optional": "(optional)",
     "processing": "Processing…",
-    "retry": "Retry"
+    "retry": "Retry",
+    "editMenu": {
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "selectAll": "Select All"
+    }
   },
   "a2ui": {
     "generating": "Generating A2UI interface...",
@@ -36,7 +42,6 @@
     "work": "Tasks",
     "agent": "Experts",
     "experiments": "Experiments",
-    "teams": "Teams",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
     "skills": "Skills",
@@ -45,7 +50,7 @@
     "settings": "Settings",
     "logs": "Logs",
     "update": "Updates",
-    "personalContext": "Personal\nContext"
+    "personalContext": "Context"
   },
   "applicationPlugins": {
     "title": "Application plugins",
@@ -59,13 +64,23 @@
   },
   "settingsPanel": {
     "title": "Settings",
+    "freeModels": {
+      "title": "Limited-time free models",
+      "loginTitle": "Sign in with Huawei Cloud",
+      "loginDescription": "Sign in with your Huawei Cloud account to get JiuwenSwarm's limited-time free models",
+      "quotaTitle": "Free credits",
+      "quotaLoggedOut": "Sign in to view",
+      "signedIn": "Signed in",
+      "loggedInDescription": "Limited-time free models are now available in the chat model dropdown"
+    },
     "categories": {
       "general": "General",
       "models": "Models",
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
-      "personalContext": "Personal Context",
+      "personalContext": "Context",
+      "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
     "feedback": {
@@ -78,6 +93,39 @@
     },
     "access": {
       "readOnly": "This setting is currently read-only."
+    },
+    "archivedTasks": {
+      "description": "Manage archived conversations: restore them to the workspace or delete them permanently. Permanent deletion cannot be undone.",
+      "searchPlaceholder": "Search conversations",
+      "clearSearch": "Clear search",
+      "unassignedProject": "No project",
+      "restoreSession": "Restore conversation",
+      "deletePermanently": "Delete permanently",
+      "moreActions": "More actions",
+      "loadMore": "Load more",
+      "loadFailed": "Failed to load the archived list",
+      "emptyTitle": "Nothing archived",
+      "emptyDescription": "Archived conversations will appear here.",
+      "emptySearchTitle": "No archived conversations match your search",
+      "stopPending": "Task stop in progress",
+      "stopPendingTooltip": "This task is still being stopped. It can be restored once the stop completes.",
+      "sessionRestored": "Conversation restored",
+      "sessionDeleted": "Conversation deleted",
+      "deleteSessionTitle": "Delete conversation permanently",
+      "deleteSessionRecord": "Permanently delete the conversation \"{{sessionTitle}}\"?",
+      "deleteSessionIrreversible": "The conversation data will be permanently deleted and cannot be recovered.",
+      "deleteArchivedSessions": "Delete archived conversations",
+      "deleteArchivedSessionsTitle": "Delete archived conversations",
+      "deleteArchivedSessionsRecord": "Permanently delete all archived conversations in the project \"{{projectName}}\". This cannot be undone.",
+      "archivedSessionsDeleted": "Deleted {{count}} archived conversations",
+      "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed.",
+      "errors": {
+        "forbidden": "This operation is not supported for this resource",
+        "notFound": "The resource no longer exists or has changed. Refresh and try again.",
+        "sessionGone": "This conversation no longer exists and cannot be restored.",
+        "requestFailed": "The operation failed. Please try again later.",
+        "sessionRestoreFailed": "Failed to restore the conversation. Refresh and try again."
+      }
     },
     "dialog": {
       "discardTitle": "Discard unsaved changes",
@@ -133,6 +181,10 @@
       "protocol": "Protocol",
       "vendor": "Model provider",
       "model": "Model",
+      "contextWindow": "Model context window",
+      "contextWindowPlaceholder": "For example, 256K, 1M, or 262144",
+      "contextWindowHint": "Enter a positive token count; plain numbers and K/M units are supported case-insensitively. You can also choose a common value next to the field.",
+      "contextWindowPresets": "Common context windows",
       "vendorPlaceholder": "Select",
       "selectVendor": "Select model provider",
       "searchVendor": "Search model providers",
@@ -230,6 +282,7 @@
         "anthropicUnavailable": "This provider plan does not support the Anthropic protocol. Use OpenAI or select another provider",
         "reasoningUnsupported": "The reasoning option “{{value}}” is unsupported. Select another option or use the default",
         "reasoningUnavailable": "Reasoning options have not loaded. Retry before saving",
+        "contextWindowInvalid": "Enter a valid positive context window, such as 256K, 1M, or 1310720",
         "aliasConflict": "Custom name must be globally unique and cannot match another model ID",
         "modelNameConflict": "Model ID cannot match another configuration's custom name"
       },
@@ -280,6 +333,7 @@
       "rsi": "RSI · Recursive self-improvement",
       "trajectoryUi": "Trajectory UI",
       "kvCacheAffinity": "Compute affinity",
+      "skillPack": "Skill Packs",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
@@ -326,6 +380,10 @@
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",
         "description": "Control automatic evolution and retention of local skills."
+      },
+      "symphony_evolution_enabled": {
+        "title": "Skill Pack Discovery",
+        "description": "Distill skill combinations from execution experience after tasks finish and discover skill packs automatically."
       },
       "skill_retrieval_enabled": {
         "title": "Automatic Skill Retrieval",
@@ -384,7 +442,10 @@
         "title": "Enable RSI",
         "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
-      "trajectory_ui_enabled": { "title": "Enable trajectory UI", "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path." },
+      "trajectory_ui_enabled": {
+        "title": "Enable trajectory UI",
+        "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
+      },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
         "description": "Show a Full-duplex action when the composer is empty; it shares the entire screen and continuously listens to the microphone."
@@ -433,7 +494,6 @@
     "validation": {
       "required": "This field is required",
       "integerRange": "Enter an integer from {{min}} to {{max}}"
-
     }
   },
   "trajectory": {
@@ -490,7 +550,6 @@
     "noGroupMessages": "No group messages",
     "memberTasksTitle": "Tasks executed by {{member}}",
     "memberTasks": "Their tasks",
-    "noMemberTasks": "No tasks assigned to this member",
     "noProcessData": "No execution process data for this member",
     "collapseView": "Collapse view",
     "expandView": "Expand view",
@@ -667,6 +726,7 @@
   "chat": {
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
+    "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
     "placeholderAwaitingApproval": "Please respond to the pending confirmation above",
     "placeholderProcessing": "Processing, enter to interrupt...",
     "placeholderProcessingQueue": "Processing, new input will join the queue...",
@@ -710,6 +770,7 @@
     "addImageDisabled": "Cannot add images while processing or recording",
     "addFile": "Add file",
     "addFileDisabled": "Cannot add files while processing or recording",
+    "unsupportedImagePaste": "Unsupported file format. You can only paste PNG, JPG/JPEG, WebP, and GIF images.",
     "addFileTooltip": "Add files, experts, skills, connectors",
     "addAttachment": "Add attachment",
     "removeImage": "Remove image",
@@ -731,6 +792,8 @@
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
       "configured": "Configured Models",
+      "free": "Limited-time Free Models",
+      "getFreeModels": "Get limited-time free models",
       "addModel": "Add Custom Model",
       "empty": "No models available. Add a model in Settings first.",
       "placeholder": "Select Model"
@@ -826,6 +889,18 @@
     },
     "historyLoading": "Loading conversation history…",
     "historyLoadMore": "Load more history",
+    "continuedFromChat": "Continued from chat",
+    "openSourceChat": "Open source chat",
+    "sideConversation": {
+      "title": "Side chat",
+      "from": "From {{title}}",
+      "empty": "Ask a question without leaving the main chat",
+      "placeholder": "Message side chat",
+      "send": "Send message",
+      "working": "Working…",
+      "sendFailed": "Message could not be sent. Try again.",
+      "close": "Close side chat"
+    },
     "config": {
       "mode": {
         "cluster": "Cluster",
@@ -940,6 +1015,7 @@
     "toggleLabel": "Pursue Goal",
     "toolbarUnavailable": "A goal is already in progress. Finish or clear it first.",
     "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
+    "overwriteConfirm": "The current goal \"{{currentObjective}}\" is unfinished. Replace it with \"{{requestedObjective}}\"?",
     "closeTag": "Cancel goal",
     "badge": "Goal",
     "status": {
@@ -1336,7 +1412,7 @@
       "viaChatPrompt": "Let's set up a scheduled task together. First, explain how scheduled tasks work in WorkSwarm. Then ask me what I'd like to schedule and when it should run."
     },
     "stats": {
-      "total": "Total tasks ({{count}})"
+      "total": "Total tasks {{count}}"
     },
     "tabs": {
       "list": "Tasks",
@@ -1594,6 +1670,18 @@
   "browser": {
     "errors": {
       "loadPath": "Failed to load browser settings"
+    },
+    "pane": {
+      "panels": "Browser panels",
+      "mainPanel": "Main browser",
+      "tabLabel": "Browser",
+      "closeTab": "Close browser",
+      "back": "Back",
+      "forward": "Forward",
+      "reload": "Reload",
+      "stop": "Stop",
+      "addressPlaceholder": "Enter URL or search",
+      "unavailable": "Built-in browser unavailable"
     }
   },
   "logsPanel": {
@@ -1756,7 +1844,8 @@
       "statKnowledge": "Context Nodes",
       "statCollecting": "Collecting",
       "knowledgeSource": "Context Source",
-      "lastRun": "Last Run"
+      "lastRun": "Last Run",
+      "fetchTaskRunning": "A fetch task is currently running. Please wait for it to complete before changing settings."
     },
     "addContent": {
       "title": "Add content",
@@ -1769,15 +1858,15 @@
       "autoCollectLabel": "Auto fetch",
       "autoCollectHint": "Fetch automatically at the chosen frequency",
       "timeRangeLabel": "Time Range",
-    "timeRangeWeek": "Last Week",
-    "timeRangeMonth": "Last Month",
-    "timeRangeQuarter": "Last Quarter",
-    "timeRangeCustom": "Custom",
-    "dateRangeTitle": "Select Date Range",
-    "dateRangePlaceholder": "Select a date range",
-    "dateRangeRequired": "Select a custom date range",
-    "addUrl": "+ Add",
-    "frequencyLabel": "Auto fetch frequency",
+      "timeRangeWeek": "Last Week",
+      "timeRangeMonth": "Last Month",
+      "timeRangeQuarter": "Last Quarter",
+      "timeRangeCustom": "Custom",
+      "dateRangeTitle": "Select Date Range",
+      "dateRangePlaceholder": "Select a date range",
+      "dateRangeRequired": "Select a custom date range",
+      "addUrl": "+ Add",
+      "frequencyLabel": "Auto fetch frequency",
       "frequencyHour": "Every {{n}} hour(s)",
       "frequencyDay": "Every {{n}} day(s)",
       "frequencyEvery": "Every",
@@ -1788,7 +1877,7 @@
       "advancedConfig": "Advanced Settings",
       "maxItemsRangeError": "Max items must be 1-10000, or empty for default",
       "previousStep": "Previous",
-    "submit": "Add",
+      "submit": "Add",
       "save": "Save",
       "notConfigured": "Personal context is not configured. Enable it in Settings first.",
       "providerUnauthorized": "Not authorized. Authorize it in Settings first.",
@@ -1908,7 +1997,8 @@
     },
     "mySkillsGroups": {
       "added": "Added Skills",
-      "builtin": "Built-in Skills"
+      "builtin": "Built-in Skills",
+      "skillPack": "Skill Packs"
     },
     "publishFilter": {
       "all": "All",
@@ -1919,6 +2009,10 @@
       "skill": "Skill Pack",
       "team": "Team Skills",
       "multimodal": "Multimodal"
+    },
+    "proprietaryLabels": {
+      "thirdParty": "Third-party",
+      "thirdPartyHint": "Provided by a third party, not built in-house"
     },
     "marketplaceCategories": {
       "all": "All",
@@ -1937,6 +2031,7 @@
     "noEnabledSkills": "No enabled skills",
     "noBuiltinSkills": "No builtin skills",
     "setEnabledError": "Failed to set skill enabled status",
+    "packBlockedHint": "This skill pack contains uninstalled skills. Install them under \"Included Skills\" before enabling.",
     "setEnabledSuccess": "Skill {name} enabled",
     "setDisabledSuccess": "Skill {name} disabled",
     "marketplaceTabs": {
@@ -1971,6 +2066,7 @@
       "install": "Install",
       "installing": "Installing...",
       "uninstall": "Uninstall",
+      "uninstalling": "Uninstalling...",
       "importLocal": "Import Local Skill",
       "sourceManager": "Source Manager",
       "create": "Create",
@@ -2095,6 +2191,17 @@
     "featuredTeamSkills": "Featured Team Skills",
     "featuredSkills": "Featured Skills",
     "noMatches": "No matching skills",
+    "featuredSkillPacks": "Featured Skill Packs",
+    "allSkillPacks": "All Skill Packs",
+    "skillPackTag": "Skill Pack",
+    "memberCountSuffix": "{{count}} skills",
+    "includedSkills": "Included Skills",
+    "noPackMembers": "No included skills",
+    "memberUnavailable": "Unavailable",
+    "memberBlockedReasonDisabled": "Disabled",
+    "memberBlockedReasonMissing": "Missing",
+    "memberBlockedReasonInvalid": "Invalid",
+    "memberBlockedReasonUninstalled": "Uninstalled",
     "viewMode": {
       "list": "List view",
       "grid": "Grid view"
@@ -2585,9 +2692,18 @@
       "createByUpload": "Create from file",
       "uploading": "Uploading…",
       "createViaChatPrompt": "Help me create an xxx Expert who is good at xxx",
-      "back": "Back"
+      "back": "Back",
+      "edit": "Edit",
+      "updating": "Saving…"
     },
-    "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}", "moreTagsTooltip": "More tags: {{tags}}" },
+    "confirm": {
+      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone."
+    },
+    "card": {
+      "open": "Open {{name}} details",
+      "actions": "Actions for {{name}}",
+      "moreTagsTooltip": "More tags: {{tags}}"
+    },
     "states": {
       "installed": "Installed",
       "loadError": "Unable to load the Expert list. Try again.",
@@ -2655,6 +2771,7 @@
     },
     "form": {
       "title": "Create manually",
+      "editTitle": "Edit Expert",
       "subtitle": "Create a reusable Expert definition",
       "createOnly": "Create only",
       "createTabsLabel": "Creation type",
@@ -2743,7 +2860,7 @@
         "createFirst": "Create manually",
         "createByChat": "Create via chat",
         "createByUpload": "Create from file",
-        "createViaChatPrompt": "Help me create an XXX Expert Team, skilled at XXXXX. My experience is: [please add your industry background and relevant experience]",
+        "createViaChatPrompt": "Help me create an xxx Expert Team, skilled at xxx",
         "install": "Install",
         "installing": "Installing…",
         "use": "Use",
@@ -2813,7 +2930,7 @@
         "uploadKindLabel": "Category",
         "uploadGroupTab": "Expert Team",
         "uploadAgentTab": "Expert",
-        "uploadHint": "Supports .zip, .tar and .tar.gz files; once extracted, the folder must include manifest.json, an agents directory and README.md, and the .json file must declare package_type.",
+        "uploadHint": "Supports uploading .zip and .tar Expert Team packages. The extracted package root must contain manifest.json, declare package_type: \"agent_group\", and configure the Expert Team name, Leader, and expert members. The package must include the member definitions, personas, and other files referenced by the configuration; README.md documentation is recommended.",
         "uploadInvalidType": "Only .zip, .tar and .tar.gz Expert Team packages are supported",
         "errors": {
           "nameRequired": "Enter an Expert Team name",
@@ -2839,6 +2956,8 @@
     "copied": "Copied",
     "stopReading": "Stop reading",
     "readMessage": "Read message",
+    "forkFromMessage": "Create a conversation branch from this message",
+    "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
     "agentProcessing": "Agent Processing",
     "thinking": "Thinking...",
@@ -2945,6 +3064,47 @@
         "completed": "Discovery completed",
         "failed": "Discovery failed",
         "resultWords": "{{count}} words returned"
+      }
+    },
+    "autoReviewer": {
+      "title": "Permission review",
+      "status": {
+        "approved": "Automatically allowed",
+        "userApproved": "User allowed",
+        "userRejected": "User rejected",
+        "manual": "Manual review required",
+        "denied": "Denied",
+        "blocked": "Blocked",
+        "hostRevalidationFailed": "Host validation failed",
+        "inProgress": "Reviewing",
+        "timedOut": "Review timed out",
+        "fallback": "Manual fallback",
+        "aborted": "Review stopped"
+      },
+      "details": {
+        "source": "Decision source",
+        "sourceValues": {
+          "automatic": "Smart Approval",
+          "manual": "Manual approval",
+          "system": "System permission check"
+        },
+        "risk": "Risk",
+        "riskValues": {
+          "critical": "Critical",
+          "high": "High",
+          "medium": "Medium",
+          "low": "Low",
+          "unknown": "Unknown"
+        },
+        "reason": "Reason",
+        "reasonValues": {
+          "approved": "Permission review allowed this operation.",
+          "denied": "Permission review denied this operation.",
+          "manual": "Available information is insufficient for Smart Approval; manual judgment is required.",
+          "inProgress": "Permission review is in progress."
+        },
+        "hint": "Manual review guidance",
+        "manualGuidanceFallback": "Review the tool parameters, target, and risks before deciding."
       }
     },
     "teamActivity": {
@@ -3229,12 +3389,20 @@
       "pinFailed": "Pin action failed",
       "rename": "Rename",
       "renamePlaceholder": "Enter a new name",
+      "archiveConversation": "Archive",
+      "conversationArchived": "Task session archived",
+      "archiveView": "View",
+      "archiveUndo": "Undo",
       "deleteProject": "Delete project",
-      "deleteProjectDescription": "Permanently delete “<name>{{projectName}}</name>” and all its conversations and cron jobs, including active conversations. Running tasks will stop. The working directory will be kept. This cannot be undone.",
+      "deleteProjectDescription": "Delete the cron jobs and idle conversations in “<name>{{projectName}}</name>”. Running ordinary conversations will be skipped and the project kept until you stop them and retry. The working directory stays. Deleted content cannot be recovered.",
+      "projectDeletedSummary": "Project deleted: {{sessions}} conversation(s), {{crons}} cron job(s)",
+      "deleteFailedSummary": "Project deletion incomplete: deleted {{sessions}} conversation(s) and {{crons}} cron job(s).",
+      "deleteSkippedRunning": "Deleted {{sessions}} conversation(s) and {{crons}} cron job(s). Skipped {{count}} running conversation(s) and kept the project. Stop them manually, then retry deletion.",
       "archiveSessions": "Archive all conversations",
-      "deleteArchivedSessions": "Delete archived conversations",
-      "archiveSessionsDescription": "Archive all ordinary conversations in “<name>{{projectName}}</name>”. Running conversations will remain active and report a failure. Cron jobs stay unchanged.",
-      "deleteArchivedSessionsDescription": "Permanently delete all archived conversations in “<name>{{projectName}}</name>”. This cannot be undone.",
+      "archiveSessionsDescription": "Archive all ordinary conversations in “<name>{{projectName}}</name>”. Running conversations will remain active and be skipped. Cron jobs stay unchanged.",
+      "sessionsArchived": "Archived {{count}} conversations",
+      "archiveSkippedRunning": "{{count}} conversation(s) are running and were skipped",
+      "archiveSkippedRunningWithSuccess": "Archived {{succeeded}} conversation(s); {{count}} running conversation(s) were skipped",
       "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed. Failed items can be retried.",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
@@ -3242,7 +3410,12 @@
         "pathExists": "This project path already exists. Choose another directory or start a new conversation from the existing project.",
         "nameExists": "This project name already exists. Please choose another name.",
         "pathMissing": "Project directory does not exist. Choose an existing directory.",
-        "projectUnavailable": "Project unavailable. Refresh and retry."
+        "projectUnavailable": "Project unavailable. Refresh and retry.",
+        "archiveSessionBusy": "This conversation is running and cannot be archived. Stop it manually, then try again.",
+        "deleteSessionBusy": "This conversation is running and cannot be deleted. Stop it manually, then try again.",
+        "archiveForbidden": "This task does not support archiving.",
+        "archiveNotFound": "The resource no longer exists or has changed. Refresh and try again.",
+        "archiveFailed": "The archive operation failed. Please try again later."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
@@ -3275,7 +3448,6 @@
     "closed": "Closed",
     "failed": "Error",
     "cancelled": "Cancelled",
-    "tasksEmpty": "No tasks",
     "activityTitle": "Activity",
     "activityEmpty": "No activity yet",
     "historyLoading": "Restoring history…",
@@ -3334,6 +3506,10 @@
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
     "skip": "Skip",
+    "toolPayload": {
+      "title": "Tool payload (redacted)",
+      "notice": "This display copy is redacted and may be truncated for safety or size limits."
+    },
     "tip": {
       "allowOnce": "Allow this action only this time",
       "allowAlways": "Remember this rule and auto-allow from now on",
@@ -3586,7 +3762,56 @@
     "loginFailed": "Sign-in failed, please retry later",
     "authRequired": "Sign-in required to access",
     "secureHint": "You'll stay signed in after login",
-    "logout": "Sign out"
+    "logout": "Sign out",
+    "huawei": {
+      "title": "Sign in with HUAWEI ID",
+      "subtitle": "Sign in to use the models your account provides — no API key needed.",
+      "accountTitle": "HUAWEI ID",
+      "reasonModel": "This model requires signing in with a HUAWEI ID.",
+      "reasonExpired": "Your session has expired. Please sign in again.",
+      "login": "Sign in",
+      "loggingIn": "Signing in…",
+      "logout": "Sign out",
+      "cancel": "Cancel",
+      "close": "Close",
+      "done": "Done",
+      "modelsTitle": "Models from this account",
+      "modelsWhere": "Pick these from the model dropdown in chat",
+      "browserHint": "Opens the HUAWEI ID sign-in page in your browser — come back here when you're done",
+      "loginSuccessToast": "Signed in with HUAWEI ID",
+      "statusStarting": "Preparing sign-in…",
+      "statusWaiting": "Sign-in page opened in your browser — come back here when you're done…",
+      "checkLogin": "I've signed in",
+      "popupBlocked": "The browser blocked the new tab. Copy this URL and open it manually:",
+      "modelError": {
+        "loginRequired": "Your sign-in for the free models has expired. Sign in to your HUAWEI ID again and retry.",
+        "rateLimited": "Too many requests to the free models. Please try again shortly.",
+        "unavailable": "The free model service is temporarily unavailable. Retry later, or switch to a configured model."
+      },
+      "quota": {
+        "loading": "Checking…",
+        "unknown": "Usage unknown",
+        "exhausted": "Used up",
+        "remaining": "Left",
+        "unit": "credits",
+        "used": "Used",
+        "total": "Total",
+        "meteringHint": "Credits are deducted by actual model usage.",
+        "exhaustedHint": "Your free credits are used up. Switch to a configured model.",
+        "exhaustedUntil": "Your free credits are used up. They refresh {{date}}.",
+        "lowBalanceHint": "Running low",
+        "resetDaily": "Credits refresh daily at {{time}}.",
+        "resetWeekly": "Credits refresh every {{weekday}} at {{time}}.",
+        "resetMonthly": "Credits refresh monthly on day {{day}} at {{time}}.",
+        "resetEveryDays": "Credits refresh every {{count}} days. Next refresh: {{date}}.",
+        "resetEveryDaysPlain": "Credits refresh every {{count}} days.",
+        "resetEveryHours": "Credits refresh every {{count}} hours. Next refresh: {{date}}.",
+        "resetEveryHoursPlain": "Credits refresh every {{count}} hours.",
+        "resetEveryMonths": "Credits refresh every {{count}} months. Next refresh: {{date}}.",
+        "resetEveryMonthsPlain": "Credits refresh every {{count}} months.",
+        "resetNext": "Next credit refresh: {{date}}."
+      }
+    }
   },
   "heartbeat": {
     "status": {
@@ -3599,8 +3824,14 @@
     "schedule": {
       "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
       "interval": { "label": "Every", "unit": "minutes, return to this session" },
-      "cron": { "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)." },
-      "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed", "dateLabel": "Date", "timeLabel": "Time" },
+      "cron": {
+        "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)."
+      },
+      "once": {
+        "hint": "Pick a date and time; the job fires once at that moment and is then marked completed",
+        "dateLabel": "Date",
+        "timeLabel": "Time"
+      },
       "summary": {
         "interval": "Return to this session every {{minutes}} min",
         "cron": "{{expr}} ({{timezone}}), return to this session",
@@ -3746,8 +3977,6 @@
       "subtypePaper": "Paper",
       "subtypeProgram": "Program",
       "optimizerModelLabel": "Optimizer model",
-      "pluginLabel": "Initial plugin",
-      "pluginDefault": "Current Harness (native baseline when none is active)",
       "evaluationMethodLabel": "Evaluation method",
       "evaluationMethodAgent": "Agent evaluation",
       "evaluationMethodScript": "Script evaluation",

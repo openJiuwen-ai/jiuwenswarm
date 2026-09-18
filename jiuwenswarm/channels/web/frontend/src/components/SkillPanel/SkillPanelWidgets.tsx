@@ -10,7 +10,6 @@ import { ChevronRight } from 'lucide-react';
 import NewConversationIcon from '../../assets/new_conversation.svg?react';
 import ExpandIcon from '../../assets/work-mode/expand.svg?react';
 import { PageCard, type PageCardActionProps } from '../ui';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { MarketplacePluginItem } from './types';
 
@@ -92,17 +91,28 @@ export function TopAnchorTooltip({ pos, text }: { pos: { left: number; top: numb
   );
 }
 
-/** 弹窗右上角关闭按钮 */
-export function ModalCloseButton({ onClick, label, testId }: { onClick: () => void; label: string; testId?: string }) {
+/** 弹窗右上角关闭按钮（24px，可传 size 覆盖） */
+export function ModalCloseButton({
+  onClick,
+  label,
+  testId,
+  size = 24,
+}: {
+  onClick: () => void;
+  label: string;
+  testId?: string;
+  size?: number;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-label={label}
       data-testid={testId}
-      className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-secondary text-text-muted hover:text-text"
+      className="flex items-center justify-center rounded-md hover:bg-secondary text-text-meta hover:text-text"
+      style={{ width: size, height: size }}
     >
-      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
       </svg>
     </button>
@@ -154,7 +164,6 @@ export function HubSkillCard({
   action: PageCardActionProps;
 }) {
   const { t } = useTranslation();
-  const avatar = getSkillAvatar(skill.name);
   const displayName = skill.display_name || skill.name;
   const tags = skill.tags && skill.tags.length > 0 ? skill.tags : undefined;
 
@@ -163,7 +172,7 @@ export function HubSkillCard({
       onClick={onSelect}
       testId="skill-panel-hub-card"
       variant={skill.asset_id}
-      avatar={avatar}
+      avatar={{ name: displayName, iconUrl: skill.icon_uri, testId: 'skill-panel-hub-avatar' }}
       title={displayName}
       label={tags}
       action={action}

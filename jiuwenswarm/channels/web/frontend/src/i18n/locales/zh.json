@@ -22,7 +22,13 @@
     "expandMore": "展开 {{count}} 个",
     "optional": "（可选）",
     "processing": "处理中…",
-    "retry": "重试"
+    "retry": "重试",
+    "editMenu": {
+      "cut": "剪切",
+      "copy": "复制",
+      "paste": "粘贴",
+      "selectAll": "全选"
+    }
   },
   "a2ui": {
     "generating": "A2UI 界面生成中...",
@@ -36,7 +42,6 @@
     "work": "任务",
     "agent": "专家",
     "experiments": "实验",
-    "teams": "团队",
     "sessions": "会话",
     "cron": "定时任务",
     "skills": "技能",
@@ -45,7 +50,7 @@
     "settings": "设置",
     "logs": "日志",
     "update": "更新",
-    "personalContext": "个人\n上下文"
+    "personalContext": "上下文"
   },
   "applicationPlugins": {
     "title": "应用插件",
@@ -59,13 +64,23 @@
   },
   "settingsPanel": {
     "title": "设置",
+    "freeModels": {
+      "title": "限时免费模型",
+      "loginTitle": "华为账号登录",
+      "loginDescription": "使用华为账号登录，获取九问限时免费限量模型",
+      "quotaTitle": "免费积分",
+      "quotaLoggedOut": "登录后查看",
+      "signedIn": "已登录",
+      "loggedInDescription": "限时免费模型已可在对话的模型下拉中选用"
+    },
     "categories": {
       "general": "常规",
       "models": "模型",
       "agent": "智能体",
       "browser": "浏览器",
       "channels": "频道",
-      "personalContext": "个人上下文",
+      "personalContext": "上下文",
+      "archivedTasks": "已归档的任务",
       "experimental": "实验功能"
     },
     "feedback": {
@@ -78,6 +93,39 @@
     },
     "access": {
       "readOnly": "当前为只读状态。"
+    },
+    "archivedTasks": {
+      "description": "管理已归档的对话：可恢复到工作区，或彻底删除。彻底删除不可恢复。",
+      "searchPlaceholder": "搜索对话",
+      "clearSearch": "清除搜索",
+      "unassignedProject": "未归属项目",
+      "restoreSession": "恢复对话",
+      "deletePermanently": "彻底删除",
+      "moreActions": "更多操作",
+      "loadMore": "加载更多",
+      "loadFailed": "归档列表加载失败",
+      "emptyTitle": "无归档内容",
+      "emptyDescription": "归档后的对话会显示在这里。",
+      "emptySearchTitle": "没有匹配的归档对话",
+      "stopPending": "任务停止处理中",
+      "stopPendingTooltip": "该任务的停止流程仍在处理中，完成后即可恢复。",
+      "sessionRestored": "对话已恢复",
+      "sessionDeleted": "对话已删除",
+      "deleteSessionTitle": "彻底删除对话",
+      "deleteSessionRecord": "确定要彻底删除对话“{{sessionTitle}}”吗？",
+      "deleteSessionIrreversible": "对话数据将永久删除，删除后不可恢复。",
+      "deleteArchivedSessions": "删除已归档会话",
+      "deleteArchivedSessionsTitle": "删除已归档对话",
+      "deleteArchivedSessionsRecord": "永久删除项目“{{projectName}}”下全部已归档对话，此操作不可恢复。",
+      "archivedSessionsDeleted": "已删除 {{count}} 个已归档对话",
+      "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。",
+      "errors": {
+        "forbidden": "该资源不支持此操作",
+        "notFound": "资源不存在或已发生变化，请刷新后重试",
+        "sessionGone": "该会话已不存在，无法恢复",
+        "requestFailed": "操作失败，请稍后重试",
+        "sessionRestoreFailed": "对话恢复失败，请刷新后重试"
+      }
     },
     "dialog": {
       "discardTitle": "放弃未保存的修改",
@@ -133,6 +181,10 @@
       "protocol": "协议",
       "vendor": "模型提供商",
       "model": "模型",
+      "contextWindow": "模型上下文窗口",
+      "contextWindowPlaceholder": "例如 256K、1M 或 262144",
+      "contextWindowHint": "请输入正整数，支持纯数字以及 K/M 单位（不区分大小写）；也可以直接选择字段旁边的常用值。",
+      "contextWindowPresets": "常用上下文窗口",
       "vendorPlaceholder": "请选择",
       "selectVendor": "选择模型提供商",
       "searchVendor": "搜索模型提供商",
@@ -230,6 +282,7 @@
         "anthropicUnavailable": "当前提供商套餐不支持 Anthropic 协议，请切换为 OpenAI 协议或重新选择提供商",
         "reasoningUnsupported": "当前推理选项“{{value}}”不受支持，请重新选择或使用默认值",
         "reasoningUnavailable": "推理选项尚未加载，请重试后保存",
+        "contextWindowInvalid": "请输入有效的正整数上下文窗口，例如 256K、1M 或 1310720",
         "aliasConflict": "自定义名称必须全局唯一，且不能与其他模型 ID 相同",
         "modelNameConflict": "模型 ID 不能与其他配置的自定义名称相同"
       },
@@ -280,6 +333,7 @@
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹界面",
       "kvCacheAffinity": "算力亲和",
+      "skillPack": "技能包",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
@@ -324,7 +378,14 @@
         "placeholder": "例如：FunAudioLLM/SenseVoiceSmall"
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
-      "skill_retrieval_enabled": { "title": "技能自动检索", "description": "基于已安装技能数量，动态选择智能体的技能发现策略" },
+      "symphony_evolution_enabled": {
+        "title": "发现技能包",
+        "description": "任务结束后从执行经验中沉淀技能组合，自动发现技能包"
+      },
+      "skill_retrieval_enabled": {
+        "title": "技能自动检索",
+        "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
+      },
       "skill_retrieval_index_enabled": {
         "title": "技能索引",
         "description": "启用已安装技能的树状目录，增强智能体的结构化技能发现能力（*可能消耗额外 Token）"
@@ -353,20 +414,29 @@
       "video_gen_api_base": { "title": "API 地址", "placeholder": "例如 https://openrouter.ai/api/v1" },
       "video_gen_api_key": { "title": "API 密钥", "placeholder": "例如 sk-..." },
       "video_gen_model": { "title": "模型名称", "placeholder": "例如 bytedance/seedance-2.0-fast" },
-      "video_gen_enabled": { "title": "视频生成", "description": "启用视频生成工具（文生视频）；关闭后仍保留已保存的模型配置。" },
+      "video_gen_enabled": {
+        "title": "视频生成",
+        "description": "启用视频生成工具（文生视频）；关闭后仍保留已保存的模型配置。"
+      },
       "visual_gen_provider": { "title": "模型提供商" },
       "visual_gen_protocol": { "title": "协议" },
       "visual_gen_api_base": { "title": "API 地址", "placeholder": "例如 https://openrouter.ai/api/v1" },
       "visual_gen_api_key": { "title": "API 密钥", "placeholder": "例如 sk-..." },
       "visual_gen_model": { "title": "模型名称", "placeholder": "例如 google/gemini-3.1-flash-image" },
-      "visual_gen_enabled": { "title": "图像生成", "description": "启用图像生成工具（文生图）；关闭后仍保留已保存的模型配置。" },
+      "visual_gen_enabled": {
+        "title": "图像生成",
+        "description": "启用图像生成工具（文生图）；关闭后仍保留已保存的模型配置。"
+      },
       "permissions_mode": { "title": "全局权限模式", "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。" },
       "a2ui_enabled": { "title": "启用 A2UI", "description": "允许将支持的结果渲染成交互式界面。" },
       "rsi_enabled": {
         "title": "启用 RSI",
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
       },
-      "trajectory_ui_enabled": { "title": "启用轨迹界面", "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。" },
+      "trajectory_ui_enabled": {
+        "title": "启用轨迹界面",
+        "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
+      },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
         "description": "输入框为空时显示全双工按钮；点击后共享整个屏幕并持续使用麦克风。"
@@ -415,7 +485,6 @@
     "validation": {
       "required": "此字段为必填项",
       "integerRange": "请输入 {{min}}–{{max}} 之间的整数"
-
     }
   },
   "trajectory": {
@@ -472,7 +541,6 @@
     "noGroupMessages": "暂无群聊消息",
     "memberTasksTitle": "{{member}} 执行的任务",
     "memberTasks": "Ta的任务",
-    "noMemberTasks": "暂无可归属到该成员的任务",
     "noProcessData": "暂无该成员的执行过程数据",
     "collapseView": "收起视图",
     "expandView": "展开视图",
@@ -649,6 +717,7 @@
   "chat": {
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
+    "modelNotConfigured": "还没有配置可用的模型。请在「设置 → 模型」里配置一个模型，或登录获取限时免费模型。",
     "placeholderAwaitingApproval": "请先处理上方待确认项",
     "placeholderProcessing": "处理中，输入新指令可中断...",
     "placeholderProcessingQueue": "处理中，输入新指令将加入等待队列...",
@@ -692,6 +761,7 @@
     "addImageDisabled": "处理中或录音中不可添加图片",
     "addFile": "上传文件",
     "addFileDisabled": "处理中或录音中不可上传文件",
+    "unsupportedImagePaste": "不支持粘贴该文件格式，仅支持粘贴 PNG、JPG/JPEG、WebP、GIF 图片。",
     "addFileTooltip": "可添加文件、专家、技能、连接器",
     "addAttachment": "添加附件",
     "removeImage": "移除图片",
@@ -713,6 +783,8 @@
     "modelSelector": {
       "tooltip": "切换对话使用的模型",
       "configured": "已配置模型",
+      "free": "限时免费模型",
+      "getFreeModels": "获取限时免费模型",
       "addModel": "添加自定义模型",
       "empty": "暂无可用模型，请先在设置中添加模型",
       "placeholder": "选择模型"
@@ -808,6 +880,18 @@
     },
     "historyLoading": "历史数据加载中…",
     "historyLoadMore": "加载更多历史消息",
+    "continuedFromChat": "从原会话继续",
+    "openSourceChat": "打开原会话",
+    "sideConversation": {
+      "title": "侧会话",
+      "from": "来自 {{title}}",
+      "empty": "在不离开主会话的情况下提问",
+      "placeholder": "发送消息到侧会话",
+      "send": "发送消息",
+      "working": "处理中…",
+      "sendFailed": "消息发送失败，请重试。",
+      "close": "关闭侧会话"
+    },
     "config": {
       "mode": {
         "cluster": "集群模式",
@@ -922,6 +1006,7 @@
     "toggleLabel": "追求目标",
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
+    "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
     "badge": "目标",
     "status": {
@@ -1318,7 +1403,7 @@
       "viaChatPrompt": "我们一起来设置一个定时任务吧。首先，说明定时任务在 WorkSwarm 中的工作方式。然后询问我需要安排什么，以及应该在什么时候运行。"
     },
     "stats": {
-      "total": "任务总数（{{count}}）"
+      "total": "任务总数 {{count}}"
     },
     "tabs": {
       "list": "任务列表",
@@ -1576,6 +1661,18 @@
   "browser": {
     "errors": {
       "loadPath": "加载浏览器配置失败"
+    },
+    "pane": {
+      "panels": "浏览器面板",
+      "mainPanel": "主浏览器",
+      "tabLabel": "浏览器",
+      "closeTab": "关闭浏览器",
+      "back": "后退",
+      "forward": "前进",
+      "reload": "刷新",
+      "stop": "停止",
+      "addressPlaceholder": "输入网址或搜索",
+      "unavailable": "内置浏览器不可用"
     }
   },
   "logsPanel": {
@@ -1738,7 +1835,8 @@
       "statKnowledge": "上下文节点数",
       "statCollecting": "正在采集",
       "knowledgeSource": "上下文来源",
-      "lastRun": "上次采集"
+      "lastRun": "上次采集",
+      "fetchTaskRunning": "当前有采集任务正在运行，请等待完成后再修改配置"
     },
     "addContent": {
       "title": "添加内容",
@@ -1751,15 +1849,15 @@
       "autoCollectLabel": "自动采集",
       "autoCollectHint": "开启后按频率自动采集",
       "timeRangeLabel": "采集时间",
-    "timeRangeWeek": "最近一周",
-    "timeRangeMonth": "最近一个月",
-    "timeRangeQuarter": "最近三个月",
-    "timeRangeCustom": "自定义",
-    "dateRangeTitle": "选择日期范围",
-    "dateRangePlaceholder": "请选择日期范围",
-    "dateRangeRequired": "请选择自定义时间范围",
-    "addUrl": "+ 添加",
-    "frequencyLabel": "自动采集频率",
+      "timeRangeWeek": "最近一周",
+      "timeRangeMonth": "最近一个月",
+      "timeRangeQuarter": "最近三个月",
+      "timeRangeCustom": "自定义",
+      "dateRangeTitle": "选择日期范围",
+      "dateRangePlaceholder": "请选择日期范围",
+      "dateRangeRequired": "请选择自定义时间范围",
+      "addUrl": "+ 添加",
+      "frequencyLabel": "自动采集频率",
       "frequencyHour": "每 {{n}} 小时",
       "frequencyDay": "每 {{n}} 天",
       "frequencyEvery": "每",
@@ -1770,7 +1868,7 @@
       "advancedConfig": "高级配置",
       "maxItemsRangeError": "单次采集条数须在 1~10000 之间，或留空使用默认",
       "previousStep": "上一步",
-    "submit": "添加",
+      "submit": "添加",
       "save": "保存",
       "notConfigured": "尚未配置个人上下文，请先在设置页开启",
       "providerUnauthorized": "未授权，请先去设置页授权",
@@ -1889,7 +1987,8 @@
     },
     "mySkillsGroups": {
       "added": "已添加技能",
-      "builtin": "内置技能"
+      "builtin": "内置技能",
+      "skillPack": "技能包"
     },
     "publishFilter": {
       "all": "全部",
@@ -1900,6 +1999,10 @@
       "skill": "技能包",
       "team": "团队技能",
       "multimodal": "多模态"
+    },
+    "proprietaryLabels": {
+      "thirdParty": "非自研",
+      "thirdPartyHint": "该技能由第三方提供，非官方自研"
     },
     "marketplaceCategories": {
       "all": "全部",
@@ -1918,6 +2021,7 @@
     "noEnabledSkills": "暂无启用的技能",
     "noBuiltinSkills": "暂无内置技能",
     "setEnabledError": "设置技能启用状态失败",
+    "packBlockedHint": "技能包包含未安装的技能，请先在「包含技能」中安装后再启用",
     "setEnabledSuccess": "已启用技能 {name}",
     "setDisabledSuccess": "已禁用技能 {name}",
     "marketplaceTabs": {
@@ -1952,6 +2056,7 @@
       "install": "安装",
       "installing": "安装中...",
       "uninstall": "卸载",
+      "uninstalling": "卸载中...",
       "importLocal": "导入本地技能",
       "sourceManager": "源管理",
       "create": "创建",
@@ -2076,6 +2181,17 @@
     "featuredTeamSkills": "精选团队技能",
     "featuredSkills": "精选技能",
     "noMatches": "暂无匹配的技能",
+    "featuredSkillPacks": "精选技能包",
+    "allSkillPacks": "全部技能包",
+    "skillPackTag": "技能包",
+    "memberCountSuffix": "{{count}} 个技能",
+    "includedSkills": "包含技能",
+    "noPackMembers": "暂无包含技能",
+    "memberUnavailable": "不可用",
+    "memberBlockedReasonDisabled": "已禁用",
+    "memberBlockedReasonMissing": "文件缺失",
+    "memberBlockedReasonInvalid": "格式无效",
+    "memberBlockedReasonUninstalled": "已卸载",
     "viewMode": {
       "list": "列表模式",
       "grid": "平铺模式"
@@ -2566,7 +2682,12 @@
       "createByUpload": "上传文件创建",
       "uploading": "上传中…",
       "createViaChatPrompt": "帮我创建一个xxx专家，擅长xxx",
-      "back": "返回"
+      "back": "返回",
+      "edit": "编辑",
+      "updating": "保存中…"
+    },
+    "confirm": {
+      "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。"
     },
     "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作", "moreTagsTooltip": "更多标签：{{tags}}" },
     "states": {
@@ -2636,6 +2757,7 @@
     },
     "form": {
       "title": "手动创建",
+      "editTitle": "编辑专家",
       "subtitle": "创建一个可复用的专家定义",
       "createOnly": "仅支持创建",
       "createTabsLabel": "创建类型",
@@ -2724,7 +2846,7 @@
         "createFirst": "手动创建",
         "createByChat": "通过聊天创建",
         "createByUpload": "上传文件创建",
-        "createViaChatPrompt": "帮我创建一个 XXX 专家团，擅长 XXXXX。我的经验是：[请补充你的行业背景、相关经验]",
+        "createViaChatPrompt": "帮我创建一个xxx专家团，擅长xxx",
         "install": "安装",
         "installing": "安装中…",
         "use": "使用",
@@ -2794,7 +2916,7 @@
         "uploadKindLabel": "类别",
         "uploadGroupTab": "专家团",
         "uploadAgentTab": "专家",
-        "uploadHint": "支持 .zip、.tar 和 .tar.gz 文件，解压后的文件夹需要至少包含 manifest.json 文件、agents 目录和 README.md，.json 文件需包含 package_type 声明包类型。",
+        "uploadHint": "支持上传 .zip、.tar 格式的专家团包。解压后的包根目录须包含 manifest.json，声明 package_type: \"agent_group\"，并配置专家团名称、Leader 及专家成员。包内须包含配置引用的成员定义、人设等文件；推荐提供 README.md 说明文档。",
         "uploadInvalidType": "仅支持 .zip、.tar 和 .tar.gz 专家团包",
         "errors": {
           "nameRequired": "请输入专家团名称",
@@ -2820,6 +2942,8 @@
     "copied": "已复制",
     "stopReading": "停止朗读",
     "readMessage": "朗读消息",
+    "forkFromMessage": "从此消息新建会话分支",
+    "forkFromMessageFailed": "新建会话分支失败，请重试。",
     "fileExpired": "已过期",
     "agentProcessing": "Agent 处理中",
     "thinking": "正在思考...",
@@ -2926,6 +3050,47 @@
         "completed": "Discovery completed",
         "failed": "Discovery failed",
         "resultWords": "{{count}} words returned"
+      }
+    },
+    "autoReviewer": {
+      "title": "权限审查",
+      "status": {
+        "approved": "已自动允许",
+        "userApproved": "用户已允许",
+        "userRejected": "用户已拒绝",
+        "manual": "需要人工审批",
+        "denied": "已拒绝",
+        "blocked": "已阻止",
+        "hostRevalidationFailed": "主机校验失败",
+        "inProgress": "审查中",
+        "timedOut": "审查超时",
+        "fallback": "已转人工",
+        "aborted": "审查已停止"
+      },
+      "details": {
+        "source": "决策来源",
+        "sourceValues": {
+          "automatic": "智能审批",
+          "manual": "人工审批",
+          "system": "系统权限检查"
+        },
+        "risk": "风险",
+        "riskValues": {
+          "critical": "严重",
+          "high": "高",
+          "medium": "中",
+          "low": "低",
+          "unknown": "未知"
+        },
+        "reason": "原因",
+        "reasonValues": {
+          "approved": "权限审查已允许此操作。",
+          "denied": "权限审查已拒绝此操作。",
+          "manual": "当前信息不足以完成智能审批，需要人工判断。",
+          "inProgress": "权限审查正在进行。"
+        },
+        "hint": "人工判断建议",
+        "manualGuidanceFallback": "请核对工具参数、操作目标和风险后再决定。"
       }
     },
     "teamActivity": {
@@ -3210,12 +3375,20 @@
       "pinFailed": "置顶操作失败",
       "rename": "重命名",
       "renamePlaceholder": "输入新名称",
+      "archiveConversation": "归档",
+      "conversationArchived": "已归档任务会话",
+      "archiveView": "查看",
+      "archiveUndo": "撤销",
       "deleteProject": "删除项目",
-      "deleteProjectDescription": "永久删除“<name>{{projectName}}</name>”及其下全部会话和定时任务，包括未归档会话。正在运行的任务将停止，不删除工作目录。此操作不可恢复。",
+      "deleteProjectDescription": "删除“<name>{{projectName}}</name>”下的定时任务和非运行中会话。若有普通会话正在运行，将跳过这些会话并保留项目；可停止后重试。不删除工作目录。已删除内容不可恢复。",
+      "projectDeletedSummary": "项目已删除：{{sessions}} 个对话、{{crons}} 个定时任务",
+      "deleteFailedSummary": "项目删除未完成：已删除 {{sessions}} 个对话、{{crons}} 个定时任务。",
+      "deleteSkippedRunning": "已删除 {{sessions}} 个对话、{{crons}} 个定时任务；{{count}} 个对话仍在运行，已跳过并保留项目。请先手动停止这些对话，再重试删除。",
       "archiveSessions": "归档全部会话",
-      "deleteArchivedSessions": "删除已归档会话",
-      "archiveSessionsDescription": "归档“<name>{{projectName}}</name>”下全部普通会话。运行中的会话将保留并提示失败，定时任务保持不变。",
-      "deleteArchivedSessionsDescription": "永久删除“<name>{{projectName}}</name>”下全部已归档会话，此操作不可恢复。",
+      "archiveSessionsDescription": "归档“<name>{{projectName}}</name>”下全部普通会话。运行中的会话将保留并略过，定时任务保持不变。",
+      "sessionsArchived": "已归档 {{count}} 个会话",
+      "archiveSkippedRunning": "有 {{count}} 个会话正在运行中，已略过归档",
+      "archiveSkippedRunningWithSuccess": "已归档 {{succeeded}} 个会话；有 {{count}} 个会话正在运行中，已略过",
       "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。可重试失败项。",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
@@ -3223,7 +3396,12 @@
         "pathExists": "该项目路径已存在，请选择其他目录或直接从现有项目开始新对话",
         "nameExists": "该项目名已存在，请换个名称",
         "pathMissing": "项目目录不存在，请选择已存在的目录",
-        "projectUnavailable": "项目不可用，请刷新后重试"
+        "projectUnavailable": "项目不可用，请刷新后重试",
+        "archiveSessionBusy": "对话正在运行，无法归档。请先手动停止，再重试归档。",
+        "deleteSessionBusy": "对话正在运行，无法删除。请先手动停止，再重试删除。",
+        "archiveForbidden": "该任务不支持归档",
+        "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
+        "archiveFailed": "归档操作失败，请稍后重试"
       },
       "cancel": "取消",
       "confirm": "确定"
@@ -3256,7 +3434,6 @@
     "closed": "已关闭",
     "failed": "异常",
     "cancelled": "已取消",
-    "tasksEmpty": "暂无任务",
     "activityTitle": "活动",
     "activityEmpty": "暂无活动",
     "historyLoading": "正在恢复历史…",
@@ -3315,6 +3492,10 @@
     "allowOnce": "授权单次",
     "allowAlways": "总是允许",
     "skip": "跳过",
+    "toolPayload": {
+      "title": "工具参数（已脱敏）",
+      "notice": "这是用于审批展示的脱敏副本，内容可能因安全或大小限制被截断。"
+    },
     "tip": {
       "allowOnce": "仅本次授权执行",
       "allowAlways": "记住该规则，以后自动放行",
@@ -3567,7 +3748,56 @@
     "loginFailed": "登录失败,请稍后重试",
     "authRequired": "需要登录后才能访问",
     "secureHint": "登录后将自动保持登录状态",
-    "logout": "登出"
+    "logout": "登出",
+    "huawei": {
+      "title": "登录华为账号",
+      "subtitle": "登录后即可使用账号提供的模型，无需配置 API Key。",
+      "accountTitle": "华为账号",
+      "reasonModel": "该模型需要登录华为账号后使用。",
+      "reasonExpired": "登录已过期，请重新登录。",
+      "login": "登录",
+      "loggingIn": "登录中…",
+      "logout": "退出登录",
+      "cancel": "取消",
+      "close": "关闭",
+      "done": "完成",
+      "modelsTitle": "账号提供的模型",
+      "modelsWhere": "这些模型在对话框的模型下拉里选用",
+      "browserHint": "将在浏览器中打开华为账号登录页，完成后回到这里即可",
+      "loginSuccessToast": "华为账号登录成功",
+      "statusStarting": "正在准备登录…",
+      "statusWaiting": "已在浏览器中打开登录页，完成后回到这里…",
+      "checkLogin": "我已完成登录",
+      "popupBlocked": "浏览器拦截了新标签页，请复制下面的地址手动打开：",
+      "modelError": {
+        "loginRequired": "免费模型的登录已失效，请重新登录华为账号后重试。",
+        "rateLimited": "免费模型请求太频繁，请稍后再试。",
+        "unavailable": "免费模型服务暂时不可用，请稍后重试，或改用已配置的模型。"
+      },
+      "quota": {
+        "loading": "查询中…",
+        "unknown": "用量未知",
+        "exhausted": "已用完",
+        "remaining": "剩余",
+        "unit": "积分",
+        "used": "已用",
+        "total": "总量",
+        "meteringHint": "按模型实际用量扣减积分",
+        "exhaustedHint": "免费积分已用完，请改用已配置的模型。",
+        "exhaustedUntil": "免费积分已用完，将于 {{date}} 刷新",
+        "lowBalanceHint": "积分所剩不多",
+        "resetDaily": "每天 {{time}} 刷新积分",
+        "resetWeekly": "每{{weekday}} {{time}} 刷新积分",
+        "resetMonthly": "每月 {{day}} {{time}} 刷新积分",
+        "resetEveryDays": "每 {{count}} 天刷新一次积分，下次刷新：{{date}}",
+        "resetEveryDaysPlain": "每 {{count}} 天刷新一次积分",
+        "resetEveryHours": "每 {{count}} 小时刷新一次积分，下次刷新：{{date}}",
+        "resetEveryHoursPlain": "每 {{count}} 小时刷新一次积分",
+        "resetEveryMonths": "每 {{count}} 个月刷新一次积分，下次刷新：{{date}}",
+        "resetEveryMonthsPlain": "每 {{count}} 个月刷新一次积分",
+        "resetNext": "下次刷新积分：{{date}}"
+      }
+    }
   },
   "heartbeat": {
     "status": {
@@ -3581,7 +3811,11 @@
       "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
       "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
       "cron": { "hint": "支持 5 段（分 时 日 月 周）或与普通 Cron 任务相同的 7 段格式（秒 分 时 日 月 周 年）。" },
-      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成", "dateLabel": "日期", "timeLabel": "时间" },
+      "once": {
+        "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成",
+        "dateLabel": "日期",
+        "timeLabel": "时间"
+      },
       "summary": {
         "interval": "每 {{minutes}} 分钟回到当前会话",
         "cron": "{{expr}}（{{timezone}}）回到当前会话",
@@ -3727,8 +3961,6 @@
       "subtypePaper": "论文",
       "subtypeProgram": "程序",
       "optimizerModelLabel": "优化模型",
-      "pluginLabel": "初始插件",
-      "pluginDefault": "当前 Harness（未安装时使用原生基线）",
       "evaluationMethodLabel": "评测方法",
       "evaluationMethodAgent": "Agent评测",
       "evaluationMethodScript": "脚本评测",

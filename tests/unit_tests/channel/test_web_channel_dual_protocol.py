@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for WebChannel dual-protocol (same-port WS; HTTP-ready) Phase 1.
+"""Tests for WebChannel same-port HTTP+WS (FastAPI/uvicorn).
 
 Avoid fastapi/starlette TestClient: some CI images ship a Starlette that requires
 ``httpx2`` and fail at import time. Exercise FastAPI route registration and the
@@ -17,8 +17,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
 from jiuwenswarm.gateway.channel_manager.web.web_channel_app import (
     _reject_disallowed_origin,
+    _serve_channel_websocket,
     build_web_channel_app,
     normalize_web_ws_path,
 )
@@ -27,7 +29,7 @@ from jiuwenswarm.gateway.channel_manager.web.ws_connection_adapter import Starle
 
 
 def _make_channel(**kwargs: Any) -> WebChannel:
-    cfg = WebChannelConfig(enabled=True, dual_protocol=True, **kwargs)
+    cfg = WebChannelConfig(enabled=True, **kwargs)
     return WebChannel(cfg, RobotMessageRouter())
 
 
@@ -170,7 +172,7 @@ async def test_dual_protocol_custom_path_jsonrpc_roundtrip() -> None:
 
 @pytest.mark.asyncio
 async def test_dual_protocol_ws_git_path_closes_without_registry() -> None:
-    """/ws/git accepts then closes with 1011 if git registry is absent (same as legacy)."""
+    """/ws/git accepts then closes with 1011 if git registry is absent."""
     channel = _make_channel()
     ws = _QueueWebSocket("/ws/git?user_id=alice", [])
     await channel.handle_connection(ws, path=ws.path)
@@ -208,9 +210,22 @@ def test_starlette_adapter_path_includes_query() -> None:
     assert adapter.request_headers.get("x-user-id") == "u1"
 
 
-def test_webchannel_config_dual_protocol_default_true() -> None:
-    assert WebChannelConfig().dual_protocol is True
+@pytest.mark.asyncio
+async def test_serve_ws_does_not_accept_when_unauthorized() -> None:
+    channel = _make_channel()
 
+    async def deny(**_kwargs: Any) -> AuthResult:
+        return AuthResult(success=False, error="Token 无效或已过期")
 
-def test_webchannel_config_legacy_flag() -> None:
-    assert WebChannelConfig(dual_protocol=False).dual_protocol is False
+    channel.set_handshake_auth(deny)
+    websocket = MagicMock()
+    websocket.headers = {}
+    websocket.url.path = "/ws"
+    websocket.url.query = "token=fake"
+    websocket.client = MagicMock(host="127.0.0.1", port=9)
+    websocket.send_denial_response = AsyncMock()
+    websocket.accept = AsyncMock()
+    await _serve_channel_websocket(channel, websocket)
+    websocket.accept.assert_not_called()
+    websocket.send_denial_response.assert_awaited_once()
+    assert websocket.send_denial_response.await_args.args[0].status_code == 401

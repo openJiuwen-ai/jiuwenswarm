@@ -2,7 +2,10 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSPropert
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
+import { requestLogin } from '../../stores/authStore';
+import { useFreeModelsCampaign } from '../../features/free-models/campaign';
 import { useSessionStore } from '../../stores/sessionStore';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { ModelProviderIcon } from '../ModelProviderIcon';
 
 interface ModelPickerProps {
@@ -27,18 +30,23 @@ export default function ModelPicker({
 }: ModelPickerProps): JSX.Element {
   const { t } = useTranslation();
   const models = useSessionStore((state) => state.chatAvailableModels);
+  const campaignActive = useFreeModelsCampaign();
+  const { tooltip, handlers } = useAdaptiveTooltip();
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const selected = models.find((model) => model.model_name === value);
+  const freeModels = models.filter((model) => model.is_free === true);
   const groups = [
     {
       id: 'configured',
       label: t('chat.modelSelector.configured'),
-      models,
+      models: models.filter((model) => model.is_free !== true),
     },
+    { id: 'free', label: t('chat.modelSelector.free'), models: freeModels },
   ];
+  const showFreeModelsCta = campaignActive && freeModels.length === 0;
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -107,11 +115,12 @@ export default function ModelPicker({
       <button
         type="button"
         className="chat-mode-select__trigger"
-        title={t('chat.modelSelector.tooltip')}
         onClick={handleTriggerClick}
         disabled={disabled}
         aria-haspopup="menu"
         aria-expanded={open && !disabled}
+        data-tooltip={t('chat.modelSelector.tooltip')}
+        {...handlers}
         data-testid={`${testIdPrefix}-trigger`}
       >
         <span className="chat-mode-select__value">
@@ -137,6 +146,7 @@ export default function ModelPicker({
           </svg>
         )}
       </button>
+      {tooltip}
 
       {open &&
         !disabled &&
@@ -148,13 +158,13 @@ export default function ModelPicker({
             data-testid={`${testIdPrefix}-menu`}
             style={{ position: 'fixed', zIndex: 9999, visibility: position ? 'visible' : 'hidden', ...position }}
           >
-            {models.length === 0 && (
+            {models.length === 0 && !showFreeModelsCta && (
               <div className="px-2 py-2 text-xs text-text-muted" role="status" data-testid={`${testIdPrefix}-empty`}>
                 {t('chat.modelSelector.empty')}
               </div>
             )}
             {groups
-              .filter((group) => group.models.length > 0)
+              .filter((group) => group.models.length > 0 || (group.id === 'free' && showFreeModelsCta))
               .map((group) => (
                 <Fragment key={group.id}>
                   <div
@@ -164,6 +174,36 @@ export default function ModelPicker({
                   >
                     {group.label}
                   </div>
+                  {group.id === 'free' && showFreeModelsCta && (
+                    <button
+                      type="button"
+                      className="model-select__free-cta"
+                      data-testid={`${testIdPrefix}-free-cta`}
+                      onClick={() => {
+                        setOpen(false);
+                        requestLogin();
+                      }}
+                    >
+                      <span className="model-select__free-cta-main">
+                        <span className="model-select__free-cta-icon" aria-hidden="true">
+                          <svg viewBox="0 0 20 20" fill="currentColor" width={12} height={12}>
+                            <path d="M10 2.5l1.7 4.3 4.3 1.7-4.3 1.7L10 14.5l-1.7-4.3L4 8.5l4.3-1.7L10 2.5z" />
+                          </svg>
+                        </span>
+                        <span className="chat-mode-select__label">{t('chat.modelSelector.getFreeModels')}</span>
+                      </span>
+                      <svg
+                        className="model-select__free-cta-chevron"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={1.8}
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8 5l4 5-4 5" />
+                      </svg>
+                    </button>
+                  )}
                   {group.models.map((model, index) => (
                     <button
                       key={`${model.model_name}-${index}`}

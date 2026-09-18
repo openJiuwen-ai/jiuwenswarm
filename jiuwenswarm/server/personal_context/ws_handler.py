@@ -385,7 +385,7 @@ async def handle_personal_context_request(
             request,
             send_lock,
             message=exc.message,
-            code=exc.code,
+            code=str(exc.code),
             status=exc.status.name,
         )
     except Exception as exc:  # noqa: BLE001

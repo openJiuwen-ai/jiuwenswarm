@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """JiuSwarmStreamEventRail — Stream event emission, pause checks, context fix.
 
@@ -16,15 +16,16 @@ import re
 from collections.abc import Mapping
 from typing import Any, List, Optional
 
-from openjiuwen.core.context_engine.context.context_utils import ContextUtils
 from openjiuwen.core.foundation.llm import (
     AssistantMessage,
     ToolMessage,
 )
 from openjiuwen.core.session.agent import Session
 from openjiuwen.core.session.stream import OutputSchema
+from openjiuwen.core.single_agent.ability_manager import resolve_tool_result_text
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
+    AgentCallbackEvent,
     InvokeInputs,
     ToolCallInputs,
 )
@@ -70,6 +71,7 @@ from jiuwenswarm.common.tool_display import (
     extract_call_goal,
     inject_call_goal_schema,
 )
+from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
 
@@ -290,6 +292,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
     priority = 80
 
+    # AFTER_TOOL_CALL projects the call's final outcome: the ``tool_result``
+    # and the tool message the model reads, after every rail that rewrites
+    # them (e.g. plan approval, user hooks, the core browser runtime and mobile
+    # skill rails). The hook alone runs this far below ``priority``; the other
+    # hooks keep their position.
+    _AFTER_TOOL_CALL_READER_OFFSET = 1_000_000
+
     # Key used in ctx.extra to carry session_id from before_invoke to checkpoints.
     # ctx.extra persists across all events within a single invoke, so sub-agent
     # checkpoints inherit the parent's session_id (correct: parent abort → sub stops).
@@ -336,6 +345,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # cleanup_session drops leftovers when the session is destroyed.
         self._emitted_tool_call_ids: dict[str, str] = {}
         self._symphony_stream_handler = SymphonyToolStreamHandler()
+
+    def callback_priority(self, event: AgentCallbackEvent) -> int:
+        """Run ``after_tool_call`` after every rail that produces the tool result."""
+        if event == AgentCallbackEvent.AFTER_TOOL_CALL:
+            return self.priority - self._AFTER_TOOL_CALL_READER_OFFSET
+        return self.priority
 
     def init(self, agent: Any) -> None:
         self._deep_agent = agent
@@ -1059,6 +1074,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     session,
                     tc,
                     tool_result,
+                    rendered_result=resolve_tool_result_text(ctx.inputs, ctx.exception),
                     reviewer_metadata=reviewer_metadata,
                 )
                 if projected:
@@ -1150,8 +1166,19 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         tool_call: Any,
         result: Any,
         *,
+        rendered_result: str | None = None,
         reviewer_metadata: Mapping[str, Any] | None = None,
     ) -> bool:
+        """Emit one ``tool_result`` event.
+
+        ``result`` is a compatibility field: ``str()`` of the structured tool
+        result, which existing web / TUI / history consumers still parse.
+        ``rendered_result`` is the independent text the model read, used for
+        display and history restore. A ``structured_result`` field is
+        intentionally not emitted yet; once web and TUI migrate to structured
+        data, ``result`` and every parser built on its string form are removed
+        end to end.
+        """
         try:
             raw_output = _structured_tool_result_payload(result)
             tool_result_payload = {
@@ -1159,6 +1186,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "tool_call_id": getattr(tool_call, "id", "") if tool_call else "",
                 "result": str(result)[:60000] if result is not None else "",
             }
+            if rendered_result is not None:
+                tool_result_payload["rendered_result"] = rendered_result[:60000]
             if raw_output is not None:
                 tool_result_payload["raw_output"] = raw_output
                 self._symphony_stream_handler.enrich_result_payload(
@@ -1369,15 +1398,23 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             logger.debug("Failed to get model_name from ctx.agent", exc_info=True)
 
         try:
-            # raw_total_tokens: model max context window — use agent-core's resolver
-            # with built-in dict + 200000 fallback (never returns 0)
-            raw_total_tokens = ContextUtils.resolve_context_max(
+            # raw_total_tokens: resolve only explicit runtime values and the
+            # fixed JiuwenSwarm fallback; never fetch model metadata here.
+            raw_total_tokens = resolve_context_window_tokens(
                 model_name=model_name,
-                fallback_context_window_tokens=(
-                    getattr(context, "_context_window_tokens", None)
-                    or getattr(context, "_model_context_window_tokens_override", None)
+                context_engine_config={
+                    "context_window_tokens": getattr(
+                        context,
+                        "_global_context_window_tokens",
+                        getattr(context, "_context_window_tokens", None),
+                    ),
+                    "model_context_window_tokens": getattr(
+                        context, "_model_context_window_tokens", None
+                    ),
+                },
+                model_context_window_override=getattr(
+                    context, "_model_context_window_tokens_override", None
                 ),
-                model_context_window_tokens=getattr(context, "_model_context_window_tokens", None),
             )
 
             # The context window contains model input, not the generated reply.

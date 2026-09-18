@@ -4,6 +4,7 @@ export const breakpoints = {
   md: 900,
   lg: 1028,
   xl: 1264,
+  toolPanelAutoHide: 1280,
   wide: 1440,
   wideSidebar: 1441,
   graph: 1535,

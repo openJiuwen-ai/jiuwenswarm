@@ -1,11 +1,16 @@
 import type { ModelPlan, VendorPresetMap } from '../../../../types';
+import { normalizeContextWindowTokens, resolveDraftContextWindowTokens } from '../models/contextWindow';
 import {
   CUSTOM_VENDOR_SELECTION,
   findVendorPreset,
   vendorSelectionKey,
   type ModelInputMode,
 } from '../models/modelAdapters';
-import { mediaCapabilityEnabledField, type MediaCapabilityModality } from './mediaCapabilities';
+import {
+  mediaCapabilityContextWindowField,
+  mediaCapabilityEnabledField,
+  type MediaCapabilityModality,
+} from './mediaCapabilities';
 
 const MODEL_PLANS: readonly ModelPlan[] = ['token_plan', 'coding_plan', 'custom_api'];
 
@@ -20,6 +25,7 @@ export type MediaModelDraft = {
   endpoint_profile: string;
   vendor_key: string;
   plan: string;
+  context_window_tokens: string;
 };
 
 function isModelPlan(value: string): value is ModelPlan {
@@ -41,6 +47,8 @@ export function createMediaModelDraft(
   const endpointProfile = readConfig(config, modality, 'endpoint_profile');
   const vendorKey = readConfig(config, modality, 'vendor_key');
   const plan = readConfig(config, modality, 'plan');
+  const contextWindowTokens = readConfig(config, modality, 'context_window_tokens');
+  const normalizedContextWindowTokens = normalizeContextWindowTokens(contextWindowTokens);
   const hasProviderIdentity = Boolean(vendorKey.trim() && isModelPlan(plan.trim()));
   const hasLegacyConfig = [apiBase, apiKey, modelName, provider].some((value) => value.trim());
 
@@ -59,6 +67,7 @@ export function createMediaModelDraft(
     endpoint_profile: endpointProfile,
     vendor_key: vendorKey,
     plan,
+    context_window_tokens: normalizedContextWindowTokens,
   };
 }
 
@@ -77,6 +86,7 @@ export function buildMediaModelConfigUpdates(
     [`${modality}_endpoint_profile`]: (preset ? (preset.endpoint_profile ?? '') : draft.endpoint_profile).trim(),
     [`${modality}_vendor_key`]: (preset?.vendor_key ?? '').trim(),
     [`${modality}_plan`]: (preset?.plan ?? '').trim(),
+    [mediaCapabilityContextWindowField(modality)]: String(resolveDraftContextWindowTokens(draft.context_window_tokens)),
     ...(enableOnSave ? { [mediaCapabilityEnabledField(modality)]: 'true' } : {}),
   };
 }

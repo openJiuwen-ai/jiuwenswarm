@@ -43,6 +43,28 @@ export interface FileDownloadItem {
   is_skill_package?: boolean;
 }
 
+export type AutoReviewerStatus =
+  | 'in_progress'
+  | 'approved'
+  | 'deterministic_allow'
+  | 'manual'
+  | 'denied'
+  | 'blocked'
+  | 'fallback'
+  | 'host_revalidation_failed'
+  | 'timed_out'
+  | 'aborted';
+
+export interface AutoReviewerMetadata {
+  reviewer_status?: AutoReviewerStatus;
+  final_reviewer_status?: AutoReviewerStatus;
+  decision_source?: string;
+  risk_level?: string;
+  evidence_summary?: string;
+  manual_reason_summary?: string;
+  user_review_hint?: string;
+}
+
 export interface ContextCompressionRuntime {
   status: 'running' | 'completed' | 'unchanged' | 'failed';
   summary: string;
@@ -79,6 +101,8 @@ export interface Message {
   renderKey?: string;
   /** 仅用于大历史渐进发布；实时消息没有该标记。 */
   historyBatchSeq?: number;
+  /** Fork 后从直接父会话继承的历史消息；用于定位分支开始边界。 */
+  forkedFromSessionId?: string;
   audioBase64?: string;
   audioMime?: string;
   mediaItems?: MediaItem[];
@@ -110,6 +134,12 @@ export interface Message {
    */
   isGoalObjectiveMessage?: boolean;
   isCommandOutput?: boolean;
+  /**
+   * 该用户消息被 before_chat_request 钩子改写（如敏感内容替换），由
+   * chat.message_updated 事件原地替换内容时置位（issue #2792）。气泡可据此
+   * 渲染「已按安全策略改写」之类的角标；刷新后从历史加载的消息无此标记。
+   */
+  hookRewritten?: boolean;
   /** 斜杠命令结果的结构化元数据；避免渲染层依赖 content 的换行分隔。 */
   commandName?: string;
   commandInput?: string;
@@ -125,14 +155,22 @@ export interface Message {
   crossSession?: CrossSessionMessageMetadata;
 }
 
+export interface MessageForkPoint {
+  messageId: string;
+  role: MessageRole;
+  content: string;
+  timestamp: string;
+}
+
 export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
-  description?: string;  // 操作描述，如 "创建 3 个任务"
-  formatted_args?: string;  // 格式化参数摘要
-  display_name?: string;  // 后端下发的可读展示名，前端优先直接展示
+  description?: string; // 操作描述，如 "创建 3 个任务"
+  formatted_args?: string; // 格式化参数摘要
+  display_name?: string; // 后端下发的可读展示名，前端优先直接展示
   memberName?: string;
+  reviewer?: AutoReviewerMetadata;
 }
 
 export interface ToolResult {
@@ -150,6 +188,7 @@ export interface ToolResult {
   beamSearch?: BeamSearchProgress;
   /** 仅 symphony_compose_graph 的合法 planned_graph Mermaid 展示投影。 */
   mermaid?: string;
+  reviewer?: AutoReviewerMetadata;
 }
 
 export type ToolExecutionStatus = 'pending' | 'timeout' | 'completed' | 'error';

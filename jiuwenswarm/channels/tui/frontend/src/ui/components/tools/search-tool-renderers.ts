@@ -21,6 +21,7 @@ import {
   summarizeToolArguments,
   summarizeToolResultByKind,
   toolDisplayName,
+  toolResultText,
   toolStateColor,
 } from "./tool-render-shared.js";
 
@@ -124,7 +125,7 @@ export function renderSearchTool(
     );
     const valueResultLines = getStringListFromValue(parsedValue);
     const resultLines = payloadResultLines.length > 0 ? payloadResultLines : valueResultLines;
-    const fallbackLines = nonEmptyLines(tool.result);
+    const fallbackLines = nonEmptyLines(toolResultText(tool));
     const visibleLines = resultLines.length > 0 ? resultLines : fallbackLines;
     const count =
       getNumericArg(payload ?? {}, "count", "match_count", "matches_count", "total") ??
@@ -211,8 +212,8 @@ export function renderMcpTool(
       ...renderToolTail(
         width,
         tool.summary ??
-          summarizeToolResultByKind(tool.name, tool.result) ??
-          summarize(tool.result, 120),
+          summarizeToolResultByKind(tool.name, toolResultText(tool)) ??
+          summarize(toolResultText(tool), 120),
         toolStateColor(tool),
       ),
     );
@@ -242,7 +243,7 @@ export function renderMcpTool(
       lines.push(
         ...renderPreviewLines(
           width,
-          nonEmptyLines(tool.result),
+          nonEmptyLines(toolResultText(tool)),
           tool.isError ? palette.status.error : palette.text.assistant,
           8,
           4,
@@ -278,14 +279,17 @@ export function renderGenericTool(
   }
 
   if (tool.result) {
+    const text = toolResultText(tool);
     const summary =
       tool.summary ??
-      summarizeToolResultByKind(tool.name, tool.result) ??
-      summarize(tool.result, 120);
+      summarizeToolResultByKind(tool.name, text) ??
+      summarize(text, 120);
     lines.push(...renderToolTail(width, summary, toolStateColor(tool)));
 
+    // Without the model-facing text, fall back to structure parsed from the
+    // compatibility `result` string.
     const parsedResult = parseToolResultValue(tool);
-    if (parsedResult !== tool.result) {
+    if (tool.renderedResult === undefined && parsedResult !== tool.result) {
       lines.push(
         ...renderStructuredBranch(
           width,
@@ -295,7 +299,7 @@ export function renderGenericTool(
         ),
       );
     } else if (options.showDetails) {
-      const previewLines = tool.result.split("\n").filter(Boolean);
+      const previewLines = text.split("\n").filter(Boolean);
       const shown = previewLines.slice(0, tool.isError ? 2 : 4);
       for (const line of shown) {
         lines.push(

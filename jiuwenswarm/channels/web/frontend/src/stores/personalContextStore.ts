@@ -12,6 +12,7 @@ import {
   type FetchServiceConfig,
   type FetchServicePatch,
   type FetchProvider,
+  type FetchRunRecord,
   type PersonalContextConfig,
   type PersonalContextStatus,
   pcApi,
@@ -36,6 +37,8 @@ interface PersonalContextState {
   status: PersonalContextStatus | null;
   graph: ContextGraph | null;
   authByProvider: Record<string, AuthorizationResult>;
+  /** 各服务采集运行历史（由 batchRefresh 一并覆盖，与 config/status 同步写入）。 */
+  runHistories: Record<string, FetchRunRecord[]>;
 
   // UI
   infoTab: InfoTab;
@@ -53,6 +56,10 @@ interface PersonalContextState {
   loadServices: () => Promise<void>;
   loadGraph: () => Promise<void>;
   loadAll: () => Promise<void>;
+
+  /** 一次 RTT 拉齐 services + status + runHistories，合并成单次 set()。
+   *  由 5s 轮询的刷新任务调用，避免三次独立 set() 触发三次级联渲染。 */
+  batchRefresh: () => Promise<void>;
 
   setEnabled: (enabled: boolean) => Promise<void>;
   setAgentUseEnabled: (enabled: boolean) => Promise<void>;
@@ -85,6 +92,7 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   status: null,
   graph: null,
   authByProvider: {},
+  runHistories: {},
 
   infoTab: 'graph',
   loadingConfig: false,
@@ -141,6 +149,29 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
 
   loadAll: async () => {
     await Promise.all([get().loadConfig(), get().loadStatus(), get().loadGraph()]);
+  },
+
+  batchRefresh: async () => {
+    // 一次 RTT 拉齐三路数据后合并成单次 set()，避免三次独立 set() 在轮询期间
+    // 触发三次级联重渲染（见抖动问题）。某一路失败时保留旧值，不阻断其余刷新。
+    const [services, status, runHistories] = await Promise.all([
+      pcApi.listServices().catch(() => null),
+      pcApi.getStatus().catch(() => null),
+      pcApi.getRunStatus().catch(() => null),
+    ]);
+    set((state) => ({
+      ...(services
+        ? { config: { ...state.config, fetch_services: services.services } }
+        : {}),
+      ...(status ? { status } : {}),
+      ...(runHistories
+        ? {
+            runHistories: Object.fromEntries(
+              runHistories.services.map((item) => [item.service_id, item.runs]),
+            ),
+          }
+        : {}),
+    }));
   },
 
   setEnabled: async (enabled) => {

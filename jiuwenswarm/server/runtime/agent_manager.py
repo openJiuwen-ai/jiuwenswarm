@@ -17,7 +17,7 @@ from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.agents.harness.team import get_team_manager
-from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.common.config import get_available_models, get_config
 from jiuwenswarm.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
@@ -1785,7 +1785,7 @@ class AgentManager:
 
         new_configs: dict[tuple, Any] = {}
         try:
-            entries = get_default_models(effective_config if isinstance(effective_config, dict) else None)
+            entries = get_available_models(effective_config if isinstance(effective_config, dict) else None)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[AgentManager] build live model configs failed: %s", exc)
             return

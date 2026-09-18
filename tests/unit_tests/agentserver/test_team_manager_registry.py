@@ -2346,3 +2346,39 @@ async def test_permanent_delete_quiesce_closes_team_execution_admission(
     await manager.quiesce_for_delete(target, reason="permanent-delete-retry")
     manager.delete_committed(target)
     assert "deleting-session" not in manager._terminal_delete_sessions
+
+
+@pytest.mark.asyncio
+async def test_team_running_window_follows_round_not_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """归档闸门：运行中 = 请求在途或 round 存活，而非持久 stream/常驻运行时。"""
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+
+    manager = TeamManager()
+    monkeypatch.setattr(team_manager_module, "_team_manager", manager)
+    session_id = "sess-running"
+
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    # 进入适配器即算运行中：round 之前的 spec 组装/运行时激活阶段也必须挡住归档。
+    manager.begin_request(session_id, "request-1")
+    assert team_manager_module.is_team_session_running(session_id)
+
+    manager.begin_round(session_id, "request-1")
+    assert team_manager_module.is_team_session_running(session_id)
+
+    # 持久 stream 与常驻运行时在 round 结束后仍然存在，但不得继续算运行中。
+    manager.commit_runtime_ready(session_id, "team-1")
+    manager._stream_tasks[session_id] = SimpleNamespace()  # type: ignore[assignment]
+    await manager.release_round(session_id, "request-1")
+
+    assert not manager.is_round_active(session_id)
+    assert manager.has_stream_task(session_id)
+    assert manager.is_runtime_active(session_id)
+    assert not team_manager_module.is_team_session_running(session_id)
+
+    # 提前退出的请求（校验失败等）由适配器兜底解除标记。
+    manager.begin_request(session_id, "request-2")
+    manager.end_request(session_id, "request-2")
+    assert not team_manager_module.is_team_session_running(session_id)

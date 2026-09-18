@@ -36,6 +36,8 @@ from jiuwenswarm.agents.harness.observability_runtime import build_observability
 from jiuwenswarm.common.config import (
     get_config,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
+    get_ttse_enabled,
 )
 from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.observability.config import load_trajectory_store_settings
@@ -79,7 +81,10 @@ def sync_agent_observability(*, force: bool = False) -> None:
     * enabled -> disabled : ``shutdown_agent_observability()``
     * unchanged           : no-op
 
-    Evolution also requests the provider when the explicit switch is disabled.
+    Trajectory-backed evolution also requests the provider when the explicit
+    ``agent_observability.enabled`` switch is off: skill evolution, symphony
+    evolution, and TTSE (FACT/TIP dual-track) all capture LLM/tool spans via
+    ``TrajectorySpanProcessor``.
 
     ``force=True`` (set by a ``/debug`` run when ``debug_trace.<mode>.otel_enabled``
     is true) treats ``want_enabled`` as true regardless of config, so a debug
@@ -100,7 +105,11 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
     config = get_config()
     cfg = config.get("agent_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
-    evolution_requested = get_skill_evolution_enabled(config)
+    evolution_requested = (
+        get_skill_evolution_enabled(config)
+        or get_symphony_evolution_enabled(config)
+        or get_ttse_enabled(config)
+    )
     want_enabled = (
         bool(cfg.get("enabled", False))
         or trajectory_settings.enabled
@@ -125,7 +134,6 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         obs_cfg = build_observability_config(
             cfg,
             service_name="jiuwenswarm-agent",
-            default_backend="otlp",
             traces_dir=traces_dir,
         )
         provider_existed = acquire_observability(obs_cfg)
@@ -143,17 +151,17 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
                     "[AgentObservability] reusing existing observability provider "
                     "(owned by another subsystem)"
                 )
-            elif cfg.get("exporter", "otlp_grpc") == "file":
+            elif obs_cfg.exporter == "file":
                 logger.info(
                     "[AgentObservability] enabled: exporter=%s traces_dir=%s",
-                    cfg.get("exporter", "otlp_grpc"),
-                    traces_dir,
+                    obs_cfg.exporter,
+                    obs_cfg.traces_dir,
                 )
             else:
                 logger.info(
                     "[AgentObservability] enabled: exporter=%s endpoint=%s",
-                    cfg.get("exporter", "otlp_grpc"),
-                    cfg.get("endpoint", "http://localhost:4317"),
+                    obs_cfg.exporter,
+                    obs_cfg.endpoint,
                 )
     except Exception as exc:
         _agent_observability_active = False

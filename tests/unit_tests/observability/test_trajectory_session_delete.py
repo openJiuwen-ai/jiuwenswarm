@@ -93,7 +93,7 @@ def _record(session_id: str) -> SimpleNamespace:
         request_id="request-1",
         run_id="run-1",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     )
 
 
@@ -208,3 +208,57 @@ def test_repeated_begin_commit_and_abort_are_idempotent() -> None:
         ("commit", "session-delete-repeat"),
     ]
     assert lifecycle.accepts_records("session-delete-repeat") is False
+
+
+def test_commit_without_backend_unlinks_session_database(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    database = session_database_path(root, "dormant-session")
+    database.parent.mkdir(parents=True)
+    sidecars = (
+        database,
+        database.with_name(f"{database.name}-wal"),
+        database.with_name(f"{database.name}-shm"),
+    )
+    for candidate in sidecars:
+        candidate.write_bytes(b"")
+    lifecycle = TrajectorySessionDeleteLifecycle()
+    lifecycle.set_database_root(root)
+
+    lifecycle.begin("dormant-session")
+    lifecycle.commit("dormant-session")
+
+    assert not any(candidate.exists() for candidate in sidecars)
+    assert lifecycle.accepts_records("dormant-session") is False
+    test_logger.info("deletion without a running store still removed the database")
+
+
+def test_committed_tombstones_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.observability import session_delete
+
+    monkeypatch.setattr(session_delete, "_MAX_COMMITTED_TOMBSTONES", 2)
+    lifecycle = TrajectorySessionDeleteLifecycle()
+    lifecycle.set_backend(_RecordingBackend())
+    lifecycle.begin("prepared-session")
+    for session_id in ("first", "second", "third"):
+        lifecycle.begin(session_id)
+        lifecycle.commit(session_id)
+
+    # The oldest committed tombstone went; a prepared deletion never does.
+    assert lifecycle.accepts_records("first") is True
+    assert lifecycle.accepts_records("second") is False
+    assert lifecycle.accepts_records("third") is False
+    assert lifecycle.accepts_records("prepared-session") is False
+    assert lifecycle._operation_locks == {}
+    test_logger.info("committed tombstones stayed within their bound")
+
+
+def test_abort_releases_operation_lock() -> None:
+    lifecycle = TrajectorySessionDeleteLifecycle()
+    lifecycle.set_backend(_RecordingBackend())
+
+    lifecycle.begin("session-a")
+    lifecycle.abort("session-a")
+
+    assert lifecycle._operation_locks == {}
+    assert lifecycle.accepts_records("session-a") is True
+    test_logger.info("abort left no per-session lock behind")

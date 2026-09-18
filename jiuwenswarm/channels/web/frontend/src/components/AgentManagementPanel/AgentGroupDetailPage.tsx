@@ -99,6 +99,9 @@ export function AgentGroupDetailPage({
   const canUse = detail.installed && detail.capabilities.canUse;
   const canDelete = detail.source === 'local' && !detail.installed;
   const canPreviewFiles = detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.source === 'hub' || detail.installed);
+  const category = detail.category?.trim() || '';
+  const categoryLabel = category ? t(`agentManagement.categories.${category}`, { defaultValue: category }) : null;
+  const detailTags = detail.tags;
   return (
     <div className="agent-management-detail agent-group-detail" data-testid="agent-group-detail">
       <button type="button" className="detail-back" data-testid="agent-group-detail-back" onClick={onBack}>
@@ -108,17 +111,14 @@ export function AgentGroupDetailPage({
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
         <PublicationDetailStatus kind="agent_group" localId={detail.id} />
         <EntityHeader
-          testId="agent-group-detail-header"
+          testId="agent-management-detail-header"
           avatar={<GroupAvatar item={detail} size="detail" />}
           title={detail.displayName}
-          titleTestId="agent-group-detail-name"
+          titleTestId="agent-management-detail-name"
           tags={[
-            detail.tags[0]?.label || t(`agentManagement.categories.${detail.category}`, {
-              defaultValue: detail.category || t('agentManagement.categoryOther'),
-            }),
+            ...(categoryLabel ? [categoryLabel] : []),
             t('agentManagement.detail.sourcePrefix', {
-              source:
-                t(`agentManagement.source.${detail.source}`),
+              source: t(`agentManagement.source.${detail.source}`),
             }),
             ...(detail.installed ? [t('agentManagement.states.installed')] : []),
           ]}
@@ -208,78 +208,79 @@ export function AgentGroupDetailPage({
             {actionNotice}
           </div>
         ) : null}
-        <DetailSection testId="agent-group-detail-ability" title={t('agentManagement.detail.ability')}>
+        <DetailSection testId="agent-management-detail-ability" title={t('agentManagement.detail.ability')}>
           <p>{detail.description || t('agentManagement.unknownDescription')}</p>
         </DetailSection>
-        {detail.members.length > 0 ? (
-          <DetailSection
-            className="agent-group-detail__members-section"
-            testId="agent-group-detail-members-section"
-            title={t('agentManagement.group.detail.membersTitle')}
-          >
-            <div className="agent-group-detail__members" data-testid="agent-group-detail-members">
-              {detail.members.map((member) => (
-                <article
-                  className="agent-group-member-card"
-                  data-testid="agent-group-detail-member"
-                  data-variant={member.id}
-                  key={member.id}
-                >
-                  <div className="agent-group-member-card__avatar-wrap">
+        <DetailSection
+          className="agent-group-detail__members-section"
+          title={t('agentManagement.group.detail.membersTitle')}
+        >
+          <div className="agent-group-detail__members" data-testid="agent-group-detail-members">
+            {detail.members.map((member) => (
+              <article
+                className="agent-group-member-card"
+                data-testid="agent-group-detail-member"
+                data-variant={member.id}
+                key={member.id}
+              >
+                <div className="agent-group-member-card__avatar-wrap">
+                  <span
+                    className={`agent-group-member-avatar agent-group-member-avatar--${getAvatarTone(member.displayName)}${imageFailed[member.id] ? ' is-fallback' : ''}`}
+                  >
+                    {member.avatarUrl && !imageFailed[member.id] ? (
+                      <img
+                        src={member.avatarUrl}
+                        alt=""
+                        onError={() => setImageFailed((current) => ({ ...current, [member.id]: true }))}
+                      />
+                    ) : (
+                      member.displayName.slice(0, 1).toUpperCase()
+                    )}
+                  </span>
+                </div>
+                <div className="agent-group-member-card__identity">
+                  <strong title={member.displayName}>{member.displayName}</strong>
+                  {member.role === 'leader' ? (
                     <span
-                      className={`agent-group-member-avatar agent-group-member-avatar--${getAvatarTone(member.displayName)}${imageFailed[member.id] ? ' is-fallback' : ''}`}
+                      className="agent-group-member-card__badge"
+                      data-testid="agent-management-group-member-leader-badge"
                     >
-                      {member.avatarUrl && !imageFailed[member.id] ? (
-                        <img
-                          src={member.avatarUrl}
-                          alt=""
-                          onError={() => setImageFailed((current) => ({ ...current, [member.id]: true }))}
-                        />
-                      ) : (
-                        member.displayName.slice(0, 1).toUpperCase()
-                      )}
+                      {t('agentManagement.group.detail.leader')}
                     </span>
-                  </div>
-                  <div className="agent-group-member-card__identity">
-                    <strong title={member.displayName}>{member.displayName}</strong>
-                    {member.role === 'leader' ? (
-                      <span
-                        className="agent-group-member-card__badge"
-                        data-testid="agent-management-group-member-leader-badge"
-                      >
-                        {t('agentManagement.group.detail.leader')}
-                      </span>
-                    ) : null}
-                  </div>
-                </article>
-              ))}
-            </div>
-          </DetailSection>
-        ) : null}
-        {detail.tags.length > 0 ? (
-          <DetailSection title={t('agentManagement.detail.tags')}>
-            <div className="detail-chip-row">
-              {detail.tags.map((tag) => (
-                <span key={tag.id} className="detail-chip">
-                  {tag.label}
-                </span>
-              ))}
-            </div>
-          </DetailSection>
-        ) : null}
-        {detail.skills.length > 0 ? (
-          <DetailSection title={t('agentManagement.detail.skills')}>
-            <div className="detail-chip-row">
-              {detail.skills.map((skill) => (
-                <span key={skill.id} className="detail-chip">
-                  {skill.name}
-                </span>
-              ))}
-            </div>
-          </DetailSection>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        </DetailSection>
+        {detailTags.length > 0 || detail.skills.length > 0 ? (
+          <>
+            {detailTags.length > 0 ? (
+              <DetailSection key="tags" testId="agent-group-detail-tags" title={t('agentManagement.detail.tags')}>
+                <div className="detail-chip-row">
+                  {detailTags.map((tag) => (
+                    <span key={tag.id} className="detail-chip">
+                      {tag.label}
+                    </span>
+                  ))}
+                </div>
+              </DetailSection>
+            ) : null}
+            {detail.skills.length > 0 ? (
+              <DetailSection key="skills" title={t('agentManagement.detail.skills')}>
+                <div className="detail-chip-row">
+                  {detail.skills.map((skill) => (
+                    <span key={skill.id} className="detail-chip">
+                      {skill.name}
+                    </span>
+                  ))}
+                </div>
+              </DetailSection>
+            ) : null}
+          </>
         ) : null}
         {detail.quickInputs.length > 0 ? (
-          <DetailSection testId="agent-group-detail-prompts" title={t('agentManagement.detail.quickInputs')}>
+          <DetailSection title={t('agentManagement.detail.quickInputs')}>
             <div className="detail-prompt-list">
               {detail.quickInputs.map((prompt, index) => (
                 <DetailPromptChip
@@ -289,13 +290,13 @@ export function AgentGroupDetailPage({
                   disabled={!canUse || busy || !onUsePrompt}
                   onClick={() => onUsePrompt?.(detail.id, prompt)}
                   testId="agent-group-detail-prompt-send"
-                  variant={index}
+                  variant={prompt}
                 />
               ))}
             </div>
           </DetailSection>
         ) : null}
-        <div className="flex flex-col min-h-0" data-testid="agent-group-detail-tabs-section">
+        <div data-testid="agent-group-detail-tabs-section" className="flex flex-col min-h-0">
           <PageToolbar style={{ marginTop: 0, flexShrink: 0 }}>
             <Tabs
               role="tablist"
@@ -306,8 +307,16 @@ export function AgentGroupDetailPage({
               value={detailTab}
               onChange={onTabChange}
               items={[
-                { value: 'content', label: t('agentManagement.group.detail.contentTab') },
-                { value: 'files', label: t('agentManagement.group.detail.filesTab') },
+                {
+                  value: 'content',
+                  label: t('agentManagement.group.detail.contentTab'),
+                  testId: 'agent-group-detail-content-tab',
+                },
+                {
+                  value: 'files',
+                  label: t('agentManagement.group.detail.filesTab'),
+                  testId: 'agent-group-detail-files-tab',
+                },
               ]}
             />
           </PageToolbar>

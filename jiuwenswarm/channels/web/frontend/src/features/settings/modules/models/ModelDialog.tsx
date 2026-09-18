@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ModelEntry, VendorFetchModelsResult, VendorPreset, VendorPresetMap } from '../../../../types';
 import { Button } from '../../../../components/ui';
-import { Form, FormDialog, useForm, type FormItem } from '../../../../components/form';
+import { Form, FormDialog, useForm, useFormState, type FormItem } from '../../../../components/form';
 import { buildModelValidationPayload } from '../../services/settingsContract';
 import { SettingsConfirmDialog } from '../../components';
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
@@ -26,6 +26,7 @@ import {
 } from './modelAdapters';
 import { validateModelDraft } from './modelValidation';
 import { buildReasoningOptions, resolveModelReasoning } from './modelReasoning';
+import { ContextWindowField } from './ContextWindowField';
 
 type ConnectionFailure = {
   error: string;
@@ -84,6 +85,7 @@ export function ModelDialog({
   const { isConnected, request } = useSettingsServices();
   const initialValues = useMemo(() => createModelDraft(model, catalog), [catalog, model]);
   const form = useForm({ initialValues });
+  useFormState(form);
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [fetching, setFetching] = useState(false);
@@ -472,6 +474,26 @@ export function ModelDialog({
     ),
   });
   formItems.push({
+    name: 'context_window_tokens',
+    label: t('settingsPanel.models.contextWindow'),
+    component: 'custom',
+    required: true,
+    helpTips: t('settingsPanel.models.contextWindowHint'),
+    onChange: invalidateConnectionState,
+    render: ({ id, value, error, disabled, onChange, onBlur }) => (
+      <ContextWindowField
+        id={id}
+        value={value}
+        error={error}
+        disabled={disabled}
+        placeholder={t('settingsPanel.models.contextWindowPlaceholder')}
+        presetLabel={t('settingsPanel.models.contextWindowPresets')}
+        onChange={onChange}
+        onBlur={onBlur}
+      />
+    ),
+  });
+  formItems.push({
     name: 'alias',
     label: t('settingsPanel.models.customName'),
     component: 'input',
@@ -564,6 +586,7 @@ export function ModelDialog({
             api_key: [{ validator: () => errors.api_key }],
             api_base: [{ validator: () => errors.api_base }],
             reasoning_level: [{ validator: () => errors.reasoning_level }],
+            context_window_tokens: [{ validator: () => errors.context_window_tokens }],
           }}
           items={formItems}
         />

@@ -6,7 +6,6 @@ import { Trash2, Plus, Wrench, Link2, Plug, Loader2, X, ExternalLink, Pencil } f
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { localizedText } from '../../types/pluginPackage';
 import { NewConversationIcon } from './icons';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { IconAvatar, PillButton, DetailLinkButton } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -146,7 +145,6 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   }
 
   const title = localizedText(detail.displayName, i18n.language);
-  const avatar = getSkillAvatar(title);
   const linked = connectionState === 'connected';
   const installBusy = installing || storeBusy || installFlow.active;
 
@@ -192,7 +190,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
         <PublicationDetailStatus kind="plugin" localId={id} />
         <EntityHeader
           testId="connector-market-plugin-detail-header"
-          avatar={detail.avatar ? <img src={detail.avatar} alt="" /> : avatar}
+          avatar={{ name: title, iconUrl: detail.avatar, testId: 'connector-market-plugin-detail-avatar' }}
           title={title}
           titleTestId="connector-market-plugin-detail-name"
           tags={detail.tags.length > 0 ? detail.tags.map((tag) => localizedText(tag, i18n.language)) : undefined}
@@ -348,7 +346,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                 return (
                   <PageCard
                     key={skill.id}
-                    avatar={getSkillAvatar(title)}
+                    avatar={{ name: title }}
                     title={title}
                     description={localizedText(skill.displayDescription, i18n.language)}
                   />

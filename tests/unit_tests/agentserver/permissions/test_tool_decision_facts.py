@@ -9,8 +9,8 @@ import pytest
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import (
     build_tool_decision_facts,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import (
-    install_permission_file_semantics,
+from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
+    NATIVE_PATH_ACCESS, NativePathAccess, native_arguments_json,
 )
 
 
@@ -40,18 +40,21 @@ def test_core_access_extraction_owns_read_and_write_paths(tmp_path: Path) -> Non
     assert write.accesses_known is True
 
 
-def test_read_pdf_uses_core_file_access_extraction(tmp_path: Path) -> None:
-    install_permission_file_semantics()
+def test_read_pdf_requires_matching_invocation_path_facts(tmp_path: Path) -> None:
     pdf_path = tmp_path / "report.pdf"
-    facts = _facts("read_pdf", {"pdf_path": str(pdf_path)}, tmp_path)
-
-    assert facts.accesses_known is True
-    assert facts.read_paths == (pdf_path.as_posix(),)
-    assert facts.write_paths == ()
-
-    missing = _facts("read_pdf", {"pdf_path": ""}, tmp_path)
-    assert missing.accesses_known is False
-    assert missing.read_paths == ()
+    args = {"pdf_path": str(pdf_path)}
+    token = NATIVE_PATH_ACCESS.set(NativePathAccess(
+        "read_pdf", native_arguments_json(args), str(pdf_path), "read",
+    ))
+    try:
+        facts = _facts("read_pdf", args, tmp_path)
+        assert facts.accesses_known is True
+        assert facts.read_paths == (pdf_path.as_posix(),)
+        assert facts.write_paths == ()
+        assert _facts("read_pdf", {"pdf_path": ""}, tmp_path).accesses_known is False
+    finally:
+        NATIVE_PATH_ACCESS.reset(token)
+    assert _facts("read_pdf", args, tmp_path).accesses_known is False
 
 
 def test_engine_external_paths_are_consumed_not_recomputed(tmp_path: Path) -> None:

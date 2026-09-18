@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
 
@@ -492,6 +493,51 @@ class RuntimeSessionCoordinator:
             raise RuntimeError(f"session has no active execution: {record.session_id}")
         return max(parents, key=lambda handle: handle.started_at or handle.created_at)
 
+    async def stream_session_input(
+        self,
+        session_id: str,
+        request_id: str,
+        operation: Callable[[str], AsyncIterator[T]],
+        idle_operation: Callable[[], AsyncIterator[T]],
+        *,
+        suspension_key: Callable[[T], str | None] | None = None,
+    ) -> AsyncIterator[T]:
+        """Track an input without acquiring the active task's scheduling lane.
+
+        An input does not resume, complete, or replace a waiting interaction.
+        The parent link exists for cancellation/close, not round binding: if
+        the SDK has become idle it can give this input its own output stream.
+        """
+        record = self._require_open_session(session_id)
+        active = self._registry.select(
+            session_id=session_id, generation=record.generation, active_only=True,
+        )
+        if any(handle.waiting_control_id for handle in active):
+            raise RuntimeError("session is waiting for an interaction answer; supplemental input was not sent")
+        parents = []
+        for handle in active:
+            if handle.state is not SessionExecutionState.RUNNING:
+                continue
+            if handle.work_kind in {
+                SessionWorkKind.SESSION_INPUT, SessionWorkKind.GOAL_CONTROL,
+                SessionWorkKind.GOAL_ATTACH,
+            }:
+                continue
+            parents.append(handle)
+        if any(handle.cancellation_requested for handle in parents):
+            raise RuntimeError("session execution is being cancelled")
+        parent = parents[-1] if parents else None
+        stream = self.run_stream(
+            session_id, request_id,
+            SessionWorkKind.SESSION_INPUT if parent else SessionWorkKind.CHAT_STREAM,
+            (lambda: operation(record.channel_id)) if parent else idle_operation,
+            suspension_key=suspension_key,
+            parent_execution_id=parent.execution_id if parent else None,
+        )
+        async with aclosing(stream):
+            async for item in stream:
+                yield item
+
     async def run_stream(
         self,
         session_id: str,
@@ -500,9 +546,12 @@ class RuntimeSessionCoordinator:
         operation: Callable[[], AsyncIterator[T] | Awaitable[AsyncIterator[T]]],
         *,
         suspension_key: Callable[[T], str | None] | None = None,
+        parent_execution_id: str | None = None,
     ) -> AsyncIterator[T]:
         record = self._require_open_session(session_id)
-        handle = self._new_execution(record, request_id, work_kind)
+        handle = self._new_execution(
+            record, request_id, work_kind, parent_execution_id=parent_execution_id,
+        )
         queue: asyncio.Queue[_StreamItem] = asyncio.Queue(self._stream_buffer_size)
 
         async def produce() -> None:

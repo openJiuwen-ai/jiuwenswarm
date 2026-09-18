@@ -27,7 +27,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Callable, Optional
 import uuid
 import zipfile
 import yaml
@@ -79,6 +79,7 @@ _DEFAULT_LOCAL_REPO = _AUTO_HARNESS_DATA_DIR / "repo" / "openJiuwen--agent-core"
 # Default values for ci_gate config
 _DEFAULT_CI_GATE_PYTHON_EXECUTABLE = sys.executable
 _DEFAULT_CI_GATE_INSTALL_COMMAND = "uv sync --active --group dev --extra cli"
+_PRODUCER_CLEANUP_LOG_INTERVAL_SECONDS = 5.0
 
 
 def _serialize_optimization_task(task: OptimizationTask | dict[str, Any]) -> dict[str, Any]:
@@ -1156,6 +1157,103 @@ class AutoHarnessService:
 
         return Path.cwd().resolve()
 
+    @staticmethod
+    async def _await_producer_completion(
+        producer_task: asyncio.Task[Any],
+        *,
+        session_id: str,
+        on_caller_cancel: Callable[[], None],
+    ) -> bool:
+        """Wait until an owned producer finishes despite repeated cancellation."""
+        caller_cancelled = False
+        while not producer_task.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(producer_task),
+                    timeout=_PRODUCER_CLEANUP_LOG_INTERVAL_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[AutoHarnessService] Waiting for producer cleanup, session=%s",
+                    session_id,
+                )
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    caller_cancelled = True
+                    on_caller_cancel()
+                continue
+            except Exception:
+                if not producer_task.done():
+                    logger.exception(
+                        "[AutoHarnessService] Unexpected producer wait failure"
+                    )
+                    continue
+
+        try:
+            producer_task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(
+                "[AutoHarnessService] Producer completed with error during cleanup"
+            )
+        return caller_cancelled
+
+    async def _settle_owned_run(
+        self,
+        *,
+        session_id: str,
+        producer_task: asyncio.Task[Any] | None,
+        active_run: ActiveAutoHarnessRun | None,
+        orchestrator: AutoHarnessOrchestrator | None,
+        cancel: bool,
+    ) -> bool:
+        """Cancel when required and wait for an owned producer to terminate."""
+        cancellation_requested = False
+
+        def request_cancellation() -> None:
+            nonlocal cancellation_requested
+            if cancellation_requested:
+                return
+            cancellation_requested = True
+            if active_run is not None:
+                active_run.cancelled = True
+            if orchestrator is not None:
+                try:
+                    orchestrator.cancel()
+                except Exception:
+                    logger.exception(
+                        "[AutoHarnessService] Orchestrator cancellation failed"
+                    )
+            if producer_task is not None and not producer_task.done():
+                producer_task.cancel()
+
+        if cancel:
+            request_cancellation()
+
+        if producer_task is not None:
+            return await self._await_producer_completion(
+                producer_task,
+                session_id=session_id,
+                on_caller_cancel=request_cancellation,
+            )
+        return False
+
+    def _remove_owned_run(
+        self,
+        *,
+        session_id: str,
+        active_run: ActiveAutoHarnessRun | None,
+    ) -> None:
+        """Remove only the completed run instance registered by this generator."""
+        if (
+            active_run is not None
+            and active_run.task.done()
+            and self._active_runs.get(session_id) is active_run
+        ):
+            self._active_runs.pop(session_id, None)
+
     async def run_activate_only(
         self,
         request: Any,
@@ -1182,21 +1280,31 @@ class AutoHarnessService:
                 },
                 is_complete=False,
             )
-            yield AgentResponseChunk(request_id=rid, channel_id=cid, payload=None, is_complete=True)
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=cid,
+                payload=None,
+                is_complete=True,
+            )
             return
 
-        yield AgentResponseChunk(
-            request_id=rid,
-            channel_id=cid,
-            payload={
-                "event_type": "chat.processing_status",
-                "session_id": session_id,
-                "is_processing": True,
-            },
-            is_complete=False,
-        )
-
+        producer_task: asyncio.Task[Any] | None = None
+        active_run: ActiveAutoHarnessRun | None = None
+        orchestrator: AutoHarnessOrchestrator | None = None
+        abort_run = False
+        cleanup_cancelled = False
+        error_message = ""
         try:
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=cid,
+                payload={
+                    "event_type": "chat.processing_status",
+                    "session_id": session_id,
+                    "is_processing": True,
+                },
+                is_complete=False,
+            )
             runtime_path = self._resolve_activate_only_runtime_path(request, query)
             local_repo = self._resolve_local_repo_for_debug()
             repo_url = (
@@ -1300,59 +1408,69 @@ class AutoHarnessService:
             )
             self._active_runs[session_id] = active_run
 
-            try:
-                async for response_chunk, should_suspend in self._consume_stream(
-                    active_run, rid, cid,
-                ):
-                    if should_suspend:
-                        active_run.suspended = True
-                        logger.info(
-                            "[AutoHarnessService] Activate-only stream waiting for interaction, session=%s",
-                            session_id,
-                        )
-                    yield response_chunk
-            except asyncio.CancelledError:
-                active_run.cancelled = True
-                if not producer_task.done():
-                    producer_task.cancel()
-                    try:
-                        await producer_task
-                    except asyncio.CancelledError:
-                        pass
-                raise
+            async for response_chunk, should_suspend in self._consume_stream(
+                active_run, rid, cid,
+            ):
+                if should_suspend:
+                    active_run.suspended = True
+                    logger.info(
+                        "[AutoHarnessService] Activate-only stream waiting for interaction, session=%s",
+                        session_id,
+                    )
+                yield response_chunk
+        except (GeneratorExit, asyncio.CancelledError):
+            abort_run = True
+            raise
         except Exception as exc:
-            logger.exception("[AutoHarnessService] activate-only failed: %s", exc)
+            abort_run = True
+            error_message = f"Auto-Harness activate-only 失败: {exc}"
+            logger.exception("[AutoHarnessService] activate-only failed")
+        finally:
+            cleanup_cancelled = await self._settle_owned_run(
+                session_id=session_id,
+                producer_task=producer_task,
+                active_run=active_run,
+                orchestrator=orchestrator,
+                cancel=abort_run,
+            )
+            self._remove_owned_run(
+                session_id=session_id,
+                active_run=active_run,
+            )
+
+        if cleanup_cancelled:
+            raise asyncio.CancelledError
+        if error_message:
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
                 payload={
                     "event_type": "chat.error",
-                    "error": f"Auto-Harness activate-only 失败: {exc}",
+                    "error": error_message,
                 },
                 is_complete=False,
             )
-        finally:
-            self._active_runs.pop(session_id, None)
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload={
-                    "event_type": "chat.processing_status",
-                    "session_id": session_id,
-                    "is_processing": False,
-                },
-                is_complete=False,
-            )
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload=None,
-                is_complete=True,
-            )
-            logger.info(
-                "[AutoHarnessService] Final complete chunk yielded, session=%s",
-                session_id,
-            )
+
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=cid,
+            payload={
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "is_processing": False,
+            },
+            is_complete=False,
+        )
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=cid,
+            payload=None,
+            is_complete=True,
+        )
+        logger.info(
+            "[AutoHarnessService] Final complete chunk yielded, session=%s",
+            session_id,
+        )
 
     async def run_implement_only(
         self,
@@ -1380,21 +1498,31 @@ class AutoHarnessService:
                 },
                 is_complete=False,
             )
-            yield AgentResponseChunk(request_id=rid, channel_id=cid, payload=None, is_complete=True)
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=cid,
+                payload=None,
+                is_complete=True,
+            )
             return
 
-        yield AgentResponseChunk(
-            request_id=rid,
-            channel_id=cid,
-            payload={
-                "event_type": "chat.processing_status",
-                "session_id": session_id,
-                "is_processing": True,
-            },
-            is_complete=False,
-        )
-
+        producer_task: asyncio.Task[Any] | None = None
+        active_run: ActiveAutoHarnessRun | None = None
+        orchestrator: AutoHarnessOrchestrator | None = None
+        abort_run = False
+        cleanup_cancelled = False
+        error_message = ""
         try:
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=cid,
+                payload={
+                    "event_type": "chat.processing_status",
+                    "session_id": session_id,
+                    "is_processing": True,
+                },
+                is_complete=False,
+            )
             design_path = self._resolve_implement_only_design_path(request, query)
             designs = self._load_extension_designs(design_path)
             repo_url = (
@@ -1492,55 +1620,65 @@ class AutoHarnessService:
             )
             self._active_runs[session_id] = active_run
 
-            try:
-                async for response_chunk, should_suspend in self._consume_stream(
-                    active_run, rid, cid,
-                ):
-                    if should_suspend:
-                        active_run.suspended = True
-                        logger.info(
-                            "[AutoHarnessService] Implement-only stream waiting for interaction, session=%s",
-                            session_id,
-                        )
-                    yield response_chunk
-            except asyncio.CancelledError:
-                active_run.cancelled = True
-                if not producer_task.done():
-                    producer_task.cancel()
-                    try:
-                        await producer_task
-                    except asyncio.CancelledError:
-                        pass
-                raise
+            async for response_chunk, should_suspend in self._consume_stream(
+                active_run, rid, cid,
+            ):
+                if should_suspend:
+                    active_run.suspended = True
+                    logger.info(
+                        "[AutoHarnessService] Implement-only stream waiting for interaction, session=%s",
+                        session_id,
+                    )
+                yield response_chunk
+        except (GeneratorExit, asyncio.CancelledError):
+            abort_run = True
+            raise
         except Exception as exc:
-            logger.exception("[AutoHarnessService] implement-only failed: %s", exc)
+            abort_run = True
+            error_message = f"Auto-Harness implement-only 失败: {exc}"
+            logger.exception("[AutoHarnessService] implement-only failed")
+        finally:
+            cleanup_cancelled = await self._settle_owned_run(
+                session_id=session_id,
+                producer_task=producer_task,
+                active_run=active_run,
+                orchestrator=orchestrator,
+                cancel=abort_run,
+            )
+            self._remove_owned_run(
+                session_id=session_id,
+                active_run=active_run,
+            )
+
+        if cleanup_cancelled:
+            raise asyncio.CancelledError
+        if error_message:
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
                 payload={
                     "event_type": "chat.error",
-                    "error": f"Auto-Harness implement-only 失败: {exc}",
+                    "error": error_message,
                 },
                 is_complete=False,
             )
-        finally:
-            self._active_runs.pop(session_id, None)
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload={
-                    "event_type": "chat.processing_status",
-                    "session_id": session_id,
-                    "is_processing": False,
-                },
-                is_complete=False,
-            )
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload=None,
-                is_complete=True,
-            )
+
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=cid,
+            payload={
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "is_processing": False,
+            },
+            is_complete=False,
+        )
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=cid,
+            payload=None,
+            is_complete=True,
+        )
 
     async def run(
         self,
@@ -1605,21 +1743,24 @@ class AutoHarnessService:
             repo_url = _DEFAULT_REPO_URL
             logger.info("[AutoHarnessService] Using default repo_url: %s", repo_url)
 
-        # Emit processing status
-        yield AgentResponseChunk(
-            request_id=rid,
-            channel_id=cid,
-            payload={
-                "event_type": "chat.processing_status",
-                "session_id": session_id,
-                "is_processing": True,
-            },
-            is_complete=False,
-        )
-
-        active_run: Optional[ActiveAutoHarnessRun] = None
+        producer_task: asyncio.Task[Any] | None = None
+        active_run: ActiveAutoHarnessRun | None = None
+        orchestrator: AutoHarnessOrchestrator | None = None
+        abort_run = False
+        cleanup_cancelled = False
+        error_message = ""
         pipeline_preference = params.get("pipeline_preference")
         try:
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=cid,
+                payload={
+                    "event_type": "chat.processing_status",
+                    "session_id": session_id,
+                    "is_processing": True,
+                },
+                is_complete=False,
+            )
             # Clone/update repository
             local_repo = await self.clone_or_update_repo(
                 repo_url,
@@ -1715,58 +1856,37 @@ class AutoHarnessService:
 
             # Consume and map chunks. Activation confirmation is handled as an
             # out-of-band resume signal; this original stream stays open.
-            try:
-                async for response_chunk, should_suspend in self._consume_stream(
-                    active_run, rid, cid, auto_accept=auto_accept,
-                ):
-                    if should_suspend:
-                        active_run.suspended = True
-                        logger.info(
-                            "[AutoHarnessService] Stream waiting for activate interaction, session=%s",
-                            session_id,
-                        )
-                    yield response_chunk
-            except asyncio.CancelledError:
-                logger.info(
-                    "[AutoHarnessService] Stream consumption cancelled for session %s",
-                    session_id,
-                )
-                cancelled = True
-                active_run.cancelled = True
-
-                if not producer_task.done():
-                    producer_task.cancel()
-                    try:
-                        await producer_task
-                    except asyncio.CancelledError:
-                        pass
-
-                yield AgentResponseChunk(
-                    request_id=rid,
-                    channel_id=cid,
-                    payload={
-                        "event_type": "chat.interrupt_result",
-                        "session_id": session_id,
-                        "intent": "cancel",
-                    },
-                    is_complete=False,
-                )
-
+            async for response_chunk, should_suspend in self._consume_stream(
+                active_run, rid, cid, auto_accept=auto_accept,
+            ):
+                if should_suspend:
+                    active_run.suspended = True
+                    logger.info(
+                        "[AutoHarnessService] Stream waiting for activate interaction, session=%s",
+                        session_id,
+                    )
+                yield response_chunk
+        except (GeneratorExit, asyncio.CancelledError):
+            abort_run = True
+            cancelled = True
+            logger.info(
+                "[AutoHarnessService] Stream consumption closed for session %s",
+                session_id,
+            )
+            raise
         except Exception as exc:
-            logger.exception("[AutoHarnessService] Run failed: %s", exc)
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload={
-                    "event_type": "chat.error",
-                    "error": f"Auto-Harness 运行失败: {exc}",
-                },
-                is_complete=False,
+            abort_run = True
+            error_message = f"Auto-Harness 运行失败: {exc}"
+            logger.exception("[AutoHarnessService] Run failed")
+        finally:
+            cleanup_cancelled = await self._settle_owned_run(
+                session_id=session_id,
+                producer_task=producer_task,
+                active_run=active_run,
+                orchestrator=orchestrator,
+                cancel=abort_run,
             )
 
-        finally:
-            # Refresh packages cache in finally block to ensure it runs regardless of exit path
-            # (success/failure/cancellation/disconnect)
             if active_run and active_run.pipeline_preference == EXTENDED_EVOLVE_PIPELINE:
                 try:
                     data = await asyncio.to_thread(self.scan_runtime_extensions)
@@ -1776,32 +1896,51 @@ class AutoHarnessService:
                         active_run.pipeline_preference,
                         session_id,
                     )
-                except Exception as exc:
+                except asyncio.CancelledError:
+                    cleanup_cancelled = True
                     logger.warning(
-                        "[AutoHarnessService] Failed to refresh packages cache in finally block: %s",
-                        exc,
+                        "[AutoHarnessService] Package cache refresh cancelled during cleanup"
+                    )
+                except Exception:
+                    logger.exception(
+                        "[AutoHarnessService] Failed to refresh packages cache during cleanup"
                     )
 
-            if session_id in self._active_runs:
-                del self._active_runs[session_id]
+            self._remove_owned_run(
+                session_id=session_id,
+                active_run=active_run,
+            )
 
+        if cleanup_cancelled:
+            raise asyncio.CancelledError
+        if error_message:
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
                 payload={
-                    "event_type": "chat.processing_status",
-                    "session_id": session_id,
-                    "is_processing": False,
+                    "event_type": "chat.error",
+                    "error": error_message,
                 },
                 is_complete=False,
             )
 
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload=None,
-                is_complete=True,
-            )
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=cid,
+            payload={
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "is_processing": False,
+            },
+            is_complete=False,
+        )
+
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=cid,
+            payload=None,
+            is_complete=True,
+        )
 
     @staticmethod
     def _map_chunk_to_response(

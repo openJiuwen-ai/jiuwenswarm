@@ -16,12 +16,16 @@ import yaml
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.config import (
     _transform_front_team_model_config,
+    coerce_config_bool,
     get_configured_read_image_multimodal,
     get_config_raw,
     get_evolution_auto_save_enabled,
     get_evolution_review_feedback_min_confidence,
     get_sandbox_runtime,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
+    get_ttse_embedding_config,
+    get_ttse_enabled,
     migrate_config_from_template,
     replace_teams_in_config,
     reset_external_cli_agents_in_config,
@@ -34,6 +38,99 @@ from jiuwenswarm.common.config import (
     update_setup_guide_enabled_in_config,
     update_xiaoyi_runtime_in_config,
 )
+from jiuwenswarm.symphony import config as symphony_config_module
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("evolution_enabled", [False, True])
+def test_symphony_evolution_requires_both_switches(
+    enabled: bool,
+    evolution_enabled: bool,
+) -> None:
+    config = {
+        "symphony": {"enabled": enabled, "evolution": {"enabled": evolution_enabled}}
+    }
+    assert get_symphony_evolution_enabled(config) is (enabled and evolution_enabled)
+
+
+@pytest.mark.parametrize("switch", ["symphony", "evolution"])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (1, True),
+        (0, False),
+        (2, False),
+        (1.0, False),
+        ("1", True),
+        (" true ", True),
+        ("YES", True),
+        ("On", True),
+        ("0", False),
+        ("false", False),
+        ("NO", False),
+        (" off ", False),
+        ("enabled", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_symphony_evolution_switch_matches_full_parser(
+    switch: str,
+    value: Any,
+    expected: bool,
+) -> None:
+    raw: dict[str, Any] = {"enabled": True, "evolution": {"enabled": True}}
+    target = raw if switch == "symphony" else raw["evolution"]
+    target["enabled"] = value
+    parsed = symphony_config_module.symphony_config_from_dict(raw)
+    assert get_symphony_evolution_enabled({"symphony": raw}) is expected
+    assert expected is (parsed.enabled and parsed.evolution.enabled)
+
+
+@pytest.mark.parametrize("value", [None, {}, [], "invalid", True, 1])
+@pytest.mark.parametrize("level", ["config", "symphony", "evolution"])
+def test_symphony_evolution_missing_or_malformed_mapping_is_disabled(
+    level: str,
+    value: Any,
+) -> None:
+    config = value
+    if level == "symphony":
+        config = {"symphony": value}
+    elif level == "evolution":
+        config = {"symphony": {"enabled": True, "evolution": value}}
+    assert get_symphony_evolution_enabled(config) is False
+
+
+def test_symphony_evolution_getter_reads_only_passed_switches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Unexpected global config, full parser, or path lookup")
+
+    monkeypatch.setattr(config_module, "get_config", fail)
+    for name in (
+        "load_symphony_config",
+        "symphony_config_from_dict",
+        "get_agent_workspace_dir",
+        "_resolve_path",
+    ):
+        monkeypatch.setattr(symphony_config_module, name, fail)
+    assert get_symphony_evolution_enabled(None) is False
+    assert get_symphony_evolution_enabled({}) is False
+    evolution_only = {"symphony": {"evolution": {"enabled": True}}}
+    assert get_symphony_evolution_enabled(evolution_only) is False
+    assert get_symphony_evolution_enabled({"symphony": {"enabled": True}}) is False
+    enabled_config = {
+        "symphony": {
+            "enabled": True,
+            "evolution": {"enabled": True},
+            "paths": "invalid",
+            "orchestration": {"mode": "invalid"},
+        },
+    }
+    assert get_symphony_evolution_enabled(enabled_config) is True
 
 
 def test_configured_read_image_multimodal_preserves_explicit_value() -> None:
@@ -571,7 +668,6 @@ class TestConfigFunctions:
         ("profile", "enabled", "mode"),
         [
             ("default", True, "manual"),
-            ("automatic", True, "auto"),
             ("full_access", False, "manual"),
         ],
     )
@@ -680,6 +776,159 @@ class TestConfigFunctions:
         ):
             monkeypatch.setenv(env_name, "true")
         assert get_skill_evolution_enabled(config) is expected
+
+    @pytest.mark.parametrize(
+        ("value", "default", "expected"),
+        [
+            (True, False, True),
+            (False, True, False),
+            (None, True, True),
+            ("true", False, True),
+            ("false", True, False),
+            ("0", True, False),
+            ("1", False, True),
+            ("yes", False, True),
+            ("no", True, False),
+            ("", True, False),
+            (1, False, True),
+            (0, True, False),
+        ],
+    )
+    def test_coerce_config_bool_values(self, value, default, expected):
+        assert coerce_config_bool(value, default) is expected
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"react": {"ttse": {"enabled": True}}}, True),
+            ({"react": {"ttse": {"enabled": False}}}, False),
+            ({"ttse": {"enabled": True}}, True),
+            ({"ttse": {"enabled": False}}, False),
+            (
+                {
+                    "react": {"ttse": {"enabled": True}},
+                    "ttse": {"enabled": False},
+                },
+                True,
+            ),
+            ({"react": {"ttse": {"enabled": "true"}}}, True),
+            ({"react": {"ttse": {"enabled": "false"}}}, False),
+            ({"react": {"ttse": {}}}, False),
+            ({"react": {"ttse": {"inject_enabled": True}}}, False),
+        ],
+    )
+    def test_ttse_enabled_config_values(self, config, expected):
+        assert get_ttse_enabled(config) is expected
+
+    def test_shipped_template_ttse_disabled_by_default(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["react"]["ttse"]["enabled"] is False
+        assert get_ttse_enabled(config) is False
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"react": {"ttse": {}}}, {}),
+            ({"react": {"ttse": {"embedding": {"api_key": "k"}}}}, {}),
+            (
+                {
+                    "react": {
+                        "ttse": {
+                            "embedding": {
+                                "api_key": "k",
+                                "base_url": "https://example.invalid/v1",
+                                "model": "m",
+                            }
+                        }
+                    }
+                },
+                {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                },
+            ),
+            (
+                {
+                    "ttse": {
+                        "embedding": {
+                            "api_key": " k ",
+                            "base_url": " https://example.invalid/v1 ",
+                            "model": " m ",
+                        }
+                    }
+                },
+                {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                },
+            ),
+        ],
+    )
+    def test_ttse_embedding_config_values(self, config, expected):
+        assert get_ttse_embedding_config(config) == expected
+
+    def test_ttse_embedding_resolves_secret_registry_embed_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("EMBED_API_KEY", "k")
+        monkeypatch.setenv("EMBED_API_BASE", "https://example.invalid/v1")
+        monkeypatch.setenv("EMBED_MODEL", "m")
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "model": "m",
+        }
+
+    def test_ttse_embedding_unresolved_embed_env_falls_back_to_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("EMBED_API_KEY", raising=False)
+        monkeypatch.delenv("EMBED_API_BASE", raising=False)
+        monkeypatch.delenv("EMBED_MODEL", raising=False)
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {}
+
+    def test_shipped_ttse_embedding_uses_embed_env_placeholders(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        embedding = config["react"]["ttse"]["embedding"]
+        assert embedding["api_key"] == "${EMBED_API_KEY}"
+        assert embedding["base_url"] == "${EMBED_API_BASE}"
+        assert embedding["model"] == "${EMBED_MODEL}"
 
     @pytest.mark.parametrize(
         ("raw", "expected"),

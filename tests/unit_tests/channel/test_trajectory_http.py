@@ -80,7 +80,7 @@ def _seed(database_path: Path, *, session_id: str = "session-1") -> bytes:
         request_id="request-1",
         run_id="run-1",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     )
     store = TrajectoryStore(database_path)
     store.initialize()
@@ -104,7 +104,7 @@ def _append_late_span(database_path: Path, *, session_id: str = "session-1") -> 
         request_id="request-1",
         run_id="run-1",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     )
     store = TrajectoryStore(database_path)
     store.initialize()
@@ -288,7 +288,7 @@ def _seed_frames(
                     request_id="request-1",
                     run_id="run-1",
                     agent_mode="agent.work.normal",
-                    schema_version="1",
+                    schema_version="2",
                 )
             )
             for index in range(count)
@@ -435,7 +435,7 @@ async def test_http_archive_exports_all_current_records_beyond_list_window(
             request_id=f"request-{index + 1}",
             run_id="run-archive",
             agent_mode="agent.work.normal",
-            schema_version="1",
+            schema_version="2",
             record_revision=3,
             observed_time_unix_nano=200 + index,
         )
@@ -474,7 +474,7 @@ async def test_http_archive_exports_all_current_records_beyond_list_window(
                 request_id="request-live",
                 run_id="run-archive",
                 agent_mode="agent.work.normal",
-                schema_version="1",
+                schema_version="2",
                 lifecycle="running",
             )
             store.write_records([TraceRecordData.from_core_snapshot(snapshot)])
@@ -501,7 +501,7 @@ async def test_http_archive_exports_all_current_records_beyond_list_window(
         'attachment; filename="trajectory-session-1.archive.json"'
     )
     assert payload["format"] == "openjiuwen.trajectory.archive"
-    assert payload["archive_version"] == 1
+    assert payload["archive_version"] == 2
     assert payload["session_id"] == "session-1"
     assert payload["exported_at"].endswith("Z")
     assert isinstance(payload["store_epoch"], str)
@@ -545,7 +545,7 @@ async def test_http_archive_preserves_invalid_otlp_as_raw_base64(tmp_path: Path)
         request_id="request-invalid",
         run_id="run-invalid",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     )
     store = TrajectoryStore(database_path)
     store.initialize()
@@ -602,7 +602,7 @@ async def test_archive_get_download_preserves_execution_subject_and_access(
         request_id="request-subagent",
         run_id="run-subagent",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     )
     store = TrajectoryStore(database_path)
     store.initialize()
@@ -618,12 +618,6 @@ async def test_archive_get_download_preserves_execution_subject_and_access(
         current_raw = bytes(
             connection.execute(
                 "SELECT raw_json FROM trajectory_current_records WHERE trace_id = ? AND span_id = ?",
-                (_TRACE_ID, _SPAN_ID),
-            ).fetchone()["raw_json"]
-        )
-        change_raw = bytes(
-            connection.execute(
-                "SELECT raw_json FROM trajectory_changes WHERE trace_id = ? AND span_id = ?",
                 (_TRACE_ID, _SPAN_ID),
             ).fetchone()["raw_json"]
         )
@@ -677,10 +671,9 @@ async def test_archive_get_download_preserves_execution_subject_and_access(
     assert stored_raw != raw_json
     assert len(stored_raw) < len(raw_json)
     assert current_raw == b""
-    assert change_raw == b""
     payload = response.json()
     assert payload["format"] == "openjiuwen.trajectory.archive"
-    assert payload["archive_version"] == 1
+    assert payload["archive_version"] == 2
     assert len(payload["records"]) == 1
     archived_record = payload["records"][0]
     assert base64.b64decode(
@@ -1014,7 +1007,7 @@ async def test_archive_route_is_export_only_and_cannot_import_into_sqlite(
             f"{TRAJECTORY_API_PREFIX}/sessions/session-1/archive",
             json={
                 "format": "openjiuwen.trajectory.archive",
-                "archive_version": 1,
+                "archive_version": 2,
                 "records": [{"record_id": "attacker:record"}],
             },
         )

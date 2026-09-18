@@ -1,9 +1,19 @@
 import { type MouseEvent, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
-import type { AvatarStyle } from '../../../utils/skillAvatar';
+import { EntityAvatar } from '../EntityAvatar/EntityAvatar';
 import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import './EntityHeader.css';
 
-export type EntityHeaderAvatar = AvatarStyle | ReactNode;
+/** 结构化头像：iconUrl 有值渲染 img，空值/加载失败回退内置 getSkillAvatar(name) 生成的字母头像 */
+export interface EntityImageAvatar {
+  /** 实体展示名：字母兜底的取字符与颜色哈希来源 */
+  name: string;
+  /** 真实图标地址 */
+  iconUrl?: string | null;
+  /** 头像位 testid（img/letter 互斥同槽位，data-variant 区分形态） */
+  testId?: string;
+}
+
+export type EntityHeaderAvatar = EntityImageAvatar | ReactNode;
 
 /** 结构化标签：纯字符串之外需要携带图标/testid/variant/tooltip 时使用（如 MCP 集成类型徽标） */
 export interface EntityHeaderTagItem {
@@ -41,30 +51,20 @@ function EntityTag({ item }: { item: EntityHeaderTagItem }) {
   );
 }
 
-function isAvatarStyle(v: EntityHeaderAvatar): v is AvatarStyle {
-  return (
-    v !== null &&
-    typeof v === 'object' &&
-    'firstChar' in v &&
-    'style' in v &&
-    typeof (v as AvatarStyle).style === 'object'
-  );
+function isEntityImageAvatar(v: EntityHeaderAvatar): v is EntityImageAvatar {
+  return v !== null && typeof v === 'object' && !('props' in v) && 'name' in v;
 }
 
 function renderAvatarInner(avatar: EntityHeaderAvatar): ReactNode {
-  if (isAvatarStyle(avatar)) {
-    return (
-      <span className="entity-header__avatar-letter" style={avatar.style}>
-        {avatar.firstChar}
-      </span>
-    );
+  if (isEntityImageAvatar(avatar)) {
+    return <EntityAvatar name={avatar.name} iconUrl={avatar.iconUrl} testId={avatar.testId} />;
   }
   return avatar;
 }
 
 /* 标签行：卡片/详情统一渲染结构——单行 nowrap，超出容器宽度时截断并显示溢出指示器。
    条目支持纯字符串或结构化 EntityHeaderTagItem（隐藏测量区只渲染内容本体，不带 tooltip） */
-function EntityTagList({ tags }: { tags: EntityHeaderTag[] }) {
+export function EntityTagList({ tags }: { tags: EntityHeaderTag[] }) {
   const items = tags.map(normalizeTag);
   const tagsRef = useRef<HTMLSpanElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);

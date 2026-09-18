@@ -68,6 +68,17 @@ class _Agent:
                     await self.release.wait()
                 if self.behavior == "fail":
                     raise RuntimeError("model failed")
+                if self.behavior == "emit_error":
+                    # 模型调用失败以 chat.error 事件（ok=True）送达、不抛异常，
+                    # 复现「模型均调用失败、界面却显示上次运行成功」的 bug。
+                    yield self._chunk(
+                        request,
+                        {
+                            "event_type": "chat.error",
+                            "error": "model call failed: 503",
+                        },
+                    )
+                    return
                 if self.behavior in {"ask_live", "ask_ended"}:
                     yield self._chunk(
                         request,
@@ -387,6 +398,31 @@ async def test_error_and_timeout_are_failed_in_both_runtime_and_store(
         assert result.run_state.last_run_status == execution.state.value == "failed"
         assert error in result.run_state.last_error
         assert error in execution.error
+        assert chain.agent.closed.is_set()
+        assert not chain.heartbeat.execution.active_session_ids()
+    finally:
+        await _finish(chain)
+
+
+async def test_model_error_event_is_failed_not_succeeded(make_chain):
+    """A model failure surfaced as a ``chat.error`` event with ``ok=True`` must
+    be recorded as failed.
+
+    Before the fix ``execute_internal_heartbeat`` only inspected ``event.ok``
+    and missed these terminal error events, so a run whose every model call
+    failed was persisted as ``last_run_status="succeeded"`` and the UI showed
+    「上次运行成功」. The agent here yields ``chat.error`` and returns normally
+    (no exception), which is exactly the misclassified shape.
+    """
+    chain = await make_chain(behavior="emit_error")
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        result = await _settle(chain)
+        (execution,) = _executions(chain)
+        assert result.run_state.last_run_status == "failed"
+        assert execution.state.value == "failed"
+        assert "model call failed" in result.run_state.last_error
+        assert "model call failed" in execution.error
         assert chain.agent.closed.is_set()
         assert not chain.heartbeat.execution.active_session_ids()
     finally:

@@ -1095,9 +1095,12 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "## Browser Capability Routing Rules" in task_section.content["en"]
     assert 'set `subagent_type` to `"browser_agent"`' in task_section.content["en"]
     assert "do not preflight with paid_search" in task_section.content["en"]
+    assert "genuinely unanswered requirements" in task_section.content["en"]
+    assert "a partial label or unmapped field alone does not justify" in task_section.content["en"]
     assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
+    assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
         SubAgentConfig(

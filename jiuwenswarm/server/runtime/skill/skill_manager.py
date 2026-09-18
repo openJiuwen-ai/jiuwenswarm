@@ -63,7 +63,30 @@ from jiuwenswarm.server.runtime.skill.skill_files import (
     read_text_preview,
     resolve_skill_relative_file,
 )
-from jiuwenswarm.server.runtime.skill.skill_type import SKILL_TYPE_SWARM, detect_skill_type
+from jiuwenswarm.server.runtime.skill.skill_type import (
+    SKILL_TYPE_SKILLPACK,
+    SKILL_TYPE_SWARM,
+    detect_skill_type,
+)
+from jiuwenswarm.server.runtime.skill.skillpack import (
+    SkillPackDefinition,
+    SkillPackService,
+    SkillPackStatus,
+    SkillPackValidationError,
+    compute_skillpack_status,
+    container_members_root,
+    container_pack_description,
+    container_pack_members,
+    find_container_member_dir,
+    is_container_skillpack,
+    is_skillpack,
+    load_skillpack,
+    member_backup_dir,
+    project_skillpack,
+    read_container_pack_body,
+    referencing_skillpacks,
+    unavailable_skillpacks,
+)
 from jiuwenswarm.server.runtime.marketplace.hub_client import (
     DEFAULT_HUB_BASE_URL,
     HttpHubTransport,
@@ -100,6 +123,7 @@ ERROR_SKILLHUB_INSTALL_FAILED = "SKILLHUB_INSTALL_FAILED"
 ERROR_SKILLHUB_PUBLISH_FAILED = "SKILLHUB_PUBLISH_FAILED"
 ERROR_SKILLHUB_DETAIL_NOT_FOUND = "SKILLHUB_DETAIL_NOT_FOUND"
 ERROR_SKILLHUB_DETAIL_FAILED = "SKILLHUB_DETAIL_FAILED"
+ERROR_SKILL_OPERATION_UNSUPPORTED = "SKILL_OPERATION_UNSUPPORTED"
 
 _DETAIL_KEY_SKILLHUB_DETAIL_NOT_FOUND = "skills.swarmskillshub.errors.detailNotFound"
 _DETAIL_KEY_SKILLHUB_DETAIL_FAILED = "skills.swarmskillshub.errors.detailFailed"
@@ -164,6 +188,31 @@ _ONLINE_SEARCH_SOURCE_ORDER = {"skillnet": 0, "teamskillshub": 1, "clawhub": 2}
 _ONLINE_SEARCH_SOURCE_TIMEOUT = 30.0
 _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-skill"}
 _SINGLE_SKILL_PLUGIN_TYPES = {"skill"}
+
+# 自研内置技能名单（内置技能目录下 _proprietary_skills.json）。名单内的内置技能标记
+# proprietary=true（自研），名单外的内置技能一律视为三方下载——不配置即默认三方。
+_PROPRIETARY_SKILLS_FILENAME = "_proprietary_skills.json"
+_PROPRIETARY_NAMES_CACHE: frozenset[str] | None = None
+ 
+ 
+def _load_proprietary_builtin_names() -> frozenset[str]:
+    """加载自研内置技能名单，进程级缓存；文件缺失/损坏时返回空集合（默认三方）."""
+    global _PROPRIETARY_NAMES_CACHE
+    if _PROPRIETARY_NAMES_CACHE is not None:
+        return _PROPRIETARY_NAMES_CACHE
+    try:
+        data = json.loads(
+            (get_builtin_skills_dir() / _PROPRIETARY_SKILLS_FILENAME).read_text(encoding="utf-8")
+        )
+        names = data.get("proprietary") if isinstance(data, dict) else None
+        if isinstance(names, list):
+            _PROPRIETARY_NAMES_CACHE = frozenset(str(n).strip() for n in names if str(n).strip())
+        else:
+            _PROPRIETARY_NAMES_CACHE = frozenset()
+    except Exception:
+        logger.debug("加载自研内置技能名单失败，按默认三方处理", exc_info=True)
+        _PROPRIETARY_NAMES_CACHE = frozenset()
+    return _PROPRIETARY_NAMES_CACHE
 
 
 def _maybe_disable_insecure_warning() -> None:
@@ -710,6 +759,11 @@ class SkillManager:
             self._state_file = _get_state_file()
         self._skills_dir.mkdir(parents=True, exist_ok=True)
         self._state: dict[str, Any] = self._load_state()
+        self._skillpacks = SkillPackService(
+            self._skills_dir,
+            enabled_for=self.get_skill_enabled,
+            resolve_skill_dir=self._resolve_local_skill_dir,
+        )
         # 把手动拷入 skills 目录、未经任何安装流程登记的本地技能，自动补登记到
         # local_skills，使其与"导入本地技能"完全等价（可展示/卸载/查看详情/禁用）。
         self._register_unmanaged_local_skills()
@@ -867,6 +921,36 @@ class SkillManager:
                     "SKILL_VERSION_NOT_FOUND",
                     f"版本副本缺少 SKILL.md: {version_requested}",
                 )
+            # 容器型技能包：无根 SKILL.md，直接构建容器详情（含成员投影）
+            if base_meta.get("container_pack"):
+                container_meta = self._build_container_pack_meta(
+                    skill_dir,
+                    include_members=True,
+                )
+                container_meta["name"] = name
+                container_meta["content"] = read_container_pack_body(skill_dir)
+                container_meta["file_path"] = ""
+                container_meta["version"] = None
+                session_id = str(
+                    params.get("_session_id") or params.get("session_id") or ""
+                ).strip()
+                try:
+                    from jiuwenswarm.server.runtime.skill.skill_content_images import (
+                        rewrite_skill_markdown_images,
+                    )
+
+                    container_meta["content"] = rewrite_skill_markdown_images(
+                        str(container_meta.get("content") or ""),
+                        skill_name=name,
+                        version=None,
+                        content_root=read_root,
+                        session_id=session_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[skills.get] 图片改写失败，返回原文: skill=%s", name, exc_info=True
+                    )
+                return container_meta
             raise SkillRpcError(ERROR_SKILL_NOT_FOUND, f"未找到 skill: {name}")
 
         meta = self._parse_skill_md(md)
@@ -888,6 +972,7 @@ class SkillManager:
         meta["display_name"] = base_meta.get("display_name") or self._resolve_skill_display_name(name)
         meta["is_builtin"] = bool(base_meta.get("is_builtin", False))
         meta["is_builtin_source"] = bool(base_meta.get("is_builtin_source", False))
+        meta["proprietary"] = bool(base_meta.get("proprietary", False))
         if "marketplace" in base_meta:
             meta["marketplace"] = base_meta.get("marketplace")
         meta["has_evolutions"] = _has_effective_evolutions(
@@ -896,6 +981,16 @@ class SkillManager:
         self._apply_enabled_config(meta, str(meta.get("name") or name))
         meta["version"] = response_version
         meta["skill_type"] = detect_skill_type(skill_dir if version_requested is None else read_root)
+        if meta["skill_type"] == SKILL_TYPE_SKILLPACK:
+            try:
+                self._apply_skillpack_projection(
+                    meta,
+                    read_root,
+                    include_members=True,
+                    expected_name=str(meta.get("name") or name),
+                )
+            except SkillPackValidationError as exc:
+                raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
 
         # 返回前改写本地相对图片为受控预览 URL（不改磁盘）
         session_id = str(params.get("_session_id") or params.get("session_id") or "").strip()
@@ -1061,6 +1156,7 @@ class SkillManager:
         skill_dir = self._resolve_local_skill_dir(name)
         if skill_dir is None:
             raise SkillRpcError(ERROR_SKILL_NOT_FOUND, f"未找到 skill: {name}")
+        self._ensure_skillpack_operation_supported(name, "skills.rebuild")
         if self._is_builtin_skill(name, self._get_installed_plugins(), skill_dir):
             raise SkillRpcError("SKILL_BUILTIN_READ_ONLY", f"内置 Skill 不可 rebuild: {name}")
 
@@ -1094,14 +1190,81 @@ class SkillManager:
             _log_rejected_name("skills.toggle", "skill", name, exc)
             return {"success": False, "detail": str(exc)}
 
+        skill_dir = self._resolve_local_skill_dir(name)
+        is_pack = is_skillpack(skill_dir)
+        affected = referencing_skillpacks(self._skills_dir, name)
+        if is_pack and skill_dir is not None:
+            try:
+                load_skillpack(skill_dir, expected_name=name)
+            except SkillPackValidationError as exc:
+                raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+        # 整包启用校验：包含缺失/损坏成员的技能包禁止启用，需重新下载完整技能包
+        if enabled and skill_dir is not None:
+            blocked_detail = self._skillpack_enable_blocked_detail(
+                skill_dir,
+                is_standard_pack=is_pack,
+                expected_name=name,
+            )
+            if blocked_detail:
+                return {"success": False, "detail": blocked_detail}
         self.set_skill_enabled(name, enabled)
-        return {
+        result: dict[str, Any] = {
             "success": True,
             "name": name,
             "enabled": enabled,
             "config": {"enabled": enabled},
             "detail": "配置已更新；下次 reload / rebuild / 新会话后执行面生效。",
         }
+        if is_pack and skill_dir is not None:
+            try:
+                self._apply_skillpack_projection(
+                    result,
+                    skill_dir,
+                    include_members=False,
+                    expected_name=name,
+                )
+            except SkillPackValidationError as exc:
+                raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+        if affected:
+            logger.info(
+                "[SkillPack] member state changed: member=%s affected=%s",
+                name,
+                self._skillpack_impacts(affected),
+            )
+        return result
+
+    def _skillpack_enable_blocked_detail(
+        self,
+        skill_dir: Path,
+        *,
+        is_standard_pack: bool,
+        expected_name: str,
+    ) -> str | None:
+        """整包启用前的阻塞校验。
+
+        成员被卸载（missing/invalid）时聚合状态已自动禁用整包
+        （enabled = requested_enabled 且无阻塞成员）；此处兜底拒绝显式
+        启用请求，提示重新下载完整技能包。disabled 成员不阻塞，与
+        list/get 的聚合语义一致。
+        """
+        if is_standard_pack:
+            try:
+                _, status = self._skillpack_definition_status(
+                    skill_dir,
+                    expected_name=expected_name,
+                )
+            except SkillPackValidationError:
+                return None  # 元数据损坏由既有 load_skillpack 校验路径报错
+            blocked = [dict(item) for item in status.blocked_members]
+        else:
+            blocked = list(
+                self._build_container_pack_meta(skill_dir).get("blocked_members") or []
+            )
+        if not blocked:
+            return None
+        names = "、".join(str(item.get("name")) for item in blocked if item.get("name"))
+        suffix = f"（{names}）" if names else ""
+        return f"技能包包含未安装的技能{suffix}，请先在「包含技能」中安装，或重新下载完整技能包后再启用"
 
     @staticmethod
     def _resolve_skill_visibility_target(params: dict) -> tuple[str, str, Path] | dict:
@@ -1754,6 +1917,39 @@ class SkillManager:
         del params
         return await get_swarm_symphony_service().cancel_build()
 
+    async def handle_skills_experience_list(self, params: dict) -> dict:
+        """List retained Symphony experience candidates."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        del params
+        return get_swarm_symphony_service().list_experience_candidates()
+
+    async def handle_skills_experience_request(self, params: dict) -> dict:
+        """Re-open one retained candidate through the normal approval prompt."""
+        from jiuwenswarm.symphony.experience import _parse_recipe_reference
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        allowed = {
+            "recipe_id",
+            "recipe_version",
+            "_session_id",
+            "_channel_id",
+        }
+        if any(key not in allowed for key in params):
+            return {"success": False, "reason": "invalid_parameters"}
+        try:
+            recipe_id, recipe_version = _parse_recipe_reference(
+                params.get("recipe_id"), params.get("recipe_version")
+            )
+        except ValueError as exc:
+            return {"success": False, "reason": str(exc)}
+        return await get_swarm_symphony_service().request_experience_candidate(
+            recipe_id=recipe_id,
+            recipe_version=recipe_version,
+            session_id=str(params.get("_session_id") or ""),
+            channel_id=str(params.get("_channel_id") or "") or None,
+        )
+
     async def handle_skills_evolution_status(self, params: dict) -> dict:
         """检查某个 skill 是否存在 evolutions.json."""
         name = str(params.get("name") or "").strip()
@@ -1764,6 +1960,7 @@ class SkillManager:
         except ValueError as exc:
             _log_rejected_name("skills.evolution.status", "skill", name, exc)
             raise ValueError(str(exc)) from exc
+        self._ensure_skillpack_operation_supported(name, "skills.evolution.status")
         evo_path = self._get_skill_evolution_path(name)
         skill_dir = evo_path.parent if evo_path is not None else None
         return {
@@ -1781,6 +1978,8 @@ class SkillManager:
         except ValueError as exc:
             _log_rejected_name("skills.evolution.get", "skill", name, exc)
             raise ValueError(str(exc)) from exc
+
+        self._ensure_skillpack_operation_supported(name, "skills.evolution.get")
 
         evo_path = self._get_skill_evolution_path(name)
         if evo_path is None or not evo_path.is_file():
@@ -1905,6 +2104,8 @@ class SkillManager:
         except ValueError as exc:
             _log_rejected_name("skills.evolution.save", "skill", name, exc)
             raise ValueError(str(exc)) from exc
+
+        self._ensure_skillpack_operation_supported(name, "skills.evolution.save")
 
         skill_dir = self._resolve_local_skill_dir(name)
         if skill_dir is None:
@@ -4183,6 +4384,7 @@ class SkillManager:
         dest = self._resolve_local_skill_dir(name)
         if dest is None:
             return {"success": False, "detail": f"未找到 skill: {name}"}
+        affected_skillpacks = referencing_skillpacks(self._skills_dir, name)
 
         # 检查是否为真正的内置技能（源码目录中的，不允许删除）
         builtin_dir = get_builtin_skills_dir()
@@ -4209,6 +4411,9 @@ class SkillManager:
                 if dest.resolve() == builtin_skill_path.resolve():
                     return {"success": False, "detail": "内置技能不允许删除"}
 
+        # 内置技能拒绝校验通过后才备份，避免拒绝路径留下无意义备份文件
+        member_backup = self._capture_container_member_backup(name, dest)
+
         _safe_rmtree(dest)
 
         # 处理 mirror 根目录中的技能
@@ -4222,7 +4427,117 @@ class SkillManager:
         # 卸载时一并清掉该 skill 的 enabled 配置，避免重装同名 skill 时沿用旧的禁用状态。
         self.remove_skill_config(raw_name)
         self._refresh_agent_data_indexes()
-        return {"success": True}
+        if affected_skillpacks:
+            logger.info(
+                "[SkillPack] member uninstalled: member=%s affected=%s",
+                name,
+                self._skillpack_impacts(affected_skillpacks),
+            )
+        return {"success": True, "restorable": member_backup is not None}
+
+    def _locate_pack_for_member(self, member_name: str, member_dir: Path) -> Path | None:
+        """找到包含 member_dir 的技能包目录（标准包或容器包）。"""
+        for child in self._skills_dir.iterdir():
+            if not child.is_dir() or child.name.startswith("_"):
+                continue
+            if is_container_skillpack(child):
+                resolved_member = find_container_member_dir(child, member_name)
+                if resolved_member is not None and resolved_member.resolve() == member_dir.resolve():
+                    return child
+                continue
+            if not is_skillpack(child):
+                continue
+            if child.resolve() == member_dir.parent.resolve():
+                return child
+        return None
+
+    def _capture_container_member_backup(self, member_name: str, member_dir: Path) -> Path | None:
+        """卸载技能包成员前把成员目录备份到包内。
+
+        备份让「卸载成员」可被单个「安装」操作从本地恢复，无需重新
+        下载完整技能包。备份目录以 ``_`` 开头，不会被成员扫描列出。
+        """
+        pack_dir = self._locate_pack_for_member(member_name, member_dir)
+        if pack_dir is None:
+            return None
+        backup_root = member_backup_dir(pack_dir)
+        backup_dest = backup_root / member_dir.name
+        try:
+            if backup_dest.exists():
+                _safe_rmtree(backup_dest)
+            backup_root.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(member_dir, backup_dest)
+        except OSError:
+            logger.warning(
+                "[SkillPack] member backup failed: member=%s pack=%s",
+                member_name,
+                pack_dir.name,
+                exc_info=True,
+            )
+            return None
+        logger.info(
+            "[SkillPack] member backup captured: member=%s pack=%s",
+            member_name,
+            pack_dir.name,
+        )
+        return backup_dest
+
+    async def handle_skills_pack_member_install(self, params: dict) -> dict:
+        """从包内备份恢复一个已卸载的技能包成员。
+
+        params:
+            pack: 技能包名称
+            name: 成员技能名称
+        """
+        pack_name = str(params.get("pack") or "").strip()
+        member_name = str(params.get("name") or "").strip()
+        if not pack_name or not member_name:
+            return {"success": False, "detail": "缺少参数: pack/name"}
+        try:
+            pack_name = _safe_path_name(pack_name, "skill")
+        except ValueError as exc:
+            _log_rejected_name("skills.pack_member.install", "pack", pack_name, exc)
+            return {"success": False, "detail": str(exc)}
+        try:
+            member_name = _safe_path_name(member_name, "skill")
+        except ValueError as exc:
+            _log_rejected_name("skills.pack_member.install", "skill", member_name, exc)
+            return {"success": False, "detail": str(exc)}
+
+        try:
+            pack_dir = _safe_child_path(self._skills_dir, pack_name, "skill")
+        except ValueError as exc:
+            return {"success": False, "detail": str(exc)}
+        if not pack_dir.is_dir() or not (is_skillpack(pack_dir) or is_container_skillpack(pack_dir)):
+            return {"success": False, "detail": f"未找到技能包: {pack_name}"}
+
+        backup_src = member_backup_dir(pack_dir) / member_name
+        if not backup_src.is_dir():
+            return {"success": False, "detail": f"未找到技能 {member_name} 的本地备份"}
+
+        dest = pack_dir / member_name if is_skillpack(pack_dir) else container_members_root(pack_dir) / member_name
+        try:
+            if dest.exists():
+                _safe_rmtree(dest)
+            shutil.copytree(backup_src, dest)
+        except OSError as exc:
+            logger.warning(
+                "[SkillPack] member restore failed: member=%s pack=%s error=%s",
+                member_name,
+                pack_name,
+                exc,
+            )
+            return {"success": False, "detail": f"恢复失败: {exc}"}
+
+        # 恢复后自动登记（若未登记），使「我的技能」立即可见。
+        self._register_unmanaged_local_skills()
+        self._refresh_agent_data_indexes()
+        logger.info(
+            "[SkillPack] member restored: member=%s pack=%s",
+            member_name,
+            pack_name,
+        )
+        return {"success": True, "name": member_name, "pack": pack_name}
 
     async def handle_skills_import_local(self, params: dict) -> dict:
         """从 download_token、本地路径或远程归档 URL 导入 skill.
@@ -4785,6 +5100,7 @@ class SkillManager:
         skill_dir: Path,
         *,
         source_trusted: bool = False,
+        allow_skillpack: bool = False,
     ) -> dict[str, Any]:
         """校验包结构：拒根级 .archive，要求有效 name；本地导入还要求 description.
 
@@ -4806,6 +5122,16 @@ class SkillManager:
         meta = self._parse_skill_md(md)
         if meta is None:
             raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, "无法解析 SKILL.md")
+        if str(meta.get("kind") or "").strip().casefold() == "skillpack":
+            if not allow_skillpack:
+                raise SkillRpcError(
+                    ERROR_SKILL_OPERATION_UNSUPPORTED,
+                    "暂不支持导入 SkillPack",
+                )
+            try:
+                load_skillpack(skill_dir)
+            except SkillPackValidationError as exc:
+                raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
         name = str(meta.get("name") or "").strip()
         description = str(meta.get("description") or "").strip()
         if not name:
@@ -4828,9 +5154,14 @@ class SkillManager:
         origin: str,
         source_trusted: bool = False,
         conflict_code: str = ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
+        allow_skillpack: bool = False,
     ) -> dict[str, Any]:
         """把已校验的 Skill 目录安装到 workspace，并返回约定的 skill 字段."""
-        meta = self._assert_skill_package_safe(src, source_trusted=source_trusted)
+        meta = self._assert_skill_package_safe(
+            src,
+            source_trusted=source_trusted,
+            allow_skillpack=allow_skillpack,
+        )
         raw_skill_name = str(meta.get("name") or "").strip()
         try:
             skill_name = _safe_path_name(raw_skill_name, "skill")
@@ -4926,6 +5257,126 @@ class SkillManager:
                 "source": source,
                 "workspace_path": str(dest),
             },
+        }
+
+    def install_symphony_skill_artifact(
+        self,
+        artifact_dir: str | Path,
+        *,
+        expected_root: str | Path,
+        package_id: str,
+        integrity: str,
+    ) -> dict[str, Any]:
+        """Install a server-resolved reviewed Symphony Skill artifact."""
+
+        source = Path(artifact_dir).resolve()
+        root = Path(expected_root).resolve()
+        try:
+            source.relative_to(root)
+        except ValueError as exc:
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "Symphony Skill 产物不在受控目录内",
+            ) from exc
+        if not package_id or not integrity or not source.is_dir():
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                "Symphony Skill 产物凭据无效",
+            )
+        try:
+            definition = load_skillpack(source)
+            status = compute_skillpack_status(
+                definition,
+                skills_dir=self._skills_dir,
+                enabled_for=self.get_skill_enabled,
+            )
+        except SkillPackValidationError as exc:
+            raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+        hard_blockers = [
+            item
+            for item in status.blocked_members
+            if item.get("reason") in {"missing", "invalid"}
+        ]
+        if hard_blockers:
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE,
+                f"Symphony SkillPack 成员不可安装: {hard_blockers}",
+            )
+        return self._install_imported_skill_dir(
+            source,
+            force=False,
+            origin=f"symphony:{package_id}",
+            source_trusted=False,
+            conflict_code=ERROR_SKILL_ALREADY_EXISTS,
+            allow_skillpack=True,
+        )
+
+    def recover_symphony_skill_install(
+        self,
+        artifact_dir: str | Path,
+        *,
+        package_id: str,
+        integrity: str,
+    ) -> dict[str, Any] | None:
+        """Recognize a fully copied Symphony Skill after receipt-write failure."""
+
+        source = Path(artifact_dir).resolve()
+        if not package_id or not integrity or not source.is_dir():
+            return None
+        try:
+            meta = self._assert_skill_package_safe(
+                source,
+                source_trusted=False,
+                allow_skillpack=True,
+            )
+            definition = load_skillpack(source)
+            status = compute_skillpack_status(
+                definition,
+                skills_dir=self._skills_dir,
+                enabled_for=self.get_skill_enabled,
+            )
+            if any(
+                item.get("reason") in {"missing", "invalid"}
+                for item in status.blocked_members
+            ):
+                return None
+            skill_name = _safe_path_name(str(meta.get("name") or "").strip(), "skill")
+            destination = _safe_child_path(self._skills_dir, skill_name, "skill")
+        except (SkillRpcError, ValueError):
+            return None
+        record = None
+        for item in self._state.get("local_skills", []):
+            if isinstance(item, dict) and item.get("name") == skill_name:
+                record = item
+                break
+        if record is None or not destination.is_dir():
+            return None
+        if compute_content_checksum(source) != compute_content_checksum(destination):
+            return None
+        expected_origin = f"symphony:{package_id}"
+        origin = str(record.get("origin") or "")
+        if origin != expected_origin:
+            if origin not in {"", "local", "project"}:
+                return None
+            self._add_local_skill(
+                {
+                    **record,
+                    "name": skill_name,
+                    "origin": expected_origin,
+                    "source": record.get("source") or "local",
+                }
+            )
+        return {
+            "success": True,
+            "skill": {
+                "name": skill_name,
+                "description": str(meta.get("description") or "").strip(),
+                "version": get_current_version(destination),
+                "skill_type": detect_skill_type(destination),
+                "source": self._resolve_display_source_for_import(skill_name),
+                "workspace_path": str(destination),
+            },
+            "recovered": True,
         }
 
     def _resolve_display_source_for_import(self, skill_name: str) -> str:
@@ -5044,6 +5495,11 @@ class SkillManager:
             meta = self._parse_skill_md(src)
             if meta is None:
                 return {"success": False, "detail": "无法解析 skill 文件"}
+            if str(meta.get("kind") or "").strip().casefold() == "skillpack":
+                raise SkillRpcError(
+                    ERROR_SKILL_OPERATION_UNSUPPORTED,
+                    "暂不支持导入 SkillPack",
+                )
             raw_skill_name = meta.get("name", src.stem)
             description = str(meta.get("description") or "").strip()
             if source_trusted:
@@ -5553,6 +6009,9 @@ class SkillManager:
         """Scan a single skill directory -> meta dict, or None if not a skill."""
         md = self._try_find_skill_file(child)
         if md is None:
+            # 容器型技能包：zip 原样解压形态（根下无 SKILL.md，skills/ 子目录内含成员技能）
+            if is_container_skillpack(child):
+                return self._build_container_pack_meta(child, source_default)
             return None
         meta = self._parse_skill_md(md)
         if meta is None:
@@ -5598,10 +6057,81 @@ class SkillManager:
             meta["is_builtin_source"] = builtin_skill_path.exists() and builtin_skill_path.is_dir()
         else:
             meta["is_builtin_source"] = False
+        # 自研判定：内置（含已安装副本/仅源码存在的内置技能）且名单内为自研；其余（本地导入、
+        # marketplace/SkillNet 安装、MCP 捆绑、用户自建等）一律三方——不配置默认三方。
+        meta["proprietary"] = bool(
+            (meta.get("is_builtin") or meta.get("is_builtin_source"))
+            and str(meta.get("name") or "") in _load_proprietary_builtin_names()
+        )
         meta["has_evolutions"] = _has_effective_evolutions(child)
         self.apply_archive_version_and_type(meta, child)
+        if meta["skill_type"] == SKILL_TYPE_SKILLPACK:
+            try:
+                self._apply_skillpack_projection(
+                    meta,
+                    child,
+                    include_members=False,
+                    expected_name=child.name,
+                )
+            except SkillPackValidationError as exc:
+                logger.warning(
+                    "[SkillPack] skip invalid package: name=%s error=%s",
+                    child.name,
+                    exc,
+                )
+                return None
+            meta["has_evolutions"] = False
         # 不在列表中返回 body
         meta.pop("body", None)
+        return meta
+
+    def _build_container_pack_meta(
+        self,
+        child: Path,
+        source_default: str | None = None,
+        *,
+        include_members: bool = False,
+    ) -> dict[str, Any]:
+        """构建容器型技能包（zip 解压形态）的 skills.list / skills.get 条目。
+
+        容器根下无 SKILL.md，成员为容器 ``skills/`` 子目录内的技能；
+        聚合状态语义与标准 SkillPack 对齐：requested_enabled 取容器自身
+        配置，enabled = requested_enabled 且无阻塞成员（disabled 不阻塞）。
+        """
+        name = child.name
+        members = container_pack_members(child, enabled_for=self.get_skill_enabled)
+        blocked = [
+            member
+            for member in members
+            if member.get("blocking_reason") not in (None, "", "disabled")
+        ]
+        requested_enabled = self.get_skill_enabled(name)
+        meta: dict[str, Any] = {
+            "name": name,
+            "display_name": self._resolve_skill_display_name(name) or name,
+            "description": container_pack_description(child),
+            "source": self._resolve_skill_source(name)
+            if source_default is None
+            else source_default,
+            "installed": True,
+            "enabled": requested_enabled and not blocked,
+            "is_builtin": False,
+            "is_builtin_source": False,
+            "has_evolutions": False,
+            "skill_type": SKILL_TYPE_SKILLPACK,
+            "member_count": len(members),
+            "requested_enabled": requested_enabled,
+            "blocked_members": [
+                {"name": member.get("name"), "reason": member.get("blocking_reason")}
+                for member in blocked
+            ],
+            "config": {"enabled": requested_enabled},
+        }
+        if include_members:
+            meta["skillpack"] = {
+                "workflow_graph": None,
+                "members": members,
+            }
         return meta
 
     def _scan_builtin_skills(self) -> list[dict]:
@@ -5637,6 +6167,8 @@ class SkillManager:
             meta["source"] = "builtin"
             meta["is_builtin"] = True
             meta["is_builtin_source"] = True
+            # 名单内的内置技能为自研，其余内置技能视为三方（不配置默认三方）
+            meta["proprietary"] = str(meta.get("name") or "") in _load_proprietary_builtin_names()
             meta["installed"] = False
             meta["has_evolutions"] = False
             self._apply_enabled_config(meta, meta.get("name", ""))
@@ -5702,6 +6234,12 @@ class SkillManager:
 
         for child in self._skills_dir.iterdir():
             if not child.is_dir() or child.name.startswith("_"):
+                continue
+            # 容器型技能包：成员技能目录在容器内部，按名定位成员目录
+            if is_container_skillpack(child):
+                member_dir = find_container_member_dir(child, skill_name)
+                if member_dir is not None:
+                    return member_dir
                 continue
             md = self._try_find_skill_file(child)
             if md is None:
@@ -6045,6 +6583,27 @@ class SkillManager:
                     continue
                 md = self._try_find_skill_file(child)
                 if md is None:
+                    # 容器型技能包：按容器名匹配后走容器详情构建
+                    if name == child.name and is_container_skillpack(child):
+                        return child, {
+                            "name": child.name,
+                            "source": self._resolve_skill_source(child.name),
+                            "display_name": child.name,
+                            "is_builtin": False,
+                            "is_builtin_source": False,
+                            "container_pack": True,
+                        }
+                    # 容器成员：按名匹配容器内的成员技能目录，走标准详情路径
+                    if is_container_skillpack(child):
+                        member_dir = find_container_member_dir(child, name)
+                        if member_dir is not None:
+                            return member_dir, {
+                                "name": name,
+                                "source": self._resolve_skill_source(name),
+                                "display_name": name,
+                                "is_builtin": False,
+                                "is_builtin_source": False,
+                            }
                     continue
                 meta = self._parse_skill_md(md)
                 if meta is None:
@@ -6054,6 +6613,14 @@ class SkillManager:
                     continue
                 listed_meta = self._scan_one_skill_dir(child)
                 if listed_meta is None:
+                    if is_skillpack(child):
+                        return child, {
+                            "name": child.name,
+                            "source": self._resolve_skill_source(child.name),
+                            "display_name": registered_name,
+                            "is_builtin": False,
+                            "is_builtin_source": False,
+                        }
                     continue
                 base = {
                     "name": listed_meta.get("name", child.name),
@@ -6063,6 +6630,7 @@ class SkillManager:
                     "is_builtin_source": bool(
                         listed_meta.get("is_builtin_source", False)
                     ),
+                    "proprietary": bool(listed_meta.get("proprietary", False)),
                 }
                 return child, base
 
@@ -8046,6 +8614,81 @@ class SkillManager:
         payload["enabled"] = enabled
         payload["config"] = {"enabled": enabled}
 
+    def _skillpack_definition_status(
+        self,
+        skill_dir: Path,
+        *,
+        expected_name: str | None = None,
+    ) -> tuple[SkillPackDefinition, SkillPackStatus]:
+        definition = load_skillpack(skill_dir, expected_name=expected_name)
+        status = compute_skillpack_status(
+            definition,
+            skills_dir=self._skills_dir,
+            enabled_for=self.get_skill_enabled,
+        )
+        return definition, status
+
+    def _apply_skillpack_projection(
+        self,
+        payload: dict[str, Any],
+        skill_dir: Path,
+        *,
+        include_members: bool,
+        expected_name: str | None = None,
+    ) -> None:
+        definition, status = self._skillpack_definition_status(
+            skill_dir,
+            expected_name=expected_name,
+        )
+        payload.update(
+            project_skillpack(
+                definition,
+                status,
+                include_members=include_members,
+            )
+        )
+
+    def _ensure_skillpack_operation_supported(
+        self,
+        skill_name: str,
+        operation: str,
+    ) -> None:
+        skill_dir = self._resolve_local_skill_dir(skill_name)
+        if is_skillpack(skill_dir):
+            raise SkillRpcError(
+                ERROR_SKILL_OPERATION_UNSUPPORTED,
+                f"SkillPack 暂不支持 {operation}: {skill_name}",
+            )
+
+    def _skillpack_impacts(self, skillpack_names: list[str]) -> list[dict[str, Any]]:
+        impacts: list[dict[str, Any]] = []
+        for skillpack_name in skillpack_names:
+            skillpack_dir = self._resolve_local_skill_dir(skillpack_name)
+            if skillpack_dir is None:
+                continue
+            try:
+                _, status = self._skillpack_definition_status(
+                    skillpack_dir,
+                    expected_name=skillpack_name,
+                )
+            except SkillPackValidationError:
+                impacts.append(
+                    {
+                        "name": skillpack_name,
+                        "blocked_members": [
+                            {"name": skillpack_name, "reason": "invalid"}
+                        ],
+                    }
+                )
+                continue
+            impacts.append(
+                {
+                    "name": skillpack_name,
+                    "blocked_members": [dict(item) for item in status.blocked_members],
+                }
+            )
+        return impacts
+
     def get_skill_enabled(self, skill_name: str) -> bool:
         return get_skill_enabled(self._state, skill_name)
 
@@ -8069,10 +8712,24 @@ class SkillManager:
         self._state = self._load_state()
 
     def list_disabled_skills(self) -> list[str]:
-        return list_disabled_skills(self._state)
+        disabled = set(list_disabled_skills(self._state))
+        disabled.update(
+            unavailable_skillpacks(
+                self._skills_dir,
+                enabled_for=self.get_skill_enabled,
+            )
+        )
+        return sorted(disabled)
 
     def list_execution_disabled_skills(self) -> list[str]:
-        return list_execution_disabled_skills(self._state)
+        disabled = set(list_execution_disabled_skills(self._state))
+        disabled.update(
+            unavailable_skillpacks(
+                self._skills_dir,
+                enabled_for=self.get_skill_enabled,
+            )
+        )
+        return sorted(disabled)
 
     def get_skill_meta(self, skill_name: str) -> dict[str, Any] | None:
         """返回本地 skill 的解析元数据，附带目录与 skill 文件路径。"""

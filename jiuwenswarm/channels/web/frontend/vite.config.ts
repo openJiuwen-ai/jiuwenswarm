@@ -1429,7 +1429,10 @@ const webTarget = `http://127.0.0.1:${webPort}`
 // a second in-memory handoff implementation.
 const hubOAuthBroker = process.env.JIUWENSWARM_HUB_OAUTH_BROKER_URL
 
+const isElectronBuild = process.env.ELECTRON === 'true'
+
 export default defineConfig({
+  base: isElectronBuild ? './' : '/',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   optimizeDeps: {
     include: ['exceljs', 'jszip', 'saxes', 'ssf'],

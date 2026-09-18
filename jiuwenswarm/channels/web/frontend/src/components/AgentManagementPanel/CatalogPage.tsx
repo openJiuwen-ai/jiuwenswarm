@@ -5,7 +5,6 @@ import { useTranslation } from 'react-i18next';
 import { type AgentCatalogItem, type RequestStatus } from '../../features/agentManagement';
 import { getAgentAvatarUrl } from '../../features/agentManagement';
 import { CategoryTabs, PageCard } from '../ui';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import ReminderIcon from '../../assets/agent-management/remind.svg?react';
 
@@ -118,22 +117,18 @@ export function CatalogPage({
           </div>
         ) : (
           <>
-            <div className="card-grid-auto" style={{ paddingTop: '16px' }}>
+            <div className="card-grid-auto">
               {pageItems.map((item) => {
                 const isBusy = busyId === item.id;
                 const avatarUrl = getAgentAvatarUrl(item);
                 const description = item.description || t('agentManagement.unknownDescription');
                 const needsConnection = item.installed && item.connectionState !== 'connected';
 
-                const avatar = avatarUrl
-                  ? <img src={avatarUrl} alt="" />
-                  : getSkillAvatar(item.displayName);
+                const avatar = { name: item.displayName, iconUrl: avatarUrl, testId: 'agent-management-card-avatar' };
 
                 const labelTags: string[] | undefined = item.tags.length > 0
                   ? item.tags.map(tg => tg.label)
-                  : (scope === 'mine'
-                    ? [t(`agentManagement.categories.${item.category}`, { defaultValue: item.category || t('agentManagement.categoryOther') })]
-                    : undefined);
+                  : undefined;
 
                 let actionContent: ReactNode = null;
                 if (item.installed) {
@@ -170,8 +165,8 @@ export function CatalogPage({
                 return (
                   <PageCard
                     key={item.id}
+                    className="agent-management-page-card agent-definition-card agent-management-catalog-card"
                     testId="agent-card"
-                    className="agent-management-catalog-card"
                     variant={item.id}
                     onClick={() => onOpen(item.id)}
                     avatar={avatar}
@@ -187,7 +182,7 @@ export function CatalogPage({
                   />
                 );
               })}
-             </div>
+            </div>
             {totalPages > 1 ? (
               <div
                 className="agent-management-pagination"

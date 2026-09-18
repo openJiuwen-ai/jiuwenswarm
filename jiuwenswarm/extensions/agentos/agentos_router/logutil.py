@@ -11,6 +11,7 @@ _PRIMARY_KEYS = (
     "user_id",
     "session_id",
     "request_id",
+    "trace_id",
     "sandbox_id",
     "agent_type",
     "instance",

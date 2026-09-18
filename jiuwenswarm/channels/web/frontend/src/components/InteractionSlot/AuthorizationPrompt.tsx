@@ -17,7 +17,11 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ShieldCheck, ChevronDown } from 'lucide-react';
 import type { AskUserQuestionPayload, Question, QuestionOption, UserAnswer } from '../../types';
+import { formatToolArguments } from '../../utils';
 import { classifyAuthOption, type AuthSemantic } from './promptRouting';
+import { AutoReviewerDetails, AutoReviewerStatusBadge } from '../ChatPanel/AutoReviewerStatus';
+import { permissionQuestionKind } from '../../stores/pendingQuestionQueue';
+import { translatePermissionText } from './permissionTextI18n';
 
 interface AuthorizationPromptProps {
   pending: AskUserQuestionPayload;
@@ -31,16 +35,117 @@ const ACTION_ORDER: AuthSemantic[] = ['reject', 'allow-always', 'session-allow',
 const PROSE_CLS =
   'prose prose-sm max-w-none prose-headings:font-semibold prose-headings:text-sm prose-ul:my-1 prose-li:my-0 prose-li:pl-1';
 
-interface ResolvedAction {
+export interface ResolvedAction {
   semantic: AuthSemantic;
   option: QuestionOption;
   label: string;
   tip: string;
 }
 
+function optionSemantic(option: QuestionOption): AuthSemantic {
+  return classifyAuthOption(option.value || option.label);
+}
+
+export function resolveAuthorizationActions(questions: Question[]): ResolvedAction[] {
+  const primary = questions[0];
+  const resolved = (primary?.options ?? [])
+    .map((option) => ({
+      semantic: optionSemantic(option),
+      option,
+      label: option.label,
+      tip: (option.description || '').trim(),
+    }));
+  const rank = (semantic: AuthSemantic) => {
+    const index = ACTION_ORDER.indexOf(semantic);
+    return index === -1 ? ACTION_ORDER.length : index;
+  };
+  return resolved.sort((left, right) => rank(left.semantic) - rank(right.semantic));
+}
+
+export function buildAuthorizationAnswers(
+  questions: Question[],
+  picked: ResolvedAction,
+  smart = false,
+): UserAnswer[] {
+  return questions.map((question) => {
+    const match =
+      question.options.find((option) => optionSemantic(option) === picked.semantic) ||
+      question.options.find(
+        (option) =>
+          (option.value || option.label) === (picked.option.value || picked.option.label),
+      );
+    const reject = question.options.find((option) => optionSemantic(option) === 'reject');
+    const selected = match || (smart ? reject : question.options[0]);
+    return { selected_options: [selected ? selected.value || selected.label : smart ? 'reject' : picked.label] };
+  });
+}
+
 /** 首个非空行，用于收起态渲染。 */
 function firstLine(text: string): string {
   return (text || '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+}
+
+export function formatPermissionPayload(payload: unknown): string {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    return formatToolArguments(payload as Record<string, unknown>);
+  }
+  try {
+    return JSON.stringify(payload, null, 2) ?? String(payload);
+  } catch {
+    return String(payload);
+  }
+}
+
+export function AuthorizationQuestionDetails({
+  questions,
+  requestId,
+}: {
+  questions: Question[];
+  requestId: string;
+}) {
+  const { t, i18n } = useTranslation();
+  const count = questions.length;
+  return (
+    <>
+      {questions.map((question, index) => (
+        <div
+          className="auth-prompt__body-item"
+          data-testid={`authorization-question-${index}`}
+          data-variant={index}
+          key={question.card_id || `${requestId}-${index}`}
+        >
+          {count > 1 && question.header && (
+            <div
+              className="auth-prompt__body-header"
+              data-testid="interaction-slot-auth-body-item-header"
+            >
+              {translatePermissionText(question.header, i18n.language)}
+            </div>
+          )}
+          <AutoReviewerDetails reviewer={question.reviewer_metadata} />
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {translatePermissionText(question.question, i18n.language)}
+          </ReactMarkdown>
+          {question.tool_payload !== undefined && (
+            <details
+              className="mt-3 rounded-lg border border-border bg-card p-3 text-xs"
+              data-testid={`permission-tool-payload-${index}`}
+            >
+              <summary className="cursor-pointer font-semibold text-text">
+                {t('authPrompt.toolPayload.title')}
+              </summary>
+              <div className="mt-2 text-text-muted">
+                {t('authPrompt.toolPayload.notice')}
+              </div>
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-text">
+                {formatPermissionPayload(question.tool_payload)}
+              </pre>
+            </details>
+          )}
+        </div>
+      ))}
+    </>
+  );
 }
 
 /** hover 说明气泡：portal 到 body，始终最上层、不被容器截断。 */
@@ -81,48 +186,34 @@ function HoverTip({ text, children }: { text: string; children: React.ReactNode 
 }
 
 export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const questions = pending.questions ?? [];
   const primary = questions[0];
+  const smart = pending.source === 'permission_interrupt' && permissionQuestionKind(questions) === 'smart';
+  const reviewer = primary?.reviewer_metadata;
   const isConfirm = pending.source === 'confirm_interrupt';
   const count = questions.length;
 
-  // 按钮文案与说明原样使用后端下发的 label / description；
-  // semantic 仅用于固定排序与样式映射，不再覆盖显示文案。
-  const actions = useMemo<ResolvedAction[]>(() => {
-    const opts = primary?.options ?? [];
-    const resolved: ResolvedAction[] = opts.map((option) => {
-      const semantic = classifyAuthOption(option.value || option.label);
-      return {
-        semantic,
-        option,
-        label: option.label,
-        tip: (option.description || '').trim(),
-      };
-    });
-    const rank = (s: AuthSemantic) => {
-      const idx = ACTION_ORDER.indexOf(s);
-      return idx === -1 ? ACTION_ORDER.length : idx;
-    };
-    return resolved.sort((a, b) => rank(a.semantic) - rank(b.semantic));
-  }, [primary]);
+  // 按钮的 label/description 原样使用后端下发的文案；semantic 判定用的是
+  // option.value（如 "allow_once"，与 label 无关），排序与语义分类不受影响。
+  // 展示层再叠一层已知短语的前端翻译（非中文语言下），查不到的原样显示。
+  const actions = useMemo<ResolvedAction[]>(
+    () =>
+      resolveAuthorizationActions(questions).map((action) => ({
+        ...action,
+        label: translatePermissionText(action.label, i18n.language),
+        tip: translatePermissionText(action.tip, i18n.language),
+      })),
+    [questions, i18n.language],
+  );
 
   /** 把选中的语义应用到所有 question（多条时统一处理）。 */
   const buildAnswers = useCallback(
-    (picked: ResolvedAction): UserAnswer[] => {
-      return questions.map((q: Question) => {
-        const match =
-          q.options.find((o) => classifyAuthOption(o.value || o.label) === picked.semantic) ||
-          q.options.find((o) => (o.value || o.label) === (picked.option.value || picked.option.label)) ||
-          q.options[0];
-        const value = match ? match.value || match.label : picked.option.label;
-        return { selected_options: [value] };
-      });
-    },
-    [questions],
+    (picked: ResolvedAction): UserAnswer[] => buildAuthorizationAnswers(questions, picked, smart),
+    [questions, smart],
   );
 
   const handlePick = useCallback(
@@ -138,11 +229,11 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   if (!primary) return null;
 
   const fallbackTitle = isConfirm ? t('authPrompt.titleConfirm') : t('authPrompt.title');
-  const title = (primary.header || '').trim() || fallbackTitle;
+  const title = translatePermissionText(primary.header, i18n.language).trim() || fallbackTitle;
 
   return (
     <div
-      className="auth-prompt"
+      className={smart ? 'auth-prompt auth-prompt--smart' : 'auth-prompt'}
       role="alertdialog"
       aria-label={title}
       data-testid="interaction-slot-auth-prompt"
@@ -167,9 +258,25 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
         }}
       >
         <div className="auth-prompt__head" data-testid="interaction-slot-auth-head">
-          <ShieldCheck className="auth-prompt__icon" size={15} strokeWidth={2} data-testid="interaction-slot-auth-icon" />
-          <span className="auth-prompt__title" title={title} data-testid="interaction-slot-auth-title">{title}</span>
-          {count > 1 && <span className="auth-prompt__count" data-testid="interaction-slot-auth-count">({count})</span>}
+          <ShieldCheck
+            className="auth-prompt__icon"
+            size={15}
+            strokeWidth={2}
+            data-testid="interaction-slot-auth-icon"
+          />
+          <span
+            className="auth-prompt__title"
+            title={title}
+            data-testid="interaction-slot-auth-title"
+          >
+            {title}
+          </span>
+          {count > 1 && (
+            <span className="auth-prompt__count" data-testid="interaction-slot-auth-count">
+              ({count})
+            </span>
+          )}
+          {count === 1 && <AutoReviewerStatusBadge reviewer={reviewer} />}
           <ChevronDown
             className={`auth-prompt__chevron${expanded ? ' auth-prompt__chevron--open' : ''}`}
             size={14}
@@ -208,16 +315,11 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
         data-variant={expanded ? 'expanded' : 'collapsed'}
       >
         {expanded ? (
-          questions.map((q, i) => (
-            <div className="auth-prompt__body-item" key={i} data-testid="interaction-slot-auth-body-item" data-variant={i}>
-              {count > 1 && q.header && (
-                <div className="auth-prompt__body-header" data-testid="interaction-slot-auth-body-item-header">{q.header}</div>
-              )}
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{q.question}</ReactMarkdown>
-            </div>
-          ))
+          <AuthorizationQuestionDetails questions={questions} requestId={pending.request_id} />
         ) : (
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{firstLine(primary.question)}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {translatePermissionText(firstLine(primary.question), i18n.language)}
+          </ReactMarkdown>
         )}
       </div>
     </div>
