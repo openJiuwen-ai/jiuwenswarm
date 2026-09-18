@@ -181,7 +181,7 @@ class TemplateEntityCache:
         self._generation += 1
         self._entries.clear()
         self._table_locks.clear()
-        logger.info("[AgentPerf] template entity cache invalidated")
+        logger.info("template entity cache invalidated")
 
     def _purge_expired(self) -> None:
         now = time.monotonic()
@@ -303,7 +303,7 @@ def invalidate_enterprise_config_caches() -> None:
     _template_entity_cache.invalidate()
     _resource_row_cache.invalidate()
     _agent_template_cache.invalidate()
-    logger.info("[AgentPerf] enterprise config caches invalidated")
+    logger.info("enterprise config caches invalidated")
 
 
 async def _fetch_slot_entities(

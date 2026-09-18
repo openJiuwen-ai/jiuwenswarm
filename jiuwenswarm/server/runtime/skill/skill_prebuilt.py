@@ -9,7 +9,6 @@ import json
 import logging
 import re
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -323,18 +322,8 @@ class SkillPrebuiltSynchronizer:
     async def _run_sync(self, config: AgentSkillPrebuiltConfig) -> SkillPrebuiltSyncResult:
         """持锁同步：对齐模板预置 → 剔除多余 → 刷新启用集."""
         result = SkillPrebuiltSyncResult()
-        _t_total0 = time.monotonic()
-        items_n = sum(1 for item in config.skills if item.install_mode() is not None)
         installed_skills_map = await self._fetch_installed_skills_map(result)
         if installed_skills_map is None:
-            logger.info(
-                "[AgentPerf] skill_sync_detail: step=run_sync total_ms=%.1f items=%d "
-                "ok=0 agent_id=%s service_id=%s",
-                (time.monotonic() - _t_total0) * 1000,
-                items_n,
-                getattr(self, "_agent_id", ""),
-                getattr(self, "_service_id", ""),
-            )
             return result
 
         kept_prebuilt_names: set[str] = set()
@@ -379,15 +368,6 @@ class SkillPrebuiltSynchronizer:
             for name, row in installed_skills_map.items()
             if str(row.get("source_type") or "").strip() == SOURCE_PREBUILT
         ]
-        logger.info(
-            "[AgentPerf] skill_sync_detail: step=run_sync total_ms=%.1f items=%d "
-            "enabled=%d ok=1 agent_id=%s service_id=%s",
-            (time.monotonic() - _t_total0) * 1000,
-            items_n,
-            len(result.enabled_skill_dirs or []),
-            getattr(self, "_agent_id", ""),
-            getattr(self, "_service_id", ""),
-        )
         return result
 
     async def reconcile_disk_into_ledger(self) -> SkillPrebuiltSyncResult:

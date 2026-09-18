@@ -14,11 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import logging
 import shutil
 import tempfile
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +29,6 @@ from jiuwenswarm.server.runtime.async_fs import (
     async_mkdir,
     async_write_text,
 )
-
-logger = logging.getLogger(__name__)
 
 _TPL_LOCK = threading.Lock()
 _TPL_CACHE: dict[str, Path] = {}
@@ -165,7 +161,6 @@ def _ensure_workspace_template(
         cached = _TPL_CACHE.get(key)
         if cached is not None and (cached / ".workspace").is_file():
             return cached
-        _t0 = time.monotonic()
         base = Path(tempfile.gettempdir()) / "jiuwenswarm_ws_tpl" / key
         root_marker = base / ".workspace"
         if root_marker.is_file():
@@ -177,12 +172,6 @@ def _ensure_workspace_template(
         _materialize_nodes(base, directories)
         root_marker.write_text("", encoding="utf-8")
         _TPL_CACHE[key] = base
-        logger.info(
-            "[SandboxPerf] workspace_template ready: key=%s path=%s elapsed_ms=%.1f",
-            key,
-            base,
-            (time.monotonic() - _t0) * 1000,
-        )
         return base
 
 

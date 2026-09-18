@@ -1661,37 +1661,17 @@ class AgentManager:
             if isinstance(req_method_value, str) and req_method_value in _DISK_ONLY_EVOLUTION_METHODS:
                 return await self._process_disk_only_evolution(request)
 
-            from jiuwenswarm.server.runtime.agent_perf import (
-                bind_request,
-                event_loop_lag_ms,
-                log_event,
-                mark_agent_ready,
-            )
-
-            rid = getattr(request, "request_id", None)
-            bind_request(rid)
             channel_id = getattr(request, "channel_id", "")
             mode, sub_mode, project_dir = self._agent_lookup_from_request(request)
 
-            t_get0 = time.monotonic()
             agent = await self.get_agent(
                 channel_id=channel_id,
                 mode=mode,
                 project_dir=project_dir,
                 sub_mode=sub_mode,
             )
-            get_agent_ms = (time.monotonic() - t_get0) * 1000
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
-
-            mark_agent_ready(rid)
-            lag_ms = await event_loop_lag_ms()
-            log_event(
-                "invoke_start",
-                request_id=rid or "",
-                get_agent_ms=get_agent_ms,
-                event_loop_lag_ms=lag_ms,
-            )
 
             return await agent.process_message(request)
         except Exception as e:
@@ -1709,37 +1689,17 @@ class AgentManager:
         """
         try:
             await self.wait_for_session_prewarm(getattr(request, "session_id", None))
-            from jiuwenswarm.server.runtime.agent_perf import (
-                bind_request,
-                event_loop_lag_ms,
-                log_event,
-                mark_agent_ready,
-            )
-
-            rid = getattr(request, "request_id", None)
-            bind_request(rid)
             channel_id = getattr(request, "channel_id", "")
             mode, sub_mode, project_dir = self._agent_lookup_from_request(request)
 
-            t_get0 = time.monotonic()
             agent = await self.get_agent(
                 channel_id=channel_id,
                 mode=mode,
                 project_dir=project_dir,
                 sub_mode=sub_mode,
             )
-            get_agent_ms = (time.monotonic() - t_get0) * 1000
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
-
-            mark_agent_ready(rid)
-            lag_ms = await event_loop_lag_ms()
-            log_event(
-                "invoke_start",
-                request_id=rid or "",
-                get_agent_ms=get_agent_ms,
-                event_loop_lag_ms=lag_ms,
-            )
 
             # 流式处理
             async for chunk in agent.process_message_stream(request):
