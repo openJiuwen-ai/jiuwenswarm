@@ -61,6 +61,7 @@ import { HarnessProgressBar } from './HarnessProgressBar';
 import { AgentTeamActivityCard } from './TeamEventGroupDisplay';
 import { isTeamActivityMessage, parseTeamEventMessage } from './teamEventUtils';
 import { isTeamLeaderMember, type TeamMemberIdentity } from '../../utils/teamMemberAvatar';
+import { writeClipboard } from '../../utils/writeClipboard';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import './ChatPanel.css';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
@@ -672,7 +673,8 @@ function HumanSharePanel({ commands, onClose }: { commands: HumanShareCommand[];
 
   const copyText = useCallback(async (key: string, text: string) => {
     if (!text) return;
-    await navigator.clipboard.writeText(text);
+    const ok = await writeClipboard(text);
+    if (!ok) return;
     setCopiedKey(key);
     window.setTimeout(() => {
       setCopiedKey((current) => (current === key ? null : current));
