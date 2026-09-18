@@ -59,11 +59,52 @@ function byId(id, variant) {
   return matches[0];
 }
 const click = async (element) => act(async () => element.click());
+const typeInput = async (value) => act(async () => {
+  const editor = byId('chat-panel-input');
+  editor.textContent = value;
+  editor.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+});
+
+for (const queuePaused of [false]) {
+  test(`busy composer queues by default even when queuePaused=${queuePaused}`, async () => {
+    await mount({}, async ({ props, render, sessionId }) => {
+      const sent = [];
+      props.isProcessing = true;
+      props.onSubmit = (...args) => sent.push(args);
+      props.onInterrupt = () => assert.fail('ordinary busy input must not interrupt');
+      await act(async () => {
+        useChatStore.getState().setProcessing(sessionId, true);
+        useChatStore.getState().setQueuePaused(sessionId, queuePaused);
+      });
+      await render();
+      await typeInput('queued from actual composer');
+      await click(byId('chat-panel-input-send'));
+      assert.deepEqual(sent, []);
+      const queue = useChatStore.getState().getRuntime(sessionId).taskQueue;
+      assert.equal(queue.length, 1);
+      assert.equal(queue[0].content, 'queued from actual composer');
+      assert.equal(queue[0].status, 'queued');
+    });
+  });
+}
+
+test('idle composer still submits normally', async () => {
+  await mount({}, async ({ props, render, sessionId }) => {
+    const sent = [];
+    props.onSubmit = (text) => sent.push(text);
+    await render();
+    await typeInput('ordinary input');
+    await click(byId('chat-panel-input-send'));
+    assert.deepEqual(sent, ['ordinary input']);
+    assert.deepEqual(useChatStore.getState().getRuntime(sessionId).taskQueue, []);
+  });
+});
 
 async function mount({ mode = 'agent', profile = 'default', language = 'en' } = {}, run) {
   const sessionId = 'input-permission-merge';
   useSessionStore.getState().ensureRuntime(sessionId);
   useSessionStore.getState().setMode(sessionId, mode);
+  useChatStore.getState().ensureRuntime(sessionId);
   useChatStore.getState().setActiveSessionId(sessionId);
   const previousWorkspace = useWorkspaceStore.getState();
   useWorkspaceStore.setState({ workMode: 'work', projects: [], selectedProject: null });

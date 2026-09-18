@@ -148,7 +148,57 @@ export function buildTimelineItems(
     segment,
   }));
 
-  return [...messageItems, ...executionItems, ...reasoningItems].sort(compareTimelineItems);
+  return [...splitSupplementedMessages(messageItems), ...executionItems, ...reasoningItems].sort(compareTimelineItems);
+}
+
+/** Split display text only. The original message, stream cursor and model response remain intact. */
+function splitSupplementedMessages(items: TimelineItem[]): TimelineItem[] {
+  const boundaries = new Map<string, Extract<TimelineItem, { type: 'message' }>[]>();
+  for (const item of items) {
+    if (item.type !== 'message' || item.message.role !== 'user') continue;
+    const streamId = item.message.supplementalInput?.streamMessageId;
+    if (!streamId) continue;
+    const group = boundaries.get(streamId) ?? [];
+    group.push(item);
+    boundaries.set(streamId, group);
+  }
+  return items.flatMap((item): TimelineItem[] => {
+    if (item.type !== 'message' || item.message.role !== 'assistant') return [item];
+    const cuts = boundaries.get(item.message.id);
+    if (!cuts?.length || !item.message.content) return [item];
+    cuts.sort(compareTimelineItems);
+    const parts: TimelineItem[] = [];
+    let start = 0;
+    let previous: typeof item | undefined;
+    const append = (end: number, last: boolean) => {
+      if (end <= start) return;
+      const key = previous ? `${item.key}/after/${previous.key}` : item.key;
+      parts.push({
+        ...item,
+        key,
+        timestampMs: previous?.timestampMs ?? item.timestampMs,
+        sourceIndex: previous ? previous.sourceIndex + 0.5 : item.sourceIndex,
+        message: {
+          ...item.message,
+          renderKey: key,
+          content: item.message.content.slice(start, end),
+          timestamp: previous?.message.timestamp ?? item.message.timestamp,
+          isStreaming: last && item.message.isStreaming,
+          completedAt: last ? item.message.completedAt : undefined,
+          fileItems: last ? item.message.fileItems : undefined,
+          mediaItems: last ? item.message.mediaItems : undefined,
+        },
+      });
+    };
+    for (const cut of cuts) {
+      const end = Math.max(start, Math.min(cut.message.supplementalInput!.streamOffset, item.message.content.length));
+      append(end, end === item.message.content.length);
+      start = end;
+      previous = cut;
+    }
+    append(item.message.content.length, true);
+    return parts;
+  });
 }
 
 const IMAGE_TOOL_FALLBACK_NOTICE_PREFIX = 'notice-image_tool_fallback-';
@@ -327,7 +377,7 @@ export function buildRenderItems(items: TimelineItem[], isTeamMode: boolean, isP
     flushToolGroup(true);
     pushMessage(item);
 
-    if (item.message.role === 'user') {
+    if (item.message.role === 'user' && !item.message.supplementalInput) {
       currentTurnId += 1;
     }
   }
@@ -536,6 +586,11 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
   };
 
   for (const item of items) {
+    if (item.type === 'message' && item.message.role === 'user' && item.message.supplementalInput) {
+      // A supplement is visible between output pieces but does not close or restart the task timer.
+      out.push(item);
+      continue;
+    }
     if (item.type === 'message' && item.message.role === 'user') {
       flush(false);
       turnId += 1;

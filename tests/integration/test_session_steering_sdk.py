@@ -21,6 +21,7 @@ from openjiuwen.core.foundation.llm.schema.message_chunk import AssistantMessage
 from openjiuwen.core.foundation.tool import Tool, ToolCard
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.agent import create_agent_session
+from openjiuwen.core.session import InteractiveInput
 from openjiuwen.harness import create_deep_agent
 from openjiuwen.harness.schema.interaction import InputDispatchMode, SendInputRequest
 
@@ -28,6 +29,9 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
+from jiuwenswarm.runtime.context import reset_runtime_context, set_runtime_context
+from jiuwenswarm.runtime.session.model import SessionExecutionState
 
 
 class ScriptedModel:
@@ -89,6 +93,133 @@ class ImmediateTool(Tool):
 
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)
+
+
+class ClarificationModel(ScriptedModel):
+    """Hold the initial and resumed model calls at reproducible input boundaries."""
+
+    def __init__(self):
+        super().__init__()
+        self.entered = [asyncio.Event(), asyncio.Event()]
+        self.release = [asyncio.Event(), asyncio.Event()]
+
+    async def invoke(self, messages, **kwargs):
+        self.messages.append(copy.deepcopy(messages))
+        index = len(self.messages) - 1
+        if index < 2:
+            self.entered[index].set()
+            await self.release[index].wait()
+        if index == 0:
+            return AssistantMessage(
+                content="Please choose the code type.",
+                tool_calls=[ToolCall(
+                    id="clarify-code", type="function", name="ask_user",
+                    arguments=json.dumps({"questions": [{
+                        "header": "Type", "question": "Which code type?",
+                        "options": [
+                            {"label": "Python", "description": "Python utility"},
+                            {"label": "JavaScript", "description": "Web utility"},
+                        ],
+                    }]}),
+                )],
+                usage_metadata=UsageMetadata(model_name="steering-test", finish_reason="tool_calls"),
+            )
+        return AssistantMessage(
+            content="completed", usage_metadata=UsageMetadata(model_name="steering-test", finish_reason="stop"),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arrival", ["before_question", "during_resume"])
+@pytest.mark.parametrize("bound", [False, True])
+async def test_steering_survives_ask_user_resume(tmp_path, arrival, bound):
+    """Run the actual SDK pause/resume loop and inspect subsequent model inputs."""
+    await Runner.start()
+    model = ClarificationModel()
+    agent = create_deep_agent(
+        model=model, workspace=str(tmp_path), rails=[StructuredAskUserRail()],
+        enable_task_loop=True, max_iterations=5,
+        enable_model_anomaly_detection_rail=False, enable_read_image_multimodal=False,
+    )
+    session = create_agent_session(session_id=f"steering-resume-{uuid.uuid4().hex}", card=agent.card)
+    await session.pre_run(inputs={})
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = agent
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = session.get_session_id()
+    stream, reader = None, None
+
+    async def collect(output):
+        return [chunk async for chunk in output]
+
+    async def supplement():
+        facade = JiuWenSwarm()
+        facade._adapter = adapter
+        request = AgentRequest(
+            request_id="supplement", channel_id="web", session_id=session.get_session_id(),
+            req_method=ReqMethod.CHAT_SEND, is_stream=True,
+            params={"query": "CHANGE_TO_100_LINES", "input_mode": "steer", "mode": "agent"},
+        )
+        if bound:
+            request.params["expected_execution_id"] = "original-execution"
+        execution = SimpleNamespace(
+            session_id=session.get_session_id(), state=SessionExecutionState.RUNNING, cancellation_requested=False,
+        )
+        token = set_runtime_context(SimpleNamespace(get_session_execution=Mock(return_value=execution)), None)
+        try:
+            events = [event async for event in facade.deliver_session_input(request)]
+        finally:
+            reset_runtime_context(token)
+        assert events[0].payload["event_type"] == "runtime.accepted"
+        assert not reader.done()
+
+    try:
+        await adapter.install_session_input_guard()
+        await agent.start(session=session)
+        stream = await agent.attach_output()
+        reader = asyncio.create_task(collect(stream))
+        await agent.send_input(SendInputRequest(request_id="original", inputs={"query": "Write 200 lines"}))
+        await asyncio.wait_for(model.entered[0].wait(), 15)
+        if arrival == "before_question":
+            await supplement()
+        model.release[0].set()
+        assert await asyncio.wait_for(reader, 15)
+        assert len(model.messages) == 1
+        assert "CHANGE_TO_100_LINES" not in str(model.messages[0])
+        await stream.close()
+
+        answer = InteractiveInput()
+        answer.update("clarify-code", {"answers": {"Which code type?": "Python utility"}})
+        stream = await agent.attach_output()
+        reader = asyncio.create_task(collect(stream))
+        await agent.send_input(SendInputRequest(request_id="answer", inputs={"query": answer}))
+        await asyncio.wait_for(model.entered[1].wait(), 15)
+        if arrival == "during_resume":
+            await supplement()
+        model.release[1].set()
+        assert await asyncio.wait_for(reader, 15)
+        assert len(model.messages) == (2 if arrival == "before_question" else 3)
+        final_messages = model.messages[-1]
+        assert "Write 200 lines" in str(final_messages)
+        assert "Python utility" in str(final_messages)
+        assert str(final_messages).count("CHANGE_TO_100_LINES") == 1
+        answer_index = next(
+            i for i, msg in enumerate(final_messages) if getattr(msg, "tool_call_id", None) == "clarify-code"
+        )
+        steer_index = next(i for i, msg in enumerate(final_messages) if "CHANGE_TO_100_LINES" in str(msg.content))
+        assert answer_index < steer_index
+        assert agent.event_handler.interaction_queues.steering.empty()
+        assert agent.event_handler.interaction_queues.drain_follow_up() == []
+    finally:
+        for release in model.release:
+            release.set()
+        if stream is not None:
+            await stream.close(abort_active_round=True)
+        await agent.stop()
+        if reader is not None and not reader.done():
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        await Runner.stop()
 
 
 @pytest.mark.asyncio
@@ -344,6 +475,18 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
             assert "STEERING_WIRE_934" in str(model.messages[1])
             assert not tool.cancelled
             runtime._prepare_chat_turn.assert_awaited_once()
+            # Idle chat.send streams acknowledge ordinary admission before real SDK output.
+            # The unary wire path retains its single final response.
+            await gateway.publish_user_messages(message(
+                "idle-supplement", input_stream, input_mode="steer", query="IDLE_WIRE_935",
+            ))
+            if input_stream:
+                idle_ack = await receive("idle-supplement", "runtime.accepted")
+                assert idle_ack.payload["input_delivery"] == "chat"
+            idle_final = await receive("idle-supplement", "chat.final")
+            assert idle_final.payload["content"] == "original completed"
+            assert "IDLE_WIRE_935" in str(model.messages[-1])
+            assert runtime._prepare_chat_turn.await_count == 2
             await gateway.stop_forwarding()
             await client.disconnect()
     finally:

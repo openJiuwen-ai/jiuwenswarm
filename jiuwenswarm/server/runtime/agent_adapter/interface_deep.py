@@ -15247,6 +15247,8 @@ class JiuWenSwarmDeepAdapter:
 
     async def install_session_input_guard(self, *, reload: bool = False) -> None:
         """Register the input guard on this Adapter's current SDK instance."""
+        from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
+
         from jiuwenswarm.server.runtime.agent_adapter.session_input import (
             SessionInputGuard,
         )
@@ -15261,9 +15263,19 @@ class JiuWenSwarmDeepAdapter:
         elif not reload:
             return
         else:
+            self._session_input_guard = None
             await instance.unregister_rail(guard)
         await instance.ensure_initialized()
         await register(guard)
+        try:
+            # DeepAgent routes BEFORE_INVOKE to the outer agent only. Resume
+            # queue binding must also run on the inner ReAct invocation.
+            event = AgentCallbackEvent.BEFORE_INVOKE
+            await instance.react_agent.register_callback(event, guard.before_invoke, guard.callback_priority(event))
+        except Exception as exc:
+            # DeepAgent unregisters all of this rail's callbacks on both agents.
+            await instance.unregister_rail(guard)
+            raise exc
         self._session_input_guard = guard
 
     async def deliver_active_session_input(
@@ -15276,6 +15288,7 @@ class JiuWenSwarmDeepAdapter:
         """
         from jiuwenswarm.server.runtime.agent_adapter.session_input import (
             SessionInputDeliveryUnknown,
+            enqueue_bound_session_input,
             sdk_input_mode,
         )
 
@@ -15290,6 +15303,7 @@ class JiuWenSwarmDeepAdapter:
                 "supplemental input was not sent"
             )
         mode = sdk_input_mode(request.params)
+        bound_round = instance.active_round
 
         def require_open_input() -> None:
             if mode is InputDispatchMode.STEER:
@@ -15313,6 +15327,9 @@ class JiuWenSwarmDeepAdapter:
 
             async def send(sdk_request: SendInputRequest) -> None:
                 require_open_input()
+                if request.params.get("expected_execution_id"):
+                    enqueue_bound_session_input(instance, bound_round, request, sdk_request)
+                    return
                 target_round = instance.active_round
                 await instance.send_input(sdk_request)
                 # A closing boundary during SDK admission makes delivery
@@ -15379,6 +15396,12 @@ class JiuWenSwarmDeepAdapter:
                 return
             # The original execution can finish between Runtime routing and
             # SDK admission. Reuse normal output ownership for the idle case.
+            if request.params.get("expected_execution_id"):
+                from jiuwenswarm.runtime.session_input import SessionInputTargetError
+
+                raise SessionInputTargetError(
+                    "the targeted execution has ended; supplemental input was not sent"
+                )
             if self._instance is not None and self._instance.has_output_stream():
                 raise RuntimeError(
                     "session output is finishing; supplemental input was not "

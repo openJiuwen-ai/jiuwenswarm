@@ -88,6 +88,12 @@ export interface Message {
   role: MessageRole;
   content: string;
   timestamp: string;
+  /** A displayed supplement belongs to the existing execution, not a new user turn. */
+  supplementalInput?: {
+    executionId: string;
+    streamMessageId?: string;
+    streamOffset: number;
+  };
   /** Full answer delivered by a delegated agent, distinct from spoken replies. */
   presentation?: 'tool_result';
   /** User-facing conversation output that must remain outside collapsed work. */
@@ -153,6 +159,11 @@ export interface Message {
   automation?: HeartbeatAutomationMetadata;
   /** 来自同一用户其他会话中 Agent 的后台请求。 */
   crossSession?: CrossSessionMessageMetadata;
+}
+
+/** Selected queued message sent by the existing non-interrupting send button. */
+export interface ChatSendOptions {
+  queuedTaskId: string;
 }
 
 export interface MessageForkPoint {
