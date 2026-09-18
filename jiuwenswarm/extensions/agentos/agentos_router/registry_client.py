@@ -151,6 +151,35 @@ def cmd_for_access_mode(access_mode: Any, name: str) -> str:
     return ""
 
 
+_HTTP_WEB_PROTOCOLS = frozenset({"", "http", "https"})
+
+
+def http_web_port_from_access_mode(access_mode: Any) -> int | None:
+    """Return the port from ``access_mode`` row ``name=web`` when it is HTTP.
+
+    A row counts as HTTP web when ``name`` is ``web`` (case-insensitive) and
+    ``protocol`` / ``type`` / ``scheme`` is empty, ``http``, or ``https``.
+    """
+    rows = access_mode if isinstance(access_mode, list) else parse_access_mode(access_mode)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("name") or "").strip().lower() != "web":
+            continue
+        protocol = str(
+            row.get("protocol") or row.get("type") or row.get("scheme") or ""
+        ).strip().lower()
+        if protocol not in _HTTP_WEB_PROTOCOLS:
+            continue
+        try:
+            port = int(row.get("port"))
+        except (TypeError, ValueError):
+            continue
+        if port > 0:
+            return port
+    return None
+
+
 @dataclass(frozen=True)
 class ImageEntry:
     """One row from registry ``GET /api/images`` (flat: one version)."""
@@ -636,6 +665,7 @@ class RegistryClient:
                 "launch_spec": dict(spec.raw),
                 "runtime_spec": runtime_spec,
                 "env_vars": dict(spec.env_vars),
+                "access_mode": parse_access_mode(spec.raw.get("access_mode")),
                 "source": "registry",
             },
         )
