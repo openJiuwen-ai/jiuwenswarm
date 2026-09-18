@@ -160,8 +160,9 @@ async def test_run_rewrite_fast_path_calls_prepare_model_commit_once_in_order():
         calls.append("prepare")
         return _json_result(_PREPARED)
 
-    async def model(_messages, *, temperature):
+    async def model(_messages, *, temperature, extra_body):
         assert temperature == 0.2
+        assert extra_body == {"thinking": {"type": "disabled"}}
         calls.append("model")
         return SimpleNamespace(
             content=_json_result(_STRUCTURED_RESULT),
@@ -208,7 +209,9 @@ async def test_run_rewrite_fast_path_preserves_sampling_for_non_polish(action):
 
     assert result is not None
     assert result.status == "completed"
-    assert model.await_args.kwargs == {}
+    assert model.await_args.kwargs == {
+        "extra_body": {"thinking": {"type": "disabled"}}
+    }
 
 
 @pytest.mark.asyncio
