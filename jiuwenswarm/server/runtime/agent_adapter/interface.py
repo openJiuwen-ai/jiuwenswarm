@@ -893,6 +893,8 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_FILES_GET: "handle_skills_files_get",
     ReqMethod.SKILLS_REBUILD: "handle_skills_rebuild",
     ReqMethod.SKILLS_TOGGLE: "handle_skills_toggle",
+    ReqMethod.SKILLS_VET: "handle_skills_vet",
+    ReqMethod.SKILLS_VET_APPROVE: "handle_skills_vet_approve",
     ReqMethod.SKILLS_MARKETPLACE_LIST: "handle_skills_marketplace_list",
     ReqMethod.SKILLS_INSTALL: "handle_skills_install",
     ReqMethod.SKILLS_UNINSTALL: "handle_skills_uninstall",

@@ -42,6 +42,8 @@ export type SkillItem = {
   skill_type?: string;
   /** 是否已发布到 SkillHub */
   published?: boolean;
+  /** 安全扫描等级（skill-vetter）：LOW | MEDIUM | HIGH | EXTREME */
+  grade?: string;
 };
 
 export type InstalledPluginItem = {

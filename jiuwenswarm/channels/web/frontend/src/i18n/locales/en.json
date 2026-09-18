@@ -1970,6 +1970,15 @@
       "skillRetrieval": "Skill Retrieval",
       "skillGraph": "Skill Graph"
     },
+    "vet": {
+      "blockedTitle": "Security review required",
+      "blockedBody": "This skill was graded {{grade}} by the security scanner. Review the findings before enabling.",
+      "approve": "Approve & enable",
+      "cancel": "Cancel",
+      "badge": "{{grade}}",
+      "findingsTitle": "Findings",
+      "noFindings": "No findings reported."
+    },
     "mySkillsTabs": {
       "all": "All",
       "enabled": "Enabled",

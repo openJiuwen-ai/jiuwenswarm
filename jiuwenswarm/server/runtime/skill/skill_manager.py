@@ -109,6 +109,7 @@ ERROR_SKILL_UNSAFE_PATH = "SKILL_UNSAFE_PATH"
 ERROR_SKILL_FILE_TOO_LARGE = "SKILL_FILE_TOO_LARGE"
 ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT = "SKILL_KNOWLEDGE_INPUT_CONFLICT"
 ERROR_SKILL_PUBLISH_VERSION_CONFLICT = "SKILL_PUBLISH_VERSION_CONFLICT"
+ERROR_SKILL_VET_BLOCKED = "SKILL_VET_BLOCKED"
 ERROR_SKILLHUB_INSTALL_FAILED = "SKILLHUB_INSTALL_FAILED"
 ERROR_SKILLHUB_PUBLISH_FAILED = "SKILLHUB_PUBLISH_FAILED"
 ERROR_SKILLHUB_DETAIL_NOT_FOUND = "SKILLHUB_DETAIL_NOT_FOUND"
@@ -278,7 +279,7 @@ def _get_state_file() -> "Path":
     return get_state_file()
 
 
-from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
+from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (  # noqa: E402
     get_registered_skill_names,
     get_skill_enabled,
     get_state_file,
@@ -288,6 +289,18 @@ from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
     normalize_skill_configs,
     remove_skill_config,
     set_skill_enabled,
+)
+from jiuwenswarm.server.runtime.skill.skill_vetter.report import VetReport, run_vet  # noqa: E402
+from jiuwenswarm.server.runtime.skill.skill_vetter.scanner import compute_content_hash  # noqa: E402
+from jiuwenswarm.server.runtime.skill.skill_vetter.store import (  # noqa: E402
+    consume_vet_token,
+    get_vet_approval,  # noqa: F401
+    get_vet_report,
+    invalidate_vet_tokens,
+    issue_vet_token,
+    remove_skill_hash,
+    set_vet_approval,
+    set_vet_report,
 )
 
 
@@ -1158,6 +1171,12 @@ class SkillManager:
                 load_skillpack(skill_dir, expected_name=name)
             except SkillPackValidationError as exc:
                 raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+
+        if enabled:
+            gate = self._vet_gate_for_enable(name)
+            if gate is not None:
+                return gate
+
         self.set_skill_enabled(name, enabled)
         result: dict[str, Any] = {
             "success": True,
@@ -1183,6 +1202,80 @@ class SkillManager:
                 self._skillpacks.impacts(affected),
             )
         return result
+
+    async def handle_skills_vet(self, params: dict) -> dict:
+        """按需重跑一次确定性扫描并返回当前 vet 报告（不授予启用）。"""
+        name = params.get("name", "")
+        try:
+            name = _safe_path_name(name, "skill")
+        except ValueError as exc:
+            _log_rejected_name("skills.vet", "skill", name, exc)
+            return {"success": False, "detail": str(exc)}
+        skill_dir = self._resolve_local_skill_dir(name)
+        if skill_dir is None:
+            return {"success": False, "detail": f"未找到本地 skill: {name}"}
+        report = self._ensure_vet_report(skill_dir)
+        payload: dict[str, Any] = {
+            "success": True,
+            "name": name,
+            "grade": report.grade,
+            "findings": report.findings,
+            "content_hash": report.content_hash,
+            "escalated": report.escalated,
+        }
+        if (
+            report.grade in ("high", "extreme")
+            and get_vet_approval(self._state, report.content_hash) is None
+        ):
+            payload["token"] = issue_vet_token(
+                self._state, name, report.content_hash
+            )
+            self._save_state()
+        return payload
+
+    async def handle_skills_vet_approve(self, params: dict) -> dict:
+        """记录对某个 content hash 的显式批准，解锁 HIGH/EXTREME 启用。
+
+        要求命中的 ``(skill_name, content_hash)`` 单次审批令牌；缺失、错误、
+        hash 不匹配或已被消费都失败关闭。该令牌是"确实看过审查结果"的证据绑定，
+        不是基于角色的授权（当前 RPC 层没有任何权限机制）；真正的 RPC 权限层
+        属于本分支之外的后续工作。
+        """
+        name = params.get("name", "")
+        content_hash = str(params.get("content_hash") or "").strip()
+        token = str(params.get("token") or "").strip()
+        try:
+            name = _safe_path_name(name, "skill")
+        except ValueError as exc:
+            _log_rejected_name("skills.vet-approve", "skill", name, exc)
+            return {"success": False, "detail": str(exc)}
+        if not content_hash:
+            return {"success": False, "detail": "缺少参数: content_hash"}
+        if not token:
+            return {
+                "success": False,
+                "code": ERROR_SKILL_VET_BLOCKED,
+                "detail": "缺少或无效的审批令牌，请重新触发安全审查后再批准。",
+            }
+        skill_dir = self._resolve_local_skill_dir(name)
+        if skill_dir is None:
+            return {"success": False, "detail": f"未找到本地 skill: {name}"}
+        report = self._ensure_vet_report(skill_dir)
+        if report.content_hash != content_hash:
+            return {
+                "success": False,
+                "code": ERROR_SKILL_VET_BLOCKED,
+                "detail": "content_hash 与当前技能内容不匹配，请重新审计后再批准。",
+            }
+        if not consume_vet_token(self._state, name, content_hash, token):
+            return {
+                "success": False,
+                "code": ERROR_SKILL_VET_BLOCKED,
+                "detail": "缺少或无效的审批令牌，请重新触发安全审查后再批准。",
+            }
+        set_vet_approval(self._state, content_hash, approved_by=params.get("approved_by") or "user")
+        self._save_state()
+        return {"success": True, "name": name, "content_hash": content_hash}
 
     @staticmethod
     def _resolve_skill_visibility_target(params: dict) -> tuple[str, str, Path] | dict:
@@ -2227,6 +2320,16 @@ class SkillManager:
             }
         )
         self._refresh_agent_data_indexes()
+
+        try:
+            self._vet_scan_and_sync(plugin_name, dest)
+        except Exception as exc:
+            logger.warning(
+                "[SkillManager] skill-vetter scan failed during marketplace install: "
+                "skill=%s error=%s",
+                plugin_name,
+                exc,
+            )
 
         return {"success": True}
 
@@ -4341,6 +4444,10 @@ class SkillManager:
         self._remove_local_skill(raw_name)
         # 卸载时一并清掉该 skill 的 enabled 配置，避免重装同名 skill 时沿用旧的禁用状态。
         self.remove_skill_config(raw_name)
+        # 同时清掉 vet 内容基线，避免重装同名 skill（内容不同）时旧哈希触发误禁用。
+        self.remove_skill_hash(raw_name)
+        if name != raw_name:
+            self.remove_skill_hash(name)
         self._refresh_agent_data_indexes()
         if affected_skillpacks:
             logger.info(
@@ -4878,6 +4985,15 @@ class SkillManager:
         self._add_local_skill(record)
         self._refresh_agent_data_indexes()
         try:
+            self._vet_scan_and_sync(skill_name, dest)
+        except Exception as exc:
+            logger.warning(
+                "[SkillManager] skill-vetter scan failed while registering workspace "
+                "skill: skill=%s error=%s",
+                skill_name,
+                exc,
+            )
+        try:
             preserved_version = get_current_version(dest)
         except SkillArchiveError:
             preserved_version = None
@@ -5049,6 +5165,14 @@ class SkillManager:
         self._refresh_agent_data_indexes()
 
         skill_type = detect_skill_type(dest)
+        try:
+            self._vet_scan_and_sync(skill_name, dest)
+        except Exception as exc:
+            logger.warning(
+                "[SkillManager] skill-vetter scan failed during install: skill=%s error=%s",
+                skill_name,
+                exc,
+            )
         description = str(meta.get("description") or "").strip()
         source = self._resolve_display_source_for_import(skill_name)
         logger.info(
@@ -8356,8 +8480,88 @@ class SkillManager:
         set_skill_enabled(self._state, skill_name, enabled)
         self._save_state()
 
+    def _ensure_vet_report(self, skill_dir: Path) -> VetReport:
+        """Return a fresh-or-cached vet report for *skill_dir*, persisting to state."""
+        content_hash = compute_content_hash(skill_dir)
+        stored = get_vet_report(self._state, content_hash)
+        if stored is not None:
+            return VetReport.from_dict(stored)
+        report = run_vet(skill_dir)
+        set_vet_report(self._state, report.to_dict())
+        self._save_state()
+        return report
+
+    def _vet_scan_and_sync(self, skill_name: str, skill_dir: Path) -> VetReport:
+        """Scan *skill_dir* and re-gate an already-enabled skill whose bytes changed.
+
+        This does not introduce a second enforcement path: it flips the same
+        enabled flag ``skills.toggle`` reads, so a re-enable still has to pass
+        ``_vet_gate_for_enable``.
+        """
+        new_hash = compute_content_hash(skill_dir)
+        section = self._state.get("skill_vet")
+        if not isinstance(section, dict):
+            section = {}
+            self._state["skill_vet"] = section
+        hashes = section.get("skill_hashes")
+        if not isinstance(hashes, dict):
+            hashes = {}
+            section["skill_hashes"] = hashes
+        old_hash = hashes.get(skill_name)
+        report = self._ensure_vet_report(skill_dir)
+        if old_hash is not None and old_hash != new_hash:
+            invalidate_vet_tokens(self._state, skill_name)
+        if (
+            old_hash is not None
+            and old_hash != new_hash
+            and get_skill_enabled(self._state, skill_name)
+        ):
+            self.set_skill_enabled(skill_name, False)
+            logger.warning(
+                "[SkillManager] skill-vetter: skill content changed while enabled; "
+                "disabling pending re-vet: skill=%s old_hash=%s new_hash=%s",
+                skill_name,
+                old_hash,
+                new_hash,
+            )
+        hashes[skill_name] = new_hash
+        self._save_state()
+        return report
+
+    def _vet_gate_for_enable(self, skill_name: str) -> dict[str, Any] | None:
+        """Return a blocking payload when enabling a HIGH/EXTREME skill without approval."""
+        skill_dir = self._resolve_local_skill_dir(skill_name)
+        if skill_dir is None:
+            return None
+        # Intentional correction of the plan's verbatim 1-arg snippet: the real
+        # contract is _is_builtin_skill(skill_name, installed_plugins, skill_path).
+        # Do NOT "restore" self._is_builtin_skill(skill_name) — it raises TypeError.
+        if self._is_builtin_skill(skill_name, self._get_installed_plugins(), skill_dir):
+            return None
+        report = self._ensure_vet_report(skill_dir)
+        if report.grade not in ("high", "extreme"):
+            return None
+        if get_vet_approval(self._state, report.content_hash) is not None:
+            return None
+        token = issue_vet_token(self._state, skill_name, report.content_hash)
+        self._save_state()
+        return {
+            "success": False,
+            "code": ERROR_SKILL_VET_BLOCKED,
+            "detail": "该技能安全审计等级为 HIGH/EXTREME，需经 skills.vet-approve 批准后才能启用。",
+            "grade": report.grade,
+            "findings": report.findings,
+            "content_hash": report.content_hash,
+            "token": token,
+        }
+
     def remove_skill_config(self, skill_name: str) -> None:
         if remove_skill_config(self._state, skill_name):
+            self._save_state()
+
+    def remove_skill_hash(self, skill_name: str) -> None:
+        """Drop the skill-vetter content baseline for *skill_name* (on uninstall)."""
+        if remove_skill_hash(self._state, skill_name):
             self._save_state()
 
     def reload_state(self) -> None:
