@@ -327,9 +327,10 @@ def test_wrap_skill_turbo_result_keeps_generic_hint_without_ppt_summary() -> Non
     clear_pending_ppt_delivery_summary()
     wrapped = _wrap_skill_turbo_result({"success": True, "result": "任务已完成"}, {})
     assert "任务已完成" in wrapped["result"]
-    assert "You should now summarize" in wrapped["result"]
-    assert "did NOT confirm" in wrapped["result"]
-    assert "ALREADY been sent" not in wrapped["result"]
+    # Q5 改造后停止提示按语言切换，默认中文（英文版见 _SKILL_TURBO_STOP_HINT_NEUTRAL["en"]）
+    assert "如实向用户总结" in wrapped["result"]
+    assert "未能确认" in wrapped["result"]
+    assert "已经发送" not in wrapped["result"]
     assert "send_file_to_user" in wrapped["result"]
     assert "逐字输出" not in wrapped["result"]
     assert take_pending_ppt_delivery_summary() == ""
