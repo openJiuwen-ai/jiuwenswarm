@@ -668,7 +668,6 @@ class TestConfigFunctions:
         ("profile", "enabled", "mode"),
         [
             ("default", True, "manual"),
-            ("automatic", True, "auto"),
             ("full_access", False, "manual"),
         ],
     )

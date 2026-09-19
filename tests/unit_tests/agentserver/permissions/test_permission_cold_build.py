@@ -91,7 +91,7 @@ class _ColdBuild:
 
 
 @pytest.fixture
-async def cold(tmp_path, monkeypatch):
+async def cold(tmp_path, monkeypatch, internal_auto_mode):
     adapter = interface_deep.JiuWenSwarmDeepAdapter()
     adapter.mark_as_session_scoped(f"cold-{tmp_path.name}")
     h = _ColdBuild(adapter, tmp_path)
