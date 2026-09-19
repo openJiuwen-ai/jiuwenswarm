@@ -15,6 +15,9 @@ from typing import Any, List
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
 from jiuwenswarm.common.xiaoyi_reference import coerce_references
+from jiuwenswarm.agents.harness.common.tools.turn_request_identity import (
+    resolve_toolkit_delivery,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +62,11 @@ class XiaoyiAppendReferenceToolkit:
                 append_history_record,
             )
 
+            delivery = resolve_toolkit_delivery(self)
             append_history_record(
-                session_id=self.session_id,
-                request_id=self.request_id,
-                channel_id=self.channel_id,
+                session_id=delivery.session_id,
+                request_id=delivery.turn_request_id,
+                channel_id=delivery.channel_id,
                 role="assistant",
                 event_type="chat.reference",
                 content="",
@@ -71,17 +75,17 @@ class XiaoyiAppendReferenceToolkit:
             )
 
             msg: dict[str, Any] = {
-                "request_id": self.request_id,
-                "channel_id": self.channel_id,
-                "session_id": self.session_id,
+                "request_id": delivery.turn_request_id,
+                "channel_id": delivery.channel_id,
+                "session_id": delivery.session_id,
                 "payload": {
                     "event_type": "chat.reference",
                     "references": items,
                 },
                 "is_complete": False,
             }
-            if self._request_metadata:
-                msg["metadata"] = dict(self._request_metadata)
+            if delivery.metadata:
+                msg["metadata"] = dict(delivery.metadata)
 
             server = AgentWebSocketServer.get_instance()
             await server.send_push(msg)

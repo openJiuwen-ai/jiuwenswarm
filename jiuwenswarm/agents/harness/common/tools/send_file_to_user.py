@@ -21,6 +21,10 @@ from typing import Any, List, Union
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
+from jiuwenswarm.agents.harness.common.tools.turn_request_identity import (
+    resolve_toolkit_delivery,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -132,15 +136,13 @@ class SendFileToolkit:
         channel_id: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Update per-request runtime context without recreating the toolkit/tool.
-        """
+        # Cached for send-path fallback when InvocationContext is unbound.
         self.request_id = request_id
         self.session_id = session_id
         self.channel_id = channel_id
         self._request_metadata = dict(metadata) if metadata else None
         logger.debug(
-            "[SendFileToolkit] update_runtime_context request_id=%s session_id=%s channel_id=%s has_metadata=%s",
-            request_id,
+            "[SendFileToolkit] update_runtime_context session_id=%s channel_id=%s has_metadata=%s",
             session_id,
             channel_id,
             bool(self._request_metadata),
@@ -231,11 +233,12 @@ class SendFileToolkit:
                 msg_parts.append(f"  - {mf}")
             return _tool_fail("\n".join(msg_parts))
 
-        valid_files, skipped_files = _partition_sent_files(self.session_id, valid_files)
+        delivery = resolve_toolkit_delivery(self)
+        valid_files, skipped_files = _partition_sent_files(delivery.session_id, valid_files)
         if not valid_files:
             logger.info(
                 "[SendFileToolkit] skip duplicate send session_id=%s skipped=%s missing=%s",
-                self.session_id,
+                delivery.session_id,
                 skipped_files,
                 missing_files,
             )
@@ -253,8 +256,9 @@ class SendFileToolkit:
             return "\n".join(msg_parts)
 
         logger.info(
-            "[SendFileToolkit] send_file 开始 session_id=%s 有效文件=%d 缺失=%d 跳过重复=%d",
-            self.session_id,
+            "[SendFileToolkit] send_file 开始 session_id=%s turn_request_id=%s 有效文件=%d 缺失=%d 跳过重复=%d",
+            delivery.session_id,
+            delivery.turn_request_id,
             len(valid_files),
             len(missing_files),
             len(skipped_files),
@@ -274,7 +278,7 @@ class SendFileToolkit:
                 for file_path in valid_files:
                     base_name = os.path.basename(file_path)
                     download_info = build_file_download_info(
-                        file_path, base_name, self.session_id
+                        file_path, base_name, delivery.session_id
                     )
                     files_payload.append({
                         "path": file_path,
@@ -323,9 +327,9 @@ class SendFileToolkit:
             if member_name:
                 history_extra["member_name"] = member_name
             append_history_record(
-                session_id=self.session_id,
-                request_id=self.request_id,
-                channel_id=self.channel_id,
+                session_id=delivery.session_id,
+                request_id=delivery.turn_request_id,
+                channel_id=delivery.channel_id,
                 role="assistant",
                 event_type="chat.file",
                 content="",
@@ -335,9 +339,9 @@ class SendFileToolkit:
             )
 
             msg = {
-                "request_id": self.request_id,
-                "channel_id": self.channel_id,
-                "session_id": self.session_id,
+                "request_id": delivery.turn_request_id,
+                "channel_id": delivery.channel_id,
+                "session_id": delivery.session_id,
                 "payload": {
                     "event_type": "chat.file",
                     "files": files_payload,
@@ -348,15 +352,14 @@ class SendFileToolkit:
             # 合并 metadata：原始 request metadata + 文件投递目标提示。
             # send_file_targets 由 Gateway 的 dispatch 层解析为 fan_out_targets，
             # 使文件可跨 channel 投递到 team 会话已接入的 channel（如飞书）。
-            merged_meta: dict[str, Any] = {}
-            if self._request_metadata:
-                merged_meta.update(self._request_metadata)
+            # xiaoyi_task_id 只留在 metadata，给手机 A2A；history / Message.id 用本轮 turn id。
+            merged_meta: dict[str, Any] = dict(delivery.metadata)
             if target_channel_list:
                 merged_meta["send_file_targets"] = list(target_channel_list)
             if merged_meta:
                 msg["metadata"] = merged_meta
             await server.send_push(msg)
-            _mark_files_sent(self.session_id, valid_files)
+            _mark_files_sent(delivery.session_id, valid_files)
             result_parts = [f"Sent {len(valid_files)} files"]
             if skipped_files:
                 result_parts.append("The following files were already sent in this session and were skipped:")
