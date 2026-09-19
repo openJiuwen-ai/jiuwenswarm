@@ -41,6 +41,7 @@ _original_ensure_schema: Optional[Callable] = None
 _original_load_vector: Optional[Callable] = None
 _original_needs_rebuild: Optional[Callable] = None
 _original_init_manager: Optional[Callable] = None
+_original_init_coding_manager: Optional[Callable] = None
 
 _template_lock = threading.Lock()
 _conn_lock = threading.Lock()
@@ -253,10 +254,12 @@ def apply_memory_init_patch() -> None:
     global _original_initialize, _original_open_database
     global _original_ensure_schema, _original_load_vector
     global _original_needs_rebuild, _original_init_manager
+    global _original_init_coding_manager
     if _PATCHED:
         return
 
     import openjiuwen.core.memory.lite.manager as memory_manager_mod
+    from openjiuwen.harness.rails.memory.coding_memory_rail import CodingMemoryRail
     from openjiuwen.harness.rails.memory.memory_rail import MemoryRail
 
     _original_initialize = MemoryIndexManager.initialize
@@ -267,6 +270,9 @@ def apply_memory_init_patch() -> None:
         MemoryIndexManager, "_needs_rebuild_on_config_change"
     )
     _original_init_manager = getattr(MemoryRail, "_init_memory_manager")
+    _original_init_coding_manager = getattr(
+        CodingMemoryRail, "_init_coding_memory_manager"
+    )
 
     setattr(memory_manager_mod, "_open_database", _open_database_reuse)
     setattr(MemoryIndexManager, "initialize", _initialize_from_template)
@@ -278,6 +284,7 @@ def apply_memory_init_patch() -> None:
         _needs_rebuild_none_safe,
     )
     setattr(MemoryRail, "_init_memory_manager", _defer_memory_index)
+    setattr(CodingMemoryRail, "_init_coding_memory_manager", _defer_memory_index)
     _PATCHED = True
     logger.info(
         "[MemoryInit] patch applied "
@@ -291,10 +298,12 @@ def remove_memory_init_patch() -> None:
     global _original_initialize, _original_open_database
     global _original_ensure_schema, _original_load_vector
     global _original_needs_rebuild, _original_init_manager
+    global _original_init_coding_manager
     if not _PATCHED:
         return
 
     import openjiuwen.core.memory.lite.manager as memory_manager_mod
+    from openjiuwen.harness.rails.memory.coding_memory_rail import CodingMemoryRail
     from openjiuwen.harness.rails.memory.memory_rail import MemoryRail
 
     setattr(memory_manager_mod, "_open_database", _original_open_database)
@@ -307,12 +316,18 @@ def remove_memory_init_patch() -> None:
         _original_needs_rebuild,
     )
     setattr(MemoryRail, "_init_memory_manager", _original_init_manager)
+    setattr(
+        CodingMemoryRail,
+        "_init_coding_memory_manager",
+        _original_init_coding_manager,
+    )
     _original_initialize = None
     _original_open_database = None
     _original_ensure_schema = None
     _original_load_vector = None
     _original_needs_rebuild = None
     _original_init_manager = None
+    _original_init_coding_manager = None
     _skip_schema_paths.clear()
     _skip_vector_paths.clear()
     with _conn_lock:
