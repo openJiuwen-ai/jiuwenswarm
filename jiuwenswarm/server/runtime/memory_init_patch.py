@@ -120,6 +120,7 @@ def _build_template_db() -> str:
         "memory",
     )
     _build_guard.active = True
+    stable = os.path.join(tempfile.gettempdir(), "jws_empty_memory.db")
     try:
         asyncio.run(_original_initialize(manager))
         db = manager.db
@@ -127,11 +128,11 @@ def _build_template_db() -> str:
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         src = manager.db_path
         asyncio.run(manager.close())
+        _copy_sqlite_file(src, stable)
     finally:
         _build_guard.active = False
+        shutil.rmtree(root, ignore_errors=True)
 
-    stable = os.path.join(tempfile.gettempdir(), "jws_empty_memory.db")
-    _copy_sqlite_file(src, stable)
     logger.info("[MemoryInit] empty memory.db template ready: %s", stable)
     return stable
 
@@ -152,8 +153,18 @@ def _seed_empty_db(manager: MemoryIndexManager, db_path: str) -> None:
     _copy_sqlite_file(_ensure_template_db(), db_path)
     manager.db_path = db_path
     manager.db = _original_open_database(db_path)
-    _original_ensure_schema(manager)
-    asyncio.run(_original_load_vector(manager))
+    try:
+        _original_ensure_schema(manager)
+        asyncio.run(_original_load_vector(manager))
+    except Exception:
+        db = manager.db
+        manager.db = None
+        if db is not None:
+            try:
+                db.close()
+            except Exception as exc:
+                logger.debug("seed memory db close failed: %s", exc)
+        raise
     with _conn_lock:
         _ready_conns[db_path] = manager.db
     _skip_schema_paths.add(db_path)

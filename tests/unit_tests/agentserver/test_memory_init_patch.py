@@ -73,6 +73,33 @@ async def test_before_invoke_does_not_build_memory_db(memory_patch, monkeypatch)
     assert rail._initialized is True
 
 
+def test_seed_closes_db_when_schema_fails(memory_patch, tmp_path, monkeypatch):
+    """建表失败时关掉已经打开的连接，避免泄漏。"""
+    template = tmp_path / "template.db"
+    template.write_bytes(b"")
+    dest = tmp_path / "memory" / "memory.db"
+    closed = {"n": 0}
+
+    class _Conn:
+        def close(self) -> None:
+            closed["n"] += 1
+
+    monkeypatch.setattr(memory_init_patch, "_ensure_template_db", lambda: str(template))
+    monkeypatch.setattr(memory_init_patch, "_original_open_database", lambda _path: _Conn())
+
+    def _boom(_manager):
+        raise RuntimeError("schema failed")
+
+    monkeypatch.setattr(memory_init_patch, "_original_ensure_schema", _boom)
+    manager = MemoryIndexManager.__new__(MemoryIndexManager)
+    manager.db = None
+    manager.db_path = None
+    with pytest.raises(RuntimeError, match="schema failed"):
+        memory_init_patch._seed_empty_db(manager, str(dest))
+    assert closed["n"] == 1
+    assert manager.db is None
+
+
 @pytest.mark.asyncio
 async def test_coding_before_invoke_does_not_build_memory_db(memory_patch, monkeypatch):
     """代码模式记忆在第一句回复前也不调用建库。"""
