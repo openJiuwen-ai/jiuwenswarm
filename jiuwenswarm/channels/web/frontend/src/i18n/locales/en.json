@@ -2002,7 +2002,8 @@
     },
     "mySkillsGroups": {
       "added": "Added Skills",
-      "builtin": "Built-in Skills"
+      "builtin": "Built-in Skills",
+      "skillPack": "Skill Packs"
     },
     "publishFilter": {
       "all": "All",
@@ -2013,6 +2014,10 @@
       "skill": "Skill Pack",
       "team": "Team Skills",
       "multimodal": "Multimodal"
+    },
+    "proprietaryLabels": {
+      "thirdParty": "Third-party",
+      "thirdPartyHint": "Provided by a third party, not built in-house"
     },
     "marketplaceCategories": {
       "all": "All",
@@ -2031,6 +2036,7 @@
     "noEnabledSkills": "No enabled skills",
     "noBuiltinSkills": "No builtin skills",
     "setEnabledError": "Failed to set skill enabled status",
+    "packBlockedHint": "This skill pack contains uninstalled skills. Install them under \"Included Skills\" before enabling.",
     "setEnabledSuccess": "Skill {name} enabled",
     "setDisabledSuccess": "Skill {name} disabled",
     "marketplaceTabs": {
@@ -2193,6 +2199,17 @@
     "featuredTeamSkills": "Featured Team Skills",
     "featuredSkills": "Featured Skills",
     "noMatches": "No matching skills",
+    "featuredSkillPacks": "Featured Skill Packs",
+    "allSkillPacks": "All Skill Packs",
+    "skillPackTag": "Skill Pack",
+    "memberCountSuffix": "{{count}} skills",
+    "includedSkills": "Included Skills",
+    "noPackMembers": "No included skills",
+    "memberUnavailable": "Unavailable",
+    "memberBlockedReasonDisabled": "Disabled",
+    "memberBlockedReasonMissing": "Missing",
+    "memberBlockedReasonInvalid": "Invalid",
+    "memberBlockedReasonUninstalled": "Uninstalled",
     "viewMode": {
       "list": "List view",
       "grid": "Grid view"
