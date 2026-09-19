@@ -517,6 +517,8 @@ from jiuwenswarm.common.mcp_server_registry import (
 from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch import (
     apply_deepagent_task_plan_binding_patch,
 )
+from jiuwenswarm.server.runtime.context_read_patch import apply_context_read_patch
+from jiuwenswarm.server.runtime.memory_init_patch import apply_memory_init_patch
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
 from jiuwenswarm.perf.context import DeepResearchReportType
 from jiuwenswarm.perf.interface_hooks import (
@@ -2253,6 +2255,10 @@ class JiuWenSwarmDeepAdapter:
         apply_mcp_call_timeout_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
+        # 空记忆库拷模板、建库放线程、第一句回复不等建库。幂等。
+        apply_memory_init_patch()
+        # 读人设文件时跳过跨进程读写锁。幂等。
+        apply_context_read_patch()
         self._instance: DeepAgent | None = None
         self._project_dir: str | None = None
         # 企业多租户：企业版下可用外部传入的隔离 workspace / 租户 ID
