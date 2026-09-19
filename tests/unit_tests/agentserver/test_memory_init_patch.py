@@ -16,6 +16,7 @@ from openjiuwen.core.memory.lite.manager import (
     MemoryIndexManager,
     clear_memory_manager_cache,
 )
+from openjiuwen.harness.rails.memory.coding_memory_rail import CodingMemoryRail
 from openjiuwen.harness.rails.memory.memory_rail import MemoryRail
 
 from jiuwenswarm.server.runtime import memory_init_patch
@@ -70,6 +71,29 @@ async def test_before_invoke_does_not_build_memory_db(memory_patch, monkeypatch)
     await rail.before_invoke(type("Ctx", (), {"inputs": object()})())
     assert called["n"] == 0
     assert rail._initialized is True
+
+
+@pytest.mark.asyncio
+async def test_coding_before_invoke_does_not_build_memory_db(memory_patch, monkeypatch):
+    """代码模式记忆在第一句回复前也不调用建库。"""
+    called = {"n": 0}
+
+    async def _boom(*_args, **_kwargs):
+        called["n"] += 1
+        raise AssertionError("should not init coding memory before the first reply")
+
+    monkeypatch.setattr(
+        "openjiuwen.harness.rails.memory.coding_memory_rail.init_memory_manager_async",
+        _boom,
+    )
+    rail = CodingMemoryRail.__new__(CodingMemoryRail)
+    rail._manager_initialized = False
+    rail._manager = None
+    rail._recalled_content = None
+    rail._prefetch_task = None
+    await rail.before_invoke(type("Ctx", (), {"inputs": object()})())
+    assert called["n"] == 0
+    assert rail._manager_initialized is True
 
 
 @pytest.mark.asyncio

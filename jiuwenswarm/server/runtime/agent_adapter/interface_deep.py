@@ -517,8 +517,6 @@ from jiuwenswarm.common.mcp_server_registry import (
 from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch import (
     apply_deepagent_task_plan_binding_patch,
 )
-from jiuwenswarm.server.runtime.context_read_patch import apply_context_read_patch
-from jiuwenswarm.server.runtime.memory_init_patch import apply_memory_init_patch
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
 from jiuwenswarm.perf.context import DeepResearchReportType
 from jiuwenswarm.perf.interface_hooks import (
@@ -541,6 +539,8 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     create_local_sysop_card,
     create_sandbox_sysop_card,
 )
+from jiuwenswarm.server.runtime.context_read_patch import apply_context_read_patch
+from jiuwenswarm.server.runtime.memory_init_patch import apply_memory_init_patch
 from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
@@ -7354,7 +7354,8 @@ class JiuWenSwarmDeepAdapter:
         """把请求期才注册的读盘 rail 从沙箱通道切回本地。
 
         ``register_rail`` 会用 agent 自己的 sysop（留给写文件、跑命令）覆盖 rail。
-        上下文组装和记忆只读工作区，应走本地直读。
+        只换 rail 自己的通道，给今日/昨日日记这类只读。记忆工具手里那份通道
+        仍跟沙箱，搜索和写入不离开沙箱。
         """
         if not agent_file_read_backend_is_local():
             return
@@ -7372,10 +7373,6 @@ class JiuWenSwarmDeepAdapter:
             if not self._set_rail_sys_operation(rail, local_sysop):
                 continue
             rebound.append(type(rail).__name__)
-            # 记忆工具在 init 时拷了一份通道，要一起换成本地，否则搜索/写入仍走沙箱。
-            tool_ctx = getattr(rail, "_tool_ctx", None)
-            if tool_ctx is not None and hasattr(tool_ctx, "sys_operation"):
-                tool_ctx.sys_operation = local_sysop
         if not rebound:
             return
         logger.info(
@@ -10925,6 +10922,8 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] memory rail refresh on reload failed: %s", e
                 )
+            # register_rail 会把记忆通道绑回沙箱，热更新后也要把只读切回本地。
+            self._rebind_late_read_rails_to_local()
 
             if first_unregister_error is not None:
                 raise first_unregister_error
