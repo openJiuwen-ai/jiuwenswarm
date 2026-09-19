@@ -273,7 +273,7 @@ def test_skill_turbo_tool_registers_as_shared_and_is_idempotent(
     resource_mgr: _FakeResourceMgr,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Concurrent / repeat agent inits must not re-add skill_acceleration_exec."""
+    """Repeat inits on the same adapter must not register skill_acceleration_exec twice."""
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._instance = MagicMock()
     adapter._stream_event_rail = None
@@ -288,7 +288,7 @@ def test_skill_turbo_tool_registers_as_shared_and_is_idempotent(
     assert skill_turbo.card.stateless is True
     assert resource_mgr.adds == [(skill_turbo.card.id, False, True)]
     assert resource_mgr.tools[skill_turbo.card.id] is skill_turbo
-    assert adapter._instance.ability_manager.add.call_count == 2
+    assert adapter._instance.ability_manager.add.call_count == 1
 
 
 def test_skill_turbo_tool_skips_registration_when_disabled(

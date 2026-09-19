@@ -197,6 +197,8 @@ class SkillPrebuiltSynchronizer:
         workspace = Path(workspace_dir)
         self._skills_dir = workspace / "skills"
         self._skills_dir.mkdir(parents=True, exist_ok=True)
+        self._service_id = service_id
+        self._agent_id = agent_id
         self._manager = skill_manager or SkillManager(
             workspace_dir=str(workspace),
             persist_skills_state=True,

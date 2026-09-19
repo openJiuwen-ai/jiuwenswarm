@@ -155,6 +155,9 @@ _INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS = 0.05
 
 # SkillTurbo 内部工具 id 后缀（如 BashTool_skill_turbo）。外层 ReAct 工具结果不含此后缀。
 _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
+# 进程级：gitignore 已处理仓库根。
+_GITIGNORE_AGENT_HISTORY_DONE: set[str] = set()
+_GITIGNORE_DONE_LOCK = threading.Lock()
 
 
 def _propagate_stream_source_id(
@@ -703,9 +706,10 @@ def _log_latency_pre_llm_once(request_id: str | None) -> None:
     if _LATENCY_PRE_LLM_MARKED.get():
         return
     _LATENCY_PRE_LLM_MARKED.set(True)
+    rid = (request_id or "").strip() or "-"
     logger.info(
         "[latency] stage=3 name=pre_llm request_id=%s",
-        (request_id or "").strip() or "-",
+        rid,
     )
 
 
@@ -1039,7 +1043,10 @@ def _apply_llm_io_trace_patch() -> None:
                             else None
                         )
                         or (
-                            (chunk.payload.get("reasoning_content") or chunk.payload.get("reasoning"))
+                            (
+                                chunk.payload.get("reasoning_content")
+                                or chunk.payload.get("reasoning")
+                            )
                             if isinstance(getattr(chunk, "payload", None), dict)
                             else None
                         )
@@ -2306,6 +2313,8 @@ class JiuWenSwarmDeepAdapter:
         self._task_execution_rail: TaskExecutionRail | None = None
         self._skill_turbo_prompt_rail: Any = None
         self._skill_turbo_delivery_summary_rail: Any = None
+        # 同一 adapter 上 skill_turbo 工具只注册一次，避免重复 add。
+        self._skill_turbo_tools_ready: bool = False
         self._skill_protocol_prompt_rail: Any = None
         self._request_summary_rail: Any | None = None
         # Track session IDs currently executing on this adapter instance.
@@ -7080,7 +7089,6 @@ class JiuWenSwarmDeepAdapter:
 
     def _create_local_sys_operation(self) -> SysOperation | None:
         """只创建/复用本地 SysOperation，给读盘类 rail 用；与沙箱实例分离。"""
-        _t0 = time.monotonic()
         cached = self._local_sys_operation
         if cached is not None:
             cached_id = str(getattr(cached, "id", "") or "")
@@ -7092,12 +7100,6 @@ class JiuWenSwarmDeepAdapter:
                 and Runner.resource_mgr.get_sys_operation(cached_id) is not None
             )
             if still_held and still_registered:
-                logger.info(
-                    "[SandboxPerf] create_local_sys_operation: agent_id=%s reuse=1 "
-                    "elapsed_ms=%.1f",
-                    self._agent_id,
-                    (time.monotonic() - _t0) * 1000,
-                )
                 return cached
             # 上一轮 recreate 已 release/unregister：丢掉脏缓存，下面重建。
             self._local_sys_operation = None
@@ -7107,12 +7109,6 @@ class JiuWenSwarmDeepAdapter:
             if existing_id and existing_id not in self._retained_sys_operation_ids:
                 self._retain_sys_operation(existing_id)
             self._local_sys_operation = existing
-            logger.info(
-                "[SandboxPerf] create_local_sys_operation: agent_id=%s reuse_agent=1 "
-                "elapsed_ms=%.1f",
-                self._agent_id,
-                (time.monotonic() - _t0) * 1000,
-            )
             return existing
         try:
             work_dir = self._workspace_dir or str(get_agent_root_dir())
@@ -7122,12 +7118,6 @@ class JiuWenSwarmDeepAdapter:
             )
             sysop_card = create_local_sysop_card(work_dir=work_dir)
             if sysop_card is None:
-                logger.info(
-                    "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=0 "
-                    "elapsed_ms=%.1f reason=card_none",
-                    self._agent_id,
-                    (time.monotonic() - _t0) * 1000,
-                )
                 return None
             isolation_key = self._sys_operation_isolation_key(sysop_card)
             if isolation_key:
@@ -7137,12 +7127,6 @@ class JiuWenSwarmDeepAdapter:
                 if registered is not None:
                     self._retain_sys_operation(str(registered.id))
                     self._local_sys_operation = registered
-                    logger.info(
-                        "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=1 "
-                        "reuse_registered=1 elapsed_ms=%.1f",
-                        self._agent_id,
-                        (time.monotonic() - _t0) * 1000,
-                    )
                     return registered
             result = Runner.resource_mgr.add_sys_operation(sysop_card)
             if result.is_err():
@@ -7159,34 +7143,15 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] add local sys_operation failed: %s",
                     result.msg(),
                 )
-                logger.info(
-                    "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=0 "
-                    "elapsed_ms=%.1f reason=add_err",
-                    self._agent_id,
-                    (time.monotonic() - _t0) * 1000,
-                )
                 return None
             sysop_obj = Runner.resource_mgr.get_sys_operation(sysop_card.id)
             if sysop_obj is not None:
                 self._retain_sys_operation(str(sysop_obj.id))
             self._local_sys_operation = sysop_obj
-            logger.info(
-                "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=%s "
-                "elapsed_ms=%.1f",
-                self._agent_id,
-                1 if sysop_obj is not None else 0,
-                (time.monotonic() - _t0) * 1000,
-            )
             return sysop_obj
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] create local sys_operation failed: %s", exc
-            )
-            logger.info(
-                "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=0 "
-                "elapsed_ms=%.1f reason=exc",
-                self._agent_id,
-                (time.monotonic() - _t0) * 1000,
             )
             return None
 
@@ -7259,7 +7224,6 @@ class JiuWenSwarmDeepAdapter:
 
     def _apply_local_sysop_to_all_rails(self) -> None:
         """按 ``AGENT_FILE_READ_BACKEND`` 把读文件类 rail 切到本地 sysop。"""
-        _t0 = time.monotonic()
         backend = get_agent_file_read_backend()
         if not agent_file_read_backend_is_local():
             logger.info(
@@ -7268,13 +7232,6 @@ class JiuWenSwarmDeepAdapter:
                 backend,
                 self._agent_id,
             )
-            logger.info(
-                "[SandboxPerf] apply_rail_sysop: agent_id=%s backend=%s skipped=1 "
-                "elapsed_ms=%.1f",
-                self._agent_id,
-                backend,
-                (time.monotonic() - _t0) * 1000,
-            )
             return
 
         local_sysop = self._create_local_sys_operation()
@@ -7282,13 +7239,6 @@ class JiuWenSwarmDeepAdapter:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] skip applying local sysop to rails: "
                 "local sysop unavailable"
-            )
-            logger.info(
-                "[SandboxPerf] apply_rail_sysop: agent_id=%s backend=%s skipped=1 "
-                "elapsed_ms=%.1f",
-                self._agent_id,
-                backend,
-                (time.monotonic() - _t0) * 1000,
             )
             return
 
@@ -7334,15 +7284,6 @@ class JiuWenSwarmDeepAdapter:
             local_applied,
             sandbox_kept,
         )
-        logger.info(
-            "[SandboxPerf] apply_rail_sysop: agent_id=%s backend=%s local=%d "
-            "sandbox_bound=%d elapsed_ms=%.1f",
-            self._agent_id,
-            backend,
-            local_applied,
-            sandbox_kept,
-            (time.monotonic() - _t0) * 1000,
-        )
 
     async def _init_workspace_on_host(self) -> None:
         """在宿主机初始化工作区，避免沙箱 DirectoryBuilder 串行建目录。
@@ -7350,16 +7291,8 @@ class JiuWenSwarmDeepAdapter:
         仅当 ``AGENT_FILE_READ_BACKEND=local``（默认）时执行。
         整段落盘丢 ``asyncio.to_thread``，避免堵事件循环。
         """
-        _t0 = time.monotonic()
         backend = get_agent_file_read_backend()
         if not agent_file_read_backend_is_local():
-            logger.info(
-                "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s "
-                "skipped=1 reason=backend_sandbox elapsed_ms=%.1f",
-                self._agent_id,
-                backend,
-                (time.monotonic() - _t0) * 1000,
-            )
             return
 
         instance = self._instance
@@ -7386,46 +7319,21 @@ class JiuWenSwarmDeepAdapter:
         )
         try:
             from jiuwenswarm.server.runtime.agent_adapter.workspace_host_init import (
-                host_init_workspace_sync,
+                host_init_workspace,
             )
 
-            result = await asyncio.to_thread(
-                host_init_workspace_sync,
+            result = await host_init_workspace(
                 str(root_path),
                 directories,
                 language=language,
             )
             status = str((result or {}).get("status") or "")
-            if status == "skipped_marker":
-                logger.info(
-                    "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s "
-                    "skipped=1 reason=marker_exists elapsed_ms=%.1f",
-                    self._agent_id,
-                    backend,
-                    (time.monotonic() - _t0) * 1000,
-                )
+            if status in {"skipped_marker", "skipped_ready_cache"}:
                 return
-            logger.info(
-                "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s ok=1 "
-                "mode=%s dirs=%d elapsed_ms=%.1f path=%s",
-                self._agent_id,
-                backend,
-                status,
-                int((result or {}).get("dirs") or len(directories)),
-                (time.monotonic() - _t0) * 1000,
-                root_path,
-            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] init_workspace_on_host failed: %s",
                 exc,
-            )
-            logger.info(
-                "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s ok=0 "
-                "elapsed_ms=%.1f reason=exc",
-                self._agent_id,
-                backend,
-                (time.monotonic() - _t0) * 1000,
             )
 
 
@@ -8757,12 +8665,13 @@ class JiuWenSwarmDeepAdapter:
         workspace = self._get_memory_workspace()
         agent_id = getattr(getattr(self._instance, "card", None), "id", None) or "default"
         try:
-            return await init_memory_manager_async(
+            manager = await init_memory_manager_async(
                 workspace=workspace,
                 agent_id=agent_id,
                 embedding_config=embedding_config,
                 sys_operation=self._sys_operation,
             )
+            return manager
         except Exception as e:
             logger.warning("[JiuWenSwarmDeepAdapter] init memory manager failed: %s", e)
             return None
@@ -9147,12 +9056,13 @@ class JiuWenSwarmDeepAdapter:
 
         total_ms = stage_timer.total_ms()
         log_rail_build = _stage_breakdown_logger(total_ms, _SLOW_RAIL_BUILD_MS)
+        breakdown = stage_timer.render(slowest_first=True)
         log_rail_build(
             "[AgentServer] agent rails built: adapter=%s count=%d total_ms=%.1f %s",
             type(self).__name__,
             len(rails_list),
             total_ms,
-            stage_timer.render(slowest_first=True),
+            breakdown,
         )
         return rails_list
 
@@ -10224,37 +10134,41 @@ class JiuWenSwarmDeepAdapter:
                     is_skill_prebuilt_tenant(self._agent_id, self._service_id)
                     and self._enterprise_config is not None
                 ):
-                    enterprise_skills: list[dict[str, Any]] = (
-                        getattr(self._enterprise_config, "skill_prebuilt", None) or []
+                    enterprise_skills = getattr(
+                        self._enterprise_config, "skill_prebuilt", None
                     )
-                    skill_config = parse_agent_skill_prebuilt(
-                        self._agent_id, self._service_id, enterprise_skills
-                    )
-                    sync_result = await SkillPrebuiltSynchronizer(
-                        self._workspace_dir,
-                        self._service_id,
-                        self._agent_id,
-                        skill_manager=self._skill_manager,
-                    ).sync(skill_config)
-                    if sync_result.errors:
-                        logger.warning(
-                            "[SkillPrebuilt] sync partial errors: agent_id=%s service_id=%s errors=%s",
-                            self._agent_id,
-                            self._service_id,
-                            sync_result.errors,
+                    # None=未配置预置模板 → 跳过 sync；[]=空模板仍走短路逻辑
+                    if enterprise_skills is not None:
+                        skill_config = parse_agent_skill_prebuilt(
+                            self._agent_id, self._service_id, enterprise_skills
                         )
-                    if sync_result.enabled_skill_dirs is not None:
-                        self._enabled_skills = [
-                            str(name) for name in sync_result.enabled_skill_dirs if str(name).strip()
-                        ]
-                    # 预置 Skill 名快照：供动态授权 trust 判定（approve_session 仅内置可选）。
-                    self._prebuilt_skills = {
-                        str(name).strip()
-                        for name in (sync_result.prebuilt_skill_dirs or [])
-                        if str(name).strip()
-                    }
+                        sync_result = await SkillPrebuiltSynchronizer(
+                            self._workspace_dir,
+                            self._service_id,
+                            self._agent_id,
+                            skill_manager=self._skill_manager,
+                        ).sync(skill_config)
+                        if sync_result.errors:
+                            logger.warning(
+                                "[SkillPrebuilt] sync partial errors: agent_id=%s service_id=%s errors=%s",
+                                self._agent_id,
+                                self._service_id,
+                                sync_result.errors,
+                            )
+                        if sync_result.enabled_skill_dirs is not None:
+                            self._enabled_skills = [
+                                str(name)
+                                for name in sync_result.enabled_skill_dirs
+                                if str(name).strip()
+                            ]
+                        # 预置 Skill 名快照：供动态授权 trust 判定（approve_session 仅内置可选）。
+                        self._prebuilt_skills = {
+                            str(name).strip()
+                            for name in (sync_result.prebuilt_skill_dirs or [])
+                            if str(name).strip()
+                        }
                 self._prompt_attachment_loader = PromptAttachmentLoader(self._prompt_attachment_root())
-                self._prompt_attachment_loader.ensure_layout()
+                await self._prompt_attachment_loader.ensure_layout_async()
 
                 self._log_active_model_on_startup(phase=f"create_instance:{mode}")
                 try:
@@ -10339,28 +10253,18 @@ class JiuWenSwarmDeepAdapter:
                 _apply_llm_io_trace_patch()
 
                 # AGENT_FILE_READ_BACKEND=local：读盘 rail 切本地 sysop；宿主机先建工作区
-                _t_sysop_apply0 = time.monotonic()
-                self._apply_local_sysop_to_all_rails()
+                # ensure 前 apply 一次即可；ensure 后可能新建 rail，再 apply 一次。
                 await self._init_workspace_on_host()
                 self._apply_local_sysop_to_all_rails()
 
                 await asyncio.sleep(0)
                 await self._instance.ensure_initialized()
                 self._apply_local_sysop_to_all_rails()
-                logger.info(
-                    "[SandboxPerf] rail_sysop_bind+ensure_init: request_id=%s agent=%s "
-                    "backend=%s elapsed_ms=%.1f",
-                    _rid,
-                    self._agent_name,
-                    get_agent_file_read_backend(),
-                    (time.monotonic() - _t_sysop_apply0) * 1000,
-                )
                 initial_runtime_workspace = self._project_dir or str(
                     get_default_project_session_workspace_dir()
                 )
-                await asyncio.to_thread(
-                    self._ensure_project_gitignore_agent_history,
-                    initial_runtime_workspace,
+                await self._ensure_project_gitignore_agent_history_async(
+                    initial_runtime_workspace
                 )
                 self._seed_runtime_cwd(initial_runtime_workspace, workspace=initial_runtime_workspace)
                 setattr(self._instance, "_jiuwenswarm_project_dir", initial_runtime_workspace)
@@ -10389,7 +10293,8 @@ class JiuWenSwarmDeepAdapter:
 
                 self._sync_preinstance_runtime_tools_to_ability_manager()
                 self._sync_multimodal_tools_for_runtime()
-                await asyncio.to_thread(self._init_skill_turbo_tool)
+                self._init_skill_turbo_tool(config_base)
+                await asyncio.sleep(0)
 
                 # 动态加载用户自定义的 Rail 扩展
                 await self.load_user_rails()
@@ -10464,6 +10369,9 @@ class JiuWenSwarmDeepAdapter:
         repo_root_text = repo_probe.stdout.strip()
         if not repo_root_text:
             return
+        with _GITIGNORE_DONE_LOCK:
+            if repo_root_text in _GITIGNORE_AGENT_HISTORY_DONE:
+                return
         gitignore_path = Path(repo_root_text) / ".gitignore"
         try:
             existing_bytes = gitignore_path.read_bytes() if gitignore_path.exists() else b""
@@ -10475,6 +10383,8 @@ class JiuWenSwarmDeepAdapter:
             return
 
         if JiuWenSwarmDeepAdapter._gitignore_covers_agent_history(existing_bytes):
+            with _GITIGNORE_DONE_LOCK:
+                _GITIGNORE_AGENT_HISTORY_DONE.add(repo_root_text)
             return
 
         existing = existing_bytes.decode("utf-8", errors="replace")
@@ -10489,6 +10399,82 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] ensure .agent_history gitignore failed: %s",
                 exc,
             )
+            return
+        with _GITIGNORE_DONE_LOCK:
+            _GITIGNORE_AGENT_HISTORY_DONE.add(repo_root_text)
+
+    @staticmethod
+    async def _ensure_project_gitignore_agent_history_async(
+        project_dir: str | None,
+    ) -> None:
+        """异步版 gitignore 确保：subprocess + 盘 IO 均 await，并带进程级跳过缓存。"""
+        if not project_dir:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "rev-parse",
+                "--show-toplevel",
+                cwd=project_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (OSError, asyncio.SubprocessError):
+            return
+        try:
+            stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return
+        if proc.returncode != 0:
+            return
+        repo_root_text = (stdout or b"").decode("utf-8", errors="replace").strip()
+        if not repo_root_text:
+            return
+        with _GITIGNORE_DONE_LOCK:
+            if repo_root_text in _GITIGNORE_AGENT_HISTORY_DONE:
+                return
+
+        from jiuwenswarm.server.runtime.async_fs import (
+            async_exists,
+            async_read_bytes,
+            async_write_bytes,
+        )
+
+        gitignore_path = Path(repo_root_text) / ".gitignore"
+        try:
+            if await async_exists(gitignore_path):
+                existing_bytes = await async_read_bytes(gitignore_path)
+            else:
+                existing_bytes = b""
+        except OSError as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] read .gitignore for agent history rule failed: %s",
+                exc,
+            )
+            return
+
+        if JiuWenSwarmDeepAdapter._gitignore_covers_agent_history(existing_bytes):
+            with _GITIGNORE_DONE_LOCK:
+                _GITIGNORE_AGENT_HISTORY_DONE.add(repo_root_text)
+            return
+
+        existing = existing_bytes.decode("utf-8", errors="replace")
+        prefix = "" if not existing else ("\n" if existing.endswith(("\n", "\r")) else "\n\n")
+        addition = f"{prefix}# JiuwenSwarm runtime file operation logs\n.agent_history/\n"
+        try:
+            await async_write_bytes(
+                gitignore_path, existing_bytes + addition.encode("utf-8")
+            )
+        except OSError as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] ensure .agent_history gitignore failed: %s",
+                exc,
+            )
+            return
+        with _GITIGNORE_DONE_LOCK:
+            _GITIGNORE_AGENT_HISTORY_DONE.add(repo_root_text)
 
     @staticmethod
     def _gitignore_covers_agent_history(content: bytes) -> bool:
@@ -10533,7 +10519,7 @@ class JiuWenSwarmDeepAdapter:
             return
         if self._prompt_attachment_loader is None:
             self._prompt_attachment_loader = PromptAttachmentLoader(self._prompt_attachment_root())
-            self._prompt_attachment_loader.ensure_layout()
+            await self._prompt_attachment_loader.ensure_layout_async()
         try:
             await self._prompt_attachment_loader.sync_to_agent(
                 self._instance,
@@ -11691,6 +11677,7 @@ class JiuWenSwarmDeepAdapter:
                 bind_request=bind_request,
             )
         finally:
+
             total_ms = stage_timer.total_ms()
             log_runtime_config_stages = _stage_breakdown_logger(
                 total_ms, _SLOW_RUNTIME_CONFIG_MS
@@ -12127,20 +12114,34 @@ class JiuWenSwarmDeepAdapter:
                 session_id, request_id, exc,
             )
 
-    def _init_skill_turbo_tool(self) -> None:
+    def _init_skill_turbo_tool(self, config_base: dict[str, Any] | None = None) -> None:
         """Initialize skill_turbo tool for SkillTurbo integration."""
         if self._instance is None:
             return
+        if getattr(self, "_skill_turbo_tools_ready", False):
+            return
         try:
-            config_base = get_config()
-            react_config = config_base.get("react", {}) if isinstance(config_base, dict) else {}
-            skill_turbo_config = react_config.get("skill_turbo", {}) if isinstance(react_config, dict) else {}
-            enabled = skill_turbo_config.get("enabled", False) if isinstance(skill_turbo_config, dict) else False
-            if not enabled:
-                logger.info("[JiuWenSwarmDeepAdapter] SkillTurbo disabled, skipping tool registration")
+            cfg = config_base if isinstance(config_base, dict) else get_config()
+            react_config = cfg.get("react", {}) if isinstance(cfg, dict) else {}
+            skill_turbo_config = (
+                react_config.get("skill_turbo", {})
+                if isinstance(react_config, dict)
+                else {}
+            )
+            skill_turbo_enabled = bool(
+                skill_turbo_config.get("enabled", False)
+                if isinstance(skill_turbo_config, dict)
+                else False
+            )
+            if not skill_turbo_enabled:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] SkillTurbo disabled, skipping tool registration"
+                )
                 return
 
-            from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import get_skill_turbo_tools
+            from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                get_skill_turbo_tools,
+            )
 
             for tool in get_skill_turbo_tools():
                 registered = self._register_shared_tool(tool)
@@ -12152,9 +12153,13 @@ class JiuWenSwarmDeepAdapter:
                 if self._checkpointer is not None:
                     self._stream_event_rail.set_checkpointer(self._checkpointer)
 
+            self._skill_turbo_tools_ready = True
             logger.info("[JiuWenSwarmDeepAdapter] skill_turbo tool initialized")
         except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] Failed to initialize skill_turbo tool: %s", exc)
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] Failed to initialize skill_turbo tool: %s",
+                exc,
+            )
 
     @staticmethod
     def _build_skill_protocol_prompt_rail() -> Any | None:
@@ -17830,6 +17835,7 @@ class JiuWenSwarmDeepAdapter:
                     continue
             raise
         try:
+
             await self._update_runtime_config(
                 self._RuntimeConfig(
                     session_id=session_id,
@@ -18864,6 +18870,7 @@ class JiuWenSwarmDeepAdapter:
             )
             perf_context_initialized = True
             initialization_complete = True
+
             await self._update_runtime_config(
                 self._RuntimeConfig(
                     session_id=session_id,
