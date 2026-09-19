@@ -539,6 +539,8 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     create_local_sysop_card,
     create_sandbox_sysop_card,
 )
+from jiuwenswarm.server.runtime.context_read_patch import apply_context_read_patch
+from jiuwenswarm.server.runtime.memory_init_patch import apply_memory_init_patch
 from jiuwenswarm.agents.harness.common.auto_harness.service import _HARNESS_PACKAGES_FILE
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
@@ -2253,6 +2255,10 @@ class JiuWenSwarmDeepAdapter:
         apply_mcp_call_timeout_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
+        # 空记忆库拷模板、建库放线程、第一句回复不等建库。幂等。
+        apply_memory_init_patch()
+        # 读人设文件时跳过跨进程读写锁。幂等。
+        apply_context_read_patch()
         self._instance: DeepAgent | None = None
         self._project_dir: str | None = None
         # 企业多租户：企业版下可用外部传入的隔离 workspace / 租户 ID
@@ -7344,6 +7350,37 @@ class JiuWenSwarmDeepAdapter:
             (time.monotonic() - _t0) * 1000,
         )
 
+    def _rebind_late_read_rails_to_local(self) -> None:
+        """把请求期才注册的读盘 rail 从沙箱通道切回本地。
+
+        ``register_rail`` 会用 agent 自己的 sysop（留给写文件、跑命令）覆盖 rail。
+        只换 rail 自己的通道，给今日/昨日日记这类只读。记忆工具手里那份通道
+        仍跟沙箱，搜索和写入不离开沙箱。
+        """
+        if not agent_file_read_backend_is_local():
+            return
+        local_sysop = self._create_local_sys_operation()
+        if local_sysop is None:
+            return
+        rebound: list[str] = []
+        for rail in (
+            self._context_assemble_rail,
+            self._memory_rail,
+            self._external_memory_rail,
+        ):
+            if rail is None or self._is_sandbox_bound_rail(rail):
+                continue
+            if not self._set_rail_sys_operation(rail, local_sysop):
+                continue
+            rebound.append(type(rail).__name__)
+        if not rebound:
+            return
+        logger.info(
+            "[SandboxPerf] late_read_rails local: agent_id=%s rails=%s",
+            self._agent_id,
+            ",".join(rebound),
+        )
+
     async def _init_workspace_on_host(self) -> None:
         """在宿主机初始化工作区，避免沙箱 DirectoryBuilder 串行建目录。
 
@@ -10885,6 +10922,8 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] memory rail refresh on reload failed: %s", e
                 )
+            # register_rail 会把记忆通道绑回沙箱，热更新后也要把只读切回本地。
+            self._rebind_late_read_rails_to_local()
 
             if first_unregister_error is not None:
                 raise first_unregister_error
@@ -11312,6 +11351,9 @@ class JiuWenSwarmDeepAdapter:
                 await self._instance.unregister_rail(self._skill_create_rail)
                 self._skill_create_rail = None
                 logger.info("[JiuWenSwarmDeepAdapter] SkillCreateRail unregistered (skill_create=false)")
+
+        # register_rail 会把后挂的 ContextAssemble / Memory 绑回沙箱，读盘再切本地。
+        self._rebind_late_read_rails_to_local()
 
     @staticmethod
     def _acp_runtime_tools_enabled(
