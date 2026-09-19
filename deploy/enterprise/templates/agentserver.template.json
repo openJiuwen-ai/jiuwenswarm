@@ -66,11 +66,6 @@
           {
             "name": "data",
             "mountPath": "<<CLAW_HOME>>/.jiuwenswarm"
-          },
-          {
-            "name": "agentserver-config",
-            "mountPath": "<<CLAW_HOME>>/.jiuwenswarm/config/config.yaml",
-            "subPath": "config.yaml"
           }
         ]
       },
@@ -183,12 +178,6 @@
             "hostPath": {
               "path": "<<CORE_CODE_PATH>>/openjiuwen",
               "type": "Directory"
-            }
-          },
-          {
-            "name": "agentserver-config",
-            "configMap": {
-              "name": "<<GATEWAY_CONFIG_MAP_NAME>>"
             }
           },
           {

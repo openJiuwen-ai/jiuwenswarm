@@ -10,7 +10,8 @@ ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
 # 会在构建期直接失败（fail fast），避免运行期属主漂移导致 EACCES
 RUN groupadd --gid 1000 app \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash app \
-    && mkdir -p /app/jiuwenswarm && chown app:app /app/jiuwenswarm
+    && mkdir -p /app/jiuwenswarm /app/config \
+    && chown -R app:app /app
 
 WORKDIR /app/jiuwenswarm
 COPY --chown=app:app . /app/jiuwenswarm/
@@ -34,8 +35,6 @@ RUN mkdir -p /opt/tiktoken-cache \
     && chmod -R u+rwX,go+rX /opt/tiktoken-cache
 
 RUN yq -y -i '.dependencies = {}' jiuwenswarm/extensions/symphony/extension.yaml
-
-RUN mkdir -p /home/app/.jiuwenswarm/config && chown -R app:app /home/app/.jiuwenswarm
 
 USER app
 ENV PATH=$PATH:/home/app/.local/bin

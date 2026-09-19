@@ -24,49 +24,6 @@ gen_gateway_env_file() {
         | yq eval 'del(.metadata.creationTimestamp)' > "${yaml_file}"
 }
 
-gen_gateway_config_file() {
-    local field_name="feishu"
-    local template_file="${CONFIG["GATEWAY_CONFIG_TEMPLATE_FILE"]}"
-    local file="${CONFIG["GATEWAY_CONFIG_FILE"]}"
-    local yaml_file="${CONFIG["GATEWAY_CONFIG_YAML_FILE"]}"
-    local namespace="${DEPLOY_VARS["NAMESPACE"]}"
-    local conf_name="${DEPLOY_VARS["GATEWAY_CONFIG_MAP_NAME"]}"
-
-    info "GATEWAY_CONFIG_TEMPLATE_FILE: ${template_file}"
-    render_config_template "${template_file}" "${file}" "DEPLOY_VARS"
-
-    # Clear configuration
-    yq eval ".channels.${field_name} = {}" -i "${file}"
-
-    # 飞书机器人配置（可选）：未配置 FEISHU_BOTS 时跳过，channels.feishu 保持为空
-    local feishu_bots="${DEPLOY_VARS["FEISHU_BOTS"]:-}"
-    if [ -n "${feishu_bots}" ]; then
-        echo "${feishu_bots}" | while read -r line; do
-            # Skip empty lines
-            [ -z "${line}" ] && continue
-
-            # Split by colon
-            IFS=':' read -r bot_name app_id app_secret <<< "${line}"
-
-            # info "Adding bot: ${bot_name}"
-            yq eval ".channels.${field_name}.${bot_name}.app_id = \"${app_id}\"" -i "${file}"
-            yq eval ".channels.${field_name}.${bot_name}.app_secret = \"${app_secret}\"" -i "${file}"
-            yq eval ".channels.${field_name}.${bot_name}.encrypt_key = \"\"" -i "${file}"
-            yq eval ".channels.${field_name}.${bot_name}.verification_token = \"\"" -i "${file}"
-            yq eval ".channels.${field_name}.${bot_name}.allow_from = []" -i "${file}"
-            yq eval ".channels.${field_name}.${bot_name}.enable_streaming = true" -i "${file}"
-            yq eval ".channels.${field_name}.${bot_name}.chat_id = \"\"" -i "${file}"
-            yq eval ".channels.${field_name}.${bot_name}.enabled = true" -i "${file}"
-        done
-    fi
-
-    success "Gateway config rendered: ${file}; ConfigMap yaml: ${yaml_file}"
-    kubectl create configmap -n "${namespace}" "${conf_name}" \
-        --from-file=config.yaml="${file}" \
-        --dry-run=client -o yaml \
-        | yq eval 'del(.metadata.creationTimestamp)' > "${yaml_file}"
-}
-
 gen_gateway_file() {
     local mode="${DEPLOY_VARS["MODE"]}"
     local template_file="${CONFIG["GATEWAY_TEMPLATE_FILE"]}"
@@ -102,7 +59,6 @@ render_gateway_files() {
 
     render_secret_configmap
     gen_gateway_env_file
-    gen_gateway_config_file
 
     ensure_available_port "GATEWAY_CONFIG_HTTP_NODE_PORT"
     gen_gateway_file
@@ -114,14 +70,12 @@ render_gateway_files() {
 deploy_gateway() {
     local namespace="${DEPLOY_VARS["NAMESPACE"]}"
     local env_yaml_file="${CONFIG["GATEWAY_ENV_YAML_FILE"]}"
-    local conf_yaml_file="${CONFIG["GATEWAY_CONFIG_YAML_FILE"]}"
     local name="${DEPLOY_VARS["GATEWAY_NAME"]}"
     local gateway_file="${CONFIG["GATEWAY_FILE"]}"
 
     ensure_secret_configmap
     # 使用 apply 保证重复部署幂等：ConfigMap 已存在时更新内容，不因 create 冲突失败。
     exec_cmd kubectl apply -f "${env_yaml_file}"
-    exec_cmd kubectl apply -f "${conf_yaml_file}"
 
     exec_cmd kubectl apply -f "${gateway_file}"
     wait_k8s_resource_ready "deployment" "${name}" "${namespace}"
@@ -130,11 +84,9 @@ deploy_gateway() {
 uninstall_gateway() {
     local gateway_file="${CONFIG["GATEWAY_FILE"]}"
     local env_yaml_file="${CONFIG["GATEWAY_ENV_YAML_FILE"]}"
-    local conf_yaml_file="${CONFIG["GATEWAY_CONFIG_YAML_FILE"]}"
 
     exec_cmd kubectl delete -f "${gateway_file}" --ignore-not-found=true
     exec_cmd kubectl delete -f "${env_yaml_file}" --ignore-not-found=true
-    exec_cmd kubectl delete -f "${conf_yaml_file}" --ignore-not-found=true
 
     uninstall_secret_configmap
     ensure_redis_down
