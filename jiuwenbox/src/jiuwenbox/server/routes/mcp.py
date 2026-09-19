@@ -130,6 +130,9 @@ async def sandbox_run_command(
                 env=env,
                 stdin_data=stdin_data,
                 timeout=float(timeout_seconds),
+                extra=None,
+                require_extra=False,
+                grant_write=True,
             ),
         )
         duration_ms = round((time.monotonic() - start_ms) * 1000)

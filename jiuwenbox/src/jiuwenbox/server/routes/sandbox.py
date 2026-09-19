@@ -6,12 +6,13 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, File, Form, Query, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.sandbox import (
+    AccessExtra,
     BackgroundExecRequest,
     BackgroundExecResult,
     BackgroundJobStatus,
@@ -23,6 +24,7 @@ from jiuwenbox.models.sandbox import (
     SandboxRef,
     SandboxSpec,
 )
+from jiuwenbox.server.access import parse_extra_paths
 from jiuwenbox.server.sandbox_manager import SandboxBackgroundExecRequest, SandboxExecRequest, SandboxListRequest
 
 router = APIRouter(tags=["sandboxes"])
@@ -49,6 +51,28 @@ class ExecRequest(BaseModel):
     env: dict[str, str] | None = None
     stdin: str | None = None
     timeout_seconds: int | None = None
+    extra: AccessExtra | None = None
+
+
+class DownloadRequest(BaseModel):
+    sandbox_path: str
+    extra: AccessExtra | None = None
+
+
+class ListFilesBody(BaseModel):
+    sandbox_path: str
+    recursive: bool = False
+    max_depth: int | None = None
+    include_files: bool = True
+    include_dirs: bool = True
+    extra: AccessExtra | None = None
+
+
+class SearchFilesBody(BaseModel):
+    sandbox_path: str
+    pattern: str
+    exclude_patterns: list[str] | None = None
+    extra: AccessExtra | None = None
 
 
 class ListFilesQuery(BaseModel):
@@ -57,6 +81,7 @@ class ListFilesQuery(BaseModel):
     max_depth: int | None = None
     include_files: bool = True
     include_dirs: bool = True
+    extra: str | None = None
 
 
 @router.post("/sandboxes", response_model=SandboxRef, status_code=201)
@@ -114,6 +139,7 @@ async def exec_in_sandbox(sandbox_id: str, request: ExecRequest):
             env=request.env,
             stdin_data=stdin_data,
             timeout=request.timeout_seconds,
+            extra=request.extra,
         ),
     )
 
@@ -136,6 +162,7 @@ async def exec_background_in_sandbox(
             workdir=request.workdir,
             env=request.env,
             stdin_data=stdin_data,
+            extra=getattr(request, "extra", None),
         ),
     )
 
@@ -190,36 +217,82 @@ async def upload_file(
     sandbox_id: str,
     file: UploadFile = File(...),
     sandbox_path: str = Query(...),
+    extra: str | None = Form(None),
 ):
     """Upload a file into the sandbox filesystem.
 
-    In process mode, this writes to the bind-mounted host path.
+    ``extra`` is a JSON object ``{"paths": [...]}`` (multipart form field).
+    Windows requires a non-empty list; Linux ignores it.
     """
+    extra_obj = None if extra is None else extra
+    if extra_obj is not None:
+        parse_extra_paths(extra_obj, required=False)
     content = await file.read()
-    await _mgr().upload_file_to_sandbox(sandbox_id, sandbox_path, content)
+    await _mgr().upload_file_to_sandbox(
+        sandbox_id, sandbox_path, content, extra=extra_obj,
+    )
     return Response(status_code=204)
 
 
-@router.get("/sandboxes/{sandbox_id}/download")
+@router.post("/sandboxes/{sandbox_id}/download")
+async def download_file_post(sandbox_id: str, request: DownloadRequest):
+    try:
+        content = await _mgr().download_file_from_sandbox(
+            sandbox_id, request.sandbox_path, extra=request.extra,
+        )
+    except FileNotFoundError:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"File not found: {request.sandbox_path}"},
+        )
+    return Response(content=content, media_type="application/octet-stream")
+
+
+@router.get("/sandboxes/{sandbox_id}/download", deprecated=True)
 async def download_file(
     sandbox_id: str,
     sandbox_path: str = Query(...),
+    extra: str | None = Query(None),
 ):
-    """Download a file from the sandbox filesystem."""
+    """Deprecated GET download. Pass URL-encoded extra JSON; missing/empty → 403 on Windows."""
     try:
-        content = await _mgr().download_file_from_sandbox(sandbox_id, sandbox_path)
+        content = await _mgr().download_file_from_sandbox(
+            sandbox_id, sandbox_path, extra=extra,
+        )
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": f"File not found: {sandbox_path}"})
 
     return Response(content=content, media_type="application/octet-stream")
 
 
-@router.get("/sandboxes/{sandbox_id}/files")
+@router.post("/sandboxes/{sandbox_id}/files/list")
+async def list_files_post(sandbox_id: str, body: ListFilesBody):
+    try:
+        items = await _mgr().list_files_in_sandbox(
+            sandbox_id=sandbox_id,
+            request=SandboxListRequest(
+                sandbox_path=body.sandbox_path,
+                recursive=body.recursive,
+                max_depth=body.max_depth,
+                include_files=body.include_files,
+                include_dirs=body.include_dirs,
+                extra=body.extra,
+            ),
+        )
+    except FileNotFoundError:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Directory not found: {body.sandbox_path}"},
+        )
+    return {"items": items}
+
+
+@router.get("/sandboxes/{sandbox_id}/files", deprecated=True)
 async def list_files(
     sandbox_id: str,
     query: Annotated[ListFilesQuery, Query()],
 ):
-    """List files and directories inside a sandbox path."""
+    """Deprecated GET list. Pass URL-encoded extra JSON; missing/empty → 403 on Windows."""
     try:
         items = await _mgr().list_files_in_sandbox(
             sandbox_id=sandbox_id,
@@ -229,6 +302,7 @@ async def list_files(
                 max_depth=query.max_depth,
                 include_files=query.include_files,
                 include_dirs=query.include_dirs,
+                extra=query.extra,
             ),
         )
     except FileNotFoundError:
@@ -239,20 +313,40 @@ async def list_files(
     return {"items": items}
 
 
-@router.get("/sandboxes/{sandbox_id}/search")
+@router.post("/sandboxes/{sandbox_id}/files/search")
+async def search_files_post(sandbox_id: str, body: SearchFilesBody):
+    try:
+        items = await _mgr().search_files_in_sandbox(
+            sandbox_id=sandbox_id,
+            sandbox_path=body.sandbox_path,
+            pattern=body.pattern,
+            exclude_patterns=body.exclude_patterns,
+            extra=body.extra,
+        )
+    except FileNotFoundError:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Directory not found: {body.sandbox_path}"},
+        )
+    return {"items": items}
+
+
+@router.get("/sandboxes/{sandbox_id}/search", deprecated=True)
 async def search_files(
     sandbox_id: str,
     sandbox_path: str = Query(...),
     pattern: str = Query(...),
     exclude_patterns: list[str] | None = Query(None),
+    extra: str | None = Query(None),
 ):
-    """Search files under a sandbox path with shell-style glob patterns."""
+    """Deprecated GET search. Pass URL-encoded extra JSON; missing/empty → 403 on Windows."""
     try:
         items = await _mgr().search_files_in_sandbox(
             sandbox_id=sandbox_id,
             sandbox_path=sandbox_path,
             pattern=pattern,
             exclude_patterns=exclude_patterns,
+            extra=extra,
         )
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": f"Directory not found: {sandbox_path}"})

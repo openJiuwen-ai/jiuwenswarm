@@ -1020,6 +1020,9 @@ export default defineConfig({
     },
   },
   server: {
+    // Windows: default `localhost` often binds [::1] only, so http://127.0.0.1
+    // and many browser localhost lookups fail even though the banner is green.
+    host: '127.0.0.1',
     port: frontendPort,
     strictPort: true,
     proxy: {

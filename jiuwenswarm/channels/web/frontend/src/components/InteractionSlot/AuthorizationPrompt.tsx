@@ -39,9 +39,13 @@ interface ResolvedAction {
   tip: string;
 }
 
-/** 首个非空行，用于收起态渲染。 */
-function firstLine(text: string): string {
-  return (text || '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+/** 收起态也带上路径行：后端曾把「申请访问:」和路径拆成两行，只渲染首行会变成空路径。 */
+function collapsedBody(text: string): string {
+  const lines = (text || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  if (lines.length <= 1) {
+    return lines[0] ?? '';
+  }
+  return lines.slice(0, 6).join('\n');
 }
 
 /** hover 说明气泡：portal 到 body，始终最上层、不被容器截断。 */
@@ -203,7 +207,7 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
             </div>
           ))
         ) : (
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{firstLine(primary.question)}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{collapsedBody(primary.question)}</ReactMarkdown>
         )}
       </div>
     </div>
