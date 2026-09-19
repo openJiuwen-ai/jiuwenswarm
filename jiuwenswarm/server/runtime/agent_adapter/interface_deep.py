@@ -2313,6 +2313,8 @@ class JiuWenSwarmDeepAdapter:
         self._task_execution_rail: TaskExecutionRail | None = None
         self._skill_turbo_prompt_rail: Any = None
         self._skill_turbo_delivery_summary_rail: Any = None
+        # 同一 adapter 上 skill_turbo 工具只注册一次，避免重复 add。
+        self._skill_turbo_tools_ready: bool = False
         self._skill_protocol_prompt_rail: Any = None
         self._request_summary_rail: Any | None = None
         # Track session IDs currently executing on this adapter instance.

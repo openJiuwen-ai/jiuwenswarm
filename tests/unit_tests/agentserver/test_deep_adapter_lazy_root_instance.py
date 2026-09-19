@@ -406,7 +406,7 @@ async def test_session_create_instance_still_refreshes_multimodal(
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: config_base)
     refresh = MagicMock()
     loader = MagicMock()
-    loader.ensure_layout = MagicMock()
+    loader.ensure_layout_async = AsyncMock()
     loader_cls = MagicMock(return_value=loader)
 
     with (
@@ -422,7 +422,7 @@ async def test_session_create_instance_still_refreshes_multimodal(
 
     refresh.assert_called_once()
     loader_cls.assert_called_once()
-    loader.ensure_layout.assert_called_once()
+    loader.ensure_layout_async.assert_awaited_once()
     assert adapter._instance is not None
 
 
@@ -447,7 +447,7 @@ async def test_ensure_instance_after_root_skip_runs_preamble(
         patch.object(
             interface_deep_module,
             "PromptAttachmentLoader",
-            return_value=MagicMock(ensure_layout=MagicMock()),
+            return_value=MagicMock(ensure_layout_async=AsyncMock()),
         ),
     ):
         await adapter.create_instance(
@@ -511,7 +511,7 @@ async def test_session_skill_prebuilt_sync_uses_create_instance_workspace_dir(
         patch.object(
             interface_deep_module,
             "PromptAttachmentLoader",
-            return_value=MagicMock(ensure_layout=MagicMock()),
+            return_value=MagicMock(ensure_layout_async=AsyncMock()),
         ),
         patch.object(interface_deep_module, "SkillPrebuiltSynchronizer", sync_cls),
         patch.object(interface_deep_module, "is_skill_prebuilt_tenant", return_value=True),
