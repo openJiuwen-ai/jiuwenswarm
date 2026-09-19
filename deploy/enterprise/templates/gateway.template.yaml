@@ -70,18 +70,6 @@ spec:
                 name: <<SECRET_CM_NAME>>
             - configMapRef:
                 name: <<GATEWAY_ENV_FILE_CM_NAME>>
-          volumeMounts:
-            - name: gateway-config
-              mountPath: <<CLAW_HOME>>/.jiuwenswarm/config/config.yaml
-              subPath: config.yaml
-              readOnly: true
-      volumes:
-        - name: gateway-config
-          configMap:
-            name: <<GATEWAY_CONFIG_MAP_NAME>>
-            items:
-              - key: config.yaml
-                path: config.yaml
 
 ---
 # Service：提供稳定 DNS 域名, 供集群内部访问
