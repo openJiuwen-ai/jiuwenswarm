@@ -7344,6 +7344,40 @@ class JiuWenSwarmDeepAdapter:
             (time.monotonic() - _t0) * 1000,
         )
 
+    def _rebind_late_read_rails_to_local(self) -> None:
+        """把请求期才注册的读盘 rail 从沙箱通道切回本地。
+
+        ``register_rail`` 会用 agent 自己的 sysop（留给写文件、跑命令）覆盖 rail。
+        上下文组装和记忆只读工作区，应走本地直读。
+        """
+        if not agent_file_read_backend_is_local():
+            return
+        local_sysop = self._create_local_sys_operation()
+        if local_sysop is None:
+            return
+        rebound: list[str] = []
+        for rail in (
+            self._context_assemble_rail,
+            self._memory_rail,
+            self._external_memory_rail,
+        ):
+            if rail is None or self._is_sandbox_bound_rail(rail):
+                continue
+            if not self._set_rail_sys_operation(rail, local_sysop):
+                continue
+            rebound.append(type(rail).__name__)
+            # 记忆工具在 init 时拷了一份通道，要一起换成本地，否则搜索/写入仍走沙箱。
+            tool_ctx = getattr(rail, "_tool_ctx", None)
+            if tool_ctx is not None and hasattr(tool_ctx, "sys_operation"):
+                tool_ctx.sys_operation = local_sysop
+        if not rebound:
+            return
+        logger.info(
+            "[SandboxPerf] late_read_rails local: agent_id=%s rails=%s",
+            self._agent_id,
+            ",".join(rebound),
+        )
+
     async def _init_workspace_on_host(self) -> None:
         """在宿主机初始化工作区，避免沙箱 DirectoryBuilder 串行建目录。
 
@@ -11312,6 +11346,9 @@ class JiuWenSwarmDeepAdapter:
                 await self._instance.unregister_rail(self._skill_create_rail)
                 self._skill_create_rail = None
                 logger.info("[JiuWenSwarmDeepAdapter] SkillCreateRail unregistered (skill_create=false)")
+
+        # register_rail 会把后挂的 ContextAssemble / Memory 绑回沙箱，读盘再切本地。
+        self._rebind_late_read_rails_to_local()
 
     @staticmethod
     def _acp_runtime_tools_enabled(
