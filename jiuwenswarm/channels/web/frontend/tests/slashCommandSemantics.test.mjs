@@ -6,9 +6,48 @@ import {
   hasUnfinishedGoal,
   isSlashCommandDisabledByGoal,
   resolvePlanGoalInterlock,
+  resolveSlashCommandDescription,
   shouldExecuteRegisteredSlashCommand,
   supportsWebSlashCommands,
 } from '../node_modules/.cache/slash-command-semantics/components/ChatPanel/slashCommands/semantics.js';
+
+test('cached command metadata switches language without changing the source description', () => {
+  const command = {
+    description: '旧版说明',
+    description_i18n: { zh: '中文说明', en: 'English description' },
+  };
+  assert.equal(resolveSlashCommandDescription(command, 'en'), 'English description');
+  assert.equal(resolveSlashCommandDescription(command, 'zh'), '中文说明');
+  assert.equal(resolveSlashCommandDescription(command, 'en'), 'English description');
+  assert.equal(command.description, '旧版说明');
+});
+
+test('command descriptions resolve regional locales before falling back to the base language', () => {
+  const command = {
+    description: '默认说明',
+    description_i18n: { zh: '中文说明', en: 'English description', 'en-gb': 'British description' },
+  };
+  assert.equal(resolveSlashCommandDescription(command, 'zh-CN'), '中文说明');
+  assert.equal(resolveSlashCommandDescription(command, ' EN_us '), 'English description');
+  assert.equal(resolveSlashCommandDescription(command, 'en-GB'), 'British description');
+});
+
+test('old servers and missing translations fall back to the original description', () => {
+  const legacyCommand = { description: 'Legacy description' };
+  assert.equal(resolveSlashCommandDescription(legacyCommand, 'en'), 'Legacy description');
+  assert.equal(
+    resolveSlashCommandDescription({ ...legacyCommand, description_i18n: { zh: '中文说明' } }, 'en'),
+    'Legacy description',
+  );
+  assert.equal(
+    resolveSlashCommandDescription({ ...legacyCommand, description_i18n: { en: '' } }, 'en'),
+    'Legacy description',
+  );
+  assert.equal(
+    resolveSlashCommandDescription({ ...legacyCommand, description_i18n: { en: 'English' } }, 'fr'),
+    'Legacy description',
+  );
+});
 
 test('standalone plan command executes', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('plan', '', 'agent'), true);

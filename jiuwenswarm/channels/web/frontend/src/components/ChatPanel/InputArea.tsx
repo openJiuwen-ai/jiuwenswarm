@@ -60,6 +60,7 @@ import {
   getWebSlashCommandsForMode,
   hasUnfinishedGoal as isUnfinishedGoal,
   isSlashCommandDisabledByGoal,
+  resolveSlashCommandDescription,
   shouldExecuteRegisteredSlashCommand,
 } from './slashCommands/semantics';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
@@ -183,6 +184,7 @@ type InputAreaSkillItem = {
 type SlashCommandMeta = {
   name: string;
   description: string;
+  description_i18n?: Record<string, string>;
   usage?: string;
   takesArgs?: boolean;
   execution?: string;
@@ -778,7 +780,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const attachmentMenuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attachmentMenuOpenedByLongPressRef = useRef(false);
   const isComposingRef = useRef(false);
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentGroupUnavailable = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
@@ -1009,11 +1011,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       }));
   }, [teamMembers]);
 
+  const commandDescriptionLanguage = i18n.resolvedLanguage ?? i18n.language;
   const composerSuggestionItems = useMemo(() => {
     const items = getComposerSuggestionItems(
       composerSuggestion,
       mentionableMembers,
-      getWebSlashCommandsForMode(slashCommands, mode),
+      getWebSlashCommandsForMode(slashCommands, mode).map((command) => ({
+        ...command,
+        description: resolveSlashCommandDescription(command, commandDescriptionLanguage),
+      })),
       slashSkills,
       isTeamMode,
     );
@@ -1022,7 +1028,17 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         ? { ...item, disabled: true, disabledReason: t('plan.toolbarUnavailableGoal') }
         : item,
     );
-  }, [composerSuggestion, hasUnfinishedGoal, isTeamMode, mentionableMembers, mode, slashCommands, slashSkills, t]);
+  }, [
+    commandDescriptionLanguage,
+    composerSuggestion,
+    hasUnfinishedGoal,
+    isTeamMode,
+    mentionableMembers,
+    mode,
+    slashCommands,
+    slashSkills,
+    t,
+  ]);
 
   const selectableComposerSuggestionIndices = useMemo(
     () =>
@@ -4893,11 +4909,11 @@ function ComposerSuggestionMenu({
             {isSlash
               ? loading
                 ? slashSkillsOnly
-                  ? '正在加载技能…'
-                  : '正在加载指令与技能…'
+                  ? t('chat.slashPicker.loadingSkills')
+                  : t('chat.slashPicker.loadingCommandsAndSkills')
                 : slashSkillsOnly
-                  ? '没有匹配的技能'
-                  : '没有匹配的指令或技能'
+                  ? t('chat.slashPicker.noMatchingSkills')
+                  : t('chat.slashPicker.noMatchingCommandsOrSkills')
               : t('chat.noTeamMembersAvailable')}
           </div>
         ) : (
@@ -4908,7 +4924,9 @@ function ComposerSuggestionMenu({
               <Fragment key={`${suggestion.kind}:${item.itemKind}:${item.id}`}>
                 {showSectionTitle && (
                   <div className="chat-composer-suggestion__section-title">
-                    <span>{item.itemKind === 'command' ? '指令' : '技能'}</span>
+                    <span data-testid="chat-panel-composer-suggestion-section-label" data-variant={item.itemKind}>
+                      {item.itemKind === 'command' ? t('chat.slashPicker.commands') : t('chat.slashPicker.skills')}
+                    </span>
                     <span>({sectionCount})</span>
                   </div>
                 )}

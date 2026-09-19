@@ -715,6 +715,14 @@
     }
   },
   "chat": {
+    "slashPicker": {
+      "commands": "指令",
+      "skills": "技能",
+      "loadingSkills": "正在加载技能…",
+      "loadingCommandsAndSkills": "正在加载指令与技能…",
+      "noMatchingSkills": "没有匹配的技能",
+      "noMatchingCommandsOrSkills": "没有匹配的指令或技能"
+    },
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
     "modelNotConfigured": "还没有配置可用的模型。请在「设置 → 模型」里配置一个模型，或登录获取限时免费模型。",
