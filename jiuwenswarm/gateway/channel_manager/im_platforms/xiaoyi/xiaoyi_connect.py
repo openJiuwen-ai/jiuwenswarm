@@ -737,6 +737,31 @@ class XiaoyiChannel(BaseChannel):
         session_id = self._session_task_map.get(task_id, task_id)
         return session_id, task_id
 
+    def _artifact_delivery_task_id(
+        self, session_id: str, task_id: str, msg: Message
+    ) -> str:
+        """file / html_card / reference 的 A2A taskId。
+
+        sticky task 仍开着时沿用（同轮气泡可展示）。已 ``_finalize_session`` 的
+        sticky 再贴产物手机会丢，改挂本轮 ``msg.id``，``xiaoyi_session_id`` 不变。
+        """
+        if session_id and task_id and self._is_session_active(session_id, task_id):
+            return task_id
+        turn_id = str(getattr(msg, "id", None) or "").strip()
+        if turn_id:
+            if turn_id != task_id:
+                logger.info(
+                    "[GUI_AGENT_DIAG] phase=XIAOYI_ARTIFACT_TASK_FALLBACK "
+                    "session_id=%s sticky_task_id=%s delivery_task_id=%s "
+                    "event_type=%s",
+                    session_id,
+                    task_id,
+                    turn_id,
+                    getattr(msg.event_type, "value", msg.event_type),
+                )
+            return turn_id
+        return task_id
+
     async def send(self, msg: Message, *, routing_target: RoutingTarget | None = None) -> None:
         """发送消息到小艺服务端（A2A 格式，双通道发送）.
 
@@ -993,6 +1018,7 @@ class XiaoyiChannel(BaseChannel):
         # mode 门控跳过——send_file_to_user 的 chat.file 被静默丢弃（且工具侧
         # 已标记已发送，重试被去重，用户永远收不到文件）。
         if msg.event_type == EventType.CHAT_FILE:
+            task_id = self._artifact_delivery_task_id(session_id, task_id, msg)
             files = msg.payload.get("files", {}) if isinstance(msg.payload, dict) else {}
             if files:
                 for file_info in files:
@@ -1021,6 +1047,7 @@ class XiaoyiChannel(BaseChannel):
 
         # Handle chat.reference（手机参考来源卡片；须在 non_user_visible SKIPPED 之前）
         if msg.event_type == EventType.CHAT_REFERENCE:
+            task_id = self._artifact_delivery_task_id(session_id, task_id, msg)
             payload = msg.payload if isinstance(msg.payload, dict) else {}
             refs = coerce_references(payload.get("references"))
             if refs:
@@ -1045,6 +1072,7 @@ class XiaoyiChannel(BaseChannel):
 
         # Handle chat.html_card event（与 chat.file 同理：两种 mode 都要处理）
         if msg.event_type == EventType.CHAT_HTML_CARD:
+            task_id = self._artifact_delivery_task_id(session_id, task_id, msg)
             payload = msg.payload if isinstance(msg.payload, dict) else {}
             cards_info = payload.get("cardsInfo")
             if not isinstance(cards_info, list) or not cards_info:

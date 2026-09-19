@@ -24,6 +24,9 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.file_upload_help
     XiaoyiObsUploadConfig,
     upload_local_file_public_url,
 )
+from jiuwenswarm.agents.harness.common.tools.turn_request_identity import (
+    resolve_toolkit_delivery,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,15 +82,14 @@ class SendHtmlCardToolkit:
         channel_id: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Update per-request runtime context without recreating the toolkit/tool."""
+        """Refresh channel/metadata; cache request_id only as send-path fallback."""
         self.request_id = request_id
         self.session_id = session_id
         self.channel_id = channel_id
         self._request_metadata = dict(metadata) if metadata else None
         logger.debug(
-            "[SendHtmlCardToolkit] update_runtime_context request_id=%s "
-            "session_id=%s channel_id=%s has_metadata=%s",
-            request_id,
+            "[SendHtmlCardToolkit] update_runtime_context session_id=%s "
+            "channel_id=%s has_metadata=%s",
             session_id,
             channel_id,
             bool(self._request_metadata),
@@ -165,10 +167,11 @@ class SendHtmlCardToolkit:
                 append_history_record,
             )
 
+            delivery = resolve_toolkit_delivery(self)
             append_history_record(
-                session_id=self.session_id,
-                request_id=self.request_id,
-                channel_id=self.channel_id,
+                session_id=delivery.session_id,
+                request_id=delivery.turn_request_id,
+                channel_id=delivery.channel_id,
                 role="assistant",
                 event_type="chat.html_card",
                 content="",
@@ -177,9 +180,9 @@ class SendHtmlCardToolkit:
             )
 
             msg: dict[str, Any] = {
-                "request_id": self.request_id,
-                "channel_id": self.channel_id,
-                "session_id": self.session_id,
+                "request_id": delivery.turn_request_id,
+                "channel_id": delivery.channel_id,
+                "session_id": delivery.session_id,
                 "payload": {
                     "event_type": "chat.html_card",
                     "cardsInfo": cards_info,
@@ -187,8 +190,8 @@ class SendHtmlCardToolkit:
                 },
                 "is_complete": False,
             }
-            if self._request_metadata:
-                msg["metadata"] = dict(self._request_metadata)
+            if delivery.metadata:
+                msg["metadata"] = dict(delivery.metadata)
 
             server = AgentWebSocketServer.get_instance()
             await server.send_push(msg)

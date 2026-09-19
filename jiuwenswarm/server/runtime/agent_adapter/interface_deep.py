@@ -6714,14 +6714,15 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         """刷新每请求相关的 cron / send_file / send_html_card / append_reference 工具运行时状态。
 
         两者的工具实例都只建一次：cron 见 ``_ensure_cron_tools_registered``，
-        send_file 首次注册后改走 ``update_runtime_context``。这里每次请求只做
-        幂等检查和运行时上下文更新。
+        send_file 首次注册后不再刷新 toolkit 上的 request_id。
+        已注册后仍刷新 channel/metadata，供 A2A 使用本轮 ``xiaoyi_task_id``。
+        发送时读 InvocationContext；ContextVar 在工具线程看不见时回落到
+        toolkit 上刚刷的 metadata。
         """
         self._ensure_cron_tools_registered(session_id)
 
-        # send_file 工具：由 channels.<channel>.send_file_allowed 控制。工具实例只建一次，
-        # 之后每次请求只用 update_runtime_context 刷新 request_id/session_id/channel 等
-        # 运行时上下文（cron 同理，见上）。
+        # send_file 工具：由 channels.<channel>.send_file_allowed 控制。工具实例只建一次。
+        # 之后不再把每轮 request_id 写入单例。
         # channel_id/metadata 由调用前的 _bind_runtime_cron_context 已写入 contextvar
         config_base = get_config()
         channel = (
@@ -6757,7 +6758,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 for sf_tool in self._send_file_toolkit.get_tools():
                     self._register_agent_owned_tool(sf_tool, self._tool_owner_id())
                     self._instance.ability_manager.add(sf_tool.card)
-            else:
+            elif self._send_file_toolkit is not None:
+                # request_id 不当 turn 源；只刷本轮 channel/metadata。
                 self._send_file_toolkit.update_runtime_context(
                     request_id=request_id,
                     session_id=session_id,

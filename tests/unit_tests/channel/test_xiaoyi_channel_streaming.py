@@ -276,3 +276,119 @@ async def test_direct_gui_response_is_not_forwarded_as_user_message() -> None:
 
     assert len(gui_events) == 1
     assert user_messages == []
+
+
+def _artifact_message(
+    event_type: EventType,
+    payload: dict[str, Any],
+    *,
+    message_id: str = "request-1",
+    sticky_task: str = "xiaoyi-task-1",
+) -> Message:
+    return Message(
+        id=message_id,
+        type="event",
+        channel_id="xiaoyi",
+        session_id="jiuwen-session-1",
+        params={},
+        timestamp=time.time(),
+        ok=True,
+        payload=payload,
+        event_type=event_type,
+        metadata={
+            "xiaoyi_session_id": "xiaoyi-session-1",
+            "xiaoyi_task_id": sticky_task,
+        },
+    )
+
+
+def test_artifact_delivery_task_id_keeps_active_sticky() -> None:
+    channel, _ = _build_channel()
+    channel._mark_session_active("xiaoyi-session-1", "xiaoyi-task-1")
+    msg = _artifact_message(EventType.CHAT_FILE, {"event_type": "chat.file", "files": []})
+    session_id, task_id = channel._extract_platform_receive_info(msg)
+    assert session_id == "xiaoyi-session-1"
+    assert channel._artifact_delivery_task_id(session_id, task_id, msg) == "xiaoyi-task-1"
+
+
+def test_artifact_delivery_task_id_falls_back_when_sticky_completed() -> None:
+    channel, _ = _build_channel()
+    channel._mark_session_active("xiaoyi-session-1", "xiaoyi-task-1")
+    channel._mark_session_completed("xiaoyi-session-1", "xiaoyi-task-1")
+    msg = _artifact_message(
+        EventType.CHAT_FILE,
+        {"event_type": "chat.file", "files": []},
+        message_id="pc-turn-uuid",
+    )
+    session_id, task_id = channel._extract_platform_receive_info(msg)
+    assert session_id == "xiaoyi-session-1"
+    assert task_id == "xiaoyi-task-1"
+    assert channel._artifact_delivery_task_id(session_id, task_id, msg) == "pc-turn-uuid"
+
+
+@pytest.mark.asyncio
+async def test_file_on_completed_sticky_uses_message_id() -> None:
+    channel, _ = _build_channel()
+    captured: list[tuple[str, str]] = []
+
+    async def fake_send_file(session_id, task_id, file_info, url_key):
+        captured.append((session_id, task_id))
+
+    channel._send_file_response = fake_send_file
+    channel._mark_session_active("xiaoyi-session-1", "xiaoyi-task-1")
+    channel._mark_session_completed("xiaoyi-session-1", "xiaoyi-task-1")
+    await channel.send(
+        _artifact_message(
+            EventType.CHAT_FILE,
+            {
+                "event_type": "chat.file",
+                "files": [{"path": "/tmp/a.jpg", "name": "a.jpg"}],
+            },
+            message_id="pc-turn-uuid",
+        )
+    )
+    assert captured == [("xiaoyi-session-1", "pc-turn-uuid")]
+
+
+@pytest.mark.asyncio
+async def test_file_on_active_sticky_keeps_task_id() -> None:
+    channel, _ = _build_channel()
+    captured: list[tuple[str, str]] = []
+
+    async def fake_send_file(session_id, task_id, file_info, url_key):
+        captured.append((session_id, task_id))
+
+    channel._send_file_response = fake_send_file
+    channel._mark_session_active("xiaoyi-session-1", "xiaoyi-task-1")
+    await channel.send(
+        _artifact_message(
+            EventType.CHAT_FILE,
+            {
+                "event_type": "chat.file",
+                "files": [{"path": "/tmp/a.jpg", "name": "a.jpg"}],
+            },
+            message_id="pc-turn-uuid",
+        )
+    )
+    assert captured == [("xiaoyi-session-1", "xiaoyi-task-1")]
+
+
+@pytest.mark.asyncio
+async def test_html_card_on_completed_sticky_uses_message_id() -> None:
+    channel, _ = _build_channel()
+    captured: list[tuple[str, str, str]] = []
+
+    async def fake_send_html(session_id, task_id, message_id, cards_info, url_key):
+        captured.append((session_id, task_id, message_id))
+
+    channel._send_html_card_response = fake_send_html
+    channel._mark_session_active("xiaoyi-session-1", "xiaoyi-task-1")
+    channel._mark_session_completed("xiaoyi-session-1", "xiaoyi-task-1")
+    await channel.send(
+        _artifact_message(
+            EventType.CHAT_HTML_CARD,
+            {"event_type": "chat.html_card", "url": "https://example.com/card.html"},
+            message_id="pc-turn-uuid",
+        )
+    )
+    assert captured == [("xiaoyi-session-1", "pc-turn-uuid", "pc-turn-uuid")]
