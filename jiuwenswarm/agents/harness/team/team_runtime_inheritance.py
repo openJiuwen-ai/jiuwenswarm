@@ -30,6 +30,20 @@ from openjiuwen.extensions.observability.demand import (
     get_trajectory_span_processor,
 )
 
+try:
+    from jiuwenswarm.extensions.co_scribe.backend.toolkit.clouddoc_tools import (
+        ALL_TOOL_NAMES as ALL_CLOUDDOC_TOOL_NAMES,
+    )
+except ImportError:  # pragma: no cover - the plugin is not installed
+    # **The host must not need the plugin to import.** This module is reached from
+    # ``harness.common.rails.__init__`` through ``team.__init__`` and
+    # ``team_manager``, so an unguarded import here does not fail one feature -- it
+    # takes the whole rails tree down, and with it the agent runtime, on any
+    # deployment that does not ship co-scribe. Measured: five host modules failed to
+    # import behind one line.
+    #
+    # A missing plugin means no tools to inherit, which is exactly the empty set.
+    ALL_CLOUDDOC_TOOL_NAMES: tuple[str, ...] = ()
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
@@ -152,6 +166,13 @@ TOOL_WHITELIST = frozenset({
     "web_paid_search",
     "skill_toolkit",
     "acp_chat",
+    # Co-scribe, taken from the toolkit's own list rather than copied.
+    #
+    # Copied is how it would drift: a tool added to the toolkit and forgotten here does
+    # not appear for a team member, and nothing raises -- the whitelist filter logs at
+    # debug and moves on. The design already carried that drift once, describing seven
+    # tools while the code built nine.
+    *ALL_CLOUDDOC_TOOL_NAMES,
 })
 
 

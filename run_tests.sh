@@ -17,7 +17,11 @@ echo ""
 # Default values
 COVERAGE_REPORT="term"
 VERBOSE="-v"
-TEST_PATH="tests/"
+# Plugins keep their own tests beside their code; naming a path here overrides
+# pytest.ini's testpaths, so the extension trees have to be named as well or a
+# plugin's suite silently stops running.
+EXTENSION_TESTS="jiuwenswarm/extensions/*/tests"
+TEST_PATH="tests/ $EXTENSION_TESTS"
 PARALLEL=false
 
 # Parse arguments
@@ -32,7 +36,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -u|--unit-only)
-            TEST_PATH="tests/unit_tests/"
+            TEST_PATH="tests/unit_tests/ $EXTENSION_TESTS"
             shift
             ;;
         -i|--integration-only)

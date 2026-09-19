@@ -1,6 +1,7 @@
 import { ArrowLeft, Boxes, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import { ApplicationPluginCard } from './ApplicationPluginCard';
 import { applicationPluginSettingsComponent } from './ApplicationPluginOutlet';
 import type { ApplicationPluginContribution } from './types';
 import './applicationPlugins.css';
@@ -51,28 +52,14 @@ export function ApplicationPluginsPanel({
         </div>
       )}
       <div className="application-plugins-panel__list">
-        {uniquePlugins.map(plugin => {
-          const Settings = applicationPluginSettingsComponent(plugin.plugin_id);
-          return (
-            <article className="application-plugins-panel__item" key={plugin.plugin_id}>
-              <div className="application-plugins-panel__identity">
-                <span className="application-plugins-panel__icon"><Boxes aria-hidden /></span>
-                <div>
-                  <strong>{plugin.title_i18n_key ? t(plugin.title_i18n_key, plugin.title) : plugin.title}</strong>
-                  <span>{plugin.plugin_id} · v{plugin.plugin_version}</span>
-                </div>
-                <span className={`application-plugins-panel__status${plugin.enabled !== false ? ' is-enabled' : ''}`}>
-                  {plugin.enabled !== false ? t('applicationPlugins.enabled') : t('applicationPlugins.disabled')}
-                </span>
-              </div>
-              {Settings ? (
-                <Settings contribution={plugin} onManifestChanged={() => void onRefresh()} />
-              ) : (
-                <p className="application-plugins-panel__no-settings">{t('applicationPlugins.noSettings')}</p>
-              )}
-            </article>
-          );
-        })}
+        {uniquePlugins.map(plugin => (
+          <ApplicationPluginCard
+            key={plugin.plugin_id}
+            plugin={plugin}
+            settings={applicationPluginSettingsComponent(plugin.plugin_id)}
+            onRefresh={onRefresh}
+          />
+        ))}
       </div>
     </section>
   );

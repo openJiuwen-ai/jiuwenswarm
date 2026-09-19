@@ -19,6 +19,7 @@ import { Switch } from '../Switch';
 import { Tabs } from '../ui';
 import { resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
 import { pruneEnabledExtensions } from '../../utils/enabledExtensions';
+import { fetchApplicationPlugins } from '../../applicationPlugins/manifest';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
 import { PickerSearchInput } from './PickerSearchInput';
 
@@ -72,6 +73,34 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   const busyMap = useConnectorStore((s) => s.busyMap);
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const connectMcp = useConnectorStore((s) => s.connect);
+
+  // Application plugins do not belong in this secondary panel: they bring their own
+  // page and are managed on the Application plugins page, and their capabilities take
+  // effect through the plugin's own switch rather than the checkbox here (measured:
+  // with the checkbox off, the cloud-doc tools still ran). Filter on the general rule
+  // "was it contributed as an application plugin" instead of hard-coding one id -- any
+  // application plugin added later then stays out of here by itself.
+  //
+  // Note that plugin_names is not only used to resolve MCP connectors: interface_deep's
+  // _load_plugins_for_request passes it to load_plugin(pkg_dir), which mounts the skills
+  // directory declared in the plugin package's manifest.json as an extra skill-scan
+  // root. So the skills a filtered-out plugin package carries never reach the agent
+  // either -- an application plugin's skills have to go through the skills library
+  // (resources/agent/workspace/skills), the one root every session scans, unattended
+  // turns included.
+  const [applicationPluginIds, setApplicationPluginIds] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    let active = true;
+    void fetchApplicationPlugins()
+      .then((plugins) => {
+        if (active) setApplicationPluginIds(new Set(plugins.map((plugin) => plugin.plugin_id)));
+      })
+      .catch(() => {
+        // 清单拿不到就退回"不过滤"：宁可多显示一行空转的开关，也不要因为一次网络失败
+        // 把用户真正能用的插件也一起藏掉。
+      });
+    return () => { active = false; };
+  }, []);
 
   const [tokenTarget, setTokenTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
   const [authTarget, setAuthTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
@@ -156,11 +185,16 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [onClose]);
 
+  const selectablePackages = useMemo(
+    () => packages.filter((p) => !applicationPluginIds.has(resolvePluginPickerIdentifiers(p).marketplaceId)),
+    [packages, applicationPluginIds],
+  );
+
   const filteredPlugins = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return packages;
-    return packages.filter((p) => localizedText(p.displayName, i18n.language).toLowerCase().includes(q));
-  }, [packages, searchQuery, i18n.language]);
+    if (!q) return selectablePackages;
+    return selectablePackages.filter((p) => localizedText(p.displayName, i18n.language).toLowerCase().includes(q));
+  }, [selectablePackages, searchQuery, i18n.language]);
 
   const filteredMcps = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();

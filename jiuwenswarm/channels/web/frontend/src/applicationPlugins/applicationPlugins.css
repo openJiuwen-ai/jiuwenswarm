@@ -55,6 +55,7 @@
 
 .application-plugins-panel__header p,
 .application-plugins-panel__identity span,
+.application-plugins-panel__description,
 .application-plugins-panel__no-settings {
   margin: 0;
   color: var(--color-text-secondary);
@@ -120,8 +121,43 @@
   height: 36px;
   flex: 0 0 36px;
   place-items: center;
+  padding: 0;
+  border: 0;
   border-radius: 6px;
   background: var(--color-surface-muted);
+  color: inherit;
+  overflow: hidden;
+}
+
+/* The icon is the description's disclosure control, so it has to look and
+   focus like one -- a pointer, and a visible ring for keyboard users. */
+.application-plugins-panel__icon--button {
+  cursor: pointer;
+}
+
+.application-plugins-panel__icon--button:focus-visible {
+  outline: 2px solid var(--color-feedback-success);
+  outline-offset: 2px;
+}
+
+/* A plugin that ships its own mark needs no plate behind it: the plate is
+   there to seat the fallback line drawing, and around real artwork it reads
+   as a grey frame. */
+.application-plugins-panel__icon--art {
+  background: transparent;
+  border-radius: 0;
+}
+
+.application-plugins-panel__icon img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.application-plugins-panel__description {
+  margin: -8px 0 16px;
+  padding-left: 48px;
+  line-height: 20px;
 }
 
 .application-plugins-panel__status {

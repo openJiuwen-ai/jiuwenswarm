@@ -1,0 +1,15 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none">
+  <!-- Cloud behind, page in front. The cloud is one open path beginning and
+       ending on the page's left edge, so the page occludes it without a fill:
+       the rail paints this shape as a mask, and any filled region would come
+       out a solid blob rather than a drawing.
+       Sized to fill the 16 square, because the rail sets every icon in a box
+       of the same width and a drawing that hugs the centre reads as smaller
+       than its neighbours. -->
+  <path d="M9.2 3.2a3.35 3.35 0 0 0-5.1 2.15A2.75 2.75 0 0 0 4.5 12.1h4.7"
+        stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="9.2" y="2.2" width="5.5" height="11.5" rx="1.15"
+        stroke="currentColor" stroke-width="1.15"/>
+  <path d="M10.7 5.3h2.5M10.7 7.7h2.5M10.7 10.1h1.5"
+        stroke="currentColor" stroke-width="1.05" stroke-linecap="round"/>
+</svg>

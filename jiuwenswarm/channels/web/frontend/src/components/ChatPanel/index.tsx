@@ -40,6 +40,7 @@ import type { HumanShareCommand } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
+import { DocReferencesStrip } from './DocReferencesStrip';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
@@ -2004,6 +2005,7 @@ export const ChatPanel = React.memo(function ChatPanel({
               onClearGoal={onClearGoal}
             />
           )}
+          <DocReferencesStrip />
           <InputArea
             ref={inputAreaRef}
             onSubmit={handleSendMessage}

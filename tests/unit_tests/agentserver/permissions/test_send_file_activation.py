@@ -52,6 +52,7 @@ def _adapter(*, registered_send_tool: bool = False) -> JiuWenSwarmDeepAdapter:
     adapter._enable_auto_permission = False
     adapter._last_mode = "agent.work.normal"
     adapter._session_messaging_toolkit = None
+    adapter._clouddoc_toolkit = None
     return adapter
 
 
@@ -130,10 +131,15 @@ async def test_registered_send_tool_stays_without_auto_authorization() -> None:
 async def test_registered_send_tool_tracks_adapter_auto_activation() -> None:
     adapter = _adapter(registered_send_tool=True)
     adapter._send_file_toolkit = MagicMock()
-    adapter._enable_auto_permission = True
-    await adapter._update_session_tools("session-auto", "request-auto", "web")
-    adapter._enable_auto_permission = False
-    await adapter._update_session_tools("session-manual", "request-manual", "web")
+    with patch.object(
+        adapter_module,
+        "get_config",
+        return_value={"permissions": {"mode": "manual"}},
+    ):
+        adapter._enable_auto_permission = True
+        await adapter._update_session_tools("session-auto", "request-auto", "web")
+        adapter._enable_auto_permission = False
+        await adapter._update_session_tools("session-manual", "request-manual", "web")
 
     authorization_values = [
         item.kwargs["require_execution_authorization"]
