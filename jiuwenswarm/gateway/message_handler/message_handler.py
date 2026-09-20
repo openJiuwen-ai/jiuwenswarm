@@ -2940,15 +2940,23 @@ class MessageHandler(FileTransferMixin, ABC):
         try:
             chunk = parse_agent_server_wire_chunk(wire)
         except Exception as e:
-            from jiuwenswarm.common.audit_emit import emit_audit_evt
-
-            emit_audit_evt(
-                SUBMDL="gateway",
-                PROC="agent_push_handle",
-                MSG=str(e),
-                EVT="agent_push_parse_failed",
-            )
             logger.exception("[MessageHandler] server_push 解析失败: %s", e)
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                emit_audit_evt(
+                    SUBMDL="gateway",
+                    PROC="agent_push_handle",
+                    MSG=str(e),
+                    EVT="agent_push_parse_failed",
+                    request_id=str(wire.get("request_id") or ""),
+                    session_id=str(wire.get("session_id") or ""),
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[MessageHandler] agent_push_handle audit skipped",
+                    exc_info=True,
+                )
             return
         rid = str(chunk.request_id or "")
         sid_raw = wire.get("session_id")
@@ -4605,11 +4613,57 @@ class MessageHandler(FileTransferMixin, ABC):
                         else:
                             # Other channels stay non-blocking so a slow interrupt
                             # cannot stall unrelated sessions in _forward_loop.
-                            await self._cancel_agent_work_for_session(
-                                msg,
-                                msg.session_id,
-                                agent_notify="fire_and_forget",
-                            )
+                            try:
+                                cancel_ok = await self._cancel_agent_work_for_session(
+                                    msg,
+                                    msg.session_id,
+                                    agent_notify="fire_and_forget",
+                                )
+                                from jiuwenswarm.common.audit_emit import (
+                                    emit_audit_evt,
+                                    emit_audit_ua,
+                                )
+
+                                _audit_uid = str(getattr(msg, "user_id", None) or "").strip()
+                                _audit_fields = {
+                                    "UID": _audit_uid or "-",
+                                    "session_id": str(msg.session_id or ""),
+                                    "request_id": str(msg.id or ""),
+                                    "MSG": "intent=cancel",
+                                }
+                                if cancel_ok:
+                                    emit_audit_ua(
+                                        SUBMDL="gateway",
+                                        PROC="chat_interrupt",
+                                        UA="chat_interrupt",
+                                        **_audit_fields,
+                                    )
+                                else:
+                                    emit_audit_evt(
+                                        SUBMDL="gateway",
+                                        PROC="chat_interrupt",
+                                        EVT="chat_interrupt",
+                                        **_audit_fields,
+                                    )
+                            except Exception as cancel_exc:  # noqa: BLE001
+                                try:
+                                    from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                                    emit_audit_evt(
+                                        SUBMDL="gateway",
+                                        PROC="chat_interrupt",
+                                        UID=str(getattr(msg, "user_id", None) or "").strip() or "-",
+                                        session_id=str(msg.session_id or ""),
+                                        request_id=str(msg.id or ""),
+                                        MSG=str(cancel_exc),
+                                        EVT="chat_interrupt",
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    logger.debug(
+                                        "[MessageHandler] chat_interrupt audit skipped",
+                                        exc_info=True,
+                                    )
+                                raise
 
                     elif intent in ("pause", "resume"):
                         # 暂停/恢复：不取消流式任务，转发给 AgentServer 处理 ReAct 循环

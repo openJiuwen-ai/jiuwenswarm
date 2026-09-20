@@ -101,50 +101,23 @@ class FeishuCardKitClient:
         path: str,
         body: dict[str, Any],
     ) -> dict[str, Any]:
-        from jiuwenswarm.common.audit_emit import audit_timer, emit_audit_evt, emit_audit_ua
-
-        with audit_timer() as timer:
-            for attempt in range(2):
-                token = await self._get_token()
-                try:
-                    result = await self._request(
-                        method,
-                        path,
-                        headers={"Authorization": f"Bearer {token}"},
-                        json=body,
-                    )
-                    emit_audit_ua(
-                        SUBMDL="api_client",
-                        PROC="feishu_cardkit_request",
-                        COST=timer.cost_ms,
-                        method=method,
-                        path=path,
-                    )
-                    return result
-                except CardKitError as exc:
-                    if "authentication" not in str(exc).lower() or attempt:
-                        emit_audit_evt(
-                            SUBMDL="api_client",
-                            PROC="feishu_cardkit_request",
-                            MSG=str(exc),
-                            EVT="feishu_cardkit_request_failed",
-                            method=method,
-                            path=path,
-                        )
-                        raise
-                    async with self._token_lock:
-                        if self._token == token:
-                            self._token = ""
-                            self._token_expires_at = 0.0
-            emit_audit_evt(
-                SUBMDL="api_client",
-                PROC="feishu_cardkit_request",
-                MSG="CardKit authentication retry exhausted",
-                EVT="feishu_cardkit_auth_failed",
-                method=method,
-                path=path,
-            )
-            raise CardKitError("CardKit authentication retry exhausted")
+        for attempt in range(2):
+            token = await self._get_token()
+            try:
+                return await self._request(
+                    method,
+                    path,
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=body,
+                )
+            except CardKitError as exc:
+                if "authentication" not in str(exc).lower() or attempt:
+                    raise
+                async with self._token_lock:
+                    if self._token == token:
+                        self._token = ""
+                        self._token_expires_at = 0.0
+        raise CardKitError("CardKit authentication retry exhausted")
 
     async def _get_token(self) -> str:
         if self._token and time.monotonic() < self._token_expires_at:

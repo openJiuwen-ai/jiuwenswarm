@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import (
     Counter,
     Histogram,
@@ -45,9 +47,11 @@ _CUMULATIVE_TEMPORALITY = {
 class ProviderBundle:
     tracer_provider: TracerProvider | None = None
     meter_provider: MeterProvider | None = None
+    logger_provider: LoggerProvider | None = None
     resource: Resource | None = None
     owns_tracer: bool = True
     owns_meter: bool = True
+    owns_logger: bool = True
 
 
 def _package_version() -> str:
@@ -127,13 +131,24 @@ def coerce_provider_bundle(value: Any) -> ProviderBundle:
         )
     if not isinstance(owns_meter, bool):
         raise TypeError(f"owns_meter must be a bool, got {type(owns_meter).__name__}")
+    logger_provider = getattr(value, "logger_provider", None)
+    if logger_provider is not None and not isinstance(logger_provider, LoggerProvider):
+        raise TypeError(
+            "logger_provider must be a LoggerProvider instance or None, "
+            f"got {type(logger_provider).__name__}"
+        )
+    owns_logger = getattr(value, "owns_logger", True)
+    if not isinstance(owns_logger, bool):
+        raise TypeError(f"owns_logger must be a bool, got {type(owns_logger).__name__}")
 
     return ProviderBundle(
         tracer_provider=tracer_provider,
         meter_provider=meter_provider,
+        logger_provider=logger_provider,
         resource=resource,
         owns_tracer=owns_tracer,
         owns_meter=owns_meter,
+        owns_logger=owns_logger,
     )
 
 
@@ -156,7 +171,7 @@ def build_provider_bundle(
 def build_default_providers(cfg: TelemetryConfig) -> ProviderBundle:
     """Build default providers; installation belongs to TelemetryRuntime."""
     if not cfg.enabled:
-        return ProviderBundle(owns_tracer=False, owns_meter=False)
+        return ProviderBundle(owns_tracer=False, owns_meter=False, owns_logger=False)
 
     attributes = {
         SERVICE_NAME: cfg.service_name,
@@ -172,9 +187,16 @@ def build_default_providers(cfg: TelemetryConfig) -> ProviderBundle:
     except BaseException:
         _shutdown_quietly(tracer_provider)
         raise
+    try:
+        logger_provider = _build_logger_provider(cfg, resource)
+    except BaseException:
+        _shutdown_quietly(tracer_provider)
+        _shutdown_quietly(meter_provider)
+        raise
     return ProviderBundle(
         tracer_provider=tracer_provider,
         meter_provider=meter_provider,
+        logger_provider=logger_provider,
         resource=resource,
     )
 
@@ -253,6 +275,54 @@ def _build_metric_reader(exporter: Any, *, export_interval_millis: int):
     except BaseException:
         _shutdown_quietly(exporter)
         raise
+
+
+def _build_logger_provider(cfg: TelemetryConfig, resource: Resource) -> LoggerProvider:
+    provider = LoggerProvider(resource=resource)
+    try:
+        if cfg.logs_exporter == "none":
+            return provider
+        if cfg.logs_exporter == "console":
+            from opentelemetry.sdk._logs.export import (
+                ConsoleLogRecordExporter,
+                SimpleLogRecordProcessor,
+            )
+
+            provider.add_log_record_processor(
+                SimpleLogRecordProcessor(ConsoleLogRecordExporter())
+            )
+            return provider
+        if cfg.logs_exporter == "otlp":
+            provider.add_log_record_processor(
+                BatchLogRecordProcessor(_create_otlp_log_exporter(cfg))
+            )
+            return provider
+        raise ValueError(f"Unsupported logs exporter: {cfg.logs_exporter}")
+    except BaseException:
+        _shutdown_quietly(provider)
+        raise
+
+
+def _create_otlp_log_exporter(cfg: TelemetryConfig):
+    if cfg.logs_protocol == "http":
+        from opentelemetry.exporter.otlp.proto.http._log_exporter import (
+            OTLPLogExporter,
+        )
+
+        return OTLPLogExporter(
+            endpoint=_signal_http_endpoint(cfg, "logs", "/v1/logs"),
+            headers=cfg.logs_headers,
+        )
+    if cfg.logs_protocol == "grpc":
+        from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+            OTLPLogExporter,
+        )
+
+        return OTLPLogExporter(
+            endpoint=cfg.logs_endpoint,
+            headers=cfg.logs_headers,
+        )
+    raise ValueError(f"Unsupported logs protocol: {cfg.logs_protocol}")
 
 
 def _otlp_http_endpoint(endpoint: str, path: str) -> str:

@@ -150,7 +150,7 @@ class TestHandleStatuslinePromptCommand:
     # --- Exclusion cases (known subcommands should NOT be matched) ---
 
     @pytest.mark.parametrize(
-        "subcmd", list(_STATUSLINE_KNOWN_SUBCOMMANDS)
+        "subcmd", sorted(_STATUSLINE_KNOWN_SUBCOMMANDS)
     )
     @staticmethod
     def test_known_subcommands_excluded(subcmd: str):

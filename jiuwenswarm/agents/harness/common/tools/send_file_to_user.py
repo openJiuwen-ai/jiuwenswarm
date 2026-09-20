@@ -427,14 +427,6 @@ class SendFileToolkit:
                     route.request_id,
                     delivered,
                 )
-                from jiuwenswarm.common.audit_emit import emit_audit_evt
-
-                emit_audit_evt(
-                    SUBMDL="file",
-                    PROC="send_file_to_user",
-                    MSG="推送通道无活跃订阅者或投递失败",
-                    EVT="send_file_failed",
-                )
                 return (
                     "发送文件失败：推送通道无活跃订阅者或投递失败"
                     f"（delivered={delivered!r}）。请检查 Gateway/Relay WebSocket 连接后重试。"
@@ -469,28 +461,12 @@ class SendFileToolkit:
                 result_parts.append("以下文件不存在，未发送：")
                 for mf in missing_files:
                     result_parts.append(f"  - {mf}")
-            from jiuwenswarm.common.audit_emit import emit_audit_ua
-
-            emit_audit_ua(
-                SUBMDL="file",
-                PROC="send_file_to_user",
-                session_id=route.session_id,
-                file_count=len(valid_files),
-            )
             return "\n".join(result_parts)
         except Exception as e:
-            from jiuwenswarm.common.audit_emit import emit_audit_evt
-
             logger.exception(
                 "[SendFileToolkit] send_file 失败 session_id=%s error=%s",
                 route.session_id,
                 str(e),
-            )
-            emit_audit_evt(
-                SUBMDL="file",
-                PROC="send_file_to_user",
-                MSG=str(e),
-                EVT="send_file_failed",
             )
             return f"提交文件失败: {str(e)}"
 
@@ -523,8 +499,17 @@ class SendFileToolkit:
             upload_local_file_to_minio,
         )
 
+        from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
         session = get_subagent_parent_session()
         if session is None or not hasattr(session, "write_stream"):
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="send_file_to_user",
+                MSG="no_write_stream",
+                EVT="send_file_failed",
+                session_id=route.session_id,
+            )
             return (
                 "发送文件失败：当前请求无可用的流式通道，无法投递企业下载链接。"
                 "请确认工具在对话流内执行（session.write_stream）。"
@@ -534,6 +519,13 @@ class SendFileToolkit:
             minio_cfg = load_minio_upload_config()
         except Exception as exc:
             logger.warning("[SendFileToolkit] OBS 配置不可用: %s", exc)
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="send_file_to_user",
+                MSG=str(exc)[:512],
+                EVT="send_file_failed",
+                session_id=route.session_id,
+            )
             return f"发送文件失败：对象存储未配置或不可用（{exc}）"
 
         files_payload: list[dict[str, Any]] = []
@@ -572,6 +564,13 @@ class SendFileToolkit:
             parts = ["发送文件失败：全部文件上传对象存储失败"]
             for ff in failed_files:
                 parts.append(f"  - {ff['file']}: {ff['error']}")
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="send_file_to_user",
+                MSG=parts[0],
+                EVT="send_file_failed",
+                session_id=route.session_id,
+            )
             return "\n".join(parts)
 
         stream_payload: dict[str, Any] = {
@@ -595,9 +594,22 @@ class SendFileToolkit:
                 "[SendFileToolkit] write_stream chat.file 失败 session_id=%s",
                 route.session_id,
             )
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="send_file_to_user",
+                MSG=str(exc)[:512],
+                EVT="send_file_failed",
+                session_id=route.session_id,
+            )
             return f"发送文件失败：写入对话流失败（{exc}）"
 
         _mark_files_sent(route.session_id, sent_ok)
+        emit_audit_ua(
+            SUBMDL="file",
+            PROC="send_file_to_user",
+            session_id=route.session_id,
+            file_count=len(files_payload),
+        )
         result_parts = [
             f"已上传 {len(files_payload)} 个文件到对象存储，下载由 Gateway 代理对象存储"
         ]

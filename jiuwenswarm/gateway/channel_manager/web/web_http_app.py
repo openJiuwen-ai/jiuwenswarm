@@ -15,7 +15,6 @@ from fastapi import Body, FastAPI, File, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from jiuwenswarm.common.audit_emit import emit_audit_evt
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.channel_manager.web.web_http_dispatch import dispatch_http_request
 from jiuwenswarm.gateway.channel_manager.web.web_http_routes import (
@@ -779,13 +778,19 @@ async def _history_json(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[WebHTTP] history json failed: %s", exc)
-        emit_audit_evt(
-            SUBMDL="gateway",
-            PROC="web_http_internal_error",
-            MSG=str(exc),
-            EVT="history_json_failed",
-            method="history.get",
-        )
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+            emit_audit_evt(
+                SUBMDL="gateway",
+                PROC="web_http_internal_error",
+                MSG=str(exc),
+                EVT="web_http_internal_error",
+                request_id=str(req_id or ""),
+                method="history.get",
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("[WebHTTP] web_http_internal_error audit skipped", exc_info=True)
         return JSONResponse(
             {
                 "request_id": req_id,
@@ -871,13 +876,19 @@ async def _unary(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[WebHTTP] unary %s failed: %s", method, exc)
-        emit_audit_evt(
-            SUBMDL="gateway",
-            PROC="web_http_internal_error",
-            MSG=str(exc),
-            EVT="unary_failed",
-            method=method,
-        )
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+            emit_audit_evt(
+                SUBMDL="gateway",
+                PROC="web_http_internal_error",
+                MSG=str(exc),
+                EVT="web_http_internal_error",
+                request_id=str(req_id or ""),
+                method=str(method or ""),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("[WebHTTP] web_http_internal_error audit skipped", exc_info=True)
         return JSONResponse(
             {
                 "request_id": req_id,

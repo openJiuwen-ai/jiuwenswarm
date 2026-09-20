@@ -784,6 +784,7 @@ function FileDownloadList({
 }) {
   const { t } = useTranslation();
   const [expiredSet, setExpiredSet] = useState<Set<number>>(new Set());
+  const downloadProbeKey = files.map((file) => file.download_url).join('\0');
 
   useEffect(() => {
     let cancelled = false;
@@ -801,7 +802,9 @@ function FileDownloadList({
         });
     });
     return () => { cancelled = true; };
-  }, [files]);
+    // 只跟下载地址走。message 更新会换新的 files 数组，否则同一张卡片会反复 HEAD。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [downloadProbeKey]);
 
   const handleDownload = async (file: FileDownloadItem, index: number) => {
     if (expiredSet.has(index)) return;

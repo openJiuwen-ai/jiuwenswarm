@@ -6834,14 +6834,6 @@ class JiuWenSwarmDeepAdapter:
             startup_mode=get_sandbox_startup_mode(),
             shared_dir=shared_dir,
         )
-        if card is not None:
-            from jiuwenswarm.common.audit_emit import emit_audit_ua
-
-            emit_audit_ua(
-                SUBMDL="sandbox",
-                PROC="create_sandbox",
-                sandbox_type=sandbox_type,
-            )
         return card
 
     def _resolve_project_dir_for_sandbox(self) -> str | None:
@@ -7094,6 +7086,17 @@ class JiuWenSwarmDeepAdapter:
                     return registered_sys_operation
                 logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: %s", result.msg())
                 return None
+            # 仅在真正 add 成功（非复用）时打 create_sandbox UA
+            if runtime.get("enabled") and sandbox_url and sandbox_type:
+                from jiuwenswarm.common.audit_emit import emit_audit_ua
+                from jiuwenswarm.common.audit_net import resolve_peer_ip
+
+                emit_audit_ua(
+                    SUBMDL="sandbox",
+                    PROC="create_sandbox",
+                    sandbox_type=sandbox_type,
+                    DSTIP=resolve_peer_ip(sandbox_url),
+                )
             return Runner.resource_mgr.get_sys_operation(sysop_card.id)
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: %s", exc)
@@ -7465,8 +7468,6 @@ class JiuWenSwarmDeepAdapter:
             runtime: ``get_sandbox_runtime()`` 当前完整 runtime。
             files_changed: 是否触发文件 policy 变更; 仅 files.* 子命令需要 True。
         """
-        from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
-
         card = self._sys_operation_card
         if card is None or card.mode != OperationMode.SANDBOX:
             logger.info(
@@ -7479,12 +7480,6 @@ class JiuWenSwarmDeepAdapter:
         if launcher is None:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] apply_sandbox_runtime_patch: missing launcher_config"
-            )
-            emit_audit_evt(
-                SUBMDL="sandbox",
-                PROC="apply_sandbox_policy",
-                MSG="missing launcher_config",
-                EVT="apply_sandbox_policy_failed",
             )
             return
 
@@ -7506,12 +7501,6 @@ class JiuWenSwarmDeepAdapter:
                         "[JiuWenSwarmDeepAdapter] delete_yuanrong_sandbox import "
                         "failed: %s",
                         exc,
-                    )
-                    emit_audit_evt(
-                        SUBMDL="sandbox",
-                        PROC="apply_sandbox_policy",
-                        MSG=str(exc),
-                        EVT="apply_sandbox_policy_failed",
                     )
                     return
                 try:
@@ -7542,12 +7531,6 @@ class JiuWenSwarmDeepAdapter:
                         "[JiuWenSwarmDeepAdapter] delete_yuanrong_sandbox failed: %s",
                         exc,
                     )
-                    emit_audit_evt(
-                        SUBMDL="sandbox",
-                        PROC="apply_sandbox_policy",
-                        MSG=str(exc),
-                        EVT="apply_sandbox_policy_failed",
-                    )
             return
 
         extra = launcher.extra_params or {}
@@ -7577,11 +7560,6 @@ class JiuWenSwarmDeepAdapter:
             files_changed,
             len(upload_list),
         )
-        emit_audit_ua(
-            SUBMDL="sandbox",
-            PROC="apply_sandbox_policy",
-            files_changed=files_changed,
-        )
 
         if files_changed:
             try:
@@ -7593,12 +7571,6 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] force_recreate_jiuwenbox_sandbox import "
                     "failed: %s",
                     exc,
-                )
-                emit_audit_evt(
-                    SUBMDL="sandbox",
-                    PROC="apply_sandbox_policy",
-                    MSG=str(exc),
-                    EVT="apply_sandbox_policy_failed",
                 )
                 return
             try:
@@ -7618,12 +7590,6 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] force_recreate_jiuwenbox_sandbox "
                     "failed: %s",
                     exc,
-                )
-                emit_audit_evt(
-                    SUBMDL="sandbox",
-                    PROC="apply_sandbox_policy",
-                    MSG=str(exc),
-                    EVT="apply_sandbox_policy_failed",
                 )
 
     @staticmethod
@@ -20635,15 +20601,6 @@ class JiuWenSwarmDeepAdapter:
 
                 if chunk_type == "security.alert":
                     if isinstance(payload, dict):
-                        from jiuwenswarm.common.audit_emit import emit_audit_evt
-
-                        emit_audit_evt(
-                            SUBMDL="alert",
-                            PROC="security_alert",
-                            MSG=str(payload.get("message") or payload.get("content") or "security.alert"),
-                            EVT="security_alert",
-                            level="ERROR",
-                        )
                         return {
                             "event_type": "security.alert",
                             **payload,

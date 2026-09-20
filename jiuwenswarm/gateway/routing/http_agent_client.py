@@ -27,7 +27,7 @@ from jiuwenswarm.gateway.routing.agent_client import (
     AGENT_REQUEST_TIMEOUT_SECONDS,
     AgentServerClient,
 )
-from jiuwenswarm.common.audit_emit import audit_timer, emit_audit_evt, emit_audit_ua
+from jiuwenswarm.common.audit_emit import AuditTimer, emit_audit_evt, emit_audit_ua
 from jiuwenswarm.gateway.routing.agent_rest_map import (
     assemble_rest_request,
     normalize_agent_http_base,
@@ -327,13 +327,16 @@ class HttpSseAgentServerClient(AgentServerClient):
     async def send_request(
         self, envelope: E2AEnvelope, *, base_url: str | None = None
     ) -> AgentResponse:
-        with audit_timer() as timer:
+        from jiuwenswarm.common.audit_net import resolve_peer_ip
+
+        with AuditTimer() as timer:
             http = self._ensure_http()
             api_root = self._resolve_api_root(base_url)
             envelope.is_stream = False
             assembled = assemble_rest_request(envelope, base_url=api_root)
             channel_id = str(envelope.channel or "web")
             rid = str(envelope.request_id or "")
+            peer_ip = resolve_peer_ip(assembled.url or api_root)
             logger.info(
                 "[E2A][out][http][unary] request_id=%s method=%s %s %s rpc=%s",
                 rid,
@@ -363,6 +366,7 @@ class HttpSseAgentServerClient(AgentServerClient):
                     EVT="http_agent_send_failed",
                     request_id=rid,
                     method=str(envelope.method or ""),
+                    DSTIP=peer_ip,
                 )
                 raise
             emit_audit_ua(
@@ -371,6 +375,7 @@ class HttpSseAgentServerClient(AgentServerClient):
                 COST=timer.cost_ms,
                 request_id=rid,
                 method=str(envelope.method or ""),
+                DSTIP=peer_ip,
             )
             return result
 

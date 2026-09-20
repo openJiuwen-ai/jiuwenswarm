@@ -30,6 +30,8 @@ from a2a.types import (
     TaskState,
 )
 
+from jiuwenswarm.common.audit_emit import AuditTimer, emit_audit_evt, emit_audit_ua
+
 from .credentials import A2AOutboundCredentialStore
 from .discovery import A2AOutboundDiscoveryService, create_pinned_transport
 from .errors import A2AOutboundError, A2AOutboundErrorCode, safe_error_summary
@@ -42,8 +44,6 @@ from .models import (
     A2AOutboundDispatchStatus,
 )
 from .repository import A2AOutboundRepository, utc_now_text
-
-from jiuwenswarm.common.audit_emit import audit_timer, emit_audit_evt, emit_audit_ua
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +290,7 @@ class A2AOutboundDispatcher:
         source_user_id = str(source_user_id or "").strip() or None
         if getattr(self._repository, "manager_owned", False) and not source_user_id:
             raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
-        with audit_timer() as timer:
+        with AuditTimer() as timer:
             try:
                 result = await self._dispatch_impl(
                     agent_id=agent_id,
