@@ -6,9 +6,10 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 await build({
   absWorkingDir: root,
   entryPoints: [
-    'src/components/InteractionSlot/SkillPackagePrompt.tsx',
+    'src/components/InteractionSlot/index.tsx',
     'src/components/InteractionSlot/promptRouting.ts',
     'src/i18n/index.ts',
+    'src/stores/index.ts',
   ],
   outbase: 'src',
   outdir: 'node_modules/.cache/skill-package-prompt',

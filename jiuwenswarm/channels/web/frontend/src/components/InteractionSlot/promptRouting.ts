@@ -5,7 +5,7 @@
  *  - authorization: 工具权限 / 操作确认 / 扩展激活 / 技能演进审批(evolution_interrupt)
  *                   —— 输入框上方吸附「授权条」
  *  - interaction:   Agent 主动提问（ask_user）—— 输入框上方吸附「交互卡」，支持单/多选/输入/多轮
- *  - experience:    Symphony 推荐的可复用技能包——输入框上方专用审批卡
+ *  - experience:    Symphony 推荐的可复用技能包——复用 InteractionPrompt 交互窗口
  *  - legacy:        计划审批(plan approval) / 演进审批的旧 source 别名(skill_evolution_approval)
  *                   —— 仍走原 InlineQuestionCard
  */

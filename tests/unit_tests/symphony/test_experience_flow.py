@@ -7,7 +7,7 @@ import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import openjiuwen.symphony as core_symphony
 import pytest
@@ -144,6 +144,8 @@ def _review_flow(tmp_path, *, package=None, verdict="approved", artifact=None):
                 reasons=[] if verdict == "approved" else ["manual review required"],
             )
         ),
+        acknowledge_candidate=Mock(return_value=True),
+        release_candidate=Mock(return_value=True),
     )
 
 
@@ -969,7 +971,7 @@ async def test_candidate_push_is_concurrency_idempotent(monkeypatch) -> None:
         restore_runtime_push_handler(push, previous)
 
     assert len(pushes) == 1
-    assert flow.acknowledged == [("recipe-1", 2)]
+    assert flow.acknowledged == []
     payload = pushes[0]["payload"]
     assert payload["event_type"] == "chat.ask_user_question"
     assert [item["label"] for item in payload["questions"][0]["options"]] == [
@@ -983,7 +985,7 @@ async def test_candidate_push_is_concurrency_idempotent(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_successful_candidate_push_stays_deduplicated_when_ack_fails(
+async def test_successful_candidate_push_stays_process_deduplicated(
     monkeypatch,
 ) -> None:
     service = SwarmSymphonyService()
@@ -993,12 +995,7 @@ async def test_successful_candidate_push_stays_deduplicated_when_ack_fails(
         pushes.append(message)
         return True
 
-    class Flow:
-        @staticmethod
-        def acknowledge_candidate(recipe_id: str, version: int) -> bool:
-            raise OSError("store unavailable")
-
-    service._runtime = SimpleNamespace(flow_engine=Flow())
+    service._runtime = SimpleNamespace(flow_engine=SimpleNamespace())
     previous = install_runtime_push_handler(push)
     try:
         await service._notify_candidate(_candidate(), session_id="s1", channel_id="web")
@@ -1007,6 +1004,31 @@ async def test_successful_candidate_push_stays_deduplicated_when_ack_fails(
         restore_runtime_push_handler(push, previous)
 
     assert len(pushes) == 1
+
+
+@pytest.mark.asyncio
+async def test_deferred_candidate_is_offered_by_a_later_successful_run(
+    monkeypatch,
+) -> None:
+    service = SwarmSymphonyService()
+    pushes: list[dict] = []
+
+    async def push(message: dict) -> bool:
+        pushes.append(message)
+        return True
+
+    flow = SimpleNamespace(release_candidate=Mock(return_value=True))
+    service._runtime = SimpleNamespace(flow_engine=flow)
+    previous = install_runtime_push_handler(push)
+    try:
+        await service._notify_candidate(_candidate(), session_id="s1", channel_id="web")
+        service.defer_candidate("recipe-1", 2)
+        await service._notify_candidate(_candidate(), session_id="s2", channel_id="web")
+    finally:
+        restore_runtime_push_handler(push, previous)
+
+    assert len(pushes) == 2
+    flow.release_candidate.assert_called_once_with("recipe-1", 2)
 
 
 @pytest.mark.asyncio
@@ -1091,21 +1113,34 @@ async def test_later_keeps_candidate_without_preparing_install() -> None:
     adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
     request_id = experience_request_id("recipe-1", 2)
 
-    result = await adapter._handle_symphony_experience_answer(
-        request_id,
-        [{"selected_options": ["稍后"]}],
-        {"evolution_meta": {"recipe_id": "recipe-1", "recipe_version": 2}},
-    )
+    service = SimpleNamespace(defer_candidate=Mock())
+    with patch(
+        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        return_value=service,
+    ):
+        result = await adapter._handle_symphony_experience_answer(
+            request_id,
+            [{"selected_options": ["稍后"]}],
+            {"evolution_meta": {"recipe_id": "recipe-1", "recipe_version": 2}},
+        )
 
     assert result["deferred"] is True
     assert result["installed"] is False
     assert result["request_id"] == request_id
+    service.defer_candidate.assert_called_once_with("recipe-1", 2)
 
 
 @pytest.mark.asyncio
-async def test_web_transport_project_dir_does_not_reject_later_answer() -> None:
+async def test_web_transport_project_dir_does_not_reject_later_answer(
+    monkeypatch,
+) -> None:
     adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
     request_id = experience_request_id("recipe-1", 2)
+    service = SimpleNamespace(defer_candidate=Mock())
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        lambda: service,
+    )
 
     result = await adapter._handle_symphony_experience_answer(
         request_id,
@@ -1120,6 +1155,7 @@ async def test_web_transport_project_dir_does_not_reject_later_answer() -> None:
 
     assert result["accepted"] is True
     assert result["deferred"] is True
+    service.defer_candidate.assert_called_once_with("recipe-1", 2)
 
 
 @pytest.mark.asyncio
@@ -1164,14 +1200,17 @@ async def test_install_requires_approved_server_artifact(
     )
 
     assert receipt["installed"] is True
+    assert flow.acknowledge_candidate.call_args_list == [
+        call("recipe-1", 2),
+        call("recipe-1", 2),
+    ]
     assert duplicate == {**receipt, "newly_installed": False, "replayed": True}
     assert len(calls) == 1
     assert calls[0] == artifact
     assert calls[0].exists()
 
-    restarted = _install_service(
-        monkeypatch, _review_flow(tmp_path, package=package, artifact=artifact)
-    )
+    restarted_flow = _review_flow(tmp_path, package=package, artifact=artifact)
+    restarted = _install_service(monkeypatch, restarted_flow)
     persisted = await restarted.install_candidate(
         request_id=request_id,
         recipe_id="recipe-1",
@@ -1182,6 +1221,7 @@ async def test_install_requires_approved_server_artifact(
     )
     assert persisted == {**receipt, "newly_installed": False, "replayed": True}
     assert len(calls) == 1
+    restarted_flow.acknowledge_candidate.assert_called_once_with("recipe-1", 2)
 
 
 @pytest.mark.asyncio

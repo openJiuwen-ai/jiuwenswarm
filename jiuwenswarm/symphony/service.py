@@ -823,19 +823,39 @@ class SwarmSymphonyService:
                 build_server_push_message,
             )
             # Delivery succeeded. Keep the process-local guard even if the
-            # persistent Flow acknowledgement is stale or temporarily fails;
-            # otherwise concurrent submissions can show the same prompt again.
+            # user has not answered yet; otherwise concurrent submissions can
+            # show the same prompt again.
             self._notified_candidates.add(key)
-            runtime = self._runtime
-            if runtime is None or runtime.flow_engine is None:
-                return
-            try:
-                runtime.flow_engine.acknowledge_candidate(*key)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Symphony candidate acknowledgement failed (%s)",
-                    type(exc).__name__,
-                )
+
+    def defer_candidate(self, recipe_id: str, version: int) -> None:
+        """Allow a deferred candidate to be offered by a later successful run."""
+
+        key = (recipe_id, version)
+        self._notified_candidates.discard(key)
+        runtime = self._runtime
+        if runtime is None or runtime.flow_engine is None:
+            return
+        try:
+            runtime.flow_engine.release_candidate(*key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Symphony deferred candidate release failed (%s)",
+                type(exc).__name__,
+            )
+
+    @staticmethod
+    def _acknowledge_installed_candidate(
+        flow: Any,
+        recipe_id: str,
+        recipe_version: int,
+    ) -> None:
+        try:
+            flow.acknowledge_candidate(recipe_id, recipe_version)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Symphony installed candidate acknowledgement failed (%s)",
+                type(exc).__name__,
+            )
 
     def list_experience_candidates(self) -> dict[str, Any]:
         """Return installable Recipe versions retained by the Core Flow store."""
@@ -905,6 +925,11 @@ class SwarmSymphonyService:
         async with self._install_lock:
             previous = self._install_receipts.get(request_id)
             if previous is not None and previous.get("installed") is True:
+                flow = self.runtime().flow_engine
+                if flow is not None:
+                    self._acknowledge_installed_candidate(
+                        flow, recipe_id, recipe_version
+                    )
                 return {**previous, "newly_installed": False, "replayed": True}
             self._install_receipts.pop(request_id, None)
             runtime = self.runtime()
@@ -914,6 +939,7 @@ class SwarmSymphonyService:
             persisted = _read_install_receipt(flow.store.root.resolve(), request_id)
             if persisted is not None and persisted.get("installed") is True:
                 self._install_receipts[request_id] = dict(persisted)
+                self._acknowledge_installed_candidate(flow, recipe_id, recipe_version)
                 return {**persisted, "newly_installed": False, "replayed": True}
             preparation = await flow.review_and_prepare_install(
                 recipe_id,
@@ -1002,6 +1028,7 @@ class SwarmSymphonyService:
             if receipt["installed"]:
                 _save_install_receipt(flow_root, receipt)
                 self._install_receipts[request_id] = dict(receipt)
+                self._acknowledge_installed_candidate(flow, recipe_id, recipe_version)
             return receipt
 
     async def close(self) -> None:
