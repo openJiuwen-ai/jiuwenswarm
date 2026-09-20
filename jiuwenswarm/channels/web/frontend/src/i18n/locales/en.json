@@ -143,7 +143,7 @@
     },
     "general": {
       "preferences": "Interface and connection",
-      "language": "Interface language",
+      "language": "Language",
       "languageDescription": "Set the display language for the application interface.",
       "chinese": "中文（简体）",
       "english": "English",
@@ -341,7 +341,7 @@
     },
     "fields": {
       "preferred_language": {
-        "title": "Interface language",
+        "title": "Language",
         "description": "Set the display language for the application interface."
       },
       "chrome_path": {

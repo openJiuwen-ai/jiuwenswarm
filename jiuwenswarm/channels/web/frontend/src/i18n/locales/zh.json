@@ -143,7 +143,7 @@
     },
     "general": {
       "preferences": "界面与连接",
-      "language": "界面语言",
+      "language": "Language",
       "languageDescription": "设置应用程序界面的界面显示语言。",
       "chinese": "中文（简体）",
       "english": "English",
@@ -341,7 +341,7 @@
     },
     "fields": {
       "preferred_language": {
-        "title": "界面语言",
+        "title": "Language",
         "description": "设置应用程序界面的显示语言。"
       },
       "chrome_path": {
