@@ -1099,3 +1099,105 @@ test('empty history removes storage-only state but keeps a live update', () => {
     globalThis.window = previousWindow;
   }
 });
+
+test('three-child WS sequence replays from history and stays isolated across sessions', () => {
+  const parent = 'session-h';
+  const other = 'session-h-other';
+  const store = useSubagentStore.getState();
+  store.removeRuntime(parent);
+  store.removeRuntime(other);
+
+  const eventFor = (targetSession, revision, overrides = {}) => ({
+    event_type: 'chat.subtask_update',
+    session_id: targetSession,
+    subagent: subagent({
+      parent_session_id: targetSession,
+      revision,
+      ...overrides,
+    }),
+  });
+  const activityFor = (targetSession, childId, activityId) => ({
+    event_type: 'chat.subagent_activity',
+    session_id: targetSession,
+    activity: activity(activityId, 1, {
+      subagent_id: childId,
+      parent_session_id: targetSession,
+      task_id: `task-${childId}`,
+    }),
+  });
+
+  try {
+    const children = ['sa-a', 'sa-b', 'sa-c'];
+    for (const [index, childId] of children.entries()) {
+      store.applyEvent(parent, eventFor(parent, 1, {
+        subagent_id: childId,
+        display_name: `Child ${childId}`,
+        status: 'running',
+        updated_at: 1000 + index,
+      }));
+      store.applyEvent(parent, activityFor(parent, childId, `${childId}-think`));
+    }
+    store.applyEvent(parent, eventFor(parent, 2, {
+      subagent_id: 'sa-a',
+      display_name: 'Child sa-a',
+      status: 'idle',
+      turn_outcome: 'completed',
+      updated_at: 2000,
+    }));
+    store.applyEvent(parent, eventFor(parent, 2, {
+      subagent_id: 'sa-c',
+      display_name: 'Child sa-c',
+      status: 'closed',
+      closed_reason: 'failed',
+      updated_at: 2100,
+    }));
+
+    const live = store.getRuntime(parent);
+    assert.deepEqual(selectSubagents(live).map(item => item.subagent_id).sort(), children);
+    assert.equal(live.subagentsById['sa-a'].status, 'idle');
+    assert.equal(live.subagentsById['sa-b'].status, 'running');
+    assert.equal(live.subagentsById['sa-c'].status, 'closed');
+    assert.equal(selectSubagentActivities(live, 'sa-a').length, 1);
+
+    store.removeRuntime(parent);
+    store.ensureRuntime(parent);
+    for (const childId of children) {
+      store.beginHistoryRestore(parent, childId);
+      store.applyHistoryEvent(parent, eventFor(parent, 1, {
+        subagent_id: childId,
+        display_name: `Child ${childId}`,
+        status: 'running',
+        updated_at: 1000,
+      }));
+      store.applyHistoryEvent(parent, activityFor(parent, childId, `${childId}-think`));
+      store.finishHistoryRestore(parent, childId);
+    }
+    store.applyHistoryEvent(parent, eventFor(parent, 2, {
+      subagent_id: 'sa-a',
+      display_name: 'Child sa-a',
+      status: 'idle',
+      updated_at: 2000,
+    }));
+
+    const restored = store.getRuntime(parent);
+    assert.equal(selectSubagentHistoryRestoring(restored, 'sa-a'), false);
+    assert.equal(restored.subagentsById['sa-a'].status, 'idle');
+    assert.equal(selectSubagentActivities(restored, 'sa-b').length, 1);
+
+    store.applyEvent(other, eventFor(other, 1, {
+      subagent_id: 'sa-a',
+      display_name: 'Other child',
+      status: 'running',
+      updated_at: 3000,
+    }));
+    const parentAfterSwitch = store.getRuntime(parent);
+    const otherRuntime = store.getRuntime(other);
+    assert.equal(parentAfterSwitch.subagentsById['sa-a'].status, 'idle');
+    assert.equal(otherRuntime.subagentsById['sa-a'].status, 'running');
+    assert.equal(selectSubagents(otherRuntime).length, 1);
+    assert.equal(selectSubagentActivities(otherRuntime, 'sa-a').length, 0);
+  } finally {
+    useSubagentStore.getState().removeRuntime(parent);
+    useSubagentStore.getState().removeRuntime(other);
+  }
+});

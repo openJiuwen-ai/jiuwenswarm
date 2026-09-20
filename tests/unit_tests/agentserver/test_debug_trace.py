@@ -1072,6 +1072,77 @@ class TestSubagentCapture:
         assert captured["trace"]["session_id"] == "sid-parent"
         assert captured["trace"]["source_label"] == "subagent:builtin:explore_agent"
 
+    def test_task_tool_dump_file_golden_matches_dispatch_sections(self, tmp_path):
+        """Origin: 自拟 §6.I. Dump-file golden after a real TaskTool.invoke.
+
+        Not a projection-payload check. The dest debug logger writes the
+        same section order the UI dump file uses.
+        """
+        from openjiuwen.core.foundation.tool import ToolCard
+        from openjiuwen.core.session.agent import Session
+        from openjiuwen.harness.tools.subagent.task_tool import TaskTool
+
+        from jiuwenswarm.server.runtime.debug_trace import (
+            reset_debug_trace_logger,
+            set_debug_trace_logger,
+        )
+        from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+            apply_task_tool_debug_patch,
+        )
+
+        apply_task_tool_debug_patch()
+        if getattr(TaskTool, "debug_trace_patch_mode", None) == "unsupported_sdk":
+            pytest.skip("current SDK has no _invoke_subagent hook")
+
+        lg = _logger(tmp_path, session_id="dump-parent")
+        lg.start_run(input_text="explore the repo")
+        token = set_debug_trace_logger(lg)
+
+        class FakeSub:
+            card = SimpleNamespace(name="explore_agent", id="explore")
+
+            async def invoke(self, inputs, session=None):
+                del inputs, session
+                return {"output": "should-not-happen"}
+
+            async def stream(self, inputs, session=None):
+                del inputs, session
+                yield _chunk("llm_output", {"content": "hello "})
+                yield _chunk("llm_output", {"content": "world"})
+                yield _chunk("answer", {"output": "hello world", "result_type": "answer"})
+
+        tool = TaskTool(
+            card=ToolCard(id="task_tool", name="task_tool", description="task"),
+            parent_agent=SimpleNamespace(create_subagent=lambda *_a, **_k: FakeSub()),
+        )
+        try:
+            result = asyncio.run(
+                tool.invoke(
+                    {
+                        "subagent_type": "explore_agent",
+                        "task_description": "explore the repo",
+                    },
+                    session=Session(session_id="dump-parent"),
+                )
+            )
+        finally:
+            reset_debug_trace_logger(token)
+        assert result.success is True
+        assert result.data["output"] == "hello world"
+        lg.end_run(status="ok")
+        out = _read(lg)
+        assert lg._path.name == "dump-code-dump-parent.txt"
+        assert [line for line in out.splitlines() if line.startswith("==========")] == [
+            "========== run start ==========",
+            "========== subagent start ==========",
+            "========== subagent end ==========",
+            "========== run end ==========",
+        ]
+        assert "source=subagent:builtin:explore_agent" in out
+        assert "prompt=explore the repo" in out
+        assert "hello world" in out
+        assert "should-not-happen" not in out
+
     def test_task_tool_patch_marks_unsupported_sdk_without_behavior_change(self):
         from openjiuwen.harness.tools.subagent.task_tool import TaskTool
 

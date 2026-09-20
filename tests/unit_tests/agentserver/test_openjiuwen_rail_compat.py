@@ -21,6 +21,34 @@ def test_filter_drops_signal_trigger_when_constructor_lacks_it():
     assert filtered == {"review_trigger": False}
 
 
+def test_filter_drops_unknown_dataclass_field():
+    """Official DeepAgentConfig is a dataclass without VAR_KEYWORD."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class _LegacyDeepAgentConfig:
+        enable_task_loop: bool = False
+
+    filtered = filter_unsupported_kwargs(
+        _LegacyDeepAgentConfig.__init__,
+        {"enable_task_loop": True, "enable_subagent_runtime": True},
+    )
+    assert filtered == {"enable_task_loop": True}
+    _LegacyDeepAgentConfig(**filtered)
+
+
+def test_filter_keeps_kwargs_when_func_has_var_keyword():
+    """Official create_deep_agent still has **config_kwargs; do not use it as the gate."""
+    def _factory(*, model: str, **config_kwargs):
+        del model, config_kwargs
+
+    filtered = filter_unsupported_kwargs(
+        _factory,
+        {"enable_subagent_runtime": True},
+    )
+    assert filtered == {"enable_subagent_runtime": True}
+
+
 def test_wrapped_rail_init_ignores_unknown_kwargs():
     class DummyRail:
         def __init__(self, *, review_trigger=None):

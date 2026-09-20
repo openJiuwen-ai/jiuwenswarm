@@ -12,6 +12,8 @@ the host in sandbox mode.
 """
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from openjiuwen.harness.schema.config import SubAgentConfig
@@ -181,3 +183,92 @@ def test_code_agent_rail_set_workspace_dir_is_noop_for_same_path():
         rail.set_workspace_dir("  /same  ")
     assert rail._workspace_dir == "/same"
     agent.ability_manager.add_ability.assert_not_called()
+
+
+def _write_project_agent(workspace: Path, name: str) -> Path:
+    agents_dir = workspace / ".jiuwenswarm" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / f"{name}.md"
+    path.write_text(
+        (
+            f"---\nname: {name}\ndescription: live {name}\n"
+            "when_to_use: testing\n---\n\n"
+            f"You are {name}.\n"
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_code_agent_rail_live_hot_switch_loads_real_files_and_creates_child(
+    tmp_path, monkeypatch
+):
+    """Live G: real agent markdown files, no parent rebuild, then create child.
+
+    After ``set_workspace_dir``, the new custom agent must be visible and the
+    created child must inherit the new workspace root plus the same
+    SysOperation instance.
+    """
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    _write_project_agent(old_root, "old_reviewer")
+    _write_project_agent(new_root, "new_reviewer")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_config_service.get_user_workspace_dir",
+        lambda: tmp_path / "empty-user-home",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {
+            "react": {
+                "subagents": {
+                    "old_reviewer": {"enabled": True},
+                    "new_reviewer": {"enabled": True},
+                }
+            }
+        },
+    )
+
+    sys_operation = MagicMock()
+    parent_config = MagicMock()
+    parent_config.model = MagicMock()
+    parent_config.workspace = Workspace(root_path=str(old_root), language="en")
+    parent_config.language = "en"
+    parent_config.backend = None
+    parent_config.max_iterations = 15
+    parent_config.prompt_mode = None
+    parent_config.sys_operation = sys_operation
+    parent_config.enable_read_image_multimodal = False
+
+    parent_agent = MagicMock()
+    parent_agent.deep_config = parent_config
+    parent_agent.ability_manager.list.return_value = []
+    parent_agent.card = SimpleNamespace(id="parent-live-g")
+
+    rail = CodeAgentRail(workspace_dir=str(old_root))
+    rail.init(parent_agent)
+    assert rail._agent_tool is not None
+    assert "old_reviewer" in rail._agent_tool._custom_agents
+    assert "new_reviewer" not in rail._agent_tool._custom_agents
+
+    rail.set_workspace_dir(str(new_root))
+    assert rail._workspace_dir == str(new_root)
+    assert rail._agent_tool is not None
+    assert "new_reviewer" in rail._agent_tool._custom_agents
+    assert "old_reviewer" not in rail._agent_tool._custom_agents
+    assert parent_config.workspace.root_path == str(new_root)
+
+    new_def = rail._agent_tool._custom_agents["new_reviewer"]
+    with patch(
+        "openjiuwen.harness.factory.create_deep_agent",
+        return_value=MagicMock(),
+    ) as create_deep_agent:
+        rail._agent_tool._create_sub_agent(
+            new_def,
+            "session_custom_new_reviewer_1",
+        )
+
+    child_workspace = create_deep_agent.call_args.kwargs["workspace"]
+    assert create_deep_agent.call_args.kwargs["sys_operation"] is sys_operation
+    assert str(new_root) in str(child_workspace.root_path)
+    assert str(old_root) not in str(child_workspace.root_path)

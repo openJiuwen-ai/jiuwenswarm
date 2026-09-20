@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
 )
@@ -13,6 +15,7 @@ from jiuwenswarm.common.config import is_subagent_runtime_enabled
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _agent_ras_kwargs_from_config,
+    _optional_enable_subagent_runtime,
 )
 
 
@@ -69,6 +72,22 @@ def test_session_has_live_subagent_runtime_reads_capacity() -> None:
     ) is False
 
 
+def test_session_has_live_subagent_runtime_fail_closed_when_capacity_raises() -> None:
+    def _boom() -> dict[str, int]:
+        raise RuntimeError("capacity unavailable")
+
+    occupied = SimpleNamespace(
+        _instance=SimpleNamespace(
+            _subagent_controls={
+                "sess-1": SimpleNamespace(capacity=_boom),
+            }
+        )
+    )
+    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+        occupied, "sess-1"
+    ) is True
+
+
 def test_release_subagent_runtime_clears_progress_batch() -> None:
     from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
         clear_all_subagent_progress_batches,
@@ -101,3 +120,32 @@ def test_agent_ras_passthrough_still_enabled() -> None:
     kwargs = _agent_ras_kwargs_from_config({"agent_ras": {"enabled": True}})
     assert "agent_ras" in kwargs
     assert kwargs["agent_ras"] is not False
+
+
+def test_optional_enable_subagent_runtime_follows_deep_agent_config_signature() -> None:
+    """Official pin omits the field; overlay / post-3A SDK keeps it."""
+    from inspect import signature
+
+    from openjiuwen.harness.schema.config import DeepAgentConfig
+
+    got = _optional_enable_subagent_runtime(True)
+    params = signature(DeepAgentConfig.__init__).parameters
+    if "enable_subagent_runtime" in params:
+        assert got == {"enable_subagent_runtime": True}
+    else:
+        assert got == {}
+
+
+def test_optional_enable_subagent_runtime_omits_flag_on_legacy_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import dataclass
+
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep_mod
+
+    @dataclass
+    class _LegacyDeepAgentConfig:
+        enable_task_loop: bool = False
+
+    monkeypatch.setattr(deep_mod, "DeepAgentConfig", _LegacyDeepAgentConfig)
+    assert deep_mod._optional_enable_subagent_runtime(True) == {}
