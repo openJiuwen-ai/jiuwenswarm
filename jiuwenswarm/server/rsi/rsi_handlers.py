@@ -162,7 +162,7 @@ class RsiAgentServerHandlers:
         )
 
     def _do_task_delete(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self.context.task_service.delete(params)
+        return self.context.task_service.delete(params, worker=self.context.worker)
 
     def _do_training_start(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.context.task_service.start(params, worker=self.context.worker)
