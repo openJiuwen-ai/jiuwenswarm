@@ -2326,7 +2326,7 @@
       "accept": "接收",
       "reject": "拒绝",
       "allowOnce": "本次允许",
-      "sessionAllow": "会话内记住",
+      "sessionAllow": "本会话内允许",
       "alwaysAllow": "永久记住",
       "acceptAll": "全部接收",
       "submit": "确认提交",

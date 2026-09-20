@@ -141,7 +141,7 @@
   background: rgba(var(--color-text-primary-rgb), 0.06);
 }
 
-/* 总是允许 / 会话内记住 / 授权单次 / 其它：主按钮（深色填充） */
+/* 总是允许 / 本会话内允许 / 授权单次 / 其它：主按钮（深色填充） */
 .auth-prompt__btn--allow-always,
 .auth-prompt__btn--session-allow,
 .auth-prompt__btn--allow-once,

@@ -246,6 +246,7 @@ declare -A DEPLOY_VARS=(
     ["VECTOR_IMAGE"]="timberio/vector:0.40.0-alpine"
     ["VAR_LIB_DOCKER_PATH"]="/var/lib/containerd"
     ["WEB_NAME"]="jiuwenclaw-web"
+    ["WEB_REPLICAS"]="1"
     ["WEB_WS_PORT"]="19000"
     ["WEB_HTTP_PORT"]="5173"
     ["AGENT_RUNTIME_NAME"]="jiuwenclaw-agent-runtime"

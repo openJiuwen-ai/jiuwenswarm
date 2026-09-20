@@ -1,7 +1,7 @@
 ## 0. 概述
 
 > **读者**：企业版（`gateway.edition = enterprise`）接入方——浏览器或经 Ingress / 反向代理访问 Gateway 的 HTTP、WebSocket 客户端。  
-> **范围**：本文以 **A1（**`/ws`**）** 为主；**A2（Web HTTP `/api/v1`）** 仅作索引，完整协议见 [Gateway Http接口文档.md](./Gateway%20Http接口文档.md)。TUI、ACP、A2A、SSH、ClawManager、Manager Config Receiver 等不在本版展开。
+> **范围**：本文以 **A1（**`/ws`**）** 为主；**A2（Web HTTP `/api/v1`）** 仅作索引，完整协议见 [Gateway Web HTTP接口文档.md](../../jiuwenswarm/gateway/docs/Gateway%20Web%20HTTP接口文档.md)。TUI、ACP、A2A、SSH、ClawManager、Manager Config Receiver 等不在本版展开。
 
 - 部署：`gateway.deployment_mode`（`distributed` / `active-standby` 等）
 - **目标架构**：客户端只面对 **Gateway**（`distributed` 下推荐 **A2 HTTP**；**A1 WebSocket** 同语义可选）。Gateway 再连 AgentServer。静态前端由部署侧另行托管，**不属于本文协议范围**。
@@ -52,7 +52,7 @@ flowchart TB
 | 范围       | 合并后 `:19000/ws` 全部 `req/res` method（kub + Swarm 并集）                                 |
 
 
-**范围说明**：本章写 `/ws` 上的 method 与 event，以合并目标为准（kub + Swarm 并集，如 `project.*`、`project.git.*`）。走 HTTP 时业务语义对齐 A1，**传输、路径、信封与流式格式以 [Gateway Http接口文档.md](./Gateway%20Http接口文档.md) 为准**（勿按 method 点号机械转路径）。
+**范围说明**：本章写 `/ws` 上的 method 与 event，以合并目标为准（kub + Swarm 并集，如 `project.*`、`project.git.*`）。走 HTTP 时业务语义对齐 A1，**传输、路径、信封与流式格式以 [Gateway Web HTTP接口文档.md](../../jiuwenswarm/gateway/docs/Gateway%20Web%20HTTP接口文档.md) 为准**（勿按 method 点号机械转路径）。
 
 **请求示例：**
 
@@ -3814,7 +3814,7 @@ Agent 下发结构；字段随场景变化，客户端按 `event` 名解析 obje
 
 ### A2 Web HTTP 协议（`/api/v1`）
 
-> **定位**：与 **A1** 同一套业务语义，传输层为 **REST + SSE**。本文 **不重复**路径、信封与流式约定；完整说明见 **[Gateway Http接口文档.md](./Gateway%20Http接口文档.md)**（以 `CORE_ROUTE_CATALOG` / OpenAPI / `GET /api/v1/catalog` 为真源）。
+> **定位**：与 **A1** 同一套业务语义，传输层为 **REST + SSE**。本文 **不重复**路径、信封与流式约定；完整说明见 **[Gateway Web HTTP接口文档.md](../../jiuwenswarm/gateway/docs/Gateway%20Web%20HTTP接口文档.md)**（以 `CORE_ROUTE_CATALOG` / OpenAPI / `GET /api/v1/catalog` 为真源）。
 
 **速查（与旧「统一 POST / 点号转斜线 / 同端口 19000」说明已废弃）**
 

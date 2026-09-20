@@ -565,4 +565,4 @@ curl "${WEB_HTTP_BASE}/api/v1/a2a/outbound/dispatches/disp_example" \
 - Receiver 服务：`packages/jiuwenclaw-ee/gateway/extensions/manager_config_receiver/core/template/a2a_outbound_template.py`、`a2a_access_policy_template.py`。
 - Manager 对照：`agent-runtime/applications/manager/manager_server/src/manager_server/routers/template_routers.py`、`schemas/template_schemas.py`。
 
-相关文档：[Gateway Web HTTP 通用说明](Gateway%20Http接口文档.md)、[Manager→Gateway Config Receiver 通用说明](../../jiuwenswarm/gateway/docs/Gateway对接管理面接口文档.md)、[A2A 接入说明](A2A.md)。
+相关文档：[Gateway Web HTTP 通用说明](../../jiuwenswarm/gateway/docs/Gateway%20Web%20HTTP接口文档.md)、[Manager→Gateway Config Receiver 通用说明](../../jiuwenswarm/gateway/docs/Gateway对接管理面接口文档.md)、[A2A 接入说明](A2A.md)。

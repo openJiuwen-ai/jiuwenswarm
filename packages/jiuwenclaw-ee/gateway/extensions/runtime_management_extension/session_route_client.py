@@ -85,6 +85,7 @@ class RuntimeSessionRouteClient:
         root = self._link_mtls.resolve_endpoint(root, role="runtime")
         self._route_url = f"{root}/api/session/route"
         self._touch_url = f"{root}/api/session/touch"
+        self._rebind_url = f"{root}/api/session/rebind"
         if http_client is not None:
             self._http = http_client
             self._owns_http = False
@@ -195,6 +196,51 @@ class RuntimeSessionRouteClient:
         touched = bool(rawdata.get("touched"))
         logger.debug("[SessionRoute] touch: session=%s touched=%s", session_id, touched)
         return touched
+
+    async def rebind(
+        self,
+        *,
+        from_session_id: str,
+        to_session_id: str | None,
+        request_id: str,
+    ) -> str:
+        """session.create 临时 key 原子改绑为真实 id（2026-09-session-create-rebind）。
+
+        ``to_session_id`` 为空 = 驱逐（create 失败立即释放槽位）。返回 runtime 侧
+        action（noop/rubble/evicted/overtaken/rebound）；失败上抛 ``RouteError``，
+        由调用方（routed client 钩子）决定降级——本方法不吞错。
+        """
+        from_session_id = (from_session_id or "").strip()
+        request_id = (request_id or "").strip()
+        to_session_id = (to_session_id or "").strip()
+        if not (from_session_id and request_id):
+            raise FatalRouteError(
+                "rebind requires from_session_id/request_id",
+                code="VALIDATION",
+            )
+        body = await self._post(
+            self._rebind_url,
+            {
+                "type": "rebind",
+                "metadata": {"request_id": request_id, "session_id": from_session_id},
+                "rawdata": {"to": to_session_id},
+            },
+        )
+        rawdata = _rawdata(body)
+        action = str(rawdata.get("action") or "").strip()
+        if not action:
+            raise FatalRouteError(
+                "rebind response missing action",
+                code="VALIDATION",
+            )
+        logger.debug(
+            "[SessionRoute] rebind: from=%s to=%s action=%s request_id=%s",
+            from_session_id,
+            to_session_id or "(evict)",
+            action,
+            request_id,
+        )
+        return action
 
     async def _post(self, url: str, envelope: dict) -> dict:
         try:

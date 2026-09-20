@@ -2009,7 +2009,7 @@ class JiuWenSwarm:
             }
         elif value in ("approve", "本次允许", "Approve", "Proceed", "批准", "开始执行"):
             confirm_payload = {"approved": True, "auto_confirm": False, "feedback": ""}
-        elif value in ("session_allow", "会话内记住", "Session Allow"):
+        elif value in ("session_allow", "本会话内允许", "会话内记住", "Session Allow"):
             confirm_payload = {
                 "approved": True,
                 "auto_confirm": True,

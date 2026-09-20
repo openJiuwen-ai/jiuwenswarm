@@ -1,4 +1,3 @@
-# ServiceAccount
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -6,7 +5,7 @@ metadata:
   namespace: <<NAMESPACE>>
 
 ---
-# RBAC：agent-runtime 需要 CRUD AgentServer Pod（与 gateway 的 agentserver-creator 同面）
+
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -35,7 +34,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -105,8 +103,6 @@ spec:
             - name: OPENJIUWEN_SERVICE_PORT
               value: "<<AGENT_RUNTIME_PORT>>"
             - name: OPENJIUWEN_SERVICE_REDIS_URL
-              # AgentServer checkpointer 用此 URL 连接 Redis（与 gateway 的 redis client 独立）
-              # 由 runtime_handler.sh 按 REDIS_MODE 计算：cluster -> redis+cluster://host:port / standalone -> redis://host:port/db
               value: "<<OPENJIUWEN_SERVICE_REDIS_URL>>"
             - name: OPENJIUWEN_SERVICE_REQUEST_TIMEOUT_SECONDS
               value: "<<AGENT_RUNTIME_REQUEST_TIMEOUT>>"
@@ -124,10 +120,6 @@ spec:
               value: "1"
             - name: AGENT_RUNTIME_KUBECONFIG
               value: ""
-            # runtime 自身 ns(downward API):模板 namespace 为空时 AgentServer
-            # 落同名 ns;代码另有 SA 文件兜底,注入仅为显式化。
-            # AGENT_RUNTIME_DEFAULT_NAMESPACE/SCOPE_FULL_TIMEOUT 已随代码删除
-            # (2026-09-17 cyz2 实录:旧注入被新代码忽略→落 "default"→403)
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

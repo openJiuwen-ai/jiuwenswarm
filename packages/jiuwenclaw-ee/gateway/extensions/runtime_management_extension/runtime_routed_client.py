@@ -106,6 +106,14 @@ def _is_routeless_envelope(envelope: E2AEnvelope) -> bool:
     return method in _ROUTELESS_METHODS
 
 
+def _rebind_timeout() -> float:
+    try:
+        value = float(read_env("GATEWAY_RUNTIME_SESSION_REBIND_TIMEOUT", "2"))
+    except (TypeError, ValueError):
+        return 2.0
+    return value if value > 0 else 2.0
+
+
 def _default_http_base() -> str:
     """管理类请求（reload_config 等）的默认 Agent HTTP Base。
 
@@ -197,6 +205,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._pod_connect_lock = asyncio.Lock()
         self._rpc_origins: dict[tuple[str, str], str] = {}
         self._drop_tasks: set[asyncio.Task[None]] = set()
+        self._last_rebind_warn = 0.0   # rebind 降级告警节流（滚动期旧 runtime 404 防刷屏）
 
     def set_server_push_handler(
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
@@ -397,7 +406,62 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             await self._ensure_pod_push(base_url)
             result = await self._http.send_request(envelope, base_url=base_url)
         await self._touch_quiet(session_id, route_id)
+        await self._rebind_after_create(envelope, result, session_id)
         return result
+
+    async def _rebind_after_create(
+        self, envelope: E2AEnvelope, result: AgentResponse, session_id: str,
+    ) -> None:
+        """session.create 响应返回上层之前，把临时路由 key 原子改绑为真实 id。
+
+        修复（runtime 侧 2026-09-session-create-rebind）：create 以临时 key
+        （sess_*/webhttp_*/身份组合串）route 占槽，真实 id 首条 chat.send 会二次
+        占槽（双计数）且可能落别的 Pod（亲和断裂）。本方法在 ``send_request``
+        返回前 await——**时序保证**：客户端拿到真实 id 时改绑已完成，chat.send
+        不可能抢先。
+
+        - 响应 ok：rebind(临时 key → 真实 id)，亲和钉在 create 实际服务的 Pod；
+        - 响应失败：rebind(临时 key → 空) 驱逐，立即释放槽位（不等 session_ttl）；
+        - 失败/超时一律降级（warning 节流 + 照常返回响应）＝旧行为；旧 runtime
+          （无 /api/session/rebind 端点）同走降级，滚动期不阻塞 create。
+        """
+        if str(envelope.method or "") != "session.create":
+            return
+        payload = result.payload if isinstance(result.payload, dict) else {}
+        if result.ok:
+            real = str(payload.get("session_id") or payload.get("sessionId") or "").strip()
+        else:
+            real = ""
+        if real and real == session_id:
+            return
+        try:
+            action = await asyncio.wait_for(
+                self._route.rebind(
+                    from_session_id=session_id,
+                    to_session_id=real or None,
+                    request_id=uuid.uuid4().hex,
+                ),
+                timeout=_rebind_timeout(),
+            )
+            logger.info(
+                "[RuntimeRouted] session.create rebind: from=%s to=%s action=%s",
+                session_id,
+                real or "(evict)",
+                action,
+            )
+        except Exception as exc:  # noqa: BLE001 - 降级=现状（临时 key 等 TTL 过期）
+            now = time.monotonic()
+            if now - self._last_rebind_warn >= 60.0:
+                self._last_rebind_warn = now
+                logger.warning(
+                    "[RuntimeRouted] session.create rebind failed (degraded, "
+                    "temp key expires via session_ttl): %s",
+                    exc,
+                )
+            else:
+                logger.debug(
+                    "[RuntimeRouted] session.create rebind failed: %s", exc,
+                )
 
     async def send_request_stream(
         self, envelope: E2AEnvelope

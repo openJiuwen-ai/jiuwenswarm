@@ -118,6 +118,7 @@ _HOSTED_ALLOW_ONCE_LABELS = frozenset({
     "allow-once",
 })
 _HOSTED_SESSION_REMEMBER_LABELS = frozenset({
+    "本会话内允许",
     "会话内记住",
     "Session remember",
     "allow_always_session",
@@ -224,7 +225,7 @@ def parse_hosted_permission_answer(answer: Any) -> Any:
             feedback="[PERMISSION_REJECTED] User rejected the request.",
         )
     if any(label in _PERMANENT_REMEMBER_LABELS for label in labels):
-        # 企业版：永久标签降级为会话内记住，不写本地 config。
+        # 企业版：永久标签降级为本会话内允许，不写本地 config。
         persist = not is_enterprise()
         return PermissionConfirmResponse(
             approved=True,
@@ -1243,7 +1244,7 @@ def _default_interrupt_options() -> list[dict[str, str]]:
     """
     options = [
         {"label": "本次允许", "description": "仅本次授权执行"},
-        {"label": "会话内记住", "description": "本次会话内自动放行同类操作"},
+        {"label": "本会话内允许", "description": "本次会话内自动放行同类操作"},
         {"label": "拒绝", "description": "拒绝执行此工具"},
     ]
     if not is_enterprise():
