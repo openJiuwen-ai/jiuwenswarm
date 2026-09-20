@@ -383,8 +383,8 @@ class SessionArchiveService:
             # persistent leader stream keeps them alive.  The archive proceeds
             # and leaves that stream alone.
             return False
-        if action == "delete" and is_cron_session:
-            return False
+        # is_cron_session 不再豁免 busy 检查：running 的 cron/heartbeat session
+        # 同样必须先停止才能 delete，避免僵尸流永久锁定会话。
         return self.runtime.is_session_running(session_id)
 
     async def _session(
