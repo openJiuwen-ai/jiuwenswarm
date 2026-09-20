@@ -2193,7 +2193,7 @@
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: var(--color-tag-neutral-text);
+  color: var(--color-text-primary, #191919);
   padding: 0;
   cursor: pointer;
   opacity: 0;
@@ -2241,7 +2241,7 @@
 .chat-agent-tag__close:hover,
 .chat-agent-tag__close:focus-visible {
   background: var(--color-action-secondary);
-  color: var(--color-text-strong);
+  color: var(--color-text-primary, #191919);
   outline: 0;
 }
 

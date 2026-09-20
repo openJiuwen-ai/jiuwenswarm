@@ -4080,13 +4080,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     <button
                       type="button"
                       className="chat-agent-tag__close"
-                      title={t('chat.agentRemove')}
                       aria-label={t('chat.agentRemove')}
                       onClick={() => {
                         if (activeSessionId) setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
                       }}
                     >
-                      <X size={16} strokeWidth={2.5} aria-hidden="true" />
+                      <WorkIcon name="close" />
                     </button>
                   </div>
                 )}
@@ -4130,15 +4129,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       <button
                         type="button"
                         className="chat-agent-tag__close"
-                        title={t('chat.agentGroupRemove')}
                         aria-label={t('chat.agentGroupRemove')}
                         data-testid="chat-panel-agent-group-tag-close"
-                        onClick={() => {
-                          if (activeSessionId) clearAgentGroupSelectionIntent(activeSessionId);
-                        }}
-                      >
-                        <X size={16} strokeWidth={2.5} aria-hidden="true" />
-                      </button>
+                          onClick={() => {
+                            if (activeSessionId) clearAgentGroupSelectionIntent(activeSessionId);
+                          }}
+                        >
+                          <WorkIcon name="close" />
+                        </button>
                     )}
                   </div>
                 )}
@@ -4154,7 +4152,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       type="button"
                       className="chat-agent-tag__close"
                       data-testid="chat-panel-goal-tag-close"
-                      title={t('goal.closeTag')}
                       aria-label={t('goal.closeTag')}
                       onClick={() => {
                         if (!activeSessionId) return;
@@ -4164,7 +4161,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                         useGoalStore.getState().setArmed(activeSessionId, false);
                       }}
                     >
-                      <X size={16} strokeWidth={2.5} aria-hidden="true" />
+                      <WorkIcon name="close" />
                     </button>
                   </div>
                 )}
@@ -4187,13 +4184,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           className="chat-agent-tag__close"
                           data-testid="chat-panel-plan-tag-close"
                           disabled={closeBlocked}
-                          title={closeBlocked ? t('plan.closeTagDisabled') : t('plan.closeTag')}
                           aria-label={closeBlocked ? t('plan.closeTagDisabled') : t('plan.closeTag')}
                           onClick={() => {
                             applyPlanToggle(activeSessionId, false);
                           }}
                         >
-                          <X size={16} strokeWidth={2.5} aria-hidden="true" />
+                          <WorkIcon name="close" />
                         </button>
                       );
                     })()}

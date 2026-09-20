@@ -1,13 +1,11 @@
 import { type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { EntityHeader, type EntityHeaderAvatar } from '../EntityHeader/EntityHeader';
-import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import './PageCard.css';
 
 export interface PageCardActionProps {
   icon: ReactNode;
   onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
-  tooltip?: string;
 }
 
 export type PageCardAvatar = EntityHeaderAvatar;
@@ -22,14 +20,12 @@ export interface PageCardProps {
   description?: string;
   onClick?: () => void;
   interactive?: boolean;
-  /** Selection state for interactive cards such as management pickers. */
   selected?: boolean;
-  /** Disabled state for interactive cards that remain visible but cannot be selected. */
   disabled?: boolean;
+  actionsHover?: boolean;
   ariaLabel?: string;
   className?: string;
   testId?: string;
-  /** Optional test hook for the clickable card header. */
   headerTestId?: string;
   variant?: string;
 }
@@ -46,6 +42,7 @@ export function PageCard({
   interactive = false,
   selected,
   disabled = false,
+  actionsHover = false,
   ariaLabel,
   className,
   testId,
@@ -56,8 +53,6 @@ export function PageCard({
   if (className) classNames.push(className);
   if (selected) classNames.push('page-card--selected');
   if (disabled) classNames.push('page-card--disabled');
-
-  const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
 
   const hasLabel = Array.isArray(label) && label.length > 0;
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -88,27 +83,44 @@ export function PageCard({
         titleEnd={titleEnd}
         tags={hasLabel ? label : undefined}
         actions={
-          action ? (
-            <button
-              type="button"
-              className="page-card-action"
-              disabled={action.disabled}
-              onClick={(e) => {
-                e.stopPropagation();
-                action.onClick?.(e);
-              }}
-              data-tooltip={action.tooltip}
-              {...(action.tooltip ? tooltipHandlers : {})}
-            >
-              {action.icon}
-            </button>
+          actionsHover ? (
+            <div className="page-card-actions-hover">
+              {action ? (
+                <button
+                  type="button"
+                  className="page-card-action"
+                  disabled={action.disabled}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    action.onClick?.(e);
+                  }}
+                >
+                  {action.icon}
+                </button>
+              ) : (
+                actionSlot
+              )}
+            </div>
           ) : (
-            actionSlot
+            action ? (
+              <button
+                type="button"
+                className="page-card-action"
+                disabled={action.disabled}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  action.onClick?.(e);
+                }}
+              >
+                {action.icon}
+              </button>
+            ) : (
+              actionSlot
+            )
           )
         }
       />
       {description ? <div className="page-card__body">{description}</div> : null}
-      {tooltip}
     </div>
   );
 }
