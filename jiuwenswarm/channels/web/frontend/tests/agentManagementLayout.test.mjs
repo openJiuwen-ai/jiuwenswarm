@@ -216,6 +216,10 @@ test('leader and member picker cards include the shared Expert description', () 
 });
 
 test('management pickers expose source tabs and preserve install/connect actions', () => {
+  assert.match(panelSource, /const skillsRevisionRef = useRef\(0\)/);
+  assert.match(panelSource, /if \(revision !== skillsRevisionRef\.current\) return;/);
+  assert.match(panelSource, /onTeamMarketplaceLoaded:/);
+  assert.match(panelSource, /scheduleCatalogRefresh\(\s*'agent-team-skill-marketplace'/);
   assert.match(panelSource, /void loadCatalog\(view === 'group-create' \? \{ includeTeamCompatibility: true \} : \{\}\);/);
   assert.match(panelSource, /catalog\.compatibility\.loading/);
   assert.match(panelSource, /catalog\.compatibility\.error/);
@@ -237,7 +241,7 @@ test('management pickers expose source tabs and preserve install/connect actions
     /sourceTab === 'market' \? agent\.source !== 'local' : agent\.source === 'local' \|\| agent\.installed === true/,
   );
   assert.match(memberPickerSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
-  assert.match(groupEditorSource, /isTeamSkillOption\(skill\)/);
+  assert.match(groupEditorSource, /isTeamSkillOption\(skill, skillSourceTab\)/);
   assert.match(groupEditorSource, /isSkillVisibleInSourceTab\(skill, skillSourceTab\)/);
   assert.match(groupEditorSource, /agent-group-editor-skill-picker-install/);
   assert.match(groupEditorSource, /skillSourceTab/);
@@ -256,6 +260,7 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(agentEditorSource, /interactive=\{selectable\}/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-tab-market/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-tab-local/);
+  assert.match(agentEditorSource, /isTeamSkillOption\(skill, skillSourceTab\)/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-market/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-installed/);
   assert.match(agentEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
@@ -305,15 +310,15 @@ test('Expert Team chat creation uses the standard new-chat welcome in Agent mode
 });
 
 test('MCP picker keeps installed but disconnected connectors out of selection', () => {
-  assert.match(agentEditorSource, /const selectable = installed && !unconnected;/);
-  assert.match(agentEditorSource, /disabled=\{unconnected \|\| \(!installed && !onInstallMcp\)\}/);
+  assert.match(agentEditorSource, /const selectable = isMcpSelectable\(mcp\)/);
+  assert.match(agentEditorSource, /disabled=\{!selectable && !onInstallMcp && !onConnectMcp\}/);
   assert.match(agentEditorSource, /onClick=\{\s*selectable\s*\?/);
 });
 
 test('disabled picker tags retain a visible border', () => {
   assert.match(
     agentManagementCss,
-    /\.agent-management-selection-card\.page-card\.is-disabled \.entity-header__tag\s*\{\s*border: 1px solid var\(--color-border-default\);\s*\}/,
+    /\.agent-management-selection-card\.page-card\.is-disabled \.entity-header__tag\s*\{\s*border: 1px solid var\(--color-border-default\);[\s\S]*color: var\(--color-text-tertiary\);\s*\}/,
   );
 });
 

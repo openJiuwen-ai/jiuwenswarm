@@ -1,3 +1,4 @@
+import type { CatalogCacheMetadata } from '../catalogCache';
 import type {
   AgentCatalogItem,
   AgentDetail,
@@ -57,13 +58,18 @@ export interface AgentCatalogListOptions {
   includeTeamCompatibility?: boolean;
 }
 
+export interface SkillListOptions {
+  includeTeamMarketplace?: boolean;
+  onTeamMarketplaceLoaded?: (options: SkillOption[], cache?: CatalogCacheMetadata) => void;
+}
+
 export interface AgentManagementClient {
   readonly source: AgentManagementSource;
   listCatalog(options?: AgentCatalogListOptions): Promise<AgentCatalogItem[]>;
   getDefinition(id: string): Promise<AgentDetail>;
   getDefinitionFiles(id: string): Promise<DefinitionFileEntry[]>;
   getDefinitionFile(id: string, relativePath: string): Promise<AgentFileContent>;
-  listSkillOptions(): Promise<SkillOption[]>;
+  listSkillOptions(options?: SkillListOptions): Promise<SkillOption[]>;
   listMcpOptions(): Promise<McpOption[]>;
   installSkill(option: SkillOption): Promise<void>;
   createAgent(draft: AgentDraft): Promise<void>;
