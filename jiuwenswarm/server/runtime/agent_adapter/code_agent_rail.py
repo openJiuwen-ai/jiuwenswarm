@@ -390,11 +390,35 @@ class CodeAgentRail(DeepAgentRail):
         self._agent = None
 
     def set_workspace_dir(self, workspace_dir: str) -> None:
-        """Rebind custom-agent discovery to the current Code workspace."""
+        """Rebind custom-agent discovery to the current Code workspace.
+
+        ``AgentTool._create_sub_agent`` reads ``parent.deep_config.workspace``,
+        not this rail's directory. A live hot-switch that only updates
+        ``_workspace_dir`` would load the new agent files and then still spawn
+        children under the old root. Keep the parent workspace in lockstep.
+        """
         normalized = str(workspace_dir or "").strip()
         if not normalized or normalized == self._workspace_dir:
             return
         self._workspace_dir = normalized
+        parent_config = getattr(self._agent, "deep_config", None) if self._agent is not None else None
+        if parent_config is not None:
+            old_workspace = getattr(parent_config, "workspace", None)
+            language = (
+                getattr(old_workspace, "language", None)
+                or getattr(parent_config, "language", None)
+                or "en"
+            )
+            try:
+                parent_config.workspace = Workspace(
+                    root_path=normalized,
+                    language=language,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[CodeAgentRail] Failed to rebind parent workspace after hot-switch: %s",
+                    exc,
+                )
         if self._agent is not None:
             self._unregister_agent_tool(self._agent)
             self._register_agent_tool()

@@ -59,6 +59,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _RailBuildInfo,
     _agent_def_to_subagent_config,
     _deep_agent_kv_cache_affinity_config,
+    _optional_enable_subagent_runtime,
     _resolve_instance_config_base,
     parse_int,
 )
@@ -541,7 +542,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             subagents=configured_subagents,
             rails=rails_list if rails_list else [],
             enable_task_loop=config.get("enable_task_loop", True),
-            enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
             max_iterations=config.get("max_iterations", 15),
             workspace=workspace,
             sys_operation=sys_operation,
@@ -550,6 +550,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             auto_create_workspace=is_enterprise(),
             completion_timeout=config.get("completion_timeout", 3600.0),
+            **_optional_enable_subagent_runtime(
+                self._resolve_enable_subagent_runtime(config_base),
+            ),
         )
 
         # 改动3：让 agent 初始化（ensure_initialized）在独立线程 + 独立事件循环里跑，

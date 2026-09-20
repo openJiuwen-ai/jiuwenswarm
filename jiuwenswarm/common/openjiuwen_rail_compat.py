@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Drop newer evolution-rail kwargs when the installed openjiuwen SDK is older."""
+"""Drop newer SDK kwargs when the installed openjiuwen package is older."""
 
 from __future__ import annotations
 

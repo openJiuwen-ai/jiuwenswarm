@@ -273,7 +273,10 @@ from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
 )
-from jiuwenswarm.common.openjiuwen_rail_compat import install_evolution_rail_kwargs_compat
+from jiuwenswarm.common.openjiuwen_rail_compat import (
+    filter_unsupported_kwargs,
+    install_evolution_rail_kwargs_compat,
+)
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import build_agent_identity_prompt
 from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
 from jiuwenswarm.agents.harness.common.rails.execution_guard import (
@@ -2183,6 +2186,22 @@ class _RuntimeCronToolContext:
         return self._tool_scope
 
 
+def _optional_enable_subagent_runtime(enabled: bool) -> dict[str, bool]:
+    """Pass ``enable_subagent_runtime`` only when ``DeepAgentConfig`` accepts it.
+
+    Official ``dev-stable`` openjiuwen 0.1.16 is a dataclass without this
+    field; constructing it with the keyword raises TypeError. Do not filter
+    against ``create_deep_agent``: that factory still has ``**config_kwargs``,
+    so signature filtering would keep the keyword and only warn, or the
+    hot-reload path would still TypeError because it builds ``DeepAgentConfig``
+    directly. Fork overlay and a future official 3A merge keep the field.
+    """
+    return filter_unsupported_kwargs(
+        DeepAgentConfig.__init__,
+        {"enable_subagent_runtime": enabled},
+    )
+
+
 def _agent_ras_kwargs_from_config(config_base: dict[str, Any] | None) -> dict[str, Any]:
     """Thin YAML gate for create_deep_agent ``agent_ras``.
 
@@ -2894,7 +2913,11 @@ class JiuWenSwarmDeepAdapter:
         adapter: "JiuWenSwarmDeepAdapter",
         session_id: str,
     ) -> bool:
-        """Return True when a session still has live subagent slots in use."""
+        """Return True when a session still has live subagent slots in use.
+
+        A missing control is idle. If ``capacity()`` raises, treat the session
+        as occupied so TTL cannot evict an Adapter that may still hold children.
+        """
         deep_agent = getattr(adapter, "_instance", None)
         if deep_agent is None:
             return False
@@ -2905,7 +2928,13 @@ class JiuWenSwarmDeepAdapter:
         try:
             return int(control.capacity().get("used", 0)) > 0
         except Exception:
-            return False
+            # Occupancy unknown: skip TTL eviction rather than drop live children.
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent capacity probe failed; "
+                "treating session as occupied: session_id=%s",
+                session_id,
+            )
+            return True
 
     async def release_subagent_runtime_for_session(
         self,
@@ -9174,8 +9203,6 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None = None,
     ) -> bool:
         """Return whether persistent subagent runtime tools should be enabled."""
-        if not getattr(self, "_subagent_runtime_supported", True):
-            return False
         return is_subagent_runtime_enabled(config_base or get_config())
 
     def _make_deep_agent_config(
@@ -9225,7 +9252,6 @@ class JiuWenSwarmDeepAdapter:
             context_engine_config=_deep_agent_context_engine_config(config),
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
-            enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
             max_iterations=config.get("max_iterations", 15),
             subagents=configured_subagents,
             add_general_purpose_agent=should_add_general_agent,
@@ -9241,6 +9267,9 @@ class JiuWenSwarmDeepAdapter:
             audio_model_config=self._audio_model_config,
             enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
             completion_timeout=config.get("completion_timeout", 21600.0),
+            **_optional_enable_subagent_runtime(
+                self._resolve_enable_subagent_runtime(config_base),
+            ),
         )
 
     def _update_permission_rail(
@@ -10105,7 +10134,6 @@ class JiuWenSwarmDeepAdapter:
                     subagents=configured_subagents,
                     rails=rails_list if rails_list else [],
                     enable_task_loop=self._resolve_enable_task_loop(config, config_base),
-                    enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
                     add_general_purpose_agent=should_enable_general_agent,
                     max_iterations=config.get("max_iterations", 15),
                     workspace=Workspace(
@@ -10120,6 +10148,11 @@ class JiuWenSwarmDeepAdapter:
 
                 # agent_ras YAML passthrough (Agent RAS owns loop detection / recovery).
                 common_kwargs.update(_agent_ras_kwargs_from_config(config_base))
+                common_kwargs.update(
+                    _optional_enable_subagent_runtime(
+                        self._resolve_enable_subagent_runtime(config_base),
+                    )
+                )
 
                 self._instance = create_deep_agent(
                     **common_kwargs,
