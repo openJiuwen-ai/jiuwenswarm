@@ -36,7 +36,7 @@ export function isPlanApprovalPrompt(pq: AskUserQuestionPayload | null | undefin
 }
 
 /** Symphony 运行成功后推荐创建的可复用技能包。 */
-export function isExperiencePackagePrompt(pq: AskUserQuestionPayload | null | undefined): boolean {
+export function isSkillPackagePrompt(pq: AskUserQuestionPayload | null | undefined): boolean {
   if (!pq) return false;
   if (pq.evolutionMeta?.rail_kind === 'symphony_experience') return true;
   return (pq.request_id ?? '').startsWith('symphony_experience_');
@@ -44,7 +44,7 @@ export function isExperiencePackagePrompt(pq: AskUserQuestionPayload | null | un
 
 export function classifyPrompt(pq: AskUserQuestionPayload | null | undefined): PromptKind {
   if (!pq) return 'none';
-  if (isExperiencePackagePrompt(pq)) return 'experience';
+  if (isSkillPackagePrompt(pq)) return 'experience';
   if (pq.source === 'swarmflow_human') return 'interaction';
   // 技能演进审批（evolution_interrupt）协议已冻结为与 permission_interrupt 一致的
   // allow_once/allow_always/reject 三选一，改走 AuthorizationPrompt；legacy source

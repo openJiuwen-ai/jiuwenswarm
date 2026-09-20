@@ -248,7 +248,7 @@
    技能包推荐卡
    =========================== */
 
-.experience-package-prompt {
+.skill-package-prompt {
   overflow: hidden;
   border: 1px solid var(--color-border-default);
   border-radius: 14px;
@@ -256,7 +256,7 @@
   box-shadow: var(--effect-interaction-shadow);
 }
 
-.experience-package-prompt__head {
+.skill-package-prompt__head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -269,18 +269,18 @@
   );
 }
 
-.experience-package-prompt__icon {
+.skill-package-prompt__icon {
   flex: 0 0 auto;
   color: var(--color-action-primary);
 }
 
-.experience-package-prompt__title {
+.skill-package-prompt__title {
   color: var(--color-text-strong);
   font-size: 14px;
   font-weight: 600;
 }
 
-.experience-package-prompt__body {
+.skill-package-prompt__body {
   max-height: 46vh;
   overflow-y: auto;
   padding: 14px 16px;
@@ -289,22 +289,22 @@
   line-height: 1.6;
 }
 
-.experience-package-prompt__body p {
+.skill-package-prompt__body p {
   margin: 0 0 8px;
 }
 
-.experience-package-prompt__body p:last-child {
+.skill-package-prompt__body p:last-child {
   margin-bottom: 0;
 }
 
-.experience-package-prompt__body code {
+.skill-package-prompt__body code {
   padding: 1px 5px;
   border-radius: 5px;
   background: var(--color-action-secondary);
   font-size: 12px;
 }
 
-.experience-package-prompt__actions {
+.skill-package-prompt__actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -312,7 +312,7 @@
   border-top: 1px solid var(--color-border-default);
 }
 
-.experience-package-prompt__button {
+.skill-package-prompt__button {
   min-width: 96px;
   height: 34px;
   padding: 0 16px;
@@ -323,29 +323,29 @@
   cursor: pointer;
 }
 
-.experience-package-prompt__button:disabled {
+.skill-package-prompt__button:disabled {
   cursor: default;
   opacity: 0.55;
 }
 
-.experience-package-prompt__button--secondary {
+.skill-package-prompt__button--secondary {
   border-color: var(--color-border-default);
   background: transparent;
   color: var(--color-text-secondary);
 }
 
-.experience-package-prompt__button--secondary:hover:not(:disabled) {
+.skill-package-prompt__button--secondary:hover:not(:disabled) {
   background: var(--color-action-secondary);
   color: var(--color-text-primary);
 }
 
-.experience-package-prompt__button--primary {
+.skill-package-prompt__button--primary {
   border-color: var(--color-text-strong);
   background: var(--color-text-strong);
   color: var(--color-surface-card);
 }
 
-.experience-package-prompt__button--primary:hover:not(:disabled) {
+.skill-package-prompt__button--primary:hover:not(:disabled) {
   opacity: 0.88;
 }
 
