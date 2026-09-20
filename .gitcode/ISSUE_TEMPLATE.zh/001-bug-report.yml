@@ -29,17 +29,18 @@ body:
         - 【dev-stable专属】 工具与外部能力
         - 【dev-stable专属】 上下文
         - 【dev-stable专属】 技能管理
-        - 【dev-stable专属】 平台底座
+        - 【dev-stable专属】 core核心引擎
+        - 【dev-stable专属】 harness框架
         - 【dev-stable专属】 主动推荐（数字分身）
         - 【dev-stable专属】 性能
         - 【dev-stable专属】 成本（非skill加速）
         - 【dev-stable专属】 企业级
         - 【dev-stable专属】 自演进
         - 【dev-stable专属】 安全
-        - 【dev-stable专属】 Agent Team
-        - 【dev-stable专属】 Code Agent
+        - 【dev-stable专属】 agent team
+        - 【dev-stable专属】 code agent
         - 【dev-stable专属】 记忆引擎
-        - 【dev-stable专属】 DeepSearch
+        - 【dev-stable专属】 deepsearch
         - 【通用】 Agent Core harness
         - 【通用】 AutoHarness
         - 【通用】 集群模式
