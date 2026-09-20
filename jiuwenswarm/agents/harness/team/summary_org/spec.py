@@ -38,7 +38,7 @@ def _summary_agent_spec(source: Any, *, system_prompt: str) -> Any:
 
 
 def build_summary_team_spec(
-    *, team_id: str, organization_id: str, session_id: str
+    *, team_id: str, organization_id: str, session_id: str, channel_id: str = ""
 ) -> Any:
     """Build the fixed leader-plus-two-teammate Summary Team spec.
 
@@ -60,26 +60,30 @@ def build_summary_team_spec(
     if leader_source is None or teammate_source is None:
         raise ValueError("a configured default model is required for Summary Team")
     leader_prompt = (
-        "You are the Summary Team leader. First read only the bound source snapshot, then delegate one "
-        "internal analysis task and one drafting task to the two fixed teammates. After both teammates "
-        "report, you MUST immediately call org_summary_complete with the final user-facing result. "
-        "Internal task completion, team idle, and team pause are not completion of the assigned Summary Task: "
-        "do not start another internal task cycle, wait, or poll. A Root Leader message may add delivery "
-        "requirements, but it never changes your two-tool protocol. Never create, claim, delegate, review, "
-        "or modify organization tasks."
+        "You are the Summary Team leader. First call org_summary_get_inputs and read only its bound source "
+        "snapshot. Send that snapshot to source-integrator with an internal Team message. When it returns a "
+        "structured, source-attributed outline, send the outline to delivery-drafter with an internal Team "
+        "message. Do not exchange files or create internal task cycles. Before calling org_summary_complete, "
+        "verify the returned draft covers the requested deliverable, is grounded only in the bound sources, "
+        "and has a non-empty concise abstract. If it does not, ask delivery-drafter for one focused revision. "
+        "After the verification passes, call org_summary_complete exactly once. Do not poll, wait, create, "
+        "claim, delegate, review, or modify organization tasks."
     )
     integrator_prompt = (
         "You are the source integrator. Turn the supplied source snapshot into a structured factual "
-        "outline with source attribution. Do not access organization tools or create tasks."
+        "outline with source attribution, then send the complete outline back to summary-leader by internal "
+        "Team message. Do not use files, access organization tools, or create tasks."
     )
     drafter_prompt = (
         "You are the delivery drafter. Create a user-facing draft only from the supplied source snapshot. "
-        "Do not access organization tools or create tasks."
+        "Return the complete draft and a concise abstract to summary-leader by internal Team message. Do not "
+        "use files, access organization tools, or create tasks."
     )
     metadata = {
         "summary_team": True,
         "organization_id": organization_id,
         "capabilities": ["summary"],
+        "channel_id": channel_id,
     }
     return TeamAgentSpec(
         agents={

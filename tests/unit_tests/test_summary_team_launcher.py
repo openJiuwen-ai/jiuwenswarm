@@ -175,6 +175,8 @@ def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     assert spec.spawn_mode == "inprocess"
     assert spec.transport is not None
     assert spec.transport.type == "inprocess"
+    assert spec.agents["leader"].enable_sys_operation is False
+    assert spec.agents["source-integrator"].enable_sys_operation is False
     assert {member.member_name for member in spec.predefined_members} == {
         "source-integrator",
         "delivery-drafter",
@@ -183,5 +185,8 @@ def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     assert "delivery-drafter" in spec.agents
     assert "source attribution" in spec.agents["source-integrator"].system_prompt
     assert "user-facing draft" in spec.agents["delivery-drafter"].system_prompt
-    assert "MUST immediately call org_summary_complete" in spec.agents["leader"].system_prompt
-    assert "not completion of the assigned Summary Task" in spec.agents["leader"].system_prompt
+    assert "verify the returned draft" in spec.agents["leader"].system_prompt
+    assert "internal Team message" in spec.agents["leader"].system_prompt
+    assert "Do not exchange files" in spec.agents["leader"].system_prompt
+    assert "send the complete outline back" in spec.agents["source-integrator"].system_prompt
+    assert "Return the complete draft" in spec.agents["delivery-drafter"].system_prompt

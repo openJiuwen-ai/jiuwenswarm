@@ -10,6 +10,7 @@ from typing import Any
 from jiuwenswarm.agents.harness.team.expert_org.launcher import (
     _align_spec_storage,
     _leader_id_from_agent,
+    _resolve_launch_channel_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,10 @@ class JiuwenSummaryTeamLauncher:
             team_id=team_id,
             organization_id=organization_id,
             session_id=session_id,
+            channel_id=_resolve_launch_channel_id(
+                (getattr(getattr(donor_entry.agent, "spec", None), "metadata", None) or {}).get("channel_id"),
+                session_id,
+            ),
         )
         _align_spec_storage(spec, donor_db)
         try:

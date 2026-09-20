@@ -701,10 +701,12 @@ class WebChannel(BaseWsChannel):
 
     @staticmethod
     def _should_preserve_full_payload(event_name: str) -> bool:
+        """Keep structured Organization milestones available to the Web client."""
         return (
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
+            or event_name.startswith("org.")
         )
 
     @staticmethod

@@ -196,12 +196,24 @@ class JiuwenExpertTeamLauncher:
     ) -> bool:
         """Run an org background turn and relay expert output to its Web session."""
         runtime = self._get_runtime()
+        relay_source = str(inputs.get("_org_relay_source") or "") if isinstance(inputs, dict) else ""
+        is_root_relay = relay_source in {"org_root_background", "org_root_delivery"}
+        turn_inputs = dict(inputs) if isinstance(inputs, dict) else inputs
+        if isinstance(turn_inputs, dict):
+            turn_inputs.pop("_org_relay_source", None)
+        if is_root_relay:
+            source = relay_source
         entry = await runtime.pool.get(team_id)
         spec = getattr(getattr(entry, "agent", None), "spec", None)
         spec_metadata = getattr(spec, "metadata", None)
         if entry is None or entry.current_session_id != session_id:
             return False
-        if not isinstance(spec_metadata, dict) or spec_metadata.get("expert_team") is not True:
+        is_relayed_team = isinstance(spec_metadata, dict) and (
+            spec_metadata.get("expert_team") is True
+            or (source == "org_summary_background" and spec_metadata.get("summary_team") is True)
+            or is_root_relay
+        )
+        if not is_relayed_team:
             if source == "org_expert_direct":
                 return False
             # The Organization runner serves both ordinary Root Teams and
@@ -209,18 +221,19 @@ class JiuwenExpertTeamLauncher:
             return await runtime.run_organization_turn(
                 team_name=team_id,
                 session_id=session_id,
-                inputs=inputs,
+                inputs=turn_inputs,
             )
         resolved_channel_id = (
             str(channel_id or "").strip()
             or self._team_channels.get((session_id, team_id))
             or str(spec_metadata.get("channel_id") or "").strip()
+            or (_resolve_launch_channel_id(None, session_id) if is_root_relay else "")
         )
         if not resolved_channel_id:
             return await runtime.run_organization_turn(
                 team_name=team_id,
                 session_id=session_id,
-                inputs=inputs,
+                inputs=turn_inputs,
             )
 
         from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
@@ -240,7 +253,7 @@ class JiuwenExpertTeamLauncher:
         leader_text_parts: list[str] = []
         saw_leader_final = False
         try:
-            activation = await runtime.activate(spec, session_id, inputs)
+            activation = await runtime.activate(spec, session_id, turn_inputs)
             agent = getattr(activation, "agent", None)
             action_kind = getattr(getattr(activation, "action", None), "kind", None)
             if agent is None or action_kind in {
@@ -250,7 +263,7 @@ class JiuwenExpertTeamLauncher:
             }:
                 return False
             ran_turn = True
-            stream = agent.stream(inputs, session=activation.session)
+            stream = agent.stream(turn_inputs, session=activation.session)
             try:
                 async for chunk in stream:
                     payload = getattr(chunk, "payload", None)

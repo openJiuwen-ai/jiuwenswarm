@@ -423,3 +423,102 @@ async def test_organization_turn_routes_root_team_to_core_runtime(is_expert: boo
         assert not await launcher.run_organization_turn(
             "ordinary-team", "sess-1", {"query": "review children"}, source="org_expert_direct"
         )
+
+
+@pytest.mark.asyncio
+async def test_summary_background_turn_relays_model_frames() -> None:
+    """Only the explicitly marked Summary Team uses the host event relay."""
+    from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    relayed = []
+
+    class _Agent:
+        spec = SimpleNamespace(metadata={"summary_team": True, "channel_id": "web"})
+
+        async def stream(self, inputs, session):
+            yield SimpleNamespace(payload={"event_type": "chat.reasoning"})
+
+    agent = _Agent()
+    entry = SimpleNamespace(agent=agent, current_session_id="sess-1", state=RuntimeState.PAUSED)
+
+    class _Pool:
+        async def get(self, team_id):
+            return entry
+
+    async def _post_run():
+        return None
+
+    async def _activate(spec, session_id, inputs):
+        return SimpleNamespace(
+            agent=agent,
+            action=SimpleNamespace(kind=RunActionKind.RESUME_FROM_PAUSE),
+            session=SimpleNamespace(post_run=_post_run),
+        )
+
+    async def _finalize(**kwargs):
+        return None
+
+    runtime = SimpleNamespace(pool=_Pool(), activate=_activate, finalize=_finalize)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _relay(chunk, **kwargs):
+        relayed.append((chunk.payload["event_type"], kwargs["team_id"]))
+        return {"event_type": "chat.reasoning", "role": "leader"}
+
+    launcher._relay_expert_chunk = _relay
+    assert await launcher.run_organization_turn(
+        "summary-team", "sess-1", {"query": "summarize"}, source="org_summary_background"
+    )
+    assert relayed == [("chat.reasoning", "summary-team")]
+
+
+@pytest.mark.asyncio
+async def test_root_summary_delivery_turn_relays_owner_output() -> None:
+    """A Summary completion marker relays the Root Leader's verified delivery."""
+    from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    received_inputs = []
+    relayed = []
+
+    class _Agent:
+        spec = SimpleNamespace(metadata={"channel_id": "web"})
+
+        async def stream(self, inputs, session):
+            received_inputs.append(inputs)
+            yield SimpleNamespace(payload={"event_type": "chat.final", "content": "verified report"})
+
+    agent = _Agent()
+    entry = SimpleNamespace(agent=agent, current_session_id="sess-1", state=RuntimeState.PAUSED)
+
+    class _Pool:
+        async def get(self, team_id):
+            return entry
+
+    async def _post_run():
+        return None
+
+    async def _activate(spec, session_id, inputs):
+        return SimpleNamespace(
+            agent=agent,
+            action=SimpleNamespace(kind=RunActionKind.RESUME_FROM_PAUSE),
+            session=SimpleNamespace(post_run=_post_run),
+        )
+
+    async def _finalize(**kwargs):
+        return None
+
+    runtime = SimpleNamespace(pool=_Pool(), activate=_activate, finalize=_finalize)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def _relay(chunk, **kwargs):
+        relayed.append((chunk.payload["event_type"], kwargs["source"], kwargs["team_id"]))
+        return {"event_type": "chat.final", "role": "leader"}
+
+    launcher._relay_expert_chunk = _relay
+    assert await launcher.run_organization_turn(
+        "root-team", "sess-1", {"query": "deliver", "_org_relay_source": "org_root_delivery"}
+    )
+    assert received_inputs == [{"query": "deliver"}]
+    assert relayed == [("chat.final", "org_root_delivery", "root-team")]

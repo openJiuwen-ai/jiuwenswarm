@@ -120,6 +120,37 @@ def test_web_channel_preserves_goal_structured_payloads():
         assert WebChannel._build_event_payload(msg, event_name) == expected
 
 
+def test_web_channel_preserves_organization_progress_payload():
+    """Organization milestones must retain their phase and target Team."""
+    msg = Message(
+        id="org-progress-summary_execution_delegated:0",
+        type="event",
+        channel_id="web",
+        session_id="session-1",
+        params={},
+        timestamp=0.0,
+        ok=True,
+        payload={
+            "event_type": "org.progress",
+            "phase": "summary_execution_delegated",
+            "root_task_id": "root-1",
+            "team_id": "root-team",
+            "team_name": "root-team",
+            "source": "org_root_progress",
+        },
+    )
+
+    assert WebChannel._build_event_payload(msg, "org.progress") == {
+        "event_type": "org.progress",
+        "phase": "summary_execution_delegated",
+        "root_task_id": "root-1",
+        "team_id": "root-team",
+        "team_name": "root-team",
+        "source": "org_root_progress",
+        "session_id": "session-1",
+    }
+
+
 @pytest.mark.asyncio
 async def test_web_channel_preserves_symphony_status_payload():
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
