@@ -293,6 +293,8 @@ export function PersonalContextGraphPanel({
   const { graph, loadingGraph, status, config, loadGraph, loadStatus } = usePersonalContextStore();
   const [query, setQuery] = useState('');
   const [treeCollapsed, setTreeCollapsed] = useState(false);
+  const [treeExpanded, setTreeExpanded] = useState(true);
+  const [treeToggleVersion, setTreeToggleVersion] = useState(0);
   const [searchResults, setSearchResults] = useState<ContextSearchResultItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
@@ -1324,6 +1326,21 @@ export function PersonalContextGraphPanel({
           </div>
 
           {!treeCollapsed && (
+          <>
+          {fileTree.length > 0 && (
+            <div className="pc-graph__tree-toggle-all">
+              <button
+                type="button"
+                className="pc-graph__tree-toggle-all-btn"
+                onClick={() => {
+                  setTreeExpanded((v) => !v);
+                  setTreeToggleVersion((v) => v + 1);
+                }}
+              >
+                {t(treeExpanded ? 'personalContext.info.collapseTree' : 'personalContext.info.expandTree')}
+              </button>
+            </div>
+          )}
           <div className="pc-graph__tree-content" ref={treeContentRef}>
             {hasQuery ? (
               <>
@@ -1382,10 +1399,13 @@ export function PersonalContextGraphPanel({
                   onSelect={(id) => { autoFitCancelledRef.current = true; setSelectedNodeId(id); }}
                   selectedId={selectedNodeId}
                   selectedAncestorPaths={selectedAncestorPaths}
+                  initialExpanded={treeExpanded}
+                  key={treeToggleVersion}
                 />
               )
             )}
           </div>
+          </>
           )}
         </aside>
 
@@ -1491,19 +1511,19 @@ export function PersonalContextGraphPanel({
           <div className="pc-graph__legend" data-testid="personal-context-graph-legend">
             <div className="pc-graph__legend-item">
               <span className="pc-graph__legend-node pc-graph__legend-node--root" />
-              <span className="pc-graph__legend-text">content root</span>
+              <span className="pc-graph__legend-text">{t('personalContext.info.legendRoot')}</span>
             </div>
             <div className="pc-graph__legend-item">
               <span className="pc-graph__legend-node pc-graph__legend-node--folder" />
-              <span className="pc-graph__legend-text">目录</span>
+              <span className="pc-graph__legend-text">{t('personalContext.info.legendFolder')}</span>
             </div>
             <div className="pc-graph__legend-item">
               <span className="pc-graph__legend-node pc-graph__legend-node--doc" />
-              <span className="pc-graph__legend-text">Markdown 文档</span>
+              <span className="pc-graph__legend-text">{t('personalContext.info.legendDoc')}</span>
             </div>
             <div className="pc-graph__legend-item">
               <span className="pc-graph__legend-edge" />
-              <span className="pc-graph__legend-text">关系</span>
+              <span className="pc-graph__legend-text">{t('personalContext.info.legendEdge')}</span>
             </div>
           </div>
         )}
@@ -1519,6 +1539,7 @@ function FileTree({
   onSelect,
   selectedId,
   selectedAncestorPaths,
+  initialExpanded = true,
   depth = 0,
 }: {
   nodes: TreeNode[];
@@ -1526,6 +1547,7 @@ function FileTree({
   onSelect: (id: string) => void;
   selectedId: string | null;
   selectedAncestorPaths: Set<string>;
+  initialExpanded?: boolean;
   depth?: number;
 }) {
   return (
@@ -1549,9 +1571,9 @@ function FileTree({
                 <span className="pc-graph__tree-name">{n.name}</span>
               </button>
             ) : (
-              <FolderRow name={n.name} path={n.path} isHit={isHit} selectedAncestorPaths={selectedAncestorPaths}>
+              <FolderRow name={n.name} path={n.path} isHit={isHit} selectedAncestorPaths={selectedAncestorPaths} initialExpanded={initialExpanded}>
                 {n.children.length > 0 && (
-                  <FileTree nodes={n.children} hits={hits} onSelect={onSelect} selectedId={selectedId} selectedAncestorPaths={selectedAncestorPaths} depth={depth + 1} />
+                  <FileTree nodes={n.children} hits={hits} onSelect={onSelect} selectedId={selectedId} selectedAncestorPaths={selectedAncestorPaths} initialExpanded={initialExpanded} depth={depth + 1} />
                 )}
               </FolderRow>
             )}
@@ -1568,15 +1590,17 @@ function FolderRow({
   path,
   isHit,
   selectedAncestorPaths,
+  initialExpanded,
   children,
 }: {
   name: string;
   path: string;
   isHit: boolean;
   selectedAncestorPaths: Set<string>;
+  initialExpanded: boolean;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(initialExpanded);
   // 选中节点在该目录内时强制展开，保证目录树自动跳转可见
   const isOpen = open || selectedAncestorPaths.has(path);
   return (

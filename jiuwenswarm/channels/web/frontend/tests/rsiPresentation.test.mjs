@@ -154,16 +154,16 @@ test('paper score_overall is rendered and rejected reason is human-readable', ()
   assert.deepEqual(nodeScoreLines(rejected)[0], { value: '0.8', label: '分数' });
 });
 
-test('paper tasks can pause but do not expose an unsupported resume action', () => {
+test('running tasks stop and paused tasks resume across scenarios', () => {
   assert.deepEqual(actionsForStatus('RUNNING', 'ARTIFACT', false, null, 'PAPER'), [
     'config',
     'delete',
-    'pause',
+    'stop',
   ]);
   assert.deepEqual(actionsForStatus('PAUSED', 'ARTIFACT', false, null, 'PAPER'), [
     'config',
     'delete',
-    'stop',
+    'resume',
   ]);
   assert.deepEqual(actionsForStatus('PAUSED', 'ARTIFACT', false, null, 'PROGRAM'), [
     'config',

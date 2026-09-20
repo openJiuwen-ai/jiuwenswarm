@@ -620,7 +620,7 @@ export function actionsForStatus(
   scenario: RsiScenario,
   installed = false,
   tree: RsiTreeGetResult | null = null,
-  artifactType: RsiArtifactType | null = null,
+  _artifactType: RsiArtifactType | null = null,
 ): RsiActionKind[] {
   const actions: RsiActionKind[] = ['config', 'delete'];
   switch (status) {
@@ -629,12 +629,12 @@ export function actionsForStatus(
       actions.push('pause');
       break;
     case 'RUNNING':
-      // Harness 引擎不支持运行中暂停，改用停止任务（后端 terminate）。
-      actions.push(scenario === 'HARNESS' ? 'stop' : 'pause');
+      // 引擎不支持运行中暂停，统一提供停止任务（后端 terminate）。
+      actions.push('stop');
       break;
     case 'PAUSED':
-      // 论文当前只支持暂停，不支持恢复；保留停止以便用户结束暂停任务。
-      actions.push(scenario === 'ARTIFACT' && artifactType === 'PAPER' ? 'stop' : 'resume');
+      // 暂停后统一可继续（resume）；论文恢复依赖 agent-core 的 PaperArtifactProviderImpl 支持。
+      actions.push('resume');
       break;
     case 'COMPLETED':
       if (!installed) {

@@ -17,6 +17,7 @@ import pytest
 from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiNotReady,
+    RsiScenarioNotSupported,
     RsiTaskNotFound,
     RsiTaskStateConflict,
 )
@@ -806,3 +807,88 @@ class TestStatusCallback:
         t = _create(ctx)
         ctx.store.update_status(t, ["CREATED"], "QUEUED", cause="x")
         assert (t, "CREATED", "QUEUED") in seen
+
+
+class _PaperLikeAdapter:
+    """Paper 场景适配器：支持排队暂停，但不支持断点 resume（同 agent-core 桩实现）。"""
+
+    supports_pause = True
+    supports_resume = False
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def build_request(self, task_view, *, resume: bool = False):
+        del resume
+        return task_view
+
+    async def run(self, request, *, on_event=None):
+        del on_event
+        self.calls.append(f"run:{request.task_id}")
+        return SimpleNamespace(status="completed")
+
+    async def resume(self, request, *, on_event=None):
+        del on_event
+        self.calls.append(f"resume:{request.task_id}")
+        return SimpleNamespace(status="completed")
+
+
+class TestResumePauseSource:
+    async def test_queued_pause_resume_runs_fresh_without_provider_resume(self, ctx):
+        """排队中暂停 → 恢复执行走 run() 而非 Provider.resume()（paper 修复）。"""
+        adapter = _PaperLikeAdapter()
+        task_id = ctx.task_service.create({
+            "scenario": "ARTIFACT",
+            "artifact_type": "PAPER",
+            "name": "paper-queue-resume",
+            "model_refs": {"optimizer": "o"},
+            "optimization_instruction": "improve it",
+        })["task_id"]
+        ctx.register_adapters({"ARTIFACT:PAPER": adapter})
+
+        ctx.worker._ensure_runner = lambda: None  # noqa: SLF001 - 排队不自动执行
+        assert ctx.worker.enqueue(task_id) == TaskStatus.QUEUED.value
+        assert ctx.worker.cancel(task_id, "pause") == TaskStatus.PAUSED.value
+        assert ctx.worker.resume(task_id) == TaskStatus.QUEUED.value
+        assert task_id not in ctx.worker._resume_task_ids  # noqa: SLF001
+
+        runner = asyncio.create_task(ctx.worker._run_loop())
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+
+        assert adapter.calls == [f"run:{task_id}"]
+        assert ctx.store.get(task_id).status == TaskStatus.COMPLETED.value
+
+    async def test_real_pause_resume_rejected_without_provider_resume(self, ctx):
+        """运行中暂停且 Provider 不支持 resume → 明确报错而非静默回到 PAUSED。"""
+        adapter = _PaperLikeAdapter()
+        task_id = ctx.task_service.create({
+            "scenario": "ARTIFACT",
+            "artifact_type": "PAPER",
+            "name": "paper-real-pause",
+            "model_refs": {"optimizer": "o"},
+            "optimization_instruction": "improve it",
+        })["task_id"]
+        ctx.register_adapters({"ARTIFACT:PAPER": adapter})
+        ctx.store.update_status(task_id, ["CREATED"], "QUEUED", cause="test")
+        ctx.store.update_status(task_id, ["QUEUED"], "RUNNING", cause="test")
+        ctx.store.update_status(task_id, ["RUNNING"], "PAUSED", cause="provider.paused")
+
+        with pytest.raises(RsiScenarioNotSupported, match="不支持运行中暂停后的 resume"):
+            ctx.worker.resume(task_id)
+        assert ctx.store.get(task_id).status == TaskStatus.PAUSED.value
+        assert ctx.worker._queue.qsize() == 0  # noqa: SLF001 - 未入队
+
+    def test_queued_pause_resume_keeps_provider_resume_when_supported(self, ctx):
+        """排队暂停 + Provider 支持 resume（harness/program）→ 维持原 resume 路由。"""
+        adapter = _ControlAdapter()
+        ctx.register_adapters({"HARNESS": adapter})
+        task_id = _create(ctx)
+        ctx.worker._ensure_runner = lambda: None  # noqa: SLF001
+        assert ctx.worker.enqueue(task_id) == TaskStatus.QUEUED.value
+        assert ctx.worker.cancel(task_id, "pause") == TaskStatus.PAUSED.value
+        assert ctx.worker.resume(task_id) == TaskStatus.QUEUED.value
+        assert task_id in ctx.worker._resume_task_ids  # noqa: SLF001
+
