@@ -14,6 +14,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from openjiuwen.core.session.agent import Session
@@ -23,6 +24,18 @@ logger = logging.getLogger(__name__)
 # 节点级 fallback 交付物校验器：契约通过后调用，返回拒绝原因（str）表示
 # 未达成节点目标，返回 None 放行。入参为 (inputs, contract_result)。
 ResultValidator = Callable[[dict[str, Any], dict[str, Any]], "str | None"]
+
+
+@dataclass
+class FallbackCall:
+    """单次节点 fallback 调用参数。"""
+
+    node_name: str
+    instruction: str
+    inputs: dict[str, Any]
+    error: Exception
+    parent_session: Session | None = None
+    result_validator: ResultValidator | None = None
 
 
 class FallbackContractError(Exception):
@@ -52,27 +65,11 @@ class SkillTurboFallbackHandler(ABC):
     """
 
     @abstractmethod
-    async def fallback(
-        self,
-        node_name: str,
-        instruction: str,
-        inputs: dict[str, Any],
-        error: Exception,
-        parent_session: Session | None = None,
-        result_validator: ResultValidator | None = None,
-    ) -> dict[str, Any]:
+    async def fallback(self, call: FallbackCall) -> dict[str, Any]:
         """非流式 fallback：使用外部 agent 兜底失败节点。"""
 
     @abstractmethod
-    def fallback_stream(
-        self,
-        node_name: str,
-        instruction: str,
-        inputs: dict[str, Any],
-        error: Exception,
-        parent_session: Session | None = None,
-        result_validator: ResultValidator | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    def fallback_stream(self, call: FallbackCall) -> AsyncIterator[dict[str, Any]]:
         """流式 fallback：使用外部 agent 兜底失败节点。"""
 
 
@@ -323,36 +320,23 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
             return False, {"reason": reason}
         return True, contract_result
 
-    async def _execute_spawn_fallback(
-        self,
-        node_name: str,
-        instruction: str,
-        inputs: dict[str, Any],
-        error: Exception,
-        parent_session: Session | None,
-    ) -> str:
+    async def _execute_spawn_fallback(self, call: FallbackCall) -> str:
         """通过 adapter 的 ``spawn_fallback`` 执行 SkillTurbo fallback，返回子代理输出文本。"""
-        query = self._build_fallback_query(node_name, instruction, inputs, error)
-        return await self._adapter.spawn_fallback(query, parent_session=parent_session)
+        query = self._build_fallback_query(
+            call.node_name, call.instruction, call.inputs, call.error
+        )
+        return await self._adapter.spawn_fallback(
+            query, parent_session=call.parent_session
+        )
 
-    async def fallback(
-        self,
-        node_name: str,
-        instruction: str,
-        inputs: dict[str, Any],
-        error: Exception,
-        parent_session: Session | None = None,
-        result_validator: ResultValidator | None = None,
-    ) -> dict[str, Any]:
+    async def fallback(self, call: FallbackCall) -> dict[str, Any]:
         """非流式 fallback 实现。"""
+        node_name = call.node_name
+        inputs = call.inputs
+        error = call.error
+        result_validator = call.result_validator
         try:
-            fallback_output = await self._execute_spawn_fallback(
-                node_name,
-                instruction,
-                inputs,
-                error,
-                parent_session,
-            )
+            fallback_output = await self._execute_spawn_fallback(call)
         except Exception as e:
             logger.error(
                 "[DeepAgentFallbackHandler] fallback error node=%s error=%s",
@@ -407,34 +391,20 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         })
         return success_result
 
-    def fallback_stream(
-        self,
-        node_name: str,
-        instruction: str,
-        inputs: dict[str, Any],
-        error: Exception,
-        parent_session: Session | None = None,
-        result_validator: ResultValidator | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    def fallback_stream(self, call: FallbackCall) -> AsyncIterator[dict[str, Any]]:
         """流式 fallback 实现。"""
-        return self._fallback_stream_impl(
-            node_name, instruction, inputs, error, parent_session, result_validator
-        )
+        return self._fallback_stream_impl(call)
 
-    async def _fallback_stream_impl(
-        self,
-        node_name: str,
-        instruction: str,
-        inputs: dict[str, Any],
-        error: Exception,
-        parent_session: Session | None,
-        result_validator: ResultValidator | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def _fallback_stream_impl(self, call: FallbackCall) -> AsyncIterator[dict[str, Any]]:
         """流式 fallback 的实际实现。
 
         adapter.spawn_fallback 为阻塞式 invoke，不向 parent_session 转发子代理流式
         过程；此处只负责 fallback 生命周期事件和最终结构化结果。
         """
+        node_name = call.node_name
+        inputs = call.inputs
+        error = call.error
+        result_validator = call.result_validator
         logger.warning(
             "[DeepAgentFallbackHandler] node fallback_stream via spawn node=%s error=%s",
             node_name,
@@ -449,13 +419,7 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         }
 
         try:
-            fallback_output = await self._execute_spawn_fallback(
-                node_name,
-                instruction,
-                inputs,
-                error,
-                parent_session,
-            )
+            fallback_output = await self._execute_spawn_fallback(call)
         except Exception as e:
             logger.error(
                 "[DeepAgentFallbackHandler] fallback_stream error node=%s error=%s",

@@ -16,6 +16,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.skill_turbo.fallback_handler import (
     DeepAgentFallbackHandler,
+    FallbackCall,
     FallbackContractError,
 )
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import PlanNode
@@ -134,12 +135,14 @@ class TestStreamFallbackHonorsValidator:
         chunks: list[dict[str, Any]] = []
         with pytest.raises(FallbackContractError) as excinfo:
             async for chunk in handler.fallback_stream(
-                node_name="ppt_gen_root",
-                instruction="PPT生成任务流根节点，串联P0-P10全流程",
-                inputs=inputs,
-                error=RuntimeError(_FAILURE),
-                parent_session=None,
-                result_validator=root.validate_fallback_success,
+                FallbackCall(
+                    node_name="ppt_gen_root",
+                    instruction="PPT生成任务流根节点，串联P0-P10全流程",
+                    inputs=inputs,
+                    error=RuntimeError(_FAILURE),
+                    parent_session=None,
+                    result_validator=root.validate_fallback_success,
+                )
             ):
                 chunks.append(chunk)
 
@@ -168,12 +171,14 @@ class TestStreamFallbackHonorsValidator:
         chunks = [
             chunk
             async for chunk in handler.fallback_stream(
-                node_name="ppt_gen_root",
-                instruction="PPT生成任务流根节点，串联P0-P10全流程",
-                inputs=inputs,
-                error=RuntimeError(_FAILURE),
-                parent_session=None,
-                result_validator=root.validate_fallback_success,
+                FallbackCall(
+                    node_name="ppt_gen_root",
+                    instruction="PPT生成任务流根节点，串联P0-P10全流程",
+                    inputs=inputs,
+                    error=RuntimeError(_FAILURE),
+                    parent_session=None,
+                    result_validator=root.validate_fallback_success,
+                )
             )
         ]
 
@@ -192,12 +197,14 @@ class TestNonStreamFallbackHonorsValidator:
 
         with pytest.raises(FallbackContractError) as excinfo:
             await handler.fallback(
-                node_name="ppt_gen_root",
-                instruction="PPT生成任务流根节点，串联P0-P10全流程",
-                inputs=inputs,
-                error=RuntimeError(_FAILURE),
-                parent_session=None,
-                result_validator=root.validate_fallback_success,
+                FallbackCall(
+                    node_name="ppt_gen_root",
+                    instruction="PPT生成任务流根节点，串联P0-P10全流程",
+                    inputs=inputs,
+                    error=RuntimeError(_FAILURE),
+                    parent_session=None,
+                    result_validator=root.validate_fallback_success,
+                )
             )
 
         assert "PPTX" in str(excinfo.value)
@@ -215,12 +222,14 @@ class TestNonStreamFallbackHonorsValidator:
 
         with pytest.raises(FallbackContractError) as excinfo:
             await handler.fallback(
-                node_name="ppt_gen_root",
-                instruction="PPT生成任务流根节点，串联P0-P10全流程",
-                inputs=inputs,
-                error=RuntimeError(_FAILURE),
-                parent_session=None,
-                result_validator=_crashing_validator,
+                FallbackCall(
+                    node_name="ppt_gen_root",
+                    instruction="PPT生成任务流根节点，串联P0-P10全流程",
+                    inputs=inputs,
+                    error=RuntimeError(_FAILURE),
+                    parent_session=None,
+                    result_validator=_crashing_validator,
+                )
             )
 
         assert "validator" in str(excinfo.value)

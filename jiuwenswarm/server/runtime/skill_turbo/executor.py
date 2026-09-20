@@ -62,7 +62,10 @@ from jiuwenswarm.server.runtime.skill_turbo.markdown_stream import (
     markdown_stream_incoming,
     terminate_dangling_markdown_fence,
 )
-from jiuwenswarm.server.runtime.skill_turbo.fallback_handler import FallbackContractError
+from jiuwenswarm.server.runtime.skill_turbo.fallback_handler import (
+    FallbackCall,
+    FallbackContractError,
+)
 from jiuwenswarm.server.runtime.skill_turbo.interactive_ask import (
     resolve_interactive_ask_from_inputs,
 )
@@ -2338,12 +2341,14 @@ class SkillTurboExecutor:
             self._fallback_count,
         )
         return await handler.fallback(
-            node_name=node.plan_name,
-            instruction=node.instruction or "",
-            inputs=inputs,
-            error=error,
-            parent_session=_session_var.get(),
-            result_validator=node.validate_fallback_success,
+            FallbackCall(
+                node_name=node.plan_name,
+                instruction=node.instruction or "",
+                inputs=inputs,
+                error=error,
+                parent_session=_session_var.get(),
+                result_validator=node.validate_fallback_success,
+            )
         )
 
     async def fallback_stream(
@@ -2386,12 +2391,14 @@ class SkillTurboExecutor:
             self._fallback_count,
         )
         async for chunk in handler.fallback_stream(
-            node_name=node.plan_name,
-            instruction=node.instruction or "",
-            inputs=inputs,
-            error=error,
-            parent_session=_session_var.get(),
-            result_validator=node.validate_fallback_success,
+            FallbackCall(
+                node_name=node.plan_name,
+                instruction=node.instruction or "",
+                inputs=inputs,
+                error=error,
+                parent_session=_session_var.get(),
+                result_validator=node.validate_fallback_success,
+            )
         ):
             yield chunk
 
