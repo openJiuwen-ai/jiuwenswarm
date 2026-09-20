@@ -6,7 +6,7 @@ import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
 
 const dom = new JSDOM('<div id="root"></div>', {
-  url: 'https://experience-package.invalid',
+  url: 'https://skill-package.invalid',
   pretendToBeVisual: true,
 });
 for (const [key, value] of Object.entries({
@@ -21,11 +21,11 @@ for (const [key, value] of Object.entries({
   Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
 after(() => dom.window.close());
 
-const { ExperiencePackagePrompt } =
-  await import('../node_modules/.cache/experience-package-prompt/components/InteractionSlot/ExperiencePackagePrompt.js');
+const { SkillPackagePrompt } =
+  await import('../node_modules/.cache/skill-package-prompt/components/InteractionSlot/SkillPackagePrompt.js');
 const { classifyPrompt } =
-  await import('../node_modules/.cache/experience-package-prompt/components/InteractionSlot/promptRouting.js');
-const { default: i18n } = await import('../node_modules/.cache/experience-package-prompt/i18n/index.js');
+  await import('../node_modules/.cache/skill-package-prompt/components/InteractionSlot/promptRouting.js');
+const { default: i18n } = await import('../node_modules/.cache/skill-package-prompt/i18n/index.js');
 
 const question = {
   header: '发现可复用的技能包',
@@ -47,7 +47,7 @@ async function mounted(onSubmit, run) {
   try {
     await act(async () =>
       root.render(
-        createElement(I18nextProvider, { i18n }, createElement(ExperiencePackagePrompt, { pending, onSubmit })),
+        createElement(I18nextProvider, { i18n }, createElement(SkillPackagePrompt, { pending, onSubmit })),
       ),
     );
     await run();
@@ -79,16 +79,16 @@ test('renders direct package actions without generic question controls', async (
     },
     async () => {
       assert.equal(
-        document.querySelector('[data-testid="interaction-slot-experience-title"]').textContent,
+        document.querySelector('[data-testid="interaction-slot-skill-package-title"]').textContent,
         '发现可复用的技能包',
       );
-      assert.match(document.querySelector('[data-testid="interaction-slot-experience-body"]').textContent, /研究组合/);
+      assert.match(document.querySelector('[data-testid="interaction-slot-skill-package-body"]').textContent, /研究组合/);
       assert.doesNotMatch(document.body.textContent, /沉淀/);
       assert.equal(document.querySelector('[data-testid="interaction-slot-ix-options"]'), null);
       assert.equal(document.querySelector('[data-testid="interaction-slot-ix-skip-button"]'), null);
       assert.equal(document.querySelector('[data-testid="interaction-slot-ix-confirm-button"]'), null);
 
-      await act(async () => document.querySelector('[data-testid="interaction-slot-experience-defer-button"]').click());
+      await act(async () => document.querySelector('[data-testid="interaction-slot-skill-package-defer-button"]').click());
       assert.deepEqual(submissions, [
         [pending.request_id, [{ question: question.question, selected_options: ['defer'] }], undefined],
       ]);
@@ -109,8 +109,8 @@ test('submits install directly and shows a beginner-friendly busy state', async 
       return true;
     },
     async () => {
-      const createButton = document.querySelector('[data-testid="interaction-slot-experience-create-button"]');
-      const deferButton = document.querySelector('[data-testid="interaction-slot-experience-defer-button"]');
+      const createButton = document.querySelector('[data-testid="interaction-slot-skill-package-create-button"]');
+      const deferButton = document.querySelector('[data-testid="interaction-slot-skill-package-defer-button"]');
       await act(async () => createButton.click());
       assert.equal(createButton.textContent, '正在创建…');
       assert.equal(createButton.disabled, true);

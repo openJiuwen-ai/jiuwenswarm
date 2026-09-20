@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { AskUserQuestionPayload, QuestionOption, UserAnswer } from '../../types';
 
-interface ExperiencePackagePromptProps {
+interface SkillPackagePromptProps {
   pending: AskUserQuestionPayload;
   onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
 }
@@ -14,7 +14,7 @@ function optionValue(option: QuestionOption): string {
   return option.value || option.label;
 }
 
-export function ExperiencePackagePrompt({ pending, onSubmit }: ExperiencePackagePromptProps) {
+export function SkillPackagePrompt({ pending, onSubmit }: SkillPackagePromptProps) {
   const { t } = useTranslation();
   const [submittingAction, setSubmittingAction] = useState<string | null>(null);
   const question = pending.questions?.[0];
@@ -48,31 +48,31 @@ export function ExperiencePackagePrompt({ pending, onSubmit }: ExperiencePackage
 
   return (
     <div
-      className="experience-package-prompt"
+      className="skill-package-prompt"
       role="alertdialog"
       aria-label={question.header}
-      data-testid="interaction-slot-experience-prompt"
+      data-testid="interaction-slot-skill-package-prompt"
       data-request-id={pending.request_id}
     >
-      <div className="experience-package-prompt__head" data-testid="interaction-slot-experience-head">
-        <Package className="experience-package-prompt__icon" size={18} strokeWidth={2} aria-hidden="true" />
-        <span className="experience-package-prompt__title" data-testid="interaction-slot-experience-title">
+      <div className="skill-package-prompt__head" data-testid="interaction-slot-skill-package-head">
+        <Package className="skill-package-prompt__icon" size={18} strokeWidth={2} aria-hidden="true" />
+        <span className="skill-package-prompt__title" data-testid="interaction-slot-skill-package-title">
           {question.header}
         </span>
       </div>
 
-      <div className="experience-package-prompt__body chat-text" data-testid="interaction-slot-experience-body">
+      <div className="skill-package-prompt__body chat-text" data-testid="interaction-slot-skill-package-body">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{question.question}</ReactMarkdown>
       </div>
 
-      <div className="experience-package-prompt__actions" data-testid="interaction-slot-experience-actions">
+      <div className="skill-package-prompt__actions" data-testid="interaction-slot-skill-package-actions">
         {actions.defer && (
           <button
             type="button"
-            className="experience-package-prompt__button experience-package-prompt__button--secondary"
+            className="skill-package-prompt__button skill-package-prompt__button--secondary"
             disabled={submittingAction !== null}
             onClick={() => void submit(actions.defer)}
-            data-testid="interaction-slot-experience-defer-button"
+            data-testid="interaction-slot-skill-package-defer-button"
           >
             {actions.defer.label}
           </button>
@@ -80,13 +80,13 @@ export function ExperiencePackagePrompt({ pending, onSubmit }: ExperiencePackage
         {actions.create && (
           <button
             type="button"
-            className="experience-package-prompt__button experience-package-prompt__button--primary"
+            className="skill-package-prompt__button skill-package-prompt__button--primary"
             disabled={submittingAction !== null}
             onClick={() => void submit(actions.create)}
-            data-testid="interaction-slot-experience-create-button"
+            data-testid="interaction-slot-skill-package-create-button"
             data-variant={submittingAction === 'install' ? 'loading' : 'idle'}
           >
-            {submittingAction === 'install' ? t('experiencePackagePrompt.creating') : actions.create.label}
+            {submittingAction === 'install' ? t('skillPackagePrompt.creating') : actions.create.label}
           </button>
         )}
       </div>
