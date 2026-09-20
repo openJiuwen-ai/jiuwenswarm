@@ -168,7 +168,10 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
   description?: string; // 操作描述，如 "创建 3 个任务"
   formatted_args?: string; // 格式化参数摘要
-  display_name?: string; // 后端下发的可读展示名，前端优先直接展示
+  /** 模型生成的自然语言目标，原样展示，不走 i18n */
+  call_goal?: string;
+  /** @deprecated 仅用于兼容旧事件，不参与标题渲染 */
+  display_name?: string;
   memberName?: string;
   reviewer?: AutoReviewerMetadata;
 }

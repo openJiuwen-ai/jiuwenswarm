@@ -1679,6 +1679,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
           arguments: n.arguments,
           description: n.description,
           formatted_args: n.formatted_args,
+          call_goal: n.call_goal,
           display_name: n.display_name,
           memberName: n.memberName,
           reviewer: n.reviewer,

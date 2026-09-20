@@ -3025,7 +3025,23 @@
       "todoModify": "更新待办",
       "todoList": "查看待办",
       "todoGet": "读取待办",
-      "skill": "查看技能"
+      "skill": "查看技能",
+      "spawnMember": "创建成员",
+      "sendMessage": "发送消息",
+      "buildTeam": "创建团队",
+      "shutdownMember": "关闭成员",
+      "createTask": "创建任务",
+      "updateTask": "更新任务"
+    },
+    "toolDisplay": {
+      "title": "{{category}} · {{action}}",
+      "category": {
+        "file": "文件",
+        "search": "搜索",
+        "code": "代码",
+        "system": "系统",
+        "other": "工具"
+      }
     },
     "toolResult": {
       "success": "完成",
@@ -3041,9 +3057,9 @@
       "truncated": "结果已截断"
     },
     "toolGroup": {
-      "running": "正在{{label}}",
-      "completed": "已完成{{label}}",
-      "failed": "{{label}}执行失败",
+      "running": "执行中：{{label}}",
+      "completed": "已完成：{{label}}",
+      "failed": "执行失败：{{label}}",
       "category": {
         "file": "文件操作",
         "search": "搜索",
