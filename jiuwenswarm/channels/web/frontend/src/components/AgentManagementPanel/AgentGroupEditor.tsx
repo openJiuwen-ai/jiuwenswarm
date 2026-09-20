@@ -101,7 +101,7 @@ export function AgentGroupEditor({
   );
   const filteredSkills = sortInstalledFirst(
     skillOptions.filter((skill) => {
-      if (!isTeamSkillOption(skill) || !isSkillVisibleInSourceTab(skill, skillSourceTab)) return false;
+      if (!isTeamSkillOption(skill, skillSourceTab) || !isSkillVisibleInSourceTab(skill, skillSourceTab)) return false;
       return `${skill.id} ${skill.name} ${skill.description}`
         .toLocaleLowerCase()
         .includes(skillQuery.trim().toLocaleLowerCase());

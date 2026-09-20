@@ -148,3 +148,133 @@ test('skill and connector picker adapters retain marketplace/install state', asy
   assert.equal(mcps[1].connectionState, 'disconnected');
   assert.deepEqual(calls.map(([method]) => method), ['skills.list', 'mcp.list', 'mcp.list']);
 });
+
+test('team skill market options use the SkillPanel type contract and Hub asset install', async () => {
+  const calls = [];
+  webClient.request = async (method, params) => {
+    calls.push([method, params]);
+    if (method === 'skills.list') {
+      return {
+        skills: [
+          {
+            name: 'installed-team',
+            display_name: 'Installed Team',
+            description: 'Installed team skill',
+            source: 'teamskillshub',
+            installed: true,
+            kind: 'team-skill',
+            skill_type: 'swarm_skill',
+          },
+        ],
+      };
+    }
+    if (method === 'skills.swarmskillshub.recommend') {
+      assert.equal(params.plugin_type, 'swarmskill');
+      return {
+        success: true,
+        skills: [
+          {
+            asset_id: 'market-team-asset',
+            name: 'market-team',
+            display_name: 'Market Team',
+            short_desc: 'Remote team skill',
+            plugin_type: 'swarmskill',
+          },
+        ],
+      };
+    }
+    if (method === 'skills.teamskillshub.install') {
+      assert.equal(params.asset_id, 'market-team-asset');
+      return { success: true };
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  };
+
+  const client = createLiveAgentManagementClient();
+  const skills = await client.listSkillOptions({ includeTeamMarketplace: true });
+  const marketTeam = skills.find((skill) => skill.id === 'market-team');
+  assert.ok(marketTeam);
+  assert.equal(marketTeam.pluginType, 'swarmskill');
+  assert.equal(marketTeam.hubAssetId, 'market-team-asset');
+  assert.equal(marketTeam.installed, false);
+  assert.equal(skills.find((skill) => skill.id === 'installed-team').skillType, 'swarm_skill');
+
+  await client.installSkill(marketTeam);
+  assert.deepEqual(calls.map(([method]) => method), [
+    'skills.list',
+    'skills.swarmskillshub.recommend',
+    'skills.teamskillshub.install',
+  ]);
+});
+
+test('team skill marketplace failure preserves the base skill list', async () => {
+  webClient.request = async (method) => {
+    if (method === 'skills.list') {
+      return {
+        skills: [{ name: 'local-review', display_name: 'Local Review', source: 'project', installed: true }],
+      };
+    }
+    if (method === 'skills.swarmskillshub.recommend') {
+      return { success: false, detail: 'Team Skills Hub unavailable' };
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  };
+
+  const skills = await createLiveAgentManagementClient().listSkillOptions({ includeTeamMarketplace: true });
+  assert.deepEqual(skills.map((skill) => skill.id), ['local-review']);
+});
+
+test('returns base skills before delayed Team Skills Hub enrichment and reports cache state', async () => {
+  let resolveMarketplace;
+  const marketplaceUpdates = [];
+  webClient.request = async (method) => {
+    if (method === 'skills.list') {
+      return {
+        skills: [{ name: 'local-review', display_name: 'Local Review', source: 'project', installed: true }],
+      };
+    }
+    if (method === 'skills.swarmskillshub.recommend') {
+      return new Promise((resolve) => {
+        resolveMarketplace = resolve;
+      });
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  };
+
+  const client = createLiveAgentManagementClient();
+  const skillsPromise = client.listSkillOptions({
+    includeTeamMarketplace: true,
+    onTeamMarketplaceLoaded: (skills, cache) => marketplaceUpdates.push({ skills, cache }),
+  });
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('Base skill list was blocked by the marketplace request')), 100);
+  });
+  const skills = await Promise.race([skillsPromise, timeout]);
+  clearTimeout(timeoutId);
+
+  assert.deepEqual(skills.map((skill) => skill.id), ['local-review']);
+  assert.equal(marketplaceUpdates.length, 0);
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  resolveMarketplace({
+    success: true,
+    skills: [
+      {
+        asset_id: 'market-team-asset',
+        name: 'market-team',
+        display_name: 'Market Team',
+        plugin_type: 'swarmskill',
+      },
+    ],
+    cache: { state: 'stale', refreshing: true, complete: false },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(marketplaceUpdates.length, 1);
+  assert.deepEqual(
+    marketplaceUpdates[0].skills.map((skill) => skill.id),
+    ['local-review', 'market-team'],
+  );
+  assert.deepEqual(marketplaceUpdates[0].cache, { state: 'stale', refreshing: true, complete: false });
+});

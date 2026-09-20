@@ -22,6 +22,7 @@ import { resolveAgentTagPayload } from '../node_modules/.cache/agent-management/
 import {
   isAgentGroupAgentCompatibilityLoading,
   isMcpSelectable,
+  isTeamSkillOption,
   isSkillVisibleInSourceTab,
   sortInstalledFirst,
   sortAgentGroupOptions,
@@ -124,6 +125,17 @@ test('skill source tabs keep marketplace and local visibility semantics', () => 
   assert.equal(isSkillVisibleInSourceTab(installedMarketplace, 'local'), true);
   assert.equal(isSkillVisibleInSourceTab(local, 'market'), false);
   assert.equal(isSkillVisibleInSourceTab(local, 'local'), true);
+});
+
+test('team skill filtering accepts marketplace plugin type and installed kind contracts', () => {
+  assert.equal(isTeamSkillOption({ pluginType: 'swarmskill' }, 'market'), true);
+  assert.equal(isTeamSkillOption({ pluginType: 'swarmskill' }, 'local'), false);
+  assert.equal(isTeamSkillOption({ kind: 'team-skill' }, 'market'), true);
+  assert.equal(isTeamSkillOption({ skillType: 'swarm_skill' }, 'market'), true);
+  assert.equal(isTeamSkillOption({ kind: 'swarm-skill' }, 'local'), true);
+  assert.equal(isTeamSkillOption({ kind: 'team-skill' }, 'local'), true);
+  assert.equal(isTeamSkillOption({ skillType: 'swarm_skill' }, 'local'), true);
+  assert.equal(isTeamSkillOption({ pluginType: 'skill', kind: 'skill', skillType: 'skill' }, 'market'), false);
 });
 
 test('normalizes interface source variants and bilingual display fields', () => {

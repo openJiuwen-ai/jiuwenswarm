@@ -268,6 +268,10 @@ test('management pickers expose source tabs and preserve install/connect actions
     panelSource,
     /scheduleCatalogRefresh\('agent-catalog', marketplaceCatalog\.cache, \(\) => \{ void loadCatalog\(options\); \}/,
   );
+  assert.match(panelSource, /const skillsRevisionRef = useRef\(0\)/);
+  assert.match(panelSource, /if \(revision !== skillsRevisionRef\.current\) return;/);
+  assert.match(panelSource, /onTeamMarketplaceLoaded:/);
+  assert.match(panelSource, /scheduleCatalogRefresh\(\s*'agent-team-skill-marketplace'/);
   assert.match(panelSource, /void loadCatalog\(view === 'group-create' \? \{ includeTeamCompatibility: true \} : \{\}\);/);
   assert.match(panelSource, /catalog\.compatibility\.loading/);
   assert.match(panelSource, /catalog\.compatibility\.error/);
@@ -289,7 +293,7 @@ test('management pickers expose source tabs and preserve install/connect actions
     /sourceTab === 'market' \? agent\.source !== 'local' : agent\.source === 'local' \|\| agent\.installed === true/,
   );
   assert.match(memberPickerSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
-  assert.match(groupEditorSource, /isTeamSkillOption\(skill\)/);
+  assert.match(groupEditorSource, /isTeamSkillOption\(skill, skillSourceTab\)/);
   assert.match(groupEditorSource, /isSkillVisibleInSourceTab\(skill, skillSourceTab\)/);
   assert.match(groupEditorSource, /agent-group-editor-skill-picker-install/);
   assert.match(groupEditorSource, /skillSourceTab/);
@@ -308,6 +312,7 @@ test('management pickers expose source tabs and preserve install/connect actions
   assert.match(agentEditorSource, /interactive=\{selectable\}/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-tab-market/);
   assert.match(agentEditorSource, /agent-editor-skill-picker-tab-local/);
+  assert.match(agentEditorSource, /isTeamSkillOption\(skill, skillSourceTab\)/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-market/);
   assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-installed/);
   assert.match(agentEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);

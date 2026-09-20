@@ -4,9 +4,15 @@ export type SelectionSourceTab = 'local' | 'market';
 
 const LOCAL_SKILL_SOURCES = new Set(['customize', 'local', 'project']);
 
-/** Team skills are identified by the frontmatter kind; skill_type is a backend compatibility fallback. */
-export function isTeamSkillOption(skill: Pick<SkillOption, 'kind' | 'skillType'>): boolean {
-  return skill.kind === 'swarm-skill' || skill.kind === 'team-skill' || skill.skillType === 'swarm_skill';
+const TEAM_MARKET_PLUGIN_TYPES = new Set(['swarmskill', 'swarm-skill', 'teamskills', 'team-skill']);
+
+/** Market cards use SkillHub's plugin type; installed/local cards use normalized kind fields. */
+export function isTeamSkillOption(
+  skill: Pick<SkillOption, 'kind' | 'skillType' | 'pluginType'>,
+  sourceTab: SelectionSourceTab,
+): boolean {
+  if (skill.kind === 'swarm-skill' || skill.kind === 'team-skill' || skill.skillType === 'swarm_skill') return true;
+  return sourceTab === 'market' && TEAM_MARKET_PLUGIN_TYPES.has(skill.pluginType || '');
 }
 
 /** The local tab keeps local-source entries and also includes installed marketplace entries. */

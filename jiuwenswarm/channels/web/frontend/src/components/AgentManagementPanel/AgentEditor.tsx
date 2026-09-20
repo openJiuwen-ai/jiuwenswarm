@@ -9,6 +9,7 @@ import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
+  isTeamSkillOption,
   isSkillVisibleInSourceTab,
   isMcpSelectable,
   sortInstalledFirst,
@@ -103,7 +104,7 @@ export function AgentEditor({
   const selectedMcps = mcpOptions.filter((mcp) => draft.mcpRefs.includes(mcp.id));
   const filteredSkills = sortInstalledFirst(
     skillOptions.filter((skill) => {
-      if (!isSkillVisibleInSourceTab(skill, skillSourceTab)) return false;
+      if (isTeamSkillOption(skill, skillSourceTab) || !isSkillVisibleInSourceTab(skill, skillSourceTab)) return false;
       return `${skill.id} ${skill.name} ${skill.description}`
         .toLocaleLowerCase()
         .includes(skillQuery.trim().toLocaleLowerCase());
