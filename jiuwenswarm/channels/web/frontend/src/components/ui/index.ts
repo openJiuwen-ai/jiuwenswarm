@@ -16,6 +16,32 @@ export { PageToolbarSearch, type PageToolbarSearchProps } from './PageToolbarSea
 export { Tabs, type TabsItem, type TabsProps } from './Tabs/Tabs';
 export { MarkdownPane, type MarkdownPaneProps } from './MarkdownPane/MarkdownPane';
 export { PageToolbar, type PageToolbarProps } from './PageToolbar/PageToolbar';
+export { FilePreviewPanel, type FilePreviewPanelProps } from './FilePreviewPanel/FilePreviewPanel';
+export {
+  FilePreviewTree,
+  findDefaultPreviewFile,
+  type FilePreviewTreeNode,
+  type FilePreviewTreeLabels,
+  type FilePreviewTreeProps,
+} from './FilePreviewPanel/FilePreviewTree';
+export {
+  FilePreviewContent,
+  type FilePreviewContentFile,
+  type FilePreviewContentLabels,
+  type FilePreviewContentProps,
+} from './FilePreviewPanel/FilePreviewContent';
+export {
+  downloadPreviewFile,
+  formatJsonContent,
+  getPreviewFileLabel,
+  isCodeFileName,
+  isJsonFilePath,
+  isMarkdownFilePath,
+  isPreviewableImagePath,
+  isPythonFilePath,
+  splitMarkdownFrontMatter,
+  type FilePreviewStatus,
+} from './FilePreviewPanel/filePreviewShared';
 export { DetailSection, type DetailSectionProps } from './DetailSection/DetailSection';
 export { DetailPromptChip, type DetailPromptChipProps } from './DetailPromptChip/DetailPromptChip';
 export {

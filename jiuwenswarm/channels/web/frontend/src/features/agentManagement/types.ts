@@ -122,7 +122,8 @@ export type DefinitionFileEntry = {
 
 export type AgentFileContent = {
   relativePath: string;
-  content: string;
+  content: string | null;
+  downloadUrl?: string | null;
 };
 
 export type SkillOption = {

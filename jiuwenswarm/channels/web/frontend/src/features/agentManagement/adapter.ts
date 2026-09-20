@@ -58,7 +58,11 @@ export function normalizeAgentConnectionState(state: string | undefined): AgentC
 export function isPreviewableFile(relativePath: string): boolean {
   const lowerPath = relativePath.toLowerCase();
   return (
-    lowerPath.endsWith('.md') || lowerPath.endsWith('.mdx') || lowerPath.endsWith('.json') || lowerPath.endsWith('.py')
+    lowerPath.endsWith('.md') ||
+    lowerPath.endsWith('.mdx') ||
+    lowerPath.endsWith('.json') ||
+    lowerPath.endsWith('.py') ||
+    lowerPath.endsWith('.pdf')
   );
 }
 
@@ -209,7 +213,7 @@ export function normalizeAgentFileTree(entries: RawAgentFileEntry[] | undefined)
       ...(entry.visible !== undefined ? { visible: entry.visible } : {}),
       size: entry.size,
       children: isDirectory ? normalizeAgentFileTree(entry.children) : undefined,
-      previewable: !isDirectory && isPreviewableFile(entry.path),
+      previewable: !isDirectory && (entry.previewable ?? isPreviewableFile(entry.path)),
     };
   });
 }
@@ -217,7 +221,8 @@ export function normalizeAgentFileTree(entries: RawAgentFileEntry[] | undefined)
 export function normalizeAgentFileContent(raw: RawAgentFileReadPayload): AgentFileContent {
   return {
     relativePath: raw.path || '',
-    content: raw.content || '',
+    content: raw.content ?? null,
+    downloadUrl: raw.download_url ?? null,
   };
 }
 
