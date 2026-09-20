@@ -93,6 +93,8 @@ Rail 是 Harness 的生命周期扩展面。它不替换主流程，而是在外
 - 技能与演进：`SkillUseRail`、`EvolutionRail`、`SkillCreateRail`、`SkillEvolutionRail`。
 - 子代理：`SubagentRail`、`VerificationContractRail`。
 
+关于如何编写、注册、热挂载和测试自定义 Rail 的详细步骤，见 [CustomRails.md](./CustomRails.md)。
+
 ### 3.3 Tool & Execution：工具、系统操作与权限治理
 
 Tool & Execution 是 Harness 把模型意图落到真实环境的执行层。工具通过 ToolCard 描述元数据，通过 Tool 实例执行动作，并由 ability manager 统一暴露给模型。
