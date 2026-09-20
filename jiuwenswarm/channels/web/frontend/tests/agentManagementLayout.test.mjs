@@ -648,6 +648,15 @@ test('concurrent Expert installs keep every affected card busy', async () => {
   assert.deepEqual(installButtons.map((button) => button.textContent), ['安装中…', '安装中…']);
 });
 
+test('Expert Team upload error prioritizes the latest local validation and stays below the picker', () => {
+  assert.match(groupUploadSource, /\{pickerError \|\| error\}/);
+  assert.match(
+    agentManagementCss,
+    /\.agent-group-upload-dialog \.agent-management-upload-dialog__error\s*\{[\s\S]*order: 4;[\s\S]*margin:/,
+  );
+  assert.match(agentManagementCss, /\.agent-group-upload-dialog > footer\s*\{[\s\S]*order: 5;/);
+});
+
 for (const status of ['success', 'loading', 'error']) {
   test(`expert catalog keeps page two cards during ${status}`, async () => {
     const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');

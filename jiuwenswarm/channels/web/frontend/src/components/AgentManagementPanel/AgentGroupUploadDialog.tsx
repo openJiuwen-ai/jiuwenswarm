@@ -293,9 +293,9 @@ export function DefinitionUploadDialog({
             </>
           )}
         </div>
-        {error || pickerError ? (
+        {pickerError || error ? (
           <p className="agent-management-upload-dialog__error" role="alert">
-            {error || pickerError}
+            {pickerError || error}
           </p>
         ) : null}
         <footer>
