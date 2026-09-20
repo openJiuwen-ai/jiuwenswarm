@@ -664,6 +664,13 @@ test('manual Expert Team validation names the capability description precisely',
   assert.equal(enLocale.agentManagement.group.form.errors.descriptionRequired, 'Enter an Expert Team capability description');
 });
 
+test('leaving Expert management discards unfinished manual-create subpages', () => {
+  assert.match(
+    panelSource,
+    /if \(!isActive && prevIsActive && \(view === 'create' \|\| view === 'group-create'\)\) \{[\s\S]*setView\('mine'\);/,
+  );
+});
+
 for (const status of ['success', 'loading', 'error']) {
   test(`expert catalog keeps page two cards during ${status}`, async () => {
     const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
