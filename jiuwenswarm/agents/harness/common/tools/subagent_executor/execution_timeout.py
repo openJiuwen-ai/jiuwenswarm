@@ -88,21 +88,19 @@ def _guard_child(child: Any, session_id: str) -> None:
                         f"limit={timeout:g}s, coroutine_cleanup={cleanup}"
                     )
                 # A TimeoutError raised inside the child is not our deadline.
-                try:
-                    result = task.result()
-                except asyncio.CancelledError:
-                    unavailable = True
-                    raise
+                result = task.result()
             if isinstance(result, dict) and result.get("result_type") != "interrupt":
                 if result.get("error") or result.get("result_type") == "error":
                     unavailable = True
-                    reason = (
-                        result.get("error") or result.get("message")
-                        or result.get("output") or "subagent_error"
-                    )
+                    # Output can contain full user content; keep it out of errors/logs.
+                    reason = result.get("error") or result.get("message") or "subagent_error"
                     # SDK TaskTool catches this before it can mark the child successful.
                     raise RuntimeError(f"subagent_failed: {reason}")
             return result
+        except (Exception, asyncio.CancelledError):
+            # Both invoke paths must retire failed instances without changing the cause.
+            unavailable = True
+            raise
         finally:
             active = False
 

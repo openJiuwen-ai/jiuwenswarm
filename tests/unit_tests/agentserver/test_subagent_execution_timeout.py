@@ -104,7 +104,6 @@ async def test_normal_output_including_empty_remains_successful(output):
 @pytest.mark.parametrize("result", [
     {"error": "provider_unavailable"},
     {"result_type": "error", "message": "provider_unavailable"},
-    {"result_type": "error", "output": "provider_unavailable"},
 ])
 async def test_explicit_failure_keeps_original_reason(result):
     async def invoke(_inputs):
@@ -113,6 +112,48 @@ async def test_explicit_failure_keeps_original_reason(result):
     tool, _, _ = _tool(invoke)
     with pytest.raises(BaseError, match="provider_unavailable"):
         await _invoke(tool)
+
+
+@pytest.mark.parametrize("task_loop", [False, True])
+@pytest.mark.parametrize("with_output", [False, True])
+async def test_error_without_reason_does_not_include_output(task_loop, with_output, caplog):
+    private_output = "private-output-marker:" + "x" * 10000
+    result = {"result_type": "error"}
+    if with_output:
+        result["output"] = private_output
+
+    async def invoke(_inputs):
+        return result
+
+    tool, child, _ = _tool(invoke, task_loop=task_loop)
+    with pytest.raises(BaseError, match="subagent_failed: subagent_error") as caught:
+        await _invoke(tool)
+    assert "private-output-marker" not in str(caught.value)
+    assert "private-output-marker" not in caplog.text
+    assert str(caught.value.__cause__) == "subagent_failed: subagent_error"
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await child.invoke({"query": "next"})
+
+
+@pytest.mark.parametrize("task_loop", [False, True])
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError, ConnectionError, TimeoutError])
+async def test_child_exception_preserves_reason_and_prevents_reuse(task_loop, error_type):
+    calls = 0
+    error = error_type("original-child-failure")
+
+    async def invoke(_inputs):
+        nonlocal calls
+        calls += 1
+        raise error
+
+    tool, child, _ = _tool(invoke, task_loop=task_loop)
+    with pytest.raises(BaseError, match="original-child-failure") as caught:
+        await _invoke(tool)
+    assert caught.value.__cause__ is error
+    assert "completion_timeout" not in str(caught.value)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await child.invoke({"query": "next"})
+    assert calls == 1
 
 
 async def test_internal_timeout_is_not_relabelled_as_completion_timeout():
@@ -144,11 +185,12 @@ async def test_user_cancellation_propagates_and_cancels_child():
     assert stopped.is_set()
 
 
-async def test_child_cancellation_also_prevents_reusing_cancelled_state():
+@pytest.mark.parametrize("task_loop", [False, True])
+async def test_child_cancellation_also_prevents_reusing_cancelled_state(task_loop):
     async def invoke(_inputs):
         raise asyncio.CancelledError()
 
-    tool, child, _ = _tool(invoke)
+    tool, child, _ = _tool(invoke, task_loop=task_loop)
     with pytest.raises(asyncio.CancelledError):
         await _invoke(tool)
     with pytest.raises(RuntimeError, match="unavailable"):
