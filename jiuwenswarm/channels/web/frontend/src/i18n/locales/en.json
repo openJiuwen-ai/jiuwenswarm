@@ -539,7 +539,7 @@
     "selectMember": "Select a team member",
     "detailTabs": {
       "members": "Members",
-      "group": "Group Chat"
+      "group": "Sub-topics"
     },
     "leader": "Team leader",
     "memberSeparator": ", ",

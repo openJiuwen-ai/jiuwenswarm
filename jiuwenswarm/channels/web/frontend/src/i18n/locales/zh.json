@@ -530,7 +530,7 @@
     "selectMember": "请选择 Team 成员",
     "detailTabs": {
       "members": "成员",
-      "group": "群聊"
+      "group": "子话题"
     },
     "leader": "Team leader",
     "memberSeparator": "、",
@@ -2165,7 +2165,7 @@
       "linkPlaceholder": "请输入",
       "descLabel": "技能描述（可选）",
       "descPlaceholder": "请输入",
-      "confirm": "确认",
+      "confirm": "确定",
       "cancel": "取消"
     },
     "builtIn": "内置",

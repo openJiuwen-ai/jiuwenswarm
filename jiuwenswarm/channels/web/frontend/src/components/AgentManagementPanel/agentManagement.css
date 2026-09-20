@@ -913,6 +913,15 @@
   color: var(--color-text-tertiary);
 }
 
+[data-testid="agent-management-editor-tabs"] {
+  height: 34px;
+  font-size: var(--font-size-base);
+}
+
+[data-testid="agent-management-editor-tabs"] > button {
+  font-weight: 400;
+}
+
 .agent-management-form-section {
   margin-top: 32px;
 }
@@ -2755,13 +2764,48 @@
   padding: 0;
 }
 
+/* footer 按钮样式对齐 chat-panel-work-dialog-actions（ChatPanel.css .chat-work-dialog__actions）：
+   84x28 胶囊按钮、取消=白底描边、确认=黑底蓝边、确认禁用=置灰不透明 */
 .agent-group-upload-dialog > footer .agent-management-button {
   width: var(--size-agent-group-upload-button-width);
   min-width: var(--size-agent-group-upload-button-width);
   height: var(--size-agent-group-drawer-control);
   min-height: var(--size-agent-group-drawer-control);
-  padding: 0 16px;
+  padding: 0;
+  border: 1px solid var(--color-control-emphasis);
   border-radius: var(--radius-full);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.agent-group-upload-dialog > footer .agent-management-button:hover:not(:disabled) {
+  border-color: var(--color-control-emphasis);
+  background: var(--color-surface-card);
+}
+
+.agent-group-upload-dialog > footer .agent-management-button--primary {
+  border-color: var(--color-action-primary);
+  background: var(--color-control-emphasis);
+  color: var(--color-action-primary-text);
+}
+
+.agent-group-upload-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
+  border-color: var(--color-action-primary);
+  background: var(--color-control-emphasis);
+}
+
+.agent-group-upload-dialog > footer .agent-management-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.agent-group-upload-dialog > footer .agent-management-button--primary:disabled {
+  border-color: var(--color-text-divider);
+  background: var(--color-surface-muted);
+  color: var(--color-text-disabled);
+  opacity: 1;
 }
 
 .agent-management-upload-dialog__hint-copy {
@@ -3044,16 +3088,15 @@
 
 .agent-group-member-card {
   display: flex;
-  width: 174px;
-  height: 104px;
-  min-width: 0;
-  min-height: 104px;
+  min-width: 174px;
+  height: 132px;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   box-sizing: border-box;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-card);
+  border: 1px solid var(--color-agent-group-member-card-border, #f0f0f0);
+  border-radius: 8px;
+  background: var(--color-agent-group-member-card-surface, #fafafa);
   padding: 12px 16px;
   text-align: center;
   transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
@@ -3074,6 +3117,11 @@
   width: 40px;
   height: 40px;
   flex-basis: 40px;
+  border-radius: 8px;
+}
+
+.agent-group-member-avatar .entity-header__avatar-letter {
+  border-radius: 8px;
 }
 
 .agent-group-member-card__identity {
