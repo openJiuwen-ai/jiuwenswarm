@@ -606,6 +606,10 @@ export function AgentManagementPanel({
     const prevIsActive = panelPrevActiveRef.current;
     const isInitialMount = !panelMountedRef.current;
     panelMountedRef.current = true;
+    if (!isActive && prevIsActive && (view === 'create' || view === 'group-create')) {
+      setView('mine');
+      setMineKind(view === 'group-create' ? 'group' : 'agent');
+    }
     if (isActive && (!prevIsActive || isInitialMount)) {
       void loadCatalog(view === 'group-create' ? { includeTeamCompatibility: true } : {});
     }
