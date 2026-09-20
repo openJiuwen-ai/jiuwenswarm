@@ -1,4 +1,5 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
+import { useTimelineRowState } from './timelineRowState';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import { ToolExecution } from '../../types';
@@ -403,10 +404,10 @@ export function ToolGroupDisplay({
   viewedSkillIds: turnViewedSkillIds = [],
 }: ToolGroupDisplayProps) {
   const { t, i18n } = useTranslation();
-  const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
+  const [openKeys, setOpenKeys] = useTimelineRowState<Record<string, boolean>>('tool-open-keys', {});
   const toggleLine = useCallback((key: string) => {
     setOpenKeys((current) => ({ ...current, [key]: !current[key] }));
-  }, []);
+  }, [setOpenKeys]);
   const visibleExecutions = teamLayout
     ? executions.filter((execution) => !execution.toolCall.memberName)
     : executions;
