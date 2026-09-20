@@ -10,8 +10,12 @@
 1. 进程里先备好一份空的 memory.db（表和元数据都写好），新会话缺文件时拷贝，
    不再现场 CREATE。
 2. 拷贝、打开、建表、加载向量插件都放进线程，不占用事件循环。
-3. MemoryRail 在第一句回复前不再建库。模型真正调用记忆搜索时，工具自己会
-   初始化（ensure_manager）。今日/昨日日记仍按原逻辑直接读文件，不依赖这个库。
+3. MemoryRail（对话记忆）在第一句回复前不再建库。模型真正调用记忆搜索时，
+   工具自己会初始化（ensure_manager）。今日/昨日日记仍按原逻辑直接读文件，
+   不依赖这个库。
+
+代码模式（CodingMemoryRail）不推迟建库，避免自动召回整会话失效。
+补丁是进程级的：装上后对本进程所有 MemoryRail 生效，直到 remove。
 """
 from __future__ import annotations
 
@@ -41,7 +45,6 @@ _original_ensure_schema: Optional[Callable] = None
 _original_load_vector: Optional[Callable] = None
 _original_needs_rebuild: Optional[Callable] = None
 _original_init_manager: Optional[Callable] = None
-_original_init_coding_manager: Optional[Callable] = None
 
 _template_lock = threading.Lock()
 _conn_lock = threading.Lock()
@@ -92,14 +95,34 @@ def _remove_sidecars(path: str) -> None:
             logger.debug("memory db sidecar remove failed: %s", exc)
 
 
+def _remove_path_quiet(path: str) -> None:
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError as exc:
+        logger.debug("memory db temp remove failed: %s", exc)
+
+
 def _copy_sqlite_file(src: str, dest: str) -> None:
     parent = os.path.dirname(dest)
     if parent:
         os.makedirs(parent, exist_ok=True)
     tmp_path = dest + ".copying"
-    shutil.copy2(src, tmp_path)
-    os.replace(tmp_path, dest)
+    try:
+        shutil.copy2(src, tmp_path)
+        os.replace(tmp_path, dest)
+    except Exception:
+        _remove_path_quiet(tmp_path)
+        raise
     _remove_sidecars(dest)
+
+
+def _template_stable_path() -> str:
+    """进程私有模板路径，避免多进程共用 /tmp 固定文件名互相踩。"""
+    return os.path.join(
+        tempfile.gettempdir(),
+        f"jws_empty_memory_{os.getpid()}.db",
+    )
 
 
 def _build_template_db() -> str:
@@ -120,7 +143,12 @@ def _build_template_db() -> str:
         "memory",
     )
     _build_guard.active = True
-    stable = os.path.join(tempfile.gettempdir(), "jws_empty_memory.db")
+    stable = _template_stable_path()
+    staging_fd, staging = tempfile.mkstemp(
+        prefix=f"jws_empty_memory_{os.getpid()}_",
+        suffix=".db",
+    )
+    os.close(staging_fd)
     try:
         asyncio.run(_original_initialize(manager))
         db = manager.db
@@ -128,7 +156,11 @@ def _build_template_db() -> str:
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         src = manager.db_path
         asyncio.run(manager.close())
-        _copy_sqlite_file(src, stable)
+        _copy_sqlite_file(src, staging)
+        os.replace(staging, stable)
+    except Exception:
+        _remove_path_quiet(staging)
+        raise
     finally:
         _build_guard.active = False
         shutil.rmtree(root, ignore_errors=True)
@@ -260,17 +292,18 @@ async def _defer_memory_index(self: Any, ctx: Any) -> None:
 
 
 def apply_memory_init_patch() -> None:
-    """安装记忆初始化补丁。重复调用无效果。"""
+    """安装记忆初始化补丁。重复调用无效果。
+
+    只推迟对话 MemoryRail 建库；CodingMemoryRail 保持原路径，避免自动召回失效。
+    """
     global _PATCHED
     global _original_initialize, _original_open_database
     global _original_ensure_schema, _original_load_vector
     global _original_needs_rebuild, _original_init_manager
-    global _original_init_coding_manager
     if _PATCHED:
         return
 
     import openjiuwen.core.memory.lite.manager as memory_manager_mod
-    from openjiuwen.harness.rails.memory.coding_memory_rail import CodingMemoryRail
     from openjiuwen.harness.rails.memory.memory_rail import MemoryRail
 
     _original_initialize = MemoryIndexManager.initialize
@@ -281,9 +314,6 @@ def apply_memory_init_patch() -> None:
         MemoryIndexManager, "_needs_rebuild_on_config_change"
     )
     _original_init_manager = getattr(MemoryRail, "_init_memory_manager")
-    _original_init_coding_manager = getattr(
-        CodingMemoryRail, "_init_coding_memory_manager"
-    )
 
     setattr(memory_manager_mod, "_open_database", _open_database_reuse)
     setattr(MemoryIndexManager, "initialize", _initialize_from_template)
@@ -295,11 +325,11 @@ def apply_memory_init_patch() -> None:
         _needs_rebuild_none_safe,
     )
     setattr(MemoryRail, "_init_memory_manager", _defer_memory_index)
-    setattr(CodingMemoryRail, "_init_coding_memory_manager", _defer_memory_index)
     _PATCHED = True
     logger.info(
         "[MemoryInit] patch applied "
-        "(template copy, off-loop open, defer until memory tool)"
+        "(template copy, off-loop open, defer MemoryRail until memory tool; "
+        "CodingMemoryRail unchanged)"
     )
 
 
@@ -309,12 +339,11 @@ def remove_memory_init_patch() -> None:
     global _original_initialize, _original_open_database
     global _original_ensure_schema, _original_load_vector
     global _original_needs_rebuild, _original_init_manager
-    global _original_init_coding_manager
+    global _cached_template
     if not _PATCHED:
         return
 
     import openjiuwen.core.memory.lite.manager as memory_manager_mod
-    from openjiuwen.harness.rails.memory.coding_memory_rail import CodingMemoryRail
     from openjiuwen.harness.rails.memory.memory_rail import MemoryRail
 
     setattr(memory_manager_mod, "_open_database", _original_open_database)
@@ -327,18 +356,13 @@ def remove_memory_init_patch() -> None:
         _original_needs_rebuild,
     )
     setattr(MemoryRail, "_init_memory_manager", _original_init_manager)
-    setattr(
-        CodingMemoryRail,
-        "_init_coding_memory_manager",
-        _original_init_coding_manager,
-    )
     _original_initialize = None
     _original_open_database = None
     _original_ensure_schema = None
     _original_load_vector = None
     _original_needs_rebuild = None
     _original_init_manager = None
-    _original_init_coding_manager = None
+    _cached_template = None
     _skip_schema_paths.clear()
     _skip_vector_paths.clear()
     with _conn_lock:

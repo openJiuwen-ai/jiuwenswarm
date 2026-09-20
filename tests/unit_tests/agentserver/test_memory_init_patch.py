@@ -102,26 +102,78 @@ def test_seed_closes_db_when_schema_fails(memory_patch, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_coding_before_invoke_does_not_build_memory_db(memory_patch, monkeypatch):
-    """代码模式记忆在第一句回复前也不调用建库。"""
+async def test_coding_before_invoke_still_builds_memory_db(memory_patch, monkeypatch):
+    """代码模式不推迟建库，自动召回仍可用。"""
     called = {"n": 0}
 
-    async def _boom(*_args, **_kwargs):
+    async def _fake_init(*_args, **_kwargs):
         called["n"] += 1
-        raise AssertionError("should not init coding memory before the first reply")
+        return object()
 
     monkeypatch.setattr(
         "openjiuwen.harness.rails.memory.coding_memory_rail.init_memory_manager_async",
-        _boom,
+        _fake_init,
     )
     rail = CodingMemoryRail.__new__(CodingMemoryRail)
     rail._manager_initialized = False
     rail._manager = None
+    rail._tool_ctx = None
     rail._recalled_content = None
     rail._prefetch_task = None
-    await rail.before_invoke(type("Ctx", (), {"inputs": object()})())
-    assert called["n"] == 0
+    rail._coding_memory_dir = ""
+    rail.workspace = None
+    rail._embedding_config = None
+    rail.sys_operation = None
+
+    class _Agent:
+        card = type("Card", (), {"id": "agent-1"})()
+
+        def _get_llm(self):
+            return None
+
+    class _Inputs:
+        def is_cron(self):
+            return False
+
+        def is_heartbeat(self):
+            return False
+
+    ctx = type("Ctx", (), {"inputs": _Inputs(), "agent": _Agent()})()
+    await rail.before_invoke(ctx)
+    assert called["n"] == 1
     assert rail._manager_initialized is True
+    assert rail._manager is not None
+
+
+def test_coding_memory_rail_is_not_deferred(memory_patch):
+    """补丁不得替换 CodingMemoryRail 的建库入口。"""
+    assert (
+        CodingMemoryRail._init_coding_memory_manager
+        is not memory_init_patch._defer_memory_index
+    )
+
+
+def test_template_stable_path_is_process_private():
+    path = memory_init_patch._template_stable_path()
+    assert f"jws_empty_memory_{os.getpid()}.db" in path
+
+
+def test_copy_sqlite_file_removes_temp_on_failure(tmp_path, monkeypatch):
+    """拷贝失败时清掉 .copying，避免临时文件残留。"""
+    src = tmp_path / "src.db"
+    src.write_bytes(b"ok")
+    dest = tmp_path / "dest.db"
+    copying = Path(str(dest) + ".copying")
+
+    def _boom(_s, _d):
+        copying.write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(memory_init_patch.shutil, "copy2", _boom)
+    with pytest.raises(OSError, match="disk full"):
+        memory_init_patch._copy_sqlite_file(str(src), str(dest))
+    assert not copying.exists()
+    assert not dest.exists()
 
 
 @pytest.mark.asyncio
@@ -223,3 +275,71 @@ def test_adapter_init_defers_memory_only_on_enterprise() -> None:
     assert mem_at != -1
     assert ctx_at != -1
     assert enterprise_at < if_at < mem_at < ctx_at
+
+
+def test_non_enterprise_adapter_skips_memory_patches(monkeypatch):
+    """运行时：非企业版构造 adapter 不安装 memory / context 补丁。"""
+    import jiuwenswarm.server.runtime.agent_adapter.interface_deep as deep_mod
+
+    calls: list[str] = []
+    monkeypatch.setattr(deep_mod, "is_enterprise", lambda: False)
+    monkeypatch.setattr(
+        deep_mod, "apply_mcp_call_timeout_patch", lambda: None
+    )
+    monkeypatch.setattr(
+        deep_mod, "apply_deepagent_task_plan_binding_patch", lambda: None
+    )
+    monkeypatch.setattr(
+        deep_mod,
+        "apply_memory_init_patch",
+        lambda: calls.append("memory"),
+    )
+    monkeypatch.setattr(
+        deep_mod,
+        "apply_context_read_patch",
+        lambda: calls.append("context"),
+    )
+    monkeypatch.setattr(deep_mod, "get_agent_workspace_dir", lambda: "/tmp/ws")
+    monkeypatch.setattr(
+        deep_mod,
+        "collapse_nested_agent_workspace_dir",
+        lambda path: path,
+    )
+
+    adapter = deep_mod.JiuWenSwarmDeepAdapter.__new__(deep_mod.JiuWenSwarmDeepAdapter)
+    deep_mod.JiuWenSwarmDeepAdapter.__init__(adapter)
+    assert calls == []
+
+
+def test_enterprise_adapter_applies_memory_patches(monkeypatch):
+    """运行时：企业版构造 adapter 会安装 memory / context 补丁。"""
+    import jiuwenswarm.server.runtime.agent_adapter.interface_deep as deep_mod
+
+    calls: list[str] = []
+    monkeypatch.setattr(deep_mod, "is_enterprise", lambda: True)
+    monkeypatch.setattr(
+        deep_mod, "apply_mcp_call_timeout_patch", lambda: None
+    )
+    monkeypatch.setattr(
+        deep_mod, "apply_deepagent_task_plan_binding_patch", lambda: None
+    )
+    monkeypatch.setattr(
+        deep_mod,
+        "apply_memory_init_patch",
+        lambda: calls.append("memory"),
+    )
+    monkeypatch.setattr(
+        deep_mod,
+        "apply_context_read_patch",
+        lambda: calls.append("context"),
+    )
+    monkeypatch.setattr(deep_mod, "get_agent_workspace_dir", lambda: "/tmp/ws")
+    monkeypatch.setattr(
+        deep_mod,
+        "collapse_nested_agent_workspace_dir",
+        lambda path: path,
+    )
+
+    adapter = deep_mod.JiuWenSwarmDeepAdapter.__new__(deep_mod.JiuWenSwarmDeepAdapter)
+    deep_mod.JiuWenSwarmDeepAdapter.__init__(adapter, workspace_dir="/tmp/ws")
+    assert calls == ["memory", "context"]
