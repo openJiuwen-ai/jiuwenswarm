@@ -1346,10 +1346,22 @@ class WebChannel(BaseWsChannel):
 
         try:
             inflight: set[Any] = set()
+
+            def _on_done(t: asyncio.Task) -> None:
+                inflight.discard(t)
+                if t.cancelled():
+                    return
+                exc = t.exception()
+                if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                    logger.warning(
+                        "WebChannel 消息处理异常: %s",
+                        describe_ws_exception(exc),
+                    )
+
             async for raw in ws:
                 task = asyncio.create_task(self._handle_raw_message(ws, raw, query))
                 inflight.add(task)
-                task.add_done_callback(inflight.discard)
+                task.add_done_callback(_on_done)
             # connection closing: let in-flight handlers finish (bounded) to avoid
             # truncating responses mid-flight; cancel if they exceed a grace period.
             if inflight:
