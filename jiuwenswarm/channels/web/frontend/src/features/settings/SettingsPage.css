@@ -956,6 +956,12 @@
   background: var(--color-settings-switch-checked);
 }
 
+.settings-page__module[data-settings-module='agent'] .ui-switch:disabled {
+  border-color: #dbdbdb;
+  background: #dbdbdb;
+  opacity: 1;
+}
+
 .settings-page .ui-dialog {
   width: min(560px, calc(100vw - 32px));
   max-height: calc(100vh - 64px);
