@@ -1821,6 +1821,138 @@ class TeamManager:
     def get_team_agent(self, session_id: str) -> TeamAgent | None:
         return self._team_agents.get(session_id)
 
+    def _lookup_cached_team_agent(self, session_id: str) -> TeamAgent | None:
+        """Return the live TeamAgent if this process still holds one."""
+        return self._runner_team_agents.get(session_id) or self._team_agents.get(session_id)
+
+    async def _lookup_runner_pool_team_agent(self, session_id: str) -> TeamAgent | None:
+        """Return the Runner-owned TeamAgent still bound to this session.
+
+        Non-distributed mode never fills ``_runner_team_agents`` (those hooks
+        are skipped). The live NativeHarness interrupt still sits on the
+        pooled TeamAgent, so cancel settle must look there before stop.
+        """
+        try:
+            from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+            runtime_mgr = _runner_team_runtime_manager(GLOBAL_RUNNER)
+            pool = getattr(runtime_mgr, "pool", None)
+            if pool is None:
+                return None
+            teams_for_session = getattr(pool, "teams_for_session", None)
+            if callable(teams_for_session):
+                for entry in await teams_for_session(session_id):
+                    agent = getattr(entry, "agent", None)
+                    if agent is not None:
+                        return agent
+            team_name = self._lookup_session_team_name(session_id)
+            if not team_name:
+                return None
+            getter = getattr(pool, "get", None)
+            if not callable(getter):
+                return None
+            entry = await getter(team_name)
+            if entry is None:
+                return None
+            current_session_id = getattr(entry, "current_session_id", None)
+            if current_session_id not in {None, session_id}:
+                return None
+            return getattr(entry, "agent", None)
+        except Exception:
+            logger.debug(
+                "[TeamManager] runner pool team agent lookup failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return None
+
+    async def _resolve_live_team_agent(self, session_id: str) -> TeamAgent | None:
+        """Prefer a cached TeamAgent, then the still-pooled Runner owner."""
+        cached = self._lookup_cached_team_agent(session_id)
+        if cached is not None:
+            return cached
+        return await self._lookup_runner_pool_team_agent(session_id)
+
+    async def _settle_live_cancelled_permission_interrupt(
+        self,
+        session_id: str,
+        team_agent: TeamAgent | None,
+        *,
+        language: str,
+    ) -> None:
+        """Best-effort live confirm-HITL settle before the runtime is torn down."""
+        if team_agent is None:
+            logger.info(
+                "[TeamManager] live confirm interrupt settle skipped: "
+                "session_id=%s reason=no_live_team_agent",
+                session_id,
+            )
+            return
+        try:
+            from jiuwenswarm.server.runtime.session.permission_interrupt_cancel import (
+                settle_live_cancelled_confirm_interrupt,
+            )
+
+            settled = await settle_live_cancelled_confirm_interrupt(
+                team_agent,
+                language=language,
+            )
+            if settled:
+                logger.info(
+                    "[TeamManager] settled live confirm interrupt before cancel: "
+                    "session_id=%s",
+                    session_id,
+                )
+            else:
+                logger.info(
+                    "[TeamManager] live confirm interrupt settle skipped: "
+                    "session_id=%s reason=not_confirm_or_no_session",
+                    session_id,
+                )
+        except Exception:
+            logger.warning(
+                "[TeamManager] live confirm interrupt settle failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+    async def _settle_persisted_cancelled_permission_interrupt(
+        self,
+        session_id: str,
+        *,
+        card: Any | None,
+        language: str,
+    ) -> None:
+        """Clear a leftover confirm interrupt from the checkpoint after cancel."""
+        try:
+            from jiuwenswarm.server.runtime.session.permission_interrupt_cancel import (
+                settle_persisted_cancelled_confirm_interrupt,
+            )
+
+            settled = await settle_persisted_cancelled_confirm_interrupt(
+                session_id,
+                card=card,
+                language=language,
+            )
+            if settled:
+                logger.info(
+                    "[TeamManager] settled persisted confirm interrupt after cancel: "
+                    "session_id=%s",
+                    session_id,
+                )
+            else:
+                logger.info(
+                    "[TeamManager] persisted confirm interrupt settle skipped: "
+                    "session_id=%s reason=session_missing_or_not_confirm",
+                    session_id,
+                )
+        except Exception:
+            logger.warning(
+                "[TeamManager] persisted confirm interrupt settle failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
     def get_monitor_handler(self, session_id: str) -> TeamMonitorHandler | None:
         return self._team_monitors.get(session_id)
 
@@ -2279,6 +2411,19 @@ class TeamManager:
                 session_id,
             )
 
+        team_agent = await self._resolve_live_team_agent(session_id)
+        card = getattr(team_agent, "card", None)
+        from jiuwenswarm.server.runtime.session.permission_interrupt_cancel import (
+            prompt_language_from_team_agent,
+        )
+
+        language = prompt_language_from_team_agent(team_agent)
+        await self._settle_live_cancelled_permission_interrupt(
+            session_id,
+            team_agent,
+            language=language,
+        )
+
         # 如果 lifecycle lock 被其他操作（如 pause）持有，先尝试直接停止 Runner
         # 以避免 cancel 被 pause 阻塞长达数分钟
         lock = self._get_lifecycle_lock(session_id)
@@ -2290,6 +2435,9 @@ class TeamManager:
                 )
 
 
+        cancelled = False
+        cleaned = False
+        runner_stopped = False
         async with self._get_lifecycle_lock(session_id):
             # 清理 cancel_requested 标志
             self._cancel_requested.pop(session_id, None)
@@ -2302,39 +2450,43 @@ class TeamManager:
                 or self.is_runtime_active(session_id)
                 or self.is_runtime_pending(session_id)
             )
-            if not has_stream_task and not has_team_runtime:
-                return False
+            if has_stream_task or has_team_runtime:
+                cancelled = True
+                logger.info(
+                    "[TeamManager] %s cancel team session runtime: session_id=%s",
+                    reason,
+                    session_id,
+                )
 
+                # Resolve team_name early before cleanup, from active/pending/metadata
+                team_name = self._resolve_session_team_name(session_id)
+
+                # Stop Runner-owned runtime first before cancelling stream task
+                # to avoid gate/teardown races and ensure pool removal
+                if team_name:
+                    runner_stopped = await self._stop_runner_team_runtime(
+                        session_id, team_name, "cancel"
+                    )
+                    await self._stop_runner_team_agent_transport(session_id)
+
+                await self._finalize_runtime_cleanup(session_id, "cancel")
+
+        # HITL 后 runtime 可能已 IDLE：仍要清 checkpoint 里的权限断点，
+        # 否则下一句纯文本仍可能撞上残留审批。返回值仍表示是否停到了 runtime。
+        await self._settle_persisted_cancelled_permission_interrupt(
+            session_id,
+            card=card,
+            language=language,
+        )
+        if cancelled:
             logger.info(
-                "[TeamManager] %s cancel team session runtime: session_id=%s",
+                "[TeamManager] %steam session cancelled: session_id=%s cleaned=%s runner_stopped=%s",
                 reason,
                 session_id,
+                cleaned,
+                runner_stopped,
             )
-
-            # Resolve team_name early before cleanup, from active/pending/metadata
-            team_name = self._resolve_session_team_name(session_id)
-
-            # Stop Runner-owned runtime first before cancelling stream task
-            # to avoid gate/teardown races and ensure pool removal
-            runner_stopped = False
-            if team_name:
-                runner_stopped = await self._stop_runner_team_runtime(
-                    session_id, team_name, "cancel"
-                )
-                await self._stop_runner_team_agent_transport(session_id)
-
-            cleaned = False
-
-            await self._finalize_runtime_cleanup(session_id, "cancel")
-
-        logger.info(
-            "[TeamManager] %steam session cancelled: session_id=%s cleaned=%s runner_stopped=%s",
-            reason,
-            session_id,
-            cleaned,
-            runner_stopped,
-        )
-        return True
+        return cancelled
 
     async def stop_session_runtime(
         self,

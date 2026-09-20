@@ -1,17 +1,17 @@
 ## 0. 概述
 
-> **读者**：企业版（`gateway.edition = enterprise`）接入方——浏览器、BFF 或经 Ingress / 反向代理访问 Gateway 的 HTTP、WebSocket 客户端。  
-> **范围**：本文仅 **A1（**`/ws`**）** 与 **A2（**`/api/v1` **HTTP）**；TUI、ACP、A2A、SSH、ClawManager 等不在本版展开。
+> **读者**：企业版（`gateway.edition = enterprise`）接入方——浏览器或经 Ingress / 反向代理访问 Gateway 的 HTTP、WebSocket 客户端。  
+> **范围**：本文以 **A1（**`/ws`**）** 为主；**A2（Web HTTP `/api/v1`）** 仅作索引，完整协议见 [Gateway Web HTTP接口文档.md](../../jiuwenswarm/gateway/docs/Gateway%20Web%20HTTP接口文档.md)。TUI、ACP、A2A、SSH、ClawManager、Manager Config Receiver 等不在本版展开。
 
 - 部署：`gateway.deployment_mode`（`distributed` / `active-standby` 等）
 - **目标架构**：客户端只面对 **Gateway**（`distributed` 下推荐 **A2 HTTP**；**A1 WebSocket** 同语义可选）。Gateway 再连 AgentServer。静态前端由部署侧另行托管，**不属于本文协议范围**。
-- 监听端口一览（默认，同一 Gateway 进程 path 分流）
+- 监听端口一览（默认；Web HTTP 与 Web WS **分端口**，非同端口 path 分流）
 
 
 | 协议       | 默认端口  | 路径          | 说明       |
 | -------- | ----- | ----------- | -------- |
-| Web HTTP | 19000 | `/api/v1/*` | 见 **A2** |
 | Web WS   | 19000 | `/ws`       | 见 **A1** |
+| Web HTTP | 19002 | `/api/v1/*` | 见 **A2**；`GATEWAY_WEB_HTTP_PORT` 可覆盖（缺省 `WEB_PORT + 2`） |
 
 
 
@@ -52,7 +52,7 @@ flowchart TB
 | 范围       | 合并后 `:19000/ws` 全部 `req/res` method（kub + Swarm 并集）                                 |
 
 
-**范围说明**：本章写 `/ws` 上的 method 与 event，以合并目标为准（kub + Swarm 并集，如 `project.`*、`project.git.*`）。走 HTTP 时见 **A2**，字段相同。
+**范围说明**：本章写 `/ws` 上的 method 与 event，以合并目标为准（kub + Swarm 并集，如 `project.*`、`project.git.*`）。走 HTTP 时业务语义对齐 A1，**传输、路径、信封与流式格式以 [Gateway Web HTTP接口文档.md](../../jiuwenswarm/gateway/docs/Gateway%20Web%20HTTP接口文档.md) 为准**（勿按 method 点号机械转路径）。
 
 **请求示例：**
 
@@ -3325,7 +3325,7 @@ Gateway 转发 AgentServer。`skilldev.start`、`skilldev.respond` 为**流式**
 
 #### 19. Git RPC（Swarm，`project.git.*`）
 
-> **编号说明**：A1 内第 19 节。Git RPC 可走 **A1** `/ws` 或 **A2** `/api/v1/project/git/...`；Git diff 实时订阅本版不展开。
+> **编号说明**：A1 内第 19 节。Git RPC 走 **A1** `/ws`；若走 Web HTTP，路径以 `GET /api/v1/catalog` / OpenAPI 为准，**勿**按 `project.git.*` 点号机械映射。Git diff 实时订阅本版不展开。
 
 仅 **code** 模式项目可用。Git 领域错误时 `ok=false`，`payload.detail` 含结构化 `{ code, message, ... }`，顶层 `code`/`error` 与 `detail` 一致。
 
@@ -3814,85 +3814,21 @@ Agent 下发结构；字段随场景变化，客户端按 `event` 名解析 obje
 
 ### A2 Web HTTP 协议（`/api/v1`）
 
-> **定位**：与 **A1** 同一套业务能力，传输层改为 HTTP。经 Ingress 暴露 **Gateway** `/api/v1/`*；**入参/出参**引用 **A1**，本文不重写。
+> **定位**：与 **A1** 同一套业务语义，传输层为 **REST + SSE**。本文 **不重复**路径、信封与流式约定；完整说明见 **[Gateway Web HTTP接口文档.md](../../jiuwenswarm/gateway/docs/Gateway%20Web%20HTTP接口文档.md)**（以 `CORE_ROUTE_CATALOG` / OpenAPI / `GET /api/v1/catalog` 为真源）。
 
-**与 A1 的差异**
-
-
-| 项目       | A1 `/ws`                              | A2 HTTP                                     |
-| -------- | ------------------------------------- | ------------------------------------------- |
-| 连接握手     | 有；就绪后推 `connection.ack`（§20.1）        | 无长连接；探活可用 `POST /api/v1/connection/status`  |
-| 鉴权       | 握手 `Origin` 白名单 + query/`params` 身份字段 | Header（如 `Authorization`）+ body 身份字段，规则同 A1 |
-| 推送 event | 独立 `event` 帧（§20）                     | 合并在**同一 HTTP 响应**流式 body 内（见下）              |
+**速查（与旧「统一 POST / 点号转斜线 / 同端口 19000」说明已废弃）**
 
 
-
-| 项目           | 说明                                                              |
-| ------------ | --------------------------------------------------------------- |
-| Base URL     | `http(s)://{gateway_host}:{port}/api/v1`（默认与 `/ws` 同端口 `19000`） |
-| Method       | 统一 `POST`                                                       |
-| Content-Type | `application/json; charset=utf-8`                               |
-| 鉴权           | Header（如 `Authorization`）；身份扩展字段规则同 A1                          |
-
-
-
-
-#### 与 A1 的映射
+| 项 | 现行约定 |
+| -- | -------- |
+| Base URL | `http(s)://{host}:19002/api/v1`（`GATEWAY_WEB_HTTP_PORT`，缺省 `WEB_PORT + 2`）；**与** `/ws`（19000）**分端口** |
+| 路由 | REST 资源路径 + HTTP 动词，例：`config.get` → `GET /api/v1/config`（**不是** `POST /api/v1/config/get`） |
+| 一元响应 | `{ request_id, ok, data\|error, metadata }` |
+| 流式 | **仅** SSE（`text/event-stream`）；`data:` 为 payload JSON；**未实现** NDJSON |
+| 探活 | `GET /api/v1/connection/status` |
+| 交互文档 | `http://{host}:19002/doc` |
 
 
-| A1（`/ws`）                                  | HTTP                                                                                     |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| `method`                                   | URL path：`{method}` 中 `.` 换 `/`，前缀 `/api/v1/`。例：`config.get` → `POST /api/v1/config/get` |
-| `params`                                   | HTTP request body（JSON object）                                                           |
-| `res`（`ok` / `payload` / `error` / `code`） | HTTP response body（JSON object）                                                          |
-| `req.id`                                   | 可选 Header `X-Request-Id` 或 body 顶层 `id`；流式响应中用于关联 event                                  |
-
-
-**请求示例**
-
-```http
-POST /api/v1/config/get HTTP/1.1
-Content-Type: application/json
-
-{}
-```
-
-**响应示例（同步）**
-
-```json
-{ "ok": true, "payload": { "model": "..." } }
-```
-
-```json
-{ "ok": false, "payload": {}, "error": "params must be object", "code": "BAD_REQUEST" }
-```
-
-HTTP 状态码：业务成败以 body 内 `ok` 为准；`4xx`/`5xx` 仅表示传输/网关层异常（如 404 path 不存在、502 上游不可达）。
-
-#### 流式响应（原 A1 event 合并进同一 HTTP 响应）
-
-部分接口在 WS 上会先 `res.accepted` 再推 event（如 `chat.send`、SkillDev）。走 HTTP 时 **不另开订阅连接**；**同一 HTTP 响应**内按序输出多帧 JSON（`Content-Type: application/x-ndjson` 或 `text/event-stream`，实现二选一，客户端按行/按 event 解析）：
-
-1. 首帧：等同 WS `res`（含 `ok`、`payload`，异步接口可为 `{ "accepted": true }`）
-2. 中间帧：等同 WS `event`（`event` + `payload`，字段见 **A1 §20**）
-3. 末帧：结束标记或最终 `res`/`chat.final`
-
-**示例（概念）**
-
-```json
-{"ok":true,"payload":{"accepted":true,"session_id":"sess_xxx"}}
-{"event":"chat.delta","payload":{"session_id":"sess_xxx","content":"..."}}
-{"event":"chat.final","payload":{"session_id":"sess_xxx","content":"..."}}
-```
-
-
-
-#### 范围
-
-
-| 能力             | 说明                              |
-| -------------- | ------------------------------- |
-| A1 全部 `method` | 按上表映射为 `/api/v1/...`；字段见 **A1** |
-| Git diff 订阅/推送 | 本版不展开                           |
+**与 Config Receiver 的区分**：Web HTTP（19002）面向浏览器 / 前端；Manager 下发走 **Config Receiver**（默认 `GATEWAY_CONFIG_HTTP_PORT=8775`，信封 `{ code, message, data }`）。后者见 [Gateway对接管理面接口文档.md](../../jiuwenswarm/gateway/docs/Gateway对接管理面接口文档.md)，**勿与本文 A2 混用**。
 
 

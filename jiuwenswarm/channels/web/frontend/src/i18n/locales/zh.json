@@ -72,6 +72,7 @@
     "noTasks": "暂无任务",
     "noMemberData": "暂无成员数据",
     "selectMember": "请选择 Team 成员",
+    "noMembers": "暂无成员",
     "detailTabs": {
       "members": "成员",
       "group": "群聊"
@@ -625,14 +626,17 @@
       },
       "localDebug": {
         "title": "网络访问设置",
-        "description": "允许访问 localhost 等回环地址。",
+        "description": "允许访问 Gateway 所在环境的 localhost、127.0.0.1 和 ::1，不包含局域网地址。",
         "allow": "允许本地回环地址",
         "warning": "风险：回环访问可能暴露 Gateway 本机服务，仅用于可信 Agent。",
         "httpWarning": "风险：HTTP 允许公网明文传输，凭据和任务数据可能泄露。",
         "saving": "保存中...",
         "saved": "出站网络访问设置已保存并立即生效。",
+        "allowPrivateNetwork": "允许局域网地址",
+        "privateNetworkDescription": "允许 RFC1918 内网地址：10.*、172.16–31.*、192.168.*。",
+        "privateNetworkWarning": "风险：内网访问可能暴露 Gateway 可达的局域网服务，仅用于可信 Agent。",
         "allowHttp": "允许 HTTP",
-        "httpDescription": "允许明文 HTTP；回环访问需同时开启上方开关。"
+        "httpDescription": "允许明文 HTTP；局域网或回环地址还需开启对应的地址开关。"
       },
       "discovery": {
         "title": "发现第三方 Agent",
@@ -696,7 +700,7 @@
       "tabs": { "ariaLabel": "A2A 请求处理历史类型", "ingress": "入站请求", "outbound": "出站请求" },
       "copy": "点击复制",
       "copied": "已复制",
-      "copyFailed": "复制失败，请检查浏览器剪贴板权限。",
+      "copyFailed": "复制失败，请选中文本后手动复制。",
       "ingress": {
         "title": "入站请求处理历史",
         "description": "显示当前 Gateway 进程内最近 200 条 A2A 入站请求，不记录请求正文。",
@@ -2322,7 +2326,7 @@
       "accept": "接收",
       "reject": "拒绝",
       "allowOnce": "本次允许",
-      "sessionAllow": "会话内记住",
+      "sessionAllow": "本会话内允许",
       "alwaysAllow": "永久记住",
       "acceptAll": "全部接收",
       "submit": "确认提交",
@@ -2670,6 +2674,18 @@
   },
   "qaSummary": {
     "title": "问题澄清"
+  },
+  "longHorizon": {
+    "toastTitle": "长程提醒",
+    "dueLabel": "计划时间",
+    "actions": {
+      "start": "现在做",
+      "snooze": "稍后",
+      "skip": "跳过"
+    },
+    "errors": {
+      "actionFailed": "操作失败"
+    }
   },
   "subagent": {
     "title": "子智能体",

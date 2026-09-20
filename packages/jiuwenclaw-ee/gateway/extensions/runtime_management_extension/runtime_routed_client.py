@@ -20,6 +20,7 @@ from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
 from jiuwenswarm.gateway.routing.http_agent_client import HttpSseAgentServerClient
 
+from .agent_authorization import authorize_agent
 from .invoke_ids import apply_invoke_ids_to_envelope
 from .session_route_client import (
     FatalRouteError,
@@ -105,6 +106,14 @@ def _is_routeless_envelope(envelope: E2AEnvelope) -> bool:
     return method in _ROUTELESS_METHODS
 
 
+def _rebind_timeout() -> float:
+    try:
+        value = float(read_env("GATEWAY_RUNTIME_SESSION_REBIND_TIMEOUT", "2"))
+    except (TypeError, ValueError):
+        return 2.0
+    return value if value > 0 else 2.0
+
+
 def _default_http_base() -> str:
     """管理类请求（reload_config 等）的默认 Agent HTTP Base。
 
@@ -119,7 +128,11 @@ def _default_http_base() -> str:
     return f"http://{host}:{port}"
 
 
-def identity_from_envelope(envelope: E2AEnvelope) -> tuple[str, str, str, str, str | None]:
+def identity_from_envelope(
+    envelope: E2AEnvelope,
+    *,
+    authorized_identity: tuple[str, str, str] | None = None,
+) -> tuple[str, str, str, str, str | None]:
     """返回 ``session_id, group_id, bot_id, request_id, user_id``。"""
     params = envelope.params if isinstance(envelope.params, dict) else {}
     ctx = envelope.channel_context if isinstance(envelope.channel_context, dict) else {}
@@ -148,6 +161,9 @@ def identity_from_envelope(envelope: E2AEnvelope) -> tuple[str, str, str, str, s
         group_id = "default"
     if not bot_id:
         bot_id = "default"
+    # 授权身份必须在合成 session key 前生效，不能仅覆盖最终路由参数。
+    if authorized_identity is not None:
+        group_id, bot_id, user_id = authorized_identity
     session_id = _first_text(envelope.session_id, params.get("session_id"))
     if not session_id and group_id and bot_id:
         session_id = f"{group_id}:{bot_id}:{user_id or '_'}"
@@ -188,6 +204,8 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._pod_clients: dict[str, HttpSseAgentServerClient] = {}
         self._pod_connect_lock = asyncio.Lock()
         self._rpc_origins: dict[tuple[str, str], str] = {}
+        self._drop_tasks: set[asyncio.Task[None]] = set()
+        self._last_rebind_warn = 0.0   # rebind 降级告警节流（滚动期旧 runtime 404 防刷屏）
 
     def set_server_push_handler(
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
@@ -217,11 +235,16 @@ class RuntimeRoutedAgentClient(AgentServerClient):
     async def _ensure_pod_push(self, base_url: str) -> None:
         if self._on_server_push is None:
             return
+        stale: HttpSseAgentServerClient | None = None
         async with self._pod_connect_lock:
             self._ensure_connected()
             client = self._pod_clients.get(base_url)
+            # Fallback if push-done drop hasn't run yet (same IP reused).
+            if client is not None and not getattr(client, "_running", True):
+                stale = self._pod_clients.pop(base_url)
+                client = None
             if client is None:
-                client = HttpSseAgentServerClient()
+                client = HttpSseAgentServerClient(retry_push_connect=False)
                 client.set_server_push_handler(
                     lambda wire: self._handle_pod_push(base_url, wire)
                 )
@@ -232,7 +255,56 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                     await client.disconnect()
                     raise
                 self._pod_clients[base_url] = client
+                client.add_push_done_callback(
+                    lambda _task, url=base_url, bound=client: self._schedule_drop_pod_client(
+                        url, bound
+                    )
+                )
+        if stale is not None:
+            try:
+                await stale.disconnect()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[RuntimeRouted] 断开旧 Pod 推送客户端失败: %s (%s)",
+                    base_url,
+                    exc,
+                )
         await client.wait_push_ready()
+
+    def _schedule_drop_pod_client(
+        self, base_url: str, client: HttpSseAgentServerClient
+    ) -> None:
+        if not self._connected:
+            return
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self._drop_pod_client(base_url, client),
+                name="runtime-drop-pod-push",
+            )
+        except RuntimeError:
+            return
+        self._drop_tasks.add(task)
+        task.add_done_callback(self._drop_tasks.discard)
+
+    async def _drop_pod_client(
+        self, base_url: str, client: HttpSseAgentServerClient
+    ) -> None:
+        async with self._pod_connect_lock:
+            if self._pod_clients.get(base_url) is not client:
+                return
+            self._pod_clients.pop(base_url, None)
+        logger.warning(
+            "[RuntimeRouted] 推送循环已结束，丢弃客户端: %s",
+            base_url,
+        )
+        try:
+            await client.disconnect()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[RuntimeRouted] 断开旧 Pod 推送客户端失败: %s (%s)",
+                base_url,
+                exc,
+            )
 
     async def connect(self, uri: str) -> None:
         _ = uri
@@ -248,6 +320,10 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         async with self._pod_connect_lock:
             clients = list(self._pod_clients.values())
             self._pod_clients.clear()
+        drop_tasks = list(self._drop_tasks)
+        self._drop_tasks.clear()
+        if drop_tasks:
+            await asyncio.gather(*drop_tasks, return_exceptions=True)
         results = await asyncio.gather(
             *(client.disconnect() for client in clients),
             return_exceptions=True,
@@ -281,6 +357,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
 
     async def send_request(self, envelope: E2AEnvelope) -> AgentResponse:
         self._ensure_connected()
+        authorized_identity = await authorize_agent(envelope)
         if envelope.method == "acp.tool_response":
             params = envelope.params or {}
             key = (
@@ -298,7 +375,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         if _is_routeless_envelope(envelope):
             result = await self._http.send_request(envelope, base_url=_default_http_base())
             return result
-        session_id, group_id, bot_id, request_id, user_id = identity_from_envelope(envelope)
+        session_id, group_id, bot_id, request_id, user_id = identity_from_envelope(
+            envelope, authorized_identity=authorized_identity,
+        )
         base_url, route_id = await self._route_with_retry(
             session_id=session_id,
             group_id=group_id,
@@ -327,12 +406,68 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             await self._ensure_pod_push(base_url)
             result = await self._http.send_request(envelope, base_url=base_url)
         await self._touch_quiet(session_id, route_id)
+        await self._rebind_after_create(envelope, result, session_id)
         return result
+
+    async def _rebind_after_create(
+        self, envelope: E2AEnvelope, result: AgentResponse, session_id: str,
+    ) -> None:
+        """session.create 响应返回上层之前，把临时路由 key 原子改绑为真实 id。
+
+        修复（runtime 侧 2026-09-session-create-rebind）：create 以临时 key
+        （sess_*/webhttp_*/身份组合串）route 占槽，真实 id 首条 chat.send 会二次
+        占槽（双计数）且可能落别的 Pod（亲和断裂）。本方法在 ``send_request``
+        返回前 await——**时序保证**：客户端拿到真实 id 时改绑已完成，chat.send
+        不可能抢先。
+
+        - 响应 ok：rebind(临时 key → 真实 id)，亲和钉在 create 实际服务的 Pod；
+        - 响应失败：rebind(临时 key → 空) 驱逐，立即释放槽位（不等 session_ttl）；
+        - 失败/超时一律降级（warning 节流 + 照常返回响应）＝旧行为；旧 runtime
+          （无 /api/session/rebind 端点）同走降级，滚动期不阻塞 create。
+        """
+        if str(envelope.method or "") != "session.create":
+            return
+        payload = result.payload if isinstance(result.payload, dict) else {}
+        if result.ok:
+            real = str(payload.get("session_id") or payload.get("sessionId") or "").strip()
+        else:
+            real = ""
+        if real and real == session_id:
+            return
+        try:
+            action = await asyncio.wait_for(
+                self._route.rebind(
+                    from_session_id=session_id,
+                    to_session_id=real or None,
+                    request_id=uuid.uuid4().hex,
+                ),
+                timeout=_rebind_timeout(),
+            )
+            logger.info(
+                "[RuntimeRouted] session.create rebind: from=%s to=%s action=%s",
+                session_id,
+                real or "(evict)",
+                action,
+            )
+        except Exception as exc:  # noqa: BLE001 - 降级=现状（临时 key 等 TTL 过期）
+            now = time.monotonic()
+            if now - self._last_rebind_warn >= 60.0:
+                self._last_rebind_warn = now
+                logger.warning(
+                    "[RuntimeRouted] session.create rebind failed (degraded, "
+                    "temp key expires via session_ttl): %s",
+                    exc,
+                )
+            else:
+                logger.debug(
+                    "[RuntimeRouted] session.create rebind failed: %s", exc,
+                )
 
     async def send_request_stream(
         self, envelope: E2AEnvelope
     ) -> AsyncIterator[AgentResponseChunk]:
         self._ensure_connected()
+        authorized_identity = await authorize_agent(envelope)
         if _is_heartbeat_envelope(envelope):
             yield AgentResponseChunk(
                 request_id=str(envelope.request_id or ""),
@@ -349,7 +484,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             ):
                 yield chunk
             return
-        session_id, group_id, bot_id, request_id, user_id = identity_from_envelope(envelope)
+        session_id, group_id, bot_id, request_id, user_id = identity_from_envelope(
+            envelope, authorized_identity=authorized_identity,
+        )
         base_url, route_id = await self._route_with_retry(
             session_id=session_id,
             group_id=group_id,

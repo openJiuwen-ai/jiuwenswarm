@@ -778,6 +778,19 @@ async def _history_json(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[WebHTTP] history json failed: %s", exc)
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+            emit_audit_evt(
+                SUBMDL="gateway",
+                PROC="web_http_internal_error",
+                MSG=str(exc),
+                EVT="web_http_internal_error",
+                request_id=str(req_id or ""),
+                method="history.get",
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("[WebHTTP] web_http_internal_error audit skipped", exc_info=True)
         return JSONResponse(
             {
                 "request_id": req_id,
@@ -795,6 +808,35 @@ async def _history_json(
                 logger.debug("[WebHTTP] unregister_request_outbound failed", exc_info=True)
 
 
+def _chat_identity_error(
+    request: Request, method: str, params: dict[str, Any], request_id: str,
+) -> JSONResponse | None:
+    """Check history-writing chat methods before dispatch or opening SSE."""
+    if method not in ("chat.send", "chat.resume", "chat.user_answer"):
+        return None
+    for field in ("user_id", "group_id", "bot_id", "gateway_id"):
+        header = (request.headers.get("x-" + field.replace("_", "-")) or "").strip()
+        value = params.get(field)
+        body_value = str(value).strip() if value is not None else ""
+        # Match routing normalization: missing/null/blank identity is unset.
+        if header and body_value and body_value != header:
+            return JSONResponse(
+                {
+                    "request_id": request_id,
+                    "ok": False,
+                    "error": {
+                        "code": "IDENTITY_CONFLICT",
+                        "message": "Request header and body identity must match",
+                        "details": {"field": field},
+                    },
+                    "metadata": _web_http_metadata(method),
+                },
+                status_code=400,
+                headers=_response_headers(request_id, method),
+            )
+    return None
+
+
 async def _unary(
     request: Request,
     channel: Any,
@@ -807,6 +849,9 @@ async def _unary(
 ) -> JSONResponse:
     outbound = None
     req_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    error = _chat_identity_error(request, method, params, req_id)
+    if error is not None:
+        return error
     try:
         outbound, req_id, _sid = await dispatch_http_request(
             channel,
@@ -831,6 +876,19 @@ async def _unary(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[WebHTTP] unary %s failed: %s", method, exc)
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+            emit_audit_evt(
+                SUBMDL="gateway",
+                PROC="web_http_internal_error",
+                MSG=str(exc),
+                EVT="web_http_internal_error",
+                request_id=str(req_id or ""),
+                method=str(method or ""),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("[WebHTTP] web_http_internal_error audit skipped", exc_info=True)
         return JSONResponse(
             {
                 "request_id": req_id,
@@ -858,8 +916,11 @@ async def _stream(
     channel: Any,
     method: str,
     params: dict[str, Any],
-) -> StreamingResponse:
+) -> Response:
     req_id = request.headers.get("x-request-id") or uuid.uuid4().hex
+    error = _chat_identity_error(request, method, params, req_id)
+    if error is not None:
+        return error
 
     async def gen() -> AsyncIterator[str]:
         outbound = None

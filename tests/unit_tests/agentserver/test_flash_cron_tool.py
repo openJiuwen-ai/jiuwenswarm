@@ -35,31 +35,31 @@ class _Backend:
         self.calls.append(("wake", text, mode))
         return {"queued": True}
 
-    async def status(self):
+    async def status(self, *, context=None):
         self.calls.append(("status",))
         return {"running": False, "job_count": 3, "run_count": 0}
 
-    async def list_jobs(self, *, include_disabled=True):
+    async def list_jobs(self, *, include_disabled=True, context=None):
         self.calls.append(("list", include_disabled))
         return []
 
-    async def get_job(self, job_id):
+    async def get_job(self, job_id, *, context=None):
         self.calls.append(("get", job_id))
         return {}
 
-    async def delete_job(self, job_id):
+    async def delete_job(self, job_id, *, context=None):
         self.calls.append(("remove", job_id))
         return True
 
-    async def toggle_job(self, job_id, enabled):
+    async def toggle_job(self, job_id, enabled, *, context=None):
         self.calls.append(("toggle", job_id, enabled))
         return {}
 
-    async def preview_job(self, job_id, count=5):
+    async def preview_job(self, job_id, count=5, *, context=None):
         self.calls.append(("preview", job_id, count))
         return []
 
-    async def run_now(self, job_id):
+    async def run_now(self, job_id, *, context=None):
         self.calls.append(("run", job_id))
         return "run-id"
 
@@ -80,6 +80,28 @@ class _RouteCapturingCronTools:
     async def create_job(self, payload):
         self.payloads.append(payload)
         return payload
+
+    async def list_jobs(self):
+        return []
+
+    async def get_job(self, job_id: str):
+        _ = job_id
+        return None
+
+    async def delete_job(self, job_id: str):
+        _ = job_id
+        return True
+
+    async def toggle_job(self, job_id: str, enabled: bool):
+        return {"id": job_id, "enabled": enabled}
+
+    async def preview_job(self, job_id: str, count: int = 5):
+        _ = (job_id, count)
+        return []
+
+    async def run_now(self, job_id: str):
+        _ = job_id
+        return {"run_id": "r-1"}
 
 
 def test_description_is_default_and_not_duplicated(monkeypatch) -> None:
@@ -237,6 +259,30 @@ async def test_flat_create_passes_session_and_app_via_backend_route() -> None:
     assert route.app_id == "app-1"
     assert cron_tools.payloads[0]["mode"] == "agent"
     assert cron_tools.reset_tokens == ["route-token"]
+
+
+@pytest.mark.asyncio
+async def test_flat_list_and_remove_pass_session_via_backend_route() -> None:
+    cron_tools = _RouteCapturingCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    context = SimpleNamespace(
+        channel_id="web",
+        session_id="session-list",
+        metadata={
+            "request_id": "request-list",
+            "user_id": "u1",
+            "routing": {"group_id": "g1", "bot_id": "b1"},
+        },
+        mode="agent",
+    )
+
+    await _cron_dispatch(backend, context, {"list": {"include_disabled": True}})
+    await _cron_dispatch(backend, context, {"remove": {"job_id": "job-1"}})
+
+    assert [route.session_id for route in cron_tools.routes] == ["session-list", "session-list"]
+    assert cron_tools.routes[0].group_id == "g1"
+    assert cron_tools.routes[0].user_id == "u1"
+    assert cron_tools.reset_tokens == ["route-token", "route-token"]
 
 
 def test_translate_at_and_timeout() -> None:

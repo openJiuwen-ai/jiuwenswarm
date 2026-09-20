@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -218,3 +220,307 @@ async def test_enterprise_request_rebuilds_session_child_created_without_identit
     assert result is fresh
     assert stale.cleaned is True
     assert fresh.created_with["request"] is request
+
+
+def _complete_video_config() -> dict:
+    return {
+        "models": {
+            "video": {
+                "model_config": {
+                    "api_key": "k",
+                    "api_base": "http://video.example",
+                    "model_name": "video-model",
+                }
+            }
+        }
+    }
+
+
+def test_build_video_model_config_does_not_apply_when_yaml_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unconfigured video must not pay apply_video_from_yaml (embed/env fallback)."""
+    applied: list[object] = []
+    monkeypatch.setattr(
+        interface_deep_module,
+        "apply_video_model_config_from_yaml",
+        lambda cfg: applied.append(cfg),
+    )
+
+    assert JiuWenSwarmDeepAdapter._build_video_model_config({}) is False
+    assert applied == []
+
+
+def test_build_video_model_config_applies_when_yaml_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    applied: list[object] = []
+    monkeypatch.setattr(
+        interface_deep_module,
+        "apply_video_model_config_from_yaml",
+        lambda cfg: applied.append(True),
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "read_env",
+        lambda key, default="": {
+            "VIDEO_API_KEY": "k",
+            "VIDEO_API_BASE": "http://video.example",
+            "VIDEO_MODEL_NAME": "video-model",
+        }.get(key, default),
+    )
+
+    assert JiuWenSwarmDeepAdapter._build_video_model_config(_complete_video_config()) is True
+    assert applied == [True]
+
+
+def test_build_image_gen_model_config_still_applies_before_key_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """image_gen keeps embed/main-API fallback: apply still runs without dedicated yaml."""
+    applied: list[object] = []
+    monkeypatch.setattr(
+        interface_deep_module,
+        "apply_image_gen_model_config_from_yaml",
+        lambda cfg: applied.append(True),
+    )
+    monkeypatch.setattr(interface_deep_module, "read_env", lambda key, default="": "")
+
+    assert JiuWenSwarmDeepAdapter._build_image_gen_model_config({}) is False
+    assert applied == [True]
+
+
+@contextmanager
+def _stub_create_instance_build():
+    """Stub the DeepAgent half of create_instance (after preamble / skip)."""
+    created = MagicMock(name="deep_agent", ensure_initialized=AsyncMock())
+    adapter_cls = interface_deep_module.JiuWenSwarmDeepAdapter
+    with (
+        patch.object(adapter_cls, "set_checkpoint", AsyncMock()),
+        patch.object(adapter_cls, "_create_model", return_value=object()),
+        patch.object(adapter_cls, "_get_tool_cards", AsyncMock(return_value=[])),
+        patch.object(adapter_cls, "_build_agent_rails", return_value=[]),
+        patch.object(adapter_cls, "_create_sys_operation", return_value=MagicMock()),
+        patch.object(adapter_cls, "_build_configured_subagents", return_value=(None, False)),
+        patch.object(adapter_cls, "load_user_rails", AsyncMock()),
+        patch.object(adapter_cls, "_try_init_a2x_client", AsyncMock()),
+        patch.object(interface_deep_module, "create_deep_agent", return_value=created),
+    ):
+        yield created
+
+
+@pytest.mark.asyncio
+async def test_root_create_instance_skips_multimodal_skill_and_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root chat-path create_instance must stop before multimodal/skill/prompt."""
+    adapter = JiuWenSwarmDeepAdapter()
+    config_base = {"react": {"agent_name": "main_agent"}}
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: config_base)
+    refresh = MagicMock()
+    loader_cls = MagicMock()
+    sync_cls = MagicMock()
+    adapter._enterprise_config = SimpleNamespace(skill_prebuilt=[{"name": "x"}])
+    monkeypatch.setattr(adapter, "_merge_enterprise_models_into_config", lambda cfg: cfg)
+
+    with (
+        patch.object(
+            interface_deep_module.JiuWenSwarmDeepAdapter,
+            "set_checkpoint",
+            AsyncMock(),
+        ),
+        patch.object(
+            interface_deep_module.JiuWenSwarmDeepAdapter,
+            "_refresh_multimodal_configs",
+            refresh,
+        ),
+        patch.object(interface_deep_module, "PromptAttachmentLoader", loader_cls),
+        patch.object(interface_deep_module, "SkillPrebuiltSynchronizer", sync_cls),
+        patch.object(interface_deep_module, "is_skill_prebuilt_tenant", return_value=True),
+    ):
+        await adapter.create_instance(config_base=config_base)
+
+    refresh.assert_not_called()
+    loader_cls.assert_not_called()
+    sync_cls.assert_not_called()
+    assert adapter._instance is None
+    assert adapter._config_base_cache["react"]["agent_name"] == "main_agent"
+    assert adapter._agent_name == "main_agent"
+
+
+@pytest.mark.asyncio
+async def test_root_create_instance_skip_applies_project_and_workspace_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Skip still runs the cheap override block moved ahead of skill sync."""
+    constructor_ws = str(tmp_path / "constructor-workspace")
+    request_ws = str(tmp_path / "request-workspace")
+    project_dir = str(tmp_path / "project")
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = constructor_ws
+    config_base = {"react": {"agent_name": "main_agent"}}
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: config_base)
+    refresh = MagicMock()
+    loader_cls = MagicMock()
+    sync_cls = MagicMock()
+    adapter._enterprise_config = SimpleNamespace(skill_prebuilt=[{"name": "x"}])
+    monkeypatch.setattr(adapter, "_merge_enterprise_models_into_config", lambda cfg: cfg)
+
+    with (
+        patch.object(
+            interface_deep_module.JiuWenSwarmDeepAdapter,
+            "set_checkpoint",
+            AsyncMock(),
+        ),
+        patch.object(
+            interface_deep_module.JiuWenSwarmDeepAdapter,
+            "_refresh_multimodal_configs",
+            refresh,
+        ),
+        patch.object(interface_deep_module, "PromptAttachmentLoader", loader_cls),
+        patch.object(interface_deep_module, "SkillPrebuiltSynchronizer", sync_cls),
+        patch.object(interface_deep_module, "is_skill_prebuilt_tenant", return_value=True),
+    ):
+        await adapter.create_instance(
+            {"project_dir": project_dir, "workspace_dir": request_ws},
+            config_base=config_base,
+        )
+
+    refresh.assert_not_called()
+    loader_cls.assert_not_called()
+    sync_cls.assert_not_called()
+    assert adapter._instance is None
+    assert adapter._project_dir == project_dir
+    assert adapter._workspace_dir == request_ws
+
+
+@pytest.mark.asyncio
+async def test_session_create_instance_still_refreshes_multimodal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Session adapters still run multimodal / prompt layout before DeepAgent."""
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter.mark_as_session_scoped("sess_preamble")
+    config_base = {"react": {"agent_name": "main_agent"}}
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: config_base)
+    refresh = MagicMock()
+    loader = MagicMock()
+    loader.ensure_layout = MagicMock()
+    loader_cls = MagicMock(return_value=loader)
+
+    with (
+        _stub_create_instance_build(),
+        patch.object(
+            interface_deep_module.JiuWenSwarmDeepAdapter,
+            "_refresh_multimodal_configs",
+            refresh,
+        ),
+        patch.object(interface_deep_module, "PromptAttachmentLoader", loader_cls),
+    ):
+        await adapter.create_instance(config_base=config_base)
+
+    refresh.assert_called_once()
+    loader_cls.assert_called_once()
+    loader.ensure_layout.assert_called_once()
+    assert adapter._instance is not None
+
+
+@pytest.mark.asyncio
+async def test_ensure_instance_after_root_skip_runs_preamble(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skip then ensure_instance must rebuild via the cached snapshot, not yaml."""
+    adapter = JiuWenSwarmDeepAdapter()
+    yaml_config = {"react": {"agent_name": "from-yaml"}}
+    snapshot = {"react": {"agent_name": "from-snapshot"}}
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: yaml_config)
+    refresh = MagicMock()
+
+    with (
+        _stub_create_instance_build(),
+        patch.object(
+            interface_deep_module.JiuWenSwarmDeepAdapter,
+            "_refresh_multimodal_configs",
+            refresh,
+        ),
+        patch.object(
+            interface_deep_module,
+            "PromptAttachmentLoader",
+            return_value=MagicMock(ensure_layout=MagicMock()),
+        ),
+    ):
+        await adapter.create_instance(
+            {"agent_name": "cached-agent"},
+            config_base=snapshot,
+        )
+        assert adapter._instance is None
+        refresh.assert_not_called()
+
+        instance = await adapter.ensure_instance()
+
+    refresh.assert_called_once()
+    assert refresh.call_args.args[0]["react"]["agent_name"] == "from-snapshot"
+    assert instance is adapter._instance
+    assert adapter._instance is not None
+    assert adapter._agent_name == "cached-agent"
+
+
+def _stub_skill_prebuilt_synchronizer() -> tuple[MagicMock, MagicMock]:
+    """Return (cls, instance) so tests can assert the workspace passed to sync."""
+    sync_result = SimpleNamespace(
+        errors=[],
+        enabled_skill_dirs=None,
+        prebuilt_skill_dirs=[],
+    )
+    sync_obj = MagicMock()
+    sync_obj.sync = AsyncMock(return_value=sync_result)
+    sync_cls = MagicMock(return_value=sync_obj)
+    return sync_cls, sync_obj
+
+
+@pytest.mark.asyncio
+async def test_session_skill_prebuilt_sync_uses_create_instance_workspace_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """create_instance(config.workspace_dir) is the SkillPrebuiltSynchronizer target.
+
+    Constructor tenant workspace is kept only when that override is absent.
+    Chat params.workspace_dir is a different path (mapped to project_dir) and
+    is not covered here.
+    """
+    constructor_ws = str(tmp_path / "constructor-workspace")
+    request_ws = str(tmp_path / "request-workspace")
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = constructor_ws
+    adapter.mark_as_session_scoped("sess_skill_sync_workspace")
+    adapter._enterprise_config = SimpleNamespace(skill_prebuilt=[{"skill_id": "prebuilt-x"}])
+    monkeypatch.setattr(adapter, "_merge_enterprise_models_into_config", lambda cfg: cfg)
+    config_base = {"react": {"agent_name": "main_agent"}}
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: config_base)
+    sync_cls, _sync_obj = _stub_skill_prebuilt_synchronizer()
+
+    with (
+        _stub_create_instance_build(),
+        patch.object(
+            interface_deep_module.JiuWenSwarmDeepAdapter,
+            "_refresh_multimodal_configs",
+            MagicMock(),
+        ),
+        patch.object(
+            interface_deep_module,
+            "PromptAttachmentLoader",
+            return_value=MagicMock(ensure_layout=MagicMock()),
+        ),
+        patch.object(interface_deep_module, "SkillPrebuiltSynchronizer", sync_cls),
+        patch.object(interface_deep_module, "is_skill_prebuilt_tenant", return_value=True),
+    ):
+        await adapter.create_instance(
+            {"workspace_dir": request_ws},
+            config_base=config_base,
+        )
+
+    sync_cls.assert_called_once()
+    assert sync_cls.call_args.args[0] == request_ws
+    assert adapter._workspace_dir == request_ws

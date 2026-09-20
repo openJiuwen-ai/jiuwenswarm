@@ -1745,6 +1745,25 @@ async def test_process_team_message_stream_control_followup_reuses_existing_wait
     assert chunks[-1].is_complete is True
 
 
+def test_note_team_permission_resume_landing_only_tracks_interactive_input() -> None:
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+    from jiuwenswarm.server.runtime.session.permission_response_ledger import (
+        consume_team_permission_resume_landed,
+        reset_team_permission_resume_landed,
+    )
+
+    reset_team_permission_resume_landed()
+    team_helpers._note_team_permission_resume_landing("继续", True)
+    assert consume_team_permission_resume_landed() is None
+
+    approval = InteractiveInput()
+    approval.update("call-1", {"approved": True})
+    team_helpers._note_team_permission_resume_landing(approval, True)
+    assert consume_team_permission_resume_landed() is True
+    team_helpers._note_team_permission_resume_landing(approval, False)
+    assert consume_team_permission_resume_landed() is False
+
+
 @pytest.mark.anyio
 async def test_process_team_message_stream_retries_followup_while_native_starts(monkeypatch):
     class _FakeManager(_CompletingFollowupRuntimeManagerMixin):

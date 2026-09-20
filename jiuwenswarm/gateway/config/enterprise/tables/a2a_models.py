@@ -18,10 +18,11 @@ A2A_OUTBOUND_USER_STATE_TABLE_DEF = TableDefinition(
             "id", "integer", primary_key=True, autoincrement=True, nullable=False
         ),
         ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("user_id", "string", length=256, nullable=True),
         ColumnDefinition("user_enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],
-    indexes=[IndexDefinition(["template_id"], unique=True)],
+    indexes=[IndexDefinition(["template_id", "user_id"], unique=True)],
 )
 
 A2A_OUTBOUND_RUNTIME_STATE_TABLE_DEF = TableDefinition(

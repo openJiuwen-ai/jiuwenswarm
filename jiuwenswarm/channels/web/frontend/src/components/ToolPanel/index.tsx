@@ -24,6 +24,7 @@ import { CodeEnvironmentPanel } from '../../features/code-mode/CodeEnvironmentPa
 import { CodeReviewPanel } from '../../features/code-mode/CodeReviewPanel';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
 import { useCodeGitDiffWatch } from '../../features/code-mode/useCodeGitDiffWatch';
+import { isEnterprise } from '../../edition';
 import './ToolPanel.css';
 
 /** 规划/性能模式下把 TodoItem 降级映射为 TeamTask，复用 TaskPlanningPanel 紧凑态样式 */
@@ -209,6 +210,7 @@ export function ToolPanel({
   setTeamAreaSelectedArtifactId,
 }: ToolPanelProps) {
   const { t } = useTranslation();
+  const enterpriseMode = isEnterprise();
   const { isConnected, memoryUsage, setMemoryUsage } = useSessionStore();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const resolvedSessionId = sessionId || activeSessionId || '';
@@ -251,7 +253,7 @@ export function ToolPanel({
   const loadingTeamHistorySessionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!isConnected) {
+    if (enterpriseMode || !isConnected) {
       setMemoryUsage(null);
       return;
     }
@@ -292,7 +294,7 @@ export function ToolPanel({
         window.clearInterval(timerId);
       }
     };
-  }, [isConnected, setMemoryUsage]);
+  }, [enterpriseMode, isConnected, setMemoryUsage]);
 
   useEffect(() => {
     if (
@@ -584,10 +586,12 @@ export function ToolPanel({
                 <span className="text-text-muted">{t('toolPanel.contextCompression')}</span>
                 <span className="mono text-text">{compressionDisplay}</span>
               </div>
-              <div className="toolpanel-status-card__row">
-                <span className="text-text-muted">{t('toolPanel.memoryUsage')}</span>
-                <span className="mono text-text">{memoryDisplay}</span>
-              </div>
+              {!enterpriseMode && (
+                <div className="toolpanel-status-card__row">
+                  <span className="text-text-muted">{t('toolPanel.memoryUsage')}</span>
+                  <span className="mono text-text">{memoryDisplay}</span>
+                </div>
+              )}
             </div>
           </div>
           </>

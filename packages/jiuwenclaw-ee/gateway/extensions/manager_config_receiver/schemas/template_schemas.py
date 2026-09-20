@@ -119,21 +119,27 @@ class HookConfig(BaseModel):
 
 
 class ModelTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """PATCH：未传=不更新；显式 null 由非 Optional 类型在 Field 层拒绝（对齐 NOT NULL 列）。
+
+    写法：``field: T = Field(default=None, ...)`` —— 可省略，但传入必须是 T，不能是 null。
+    ``description`` / ``model_tags`` 等可空列仍用 ``T | None``。
+    """
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    model_type: list[str] | None = None
+    model_type: list[str] = Field(default=None)
     model_tags: list[str] | None = None
-    api_base: str | None = Field(default=None, max_length=512)
-    api_key: str | None = None
-    model_id: str | None = Field(default=None, max_length=128)
-    model_provider: str | None = Field(default=None, max_length=64)
+    api_base: str = Field(default=None, min_length=1, max_length=512)
+    api_key: str = Field(default=None, min_length=1, max_length=4096)
+    model_id: str = Field(default=None, min_length=1, max_length=128)
+    model_provider: str = Field(default=None, min_length=1, max_length=64)
     parameters: dict[str, Any] | None = None
-    timeout: int | None = Field(default=None, ge=1)
-    retry_count: int | None = Field(default=None, ge=0)
-    enable_streaming: bool | None = None
-    enable_function_calling: bool | None = None
-    verify_ssl: bool | None = None
-    enabled: bool | None = None
+    timeout: int = Field(default=None, ge=1)
+    retry_count: int = Field(default=None, ge=0)
+    enable_streaming: bool = Field(default=None)
+    enable_function_calling: bool = Field(default=None)
+    verify_ssl: bool = Field(default=None)
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -143,26 +149,29 @@ class ModelTemplateCreateRequest(ModelTemplateUpdateRequest):
     template_id: str = Field(..., min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=128)
     api_base: str = Field(..., min_length=1, max_length=512)
-    api_key: str = Field(..., min_length=1)
+    api_key: str = Field(..., min_length=1, max_length=4096)
     model_id: str = Field(..., min_length=1, max_length=128)
     model_provider: str = Field(..., min_length=1, max_length=64)
 
 
 class EmbeddingTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(
+    """对齐 embedding_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(
         default=None,
+        min_length=1,
         max_length=128,
         validation_alias=AliasChoices("template_name", "name"),
     )
     description: str | None = Field(default=None, max_length=512)
     embed_tags: list[str] | None = None
-    api_base: str | None = Field(default=None, max_length=512)
-    api_key: str | None = None
-    model_id: str | None = Field(default=None, max_length=128)
-    model_provider: str | None = Field(default=None, max_length=64)
+    api_base: str = Field(default=None, min_length=1, max_length=512)
+    api_key: str = Field(default=None, min_length=1, max_length=4096)
+    model_id: str = Field(default=None, min_length=1, max_length=128)
+    model_provider: str = Field(default=None, min_length=1, max_length=64)
     parameters: dict[str, Any] | None = None
     client_config: dict[str, Any] | None = None
-    enabled: bool | None = None
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -170,19 +179,21 @@ class EmbeddingTemplateCreateRequest(EmbeddingTemplateUpdateRequest):
     template_id: str = Field(..., min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=128)
     api_base: str = Field(..., min_length=1, max_length=512)
-    api_key: str = Field(..., min_length=1)
+    api_key: str = Field(..., min_length=1, max_length=4096)
     model_id: str = Field(..., min_length=1, max_length=128)
     model_provider: str = Field(..., min_length=1, max_length=64)
 
 
 class ExtensionConfigTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 extension_config_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    component: str | None = Field(default=None, max_length=32)
-    hook_type: str | None = Field(default=None, max_length=32)
-    hook_config: HookConfig | None = None
+    component: str = Field(default=None, min_length=1, max_length=32)
+    hook_type: str = Field(default=None, min_length=1, max_length=32)
+    hook_config: HookConfig = Field(default=None)
     custom_config: dict[str, Any] | None = None
-    enabled: bool | None = None
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -191,16 +202,19 @@ class ExtensionConfigTemplateCreateRequest(ExtensionConfigTemplateUpdateRequest)
     template_name: str = Field(..., min_length=1, max_length=128)
     component: str = Field(..., min_length=1, max_length=32)
     hook_type: str = Field(..., min_length=1, max_length=32)
+    hook_config: HookConfig
 
 
 class SkillPrebuiltTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 skill_prebuilt_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    skill_id: str | None = Field(default=None, max_length=512)
+    skill_id: str = Field(default=None, min_length=1, max_length=512)
     package_url: OptionalSkillSourceUrl = None
     source_id: str | None = Field(default=None, max_length=64)
     version_id: str | None = Field(default=None, max_length=128)
-    enabled: bool | None = None
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -256,10 +270,12 @@ def validate_mcp_entry(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 class McpTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 mcp_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    mcp_entry: dict[str, Any] | None = None
-    enabled: bool | None = None
+    mcp_entry: dict[str, Any] = Field(default=None)
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
     @model_validator(mode="after")
@@ -276,10 +292,12 @@ class McpTemplateCreateRequest(McpTemplateUpdateRequest):
 
 
 class PermissionsTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 permissions_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    enabled: bool | None = None
-    body: dict[str, Any] | None = None
+    enabled: bool = Field(default=None)
+    body: dict[str, Any] = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -295,11 +313,13 @@ class PermissionsTemplateCreateRequest(PermissionsTemplateUpdateRequest):
 
 
 class AgentTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 agent_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
     agent_tags: list[str] | None = None
     template_ref: dict[str, list[str]] | None = None
-    enabled: bool | None = None
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
     @model_validator(mode="before")
@@ -338,23 +358,28 @@ class A2ACredentialOperation(BaseModel):
 
 
 class A2AOutboundTemplateUpdateRequest(SafeTextMixin):
+    """对齐 a2a_outbound_template：NOT NULL 列用 ``T = Field(default=None)``。
+
+    ``credential`` 非落库列（映射 credential_ref），null 表示不改凭证，保持可空。
+    """
+
     model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
 
-    template_name: str | None = Field(default=None, min_length=1, max_length=128)
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
     a2a_tags: list[str] | None = None
-    source_url: A2ASourceUrl | None = None
-    card_path: A2ACardPath | None = None
-    agent_card: dict[str, Any] | None = None
-    card_fingerprint: str | None = Field(default=None, min_length=1, max_length=128)
-    card_revision: int | None = Field(default=None, ge=1)
-    selected_interface: dict[str, Any] | None = None
-    connect_timeout_seconds: float | None = Field(default=None, gt=0)
-    sync_wait_seconds: float | None = Field(default=None, gt=0)
-    enabled: bool | None = None
+    source_url: A2ASourceUrl = Field(default=None)
+    card_path: A2ACardPath = Field(default=None)
+    agent_card: dict[str, Any] = Field(default=None)
+    card_fingerprint: str = Field(default=None, min_length=1, max_length=128)
+    card_revision: int = Field(default=None, ge=1)
+    selected_interface: dict[str, Any] = Field(default=None)
+    connect_timeout_seconds: float = Field(default=None, gt=0)
+    sync_wait_seconds: float = Field(default=None, gt=0)
+    enabled: bool = Field(default=None)
     credential: A2ACredentialOperation | None = None
     data: dict[str, Any] | None = None
-    updated_at: datetime | None = None
+    updated_at: datetime = Field(default=None)
 
     @model_validator(mode="after")
     def _validate_card_and_interface(self) -> A2AOutboundTemplateUpdateRequest:
@@ -401,16 +426,18 @@ class A2AOutboundTemplateCreateRequest(A2AOutboundTemplateUpdateRequest):
 
 
 class A2AAccessPolicyTemplateUpdateRequest(SafeTextMixin):
+    """对齐 a2a_access_policy_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
     model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
 
-    policy_name: str | None = Field(default=None, min_length=1, max_length=128)
+    policy_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    mode: Literal["allowlist", "denylist"] | None = None
-    member_template_ids: list[TemplateId] | None = None
-    enabled: bool | None = None
-    revision: int | None = Field(default=None, ge=1)
+    mode: Literal["allowlist", "denylist"] = Field(default=None)
+    member_template_ids: list[TemplateId] = Field(default=None)
+    enabled: bool = Field(default=None)
+    revision: int = Field(default=None, ge=1)
     data: dict[str, Any] | None = None
-    updated_at: datetime | None = None
+    updated_at: datetime = Field(default=None)
 
     @field_validator("member_template_ids")
     @classmethod

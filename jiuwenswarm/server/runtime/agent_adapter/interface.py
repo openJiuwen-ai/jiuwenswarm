@@ -42,6 +42,8 @@ from jiuwenswarm.server.runtime.session.session_history import (
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 from jiuwenswarm.server.runtime.session.permission_response_ledger import (
     PermissionResponseLedger,
+    reset_team_permission_resume_landed,
+    settle_permission_reservation,
 )
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.skill.workspace_provider import SkillWorkspaceProvider
@@ -108,6 +110,19 @@ def _permission_response_key(request: AgentRequest) -> str | None:
     if not isinstance(request_id, str):
         return None
     return request_id or None
+
+
+def _is_team_permission_interactive_resume(
+    request: AgentRequest,
+    inputs: dict[str, Any],
+) -> bool:
+    """Return whether this request is a Team InteractiveInput permission click."""
+    params = request.params if isinstance(request.params, dict) else None
+    if not is_team_params(params):
+        return False
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    return isinstance(inputs.get("query"), InteractiveInput)
 
 
 def _duplicate_permission_response(request: AgentRequest) -> AgentResponse:
@@ -1994,7 +2009,7 @@ class JiuWenSwarm:
             }
         elif value in ("approve", "本次允许", "Approve", "Proceed", "批准", "开始执行"):
             confirm_payload = {"approved": True, "auto_confirm": False, "feedback": ""}
-        elif value in ("session_allow", "会话内记住", "Session Allow"):
+        elif value in ("session_allow", "本会话内允许", "会话内记住", "Session Allow"):
             confirm_payload = {
                 "approved": True,
                 "auto_confirm": True,
@@ -2748,6 +2763,10 @@ class JiuWenSwarm:
                         request.request_id,
                     )
                     return _duplicate_permission_response(request)
+            settle_by_team_landing = (
+                permission_reservation is not None
+                and _is_team_permission_interactive_resume(request, inputs)
+            )
 
             async def run_agent_task():
                 if (
@@ -2755,6 +2774,8 @@ class JiuWenSwarm:
                     and not permission_reservation.start()
                 ):
                     return _duplicate_permission_response(request)
+                if settle_by_team_landing:
+                    reset_team_permission_resume_landed()
                 try:
                     return await adapter.process_message_impl(request, inputs)
                 except Exception as exc:
@@ -2772,8 +2793,10 @@ class JiuWenSwarm:
                         metadata=request.metadata,
                     )
                 finally:
-                    if permission_reservation is not None:
-                        permission_reservation.complete()
+                    settle_permission_reservation(
+                        permission_reservation,
+                        settle_by_team_landing=settle_by_team_landing,
+                    )
 
             try:
                 result = await self._session_manager.submit_and_wait(
@@ -3165,6 +3188,11 @@ class JiuWenSwarm:
                 )
                 yield _duplicate_permission_chunk(request)
                 return
+        settle_by_team_landing = bool(
+            permission_reservation is not None
+            and is_team_mode
+            and team_query_is_interactive_input
+        )
 
         stream_queue = asyncio.Queue()
         stream_done = asyncio.Event()
@@ -3228,6 +3256,8 @@ class JiuWenSwarm:
                             ("chunk", _duplicate_permission_chunk(request))
                         )
                         return
+                    if settle_by_team_landing:
+                        reset_team_permission_resume_landed()
                     async for chunk in adapter.process_message_stream_impl(request, inputs):
                         _put_count += 1
                         _pl = getattr(chunk, "payload", None) or {}
@@ -3260,8 +3290,10 @@ class JiuWenSwarm:
                     logger.exception("[JiuWenSwarm] 流式任务异常: %s", exc)
                     await stream_queue.put(("error", exc))
                 finally:
-                    if permission_reservation is not None:
-                        permission_reservation.complete()
+                    settle_permission_reservation(
+                        permission_reservation,
+                        settle_by_team_landing=settle_by_team_landing,
+                    )
                     logger.info(
                         "[JiuWenSwarm] run_stream_task finished: request_id=%s total_chunks=%s",
                         rid, _put_count,

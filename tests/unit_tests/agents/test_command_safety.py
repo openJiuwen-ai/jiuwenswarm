@@ -52,6 +52,106 @@ def test_blocks_pkill_on_jiuwenclaw_backend() -> None:
     assert reason is not None
 
 
+def test_blocks_get_process_python_stop_process_pipeline() -> None:
+    reason = _check_command_safety(
+        'Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force '
+        '-ErrorAction SilentlyContinue; Write-Output "Python processes killed"'
+    )
+    assert reason is not None
+    assert "Get-Process" in reason
+    assert "Stop-Process" in reason
+
+
+def test_allows_get_process_python_query() -> None:
+    assert _check_command_safety("Get-Process python -ErrorAction SilentlyContinue") is None
+
+
+def test_blocks_taskkill_im_python() -> None:
+    reason = _check_command_safety("taskkill /F /IM python.exe")
+    assert reason is not None
+    assert "taskkill /im" in reason
+
+
+def test_blocks_pkill_python() -> None:
+    reason = _check_command_safety("pkill -f python")
+    assert reason is not None
+
+
+def test_blocks_stop_process_self_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.agents.harness.common.tools import command_tools
+
+    monkeypatch.setattr(command_tools.os, "getpid", lambda: 30472)
+    monkeypatch.setattr(command_tools.os, "getppid", lambda: 1)
+    reason = _check_command_safety(
+        'Stop-Process -Id 30472 -Force -ErrorAction SilentlyContinue; Write-Output "done"'
+    )
+    assert reason is not None
+    assert "Stop-Process" in reason
+
+
+def test_allows_stop_process_other_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.agents.harness.common.tools import command_tools
+
+    monkeypatch.setattr(command_tools.os, "getpid", lambda: 100)
+    monkeypatch.setattr(command_tools.os, "getppid", lambda: 1)
+    assert _check_command_safety("Stop-Process -Id 26448 -Force") is None
+
+
+def test_blocks_taskkill_self_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.agents.harness.common.tools import command_tools
+
+    monkeypatch.setattr(command_tools.os, "getpid", lambda: 18004)
+    monkeypatch.setattr(command_tools.os, "getppid", lambda: 1)
+    reason = _check_command_safety(
+        'taskkill //PID 18004 //F 2>/dev/null; taskkill //PID 26448 //F 2>/dev/null; echo "killed"'
+    )
+    assert reason is not None
+    assert "taskkill" in reason
+
+
+def test_blocks_stop_process_inputobject_get_process_pipeline() -> None:
+    reason = _check_command_safety(
+        "Stop-Process -InputObject (Get-Process python) -Force"
+    )
+    assert reason is not None
+    assert "Get-Process" in reason
+
+
+def test_blocks_taskkill_im_pythonw() -> None:
+    reason = _check_command_safety("taskkill /F /IM pythonw.exe")
+    assert reason is not None
+    assert "taskkill /im" in reason
+
+
+def test_blocks_stop_process_self_pid_in_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.agents.harness.common.tools import command_tools
+
+    monkeypatch.setattr(command_tools.os, "getpid", lambda: 5678)
+    monkeypatch.setattr(command_tools.os, "getppid", lambda: 1)
+    reason = _check_command_safety("Stop-Process -Id 1234,5678 -Force")
+    assert reason is not None
+    assert "Stop-Process" in reason
+
+
+def test_blocks_stop_process_self_pid_in_parens(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.agents.harness.common.tools import command_tools
+
+    monkeypatch.setattr(command_tools.os, "getpid", lambda: 5678)
+    monkeypatch.setattr(command_tools.os, "getppid", lambda: 1)
+    reason = _check_command_safety("Stop-Process -Id (5678) -Force")
+    assert reason is not None
+    assert "Stop-Process" in reason
+
+
+def test_allows_stop_process_other_pid_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.agents.harness.common.tools import command_tools
+
+    monkeypatch.setattr(command_tools.os, "getpid", lambda: 100)
+    monkeypatch.setattr(command_tools.os, "getppid", lambda: 1)
+    assert _check_command_safety("Stop-Process -Id 1234,5678 -Force") is None
+    assert _check_command_safety("Stop-Process -Id (26448)") is None
+
+
 # ── jiuwenswarm-tui spawn 护栏 ────────────────────────────────
 
 

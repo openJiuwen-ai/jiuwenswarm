@@ -576,6 +576,11 @@ react:
       - todo_list
       - todo_modify
       - task_tool                   # 常驻可见，否则 ProgressiveToolRail 会滤掉，主 agent 无法委派 subagent
+      - memory_search               # 记忆五件套常驻：被动记忆提示词要求"涉及历史/偏好先 memory_search"，
+      - memory_get                  # 若被滤进 deferred 池，模型面对偏好类问题时不会想到经 tools_search
+      - read_memory                 # 间接调用（尤其中小模型），长期记忆功能形同虚设
+      - write_memory
+      - edit_memory
     enable_for_models:             # 模型白名单（空=全部启用）
       - glm
     subagents:                      # 子 agent 延迟加载配置

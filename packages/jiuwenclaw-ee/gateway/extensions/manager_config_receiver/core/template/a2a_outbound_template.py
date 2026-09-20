@@ -150,7 +150,7 @@ class A2AOutboundTemplateService:
         user_states = require_enterprise_repository(_USER_STATE_TABLE)
         runtime_states = require_enterprise_repository(_RUNTIME_STATE_TABLE)
         existing = await repo.get(template_id=tid)
-        old_user_state = await user_states.get(template_id=tid)
+        old_user_states = await user_states.list(filters={"template_id": tid})
         old_runtime_state = await runtime_states.get(template_id=tid)
         credential_ref = (
             str(existing.get("credential_ref") or "")
@@ -162,15 +162,19 @@ class A2AOutboundTemplateService:
             self._credentials.delete(credential_ref)
             if existing is not None:
                 await repo.delete(template_id=tid)
-            await user_states.delete(template_id=tid)
+            for row in old_user_states:
+                await user_states.delete(template_id=tid, user_id=row.get("user_id"))
             await runtime_states.delete(template_id=tid)
         except Exception:
             try:
                 projection = _row_for_restore(existing, "created_at", "updated_at")
                 if projection is not None:
                     await repo.upsert(projection)
-                user_state = _row_for_restore(old_user_state, "updated_at")
-                if user_state is not None:
+                for row in old_user_states:
+                    user_state = _row_for_restore(row, "updated_at")
+                    if user_state is None:
+                        continue
+                    user_state.setdefault("user_id", None)
                     await user_states.upsert(user_state)
                 runtime_state = _row_for_restore(
                     old_runtime_state,

@@ -329,6 +329,28 @@ check_if_rabbitmq_up() {
     DEPLOY_VARS["MANAGER_RABBITMQ_URL"]="amqp://${user}:${encoded_password}@${url}"
 }
 
+check_if_otel_up() {
+    local name="${DEPLOY_VARS["OTEL_NAME"]}"
+    if [ -n "${DEPLOY_VARS["OTEL_EXPORTER_OTLP_ENDPOINT"]:-}" ]; then
+        info "Use external Opentelemetry Collector"
+        DEPLOY_VARS["ENABLE_EXTERNAL_OTEL"]="true"
+        return
+    fi
+    info "Use built-in Opentelemetry Collector"
+    DEPLOY_VARS["OTEL_EXPORTER_OTLP_ENDPOINT"]="http://${name}:4318"
+}
+
+check_if_loki_up() {
+    local name="${DEPLOY_VARS["LOKI_NAME"]}"
+    if [ -n "${DEPLOY_VARS["LOKI_URL"]:-}" ]; then
+        info "Use external Loki server"
+        DEPLOY_VARS["ENABLE_EXTERNAL_LOKI"]="true"
+        return
+    fi
+    info "Use built-in Loki server"
+    DEPLOY_VARS["LOKI_URL"]="http://${name}:3100"
+}
+
 check_if_gateway_up() {
     if ! check_k8s_resource_exists "deployment" "${DEPLOY_VARS["GATEWAY_NAME"]}" "${DEPLOY_VARS["NAMESPACE"]}"; then
         error "GATEWAY is not deployed. Please deploy it first with: ./$(basename "$0") up gateway"
@@ -352,67 +374,24 @@ check_nfs_sc_up_dependency(){
 }
 
 check_mysql_up_dependency(){
-    local mysql_path="${DEPLOY_VARS["NFS_POD_PATH"]}/${DEPLOY_VARS["MYSQL_NAME"]}"
-    local nfs_dname=${DEPLOY_VARS["NFS_NAME"]}
-
-    check_if_nfs_up
-
-    if [ "${DEPLOY_VARS["RENDER_ONLY"]}" == "true" ]; then
-        return
-    fi
-
-    if [ "${DEPLOY_VARS["ENABLE_EXTERNAL_NFS"]}" == "false" ]; then
-        info "Preparing MySQL data directory: ${mysql_path}"
-        local nfs_pod=$(kubectl get pods -n default -l app=${nfs_dname} -o jsonpath='{.items[0].metadata.name}')
-
-        info "Executing: kubectl exec ${nfs_pod} -- sh -c \"mkdir -p ${mysql_path}\""
-        kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${mysql_path}"
-        success "MySQL directory created successfully in NFS Pod!"
-    fi
+    prepare_nfs_path "${DEPLOY_VARS["MYSQL_NAME"]}"
 }
 
 check_postgresql_up_dependency(){
-    local pg_path="${DEPLOY_VARS["NFS_POD_PATH"]}/${DEPLOY_VARS["POSTGRESQL_NAME"]}"
-    local nfs_dname=${DEPLOY_VARS["NFS_NAME"]}
-
-    check_if_nfs_up
-
-    if [ "${DEPLOY_VARS["RENDER_ONLY"]}" == "true" ]; then
-        return
-    fi
-
-    if [ "${DEPLOY_VARS["ENABLE_EXTERNAL_NFS"]}" == "false" ]; then
-        info "Preparing PostgreSQL data directory: ${pg_path}"
-        local nfs_pod=$(kubectl get pods -n default -l app=${nfs_dname} -o jsonpath='{.items[0].metadata.name}')
-
-        info "Executing: kubectl exec ${nfs_pod} -- sh -c \"mkdir -p ${pg_path}\""
-        kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${pg_path}"
-        success "PostgreSQL directory created successfully in NFS Pod!"
-    fi
+    prepare_nfs_path "${DEPLOY_VARS["POSTGRESQL_NAME"]}"
 }
 
 check_minio_up_dependency(){
-    local minio_path="${DEPLOY_VARS["NFS_POD_PATH"]}/${DEPLOY_VARS["MINIO_NAME"]}"
-    local nfs_dname=${DEPLOY_VARS["NFS_NAME"]}
-
-    check_if_nfs_up
-
-    if [ "${DEPLOY_VARS["RENDER_ONLY"]}" == "true" ]; then
-        return
-    fi
-
-    if [ "${DEPLOY_VARS["ENABLE_EXTERNAL_NFS"]}" == "false" ]; then
-        info "Preparing Minio data directory: ${minio_path}"
-        local nfs_pod=$(kubectl get pods -n default -l app=${nfs_dname} -o jsonpath='{.items[0].metadata.name}')
-
-        info "Executing: kubectl exec ${nfs_pod} -- sh -c \"mkdir -p ${minio_path}\""
-        kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${minio_path}"
-        success "Minio directory created successfully in NFS Pod!"
-    fi
+    prepare_nfs_path "${DEPLOY_VARS["MINIO_NAME"]}"
 }
 
 check_rabbitmq_up_dependency(){
-    local rabbit_path="${DEPLOY_VARS["NFS_POD_PATH"]}/${DEPLOY_VARS["RABBITMQ_NAME"]}"
+    prepare_nfs_path "${DEPLOY_VARS["RABBITMQ_NAME"]}"
+}
+
+prepare_nfs_path() {
+    local name="$1"
+    local path="${DEPLOY_VARS["NFS_POD_PATH"]}/${name}"
     local nfs_dname=${DEPLOY_VARS["NFS_NAME"]}
 
     check_if_nfs_up
@@ -421,14 +400,15 @@ check_rabbitmq_up_dependency(){
         return
     fi
 
-    if [ "${DEPLOY_VARS["ENABLE_EXTERNAL_NFS"]}" == "false" ]; then
-        info "Preparing RabbitMQ data directory: ${rabbit_path}"
-        local nfs_pod=$(kubectl get pods -n default -l app=${nfs_dname} -o jsonpath='{.items[0].metadata.name}')
-
-        info "Executing: kubectl exec ${nfs_pod} -- sh -c \"mkdir -p ${rabbit_path}\""
-        kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${rabbit_path}"
-        success "RabbitMQ directory created successfully in NFS Pod!"
+    if [ "${DEPLOY_VARS["ENABLE_EXTERNAL_NFS"]}" == "true" ]; then
+        return
     fi
+
+    info "Preparing ${name} data directory: ${path}"
+    local nfs_pod=$(kubectl get pods -n default -l app=${nfs_dname} -o jsonpath='{.items[0].metadata.name}')
+    info "Executing: kubectl exec ${nfs_pod} -- sh -c \"mkdir -p ${path} && chmod 777 ${path}\""
+    kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${path} && chmod 777 ${path}"
+    success "${name} directory created successfully in NFS Pod!"
 }
 
 check_log_up_dependency(){
@@ -453,6 +433,41 @@ check_proxy_up_dependency() {
     info "PROXY module has no dependencies"
 }
 
+prepare_nfs_path() {
+    local name="$1"
+    local path="${DEPLOY_VARS["NFS_POD_PATH"]}/${name}"
+    local nfs_dname=${DEPLOY_VARS["NFS_NAME"]}
+
+    check_if_nfs_up
+
+    if [ "${DEPLOY_VARS["RENDER_ONLY"]}" == "true" ]; then
+        return
+    fi
+
+    if [ "${DEPLOY_VARS["ENABLE_EXTERNAL_NFS"]}" == "true" ]; then
+        return
+    fi
+
+    info "Preparing ${name} data directory: ${path}"
+    local nfs_pod=$(kubectl get pods -n default -l app=${nfs_dname} -o jsonpath='{.items[0].metadata.name}')
+    info "Executing: kubectl exec ${nfs_pod} -- sh -c \"mkdir -p ${path}\""
+    kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${path}"
+    success "${name} directory created successfully in NFS Pod!"
+}
+
+check_monitor_up_dependency() {
+    if [ "${DEPLOY_VARS["OTEL_ENABLED"]}" == "false" ]; then
+        return
+    fi
+
+    check_if_otel_up
+    check_if_loki_up
+    prepare_nfs_path "${DEPLOY_VARS["LOKI_NAME"]}"
+
+    # 归一化尾斜杠，避免 NFS path 渲染成 "//loki"
+    DEPLOY_VARS["NFS_SHARE_PATH"]="${DEPLOY_VARS["NFS_SHARE_PATH"]%/}"
+}
+
 check_gateway_up_dependency(){
     check_if_db_up
     check_if_jina_up
@@ -467,22 +482,20 @@ check_web_up_dependency(){
 }
 
 check_manager_up_dependency(){
+    if [ -z "${DEPLOY_VARS["IDENTITY_ADMIN_PASSWORD"]:-}" ]; then
+        error "IDENTITY_ADMIN_PASSWORD cannot be empty."
+    fi
+
+    if [ -z "${DEPLOY_VARS["IDENTITY_USER1_PASSWORD"]:-}" ]; then
+        error "IDENTITY_USER1_PASSWORD cannot be empty."
+    fi
+
     check_if_db_up
 }
 
 check_runtime_up_dependency(){
-    local jiuwenclaw_path="${DEPLOY_VARS["NFS_POD_PATH"]}/jiuwenclaw"
-    local nfs_dname=${DEPLOY_VARS["NFS_NAME"]}
-
     if [ "${DEPLOY_VARS["CLAW_MOUNT_TYPE"]}" == "nfs" ]; then
-        check_if_nfs_up
-
-        if [[ "${DEPLOY_VARS["RENDER_ONLY"]}" != "true" && "${DEPLOY_VARS["ENABLE_EXTERNAL_NFS"]}" == "false" ]]; then
-            info "Preparing JiuwenClaw data directory: ${jiuwenclaw_path}"
-            local nfs_pod=$(kubectl get pods -n default -l app=${nfs_dname} -o jsonpath='{.items[0].metadata.name}')
-            kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${jiuwenclaw_path}"
-            success "JiuwenClaw directory created successfully in NFS Pod!"
-        fi
+        prepare_nfs_path "jiuwenclaw"
     elif [ "${DEPLOY_VARS["CLAW_MOUNT_TYPE"]}" == "pvc" ]; then
         check_if_nfs_sc_up
     fi

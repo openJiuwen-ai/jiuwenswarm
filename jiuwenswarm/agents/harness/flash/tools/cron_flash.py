@@ -591,7 +591,7 @@ async def _cron_dispatch(
 
     if action == "status":
         _reject_unknown_fields(scoped, set(), scope="status")
-        status = await backend.status()
+        status = await backend.status(context=context)
         # The shared backend currently cannot observe scheduler liveness and
         # reports a constant ``running=false``.  Flash exposes only the field
         # it can state truthfully rather than presenting that placeholder as
@@ -602,11 +602,11 @@ async def _cron_dispatch(
         include = scoped.get("include_disabled", False)
         if not isinstance(include, bool):
             raise ValueError("include_disabled must be a boolean")
-        return {"jobs": await backend.list_jobs(include_disabled=include)}
+        return {"jobs": await backend.list_jobs(include_disabled=include, context=context)}
     if action == "get":
         _reject_unknown_fields(scoped, {"job_id"}, scope="get")
         job_id = _required_text(scoped, "job_id")
-        return await backend.get_job(job_id)
+        return await backend.get_job(job_id, context=context)
     if action == "add":
         create_input = _translate_to_native(scoped, is_update=False, context=context)
         return await backend.create_job(create_input, context=context)
@@ -618,25 +618,25 @@ async def _cron_dispatch(
     if action == "remove":
         _reject_unknown_fields(scoped, {"job_id"}, scope="remove")
         job_id = _required_text(scoped, "job_id")
-        return {"deleted": await backend.delete_job(job_id)}
+        return {"deleted": await backend.delete_job(job_id, context=context)}
     if action == "toggle":
         _reject_unknown_fields(scoped, {"job_id", "enabled"}, scope="toggle")
         job_id = _required_text(scoped, "job_id")
         enabled = scoped.get("enabled")
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be a boolean")
-        return await backend.toggle_job(job_id, enabled)
+        return await backend.toggle_job(job_id, enabled, context=context)
     if action == "preview":
         _reject_unknown_fields(scoped, {"job_id", "count"}, scope="preview")
         job_id = _required_text(scoped, "job_id")
         count = scoped.get("count", 5)
         if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 50:
             raise ValueError("count must be an integer between 1 and 50")
-        return await backend.preview_job(job_id, count)
+        return await backend.preview_job(job_id, count, context=context)
     if action == "run":
         _reject_unknown_fields(scoped, {"job_id"}, scope="run")
         job_id = _required_text(scoped, "job_id")
-        return {"run_id": await backend.run_now(job_id)}
+        return {"run_id": await backend.run_now(job_id, context=context)}
     if action == "wake":
         _reject_unknown_fields(scoped, {"text"}, scope="wake")
         text = _required_text(scoped, "text")

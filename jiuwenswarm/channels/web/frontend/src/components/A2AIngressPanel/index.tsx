@@ -6,6 +6,7 @@ import { RUNTIME_SCOPE_CHANGED_EVENT } from '../../services/runtimeScope';
 import type { WebError } from '../../types/websocket';
 import { A2AOutboundPanel } from './A2AOutboundPanel';
 import { A2AIngressSecurityFields } from './A2AIngressSecurityFields';
+import { copyHistoryText } from './copyHistoryText';
 import {
   canOperateA2AIngress,
   draftFromA2AIngressSnapshot,
@@ -199,7 +200,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
   const copyHistoryValue = useCallback(
     async (cellKey: string, value: string) => {
       try {
-        await navigator.clipboard.writeText(value);
+        await copyHistoryText(value);
         setCopyError(null);
         setCopiedHistoryCell(cellKey);
         if (copyFeedbackTimerRef.current !== null) window.clearTimeout(copyFeedbackTimerRef.current);

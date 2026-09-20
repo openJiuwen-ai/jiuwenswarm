@@ -5138,12 +5138,12 @@ class SkillManager:
         *,
         allowed_hosts: tuple[str, ...] | None = None,
     ) -> None:
-        """SkillHub / 远程归档下载主机白名单（import_local 与 Team Skills Hub 并集）。"""
+        """校验 SkillHub / 远程归档下载 URL 的协议和主机白名单。"""
         if allowed_hosts:
             parsed = urlparse(str(download_url or "").strip())
             host = (parsed.hostname or "").strip().lower()
-            if parsed.scheme != "https":
-                raise RuntimeError("skill 下载 URL 必须使用 HTTPS")
+            if parsed.scheme not in {"http", "https"}:
+                raise RuntimeError("skill 下载 URL 必须使用 HTTP 或 HTTPS")
             if not host:
                 raise RuntimeError("skill 下载 URL 缺少主机名")
             if parsed.username or parsed.password:
@@ -5428,8 +5428,8 @@ class SkillManager:
         max_bytes: int | None = None,
     ) -> bytes:
         parsed = urlparse(str(download_url or "").strip())
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise RuntimeError("skill 下载 URL 必须是 HTTPS 地址")
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise RuntimeError("skill 下载 URL 必须是 HTTP 或 HTTPS 地址")
         timeout = max(30.0, timeout or _TEAM_SKILLS_HUB_MARKET_TIMEOUT)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             resp = await client.get(download_url)

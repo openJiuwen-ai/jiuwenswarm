@@ -1,4 +1,3 @@
-# ServiceAccount
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -6,7 +5,7 @@ metadata:
   namespace: <<NAMESPACE>>
 
 ---
-# RBAC：agent-runtime 需要 CRUD AgentServer Pod（与 gateway 的 agentserver-creator 同面）
+
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -35,7 +34,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -67,11 +65,14 @@ spec:
                         - <<AGENT_RUNTIME_NAME>>
                 topologyKey: "kubernetes.io/hostname"
       securityContext:
-        fsGroup: 1000
+        fsGroup: <<CLAW_FS_GROUP>>
       containers:
         - name: agent-runtime
           image: <<AGENT_RUNTIME_IMAGE>>
           imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: <<CLAW_USER>>
+            runAsGroup: <<CLAW_GROUP>>
           ports:
             - name: rest
               containerPort: <<AGENT_RUNTIME_PORT>>
@@ -102,8 +103,6 @@ spec:
             - name: OPENJIUWEN_SERVICE_PORT
               value: "<<AGENT_RUNTIME_PORT>>"
             - name: OPENJIUWEN_SERVICE_REDIS_URL
-              # AgentServer checkpointer 用此 URL 连接 Redis（与 gateway 的 redis client 独立）
-              # 由 runtime_handler.sh 按 REDIS_MODE 计算：cluster -> redis+cluster://host:port / standalone -> redis://host:port/db
               value: "<<OPENJIUWEN_SERVICE_REDIS_URL>>"
             - name: OPENJIUWEN_SERVICE_REQUEST_TIMEOUT_SECONDS
               value: "<<AGENT_RUNTIME_REQUEST_TIMEOUT>>"
@@ -121,12 +120,15 @@ spec:
               value: "1"
             - name: AGENT_RUNTIME_KUBECONFIG
               value: ""
-            - name: AGENT_RUNTIME_DEFAULT_NAMESPACE
-              value: "<<NAMESPACE>>"
-            - name: AGENT_RUNTIME_SCOPE_FULL_TIMEOUT
-              value: "<<AGENT_RUNTIME_SCOPE_FULL_TIMEOUT>>"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
             - name: AGENT_RUNTIME_LOG_LEVEL
               value: "<<AGENT_RUNTIME_LOG_LEVEL>>"
+            - name: AGENT_RUNTIME_WATCH_INTERVAL
+              value: "<<AGENT_RUNTIME_WATCH_INTERVAL>>"
             - name: JIUWENSWARM_EDITION
               value: "enterprise"
             - name: TZ

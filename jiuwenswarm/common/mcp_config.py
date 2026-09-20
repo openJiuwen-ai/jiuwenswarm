@@ -37,7 +37,16 @@ try:
 except ImportError:
     pass
 
+from jiuwenswarm.edition import is_enterprise
+
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
+
+
+def _positive_timeout_s(raw: Any, *, minimum: float = 0.0) -> float | None:
+    """Return a normalized positive timeout, rejecting bool and invalid values."""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > minimum:
+        return float(raw)
+    return None
 
 
 def extract_enabled_mcp_server_entries(
@@ -133,6 +142,14 @@ def build_mcp_server_config(
         payload["server_id"] = explicit_server_id
 
     if transport == "stdio":
+        # 个人版可用本地 stdio（mcp.servers / mcp.server）；企业版仅远程模板。
+        if is_enterprise():
+            logger.warning(
+                "enterprise edition rejects local stdio MCP server %r; "
+                "use remote MCP template from management console",
+                name,
+            )
+            return None
         command = str(entry.get("command", "")).strip()
         if not command:
             return None
@@ -146,9 +163,9 @@ def build_mcp_server_config(
         env = entry.get("env")
         if isinstance(env, dict):
             params["env"] = {str(k): str(v) for k, v in env.items()}
-        timeout_s = entry.get("timeout_s")
-        if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and float(timeout_s) > 0:
-            params["timeout_s"] = float(timeout_s)
+        timeout_s = _positive_timeout_s(entry.get("timeout_s"))
+        if timeout_s is not None:
+            params["timeout_s"] = timeout_s
         payload["server_path"] = f"stdio://{name}"
         payload["params"] = params
     else:
@@ -164,9 +181,9 @@ def build_mcp_server_config(
         if auth_query:
             payload["auth_query_params"] = auth_query
         params = {}
-        timeout_s = entry.get("timeout_s")
-        if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and float(timeout_s) > 0:
-            params["timeout_s"] = float(timeout_s)
+        timeout_s = _positive_timeout_s(entry.get("timeout_s"))
+        if timeout_s is not None:
+            params["timeout_s"] = timeout_s
         if params:
             payload["params"] = params
 
@@ -576,9 +593,14 @@ def _validate_request_scoped_remote_mcp(tool_name: str, cfg: dict) -> None:
 def create_mcp_tool(config_str: str) -> McpServerConfig:
     """从 JSON 字符串解析并构造 ``McpServerConfig``。
 
-    用户连接器支持 stdio（node/python/npx/uvx 白名单）以及远程
-    sse / streamable-http / playwright / openapi（方案 §5.2 / §10.1）。
+    个人版用户连接器支持本地 stdio（node/python/npx/uvx 白名单，供
+    ``mcp.server`` / 请求级连接器）以及远程 sse / streamable-http /
+    playwright / openapi（方案 §5.2 / §10.1）。
+    企业版禁止用户可配本地 stdio，仅允许远程类型（本地 /mcp 与
+    ``mcp.server.*`` 管理面另有入口拦截）。
     远程鉴权经 ``_resolve_remote_mcp_auth`` 写入 SDK ``auth_headers``。
+    OfficeClaw Relay 自带 bundle 走 ``validate_office_claw_mcp_config``，
+    不经过本入口的 stdio 分支。
     """
     try:
         config = json.loads(config_str)
@@ -604,7 +626,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     env = tool_config.get("env")
     cwd = tool_config.get("cwd")
     # timeout_s 兼容两种下发形状：顶层（config.yaml 风格）与嵌套 params.timeout_s
-    # （relay buildMcpRequestFields 下发的 {"params": {"timeout_s": N}}）。
+    # （前端下发的 {"params": {"timeout_s": N}}）。
     timeout_s = tool_config.get("timeout_s")
     if timeout_s is None:
         nested_params = tool_config.get("params")
@@ -617,10 +639,11 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     url = _pick_mcp_url(tool_config)
     client_type = _normalize_mcp_client_type(tool_config.get("type"))
     params = {}
-    # 前端（Relay/officeAce）下发的单连接器调用超时（秒）：透传到 params，
+    # 前端下发的单连接器调用超时（秒）：透传到 params，
     # 供 _run_mcp_worker 按 call_tool 超时使用；非法值忽略，回落到默认 300s。
-    if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and timeout_s > 0:
-        params["timeout_s"] = timeout_s
+    timeout_value = _positive_timeout_s(timeout_s)
+    if timeout_value is not None:
+        params["timeout_s"] = timeout_value
     if isinstance(env, dict) and env:
         params["env"] = {
             str(k): str(v) for k, v in env.items() if k is not None and v is not None
@@ -675,8 +698,27 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
             params=params,
         )
 
+    # 仅缺省 type / 显式 stdio 才走本地进程；未知 type 单独报错，避免企业版误报成 stdio。
+    if client_type != "stdio":
+        if is_enterprise():
+            raise ValueError(
+                f"工具 '{tool_name}' 不支持 type={tool_config.get('type')!r}；"
+                "企业版仅支持 sse / streamable-http / playwright / openapi"
+            )
+        raise ValueError(
+            f"工具 '{tool_name}' 不支持 type={tool_config.get('type')!r}；"
+            "请使用 sse / streamable-http / playwright / openapi / stdio"
+        )
+
     if not isinstance(args, list):
         raise ValueError(f"工具 '{tool_name}' 的 args 必须是列表类型")
+
+    if is_enterprise():
+        raise ValueError(
+            f"工具 '{tool_name}' 不支持本地 stdio；"
+            "企业版仅允许远程 MCP（sse / streamable-http / playwright / openapi），"
+            "请通过管理端模板下发"
+        )
 
     _check_dangerous_args(tool_name, args)
 
@@ -846,7 +888,9 @@ class OfficeClawMcpRegistration:
 # owner task 排干队列在自身上下文里跑 session.call_tool。请求清理时销毁 owner task
 # （cancel 关闭 stdio 进程/浏览器）。
 
-# stdio MCP 无 apply_mcp_call_timeout_patch 兜底（仅覆盖 HTTP），故此处对 call_tool/discovery 各加超时。
+# Request-scoped worker defaults: this 300s ceiling covers connector
+# discovery/startup and call_tool. Process-level ToolMgr clients use the
+# separate 30s ``mcp_call_timeout_patch.DEFAULT_CALL_TIMEOUT`` fallback.
 _MCP_CALL_TOOL_TIMEOUT_S = 300.0
 _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S = 300.0
 
@@ -916,15 +960,11 @@ async def _run_mcp_worker(
     """
 
     client_type = str(params.get("_mcp_client_type") or "").lower() or "stdio"
-    # 单连接器调用超时：前端（Relay/officeAce）下发的 timeout_s 经 create_mcp_tool
+    # 单连接器调用超时：前端下发的 timeout_s 经 create_mcp_tool
     # 透传进 params；未下发或非法时回落到 300s 默认值。
-    _timeout_raw = params.get("timeout_s")
     call_timeout_s = (
-        float(_timeout_raw)
-        if isinstance(_timeout_raw, (int, float))
-        and not isinstance(_timeout_raw, bool)
-        and _timeout_raw > 0
-        else _MCP_CALL_TOOL_TIMEOUT_S
+        _positive_timeout_s(params.get("timeout_s"))
+        or _MCP_CALL_TOOL_TIMEOUT_S
     )
 
     async with AsyncExitStack() as stack:
@@ -1054,7 +1094,7 @@ async def _enter_remote_mcp_session(
     """sse/streamable-http transport：复用 openjiuwen 高层 client，长连接复用。
 
     connect 时 ``Runner.callback_framework.trigger(TOOL_AUTH)`` 注入 auth_headers
-    （relay 下发的 ``Authorization: Bearer xxx`` 经 HeaderQueryAuthStrategy 加到请求头）。
+    （前端下发的 ``Authorization: Bearer xxx`` 经 HeaderQueryAuthStrategy 加到请求头）。
     把 disconnect 注册进 stack，使 worker 退出时统一关连接。
     """
     client_cls = _remote_mcp_client_cls(client_type)
@@ -1067,14 +1107,45 @@ async def _enter_remote_mcp_session(
     # 包了内层 anyio.fail_after：不经 ToolMgr._create_client 自建的 client 不会被打
     # _jws_call_timeout，内层按 300s 默认先掐断，令 params["timeout_s"] 失效。按
     # _run_mcp_worker 的口径（下发合法值直接生效）在此补打。
-    _stamp_raw = params.get("timeout_s")
-    if (
-        isinstance(_stamp_raw, (int, float))
-        and not isinstance(_stamp_raw, bool)
-        and _stamp_raw > 0
-    ):
-        setattr(client, "_jws_call_timeout", float(_stamp_raw))
-    connected = await client.connect(timeout=_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S)
+    call_timeout_s = (
+        _positive_timeout_s(params.get("timeout_s"))
+        or _MCP_CALL_TOOL_TIMEOUT_S
+    )
+    setattr(client, "_jws_call_timeout", call_timeout_s)
+    discovery_timeout = max(
+        _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
+        call_timeout_s,
+    )
+    # remote transport（sse/streamable-http）的 client.connect 内部 enter async
+    # context manager（streamable-http 尤其用 anyio TaskGroup + cancel scope）。
+    # connect 失败时 anyio cancel()+uncancel() 本 task，抛出 CancelledError；它是
+    # BaseException（Py3.8+），外层 ``except Exception`` 抓不住，会一路泄漏杀死流式
+    # 任务。用 asyncio.wait_for 套住防卡死，再显式 except CancelledError + cancelling()
+    # 区分：anyio 内部取消（cancelling()==0）→ 当连接失败跳过；外层真取消 → re-raise。
+    try:
+        connected = await asyncio.wait_for(
+            client.connect(timeout=discovery_timeout),
+            timeout=discovery_timeout,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError(  # pylint: disable=raise-missing-from
+            f"remote MCP client connect timed out after {discovery_timeout}s: "
+            f"{rebuild_cfg.server_path}"
+        )
+    except asyncio.CancelledError:
+        if is_asyncio_outer_cancellation():
+            raise
+        logger.warning(
+            "request-scoped MCP worker init cancelled (anyio internal), "
+            "isolating as connect failure: server=%s transport=%s path=%s",
+            rebuild_cfg.server_name,
+            client_type,
+            rebuild_cfg.server_path,
+        )
+        raise RuntimeError(  # pylint: disable=raise-missing-from
+            f"remote MCP client connect cancelled (anyio internal): "
+            f"{rebuild_cfg.server_path}"
+        )
     if not connected:
         raise RuntimeError(
             f"remote MCP client connect returned false: {rebuild_cfg.server_path}"
@@ -1620,7 +1691,7 @@ def extract_office_claw_mcp(params: Any) -> dict[str, Any] | None:
 def extract_request_mcp_servers(params: Any) -> dict[str, dict[str, Any]] | None:
     """取 ``request_mcp_servers.mcpServers`` 的用户连接器 map。
 
-    Relay 的 buildMcpRequestFields 把用户配置的连接器放这里，值仅含启动配置
+    前端 的 buildMcpRequestFields 把用户配置的连接器放这里，值仅含启动配置
     （stdio: {command,args,cwd,env?}；remote: {type,url,auth_headers?}），无 tool schema，
     需由 list_request_mcp_server_tools 发现。无该字段返回 None。
     """
@@ -1882,7 +1953,7 @@ async def _list_remote_mcp_connector_tools(
     ``SseClient`` / ``StreamableHttpClient`` 自带 owner-task/cancel-scope/超时/重连，
     且 connect 时经 ``Runner.callback_framework.trigger(TOOL_AUTH)`` 注入 auth_headers
     （由 ``auth_callback`` 的 ``HeaderQueryAuthStrategy`` 转 ``AuthHeaderAndQueryProvider``，
-    把 relay 下发的 ``Authorization: Bearer xxx`` 加到请求头）。import 链自动注册 handler。
+    把 前端 下发的 ``Authorization: Bearer xxx`` 加到请求头）。import 链自动注册 handler。
     """
     client_cls = _remote_mcp_client_cls(client_type)
     if client_cls is None:
@@ -1905,33 +1976,29 @@ async def _list_remote_mcp_connector_tools(
         "auth_query_params": dict(getattr(server_cfg, "auth_query_params", {}) or {}),
         "params": _connector_params,
     }
-    _connector_timeout = _connector_params.get("timeout_s")
-    if (
-        isinstance(_connector_timeout, (int, float))
-        and not isinstance(_connector_timeout, bool)
-        and _connector_timeout > 0
-    ):
+    _connector_timeout = _positive_timeout_s(_connector_params.get("timeout_s"))
+    if _connector_timeout is not None:
         connect_params["timeout_s"] = _connector_timeout
 
     # 发现阶段超时：连接器下发 timeout_s 时取 max(下发值, 300s)——下发值只放宽不收紧
     # （与 stdio 分支的发现超时语义一致）。
     discovery_timeout = _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S
-    if (
-        isinstance(_connector_timeout, (int, float))
-        and not isinstance(_connector_timeout, bool)
-        and _connector_timeout > discovery_timeout
-    ):
-        discovery_timeout = float(_connector_timeout)
+    timeout_override = _positive_timeout_s(
+        _connector_timeout, minimum=discovery_timeout
+    )
+    if timeout_override is not None:
+        discovery_timeout = timeout_override
 
     # _run_mcp_worker 用 connect_params 字段经 _build_remote_mcp_config 重建 client。
     rebuild_cfg = _build_remote_mcp_config(server_name, connect_params, client_type)
     client = client_cls(rebuild_cfg)
     # 同 _enter_remote_mcp_session：自建 client 不经 ToolMgr._create_client，需补打
     # _jws_call_timeout，否则 mcp_call_timeout_patch 的内层 300s 默认会先掐断长调用。
-    if isinstance(_connector_timeout, (int, float)) and not isinstance(
-        _connector_timeout, bool
-    ) and _connector_timeout > 0:
-        setattr(client, "_jws_call_timeout", float(_connector_timeout))
+    setattr(
+        client,
+        "_jws_call_timeout",
+        _connector_timeout or _MCP_CALL_TOOL_TIMEOUT_S,
+    )
     connected = False
     try:
         try:
@@ -1952,6 +2019,21 @@ async def _list_remote_mcp_connector_tools(
                 "%.0fs (connect/list_tools hung)",
                 server_name,
                 discovery_timeout,
+            )
+            return [], {}
+        except asyncio.CancelledError:
+            # connect 失败时 anyio TaskGroup cancel()+uncancel() 本 task 抛
+            # CancelledError（BaseException，Py3.8+）；``except Exception`` 在下方
+            # 抓不住，会泄漏杀死流式任务。cancelling()==0 → anyio 内部取消 → 当
+            # 该连接器连接失败跳过（返回空）；cancelling()>0 → 外层真取消 → re-raise。
+            if is_asyncio_outer_cancellation():
+                raise
+            logger.warning(
+                "request-scoped MCP connector '%s' connect cancelled (anyio "
+                "internal), isolating as connect failure: transport=%s path=%s",
+                server_name,
+                client_type,
+                connect_params["server_path"],
             )
             return [], {}
         if not connected:
@@ -1975,6 +2057,20 @@ async def _list_remote_mcp_connector_tools(
                 "request-scoped MCP connector '%s' list_tools timed out after %.0fs",
                 server_name,
                 discovery_timeout,
+            )
+            return [], {}
+        except asyncio.CancelledError:
+            # list_tools 与 connect 共用 anyio TaskGroup，失败时同样 cancel() 本
+            # task 抛 CancelledError。隔离语义同 connect：内部取消跳过该连接器，
+            # 外层真取消 re-raise。
+            if is_asyncio_outer_cancellation():
+                raise
+            logger.warning(
+                "request-scoped MCP connector '%s' list_tools cancelled (anyio "
+                "internal), isolating as discovery failure: transport=%s path=%s",
+                server_name,
+                client_type,
+                connect_params["server_path"],
             )
             return [], {}
         tool_defs = [

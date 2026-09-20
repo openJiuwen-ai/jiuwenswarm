@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, Plus, Power, RefreshCw, Search, Server, Trash2, X } from 'lucide-react';
 import { isEnterprise } from '../../edition';
+import { RUNTIME_SCOPE_CHANGED_EVENT } from '../../services/runtimeScope';
 import type { WebError } from '../../types/websocket';
 import { Switch } from '../Switch';
 import { A2AOutboundCredentialInput } from './A2AOutboundCredentialInput';
@@ -41,6 +42,8 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
   const [agents, setAgents] = useState<A2AOutboundAgent[]>([]);
   const [allowLoopback, setAllowLoopback] = useState(false);
   const [savedAllowLoopback, setSavedAllowLoopback] = useState(false);
+  const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(false);
+  const [savedAllowPrivateNetwork, setSavedAllowPrivateNetwork] = useState(false);
   const [allowHttp, setAllowHttp] = useState(false);
   const [savedAllowHttp, setSavedAllowHttp] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -59,6 +62,27 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
   } | null>(null);
   const generationRef = useRef(createA2AOutboundRequestScope());
   const editGenerationRef = useRef(createA2AOutboundRequestScope());
+  const awaitingReconnectRef = useRef(false);
+  const userScopeRef = useRef(createA2AOutboundRequestScope());
+
+  useEffect(() => {
+    if (isConnected) awaitingReconnectRef.current = false;
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (!enterpriseMode) return;
+    const clearUserState = () => {
+      awaitingReconnectRef.current = true;
+      userScopeRef.current.next();
+      generationRef.current.next();
+      setAgents([]);
+      setBusy(null);
+      setError(null);
+      setNotice(null);
+    };
+    window.addEventListener(RUNTIME_SCOPE_CHANGED_EVENT, clearUserState);
+    return () => window.removeEventListener(RUNTIME_SCOPE_CHANGED_EVENT, clearUserState);
+  }, [enterpriseMode]);
 
   useEffect(() => {
     editGenerationRef.current.next();
@@ -69,7 +93,7 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
   }, [isConnected]);
 
   const refresh = useCallback(async () => {
-    if (!isConnected) return;
+    if (!isConnected || awaitingReconnectRef.current) return;
     const generation = generationRef.current.next();
     try {
       const [payload, rawSettings] = enterpriseMode
@@ -85,6 +109,8 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
         setSavedAllowLoopback(settings.allow_loopback);
         setAllowHttp(settings.allow_http);
         setSavedAllowHttp(settings.allow_http);
+        setAllowPrivateNetwork(settings.allow_private_network);
+        setSavedAllowPrivateNetwork(settings.allow_private_network);
       }
       setError(null);
     } catch (nextError) {
@@ -137,11 +163,14 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
     }
   };
 
-  const updateNetworkSettings = async (field: 'allow_loopback' | 'allow_http', nextEnabled: boolean) => {
+  const updateNetworkSettings = async (field: 'allow_loopback' | 'allow_http' | 'allow_private_network', nextEnabled: boolean) => {
     if (busy || !isConnected) return;
     const generation = generationRef.current.next();
     const previous = savedAllowLoopback;
     const previousHttp = savedAllowHttp;
+    const previousPrivateNetwork = savedAllowPrivateNetwork;
+    const nextPrivateNetwork = field === 'allow_private_network' ? nextEnabled : savedAllowPrivateNetwork;
+    setAllowPrivateNetwork(nextPrivateNetwork);
     const nextLoopback = field === 'allow_loopback' ? nextEnabled : savedAllowLoopback;
     const nextHttp = field === 'allow_http' ? nextEnabled : savedAllowHttp;
     setAllowLoopback(nextLoopback);
@@ -154,6 +183,7 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
         await request('a2a.outbound.settings.update', {
           allow_loopback: nextLoopback,
           allow_http: nextHttp,
+          allow_private_network: nextPrivateNetwork,
         }),
       );
       if (!settings) throw new Error(t('a2aIngress.outbound.errors.invalidResponse'));
@@ -162,11 +192,14 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
       setSavedAllowLoopback(settings.allow_loopback);
       setAllowHttp(settings.allow_http);
       setSavedAllowHttp(settings.allow_http);
+      setAllowPrivateNetwork(settings.allow_private_network);
+      setSavedAllowPrivateNetwork(settings.allow_private_network);
       setNotice(t('a2aIngress.outbound.localDebug.saved'));
     } catch (nextError) {
       if (!generationRef.current.accepts(generation)) return;
       setAllowLoopback(previous);
       setAllowHttp(previousHttp);
+      setAllowPrivateNetwork(previousPrivateNetwork);
       setError(errorMessage(nextError));
     } finally {
       setBusy(null);
@@ -202,12 +235,13 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
   };
 
   const operate = async (agent: A2AOutboundAgent, operation: 'toggle' | 'refresh' | 'confirm' | 'reject' | 'delete') => {
-    if (busy || !isConnected) return;
+    if (busy || !isConnected || awaitingReconnectRef.current) return;
     if (operation === 'delete' && !window.confirm(t('a2aIngress.outbound.deleteConfirm'))) return;
     setBusy(`${operation}:${agent.agent_id}`);
     setError(null);
     setNotice(null);
     generationRef.current.next();
+    const generation = userScopeRef.current.next();
     try {
       let payload: unknown;
       if (operation === 'toggle') {
@@ -219,6 +253,7 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
       else if (operation === 'confirm' || operation === 'reject')
         payload = await request('a2a.outbound.confirm_revision', { agent_id: agent.agent_id, accept: operation === 'confirm' });
       else payload = await request('a2a.outbound.delete', { agent_id: agent.agent_id });
+      if (!userScopeRef.current.accepts(generation)) return;
       if (operation === 'delete') setAgents(current => current.filter(item => item.agent_id !== agent.agent_id));
       else {
         const updated = normalizeA2AOutboundAgent(payload);
@@ -226,10 +261,11 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
         setAgents(current => current.map(item => (item.agent_id === updated.agent_id ? updated : item)));
       }
     } catch (nextError) {
+      if (!userScopeRef.current.accepts(generation)) return;
       setError(errorMessage(nextError));
       void refresh();
     } finally {
-      setBusy(null);
+      if (userScopeRef.current.accepts(generation)) setBusy(null);
     }
   };
 
@@ -399,6 +435,18 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
                         </div>
                         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                           <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium text-text">{t('a2aIngress.outbound.localDebug.allowPrivateNetwork')}</div>
+                            <p className="mt-1 text-xs text-text-muted">{t('a2aIngress.outbound.localDebug.privateNetworkDescription')}</p>
+                          </div>
+                          <Switch
+                            checked={allowPrivateNetwork}
+                            onChange={nextEnabled => void updateNetworkSettings('allow_private_network', nextEnabled)}
+                            disabled={!isConnected || !!busy}
+                            title={t('a2aIngress.outbound.localDebug.allowPrivateNetwork')}
+                          />
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
                             <div className="text-sm font-medium text-text">{t('a2aIngress.outbound.localDebug.allowHttp')}</div>
                             <p className="mt-1 text-xs text-text-muted">{t('a2aIngress.outbound.localDebug.httpDescription')}</p>
                           </div>
@@ -409,9 +457,10 @@ export function A2AOutboundPanel({ isConnected, request, headerActionsContainer 
                             title={t('a2aIngress.outbound.localDebug.allowHttp')}
                           />
                         </div>
-                        {(allowLoopback || allowHttp) && (
+                        {(allowLoopback || allowPrivateNetwork || allowHttp) && (
                           <div className="mt-3 space-y-1 border-t border-warn/20 pt-3 text-xs text-warn">
                             {allowLoopback && <p>{t('a2aIngress.outbound.localDebug.warning')}</p>}
+                            {allowPrivateNetwork && <p>{t('a2aIngress.outbound.localDebug.privateNetworkWarning')}</p>}
                             {allowHttp && <p>{t('a2aIngress.outbound.localDebug.httpWarning')}</p>}
                           </div>
                         )}

@@ -1,6 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""MCP Server 注册表 CRUD（mcp.server.*），与 command.mcp（config.yaml）分离。"""
+"""MCP Server 注册表 CRUD（mcp.server.*），与 command.mcp（config.yaml）分离。
+
+个人版：允许注册本地 stdio 与远程连接器。
+企业版：整组方法禁止（与本地 /mcp 一致），避免绕过管理端模板。
+"""
 
 from __future__ import annotations
 

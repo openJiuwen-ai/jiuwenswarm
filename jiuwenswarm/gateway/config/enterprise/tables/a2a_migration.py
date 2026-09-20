@@ -1,10 +1,56 @@
-"""Upgrade only A2A history ownership; legacy rows remain unowned."""
+"""Upgrade A2A user ownership; legacy rows remain unowned."""
 
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from .a2a_models import A2A_OUTBOUND_DISPATCH_TABLE_DEF
+from .a2a_models import A2A_OUTBOUND_DISPATCH_TABLE_DEF, A2A_OUTBOUND_USER_STATE_TABLE_DEF
+
+
+async def ensure_user_state_identity(engine: AsyncEngine) -> None:
+    """Replace the template-only unique index with a per-user identity."""
+    table_name = A2A_OUTBOUND_USER_STATE_TABLE_DEF.table_name
+    index_name = f"ix_{table_name}_template_id_user_id"
+
+    def upgrade(connection):
+        inspector = inspect(connection)
+        if not inspector.has_table(table_name):
+            return
+        quote = connection.dialect.identifier_preparer.quote
+        table = quote(table_name)
+        if not any(col["name"] == "user_id" for col in inspector.get_columns(table_name)):
+            connection.execute(text(f"ALTER TABLE {table} ADD COLUMN user_id VARCHAR(256) NULL"))
+        indexes = inspector.get_indexes(table_name)
+        # Create the replacement before removing the old uniqueness constraint.
+        if not any(
+            idx["unique"] and idx["column_names"] == ["template_id", "user_id"]
+            for idx in indexes
+        ):
+            connection.execute(text(
+                f"CREATE UNIQUE INDEX {quote(index_name)} ON {table} (template_id, user_id)"
+            ))
+        for idx in indexes:
+            if idx["unique"] and idx["column_names"] == ["template_id"]:
+                suffix = f" ON {table}" if connection.dialect.name == "mysql" else ""
+                connection.execute(text(f"DROP INDEX {quote(idx['name'])}{suffix}"))
+
+    def ready(connection):
+        inspector = inspect(connection)
+        indexes = inspector.get_indexes(table_name)
+        return (
+            any(col["name"] == "user_id" for col in inspector.get_columns(table_name))
+            and any(idx["unique"] and idx["column_names"] == ["template_id", "user_id"] for idx in indexes)
+            and not any(idx["unique"] and idx["column_names"] == ["template_id"] for idx in indexes)
+        )
+
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(upgrade)
+    except DBAPIError as exc:
+        # Only tolerate concurrent upgrades after verifying the complete schema.
+        async with engine.connect() as connection:
+            if not await connection.run_sync(ready):
+                raise exc
 
 
 async def ensure_dispatch_user_column(engine: AsyncEngine) -> None:

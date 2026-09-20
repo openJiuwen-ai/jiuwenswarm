@@ -25,6 +25,10 @@ class TelemetryConfig:
     metrics_endpoint: str = "http://localhost:4317"
     metrics_protocol: str = "grpc"
     metrics_headers: dict[str, str] = field(default_factory=dict)
+    logs_exporter: str = "none"
+    logs_endpoint: str = "http://localhost:4317"
+    logs_protocol: str = "grpc"
+    logs_headers: dict[str, str] = field(default_factory=dict)
     service_name: str = "jiuwenclaw"
     sample_rate: float = 1.0
     max_attributes: int = 128
@@ -237,6 +241,23 @@ def load_telemetry_config() -> TelemetryConfig:
         headers,
     )
 
+
+    logs_exporter = _normalize(
+        signal_value("logs", "exporter", "OTEL_LOGS_EXPORTER", exporter, exporter), exporter
+    )
+    logs_endpoint = signal_value(
+        "logs", "endpoint", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", endpoint, endpoint
+    )
+    logs_protocol = _normalize(
+        signal_value("logs", "protocol", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", protocol, protocol),
+        protocol,
+    )
+    logs_headers = _headers_value(
+        "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+        _yaml_signal_headers_value(yaml_cfg, "logs"),
+        headers,
+    )
+
     sample_rate = _coerce_value("OTEL_SAMPLE_RATE", yaml_cfg.get("sample_rate"), 1.0, _parse_float)
     max_attributes = _coerce_value(
         "OTEL_MAX_ATTRIBUTES", yaml_cfg.get("max_attributes"), 128, _parse_int
@@ -269,6 +290,10 @@ def load_telemetry_config() -> TelemetryConfig:
         metrics_endpoint=metrics_endpoint,
         metrics_protocol=metrics_protocol,
         metrics_headers=metrics_headers,
+        logs_exporter=logs_exporter,
+        logs_endpoint=logs_endpoint,
+        logs_protocol=logs_protocol,
+        logs_headers=logs_headers,
         service_name=_string_value(
             "OTEL_SERVICE_NAME", yaml_cfg.get("service_name"), "jiuwenclaw"
         ),

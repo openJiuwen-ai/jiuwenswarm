@@ -120,10 +120,10 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
         self._instance_resources = instance_resources
 
     async def resolve_effective_a2a_agent_ids(
-        self, resource_id: str
+        self, resource_id: str, *, source_user_id: str | None = None
     ) -> frozenset[str]:
         """Resolve the current policy/manager/user intersection for one resource."""
-        allowed, projected = await self._resolve_policy_scope(resource_id)
+        allowed, projected = await self._resolve_policy_scope(resource_id, source_user_id=source_user_id)
         effective_ids = []
         for item in projected:
             if item.agent.agent_id not in allowed:
@@ -143,7 +143,7 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
         return allowed
 
     async def _resolve_policy_scope(
-        self, resource_id: str
+        self, resource_id: str, *, source_user_id: str | None = None
     ) -> tuple[frozenset[str], list[EnterpriseA2AAgentView]]:
         if not all((self._policies, self._agent_templates, self._instance_resources)):
             return frozenset(), []
@@ -180,7 +180,7 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
             for item in (policy.get("member_template_ids") or [])
             if str(item).strip()
         }
-        projected = await self.list_projected_agents()
+        projected = await self.list_projected_agents(source_user_id=source_user_id)
         mode = str(policy.get("mode") or "").strip().lower()
         if mode == "allowlist":
             policy_allowed = members
@@ -259,25 +259,29 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
         )
 
     async def get_projected_agent(
-        self, template_id: str
+        self, template_id: str, *, source_user_id: str | None = None
     ) -> EnterpriseA2AAgentView | None:
         normalized = str(template_id or "").strip()
         template = await self._templates.get(template_id=normalized)
         if template is None:
             return None
-        user_state, runtime_state = await asyncio.gather(
-            self._user_states.get(template_id=normalized),
-            self._runtime_states.get(template_id=normalized),
+        # System catalog reads do not inherit the old, unowned shared switch.
+        user_state = (
+            await self._user_states.get(template_id=normalized, user_id=source_user_id)
+            if source_user_id else None
         )
+        runtime_state = await self._runtime_states.get(template_id=normalized)
         return self._project(template, user_state, runtime_state)
 
-    async def list_projected_agents(self) -> list[EnterpriseA2AAgentView]:
+    async def list_projected_agents(
+        self, *, source_user_id: str | None = None
+    ) -> list[EnterpriseA2AAgentView]:
         templates, user_rows, runtime_rows = await asyncio.gather(
             self._templates.list(order_by="updated_at DESC"),
-            self._user_states.list(),
+            self._user_states.list(filters={"user_id": source_user_id}),
             self._runtime_states.list(),
         )
-        user_states = {row["template_id"]: row for row in user_rows}
+        user_states = {row["template_id"]: row for row in user_rows} if source_user_id else {}
         runtime_states = {row["template_id"]: row for row in runtime_rows}
         return [
             self._project(
@@ -296,8 +300,11 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
         return [item.agent for item in await self.list_projected_agents()]
 
     async def set_user_enabled(
-        self, template_id: str, user_enabled: bool
+        self, template_id: str, user_enabled: bool, *, source_user_id: str | None = None
     ) -> EnterpriseA2AAgentView:
+        source_user_id = str(source_user_id or "").strip()
+        if not source_user_id:
+            raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
         if not isinstance(user_enabled, bool):
             raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
         normalized = str(template_id or "").strip()
@@ -306,11 +313,12 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
         await self._user_states.upsert(
             {
                 "template_id": normalized,
+                "user_id": source_user_id,
                 "user_enabled": user_enabled,
                 "updated_at": _utc_now(),
             }
         )
-        projected = await self.get_projected_agent(normalized)
+        projected = await self.get_projected_agent(normalized, source_user_id=source_user_id)
         if projected is None:
             raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_REGISTERED)
         return projected
@@ -350,10 +358,9 @@ class EnterpriseA2AProjection(A2AOutboundRepository):
 
     async def clear_agent_state(self, template_id: str) -> None:
         key = {"template_id": str(template_id or "").strip()}
-        await asyncio.gather(
-            self._user_states.delete(key),
-            self._runtime_states.delete(key),
-        )
+        for row in await self._user_states.list(filters=key):
+            await self._user_states.delete(**key, user_id=row.get("user_id"))
+        await self._runtime_states.delete(key)
 
     async def create_agent(self, agent: A2AOutboundAgent) -> A2AOutboundAgent:
         del agent

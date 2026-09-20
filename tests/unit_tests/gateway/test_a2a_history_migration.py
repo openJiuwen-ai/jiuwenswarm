@@ -84,6 +84,14 @@ class _SQLiteConnection:
     def execute(self, statement):
         return self.db.execute(statement)
 
+    def get_indexes(self, name):
+        return [
+            {"name": row[1], "unique": bool(row[2]), "column_names": [
+                col[2] for col in self.db.execute(f"PRAGMA index_info({row[1]})")
+            ]}
+            for row in self.db.execute(f"PRAGMA index_list({name})")
+        ]
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner_length", [None, 64, 256])
@@ -194,5 +202,122 @@ async def test_failed_widening_requires_verified_final_length(monkeypatch, migra
     else:
         with pytest.raises(DBAPIError) as caught:
             await a2a_migration.ensure_dispatch_user_column(engine)
+        assert caught.value is failure
+    assert events == ["rollback", "verify"]
+
+
+@pytest.mark.asyncio
+async def test_user_state_migration_preserves_unowned_rows_and_is_idempotent(migration):
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.execute("CREATE TABLE a2a_outbound_user_state (id INTEGER PRIMARY KEY, "
+                   "template_id VARCHAR(100), user_enabled BOOLEAN, updated_at DATETIME)")
+        db.execute("CREATE UNIQUE INDEX ix_a2a_outbound_user_state_template_id "
+                   "ON a2a_outbound_user_state(template_id)")
+        db.execute("INSERT INTO a2a_outbound_user_state VALUES (1, 'agent', 0, 'old')")
+        connection = _SQLiteConnection(db)
+
+        @asynccontextmanager
+        async def begin():
+            with db:
+                yield connection
+
+        engine = SimpleNamespace(begin=begin, connect=begin)
+        await migration.ensure_user_state_identity(engine)
+        await migration.ensure_user_state_identity(engine)
+        assert db.execute("SELECT user_id, user_enabled FROM a2a_outbound_user_state").fetchall() == [(None, 0)]
+        for owner, enabled in [("user-a", 0), ("u" * 256, 1)]:
+            db.execute("INSERT INTO a2a_outbound_user_state(template_id, user_id, user_enabled) "
+                       "VALUES ('agent', ?, ?)", (owner, enabled))
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("INSERT INTO a2a_outbound_user_state(template_id, user_id) VALUES ('agent', 'user-a')")
+        await migration.ensure_user_state_identity(engine)
+        assert db.execute("SELECT COUNT(*) FROM a2a_outbound_user_state").fetchone()[0] == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dialect_name", ["mysql", "postgresql"])
+async def test_user_state_migration_replaces_template_index(monkeypatch, migration, dialect_name):
+    columns = [{"name": "template_id"}]
+    indexes = [{"name": "old_unique", "unique": True, "column_names": ["template_id"]}]
+    statements = []
+    inspector = SimpleNamespace(
+        has_table=lambda name: True, get_columns=lambda name: columns,
+        get_indexes=lambda name: list(indexes),
+    )
+    monkeypatch.setattr(migration, "inspect", lambda connection: inspector)
+
+    class Connection:
+        dialect = _dialect(dialect_name)
+
+        async def run_sync(self, callback):
+            return callback(self)
+
+        def execute(self, statement):
+            statements.append(statement)
+            if "ADD COLUMN" in statement:
+                columns.append({"name": "user_id"})
+            elif "CREATE UNIQUE INDEX" in statement:
+                indexes.append({"name": "new_unique", "unique": True,
+                                "column_names": ["template_id", "user_id"]})
+            elif "DROP INDEX" in statement:
+                indexes[:] = [index for index in indexes if index["name"] != "old_unique"]
+
+    @asynccontextmanager
+    async def begin():
+        yield Connection()
+
+    engine = SimpleNamespace(begin=begin, connect=begin)
+    await migration.ensure_user_state_identity(engine)
+    await migration.ensure_user_state_identity(engine)
+    assert len(statements) == 3
+    suffix = " ON a2a_outbound_user_state" if dialect_name == "mysql" else ""
+    assert statements[-1] == f"DROP INDEX old_unique{suffix}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema_ready", [False, True])
+async def test_failed_user_state_upgrade_requires_verified_schema(monkeypatch, migration, schema_ready):
+    events = []
+    failure = DBAPIError("CREATE UNIQUE INDEX", {}, Exception("DDL failed"))
+    columns = [{"name": "template_id"}]
+    indexes = [{"name": "old_unique", "unique": True, "column_names": ["template_id"]}]
+    inspector = SimpleNamespace(
+        has_table=lambda name: True,
+        get_columns=lambda name: columns,
+        get_indexes=lambda name: indexes,
+    )
+    monkeypatch.setattr(migration, "inspect", lambda connection: inspector)
+
+    class Connection:
+        dialect = _dialect("postgresql")
+
+        async def run_sync(self, callback):
+            return callback(self)
+
+        def execute(self, statement):
+            raise failure
+
+    @asynccontextmanager
+    async def begin():
+        try:
+            yield Connection()
+        finally:
+            events.append("rollback")
+            if schema_ready:
+                columns.append({"name": "user_id"})
+                indexes[:] = [{"name": "new_unique", "unique": True,
+                               "column_names": ["template_id", "user_id"]}]
+
+    @asynccontextmanager
+    async def connect():
+        events.append("verify")
+        yield Connection()
+
+    engine = SimpleNamespace(begin=begin, connect=connect)
+    if schema_ready:
+        await migration.ensure_user_state_identity(engine)
+    else:
+        with pytest.raises(DBAPIError) as caught:
+            await migration.ensure_user_state_identity(engine)
         assert caught.value is failure
     assert events == ["rollback", "verify"]

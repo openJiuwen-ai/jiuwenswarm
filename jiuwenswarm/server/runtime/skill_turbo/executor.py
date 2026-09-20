@@ -2509,10 +2509,15 @@ class SkillTurboExecutor:
                     # fallback 契约失败：不在内层转成 node_error chat.error（会抢跑前端），
                     # 直接向上 raise，交给 execute_plan_stream 的 except FallbackContractError
                     # 走"不发 chat.error、只 plan.finished(failed)+complete"的降级路径。
+                    # 先排空已入队的 task.*（含 in-progress stage 的 task.complete(failed)），
+                    # 否则前端任务面板停滞在 in_progress。
                     logger.error(
                         "[SkillTurboExecutor] _execute_node_stream FallbackContractError, propagating: %s",
                         item,
                     )
+                    self._flush_deferred_task_lifecycle_events()
+                    async for task_chunk in self._drain_task_event_chunks():
+                        yield task_chunk
                     raise item
                 if isinstance(item, BaseException):
                     # cancel 中断（asyncio.CancelledError / KeyboardInterrupt）必须向上抛，

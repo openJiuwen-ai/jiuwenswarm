@@ -209,23 +209,26 @@ async def test_team_stream_duplicate_permission_runs_runtime_once(monkeypatch) -
     async def collect(request: AgentRequest) -> list[AgentResponseChunk]:
         return [chunk async for chunk in swarm.process_message_stream(request)]
 
-    results = await asyncio.gather(*(
-        collect(
-            _permission_request(
-                "permission-1",
-                request_id=f"stream-{index}",
-                stream=True,
-                mode="team",
+    try:
+        results = await asyncio.gather(*(
+            collect(
+                _permission_request(
+                    "permission-1",
+                    request_id=f"stream-{index}",
+                    stream=True,
+                    mode="team",
+                )
             )
-        )
-        for index in range(3)
-    ))
+            for index in range(3)
+        ))
 
-    assert adapter.runtime_calls == ["permission-1"]
-    assert sum(
-        chunks[-1].payload.get("code") == "duplicate_permission_response"
-        for chunks in results
-    ) == 2
+        assert adapter.runtime_calls == ["permission-1"]
+        assert sum(
+            chunks[-1].payload.get("code") == "duplicate_permission_response"
+            for chunks in results
+        ) == 2
+    finally:
+        await swarm._session_manager.close_all_sessions()
 
 
 @pytest.mark.asyncio
@@ -317,3 +320,143 @@ async def test_cancelled_queued_permission_releases_retry_without_stale_executio
         "deduplicated": True,
     }
     assert adapter.runtime_calls == ["permission-1"]
+
+
+def test_abandon_does_not_remember_recent_key() -> None:
+    ledger = PermissionResponseLedger()
+    reservation = ledger.reserve("session-1", "permission-1")
+    assert reservation is not None
+    assert reservation.start() is True
+    reservation.abandon()
+
+    retry = ledger.reserve("session-1", "permission-1")
+    assert retry is not None
+    assert retry.start() is True
+    retry.complete()
+    assert ledger.reserve("session-1", "permission-1") is None
+
+
+def test_team_landing_settle_abandons_when_resume_did_not_land() -> None:
+    from jiuwenswarm.server.runtime.session.permission_response_ledger import (
+        reset_team_permission_resume_landed,
+        settle_permission_reservation,
+    )
+
+    reset_team_permission_resume_landed()
+    ledger = PermissionResponseLedger()
+    reservation = ledger.reserve("session-1", "permission-1")
+    assert reservation is not None
+    assert reservation.start() is True
+    settle_permission_reservation(reservation, settle_by_team_landing=True)
+    retry = ledger.reserve("session-1", "permission-1")
+    assert retry is not None
+
+
+def test_team_landing_settle_completes_when_resume_landed() -> None:
+    from jiuwenswarm.server.runtime.session.permission_response_ledger import (
+        mark_team_permission_resume_landed,
+        reset_team_permission_resume_landed,
+        settle_permission_reservation,
+    )
+
+    reset_team_permission_resume_landed()
+    ledger = PermissionResponseLedger()
+    reservation = ledger.reserve("session-1", "permission-1")
+    assert reservation is not None
+    assert reservation.start() is True
+    mark_team_permission_resume_landed(True)
+    settle_permission_reservation(reservation, settle_by_team_landing=True)
+    assert ledger.reserve("session-1", "permission-1") is None
+
+
+@pytest.mark.asyncio
+async def test_team_stream_unlanded_permission_can_retry(monkeypatch) -> None:
+    adapter = _PermissionAdapter()
+    swarm = _build_swarm(monkeypatch, adapter)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda _channel_id: object(),
+    )
+
+    async def collect(request: AgentRequest) -> list[AgentResponseChunk]:
+        return [chunk async for chunk in swarm.process_message_stream(request)]
+
+    try:
+        first = await collect(
+            _permission_request(
+                "permission-1",
+                request_id="stream-unlanded",
+                stream=True,
+                mode="team",
+            )
+        )
+        assert adapter.runtime_calls == ["permission-1"]
+        assert first[-1].payload.get("code") != "duplicate_permission_response"
+
+        retry = await collect(
+            _permission_request(
+                "permission-1",
+                request_id="stream-unlanded-retry",
+                stream=True,
+                mode="team",
+            )
+        )
+        assert adapter.runtime_calls == ["permission-1", "permission-1"]
+        assert retry[-1].payload.get("code") != "duplicate_permission_response"
+    finally:
+        await swarm._session_manager.close_all_sessions()
+
+
+@pytest.mark.asyncio
+async def test_team_stream_landed_permission_is_deduplicated(monkeypatch) -> None:
+    from jiuwenswarm.server.runtime.session.permission_response_ledger import (
+        mark_team_permission_resume_landed,
+    )
+
+    class _LandingAdapter(_PermissionAdapter):
+        async def process_message_stream_impl(
+            self,
+            request: AgentRequest,
+            _inputs: dict[str, Any],
+        ):
+            mark_team_permission_resume_landed(True)
+            async for chunk in super().process_message_stream_impl(request, _inputs):
+                yield chunk
+
+    adapter = _LandingAdapter()
+    swarm = _build_swarm(monkeypatch, adapter)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda _channel_id: object(),
+    )
+
+    async def collect(request: AgentRequest) -> list[AgentResponseChunk]:
+        return [chunk async for chunk in swarm.process_message_stream(request)]
+
+    try:
+        first = await collect(
+            _permission_request(
+                "permission-1",
+                request_id="stream-landed",
+                stream=True,
+                mode="team",
+            )
+        )
+        assert adapter.runtime_calls == ["permission-1"]
+        assert first[-1].payload.get("code") != "duplicate_permission_response"
+
+        retry = await collect(
+            _permission_request(
+                "permission-1",
+                request_id="stream-landed-retry",
+                stream=True,
+                mode="team",
+            )
+        )
+        assert adapter.runtime_calls == ["permission-1"]
+        assert retry[-1].payload == {
+            "code": "duplicate_permission_response",
+            "deduplicated": True,
+        }
+    finally:
+        await swarm._session_manager.close_all_sessions()

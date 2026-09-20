@@ -37,6 +37,7 @@ A2A_INGRESS_ENV_MAP = {
 }
 A2A_OUTBOUND_ALLOW_LOOPBACK_ENV = "A2A_OUTBOUND_ALLOW_LOOPBACK"
 A2A_OUTBOUND_ALLOW_HTTP_ENV = "A2A_OUTBOUND_ALLOW_HTTP"
+A2A_OUTBOUND_ALLOW_PRIVATE_NETWORK_ENV = "A2A_OUTBOUND_ALLOW_PRIVATE_NETWORK"
 _ENV_ASSIGNMENT_RE = re.compile(
     r"^(?P<indent>\s*)(?P<export>export\s+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*="
 )
@@ -243,16 +244,23 @@ class A2AOutboundSettingsRepository:
         return {
             "allow_loopback": _bool(source, A2A_OUTBOUND_ALLOW_LOOPBACK_ENV, False),
             "allow_http": _bool(source, A2A_OUTBOUND_ALLOW_HTTP_ENV, False),
+            "allow_private_network": _bool(source, A2A_OUTBOUND_ALLOW_PRIVATE_NETWORK_ENV, False),
         }
 
-    def save(self, *, allow_loopback: bool, allow_http: bool) -> None:
-        if not isinstance(allow_loopback, bool) or not isinstance(allow_http, bool):
+    def save(
+        self, *, allow_loopback: bool, allow_http: bool, allow_private_network: bool = False
+    ) -> None:
+        if not all(
+            isinstance(value, bool)
+            for value in (allow_loopback, allow_http, allow_private_network)
+        ):
             raise A2AIngressError(
-                "A2A_CONFIG_INVALID", "allow_loopback and allow_http must be booleans"
+                "A2A_CONFIG_INVALID", "allow_loopback, allow_http and allow_private_network must be booleans"
             )
         updates = {
             A2A_OUTBOUND_ALLOW_LOOPBACK_ENV: "true" if allow_loopback else "false",
             A2A_OUTBOUND_ALLOW_HTTP_ENV: "true" if allow_http else "false",
+            A2A_OUTBOUND_ALLOW_PRIVATE_NETWORK_ENV: "true" if allow_private_network else "false",
         }
         try:
             _persist_dotenv_updates(

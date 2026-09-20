@@ -12,6 +12,7 @@ import {
 import { getGatewayHttpBase } from '../utils/env';
 import { isEnterprise } from '../edition';
 import {
+  getManagerAccessToken,
   hasManagerSessionCredentials,
   managerAuthenticatedFetch,
 } from '../auth/manager/authSession';
@@ -999,6 +1000,16 @@ export class WebHttpClient {
 
   private authenticatedFetch(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
     if (isEnterprise() && hasManagerSessionCredentials()) {
+      // 保留外部透传的 Authorization；只有 Manager 自己的 token 才走刷新包装器。
+      // 该分支仅在部署通过 REQUEST_EXT_FIELDS 启用 Authorization 透传时触达
+      // （宿主 token 经 ext.Authorization 进入请求头）；出厂空注册表下走不到，
+      // 属部署契约休眠路径，勿当死代码删除。
+      const headers = new Headers(init.headers);
+      const authorization = headers.get('Authorization');
+      const managerAccessToken = getManagerAccessToken();
+      if (authorization && authorization !== (managerAccessToken ? `Bearer ${managerAccessToken}` : null)) {
+        return fetch(input, init);
+      }
       return managerAuthenticatedFetch(input, init);
     }
     return fetch(input, init);

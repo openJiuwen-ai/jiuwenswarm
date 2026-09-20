@@ -91,6 +91,8 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
         "JIUWENSWARM_LINK_MTLS_KEY_FILE",
         # launchEnv / config.yaml ${EXTENSION_DIRS}; process-shared (relay RELAYCLAW_SHARED_ENV_KEYS TBD).
         "EXTENSION_DIRS",
+        # Comma-separated source basenames loaded from EXTENSION_DIRS/model_clients at startup.
+        "AGENT_EXTRA_MODEL_CLIENTS",
     }
 )
 

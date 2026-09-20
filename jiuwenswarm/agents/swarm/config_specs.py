@@ -109,6 +109,9 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
 
 # Tools common to both roles. Each element self-gates on config, so all are
 # declared; an unconfigured element simply yields no tools.
+#
+# Agent-only tools (ordinary Agent mode via interface_deep / ProgressiveToolRail)
+# must NOT appear here — e.g. registry.LONG_HORIZON / long_horizon_task.
 _COMMON_TOOL_NAMES: tuple[str, ...] = (
     registry.WEB_SEARCH,
     registry.WEB_FETCH,
@@ -162,6 +165,7 @@ _CODE_SHARED_RAIL_NAMES: tuple[str, ...] = (
 )
 
 # Code member tools: the common tool set plus the code-exclusive acp_chat.
+# long_horizon_task stays Agent-only (not mounted for code.team / team.plan).
 _CODE_TOOL_NAMES: tuple[str, ...] = (
     registry.WEB_SEARCH,
     registry.WEB_FETCH,

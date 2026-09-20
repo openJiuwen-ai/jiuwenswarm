@@ -3,7 +3,7 @@
 本文档描述 JiuWenSwarm **工具权限（permissions）配置**的整体架构：标准版 yaml、企业版 `permissions_template`、生效粒度、运行时判定框架。
 
 > 相关文档：[工具权限与安全防护](./工具权限与安全防护.md)  
-> Manager ↔ Gateway 模板接口：[Gateway中和Manager交互的接口文档.md](./Gateway中和Manager交互的接口文档.md) §8
+> Manager ↔ Gateway 模板接口：[Gateway对接管理面接口文档.md](../../jiuwenswarm/gateway/docs/Gateway对接管理面接口文档.md) §8
 
 > **迁移说明（2026-09）**：实例级表 / 应用配置 API `permissions_config` 已废弃。  
 > 企业策略改为 `permissions_template`，经 Agent `template_ref.permissions` 绑定到具体 Agent。  
@@ -147,7 +147,8 @@ permissions:
 | `data` | 扩展元数据 |
 
 
-接口细节见 [Gateway中和Manager交互的接口文档.md](./Gateway中和Manager交互的接口文档.md) §8。  
+接口细节见 [Gateway对接管理面接口文档.md](../../jiuwenswarm/gateway/docs/Gateway对接管理面接口文档.md) §8。  
+
 实例级 `permissions_config` 表与 `/api/v1/instances/{id}/permissions` **已移除**。
 
 ---

@@ -50,9 +50,9 @@ spec:
             - -c
             - max_connections=<<POSTGRESQL_MAX_CONNECTION>>
           env:
-            - name: POSTGRESQL_PASSWORD
+            - name: POSTGRES_PASSWORD
               value: "<<POSTGRESQL_PASSWORD>>"
-            - name: POSTGRESQL_HOST_AUTH_METHOD
+            - name: POSTGRES_HOST_AUTH_METHOD
               value: "scram-sha-256"
             - name: TZ
               value: "<<TIMEZONE>>"

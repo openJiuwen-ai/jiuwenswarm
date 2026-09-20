@@ -35,8 +35,8 @@
           }
         ],
         "securityContext": {
-          "runAsUser": 0,
-          "runAsGroup": 0
+          "runAsUser": <<CLAW_USER>>,
+          "runAsGroup": <<CLAW_GROUP>>
         },
         "readinessProbe": {
           "httpGet": {
@@ -66,11 +66,6 @@
           {
             "name": "data",
             "mountPath": "<<CLAW_HOME>>/.jiuwenswarm"
-          },
-          {
-            "name": "agentserver-config",
-            "mountPath": "<<CLAW_HOME>>/.jiuwenswarm/config/config.yaml",
-            "subPath": "config.yaml"
           }
         ]
       },
@@ -132,7 +127,7 @@
           },
           {
             "name": "data",
-            "mountPath": "<<JIUWENBOX_HOME>>/.jiuwenswarm"
+            "mountPath": "<<CLAW_HOME>>/.jiuwenswarm"
           }
         ]
       }
@@ -140,7 +135,7 @@
     "templates": [
       {
         "template_id": "default",
-        "fsGroup": 0,
+        "fsGroup": <<CLAW_FS_GROUP>>,
         "template_name": "default",
         "main_container_id": "c-agentserver",
         "sidecar_container_ids": [
@@ -183,12 +178,6 @@
             "hostPath": {
               "path": "<<CORE_CODE_PATH>>/openjiuwen",
               "type": "Directory"
-            }
-          },
-          {
-            "name": "agentserver-config",
-            "configMap": {
-              "name": "<<GATEWAY_CONFIG_MAP_NAME>>"
             }
           },
           {

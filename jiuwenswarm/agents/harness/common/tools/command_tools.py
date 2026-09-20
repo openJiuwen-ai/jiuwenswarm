@@ -171,6 +171,36 @@ _DANGEROUS_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         ),
         "blocked pattern: xargs kill pipeline targeting jiuwenswarm",
     ),
+    (
+        re.compile(
+            r"(?:Get-Process[\s\S]{0,400}Stop-Process|Stop-Process[\s\S]{0,400}Get-Process)",
+            re.IGNORECASE,
+        ),
+        "blocked pattern: Get-Process combined with Stop-Process",
+    ),
+    (
+        re.compile(
+            r"\bStop-Process\b[\s\S]{0,200}-Name\s+['\"]?(?:pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?"
+            r"|node(?:\.exe)?|jiuwenswarm|jiuwenclaw)\b",
+            re.IGNORECASE,
+        ),
+        "blocked pattern: Stop-Process -Name targeting agent/host runtime",
+    ),
+    (
+        re.compile(
+            r"\btaskkill\b[\s\S]*?/{1,2}im\b[\s\S]*?\b(?:pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?"
+            r"|node(?:\.exe)?|jiuwenswarm|jiuwenclaw)\b",
+            re.IGNORECASE,
+        ),
+        "blocked pattern: taskkill /im targeting agent/host runtime",
+    ),
+    (
+        re.compile(
+            r"\b(?:pkill|killall)\b[^\n\r;|&]*\bpythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?\b",
+            re.IGNORECASE,
+        ),
+        "blocked pattern: pkill/killall targeting python runtime",
+    ),
 ]
 
 _POWERSHELL_TOKENS = (
@@ -274,11 +304,44 @@ def _clip_text(value: str, max_chars: int) -> str:
     return f"{value[:max_chars]}\n...[truncated]"
 
 
+_TASKKILL_PID_RE = re.compile(
+    r"\btaskkill\b[\s\S]*?/{1,2}pid\b[\s:=]*(\d+)",
+    re.IGNORECASE,
+)
+_STOP_PROCESS_ID_RE = re.compile(
+    r"\bStop-Process\b[\s\S]{0,300}-Id\s*\(?([\d\s,]+)\)?",
+    re.IGNORECASE,
+)
+
+
+def _protected_runtime_pids() -> set[str]:
+    pids = {str(os.getpid())}
+    try:
+        ppid = os.getppid()
+    except OSError:
+        return pids
+    if ppid > 1:
+        pids.add(str(ppid))
+    return pids
+
+
+def _check_self_pid_kill(command: str) -> str | None:
+    protected = _protected_runtime_pids()
+    for match in _TASKKILL_PID_RE.finditer(command):
+        if match.group(1) in protected:
+            return "blocked pattern: taskkill targeting current agent/host process"
+    for match in _STOP_PROCESS_ID_RE.finditer(command):
+        for pid in re.findall(r"\d+", match.group(1)):
+            if pid in protected:
+                return "blocked pattern: Stop-Process targeting current agent/host process"
+    return None
+
+
 def _check_command_safety(command: str) -> str | None:
     for pattern, message in _DANGEROUS_COMMAND_PATTERNS:
         if pattern.search(command):
             return message
-    return None
+    return _check_self_pid_kill(command)
 
 
 # Options of `git worktree add` that consume the following token as a value.
@@ -671,13 +734,67 @@ def _resolve_encoding(resolved_shell: str) -> str:
     """Choose subprocess text encoding based on the resolved shell type.
 
     - bash / sh on Windows (e.g. Git Bash / MSYS2) output UTF-8 by default.
-    - cmd uses the system code page (typically CP936/GBK on Chinese Windows).
-    - PowerShell also uses the system code page by default; safest to use
-      the system code page and rely on ``errors='replace'`` for edge cases.
+    - 非 Windows 沿用系统 locale 编码.
+    - Windows cmd / powershell 走字节捕获 + _decode_child_output, 此返回值不适用.
     """
     if os.name == "nt" and resolved_shell in ("bash", "sh"):
         return "utf-8"
     return locale.getpreferredencoding(False) or "utf-8"
+
+
+def _decode_child_output(data: bytes) -> str:
+    """解码子进程管道输出的原始字节, 自动探测编码.
+
+    Windows cmd / powershell 管道重定向下子进程输出编码不固定:
+    cmd 内建命令与原生程序按系统代码页 (中文 Windows 为 GBK/CP936),
+    而 Node/Python 等运行时直写 UTF-8, WSL/部分系统资源串为 UTF-16LE.
+    单一 ``encoding`` 参数无法覆盖, 按优先级探测:
+
+    1. BOM 判定 (UTF-16LE/BE/UTF-8-sig);
+    2. UTF-8 严格 (ASCII/UTF-8 文本在此成功; GBK 中文序列几乎不可能是
+       合法 UTF-8, 因此不会误判方向);
+    3. UTF-16LE 启发式 (严格 UTF-8 失败后, 高位字节 0x00 占比 >0.3);
+    4. GB18030 (GBK 超集, 中文 Windows 最可能 OEM/ANSI 代码页);
+    5. UTF-8 errors=replace 兜底, 永不抛.
+
+    参考 ``jiuwenbox.supervisor.win_exec._decode_child_output``.
+    """
+    if not data:
+        return ""
+
+    # 1. BOM.
+    if data.startswith(b"\xff\xfe"):
+        return data[2:].decode("utf-16-le", errors="replace")
+    if data.startswith(b"\xfe\xff"):
+        return data[2:].decode("utf-16-be", errors="replace")
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8", errors="replace")
+
+    # 2. UTF-8 严格. 纯 ASCII / UTF-8 文本在此成功, 不会误判为 UTF-16.
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+
+    # 3. UTF-16LE 启发式: 严格 UTF-8 失败后, 试 UTF-16LE.
+    sample = data[:128]
+    hi = sample[1::2]
+    if len(hi) >= 4:
+        zero_ratio = sum(1 for b in hi if b == 0) / len(hi)
+        if zero_ratio > 0.3:
+            try:
+                return data.decode("utf-16-le", errors="replace")
+            except ValueError:  # UnicodeDecodeError 是 ValueError 子类, 勿同时捕获父子异常
+                pass
+
+    # 4. GB18030 (GBK 超集, 中文 Windows 最可能 OEM/ANSI 代码页).
+    try:
+        return data.decode("gb18030", errors="replace")
+    except (UnicodeDecodeError, LookupError):
+        pass
+
+    # 5. 兜底: 永不抛.
+    return data.decode("utf-8", errors="replace")
 
 
 def _run_command_sync(
@@ -691,6 +808,10 @@ def _run_command_sync(
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     plan, use_shell, resolved_shell = _resolve_execution_plan(command, shell_type)
     encoding = _resolve_encoding(resolved_shell)
+    # Windows cmd / powershell: 单一编码假设无法覆盖原生程序 (系统代码页)
+    # 与 Node/Python 等运行时 (UTF-8 直写) 的混合场景, 改为字节捕获 +
+    # _decode_child_output 多编码探测.
+    use_byte_capture = os.name == "nt" and resolved_shell in ("cmd", "powershell")
     popen_kw: dict[str, Any] = {}
     if os.name != "nt":
         _jw_start_new_session = os.getenv("JW_START_NEW_SESSION", "true").strip().lower()
@@ -699,17 +820,27 @@ def _run_command_sync(
     subprocess_env = _build_subprocess_env(extra_env)
     if subprocess_env is not None:
         popen_kw["env"] = subprocess_env
-    proc = subprocess.Popen(
-        plan,
-        shell=use_shell,
-        cwd=str(workdir),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding=encoding,
-        errors="replace",
-        **popen_kw,
-    )
+    if use_byte_capture:
+        proc = subprocess.Popen(
+            plan,
+            shell=use_shell,
+            cwd=str(workdir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            **popen_kw,
+        )
+    else:
+        proc = subprocess.Popen(
+            plan,
+            shell=use_shell,
+            cwd=str(workdir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding=encoding,
+            errors="replace",
+            **popen_kw,
+        )
     sid = (session_id or "").strip()
     if sid:
         register_shell_process(sid, proc)
@@ -733,7 +864,7 @@ def _run_command_sync(
         # forever when a grandchild inherits stdout/stderr (e.g. `cmd &` in shell).
         remaining = max(deadline - time.monotonic(), 1.0)
         try:
-            stdout, stderr = proc.communicate(timeout=remaining)
+            raw_stdout, raw_stderr = proc.communicate(timeout=remaining)
         except subprocess.TimeoutExpired:
             terminate_shell_process(proc)
             raise subprocess.TimeoutExpired(cmd=command, timeout=timeout_seconds) from None
@@ -741,6 +872,13 @@ def _run_command_sync(
         # cancel arrived between the last poll iteration and communicate().
         if sid and consume_shell_session_cancelled(sid):
             raise CommandCancelled(command)
+        if use_byte_capture:
+            stdout = _decode_child_output(raw_stdout or b"")
+            stderr = _decode_child_output(raw_stderr or b"")
+        else:
+            # text=True 路径下 raw_* 恒为 str (G.VAR.01 类型收窄).
+            stdout = raw_stdout if isinstance(raw_stdout, str) else ""
+            stderr = raw_stderr if isinstance(raw_stderr, str) else ""
     except CommandCancelled:
         raise
     except Exception:

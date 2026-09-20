@@ -121,27 +121,30 @@ def test_invalid_a2a_config_has_a_disabled_boot_fallback():
 
 
 @pytest.mark.parametrize("allow_loopback,allow_http", [(False, False), (True, False), (False, True), (True, True)])
-def test_outbound_network_settings_round_trip_through_dotenv(tmp_path, monkeypatch, allow_loopback, allow_http):
+@pytest.mark.parametrize("allow_private_network", [False, True])
+def test_outbound_network_settings_round_trip_through_dotenv(tmp_path, monkeypatch, allow_loopback, allow_http, allow_private_network):
     env_path = tmp_path / ".env"
     env_path.write_text(
         'KEEP_ME="yes"\nA2A_OUTBOUND_ALLOW_LOOPBACK="false"\n', "utf-8"
     )
     monkeypatch.delenv("A2A_OUTBOUND_ALLOW_LOOPBACK", raising=False)
     monkeypatch.delenv("A2A_OUTBOUND_ALLOW_HTTP", raising=False)
+    monkeypatch.delenv("A2A_OUTBOUND_ALLOW_PRIVATE_NETWORK", raising=False)
     repository = A2AOutboundSettingsRepository(env_path)
 
-    assert repository.load({}) == {"allow_loopback": False, "allow_http": False}
+    assert repository.load({}) == {"allow_loopback": False, "allow_http": False, "allow_private_network": False}
     assert repository.load({"A2A_OUTBOUND_ALLOW_LOOPBACK_HTTP": "true"}) == {
-        "allow_loopback": False, "allow_http": False,
+        "allow_loopback": False, "allow_http": False, "allow_private_network": False,
     }
-    repository.save(allow_loopback=allow_loopback, allow_http=allow_http)
+    repository.save(allow_loopback=allow_loopback, allow_http=allow_http, allow_private_network=allow_private_network)
 
-    assert repository.load() == {"allow_loopback": allow_loopback, "allow_http": allow_http}
+    assert repository.load() == {"allow_loopback": allow_loopback, "allow_http": allow_http, "allow_private_network": allow_private_network}
     content = env_path.read_text("utf-8")
     assert 'KEEP_ME="yes"' in content
     assert content.count("A2A_OUTBOUND_ALLOW_LOOPBACK") == 1
     assert f'A2A_OUTBOUND_ALLOW_LOOPBACK="{str(allow_loopback).lower()}"' in content
     assert f'A2A_OUTBOUND_ALLOW_HTTP="{str(allow_http).lower()}"' in content
+    assert f'A2A_OUTBOUND_ALLOW_PRIVATE_NETWORK="{str(allow_private_network).lower()}"' in content
 
 
 def test_ingress_and_outbound_repositories_share_one_dotenv_writer(tmp_path):
@@ -929,7 +932,7 @@ async def test_enterprise_outbound_tools_enforce_resource_policy(
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
 
     class _Registry:
-        async def resolve_effective_a2a_agent_ids(self, resource_id):
+        async def resolve_effective_a2a_agent_ids(self, resource_id, *, source_user_id=None):
             assert resource_id == "resource-1"
             return frozenset({"agent-1"})
 
@@ -937,20 +940,20 @@ async def test_enterprise_outbound_tools_enforce_resource_policy(
             assert resource_id == "resource-1"
             return frozenset({"agent-1", "agent-manager", "agent-user"})
 
-        async def list_agents(self):
+        async def list_agents(self, *, source_user_id=None):
             return {
                 "items": [{"agent_id": "agent-1"}, {"agent_id": "agent-2"}],
                 "total": 2,
             }
 
-        async def get_agent(self, agent_id):
+        async def get_agent(self, agent_id, *, source_user_id=None):
             return {
                 "agent_id": agent_id,
                 "manager_enabled": agent_id != "agent-manager",
                 "user_enabled": agent_id != "agent-user",
             }
 
-        async def set_user_enabled(self, agent_id, enabled):
+        async def set_user_enabled(self, agent_id, enabled, *, source_user_id=None):
             return {"agent_id": agent_id, "user_enabled": enabled}
 
     class _Dispatcher:
@@ -967,9 +970,9 @@ async def test_enterprise_outbound_tools_enforce_resource_policy(
     manager._outbound = _Registry()
     manager._outbound_dispatcher = _Dispatcher()
 
-    found = await manager.outbound_find_agents(source_resource_id="resource-1")
+    found = await manager.outbound_find_agents(source_resource_id="resource-1", source_user_id="user-1")
     assert found["allowed_agent_ids"] == frozenset({"agent-1"})
-    listed = await manager.outbound_list(source_resource_id="resource-1")
+    listed = await manager.outbound_list(source_resource_id="resource-1", source_user_id="user-1")
     assert listed == {"items": [{"agent_id": "agent-1"}], "total": 1}
     dispatched = await manager.outbound_dispatch_task(
         agent_id="agent-1",
@@ -1034,6 +1037,43 @@ async def test_enterprise_outbound_tools_enforce_resource_policy(
 
     with pytest.raises(A2AOutboundError) as exc_info:
         await manager.outbound_set_user_enabled(
-            "agent-2", enabled=True, source_resource_id="resource-1"
+            "agent-2", enabled=True, source_resource_id="resource-1", source_user_id="user-1"
         )
     assert exc_info.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED
+
+
+@pytest.mark.asyncio
+async def test_personal_lan_setting_applies_immediately_and_after_restart(tmp_path, monkeypatch):
+    from jiuwenswarm.gateway.a2a_manager.outbound import A2AOutboundRepository
+    from jiuwenswarm.gateway.storage.backends.memory_persistent import InMemoryPersistentBackend
+
+    for key in ("A2A_OUTBOUND_ALLOW_LOOPBACK", "A2A_OUTBOUND_ALLOW_HTTP", "A2A_OUTBOUND_ALLOW_PRIVATE_NETWORK"):
+        monkeypatch.setenv(key, "false")
+    settings = A2AOutboundSettingsRepository(tmp_path / ".env")
+
+    def create_manager():
+        return A2AManager(
+            _ChannelManagerProbe(), object(), A2AIngressConfig(),
+            outbound_repository=A2AOutboundRepository(InMemoryPersistentBackend()),
+            outbound_settings_repository=settings,
+        )
+
+    async def assert_access(manager, allowed):
+        for target in (manager._outbound, manager._outbound_dispatcher):
+            if allowed:
+                result = await target._discovery.validate_network_target("http://192.168.1.27:19117/a2a")
+                assert result.pinned_address == "192.168.1.27"
+            else:
+                with pytest.raises(A2AOutboundError) as error:
+                    await target._discovery.validate_network_target("http://192.168.1.27:19117/a2a")
+                assert error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED
+
+    manager = create_manager()
+    await assert_access(manager, False)
+    await manager.outbound_update_settings(allow_loopback=False, allow_http=True, allow_private_network=True)
+    await assert_access(manager, True)
+    restarted = create_manager()
+    assert (await restarted.outbound_get_settings())["allow_private_network"] is True
+    await assert_access(restarted, True)
+    await restarted.outbound_update_settings(allow_loopback=False, allow_http=True, allow_private_network=False)
+    await assert_access(restarted, False)

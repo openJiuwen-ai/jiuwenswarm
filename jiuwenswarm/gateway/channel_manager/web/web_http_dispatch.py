@@ -138,7 +138,24 @@ async def dispatch_http_request(
     # remote 模式 session.create 走转发主路径：与 WS 上行对齐，登记请求，
     # 成功响应经 _enqueue_send 拦截后落 web 库会话行（见
     # WebWsTransport._capture_session_create_row；失败不阻塞，首条消息兜底）。
+    # 企业 HTTP 对等原 #1 ws_resolve_identity：仅新建会话且解析到 user_id 打 UA。
     if method == "session.create":
+        if user_id:
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_ua
+
+                emit_audit_ua(
+                    SUBMDL="gateway",
+                    PROC="http_resolve_identity",
+                    UID=user_id,
+                    session_id=session_id,
+                    request_id=req_id,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[WebHTTP] http_resolve_identity audit skipped",
+                    exc_info=True,
+                )
         transport = getattr(channel, "ws", channel)
         pending_creates = getattr(transport, "_pending_session_creates", None)
         if isinstance(pending_creates, dict):

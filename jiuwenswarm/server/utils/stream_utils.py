@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any
 
 from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
@@ -275,7 +276,16 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
     if chunk_type == "controller_output" and payload is not None:
         interactions = _find_interaction_payloads(payload)
         if interactions:
-            return _parse_interaction_payload(interactions)
+            parsed_event = _parse_interaction_payload(interactions)
+            if parsed_event is not None:
+                return parsed_event
+            # interaction payloads were present but none
+            # converted — previously this returned None silently and the
+            # frontend never received the question.
+            logger.warning(
+                "[stream_utils] controller_output carried %d interaction payload(s) but none converted to a card",
+                len(interactions),
+            )
         inner_t = getattr(payload, "type", None)
         if inner_t is None and isinstance(payload, dict):
             inner_t = payload.get("type")
@@ -304,6 +314,23 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                     "任务执行失败",
                 )
             return {"event_type": "chat.error", "error": error}
+        if inner_val == "task_interaction":
+            # native-harness ask_user interrupts (deep-agent
+            # task loop) surface as a bare task_interaction controller payload
+            # without __interaction__ chunks reaching this stream. Parse the
+            # embedded interrupt result; fall back to an awaiting-input card so
+            # the frontend is never left waiting without an input affordance.
+            parsed_event = parse_task_interaction_payload(payload)
+            if parsed_event is not None:
+                return parsed_event
+            request_id_candidates = _collect_request_id_candidates(payload)
+            fallback_rid = request_id_candidates[0] if request_id_candidates else ""
+            logger.warning(
+                "[stream_utils] task_interaction without parsable ask_user payload;"
+                " emitting awaiting-input fallback request_id=%s",
+                fallback_rid or "<generated>",
+            )
+            return _fallback_awaiting_input_card(fallback_rid)
         # Close the enum: do not stringify ControllerOutputPayload as visible text.
         if inner_val not in (
             "task_completion",
@@ -630,6 +657,220 @@ def _find_interaction_payload(
     """Find a nested ``__interaction__`` payload inside controller output."""
     matches = _find_interaction_payloads(obj, _depth=_depth, _seen=_seen)
     return matches[0] if matches else None
+
+
+def _dump_model(obj: Any) -> Any:
+    """Best-effort ``model_dump`` for pydantic objects, else the object."""
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump(mode="python")
+        except Exception:
+            try:
+                return obj.model_dump()
+            except Exception:
+                return obj
+    return obj
+
+
+def _iter_ask_user_interrupt_values(
+    obj: Any,
+    *,
+    _depth: int = 0,
+    _seen: set[int] | None = None,
+):
+    """Yield dicts that look like ask_user interrupt values inside ``obj``.
+
+    Native-harness ask_user interrupts (deep-agent task loop) embed the
+    interrupt value somewhere inside the task-loop result carried by the
+    ``task_interaction`` controller payload, e.g. a dict with
+    ``tool_name == "ask_user"`` or a ToolCallInterruptRequest dump with
+    ``payload_schema`` + ``questions``.
+    """
+    if obj is None or _depth > 10:
+        return
+    if _seen is None:
+        _seen = set()
+    obj_id = id(obj)
+    if obj_id in _seen:
+        return
+    _seen.add(obj_id)
+
+    if isinstance(obj, dict):
+        tool_name = str(obj.get("tool_name") or "").strip()
+        if tool_name == "ask_user" or (
+            "payload_schema" in obj and "questions" in obj
+        ):
+            yield obj
+        for value in obj.values():
+            yield from _iter_ask_user_interrupt_values(
+                value, _depth=_depth + 1, _seen=_seen
+            )
+        return
+
+    if isinstance(obj, (list, tuple)):
+        for value in obj:
+            yield from _iter_ask_user_interrupt_values(
+                value, _depth=_depth + 1, _seen=_seen
+            )
+        return
+
+    dumped = _dump_model(obj)
+    if dumped is not obj:
+        yield from _iter_ask_user_interrupt_values(
+            dumped, _depth=_depth + 1, _seen=_seen
+        )
+        return
+
+    for attr_name in ("payload", "data", "value", "result", "state", "output"):
+        if hasattr(obj, attr_name):
+            yield from _iter_ask_user_interrupt_values(
+                getattr(obj, attr_name), _depth=_depth + 1, _seen=_seen
+            )
+
+
+def _collect_request_id_candidates(
+    obj: Any,
+    *,
+    _depth: int = 0,
+    _seen: set[int] | None = None,
+) -> list[str]:
+    """Collect plausible interaction request ids (tool_call_id et al)."""
+    ids: list[str] = []
+    if obj is None or _depth > 10:
+        return ids
+    if _seen is None:
+        _seen = set()
+    obj_id = id(obj)
+    if obj_id in _seen:
+        return ids
+    _seen.add(obj_id)
+
+    if isinstance(obj, dict):
+        for key in ("tool_call_id", "request_id", "interrupt_id"):
+            value = obj.get(key)
+            if isinstance(value, str) and value.strip():
+                ids.append(value.strip())
+        interrupt_ids = obj.get("interrupt_ids")
+        if isinstance(interrupt_ids, (list, tuple)):
+            for value in interrupt_ids:
+                if isinstance(value, str) and value.strip():
+                    ids.append(value.strip())
+        for value in obj.values():
+            ids.extend(
+                _collect_request_id_candidates(value, _depth=_depth + 1, _seen=_seen)
+            )
+        return ids
+
+    if isinstance(obj, (list, tuple)):
+        for value in obj:
+            ids.extend(
+                _collect_request_id_candidates(value, _depth=_depth + 1, _seen=_seen)
+            )
+        return ids
+
+    dumped = _dump_model(obj)
+    if dumped is not obj:
+        return _collect_request_id_candidates(dumped, _depth=_depth + 1, _seen=_seen)
+    return ids
+
+
+def _ask_user_value_has_structured_questions(value_obj: dict[str, Any]) -> bool:
+    """Whether the interrupt value carries a structured ``questions`` payload."""
+    questions = value_obj.get("questions")
+    if isinstance(questions, list) and questions:
+        return True
+    tool_args = value_obj.get("tool_args")
+    if isinstance(tool_args, str):
+        try:
+            tool_args = json.loads(tool_args)
+        except (ValueError, TypeError):
+            tool_args = None
+    return (
+        isinstance(tool_args, dict)
+        and isinstance(tool_args.get("questions"), list)
+        and bool(tool_args["questions"])
+    )
+
+
+def _resolve_task_interaction_request_id(
+    value_obj: dict[str, Any],
+    request_id_candidates: list[str],
+) -> str:
+    """Pick the request id that resumes the pending interrupt (tool_call_id)."""
+    for source in (value_obj, value_obj.get("tool_args")):
+        if not isinstance(source, dict):
+            continue
+        for key in ("tool_call_id", "request_id", "interrupt_id"):
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    return request_id_candidates[0] if request_id_candidates else ""
+
+
+def parse_task_interaction_payload(payload: Any) -> dict[str, Any] | None:
+    """Build a frontend ask-user card from a TASK_INTERACTION controller payload.
+
+    Rail-based interrupts already expose ``__interaction__`` payloads which
+    ``_find_interaction_payloads`` picks up; this handles the remaining
+    native-harness shapes so the ask_user question still reaches the frontend. 
+    Returns ``None`` when no ask_user value is embedded.
+    """
+    candidates = [
+        value
+        for value in _iter_ask_user_interrupt_values(payload)
+        if isinstance(value, dict)
+    ]
+    if not candidates:
+        return None
+
+    request_id_candidates = _collect_request_id_candidates(payload)
+    if not request_id_candidates:
+        request_id_candidates = [f"task_interaction_{uuid.uuid4().hex[:12]}"]
+
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        convert_interactions_to_ask_user_question,
+    )
+
+    # Prefer structured question payloads, then plain query interrupts.
+    candidates.sort(
+        key=lambda v: 0 if _ask_user_value_has_structured_questions(v) else 1
+    )
+    for value_obj in candidates:
+        request_id = _resolve_task_interaction_request_id(
+            value_obj, request_id_candidates
+        )
+        try:
+            card = convert_interactions_to_ask_user_question(
+                [{"id": request_id, "value": value_obj}]
+            )
+        except Exception:
+            logger.exception(
+                "[stream_utils] failed to convert task_interaction value to ask_user card"
+            )
+            card = None
+        if card is not None:
+            return card
+    return None
+
+
+def _fallback_awaiting_input_card(request_id: str) -> dict[str, Any]:
+    """Build a generic awaiting-input card for unparsable task_interaction."""
+    return {
+        "event_type": "chat.ask_user_question",
+        "request_id": request_id or f"task_interaction_{uuid.uuid4().hex[:12]}",
+        "questions": [
+            {
+                "question": (
+                    "任务正在等待你的输入后才能继续，请直接回复；"
+                    "若此前的问题未显示，请重新描述你的需求。"
+                ),
+                "header": "Input required",
+                "options": [],
+                "multi_select": False,
+            }
+        ],
+        "source": "task_interaction_fallback",
+    }
 
 
 def _parse_event_typed_chunk(chunk: Any) -> dict[str, Any]:

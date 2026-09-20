@@ -50,10 +50,13 @@ spec:
         app: <<MANAGER_SERVER_NAME>>
     spec:
       securityContext:
-        fsGroup: 1000
+        fsGroup: <<CLAW_FS_GROUP>>
       containers:
       - name: manager
         image: <<MANAGER_SERVER_IMAGE>>
+        securityContext:
+          runAsUser: <<CLAW_USER>>
+          runAsGroup: <<CLAW_GROUP>>
         ports:
         - name: rest
           containerPort: <<MANAGER_REST_PORT>>

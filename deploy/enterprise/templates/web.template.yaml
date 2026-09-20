@@ -6,7 +6,7 @@ metadata:
   labels:
     app: <<WEB_NAME>>
 spec:
-  replicas: 1
+  replicas: <<WEB_REPLICAS>>
   selector:
     matchLabels:
       app: <<WEB_NAME>>

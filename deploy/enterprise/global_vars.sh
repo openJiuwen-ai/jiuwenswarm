@@ -43,10 +43,6 @@ declare -A CONFIG=(
     ["SECRET_CM_TEMPLATE_FILE"]="${TEMPLATE_DIR}/configmap-secret.template.yaml"
     ["SECRET_CM_FILE"]="${CONFIG_DIR}/configmap-secret.yaml"
 
-    ["GATEWAY_CONFIG_TEMPLATE_FILE"]="${TEMPLATE_DIR}/gateway-config.template.yaml"
-    ["GATEWAY_CONFIG_FILE"]="${CONFIG_DIR}/gateway-config.yaml"
-    ["GATEWAY_CONFIG_YAML_FILE"]="${CONFIG_DIR}/gateway-config.configmap.yaml"
-
     ["GATEWAY_ENV_TEMPLATE_FILE"]="${TEMPLATE_DIR}/gateway.template.env"
     ["GATEWAY_ENV_FILE"]="${CONFIG_DIR}/gateway.env"
     ["GATEWAY_ENV_YAML_FILE"]="${CONFIG_DIR}/gateway-env.configmap.yaml"
@@ -68,6 +64,13 @@ declare -A CONFIG=(
 
     ["IDENTITY_TEMPLATE_FILE"]="${TEMPLATE_DIR}/identity.template.yaml"
     ["IDENTITY_FILE"]="${CONFIG_DIR}/identity.yaml"
+
+    ["OTEL_TEMPLATE_FILE"]="${TEMPLATE_DIR}/otel.template.yaml"
+    ["OTEL_FILE"]="${CONFIG_DIR}/otel.yaml"
+    ["LOKI_TEMPLATE_FILE"]="${TEMPLATE_DIR}/loki.template.yaml"
+    ["LOKI_FILE"]="${CONFIG_DIR}/loki.yaml"
+    ["OBSERVABILITY_TEMPLATE_FILE"]="${TEMPLATE_DIR}/observability.template.yaml"
+    ["OBSERVABILITY_FILE"]="${CONFIG_DIR}/observability.yaml"
 
     ["AS_JSON_TEMPLATE_FILE"]="${TEMPLATE_DIR}/agentserver.template.json"
     ["AS_JSON_FILE"]="${CONFIG_DIR}/agentserver.json"
@@ -95,7 +98,7 @@ declare -A ARGS=(
 
 
 # ==== All available modules ====
-declare -ga ALL_MODULES=("NFS" "NFS-SC" "RABBITMQ" "MYSQL" "POSTGRESQL" "MINIO" "LOG" "JINA" "PROXY" "GATEWAY" "WEB" "MANAGER" "RUNTIME")
+declare -ga ALL_MODULES=("NFS" "NFS-SC" "RABBITMQ" "MYSQL" "POSTGRESQL" "MINIO" "LOG" "JINA" "PROXY" "MONITOR" "GATEWAY" "WEB" "MANAGER" "RUNTIME")
 
 declare -ga MODULES=()
 
@@ -105,6 +108,7 @@ declare -A DEPLOY_VARS=(
     ["JIUWENSWARM_LINK_MTLS_MODE"]="off"
     ["IS_MOUNT_WEB_CODE"]="false"
     ["IS_MOUNT_MANAGER_WEB_CODE"]="false"
+    ["IS_MOUNT_OBSERVABILITY_CODE"]="false"
     ["CLAW_POD_CODE_PATH"]="/app/jiuwenswarm"
     ["RUNTIME_POD_CODE_PATH"]="/app/agent-runtime"
     ["CORE_POD_PKG_PATH"]="/usr/local/lib/python3.11/site-packages/openjiuwen"
@@ -126,6 +130,8 @@ declare -A DEPLOY_VARS=(
     ["ENABLE_EXTERNAL_PVC"]="false"
     ["ENABLE_EXTERNAL_RABBITMQ"]="false"
     ["ENABLE_EXTERNAL_REDIS"]="false"
+    ["ENABLE_EXTERNAL_LOKI"]="false"
+    ["ENABLE_EXTERNAL_OTEL"]="false"
     ["USER_WEB_IDP_TARGET"]=""
     ["USER_WEB_MANAGER_TARGET"]=""
     ["FLUENT_BIT_NAME"]="fluent-bit"
@@ -137,15 +143,17 @@ declare -A DEPLOY_VARS=(
     ["TOOL_RESULT_DISPLAY_MAX_CHARS"]="500"
     ["GATEWAY_NAME"]="jiuwenclaw-gateway"
     ["GATEWAY_REPLICAS"]="1"
-    ["GATEWAY_CONFIG_MAP_NAME"]="jiuwenclaw-gateway-config"
     ["GATEWAY_DB_MAX_OVERFLOW"]="20"
     ["GATEWAY_DB_POOL_SIZE"]="2"
     ["GATEWAY_DB_POOL_TIMEOUT"]="30"
+    ["GATEWAY_AGENT_HTTP_MAX_CONNECTIONS"]="200"
+    ["GATEWAY_AGENT_HTTP_MAX_KEEPALIVE"]="20"
     ["GATEWAY_ENV_FILE_CM_NAME"]="jiuwenclaw-gateway-envfile"
     ["GATEWAY_INSTANCE_ID"]=""
     ["GATEWAY_SCHED_LABEL_ENABLED"]="false"
     ["GATEWAY_RUNTIME_MANAGER_URL"]="http://jiuwenclaw-agent-runtime:8091"
     ["GATEWAY_WEB_SESSION_STORAGE"]="remote"
+    ["GATEWAY_SESSION_MAP_SCOPE"]="per_chat_bot_user"
     ["LOG_MASK_ENABLED"]="true"
     ["LOG_TO_FILE_ENABLED"]="true"
     ["IDENTITY_NAME"]="jiuwenclaw-identity"
@@ -178,6 +186,14 @@ declare -A DEPLOY_VARS=(
     # 也可显式写集群DNS的ClusterIP或完整服务名
     ["MANAGER_WEB_RESOLVER"]="auto"
     ["MANAGER_WS_PORT"]="8766"
+    ["OTEL_ENABLED"]="true"
+    ["OTEL_NAME"]="jiuwenclaw-otel-collector"
+    ["OTEL_IMAGE"]="otel/opentelemetry-collector-contrib:0.104.0"
+    ["LOKI_NAME"]="jiuwenclaw-loki"
+    ["LOKI_IMAGE"]="grafana/loki:3.0.0"
+    ["LOKI_STORAGE_SIZE"]="4Gi"
+    ["OBSERVABILITY_NAME"]="jiuwenclaw-observability"
+    ["OBSERVABILITY_IMAGE"]=""
     ["MINIO_IMAGE"]="minio/minio-arm64:RELEASE.2024-12-18T13-15-44Z"
     ["MINIO_NAME"]="minio"
     ["MINIO_STORAGE_SIZE"]="4Gi"
@@ -230,6 +246,7 @@ declare -A DEPLOY_VARS=(
     ["VECTOR_IMAGE"]="timberio/vector:0.40.0-alpine"
     ["VAR_LIB_DOCKER_PATH"]="/var/lib/containerd"
     ["WEB_NAME"]="jiuwenclaw-web"
+    ["WEB_REPLICAS"]="1"
     ["WEB_WS_PORT"]="19000"
     ["WEB_HTTP_PORT"]="5173"
     ["AGENT_RUNTIME_NAME"]="jiuwenclaw-agent-runtime"
@@ -241,9 +258,13 @@ declare -A DEPLOY_VARS=(
     ["AGENT_RUNTIME_REQUEST_TIMEOUT"]="300"
     ["AGENT_RUNTIME_SCOPE_FULL_TIMEOUT"]="30"
     ["AGENT_RUNTIME_LOG_LEVEL"]="INFO"
+    ["AGENT_RUNTIME_WATCH_INTERVAL"]="10"
     ["WS_ALLOWED_ORIGINS"]=""
     ["WS_ORIGIN_CHECK_ENABLED"]="false"
-    ["CLAW_HOME"]="/root"
+    ["CLAW_HOME"]="/home/app"
+    ["CLAW_USER"]="1000"
+    ["CLAW_GROUP"]="1000"
+    ["CLAW_FS_GROUP"]="1000"
     ["AGENT_SERVER_NAME"]="jiuwenclaw-agentserver"
     ["AGENT_SERVER_PORT"]="8766"
     ["AGENT_SERVER_SERVICE_CONCURRENCY"]="10"
@@ -255,9 +276,9 @@ declare -A DEPLOY_VARS=(
     ["JIUWENBOX_ENABLED"]="true"
     ["JIUWENBOX_NAME"]="jiuwenbox"
     ["JIUWENBOX_PORT"]="8321"
-    ["JIUWENBOX_HOME"]="/root"
     ["APPLY_PATCH"]="false"
     ["LOGIN_AUTH_SIMULATE"]="false"
+    ["JIUWENSWARM_CONFIG_DIR"]="/app/config"
 )
 
 declare -A OYR_COMPONENTS=(

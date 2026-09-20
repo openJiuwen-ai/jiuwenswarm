@@ -17,7 +17,7 @@ class GatewayPushTransport(Protocol):
 class WebSocketGatewayPushTransport:
     """通过进程内 AgentWebSocketServer 单例推送（分离部署 + WebSocket 默认路径）。"""
 
-    async def send_push(self, msg: dict[str, Any]) -> None:
+    async def send_push(self, msg: dict[str, Any]) -> int:
         from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
-        await AgentWebSocketServer.get_instance().send_push(msg)
+        return int(await AgentWebSocketServer.get_instance().send_push(msg))

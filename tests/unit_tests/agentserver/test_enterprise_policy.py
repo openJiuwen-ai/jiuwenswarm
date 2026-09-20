@@ -9,6 +9,18 @@ from jiuwenswarm.server.runtime.enterprise_config.schemas import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_enterprise_config_caches() -> None:
+    """进程级模板/资源缓存会跨用例串味，每个用例前清掉。"""
+    from jiuwenswarm.server.runtime.enterprise_config.loader import (
+        invalidate_enterprise_config_caches,
+    )
+
+    invalidate_enterprise_config_caches()
+    yield
+    invalidate_enterprise_config_caches()
+
+
 def test_normalize_template_ref_accepts_list() -> None:
     assert normalize_template_ref(None) == {}
     assert normalize_template_ref(

@@ -86,8 +86,10 @@ class SecretStore:
         self,
         *,
         master_key_env: str = "JIUWEN_SECRET_MASTER_KEY",
-        master_key_file: str = "~/.jiuwenswarm/config/.master_key",
+        master_key_file: str | None = None,
     ) -> None:
+        if not master_key_file:
+            master_key_file = str(get_config_dir() / ".master_key")
         self._transform.configure_aes256gcm(
             master_key_env=master_key_env,
             master_key_file=master_key_file,

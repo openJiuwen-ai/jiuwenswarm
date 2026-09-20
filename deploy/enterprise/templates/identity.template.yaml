@@ -30,11 +30,14 @@ spec:
         app: <<IDENTITY_NAME>>
     spec:
       securityContext:
-        fsGroup: 1000
+        fsGroup: <<CLAW_FS_GROUP>>
       containers:
       - name: <<IDENTITY_NAME>>
         image: <<IDENTITY_IMAGE>>
         imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: <<CLAW_USER>>
+          runAsGroup: <<CLAW_GROUP>>
         ports:
         - name: rest
           containerPort: <<IDENTITY_REST_PORT>>

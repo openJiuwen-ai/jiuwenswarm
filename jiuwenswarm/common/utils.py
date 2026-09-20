@@ -601,7 +601,12 @@ def get_user_workspace_dir() -> Path:
     return _workspace_base_dir
 
 
-
+def _config_dir_from_env() -> Path | None:
+    """显式覆盖：``JIUWENSWARM_CONFIG_DIR``，未设置返回 None。"""
+    env_config_dir = os.getenv("JIUWENSWARM_CONFIG_DIR", "").strip()
+    if env_config_dir:
+        return Path(env_config_dir).expanduser()
+    return None
 
 # Cache for resolved paths
 _config_dir: Path | None = None
@@ -1443,7 +1448,8 @@ def prepare_workspace(
             + ", ".join(str(p) for p in config_yaml_src_candidates)
         )
 
-    config_dest_dir = workspace_dir / "config"
+    override = _config_dir_from_env()
+    config_dest_dir = override if override is not None else (workspace_dir / "config")
     config_dest_dir.mkdir(parents=True, exist_ok=True)
     config_yaml_dest = config_dest_dir / "config.yaml"
 
@@ -1483,7 +1489,7 @@ def prepare_workspace(
                 "env template source not found; tried: "
                 + ", ".join(str(p) for p in env_template_src_candidates)
             )
-        env_dest = workspace_dir / "config" / ".env"
+        env_dest = config_dest_dir / ".env"
         if overwrite or not env_dest.exists():
             with TrackCopyDiff(
                 dest=env_dest,
@@ -1810,7 +1816,14 @@ def _resolve_paths(force=False) -> None:
 
 
 def get_config_dir() -> Path:
-    """Get the config directory path."""
+    """Get the config directory path.
+
+    ``JIUWENSWARM_CONFIG_DIR`` 优先级最高：设置时绕过缓存，每次按 env 返回；
+    未设置时走默认缓存解析。
+    """
+    override = _config_dir_from_env()
+    if override is not None:
+        return override
     _resolve_paths()
     return _config_dir
 

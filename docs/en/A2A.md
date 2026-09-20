@@ -23,7 +23,7 @@ This page explains the Gateway-side **A2A ingress service**: its management surf
 ## 1. Responsibility Boundary
 
 - **Inbound (this page)**: external A2A client → `A2AChannel` → `ChannelManager` → `MessageHandler` → E2A → AgentServer; responses return through the same path, emitted as `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent` (streaming) or aggregated result (non-streaming).
-- **Outbound**: Agent-side access to external A2A services (for example via A2A MCP Hub style tooling) belongs to the AgentServer adapter layer (see section 7), not `A2AChannel`.
+- **Outbound**: Gateway maintains the external A2A Agent directory, credential references, and dispatch records. AgentServer calls Gateway over reverse RPC for lookup, dispatch, and result queries (see section 7).
 
 ---
 
@@ -69,7 +69,7 @@ uv sync --extra a2a
 
 AgentServer connectivity still follows existing gateway config (for example `AGENT_SERVER_URL`) and is independent from the A2A listening endpoint.
 
-While Gateway is running, use **More Settings → A2A Dispatch Center** in the Web UI to inspect status, save configuration, enable, disable, or reload ingress without restarting Gateway. This page currently manages inbound listening only; it does not provide external-agent discovery, outbound calls, or automatic dispatch.
+While Gateway is running, use **More Settings → A2A Dispatch Center** in the Web UI to inspect status, save configuration, enable, disable, or reload ingress without restarting Gateway.
 
 When `A2A_SERVER_ENABLED=true` but `jiuwenswarm[a2a]` (or `uv sync --extra a2a`) is not installed, Gateway startup remains non-blocking; A2A channel startup failure is reported in logs with actionable install hints.
 
@@ -131,7 +131,7 @@ flowchart LR
     Ch --> Caller
 ```
 
-Inbound A2A `message.parts` are mapped into internal `Message.params.query` and optional `files`; no dedicated `params["a2a"]` extension object is written. Outbound internal `Message.payload` is mapped to A2A `Part` list (including multimodal parts and textified tool events).
+Inbound mapping extracts only text from A2A `message.parts` and merges it into `Message.params.query`. File, URL, binary, and other non-text parts are dropped, and `params.files` is always an empty list. Outbound internal `Message.payload` is mapped to an A2A `Part` list (including multimodal parts and textified tool events).
 
 ---
 
@@ -144,7 +144,7 @@ Inbound A2A `message.parts` are mapped into internal `Message.params.query` and 
 | `task_id` or generated value | `Message.id` (used to correlate replies) |
 | `context_id` | `Message.session_id` |
 | `parts[].text` | merged into `params.query` |
-| non-text parts (`url` / `data` / `raw`) | `params.files[]` (includes web-compatible redundant keys) |
+| non-text parts (`url` / `data` / `raw`) | dropped; `params.files=[]` |
 | metadata | `Message.metadata` |
 
 ### 6.2 Response (`Message` → A2A)
@@ -161,7 +161,8 @@ Inbound A2A `message.parts` are mapped into internal `Message.params.query` and 
 
 ## 7. Outbound A2A (Agent Side)
 
-- This repository currently does not include a dedicated A2A MCP Hub registration module. If/when that capability is restored, follow the actual wiring code and environment variable definitions.
+- Gateway's `A2AManager` owns discovery, registration, the runtime directory, enablement projection, and dispatch records for external A2A Agents.
+- AgentServer tools use Gateway reverse RPC for Agent lookup, synchronous/asynchronous dispatch, and dispatch-result queries. Enterprise requests are authorized and history-isolated with trusted user, session, and resource identities injected by Gateway.
 
 ---
 

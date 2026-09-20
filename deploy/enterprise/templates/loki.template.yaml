@@ -1,0 +1,149 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: <<LOKI_NAME>>-config
+  namespace: <<NAMESPACE>>
+data:
+  loki.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9095
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /tmp/loki
+      storage:
+        filesystem:
+          chunks_directory: /tmp/loki/chunks
+          rules_directory: /tmp/loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    storage_config:
+      tsdb_shipper:
+        # active WAL 放 emptyDir（本地盘），避开 NFS 目录删除非原子 bug。
+        # shipped cache + chunks 仍在 NFS 上（走 path_prefix /tmp/loki），持久不丢。
+        active_index_directory: /tmp/loki-wal/active
+        cache_location: /tmp/loki/tsdb-shipper-cache
+    limits_config:
+      allow_structured_metadata: true
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      retention_period: 168h
+      max_query_length: 0
+    compactor:
+      working_directory: /tmp/loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: <<LOKI_NAME>>
+  namespace: <<NAMESPACE>>
+spec:
+  serviceName: <<LOKI_NAME>>
+  replicas: 1
+  selector:
+    matchLabels:
+      app: <<LOKI_NAME>>
+  template:
+    metadata:
+      labels:
+        app: <<LOKI_NAME>>
+    spec:
+      securityContext:
+        runAsUser: 0
+      containers:
+        - name: <<LOKI_NAME>>
+          image: <<LOKI_IMAGE>>
+          args:
+            - "-config.file=/etc/loki/loki.yaml"
+          ports:
+            - containerPort: 3100
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+            - name: <<LOKI_NAME>>-wal
+              mountPath: /tmp/loki-wal
+            - name: <<LOKI_NAME>>-storage
+              mountPath: /tmp/loki
+      volumes:
+        - name: config
+          configMap:
+            name: <<LOKI_NAME>>-config
+        # active WAL：emptyDir 本地盘，NFS 目录删除非原子 bug 不再适用
+        - name: <<LOKI_NAME>>-wal
+          emptyDir: {}
+        # shipped index(cache) + chunks：NFS，持久不丢
+        - name: <<LOKI_NAME>>-storage
+          persistentVolumeClaim:
+            claimName: <<LOKI_NAME>>-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: <<LOKI_NAME>>
+  namespace: <<NAMESPACE>>
+spec:
+  ports:
+    - port: 3100
+      targetPort: 3100
+      name: http
+  selector:
+    app: <<LOKI_NAME>>
+
+---
+# PV 持久化存储
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: <<LOKI_NAME>>-pv
+  labels:
+    app: <<LOKI_NAME>>
+spec:
+  capacity:
+    storage: <<LOKI_STORAGE_SIZE>>
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: <<NFS_SERVER_ADDR>>
+    path: <<NFS_SHARE_PATH>>/<<LOKI_NAME>>
+    readOnly: false
+  mountOptions:
+    - nfsvers=4
+    - soft
+    - timeo=600
+    - retrans=2
+    - noatime
+
+---
+# PVC 持久化存储（自动绑定 PV）
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: <<LOKI_NAME>>-pvc
+  namespace: <<NAMESPACE>>
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: <<LOKI_STORAGE_SIZE>>
+  storageClassName: ""
+  selector:
+    matchLabels:
+      app: <<LOKI_NAME>>

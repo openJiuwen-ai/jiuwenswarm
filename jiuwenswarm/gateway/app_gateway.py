@@ -1537,6 +1537,10 @@ async def _run_with_telemetry(
     web_path: str,
     telemetry_lifecycle,
 ) -> bool:
+    from jiuwenswarm.common.model_client_extensions import load_extra_model_clients
+
+    load_extra_model_clients()
+
     from jiuwenswarm.gateway.a2a_manager import A2AManager
     from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import DingTalkChannel, \
         DingTalkConfig
@@ -1696,6 +1700,17 @@ async def _run_with_telemetry(
                         logger.warning(
                             "[App] logging repository reload failed: %s",
                             log_exc,
+                        )
+                    try:
+                        from jiuwenswarm.gateway.config.audit.access import (
+                            reload_audit_log_config_from_db,
+                        )
+
+                        await reload_audit_log_config_from_db()
+                    except Exception as audit_exc:  # noqa: BLE001
+                        logger.warning(
+                            "[App] audit_log_config cold load failed: %s",
+                            audit_exc,
                         )
     except Exception as exc:  # noqa: BLE001
         if is_enterprise():

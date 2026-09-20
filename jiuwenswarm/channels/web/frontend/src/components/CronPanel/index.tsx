@@ -524,7 +524,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         description: value.description.trim(),
         cron_expr: value.cronExpr.trim(),
         timezone: value.timezone,
-        targets: value.targets.trim() || 'web',
+        targets: isEnterprise() ? 'web' : value.targets.trim() || 'web',
         enabled: value.enabled,
         wake_offset_seconds: normalizeWakeOffsetSeconds(value.wakeOffsetSeconds),
         // 始终显式带上 project_dir（未选项目传空串），不能省略这个 key——后端
@@ -646,16 +646,37 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     if (!confirmState || confirmBusy) return;
     setConfirmBusy(true);
     try {
+      const job = confirmState.job;
+      // Long-horizon stage jobs must reuse the toast「现在做」path:
+      // one task → one longhorizon_* session, not a new cron_* run.
+      const lhMatch = /^lh-(lhc_[^-]+)-(lhs_.+)$/.exec(job.id || '');
+      if (lhMatch) {
+        const [, taskId, stageId] = lhMatch;
+        const { runLongHorizonStageAction } = await import(
+          '../../features/longHorizon/stageAction'
+        );
+        await runLongHorizonStageAction({
+          taskId,
+          stageId,
+          action: 'start',
+          title: job.name,
+        });
+        setSuccess(t('cron.success.runNow'));
+        await loadJobs(projects);
+        void reloadCronStore();
+        return;
+      }
+
       const result = await webRequest<{ accepted: boolean; run_id: string; session_id?: string }>('cron.job.run_now', {
-        id: confirmState.job.id,
+        id: job.id,
       });
       if (result.session_id) {
-        useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
+        useCronStore.getState().setLastRunSessionId(job.id, result.session_id);
         onSelectSession(result.session_id);
       }
       setSuccess(t('cron.success.runNow'));
       // 刷新左侧栏该定时任务下展开的 session 列表（project.get_cron_sessions）
-      const { id: cronId, projectId } = confirmState.job;
+      const { id: cronId, projectId } = job;
       if (cronId && projectId) {
         void loadCronSessions(projectId, cronId);
       }

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.resources import Resource
@@ -87,6 +88,10 @@ class ProxyTracerProvider:
     pass
 
 
+class ProxyLoggerProvider:
+    pass
+
+
 class _ProxyMeterProvider:
     pass
 
@@ -118,13 +123,16 @@ async def test_runtime_claims_extension_and_only_flushes_external_providers(
     tracer_provider = _CountingTracerProvider(resource=resource)
     tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
     meter_provider = _CountingMeterProvider(resource=resource, reader=reader)
+    logger_provider = LoggerProvider(resource=resource)
     extension = _ProviderExtension(
         ProviderBundle(
             tracer_provider=tracer_provider,
             meter_provider=meter_provider,
+            logger_provider=logger_provider,
             resource=resource,
             owns_tracer=False,
             owns_meter=False,
+            owns_logger=False,
         )
     )
     support_name = f"_telemetry_extension_support_{id(extension)}"
@@ -160,6 +168,7 @@ async def test_runtime_claims_extension_and_only_flushes_external_providers(
         shutdown_observability()
         tracer_provider.shutdown()
         meter_provider.shutdown()
+        logger_provider.shutdown()
         IdentityStore.clear(identity_context_token)
         sys.modules.pop("jiuwenswarm.loaded_extension.telemetry_probe", None)
 
@@ -177,6 +186,7 @@ async def test_runtime_claims_extension_and_only_flushes_external_providers(
     globals_state = SimpleNamespace(
         tracer=ProxyTracerProvider(),
         meter=_ProxyMeterProvider(),
+        logger=ProxyLoggerProvider(),
     )
     monkeypatch.setattr(
         runtime_module,
@@ -208,6 +218,16 @@ async def test_runtime_claims_extension_and_only_flushes_external_providers(
         runtime_module.metrics,
         "set_meter_provider",
         lambda provider: setattr(globals_state, "meter", provider),
+    )
+    monkeypatch.setattr(
+        runtime_module._logs,
+        "get_logger_provider",
+        lambda: globals_state.logger,
+    )
+    monkeypatch.setattr(
+        runtime_module._logs,
+        "set_logger_provider",
+        lambda provider: setattr(globals_state, "logger", provider),
     )
     monkeypatch.setattr(
         agent_observability,

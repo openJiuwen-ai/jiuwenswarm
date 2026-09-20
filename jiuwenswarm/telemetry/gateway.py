@@ -171,6 +171,27 @@ def open_gateway_request(envelope: object) -> GatewayRequestHandle:
         _release_request_context(handle)
         raise
 
+    try:
+        # 行为审计共享同一份请求上下文：session/user/request 进
+        # SDK ContextVar + session 注册表，供 HTTP 中间件与打点回退。
+        from openjiuwen_runtime.foundation import audit
+
+        routing_md = carrier.get("routing") if isinstance(carrier.get("routing"), dict) else {}
+        audit.bind_routing(
+            session_id=str(getattr(envelope, "session_id", None) or ""),
+            user_id=str(identity.user_id or ""),
+            request_id=str(getattr(envelope, "request_id", None) or ""),
+            channel_id=str(getattr(envelope, "channel", None) or ""),
+            group_id=str(routing_md.get("group_id") or ""),
+            bot_id=str(routing_md.get("bot_id") or ""),
+        )
+    except Exception as error:
+        logger.warning(
+            "[TelemetryGateway] audit routing bind failed: %s: %s",
+            type(error).__name__,
+            error,
+        )
+
     provider = getattr(runtime, "tracer_provider", None)
     if provider is not None:
         try:

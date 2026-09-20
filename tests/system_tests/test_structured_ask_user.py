@@ -115,9 +115,8 @@ class TestStructuredAskUserToolSchema:
         assert EXTENDED_INPUT_PARAMS_CN["required"] == ["query"]
 
     @staticmethod
-    def test_questions_schema_limits_each_call_to_four():
+    def test_questions_schema_enforces_consistent_question_limit():
         """English and Chinese schemas must enforce the same question limit."""
-        assert MAX_STRUCTURED_QUESTIONS == 4
         assert (
             EXTENDED_INPUT_PARAMS_EN["properties"]["questions"]["maxItems"]
             == MAX_STRUCTURED_QUESTIONS
@@ -606,7 +605,7 @@ class TestStructuredAskUserRailResolveInterrupt:
 
     @staticmethod
     @pytest.mark.asyncio
-    async def test_four_questions_are_allowed():
+    async def test_max_batch_questions_are_allowed():
         """The maximum supported batch should still produce an interrupt."""
         rail = StructuredAskUserRail()
         tc = _make_tool_call(arguments={
@@ -624,7 +623,7 @@ class TestStructuredAskUserRailResolveInterrupt:
 
     @staticmethod
     @pytest.mark.asyncio
-    async def test_more_than_four_questions_are_rejected():
+    async def test_more_than_max_questions_are_rejected():
         """An oversized batch should return an argument error without prompting."""
         rail = StructuredAskUserRail()
         tc = _make_tool_call(arguments={
@@ -639,7 +638,7 @@ class TestStructuredAskUserRailResolveInterrupt:
 
         from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
         assert isinstance(decision, RejectResult)
-        assert "at most 4 questions" in decision.tool_result
+        assert f"at most {MAX_STRUCTURED_QUESTIONS} questions" in decision.tool_result
 
     @staticmethod
     @pytest.mark.parametrize(

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
+    _ContextInjectingCronBackend,
     _CronToolsCronBackend,
     _extract_legacy_params,
 )
@@ -45,6 +46,9 @@ class _FakeCronTools:
         self.routes: list[object] = []
         self.reset_tokens: list[str] = []
         self.create_payloads: list[dict] = []
+
+    def _enterprise_ready(self) -> bool:
+        return False
 
     def push_cron_route(self, route):
         self.routes.append(route)
@@ -736,3 +740,167 @@ class TestComputeNextRunMissedTriggerWindow:
 
         assert push_dt.minute == 35
         assert wake_dt == push_dt
+
+
+def _identity_context(session_id: str = "sess-9") -> SimpleNamespace:
+    return SimpleNamespace(
+        channel_id="web",
+        session_id=session_id,
+        metadata={
+            "request_id": "req-9",
+            "user_id": "u1",
+            "routing": {"group_id": "g1", "bot_id": "b1"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_binds_route_for_list_get_delete_toggle_preview_run_now() -> None:
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    context = _identity_context()
+
+    await backend.list_jobs(context=context)
+    await backend.get_job("job-1", context=context)
+    await backend.delete_job("job-1", context=context)
+    await backend.toggle_job("job-1", False, context=context)
+    await backend.preview_job("job-1", 3, context=context)
+    await backend.run_now("job-1", context=context)
+
+    assert len(cron_tools.routes) == 6
+    assert all(route.session_id == "sess-9" for route in cron_tools.routes)
+    assert all(route.group_id == "g1" for route in cron_tools.routes)
+    assert all(route.bot_id == "b1" for route in cron_tools.routes)
+    assert all(route.user_id == "u1" for route in cron_tools.routes)
+    assert cron_tools.reset_tokens == ["token-1"] * 6
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_list_uses_bound_request_context() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep
+
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    tokens = [
+        deep._CRON_TOOL_CHANNEL_ID.set("web"),
+        deep._CRON_TOOL_SESSION_ID.set("sess-bound"),
+        deep._CRON_TOOL_METADATA.set(
+            {
+                "request_id": "req-bound",
+                "user_id": "u1",
+                "routing": {"group_id": "g1", "bot_id": "b1"},
+            }
+        ),
+        deep._CRON_TOOL_BOUND.set(True),
+    ]
+    try:
+        await backend.list_jobs()
+        await backend.delete_job("job-1")
+    finally:
+        deep._CRON_TOOL_BOUND.reset(tokens[3])
+        deep._CRON_TOOL_METADATA.reset(tokens[2])
+        deep._CRON_TOOL_SESSION_ID.reset(tokens[1])
+        deep._CRON_TOOL_CHANNEL_ID.reset(tokens[0])
+
+    assert [route.session_id for route in cron_tools.routes] == ["sess-bound", "sess-bound"]
+    assert cron_tools.routes[0].user_id == "u1"
+    assert cron_tools.routes[0].group_id == "g1"
+    assert cron_tools.reset_tokens == ["token-1", "token-1"]
+
+
+class _FallbackAdapterContext:
+    """Mirrors _RuntimeCronToolContext fallback when invoke_tool has no BOUND flag."""
+
+    channel_id = "web"
+    session_id = "sess-adapter"
+    mode = "agent"
+    metadata = {
+        "request_id": "req-adapter",
+        "user_id": "u1",
+        "routing": {"group_id": "g1", "bot_id": "b1"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_context_injecting_backend_fills_openjiuwen_omitted_context() -> None:
+    cron_tools = _FakeCronTools()
+    inner = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    backend = _ContextInjectingCronBackend(inner, _FallbackAdapterContext())
+
+    await backend.list_jobs()
+    await backend.get_job("job-1")
+    await backend.delete_job("job-1")
+    await backend.toggle_job("job-1", False)
+    await backend.preview_job("job-1", 3)
+    await backend.run_now("job-1")
+    await backend.status()
+
+    assert len(cron_tools.routes) == 7
+    assert all(route.session_id == "sess-adapter" for route in cron_tools.routes)
+    assert all(route.group_id == "g1" for route in cron_tools.routes)
+    assert all(route.bot_id == "b1" for route in cron_tools.routes)
+    assert all(route.user_id == "u1" for route in cron_tools.routes)
+
+
+@pytest.mark.asyncio
+async def test_context_injecting_backend_keeps_explicit_context() -> None:
+    cron_tools = _FakeCronTools()
+    inner = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    backend = _ContextInjectingCronBackend(inner, _FallbackAdapterContext())
+
+    await backend.list_jobs(context=_identity_context("sess-explicit"))
+
+    assert cron_tools.routes[0].session_id == "sess-explicit"
+    assert cron_tools.routes[0].user_id == "u1"
+
+
+class _EnterpriseFakeCronTools(_FakeCronTools):
+    def _enterprise_ready(self) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_enterprise_backend_rejects_missing_authenticated_session() -> None:
+    cron_tools = _EnterpriseFakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    with pytest.raises(ValueError, match="authenticated session"):
+        await backend.list_jobs()
+    with pytest.raises(ValueError, match="authenticated session"):
+        await backend.list_jobs(
+            context=SimpleNamespace(
+                channel_id="web",
+                session_id="sess-1",
+                metadata={"request_id": "req-1"},
+            )
+        )
+    assert cron_tools.routes == []
+
+
+@pytest.mark.asyncio
+async def test_enterprise_backend_does_not_take_identity_from_non_metadata_context() -> None:
+    cron_tools = _EnterpriseFakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    context = SimpleNamespace(
+        channel_id="web",
+        session_id="sess-1",
+        metadata={"request_id": "req-1"},
+        group_id="attacker-g",
+        bot_id="attacker-b",
+        user_id="attacker-u",
+        params={"group_id": "attacker-g", "bot_id": "attacker-b", "user_id": "attacker-u"},
+    )
+    with pytest.raises(ValueError, match="authenticated session"):
+        await backend.list_jobs(context=context)
+
+
+@pytest.mark.asyncio
+async def test_enterprise_injecting_backend_uses_adapter_proxy_identity() -> None:
+    cron_tools = _EnterpriseFakeCronTools()
+    inner = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    backend = _ContextInjectingCronBackend(inner, _FallbackAdapterContext())
+    await backend.list_jobs()
+    assert cron_tools.routes[0].session_id == "sess-adapter"
+    assert cron_tools.routes[0].group_id == "g1"
+    assert cron_tools.routes[0].bot_id == "b1"
+    assert cron_tools.routes[0].user_id == "u1"
+

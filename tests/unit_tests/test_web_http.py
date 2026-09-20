@@ -285,6 +285,82 @@ def test_http_dispatch_registers_outbound_not_ws(monkeypatch: pytest.MonkeyPatch
     asyncio.run(_run())
 
 
+def test_http_dispatch_session_create_emits_resolve_identity(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """企业 HTTP 对等 #1：session.create + X-User-Id → http_resolve_identity UA。"""
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from jiuwenswarm.gateway.channel_manager.web import web_http_dispatch as disp
+
+    channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
+    audit_calls: list[dict[str, Any]] = []
+
+    def _capture_ua(**kwargs: Any) -> None:
+        audit_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.audit_emit.emit_audit_ua",
+        _capture_ua,
+    )
+    monkeypatch.setattr(disp, "is_enterprise", lambda: True)
+
+    async def _handler(ws, req_id, params, session_id, **kwargs):
+        await channel.send_response(ws, req_id, ok=True, payload={"id": "s1"})
+
+    channel.register_method("session.create", _handler)
+    channel.register_method("chat.send", _handler)
+
+    async def _run():
+        out, _rid, _sid = await disp.dispatch_http_request(
+            channel,
+            method="session.create",
+            params={"title": "t"},
+            headers={
+                "X-Request-Id": "req-id-1",
+                "X-User-Id": "user-alice",
+            },
+            client_host="10.0.0.8",
+            use_sse=False,
+        )
+        await channel.unregister_request_outbound(out)
+
+        assert len(audit_calls) == 1
+        assert audit_calls[0]["PROC"] == "http_resolve_identity"
+        assert audit_calls[0]["SUBMDL"] == "gateway"
+        assert audit_calls[0]["UID"] == "user-alice"
+        assert audit_calls[0]["request_id"] == "req-id-1"
+
+        audit_calls.clear()
+        out2, _rid2, _sid2 = await disp.dispatch_http_request(
+            channel,
+            method="chat.send",
+            params={"content": "hi"},
+            headers={
+                "X-Request-Id": "req-id-2",
+                "X-User-Id": "user-alice",
+                "X-Session-Id": "sess-1",
+            },
+            client_host="10.0.0.8",
+            use_sse=False,
+        )
+        await channel.unregister_request_outbound(out2)
+        assert audit_calls == []
+
+        out3, _rid3, _sid3 = await disp.dispatch_http_request(
+            channel,
+            method="session.create",
+            params={},
+            headers={"X-Request-Id": "req-id-3"},
+            client_host="10.0.0.8",
+            use_sse=False,
+        )
+        await channel.unregister_request_outbound(out3)
+        assert audit_calls == []
+
+    asyncio.run(_run())
+
+
 def test_http_sse_unregister_on_cancel():
     """S4: client cancel / stop clears request outbound routing tables."""
     from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
@@ -487,6 +563,53 @@ def test_sessions_list_create_delete(app_with_mock):
     r = client.delete("/api/v1/sessions/s_x")
     assert r.status_code == 200
     assert r.json()["ok"] is True
+
+
+@pytest.mark.parametrize("path", [
+    "/api/v1/chat/completions", "/api/v1/chat/send", "/api/v1/chat/resume",
+    "/api/v1/chat/sess_1/actions/user_answer", "/api/v1/chat/sess_1/actions/answer",
+])
+@pytest.mark.parametrize("stream,accept", [(True, "application/json"), (False, "application/json"), (False, "text/event-stream")])
+@pytest.mark.parametrize("field", ["user_id", "group_id", "bot_id", "gateway_id"])
+def test_chat_rejects_conflicting_identity_before_dispatch(app_with_mock, path, stream, accept, field):
+    app, dispatch = app_with_mock
+    response = TestClient(app).post(
+        path,
+        json={"session_id": "sess_1", "query": "probe", "user_id": "A", field: "B", "enable_streaming": stream},
+        headers={"X-" + field.replace("_", "-"): "A", "X-Request-Id": "conflict", "Accept": accept},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "IDENTITY_CONFLICT"
+    assert response.headers["x-request-id"] == "conflict"
+    dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize("path", [
+    "/api/v1/chat/completions", "/api/v1/chat/resume",
+    "/api/v1/chat/sess_1/actions/user_answer",
+])
+@pytest.mark.parametrize("body_identity", [
+    {}, {"bot_id": "A"}, {"bot_id": " A "}, {"bot_id": None},
+    {"bot_id": ""}, {"bot_id": "  "},
+    {"user_id": "A", "user": "B"},  # user is not a routing identity field.
+])
+def test_chat_accepts_matching_or_header_only_identity(app_with_mock, body_identity, path):
+    app, dispatch = app_with_mock
+
+    async def _disp(*args, **kwargs):
+        rid = kwargs["request_id"]
+        return _FakePeer([
+            {"type": "res", "id": rid, "ok": True, "payload": {"accepted": True}},
+        ]), rid, "sess_1"
+
+    dispatch.side_effect = _disp
+    response = TestClient(app).post(
+        path,
+        json={"session_id": "sess_1", "query": "probe", "enable_streaming": False, **body_identity},
+        headers={"X-Bot-Id": "A", "X-User-Id": "A"},
+    )
+    assert response.status_code == 200
+    dispatch.assert_awaited_once()
 
 
 def test_chat_completions_sse(app_with_mock):

@@ -383,7 +383,17 @@ def create_memory_settings(
 
 def is_agent_mode(mode: str) -> bool:
     normalized_mode = (mode or "").strip()
-    return normalized_mode in ("agent", "agent.plan", "agent.fast", "plan", "fast")
+    # flash 与 agent 共用记忆档（modes.agent.memory）：flash 是 deep 的裁剪
+    # profile，不单设记忆节点；不归一的话 reload 按 mode 解析记忆配置会得到
+    # {} → 视为禁用 → 已挂载的 memory rail 被静默卸载。
+    return normalized_mode in (
+        "agent",
+        "agent.plan",
+        "agent.fast",
+        "plan",
+        "fast",
+        "flash",
+    )
 
 
 def _resolve_mode_memory(mode: str, config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -393,6 +403,7 @@ def _resolve_mode_memory(mode: str, config: Optional[Dict[str, Any]]) -> Dict[st
       - "agent"                      -> modes.agent (merged single mode)
       - "agent.plan" / "agent.fast"  -> modes.agent (legacy tokens,归一)
       - "plan" / "fast"              -> modes.agent (legacy sub-tokens, 归一)
+      - "flash"                      -> modes.agent (flash 与 agent 共用记忆档)
       - "code" / "code.normal"       -> modes.code
 
     plan / fast 已合并为单一 ``agent`` 模式，记忆配置统一读取
@@ -406,7 +417,8 @@ def _resolve_mode_memory(mode: str, config: Optional[Dict[str, Any]]) -> Dict[st
 
     normalized_mode = (mode or "").strip()
     if is_agent_mode(normalized_mode):
-        # "agent" 或历史 "agent.plan" / "agent.fast" / 单独出现的 "plan" / "fast"
+        # "agent"、历史 "agent.plan" / "agent.fast" / 单独出现的 "plan" / "fast"、
+        # 以及 "flash"（与 agent 共用记忆档）
         node = modes_cfg.get("agent", {})
     elif normalized_mode == "code" or normalized_mode.startswith("code."):
         # "code" 及其子模式（code.normal / code.plan / code.team...）统一读取 modes.code。

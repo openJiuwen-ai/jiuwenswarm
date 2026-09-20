@@ -286,7 +286,7 @@ class SkillSourceProvider(ABC):
     ) -> bytes:
         """Download artifact bytes under the platform's secure download policy.
 
-        The default enforces HTTPS-only URLs, forbids redirects, applies the
+        The default accepts HTTP(S) URLs, forbids redirects, applies the
         DownloadPolicy ``max_bytes``/``timeout_seconds`` limits (timeout is
         clamped to at least 30s, matching the platform's historical behavior),
         requires a ZIP payload (PK magic, intact archive) and checks the
@@ -295,8 +295,8 @@ class SkillSourceProvider(ABC):
         """
         download_url = str(descriptor.download_url or "").strip()
         parsed = urlparse(download_url)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise RuntimeError("skill 下载 URL 必须是 HTTPS 地址")
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise RuntimeError("skill 下载 URL 必须是 HTTP 或 HTTPS 地址")
         policy = download_policy or DownloadPolicy()
         timeout = max(30.0, policy.timeout_seconds or DownloadPolicy.timeout_seconds)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:

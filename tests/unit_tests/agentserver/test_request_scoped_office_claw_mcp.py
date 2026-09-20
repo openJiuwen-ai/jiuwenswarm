@@ -618,6 +618,150 @@ async def test_stream_request_binds_active_tool_allowlist() -> None:
     assert seen == {"allowed": True, "rejected_foreign": True}
 
 
+def _team_answer_request(
+    *,
+    mode: str = "team",
+    source: str = "ask_user_interrupt",
+    request_id: str = "req-answer-1",
+) -> AgentRequest:
+    return AgentRequest(
+        request_id=request_id,
+        channel_id="officeclaw",
+        session_id="session-456",
+        params={
+            "query": "",
+            "mode": mode,
+            "source": source,
+            "status": "answered",
+            "request_id": "call_ask_user_1",
+            "answers": [
+                {
+                    "question": "文件存放到哪个目录？",
+                    "selected_options": ["当前项目目录"],
+                }
+            ],
+            "office_claw_mcp": _valid_config(),
+        },
+    )
+
+
+def _interactive_input_query() -> "InteractiveInput":
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    interactive_input = InteractiveInput()
+    interactive_input.update(
+        "call_ask_user_1",
+        {"status": "answered", "answers": [{"selected_options": ["当前项目目录"]}]},
+    )
+    return interactive_input
+
+
+@pytest.mark.asyncio
+async def test_stream_team_control_continuation_skips_request_mcp() -> None:
+    """team 模式 ask_user 作答不得注册 request-scoped MCP（会与暂停中的原始请求死锁）。"""
+    parent = object.__new__(JiuWenSwarmDeepAdapter)
+    parent._is_session_scoped_adapter = False
+    chunk = AgentResponseChunk(request_id="req-answer-1", channel_id="officeclaw")
+
+    class _Child:
+        def __init__(self) -> None:
+            self.register_request_scoped_office_claw_mcp = AsyncMock(
+                side_effect=AssertionError("must not register for team answer delivery")
+            )
+            self.cleanup_request_scoped_office_claw_mcp = AsyncMock()
+
+        async def process_message_stream_impl(self, request, inputs):
+            yield chunk
+
+    child = _Child()
+    parent._get_or_create_session_adapter = AsyncMock(return_value=child)
+    parent._evict_idle_session_adapters = AsyncMock()
+
+    chunks = [
+        item
+        async for item in parent.process_message_stream_impl(
+            _team_answer_request(),
+            {"query": _interactive_input_query()},
+        )
+    ]
+
+    assert chunks == [chunk]
+    child.cleanup_request_scoped_office_claw_mcp.assert_awaited_once_with(None)
+
+
+@pytest.mark.asyncio
+async def test_unary_team_control_continuation_skips_request_mcp() -> None:
+    parent = object.__new__(JiuWenSwarmDeepAdapter)
+    parent._is_session_scoped_adapter = False
+    response = AgentResponse(request_id="req-answer-1", channel_id="officeclaw")
+    child = SimpleNamespace(
+        register_request_scoped_office_claw_mcp=AsyncMock(
+            side_effect=AssertionError("must not register for team answer delivery")
+        ),
+        process_message_impl=AsyncMock(return_value=response),
+        cleanup_request_scoped_office_claw_mcp=AsyncMock(),
+    )
+    parent._get_or_create_session_adapter = AsyncMock(return_value=child)
+    parent._evict_idle_session_adapters = AsyncMock()
+
+    result = await parent.process_message_impl(
+        _team_answer_request(),
+        {"query": _interactive_input_query()},
+    )
+
+    assert result is response
+    child.cleanup_request_scoped_office_claw_mcp.assert_awaited_once_with(None)
+
+
+@pytest.mark.asyncio
+async def test_agent_mode_answer_still_registers_request_mcp() -> None:
+    """agent 模式的作答续跑仍需自行注册（原始请求已结束并释放注册）。"""
+    parent = object.__new__(JiuWenSwarmDeepAdapter)
+    parent._is_session_scoped_adapter = False
+    registration = OfficeClawMcpRegistration("req-answer-1", ("tool-id",), ("tool",))
+    response = AgentResponse(request_id="req-answer-1", channel_id="officeclaw")
+    child = SimpleNamespace(
+        register_request_scoped_office_claw_mcp=AsyncMock(return_value=registration),
+        process_message_impl=AsyncMock(return_value=response),
+        cleanup_request_scoped_office_claw_mcp=AsyncMock(),
+    )
+    parent._get_or_create_session_adapter = AsyncMock(return_value=child)
+    parent._evict_idle_session_adapters = AsyncMock()
+
+    result = await parent.process_message_impl(
+        _team_answer_request(mode="agent"),
+        {"query": _interactive_input_query()},
+    )
+
+    assert result is response
+    child.register_request_scoped_office_claw_mcp.assert_awaited_once()
+    child.cleanup_request_scoped_office_claw_mcp.assert_awaited_once_with(registration)
+
+
+@pytest.mark.asyncio
+async def test_team_normal_followup_still_registers_request_mcp() -> None:
+    """team 模式普通文本消息（非作答投递）仍需注册。"""
+    parent = object.__new__(JiuWenSwarmDeepAdapter)
+    parent._is_session_scoped_adapter = False
+    registration = OfficeClawMcpRegistration("req-follow-1", ("tool-id",), ("tool",))
+    response = AgentResponse(request_id="req-follow-1", channel_id="officeclaw")
+    child = SimpleNamespace(
+        register_request_scoped_office_claw_mcp=AsyncMock(return_value=registration),
+        process_message_impl=AsyncMock(return_value=response),
+        cleanup_request_scoped_office_claw_mcp=AsyncMock(),
+    )
+    parent._get_or_create_session_adapter = AsyncMock(return_value=child)
+    parent._evict_idle_session_adapters = AsyncMock()
+
+    request = _request(_valid_config(), request_id="req-follow-1")
+    request.params["mode"] = "team"
+    result = await parent.process_message_impl(request, {"query": "继续上一步"})
+
+    assert result is response
+    child.register_request_scoped_office_claw_mcp.assert_awaited_once()
+    child.cleanup_request_scoped_office_claw_mcp.assert_awaited_once_with(registration)
+
+
 def test_carrier_stores_on_ability_manager_and_rebinds() -> None:
     """The allowlist lives on the shared ability_manager, visible to either agent."""
     tool_id = "office-claw-request-aaa.office-claw.office_claw_multi_mention"

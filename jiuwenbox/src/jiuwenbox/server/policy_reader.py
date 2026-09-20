@@ -153,17 +153,18 @@ class PolicyReader:
         return base_policy_path()
 
     def load_policy(self) -> SecurityPolicy:
-        """读基底 (框架 default, 打包随 wheel) + 副本 (用户 user_config) 合并.
+        """Load the server root policy.
 
-        - 基底: ``base_policy_path()`` (windows-policy.yaml / default-policy.yaml),
-          随 wheel 升级, 提供 default 值; 热更新场景新字段经此生效.
-        - 副本: ``self.policy_path`` (``JIUWENBOX_POLICY_PATH`` env 指向 workspace 下
-          稀疏 user_config, 只存用户可配字段, 用 policy 字段名 e.g.
-          ``windows.filesystem.allow_read`` / ``windows.network.egress.allowed_domains``).
-          副本不存在 → 只读基底 (退化为无 user_config).
-        - 合并: ``policy_engine.merge_policy(基底, 副本)`` — dict 深合并, list 追加去重
-          (用户白名单叠加基底必需集, 不丢); 不生成合并文件 (与 jiuwenclaw config.yaml
-          template+override 机制对齐, 但用 list 追加语义而非替换).
+        Windows: merge bundled ``windows-policy.yaml`` (base) with the sparse
+        user copy at ``self.policy_path`` (``JIUWENBOX_POLICY_PATH``). Dict
+        fields deep-merge; list fields are appended and de-duplicated so a
+        user allowlist cannot drop the base required set. Copy missing /
+        unreadable → base only.
+
+        Other platforms: ``JIUWENBOX_POLICY_PATH`` is a complete replacement
+        (e.g. ``enterprise-policy.yaml``). It is loaded as-is and is **not**
+        merged with ``default-policy.yaml``. Missing / unreadable files fall
+        back to the bundled base.
         """
         base_path = base_policy_path()
         try:
@@ -187,7 +188,6 @@ class PolicyReader:
         ):
             return _resolve_tool_paths(base_policy)
 
-        # 有副本: 合并基底 + 副本 (副本用户配置叠加基底; list 追加, dict 深合并).
         try:
             override_data = yaml.safe_load(read_policy_text(self.policy_path)) or {}
         except (OSError, yaml.YAMLError, UnicodeDecodeError) as exc:
@@ -204,9 +204,14 @@ class PolicyReader:
         if not isinstance(override_data, dict) or not override_data:
             return _resolve_tool_paths(base_policy)
 
-        return _resolve_tool_paths(
-            self.policy_engine.merge_policy(base_policy, override_data)
-        )
+        # 基底+副本 list 并集只服务 Windows 稀疏 user_config. Linux 上
+        # JIUWENBOX_POLICY_PATH 指向完整 policy (enterprise-policy.yaml 等),
+        # 合并会把 default-policy.yaml 的 /home 等 list 项带进沙箱.
+        if sys.platform == "win32":
+            return _resolve_tool_paths(
+                self.policy_engine.merge_policy(base_policy, override_data)
+            )
+        return _resolve_tool_paths(SecurityPolicy.model_validate(override_data))
 
     def load_policy_from_file(self, path: Path) -> SecurityPolicy:
         """从单文件加载 (不合并, 用于 per-sandbox policy 文件)."""

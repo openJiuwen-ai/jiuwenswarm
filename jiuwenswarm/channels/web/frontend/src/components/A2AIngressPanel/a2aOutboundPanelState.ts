@@ -46,6 +46,7 @@ export interface A2AOutboundAgent {
 export interface A2AOutboundSettings {
   allow_loopback: boolean;
   allow_http: boolean;
+  allow_private_network: boolean;
 }
 
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -130,9 +131,9 @@ export function normalizeA2AOutboundList(value: unknown): A2AOutboundAgent[] | n
 
 export function normalizeA2AOutboundSettings(value: unknown): A2AOutboundSettings | null {
   if (!value || typeof value !== 'object') return null;
-  const { allow_loopback, allow_http } = value as Record<string, unknown>;
-  return typeof allow_loopback === 'boolean' && typeof allow_http === 'boolean'
-    ? { allow_loopback, allow_http }
+  const { allow_loopback, allow_http, allow_private_network = false } = value as Record<string, unknown>;
+  return typeof allow_loopback === 'boolean' && typeof allow_http === 'boolean' && typeof allow_private_network === 'boolean'
+    ? { allow_loopback, allow_http, allow_private_network }
     : null;
 }
 

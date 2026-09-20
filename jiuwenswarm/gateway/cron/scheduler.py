@@ -1147,6 +1147,112 @@ class CronSchedulerService:
     async def _handle_event(self, ev: _Event) -> None:
         job = self._jobs.get(ev.job_id)
 
+        # Long-horizon stage: toast / inbox only — never fall through to ordinary
+        # cron LLM wake (that creates stray cron_* sessions and stamps cron_id).
+        if job is not None and ev.kind == "wake":
+            try:
+                from jiuwenswarm.gateway.long_horizon.job_tags import (
+                    is_long_horizon_cron_job,
+                    parse_long_horizon_description,
+                    should_drop_oneshot_after_mark_due,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[Cron] long_horizon import failed job=%s: %s",
+                    getattr(job, "id", ev.job_id),
+                    exc,
+                    exc_info=True,
+                )
+                is_lh = str(getattr(job, "id", "") or "").startswith("lh-")
+                if is_lh:
+                    return
+            else:
+                if is_long_horizon_cron_job(job):
+                    logger.info(
+                        "[Cron] long_horizon stage wake job=%s run_id=%s",
+                        job.id,
+                        ev.run_id,
+                    )
+                    try:
+                        desc = str(getattr(job, "description", "") or "")
+                        parsed = parse_long_horizon_description(desc)
+                        if parsed is None:
+                            logger.warning(
+                                "[Cron] long_horizon job missing tags job=%s",
+                                job.id,
+                            )
+                            return
+                        task_id, stage_id = parsed
+                        from jiuwenswarm.gateway.long_horizon.agent_call import (
+                            broadcast_stage_due,
+                            call_agent_long_horizon,
+                        )
+
+                        targets = str(getattr(job, "targets", "") or "web").strip() or "web"
+                        result = await call_agent_long_horizon(
+                            action="mark_due",
+                            params={
+                                "task_id": task_id,
+                                "stage_id": stage_id,
+                                "job_id": job.id,
+                                "service_id": self._service_id,
+                                "agent_id": self._agent_id,
+                            },
+                            channel_id=targets,
+                            agent_client=self._agent_client,
+                            service_id=self._service_id,
+                            agent_id=self._agent_id,
+                        )
+                        if result.get("success"):
+                            await broadcast_stage_due(
+                                self._message_handler,
+                                result,
+                                channel_id=targets,
+                            )
+                        if job.delete_after_run:
+                            if not should_drop_oneshot_after_mark_due(result):
+                                logger.warning(
+                                    "[Cron] long_horizon mark_due failed, keep job=%s err=%s",
+                                    job.id,
+                                    result.get("error"),
+                                )
+                            else:
+                                try:
+                                    await self._store.delete_job(job.id, force=True)
+                                    self._jobs.pop(job.id, None)
+                                except Exception as exc:
+                                    logger.warning(
+                                        "[Cron] delete long_horizon job failed "
+                                        "job=%s: %s",
+                                        job.id,
+                                        exc,
+                                    )
+                                    try:
+                                        await self._store.update_job(
+                                            job.id, {"expired": True}
+                                        )
+                                        job.expired = True
+                                    except Exception as mark_exc:
+                                        logger.warning(
+                                            "[Cron] mark long_horizon job expired failed "
+                                            "job=%s: %s",
+                                            job.id,
+                                            mark_exc,
+                                        )
+                        logger.info(
+                            "[Cron] long_horizon stage done job=%s success=%s",
+                            job.id,
+                            result.get("success"),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[Cron] long_horizon stage wake failed job=%s: %s",
+                            job.id,
+                            exc,
+                            exc_info=True,
+                        )
+                    return
+
         # Handle proactive.tick mode: send WebSocket request to AgentServer
         if job is not None and job.mode == "proactive.tick" and ev.kind == "wake":
             if not await self._claim_wake(job, ev.run_id):

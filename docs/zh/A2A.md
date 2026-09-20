@@ -1,6 +1,6 @@
 # A2A 接入说明
 
-本文说明 Gateway 侧 **A2A 入站服务**的管理入口、配置方式、与内部 `Message`/E2A 的对应关系及端到端验证方式；出站 A2A（Agent 调外部）见 §7。
+本文说明 Gateway 侧 **A2A 入站服务**的管理入口、配置方式、与内部 `Message`/E2A 的对应关系及端到端验证方式；出站 A2A（Agent 调外部）见 §7，完整 HTTP 契约见 [Gateway A2A HTTP 接口文档](Gateway%20A2A接口文档.md)。
 
 > **运行时所有者**：`jiuwenswarm/gateway/a2a_manager/manager.py`（`A2AManager`）。**协议适配器**：`jiuwenswarm/gateway/channel_manager/protocol/a2a/a2a_connect.py`（`A2AChannel` + `a2a-sdk`）。**入口进程**：`python -m jiuwenswarm.gateway.app_gateway`。冲突时以源码为准，并回头修正本文。
 
@@ -17,13 +17,14 @@
 | `jiuwenswarm/gateway/message_handler/message_handler.py` | 与 AgentServer 的 E2A 收发、内部 `Message` 编排 |
 | `jiuwenswarm/gateway/channel_manager/channel_manager.py` | 频道注册与 `robot_messages` → `Channel.send` 派发 |
 | [E2A-protocol.md](E2A-protocol.md) | Gateway↔AgentServer 内层协议 |
+| [Gateway A2A接口文档.md](Gateway%20A2A接口文档.md) | 出站 Web HTTP、企业 Config Receiver、权限及 DTO |
 
 ---
 
 ## 1. 职责边界
 
 - **入站（本文）**：外部 A2A 客户端 → `A2AChannel` → `ChannelManager` → `MessageHandler` → E2A → AgentServer；回复沿同一路径返回，经 `TaskStatusUpdateEvent` / `TaskArtifactUpdateEvent` 输出（流式）或聚合结果（非流式）。
-- **出站**：Agent 侧通过 A2A MCP Hub 等工具访问外部 A2A，接线在 AgentServer 适配层（见 §7），不在 `A2AChannel` 内实现。
+- **出站**：Gateway 维护外部 A2A Agent 的目录、凭据引用和派发记录；AgentServer 通过反向 RPC 调用 Gateway 的查找、派发和结果查询能力（见 §7）。
 
 ---
 
@@ -69,7 +70,7 @@ uv sync --extra a2a
 
 AgentServer 连接仍由网关既有逻辑配置（例如 `AGENT_SERVER_URL` 等），与 A2A 监听端口独立。
 
-运行期间可在 Web 的“更多设置 → A2A 调度中心”查看状态、保存配置、启用、停用或重载入站服务，无需重启 Gateway。页面目前只管理入站监听，不提供外部 Agent 发现、出站调用或自动调度。
+运行期间可在 Web 的“更多设置 → A2A 调度中心”查看状态、保存配置、启用、停用或重载入站服务，无需重启 Gateway。
 
 当 `A2A_SERVER_ENABLED=true` 且未安装 `jiuwenswarm[a2a]`（或 `uv sync --extra a2a`）时，Gateway 主流程仍会继续启动；A2A 通道启动失败会在日志中输出明确安装指引。
 
@@ -131,7 +132,7 @@ flowchart LR
     Ch --> Caller
 ```
 
-入站将 A2A `message.parts` 映射为 `Message.params` 的 `query` 与可选 `files`；不写入 `params["a2a"]` 等扩展结构。回包将内部 `Message.payload` 映射为 A2A `Part` 列表（含多模态与工具事件文本化）。
+入站只提取 A2A `message.parts` 中的文本并合并为 `Message.params.query`；文件、URL、二进制等非文本 Part 会被丢弃，`params.files` 固定为空列表。回包将内部 `Message.payload` 映射为 A2A `Part` 列表（含多模态与工具事件文本化）。
 
 ---
 
@@ -144,7 +145,7 @@ flowchart LR
 | `task_id` 或生成值 | `Message.id`（与回包关联） |
 | `context_id` | `Message.session_id` |
 | `parts[].text` | 合并为 `params.query` |
-| `parts` 中非文本（url / data / raw） | `params.files[]`（含与 web 对齐的冗余键） |
+| `parts` 中非文本（url / data / raw） | 丢弃；`params.files=[]` |
 | 元数据 | `Message.metadata` |
 
 ### 6.2 响应（`Message` → A2A）
@@ -161,7 +162,9 @@ flowchart LR
 
 ## 7. 出站 A2A（Agent 侧）
 
-- 当前仓库未包含独立的 A2A MCP Hub 注册模块；若后续恢复该能力，请以实际接线代码与环境变量定义为准。
+- Gateway 的 `A2AManager` 负责外部 A2A Agent 的发现、注册、运行态目录、启停投影和派发记录。
+- AgentServer 侧工具通过 Gateway 反向 RPC 执行 Agent 查找、同步/异步派发以及派发结果查询；企业版使用 Gateway 注入的可信用户、会话和资源身份进行授权与历史隔离。
+- Web HTTP 和企业 Config Receiver 的已实现接口、请求响应及权限规则见 [Gateway A2A HTTP 接口文档](Gateway%20A2A接口文档.md)。
 
 ---
 

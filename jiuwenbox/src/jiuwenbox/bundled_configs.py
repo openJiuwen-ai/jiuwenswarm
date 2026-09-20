@@ -30,11 +30,12 @@ def default_policy_path() -> Path:
 
 
 def base_policy_path() -> Path:
-    """ policy 路径 (框架 default, 随 wheel 升级只读).
+    """Bundled policy path (framework default, read-only, upgraded with the wheel).
 
-    Windows: ``windows-policy.yaml``; 其它平台 (Linux): ``default-policy.yaml``.
-    box-server 读 ``base_policy_path()`` (基底 default) + ``JIUWENBOX_POLICY_PATH``
-    (用户副本 user_config) 合并, 不生成合并文件 (见 policy_merge).
+    Windows: ``windows-policy.yaml``. Other platforms: ``default-policy.yaml``.
+    On Windows, box-server merges this base with the sparse user copy at
+    ``JIUWENBOX_POLICY_PATH``. On Linux, ``JIUWENBOX_POLICY_PATH`` replaces
+    the base entirely (no merge).
     """
     name = "windows-policy.yaml" if sys.platform == "win32" else "default-policy.yaml"
     return configs_dir() / name

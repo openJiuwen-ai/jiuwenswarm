@@ -150,7 +150,10 @@ class TestHandleStatuslinePromptCommand:
     # --- Exclusion cases (known subcommands should NOT be matched) ---
 
     @pytest.mark.parametrize(
-        "subcmd", list(_STATUSLINE_KNOWN_SUBCOMMANDS)
+        # sorted：参数源是 set 字面量，迭代序随每个 xdist worker 的
+        # PYTHONHASHSEED 变化 → 各 worker 收集顺序不同 → pytest-xdist
+        # "Different tests were collected between gw0 and gw1" 中止。
+        "subcmd", sorted(_STATUSLINE_KNOWN_SUBCOMMANDS)
     )
     @staticmethod
     def test_known_subcommands_excluded(subcmd: str):

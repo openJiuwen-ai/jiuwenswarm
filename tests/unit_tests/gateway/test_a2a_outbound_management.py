@@ -146,7 +146,7 @@ def _card(
 
 
 class _DiscoverySequence:
-    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
+    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool, allow_private_network: bool = False) -> None:
         self.allow_loopback = allow_loopback
         self.allow_http = allow_http
 
@@ -731,15 +731,18 @@ def test_app_gateway_wires_outbound_repository_without_removed_edition_module():
 @pytest.mark.parametrize("allow_loopback", [False, True])
 @pytest.mark.parametrize("allow_http", [False, True])
 @pytest.mark.parametrize("scheme", ["http", "https"])
-@pytest.mark.parametrize("address", ["93.184.216.34", "127.0.0.1", "::1", "192.168.1.27"])
-async def test_personal_network_switches_are_independent(address, scheme, allow_loopback, allow_http):
+@pytest.mark.parametrize("allow_private_network", [False, True])
+@pytest.mark.parametrize("address", ["93.184.216.34", "127.0.0.1", "::1", "192.168.1.27", "10.0.0.1", "172.16.0.1", "172.31.255.254", "169.254.169.254", "0.0.0.0", "224.0.0.1", "fc00::1", "::ffff:192.168.1.27"])
+async def test_personal_network_switches_are_independent(address, scheme, allow_loopback, allow_http, allow_private_network):
     async def resolver(host, port):
         return [address]
 
     service = A2AOutboundDiscoveryService(address_resolver=resolver)
-    service.set_network_settings(allow_loopback=allow_loopback, allow_http=allow_http)
+    service.set_network_settings(allow_loopback=allow_loopback, allow_http=allow_http, allow_private_network=allow_private_network)
     allowed = (
-        (address == "93.184.216.34" or (allow_loopback and address in {"127.0.0.1", "::1"}))
+        (address == "93.184.216.34"
+         or (allow_loopback and address in {"127.0.0.1", "::1"})
+         or (allow_private_network and address in {"192.168.1.27", "10.0.0.1", "172.16.0.1", "172.31.255.254"}))
         and (scheme == "https" or allow_http)
     )
     if allowed:
@@ -749,3 +752,35 @@ async def test_personal_network_switches_are_independent(address, scheme, allow_
         with pytest.raises(A2AOutboundError) as error:
             await service.validate_network_target(f"{scheme}://agent.example.com/a2a")
         assert error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_endpoint", [False, True])
+async def test_personal_lan_discovery_and_registration(blocked_endpoint):
+    async def resolver(host, port):
+        return [host]
+
+    endpoint = "http://169.254.169.254/a2a" if blocked_endpoint else "http://192.168.1.27:19117/a2a"
+    payload = _card(endpoint).agent_card
+    pins = []
+
+    def transport(addresses):
+        pins.append(addresses)
+        return httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+
+    repository = A2AOutboundRepository(InMemoryPersistentBackend())
+    registry = A2AOutboundRegistry(
+        repository,
+        discovery_service=A2AOutboundDiscoveryService(address_resolver=resolver, transport_factory=transport),
+    )
+    registry.set_network_settings(allow_loopback=False, allow_http=True, allow_private_network=True)
+    if blocked_endpoint:
+        with pytest.raises(A2AOutboundError) as error:
+            await registry.discover("http://192.168.1.27:19117")
+        assert error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED
+    else:
+        preview = await registry.discover("http://192.168.1.27:19117")
+        agent = await registry.register({"discovery_id": preview["discovery_id"]})
+        assert agent["selected_interface"]["url"] == endpoint
+        assert await repository.get_agent(agent["agent_id"]) is not None
+    assert pins == [{"192.168.1.27": "192.168.1.27"}]

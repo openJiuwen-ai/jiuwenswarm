@@ -52,7 +52,7 @@ export function classifyPrompt(pq: AskUserQuestionPayload | null | undefined): P
   const firstOptions = pq.questions?.[0]?.options ?? [];
   const looksLikePermission = firstOptions.some((o) =>
     [
-      '本次允许', '总是允许', '永久记住', '会话内记住', '拒绝',
+      '本次允许', '总是允许', '永久记住', '本会话内允许', '会话内记住', '拒绝',
       'allow_once', 'always_allow', 'allow_always', 'session_allow', 'reject',
     ].includes(
       (o.value || o.label || '').trim(),
@@ -75,7 +75,7 @@ const ALLOW_ALWAYS_LABELS = new Set([
   '总是允许', '永久记住', 'always_allow', 'allow_always', 'Always Allow',
 ]);
 const SESSION_ALLOW_LABELS = new Set([
-  '会话内记住', 'session_allow', 'Session Allow',
+  '本会话内允许', '会话内记住', 'session_allow', 'Session Allow',
 ]);
 const REJECT_LABELS = new Set(['拒绝', 'reject', 'Reject']);
 

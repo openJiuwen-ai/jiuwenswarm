@@ -20,12 +20,14 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+from jiuwenswarm.common.local_env_config import read_env
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 from jiuwenswarm.gateway.routing.agent_client import (
     AGENT_REQUEST_TIMEOUT_SECONDS,
     AgentServerClient,
 )
+from jiuwenswarm.common.audit_emit import AuditTimer, emit_audit_evt, emit_audit_ua
 from jiuwenswarm.gateway.routing.agent_rest_map import (
     assemble_rest_request,
     normalize_agent_http_base,
@@ -33,8 +35,20 @@ from jiuwenswarm.gateway.routing.agent_rest_map import (
 
 logger = logging.getLogger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    """读进程级环境变量并转 int；非数字/≤0 时回退默认值。"""
+    try:
+        value = int(float(read_env(name, "").strip()))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 _CONNECT_TIMEOUT_SECONDS = 10.0
 _PUSH_RETRY_SECONDS = 3.0
+# 企业按 Pod 订阅：连续 TCP 失败才停，避免活 Pod 闪断被立刻 drop。
+_PUSH_MAX_CONNECT_FAILURES = 3
 # 与 WebSocketAgentServerClient._delayed_cleanup_cancelled_request_id 对齐。
 _CANCELLED_RID_TTL_SECONDS = 2.0
 
@@ -142,6 +156,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         timeout_s: float = AGENT_REQUEST_TIMEOUT_SECONDS,
         http_client: httpx.AsyncClient | None = None,
         link_mtls_config: LinkMTLSConfig | None = None,
+        retry_push_connect: bool = True,
     ) -> None:
         self._timeout_s = float(timeout_s)
         self._http = http_client
@@ -158,6 +173,9 @@ class HttpSseAgentServerClient(AgentServerClient):
         self._cancelled_request_ids: set[str] = set()
         self._inflight_stream_ids: dict[str, _StreamScope | None] = {}
         self._link_mtls = link_mtls_config
+        # False：连续 TCP 失败后停（企业按 Pod IP）。True：继续重连（开源固定 URL）。
+        self._retry_push_connect = retry_push_connect
+        self._push_connect_failures = 0
 
     def _link_config(self) -> LinkMTLSConfig:
         if self._link_mtls is None:
@@ -181,7 +199,21 @@ class HttpSseAgentServerClient(AgentServerClient):
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
     ) -> None:
         self._on_server_push = handler
-        if handler is not None and self._running and self._push_task is None:
+        self._start_push_loop()
+
+    def add_push_done_callback(
+        self, callback: Callable[[asyncio.Task[None]], None]
+    ) -> None:
+        """Observe push-loop exit without poking ``_push_task``."""
+        task = self._push_task
+        if isinstance(task, asyncio.Task):
+            task.add_done_callback(callback)
+
+    def _start_push_loop(self) -> None:
+        task = self._push_task
+        if task is not None and task.done():
+            self._push_task = None
+        if self._on_server_push is not None and self._running and self._push_task is None:
             self._push_task = asyncio.create_task(self._push_loop(), name="agent-http-push")
 
     @property
@@ -205,9 +237,11 @@ class HttpSseAgentServerClient(AgentServerClient):
     def _ensure_http(self) -> httpx.AsyncClient:
         if self._http is None:
             link_mtls = self._link_config()
+            max_conns = _env_int("GATEWAY_AGENT_HTTP_MAX_CONNECTIONS", 200)
+            max_keepalive = _env_int("GATEWAY_AGENT_HTTP_MAX_KEEPALIVE", 20)
             self._http = httpx.AsyncClient(
                 timeout=httpx.Timeout(self._timeout_s, connect=_CONNECT_TIMEOUT_SECONDS),
-                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+                limits=httpx.Limits(max_connections=max_conns, max_keepalive_connections=max_keepalive),
                 follow_redirects=False,
                 trust_env=False,
                 **link_mtls.client_kwargs(role="agentserver"),
@@ -260,9 +294,9 @@ class HttpSseAgentServerClient(AgentServerClient):
             )
         self._server_ready = True
         self._running = True
+        self._push_connect_failures = 0
         logger.info("[HttpSseAgentServerClient] health ok: %s", health_url)
-        if self._on_server_push is not None and self._push_task is None:
-            self._push_task = asyncio.create_task(self._push_loop(), name="agent-http-push")
+        self._start_push_loop()
 
     async def disconnect(self) -> None:
         self._running = False
@@ -293,32 +327,57 @@ class HttpSseAgentServerClient(AgentServerClient):
     async def send_request(
         self, envelope: E2AEnvelope, *, base_url: str | None = None
     ) -> AgentResponse:
-        http = self._ensure_http()
-        api_root = self._resolve_api_root(base_url)
-        envelope.is_stream = False
-        assembled = assemble_rest_request(envelope, base_url=api_root)
-        channel_id = str(envelope.channel or "web")
-        rid = str(envelope.request_id or "")
-        logger.info(
-            "[E2A][out][http][unary] request_id=%s method=%s %s %s rpc=%s",
-            rid,
-            envelope.method,
-            assembled.verb,
-            assembled.url,
-            assembled.used_rpc_fallback,
-        )
-        response = await http.request(
-            assembled.verb,
-            assembled.url,
-            headers=self._request_headers(assembled.headers),
-            json=assembled.json_body,
-            params=assembled.query,
-        )
-        _raise_for_pod_http_error(response, base_url=base_url)
-        payload = _response_json(response, request_id=rid)
-        return http_unary_to_agent_response(
-            payload, channel_id=channel_id, request_id=rid
-        )
+        from jiuwenswarm.common.audit_net import resolve_peer_ip
+
+        with AuditTimer() as timer:
+            http = self._ensure_http()
+            api_root = self._resolve_api_root(base_url)
+            envelope.is_stream = False
+            assembled = assemble_rest_request(envelope, base_url=api_root)
+            channel_id = str(envelope.channel or "web")
+            rid = str(envelope.request_id or "")
+            peer_ip = resolve_peer_ip(assembled.url or api_root)
+            logger.info(
+                "[E2A][out][http][unary] request_id=%s method=%s %s %s rpc=%s",
+                rid,
+                envelope.method,
+                assembled.verb,
+                assembled.url,
+                assembled.used_rpc_fallback,
+            )
+            try:
+                response = await http.request(
+                    assembled.verb,
+                    assembled.url,
+                    headers=self._request_headers(assembled.headers),
+                    json=assembled.json_body,
+                    params=assembled.query,
+                )
+                _raise_for_pod_http_error(response, base_url=base_url)
+                payload = _response_json(response, request_id=rid)
+                result = http_unary_to_agent_response(
+                    payload, channel_id=channel_id, request_id=rid
+                )
+            except Exception as exc:
+                emit_audit_evt(
+                    SUBMDL="api_client",
+                    PROC="http_agent_send",
+                    MSG=str(exc),
+                    EVT="http_agent_send_failed",
+                    request_id=rid,
+                    method=str(envelope.method or ""),
+                    DSTIP=peer_ip,
+                )
+                raise
+            emit_audit_ua(
+                SUBMDL="api_client",
+                PROC="http_agent_send",
+                COST=timer.cost_ms,
+                request_id=rid,
+                method=str(envelope.method or ""),
+                DSTIP=peer_ip,
+            )
+            return result
 
     def _is_stream_cancelled(self, rid: str) -> bool:
         return bool(rid) and rid in self._cancelled_request_ids
@@ -471,6 +530,7 @@ class HttpSseAgentServerClient(AgentServerClient):
                     ),
                     timeout=timeout,
                 ) as response:
+                    self._push_connect_failures = 0
                     response.raise_for_status()
                     async for frame in iter_sse_data_frames(response):
                         if frame.get("event_type") == "gateway.push_ready":
@@ -500,6 +560,21 @@ class HttpSseAgentServerClient(AgentServerClient):
             except Exception as exc:  # noqa: BLE001
                 if not self._running:
                     return
+                if not self._retry_push_connect and isinstance(
+                    exc, (httpx.ConnectError, httpx.ConnectTimeout)
+                ):
+                    self._push_connect_failures += 1
+                    if self._push_connect_failures >= _PUSH_MAX_CONNECT_FAILURES:
+                        logger.warning(
+                            "[HttpSseAgentServerClient] events/stream 目标不可达，停止推送循环: "
+                            "%s url=%s failures=%s",
+                            exc,
+                            url,
+                            self._push_connect_failures,
+                        )
+                        self._running = False
+                        self._server_ready = False
+                        return
                 logger.warning(
                     "[HttpSseAgentServerClient] events/stream 断开，%.0fs 后重连: %s",
                     _PUSH_RETRY_SECONDS,

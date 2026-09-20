@@ -30,6 +30,14 @@ def test_pre_execute_allows_unrelated_ps() -> None:
     assert err is None
 
 
+def test_pre_execute_blocks_python_stop_process_pipeline() -> None:
+    err = _pre_execute_shell_command(
+        "Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force"
+    )
+    assert err is not None
+    assert "rejected for safety" in err
+
+
 def test_install_wraps_bash_tool_invoke() -> None:
     from openjiuwen.harness.tools.shell.bash._tool import BashTool
 

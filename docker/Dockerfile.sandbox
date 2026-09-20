@@ -3,7 +3,13 @@ FROM ${BASE_IMAGE}
 
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
 
-RUN useradd --create-home --shell /bin/bash app
+# 沙箱运行期 pip 源（构建期 uv 不读 pip.conf）：只需传 index-url，trusted-host 由 RUN 内 shell 从 URL 解析
+ARG PIP_INDEX_URL="https://mirrors.aliyun.com/pypi/simple/"
+
+# uid/gid 固定 1000：与部署侧 CLAW_USER/CLAW_GROUP(=1000) 硬契约对齐，
+# 防止基础镜像占用 1000 时属主漂移（构建期直接失败，fail fast）
+RUN groupadd --gid 1000 app \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash app
 WORKDIR /app/jiuwenswarm/jiuwenbox
 
 COPY jiuwenbox/pyproject.toml ./pyproject.toml
@@ -16,6 +22,14 @@ RUN uv pip install --system --break-system-packages \
 
 COPY docker/sandbox-entrypoint.sh /usr/local/bin/sandbox-entrypoint.sh
 RUN chmod +x /usr/local/bin/sandbox-entrypoint.sh
+
+RUN if [ -z "$PIP_INDEX_URL" ]; then echo "PIP_INDEX_URL is empty" >&2; exit 1; fi && \
+    TRUSTED_HOST=${PIP_INDEX_URL#*//} && \
+    TRUSTED_HOST=${TRUSTED_HOST%%/*} && \
+    echo '[global]' > /etc/pip.conf && \
+    echo "index-url = ${PIP_INDEX_URL}" >> /etc/pip.conf && \
+    echo "trusted-host = ${TRUSTED_HOST}" >> /etc/pip.conf && \
+    chmod 644 /etc/pip.conf
 
 EXPOSE 8321
 EXPOSE 8322

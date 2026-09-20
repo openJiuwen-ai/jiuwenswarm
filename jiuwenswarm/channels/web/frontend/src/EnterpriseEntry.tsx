@@ -11,7 +11,13 @@ import {
   type EnterpriseContextSnapshot,
   type EnterpriseContextValue,
 } from './services/enterpriseContext';
-import { parseRuntimeScope, setRuntimeScope } from './services/runtimeScope';
+import {
+  requestExtEntries,
+  getRuntimeScope,
+  parseRuntimeScope,
+  setRuntimeScope,
+  type RuntimeScope,
+} from './services/runtimeScope';
 
 type EntryPhase = 'loading' | 'ready' | 'empty' | 'error' | 'redirecting' | 'login-required';
 
@@ -92,12 +98,16 @@ function contextUrl(
   selected: EnterpriseAgentContext,
   debugContext = false,
   resetPath = false,
+  launchScope?: RuntimeScope,
 ): string {
   const query = new URLSearchParams({
     user_id: selected.user_id,
     group_id: selected.group_id,
     bot_id: selected.bot_id,
   });
+  for (const [key, value] of requestExtEntries(launchScope)) {
+    query.set(key, value);
+  }
   if (selected.jiuwenclaw_id) query.set('jiuwenclaw_id', selected.jiuwenclaw_id);
   if (debugContext) query.set('debug_context', '1');
   const path = resetPath
@@ -113,13 +123,15 @@ function activateContext(
   navigate: boolean,
   debugContext = false,
   resetPath = false,
+  launchScope?: RuntimeScope,
 ): void {
   setRuntimeScope({
     userId: selected.user_id,
     groupId: selected.group_id,
     botId: selected.bot_id,
+    ext: launchScope?.ext ?? {},
   });
-  const nextUrl = contextUrl(selected, debugContext, resetPath);
+  const nextUrl = contextUrl(selected, debugContext, resetPath, launchScope);
   if (navigate) window.location.replace(nextUrl);
   else window.history.replaceState({}, '', nextUrl);
 }
@@ -287,16 +299,22 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
           setPhase('empty');
           return;
         }
+        const launchScope =
+          preferred.userId === selected.user_id &&
+          preferred.groupId === selected.group_id &&
+          preferred.botId === selected.bot_id
+            ? preferred
+            : undefined;
         const clusterChanged = await ensureActiveCluster(provider, selected.jiuwenclaw_id);
         if (cancelled) return;
         if (clusterChanged) {
           // Cookie 已指向新实例，整页刷新让 nginx 改打 /chat、/gateway-api
           window.location.replace(
-            contextUrl(selected, isDebugContext(window.location.search), true),
+            contextUrl(selected, isDebugContext(window.location.search), true, launchScope),
           );
           return;
         }
-        activateContext(selected, false, isDebugContext(window.location.search));
+        activateContext(selected, false, isDebugContext(window.location.search), false, launchScope);
         setContext({ user, contexts, selected });
         setPhase('ready');
       } catch (bootstrapError) {
@@ -333,7 +351,9 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
         void (async () => {
           try {
             const clusterChanged = await ensureActiveCluster(provider, selected.jiuwenclaw_id);
-            activateContext(selected, true, false, clusterChanged);
+            // 透传字段是宿主注入的会话级参数：切换上下文必须随 launchScope 写回
+            // 刷新后的 URL（activateContext 的 navigate 路径整页 reload），否则静默丢失。
+            activateContext(selected, true, false, clusterChanged, { ext: getRuntimeScope().ext });
           } catch (switchError) {
             setContextSwitching(false);
             setContextError(errorText(switchError));
@@ -369,6 +389,7 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
               true,
               true,
               clusterChanged,
+              { ext: getRuntimeScope().ext },
             );
           } catch (switchError) {
             setContextSwitching(false);

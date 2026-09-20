@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import inspect
+import random
 from typing import Any
 
 from openjiuwen.core.common.logging import logger
@@ -35,6 +36,19 @@ _COUNT_ATTRS: dict[str, str] = {
     "transient_invoke": "transient_invoke_retry_count",
 }
 
+_INITIAL_BACKOFF = 5.0
+_MAX_BACKOFF = 60.0
+_BACKOFF_FACTOR = 2.0
+# Jitter is sampled per retry request, not baked into the generated sequence:
+# concurrent callers share one rail instance (SkillTurbo PPT page gather), so a
+# constructor-time sample would keep them synchronized and defeat the purpose.
+_BACKOFF_JITTER_RANGE = (0.5, 1.5)
+
+
+def _exponential_backoff(attempt: int) -> float:
+    """Return exponential backoff delay: initial * factor^attempt, capped at max."""
+    return min(_INITIAL_BACKOFF * (_BACKOFF_FACTOR ** attempt), _MAX_BACKOFF)
+
 
 def _parent_accepts_retry_transient_invoke_errors() -> bool:
     return "retry_transient_invoke_errors" in inspect.signature(LLMRetryRail.__init__).parameters
@@ -59,6 +73,17 @@ class NotifyingLLMRetryRail(LLMRetryRail):
         if _parent_accepts_retry_transient_invoke_errors():
             parent_kwargs["retry_transient_invoke_errors"] = retry_transient_invoke_errors
         super().__init__(**parent_kwargs)
+
+        # Generate the exponential schedule only when the caller did not supply
+        # one; build it from the parent-resolved self.max_retries so the parent
+        # default is never duplicated here.
+        if kwargs.get("backoff_seconds") is None:
+            self.backoff_seconds = [
+                _exponential_backoff(i) for i in range(self.max_retries)
+            ]
+            self._backoff_generated = True
+        else:
+            self._backoff_generated = False
 
         if not hasattr(self, "transient_invoke_retry_count"):
             self.transient_invoke_retry_count = 0
@@ -119,14 +144,26 @@ class NotifyingLLMRetryRail(LLMRetryRail):
         elif not will_retry and self.notify_user_on_exhausted:
             await self._emit_retry_exhausted(ctx, reason, ctx.exception)
 
-        self._request_retry_or_reset(ctx, reason)
+        self._request_retry_or_reset(ctx, reason, delay=delay)
 
-    def _request_retry_or_reset(self, ctx: AgentCallbackContext, reason: str) -> None:
+    def _apply_backoff_jitter(self, delay: float) -> float:
+        """Jitter only the auto-generated schedule; explicit caller values stay exact."""
+        if self._backoff_generated and delay > 0:
+            return delay * random.uniform(*_BACKOFF_JITTER_RANGE)
+        return delay
+
+    def _request_retry_or_reset(
+        self,
+        ctx: AgentCallbackContext,
+        reason: str,
+        delay: float | None = None,
+    ) -> None:
         counts = self._retry_counts(ctx)
         count = counts.get(reason, 0)
         attr = _COUNT_ATTRS.get(reason)
         if count < self.max_retries:
-            delay = self.backoff_delay(count)
+            if delay is None:
+                delay = self._apply_backoff_jitter(self.backoff_delay(count))
             counts[reason] = count + 1
             if attr is not None:
                 setattr(self, attr, counts[reason])
@@ -152,7 +189,8 @@ class NotifyingLLMRetryRail(LLMRetryRail):
         """Return ``(will_retry, attempt_number, max_attempts, delay_seconds)``."""
         count = self._retry_counts(ctx).get(reason, 0)
         if count < self.max_retries:
-            return True, count + 1, self.max_retries, self.backoff_delay(count)
+            delay = self._apply_backoff_jitter(self.backoff_delay(count))
+            return True, count + 1, self.max_retries, delay
         return False, count, self.max_retries, 0.0
 
     @staticmethod

@@ -204,7 +204,7 @@ class TestValidateRequestScopedRemoteMcp:
 
 
 class TestCreateMcpToolStdio:
-    """用户连接器 create_mcp_tool 接受白名单 stdio（方案 §5.2）。"""
+    """个人版用户连接器 create_mcp_tool 接受白名单 stdio（方案 §5.2）。"""
 
     def test_basic_stdio(self):
         cfg = json.dumps({"name": "my-tool", "command": "node", "args": ["server.js"]})
@@ -265,6 +265,55 @@ class TestCreateMcpToolStdio:
         cfg = json.dumps({"name": "bad", "command": "node", "args": ["-e", "1"]})
         with pytest.raises(ValueError, match="危险"):
             create_mcp_tool(cfg)
+
+    def test_enterprise_rejects_stdio(self, monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.mcp_config.is_enterprise", lambda: True
+        )
+        cfg = json.dumps({
+            "name": "local",
+            "type": "stdio",
+            "command": "node",
+            "args": ["s.js"],
+        })
+        with pytest.raises(ValueError, match="不支持本地 stdio"):
+            create_mcp_tool(cfg)
+
+    def test_enterprise_unknown_type_not_misreported_as_stdio(self, monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.mcp_config.is_enterprise", lambda: True
+        )
+        cfg = json.dumps({
+            "name": "weird",
+            "type": "websocket",
+            "command": "node",
+            "args": ["s.js"],
+        })
+        with pytest.raises(ValueError, match="不支持 type=") as exc_info:
+            create_mcp_tool(cfg)
+        assert "本地 stdio" not in str(exc_info.value)
+
+    def test_unknown_type_rejected_in_personal(self):
+        cfg = json.dumps({
+            "name": "weird",
+            "type": "websocket",
+            "command": "node",
+            "args": ["s.js"],
+        })
+        with pytest.raises(ValueError, match="不支持 type="):
+            create_mcp_tool(cfg)
+
+    def test_enterprise_still_allows_remote(self, monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.mcp_config.is_enterprise", lambda: True
+        )
+        cfg = json.dumps({
+            "name": "remote",
+            "type": "sse",
+            "url": "http://127.0.0.1:3001/sse",
+        })
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "sse"
 
 
 class TestCreateMcpToolSse:
@@ -485,6 +534,32 @@ class TestBuildMcpServerConfigStdio:
         assert cfg is not None
         assert cfg.client_type == "stdio"
         assert cfg.params["command"] == "node"
+
+    def test_enterprise_rejects_stdio_transport(self, monkeypatch):
+        warned: list[tuple] = []
+
+        def _capture_warning(msg, *args, **kwargs):
+            warned.append((msg, args))
+
+        monkeypatch.setattr(
+            "jiuwenswarm.common.mcp_config.is_enterprise", lambda: True
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.common.mcp_config.logger.warning", _capture_warning
+        )
+        cfg = build_mcp_server_config(
+            {
+                "name": "local",
+                "transport": "stdio",
+                "command": "node",
+                "args": ["s.js"],
+            }
+        )
+        assert cfg is None
+        assert len(warned) == 1
+        msg, args = warned[0]
+        assert "rejects local stdio" in msg
+        assert args == ("local",)
 
 
 class TestBuildMcpServerConfigAuthHeaders:
