@@ -22,6 +22,45 @@ test('existing full-duplex spoken replies stay expanded after history restore wi
   assert.deepEqual(messages.map((message) => message.keepExpanded), [true, true, undefined]);
 });
 
+test('history restores accepted supplemental user input metadata', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    {
+      id: 'original:user',
+      role: 'user',
+      content: 'write 500 words',
+      timestamp: 1,
+    },
+    {
+      id: 'supplement:user',
+      role: 'user',
+      content: 'change to 200 words',
+      timestamp: 2,
+      is_supplemental_input: true,
+      supplemental_input: {
+        execution_id: 'execution-A',
+        stream_offset: 0,
+      },
+    },
+    {
+      id: 'answer:assistant',
+      role: 'assistant',
+      event_type: 'chat.final',
+      content: 'complete answer',
+      timestamp: 3,
+    },
+  ], sessionId);
+
+  assert.deepEqual(messages.map((message) => message.content), [
+    'write 500 words',
+    'change to 200 words',
+    'complete answer',
+  ]);
+  assert.deepEqual(messages[1].supplementalInput, {
+    executionId: 'execution-A',
+    streamOffset: 0,
+  });
+});
+
 test('history distinguishes a Core Agent result from Qwen acknowledgement and receipt', () => {
   const messages = parseHistoryJsonFileToPreviewMessages([
     { id: 'ack', role: 'assistant', event_type: 'chat.final', content: '我来处理。', timestamp: 1 },

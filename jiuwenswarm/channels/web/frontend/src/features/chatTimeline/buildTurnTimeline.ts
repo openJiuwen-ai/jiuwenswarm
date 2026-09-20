@@ -148,57 +148,123 @@ export function buildTimelineItems(
     segment,
   }));
 
-  return [...splitSupplementedMessages(messageItems), ...executionItems, ...reasoningItems].sort(compareTimelineItems);
+  return placeSupplementedAssistantAfterWork(
+    groupSupplementalMessages(
+      [...messageItems, ...executionItems, ...reasoningItems].sort(compareTimelineItems)
+    )
+  );
 }
 
-/** Split display text only. The original message, stream cursor and model response remain intact. */
-function splitSupplementedMessages(items: TimelineItem[]): TimelineItem[] {
-  const boundaries = new Map<string, Extract<TimelineItem, { type: 'message' }>[]>();
+/** Keep supplemental inputs together below their original user message without splitting assistant output. */
+function groupSupplementalMessages(items: TimelineItem[]): TimelineItem[] {
+  const assistantTurnAnchors = new Map<string, string>();
+  const fallbackAnchors = new Map<string, string>();
+  let currentUserKey: string | null = null;
+
   for (const item of items) {
-    if (item.type !== 'message' || item.message.role !== 'user') continue;
-    const streamId = item.message.supplementalInput?.streamMessageId;
-    if (!streamId) continue;
-    const group = boundaries.get(streamId) ?? [];
-    group.push(item);
-    boundaries.set(streamId, group);
-  }
-  return items.flatMap((item): TimelineItem[] => {
-    if (item.type !== 'message' || item.message.role !== 'assistant') return [item];
-    const cuts = boundaries.get(item.message.id);
-    if (!cuts?.length || !item.message.content) return [item];
-    cuts.sort(compareTimelineItems);
-    const parts: TimelineItem[] = [];
-    let start = 0;
-    let previous: typeof item | undefined;
-    const append = (end: number, last: boolean) => {
-      if (end <= start) return;
-      const key = previous ? `${item.key}/after/${previous.key}` : item.key;
-      parts.push({
-        ...item,
-        key,
-        timestampMs: previous?.timestampMs ?? item.timestampMs,
-        sourceIndex: previous ? previous.sourceIndex + 0.5 : item.sourceIndex,
-        message: {
-          ...item.message,
-          renderKey: key,
-          content: item.message.content.slice(start, end),
-          timestamp: previous?.message.timestamp ?? item.message.timestamp,
-          isStreaming: last && item.message.isStreaming,
-          completedAt: last ? item.message.completedAt : undefined,
-          fileItems: last ? item.message.fileItems : undefined,
-          mediaItems: last ? item.message.mediaItems : undefined,
-        },
-      });
-    };
-    for (const cut of cuts) {
-      const end = Math.max(start, Math.min(cut.message.supplementalInput!.streamOffset, item.message.content.length));
-      append(end, end === item.message.content.length);
-      start = end;
-      previous = cut;
+    if (item.type !== 'message') continue;
+    if (item.message.role === 'user' && !item.message.supplementalInput) {
+      currentUserKey = item.key;
+      continue;
     }
-    append(item.message.content.length, true);
-    return parts;
-  });
+    if (item.message.role === 'user' && item.message.supplementalInput) {
+      if (currentUserKey) fallbackAnchors.set(item.key, currentUserKey);
+      continue;
+    }
+    if (item.message.role === 'assistant' && currentUserKey) {
+      assistantTurnAnchors.set(item.message.id, currentUserKey);
+    }
+  }
+
+  const supplementsByAnchor = new Map<string, Extract<TimelineItem, { type: 'message' }>[]>();
+  const groupedSupplements = new Set<TimelineItem>();
+  for (const item of items) {
+    if (item.type !== 'message' || item.message.role !== 'user' || !item.message.supplementalInput) {
+      continue;
+    }
+    const streamId = item.message.supplementalInput.streamMessageId;
+    const anchorKey =
+      (streamId ? assistantTurnAnchors.get(streamId) : undefined) ?? fallbackAnchors.get(item.key);
+    if (!anchorKey) continue;
+    const group = supplementsByAnchor.get(anchorKey) ?? [];
+    group.push(item);
+    supplementsByAnchor.set(anchorKey, group);
+    groupedSupplements.add(item);
+  }
+
+  const grouped: TimelineItem[] = [];
+  for (const item of items) {
+    if (groupedSupplements.has(item)) continue;
+    grouped.push(item);
+    const supplements = supplementsByAnchor.get(item.key);
+    if (supplements) grouped.push(...supplements);
+  }
+  return grouped;
+}
+
+/** In a supplemented turn, keep the final ordinary assistant answer after all work. */
+function placeSupplementedAssistantAfterWork(items: TimelineItem[]): TimelineItem[] {
+  const reordered = [...items];
+  const isOrdinaryUser = (
+    item: TimelineItem
+  ): item is Extract<TimelineItem, { type: 'message' }> =>
+    item.type === 'message' &&
+    item.message.role === 'user' &&
+    !item.message.supplementalInput;
+  let turnStart = 0;
+  while (turnStart < reordered.length) {
+    while (turnStart < reordered.length && !isOrdinaryUser(reordered[turnStart])) {
+      turnStart += 1;
+    }
+    if (turnStart >= reordered.length) break;
+
+    let turnEnd = reordered.length;
+    for (let index = turnStart + 1; index < reordered.length; index += 1) {
+      const item = reordered[index];
+      if (isOrdinaryUser(item)) {
+        turnEnd = index;
+        break;
+      }
+    }
+
+    const hasSupplement = reordered
+      .slice(turnStart + 1, turnEnd)
+      .some(
+        (item) =>
+          item.type === 'message' &&
+          item.message.role === 'user' &&
+          Boolean(item.message.supplementalInput)
+      );
+    if (!hasSupplement) {
+      turnStart = turnEnd;
+      continue;
+    }
+
+    let assistantIndex = -1;
+    let lastWorkIndex = -1;
+    for (let index = turnStart + 1; index < turnEnd; index += 1) {
+      const item = reordered[index];
+      if (
+        item.type === 'message' &&
+        item.message.role === 'assistant' &&
+        !item.message.keepExpanded &&
+        item.message.presentation !== 'tool_result' &&
+        !item.message.isProactiveRecommendation &&
+        !isGoalCompletedContent(item.message.content)
+      ) {
+        assistantIndex = index;
+      }
+      if (reordered[index].type === 'reasoning' || reordered[index].type === 'toolExecution') {
+        lastWorkIndex = index;
+      }
+    }
+    if (assistantIndex >= 0 && lastWorkIndex > assistantIndex) {
+      const [assistant] = reordered.splice(assistantIndex, 1);
+      reordered.splice(lastWorkIndex, 0, assistant);
+    }
+    turnStart = turnEnd;
+  }
+  return reordered;
 }
 
 const IMAGE_TOOL_FALLBACK_NOTICE_PREFIX = 'notice-image_tool_fallback-';
@@ -589,6 +655,11 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
     if (item.type === 'message' && item.message.role === 'user' && item.message.supplementalInput) {
       // A supplement is visible between output pieces but does not close or restart the task timer.
       out.push(item);
+      // Leading supplements still belong to the user-input area. Keep the timer immediately
+      // above the first assistant/reasoning/tool content instead of before these user bubbles.
+      if (!hasActivity) {
+        turnContentStart = out.length;
+      }
       continue;
     }
     if (item.type === 'message' && item.message.role === 'user') {

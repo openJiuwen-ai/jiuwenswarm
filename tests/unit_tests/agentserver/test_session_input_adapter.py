@@ -7,12 +7,55 @@ from contextlib import asynccontextmanager, nullcontext
 
 import pytest
 
+from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_adapter.session_input import (
     SessionInputDeliveryUnknown, SessionInputGuard,
 )
 from jiuwenswarm.runtime.context import reset_runtime_context, set_runtime_context
 from jiuwenswarm.runtime.session.model import SessionExecutionState
+
+
+@pytest.mark.asyncio
+async def test_accepted_steer_persists_supplemental_user_history(monkeypatch):
+    async def deliver(_request, _inputs):
+        yield SimpleNamespace(payload={
+            "event_type": "runtime.accepted",
+            "request_id": "supplement-request",
+        })
+
+    facade = interface_module.JiuWenSwarm()
+    facade._adapter = SimpleNamespace(deliver_session_input_impl=deliver)
+    facade._session_manager = SimpleNamespace(get_session_id=lambda value: value)
+    facade._build_inputs = lambda _request: ({"query": "change to 200 words"}, "disabled", None)
+    monkeypatch.setattr(interface_module, "restore_chat_send_equipment_params", Mock())
+    history_io = AsyncMock()
+    monkeypatch.setattr(interface_module, "_run_history_io", history_io)
+    request = SimpleNamespace(
+        request_id="supplement-request",
+        channel_id="web",
+        session_id="session",
+        metadata={},
+        params={
+            "query": "change to 200 words",
+            "input_mode": "steer",
+            "expected_execution_id": "execution-A",
+            "mode": "agent",
+        },
+    )
+
+    chunks = [chunk async for chunk in facade.deliver_session_input(request)]
+
+    assert chunks[0].payload["event_type"] == "runtime.accepted"
+    history_io.assert_awaited_once()
+    kwargs = history_io.await_args.kwargs
+    assert kwargs["role"] == "user"
+    assert kwargs["content"] == "change to 200 words"
+    assert kwargs["extra"]["is_supplemental_input"] is True
+    assert kwargs["extra"]["supplemental_input"] == {
+        "execution_id": "execution-A",
+        "stream_offset": 0,
+    }
 
 
 @pytest.mark.asyncio

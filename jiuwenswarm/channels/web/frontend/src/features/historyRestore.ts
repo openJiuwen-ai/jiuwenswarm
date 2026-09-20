@@ -924,6 +924,39 @@ function isTruthyHistoryFlag(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
 }
 
+function extractHistorySupplementalInput(
+  record: Record<string, unknown>
+): Message['supplementalInput'] | undefined {
+  const payload = buildEventPayloadForRecord(record);
+  const raw = isRecord(record.supplemental_input)
+    ? record.supplemental_input
+    : isRecord(payload.supplemental_input)
+      ? payload.supplemental_input
+      : null;
+  const marked =
+    isTruthyHistoryFlag(record.is_supplemental_input) ||
+    isTruthyHistoryFlag(payload.is_supplemental_input) ||
+    Boolean(raw);
+  if (!marked) return undefined;
+
+  const executionId = raw ? pickFirstString(raw, ['execution_id', 'executionId']) ?? '' : '';
+  const streamMessageId = raw
+    ? pickFirstString(raw, ['stream_message_id', 'streamMessageId'])
+    : undefined;
+  const rawOffset = raw?.stream_offset ?? raw?.streamOffset;
+  const numericOffset =
+    typeof rawOffset === 'number'
+      ? rawOffset
+      : typeof rawOffset === 'string' && rawOffset.trim()
+        ? Number(rawOffset)
+        : 0;
+  return {
+    executionId,
+    ...(streamMessageId ? { streamMessageId } : {}),
+    streamOffset: Number.isFinite(numericOffset) && numericOffset >= 0 ? numericOffset : 0,
+  };
+}
+
 function compactTokenCount(value: number): string {
   const abs = Math.abs(value);
   if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
@@ -1005,6 +1038,7 @@ function parseHistoryTimelineEntry(
     const userCrossSession =
       extractCrossSessionMessage(record) ??
       extractCrossSessionMessage(buildEventPayloadForRecord(record));
+    const supplementalInput = extractHistorySupplementalInput(record);
     const id = userCrossSession
       ? crossSessionUserMessageId(userCrossSession.messageId)
       : restoredId;
@@ -1021,6 +1055,7 @@ function parseHistoryTimelineEntry(
         ...(skills && skills.length > 0 ? { skills } : {}),
         ...(userAutomation ? { automation: userAutomation } : {}),
         ...(userCrossSession ? { crossSession: userCrossSession } : {}),
+        ...(supplementalInput ? { supplementalInput } : {}),
       },
     };
   }

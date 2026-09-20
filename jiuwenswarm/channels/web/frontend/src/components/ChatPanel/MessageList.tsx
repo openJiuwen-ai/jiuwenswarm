@@ -709,8 +709,11 @@ export function ChatTimelineList({
     const initial = initialAdmission(renderItems, timelineScope);
     return new Map([[timelineScope, initial]]);
   });
-  const admission = admissionByScope.get(timelineScope)
-    ?? { scope: timelineScope, firstKey: '', lastKey: null };
+  const admission = useMemo(
+    () => admissionByScope.get(timelineScope)
+      ?? { scope: timelineScope, firstKey: '', lastKey: null },
+    [admissionByScope, timelineScope],
+  );
   const resolvedAdmission = useMemo(
     () => resolveTimelineAdmission(renderItems, timelineScope, admission, virtualized),
     [admission, renderItems, timelineScope, virtualized],
@@ -1128,6 +1131,25 @@ export function ChatTimelineList({
     });
   };
 
+  const renderTurnChip = (
+    turnKey: string,
+    meta: NonNullable<ReturnType<typeof turnWorkMeta.get>>
+  ) => (
+    <CompletedWorkChip
+      key={`${timelineScope}/completed-work-${turnKey}`}
+      variant="turn"
+      outcomeTone={meta.outcomeTone}
+      expanded={Boolean(expandedTurns[turnKey])}
+      onToggle={() => toggleTurn(turnKey)}
+      elapsedMs={completedWorkDurationMs(meta)}
+      showAvatar
+      teamLayout={isTeamMode}
+      agentTemplateName={agentTemplateNameByTurn.get(meta.turnId)}
+      teamLeaderIdentity={teamLeaderIdentity}
+      teamGroupIdentity={teamGroupIdentity}
+    />
+  );
+
   return (
     <div
       ref={timelineRef}
@@ -1174,6 +1196,7 @@ export function ChatTimelineList({
           const isFoldAnchor = turnFoldAnchorKeys.get(item.turnId) === item.key;
           const isTurnAnchor =
             Boolean(meta) &&
+            !chipAnchoredTurns.current.has(turnKey) &&
             (isFoldAnchor ||
               (!turnFoldAnchorKeys.has(item.turnId) &&
                 (meta!.firstWorkKey === item.key ||
@@ -1185,22 +1208,7 @@ export function ChatTimelineList({
           const nodes: ReactNode[] = [];
 
           if (turnFoldable && isTurnAnchor && meta) {
-            nodes.push(
-              <CompletedWorkChip
-                key={`${timelineScope}/completed-work-${turnKey}`}
-                variant="turn"
-                outcomeTone={meta.outcomeTone}
-                expanded={turnOpen}
-                onToggle={() => toggleTurn(turnKey)}
-                // 折叠条就是该轮视觉顶部：头像必须挂在这里，不能跟 meta/内容区抢来抢去。
-                elapsedMs={completedWorkDurationMs(meta)}
-                showAvatar
-                teamLayout={isTeamMode}
-                agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
-                teamLeaderIdentity={teamLeaderIdentity}
-                teamGroupIdentity={teamGroupIdentity}
-              />
-            );
+            nodes.push(renderTurnChip(turnKey, meta));
           }
 
           // 轮次展开后才露出 streak chip；内容仍可按 streak 再折一层
@@ -1302,9 +1310,12 @@ export function ChatTimelineList({
 
         if (item.type === 'turnSummary') {
           const meta = turnWorkMeta.get(item.turnId);
-          // 有折叠工作的已完成轮次：耗时已并入折叠条文案（头像下第一行），时间行不再重复渲染。
+          // 已完成工作条使用 summary 的顶部位置；若 summary 被虚拟窗口裁掉，
+          // reasoning/tool 分支仍会在首个工作项处提供兜底锚点。
           if (meta?.completed && meta.hasWork) {
-            return null;
+            const turnKey = stableTurnKeyById.get(item.turnId) ?? item.key;
+            chipAnchoredTurns.current.add(turnKey);
+            return renderTurnChip(turnKey, meta);
           }
           const range = meta
             ? turnElapsedRangeMs(meta)

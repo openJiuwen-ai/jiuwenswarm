@@ -138,6 +138,8 @@ export interface ChatRuntime {
   /** 本轮是否已按工具边界分段（chat.final 去重）。 */
   assistantStreamSplit: boolean;
   reasoningSegments: ReasoningSegment[];
+  /** 已接受补充输入；仅在下一条 reasoning 真正到达时分段。 */
+  reasoningInputBoundaryPending: boolean;
   /** 「思考中」耗时锚点：仅在可见文字产出时前移。 */
   thinkingAnchorAt: number;
   messageRenderKeySeq: number;
@@ -192,6 +194,7 @@ function createEmptyRuntime(): ChatRuntime {
     currentStreamId: null,
     assistantStreamSplit: false,
     reasoningSegments: [],
+    reasoningInputBoundaryPending: false,
     thinkingAnchorAt: Date.now(),
     messageRenderKeySeq: 0,
     error: null,
@@ -531,7 +534,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ? options.atMs
           : Date.now();
       let next: ReasoningSegment[];
-      if (last && !last.closed) {
+      if (last && !last.closed && !runtime.reasoningInputBoundaryPending) {
         // 每个 delta 都推进 updatedAt，使耗时终点不依赖 closeReasoning 收尾事件
         next = segments.slice(0, -1).concat({
           ...last,
@@ -542,7 +545,15 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             : {}),
         });
       } else {
-        next = segments.concat({
+        const settledSegments =
+          last && !last.closed && runtime.reasoningInputBoundaryPending
+            ? segments.slice(0, -1).concat({
+                ...last,
+                closed: true,
+                closedAt: atMs,
+              })
+            : segments;
+        next = settledSegments.concat({
           id: createReasoningSegmentId(),
           text: content,
           startedAt: atMs,
@@ -554,7 +565,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, reasoningSegments: next },
+          [sessionId]: {
+            ...runtime,
+            reasoningSegments: next,
+            reasoningInputBoundaryPending: false,
+          },
         },
       };
     });
@@ -566,7 +581,15 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime) return state;
       const segments = runtime.reasoningSegments;
       const last = segments[segments.length - 1];
-      if (!last || last.closed) return state;
+      if (!last || last.closed) {
+        if (!runtime.reasoningInputBoundaryPending) return state;
+        return {
+          runtimes: {
+            ...state.runtimes,
+            [sessionId]: { ...runtime, reasoningInputBoundaryPending: false },
+          },
+        };
+      }
       const atMs =
         typeof options?.atMs === 'number' && Number.isFinite(options.atMs)
           ? options.atMs
@@ -582,6 +605,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               closedAt: atMs,
               updatedAt: atMs,
             }),
+            reasoningInputBoundaryPending: false,
           },
         },
       };
@@ -766,10 +790,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ? m.role === 'system' && typeof m.id === 'string' && m.id.startsWith('team-leader-')
           : m.role === 'assistant';
       const kept: Message[] = [];
+      const removedIds = new Set<string>();
       let removed = 0;
       for (let i = 0; i < msgs.length; i += 1) {
         if (i >= turnStart && isTarget(msgs[i])) {
           removed += 1;
+          removedIds.add(msgs[i].id);
           continue;
         }
         kept.push(msgs[i]);
@@ -779,7 +805,18 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         kind === 'team'
           ? `team.leader:${JSON.stringify({ content, timestamp: Date.parse(timestampIso) || Date.now() })}`
           : content;
-      kept.push({
+      const reboundMessages = kept.map((message) => {
+        const streamMessageId = message.supplementalInput?.streamMessageId;
+        if (!streamMessageId || !removedIds.has(streamMessageId)) return message;
+        return {
+          ...message,
+          supplementalInput: {
+            ...message.supplementalInput!,
+            streamMessageId: finalId,
+          },
+        };
+      });
+      reboundMessages.push({
         id: finalId,
         role: kind === 'team' ? 'system' : 'assistant',
         content: displayContent,
@@ -793,7 +830,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
-            messages: kept,
+            messages: reboundMessages,
             assistantStreamSplit: false,
             currentStreamId: null,
             currentStreamContent: '',
@@ -864,7 +901,10 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             isProcessing: status,
-            ...(!status ? { activeExecutionId: null } : {}),
+            ...(!status ? {
+              activeExecutionId: null,
+              reasoningInputBoundaryPending: false,
+            } : {}),
             executionError: status ? null : runtime.executionError,
             ...(status ? { error: null } : {}),
             ...(turnStart ? { thinkingAnchorAt: Date.now() } : {}),
@@ -1697,6 +1737,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ...(acceptedMessages ? {
               messages: [...runtime.messages, ...acceptedMessages.messages],
               messageRenderKeySeq: acceptedMessages.messageRenderKeySeq,
+              reasoningInputBoundaryPending: true,
             } : {}),
             taskQueue:
               status === 'accepted'

@@ -3085,7 +3085,8 @@ class JiuWenSwarm:
         """Submit new text to this Session, independently of question answers."""
         from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 
-        if is_interrupt_resume_payload(request.params) or resolve_session_input_mode(request.params) is None:
+        input_mode = resolve_session_input_mode(request.params)
+        if is_interrupt_resume_payload(request.params) or input_mode is None:
             raise ValueError("supplemental input requires an explicit input mode")
         validate_session_input(request.params)
         adapter = self._adapter
@@ -3095,8 +3096,38 @@ class JiuWenSwarm:
         session_id = self._session_manager.get_session_id(request.session_id)
         restore_chat_send_equipment_params(session_id, request.params)
         inputs, _memory_mode, _user_turn = self._build_inputs(request)
+        history_persisted = False
         async with aclosing(deliver(request, inputs)) as stream:
             async for chunk in stream:
+                payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+                if (
+                    not history_persisted
+                    and input_mode.value == "steer"
+                    and payload.get("event_type") == "runtime.accepted"
+                ):
+                    params = request.params if isinstance(request.params, dict) else {}
+                    history_extra = _history_user_extra(params) or {}
+                    history_extra.update({
+                        "is_supplemental_input": True,
+                        "supplemental_input": {
+                            "execution_id": str(params.get("expected_execution_id") or ""),
+                            "stream_offset": 0,
+                        },
+                    })
+                    query = params.get("query") or params.get("content") or ""
+                    await _run_history_io(
+                        append_history_record,
+                        session_id=session_id,
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        role="user",
+                        content=_history_user_content(params, query),
+                        timestamp=time.time(),
+                        extra=history_extra,
+                        channel_metadata=request.metadata,
+                        mode=params.get("mode", "unknown"),
+                    )
+                    history_persisted = True
                 yield chunk
 
     async def deliver_control_input(

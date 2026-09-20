@@ -188,9 +188,25 @@ async function mount(context) {
   };
 }
 
+function addOriginalUser(c, content = 'original question') {
+  act(() => c.store.addMessage(c.sid, {
+    id: `original-user-${c.sid}`,
+    role: 'user',
+    content,
+    timestamp: new Date(Date.now() - 1_000).toISOString(),
+  }));
+}
+
+function assertNodeBefore(earlier, later, message) {
+  const relation = earlier.compareDocumentPosition(later);
+  const following = earlier.ownerDocument.defaultView.Node.DOCUMENT_POSITION_FOLLOWING;
+  assert.ok(relation & following, message);
+}
+
 test('two queued messages: only the selected item steers, locks double click, and waits for Runtime ACK', async (context) => {
   const c = await mount(context);
   try {
+    addOriginalUser(c);
     const first = c.queue('next task');
     const second = c.queue('extra constraint');
     assert.equal(c.requests().length, 0);
@@ -249,7 +265,7 @@ test('two queued messages: only the selected item steers, locks double click, an
     await c.tick(16);
     assert.equal(c.runtime().messages.find((message) => message.id === streamId).content, 'original answer continued');
     const visible = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')].map((node) => node.textContent.trim());
-    assert.deepEqual(visible, ['original answer', 'extra constraint', 'continued']);
+    assert.deepEqual(visible, ['original question', 'extra constraint', 'original answer continued']);
     assert.equal(document.querySelectorAll('[data-testid="chat-panel-turn-elapsed-value"]').length, 1);
     c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
     await c.flush();
@@ -330,6 +346,7 @@ test('idle button rejection clears only its own pending state and leaves the ite
 test('the original final completes one task without duplicating text around the supplemental bubble', async (context) => {
   const c = await mount(context);
   try {
+    addOriginalUser(c);
     const streamId = c.runtime().currentStreamId;
     const anchor = c.runtime().thinkingAnchorAt;
     const id = c.queue('space theme');
@@ -344,7 +361,7 @@ test('the original final completes one task without duplicating text around the 
     c.receive('chat.final', { request_id: 'original', content: 'original answer in space' });
     await c.flush();
     const visible = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')].map(node => node.textContent.trim());
-    assert.deepEqual(visible, ['original answer', 'space theme', 'in space']);
+    assert.deepEqual(visible, ['original question', 'space theme', 'original answer in space']);
     assert.equal(document.querySelectorAll('[data-testid="chat-panel-turn-elapsed-value"]').length, 1);
     assert.equal(c.runtime().isProcessing, false);
     assert.equal(c.runtime().currentStreamId, null);
@@ -627,14 +644,14 @@ test('a connection failure before assigning a request ID stays associated with t
   }
 });
 
-test('steering receipts do not change the thinking header or add visible feedback', async (context) => {
+test('accepted steering preserves the thinking display while recording a lazy reasoning boundary', async (context) => {
   const c = await mount(context);
   try {
     c.receive('chat.reasoning', { request_id: 'original', content: 'original reasoning only' });
     const header = () => document.querySelector('[data-testid="chat-panel-reasoning-panel-header"]').outerHTML;
     const originalHeader = header();
     const reasoning = c.runtime().reasoningSegments;
-    const assertOriginalDisplay = () => {
+    const assertStableDisplay = () => {
       assert.equal(header(), originalHeader);
       assert.equal(document.querySelector('[data-testid="chat-panel-task-input-feedback"]'), null);
       assert.equal(document.querySelector('[data-testid="chat-panel-task-input-receipt"]'), null);
@@ -645,27 +662,113 @@ test('steering receipts do not change the thinking header or add visible feedbac
     };
     const accepted = c.queue('supplement');
     await c.click(accepted, 'send');
-    assertOriginalDisplay();
+    assertStableDisplay();
     c.receive('runtime.accepted', { request_id: c.requests()[0].id });
     await c.flush();
     assert.equal(c.receipt(accepted).status, 'accepted');
-    assertOriginalDisplay();
+    assert.equal(c.runtime().reasoningSegments[0].closed, false);
+    assert.equal(c.runtime().reasoningInputBoundaryPending, true);
+    assertStableDisplay();
     const failed = c.queue('rejected supplement');
     await c.click(failed, 'send');
     c.receive('chat.error', { request_id: c.requests()[1].id, error: 'SDK rejected input' });
     await c.flush();
     assert.equal(c.receipt(failed).status, 'failed');
-    assertOriginalDisplay();
+    assertStableDisplay();
     const unknown = c.queue('unconfirmed supplement');
     await c.click(unknown, 'send');
     c.receive('chat.error', { request_id: c.requests()[2].id, error: 'delivery uncertain', code: 'SESSION_INPUT_DELIVERY_UNKNOWN' });
     await c.flush();
     assert.equal(c.receipt(unknown).status, 'unknown');
-    assertOriginalDisplay();
+    assertStableDisplay();
   } finally {
     await c.dispose();
   }
 });
+
+for (const scenario of [
+  {
+    name: 'before reasoning',
+    before: null,
+    closeBefore: false,
+    after: 'reasoning after early supplement',
+    expectedSegments: ['reasoning after early supplement'],
+    boundaryPending: false,
+    withoutStreamId: true,
+  },
+  {
+    name: 'during reasoning',
+    before: 'reasoning before supplement',
+    closeBefore: false,
+    after: 'reasoning after supplement',
+    expectedSegments: ['reasoning before supplement', 'reasoning after supplement'],
+    boundaryPending: false,
+  },
+  {
+    name: 'after reasoning',
+    before: 'completed reasoning before supplement',
+    closeBefore: true,
+    after: null,
+    expectedSegments: ['completed reasoning before supplement'],
+    boundaryPending: true,
+  },
+]) {
+  test(`supplement ${scenario.name} keeps user-work-answer layout`, async (context) => {
+    const c = await mount(context);
+    try {
+      addOriginalUser(c);
+      if (scenario.before) {
+        c.receive('chat.reasoning', { request_id: 'original', content: scenario.before });
+      }
+      if (scenario.closeBefore) {
+        act(() => c.store.closeReasoning(c.sid));
+      }
+      if (scenario.withoutStreamId) {
+        act(() => c.store.stopStreaming(c.sid));
+      }
+
+      const taskId = c.queue(`supplement ${scenario.name}`);
+      await c.click(taskId, 'send');
+      c.receive('runtime.accepted', { request_id: c.requests()[0].id });
+      await c.flush();
+
+      if (scenario.after) {
+        c.receive('chat.reasoning', { request_id: 'original', content: scenario.after });
+        await c.flush();
+      }
+
+      const runtime = c.runtime();
+      assert.deepEqual(
+        runtime.reasoningSegments.map((segment) => segment.text),
+        scenario.expectedSegments,
+      );
+      assert.equal(runtime.reasoningInputBoundaryPending, scenario.boundaryPending);
+
+      const bubbles = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')];
+      const originalUser = bubbles.find((node) => node.textContent.trim() === 'original question');
+      const supplement = bubbles.find(
+        (node) => node.textContent.trim() === `supplement ${scenario.name}`,
+      );
+      const assistant = bubbles.find((node) => node.textContent.trim() === 'original answer');
+      const reasoningPanel = document.querySelector('[data-testid="chat-panel-reasoning-panel"]');
+      assert.ok(originalUser && supplement && reasoningPanel && assistant);
+      assertNodeBefore(originalUser, supplement, '原 USER 消息应位于补充消息之前');
+      assertNodeBefore(supplement, reasoningPanel, '补充消息应位于 Jiuwen 思考区域之前');
+      assertNodeBefore(reasoningPanel, assistant, '思考区域应位于完整 assistant 回答之前');
+      assert.equal(
+        document.querySelectorAll('[data-testid="chat-panel-reasoning-panel"]').length,
+        1,
+        '连续思考段在视觉上应保持一个思考区域',
+      );
+      assert.equal(
+        document.querySelector('[data-testid="chat-panel-reasoning-panel-body"]').textContent,
+        scenario.expectedSegments.join('\n\n'),
+      );
+    } finally {
+      await c.dispose();
+    }
+  });
+}
 
 test('a late supplement rejection preserves the message without starting a new turn', async (context) => {
   const c = await mount(context);

@@ -14,7 +14,7 @@ const U = 1_700_000_000_000; // 用户消息时刻
 const S = 1_700_000_005_000; // reasoning 首帧
 const A = 1_700_000_035_000; // reasoning 末帧（updatedAt）
 
-test('supplements split displayed text while keeping one task, original timing and untouched stream data', () => {
+test('supplements stay below the original user message without splitting assistant output', () => {
   const messages = [
     { id: 'user', role: 'user', content: 'write a story', timestamp: new Date(U).toISOString() },
     { id: 'answer', role: 'assistant', content: 'before-middle-after', timestamp: new Date(S).toISOString(), completedAt: new Date(A).toISOString() },
@@ -25,7 +25,12 @@ test('supplements split displayed text while keeping one task, original timing a
   for (const running of [true, false]) {
     const items = buildRenderItems(buildTimelineItems(messages, [], []), false, running);
     assert.deepEqual(items.filter(item => item.type === 'message').map(item => item.message.content),
-      ['write a story', 'before-', 'space theme', 'middle-', 'happy ending', 'after']);
+      ['write a story', 'space theme', 'happy ending', 'before-middle-after']);
+    assert.equal(
+      items.filter(item => item.type === 'message' && item.message.role === 'assistant').length,
+      1,
+      'assistant 回复必须保持为一个连续气泡',
+    );
     const summaries = items.filter(item => item.type === 'turnSummary');
     assert.equal(summaries.length, 1);
     assert.equal(summaries[0].startMs, U);
@@ -35,16 +40,84 @@ test('supplements split displayed text while keeping one task, original timing a
   assert.deepEqual(messages, original);
 });
 
+test('a supplement before the first assistant output stays above the timer and assistant block', () => {
+  const messages = [
+    { id: 'user', role: 'user', content: 'write a story', timestamp: new Date(U).toISOString() },
+    { id: 'answer', role: 'assistant', content: 'complete answer', timestamp: new Date(S + 2_000).toISOString(), completedAt: new Date(A).toISOString() },
+    { id: 'early-extra', role: 'user', content: 'space theme', timestamp: new Date(S).toISOString(), supplementalInput: { executionId: 'execution', streamMessageId: 'answer', streamOffset: 0 } },
+  ];
+
+  for (const running of [true, false]) {
+    const items = buildRenderItems(buildTimelineItems(messages, [], [{
+      id: 'reasoning-after-supplement',
+      text: 'thinking',
+      startedAt: S + 1_000,
+      updatedAt: S + 1_500,
+      closedAt: S + 1_500,
+      closed: true,
+    }]), false, running);
+    const originalUserIndex = items.findIndex(
+      item => item.type === 'message' && item.message.id === 'user',
+    );
+    const supplementIndex = items.findIndex(
+      item => item.type === 'message' && item.message.id === 'early-extra',
+    );
+    const summaryIndex = items.findIndex(item => item.type === 'turnSummary');
+    const reasoningIndex = items.findIndex(item => item.type === 'reasoning');
+    const assistantIndex = items.findIndex(
+      item => item.type === 'message' && item.message.role === 'assistant',
+    );
+
+    assert.ok(originalUserIndex < supplementIndex, '补充 USER 消息应位于原 USER 消息之后');
+    assert.ok(supplementIndex < summaryIndex, '首包前的补充 USER 消息应位于计时行之前');
+    assert.ok(summaryIndex < reasoningIndex, '计时行应紧邻 Jiuwen 工作内容区域顶部');
+    assert.ok(reasoningIndex < assistantIndex, '首包前补充消息不得把 assistant 回复提前到思考之前');
+    assert.equal(items[summaryIndex].showAvatar, true, '计时行应接管 assistant 顶部头像');
+    assert.equal(items[assistantIndex].showAvatar, false, 'assistant 内容不应重复显示头像');
+  }
+});
+
+test('a supplement without a stream id keeps revised reasoning above the intact assistant answer', () => {
+  const messages = [
+    { id: 'user', role: 'user', content: 'write 500 words', timestamp: new Date(U).toISOString() },
+    { id: 'answer', role: 'assistant', content: 'complete answer', timestamp: new Date(S).toISOString(), completedAt: new Date(A).toISOString() },
+    { id: 'mid-extra', role: 'user', content: 'change to 200 words', timestamp: new Date(S + 1_000).toISOString(), supplementalInput: { executionId: 'execution', streamOffset: 0 } },
+  ];
+  const items = buildRenderItems(buildTimelineItems(messages, [], [{
+    id: 'reasoning-after-steer',
+    text: 'revise to 200 words',
+    startedAt: S + 2_000,
+    updatedAt: S + 3_000,
+    closedAt: S + 3_000,
+    closed: true,
+  }]), false, false);
+  const supplementIndex = items.findIndex(
+    item => item.type === 'message' && item.message.id === 'mid-extra',
+  );
+  const reasoningIndex = items.findIndex(item => item.type === 'reasoning');
+  const assistantIndex = items.findIndex(
+    item => item.type === 'message' && item.message.id === 'answer',
+  );
+
+  assert.ok(supplementIndex < reasoningIndex);
+  assert.ok(reasoningIndex < assistantIndex, '补充后的思考必须位于完整最终回答之前');
+  assert.equal(
+    items.filter(item => item.type === 'message' && item.message.id === 'answer').length,
+    1,
+    'assistant 最终回答仍应保持为一个完整气泡',
+  );
+});
+
 test('late acceptance stays in its original turn and an empty continuation retains final metadata', () => {
   const messages = [
     { id: 'user', role: 'user', content: 'first', timestamp: new Date(U).toISOString() },
     { id: 'answer', role: 'assistant', content: 'answer', timestamp: new Date(S).toISOString(), completedAt: new Date(A).toISOString(), fileItems: [{ name: 'result.txt' }] },
     { id: 'next-user', role: 'user', content: 'second', timestamp: new Date(A + 1000).toISOString() },
     { id: 'next-answer', role: 'assistant', content: 'second answer', timestamp: new Date(A + 2000).toISOString(), isStreaming: true },
-    { id: 'late', role: 'user', content: 'extra', timestamp: new Date(S + 1000).toISOString(), supplementalInput: { executionId: 'old-execution', streamMessageId: 'answer', streamOffset: 6 } },
+    { id: 'late', role: 'user', content: 'extra', timestamp: new Date(A + 3000).toISOString(), supplementalInput: { executionId: 'old-execution', streamMessageId: 'answer', streamOffset: 6 } },
   ];
   const items = buildRenderItems(buildTimelineItems(messages, [], []), false, true);
-  assert.deepEqual(items.filter(item => item.type === 'message').map(item => item.message.content), ['first', 'answer', 'extra', 'second', 'second answer']);
+  assert.deepEqual(items.filter(item => item.type === 'message').map(item => item.message.content), ['first', 'extra', 'answer', 'second', 'second answer']);
   const summaries = items.filter(item => item.type === 'turnSummary');
   assert.equal(summaries.length, 2);
   assert.equal(summaries[0].endMs, A);
@@ -308,6 +381,39 @@ test('任务用时行移动到本轮内容顶部：头像下第一行，并接�
   assert.equal(summary.showAvatar, true, '时间行接管本轮顶部头像');
   const assistant = out[assistantIndex];
   assert.equal(assistant.showAvatar, false, '首条 assistant 内容不再重复画头像');
+});
+
+test('assistant 早于折叠工作时，任务用时条仍由顶部 summary 锚点渲染', () => {
+  const out = buildRenderItems([
+    userMessage(U),
+    assistantMessage(U + 2_000, U + 3_000),
+    reasoningItem({
+      id: 'reasoning-after-answer',
+      text: 'follow-up work',
+      startedAt: S,
+      updatedAt: A,
+      closedAt: A,
+      closed: true,
+    }),
+  ], false, false);
+  const summaryIndex = out.findIndex((item) => item.type === 'turnSummary');
+  const assistantIndex = out.findIndex(
+    (item) => item.type === 'message' && item.message.role === 'assistant',
+  );
+  const meta = buildTurnWorkMeta(out, false).get(1);
+
+  assert.ok(meta?.completed && meta.hasWork, '该轮应渲染可折叠任务用时条');
+  assert.ok(summaryIndex < assistantIndex, '任务用时条的锚点必须位于 assistant 正文之前');
+
+  const source = readFileSync(new URL('../src/components/ChatPanel/MessageList.tsx', import.meta.url), 'utf8');
+  const workRenderBranch = source
+    .split("if (item.type === 'reasoning' || item.type === 'toolGroup') {")
+    .at(-1)
+    .split("if (item.type === 'turnSummary') {")[0];
+  const summaryRenderBranch = source.split("if (item.type === 'turnSummary') {").at(-1);
+  assert.match(summaryRenderBranch, /chipAnchoredTurns\.current\.add\(turnKey\)/);
+  assert.match(summaryRenderBranch, /return renderTurnChip\(turnKey, meta\)/);
+  assert.match(workRenderBranch, /!chipAnchoredTurns\.current\.has\(turnKey\)/);
 });
 
 test('slash 命令结果自成时间线块，不把上一轮任务用时排到卡片下方', () => {
