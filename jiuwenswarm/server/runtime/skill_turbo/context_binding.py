@@ -62,18 +62,19 @@ def bind_skill_turbo_context(
         tokens["metadata"] = set_current_request_metadata(request_metadata)
 
         # workspace / interactive_ask 与 metadata 同源、同条件（metadata 是 dict 才有）
-        from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
-            set_effective_request_workspace_dir,
-            set_interactive_ask,
-        )
+        if isinstance(request_metadata, dict):
+            from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
+                set_effective_request_workspace_dir,
+                set_interactive_ask,
+            )
 
-        epd = request_metadata.get("effective_project_dir")
-        if isinstance(epd, str) and epd.strip():
-            # 与 extract_effective_project_dir 同一语义：strip 后非空才绑定
-            tokens["workspace"] = set_effective_request_workspace_dir(epd.strip())
-        interactive_ask = request_metadata.get("interactive_ask")
-        if interactive_ask is not None:
-            tokens["interactive_ask"] = set_interactive_ask(bool(interactive_ask))
+            epd = request_metadata.get("effective_project_dir")
+            if isinstance(epd, str) and epd.strip():
+                # 与 extract_effective_project_dir 同一语义：strip 后非空才绑定
+                tokens["workspace"] = set_effective_request_workspace_dir(epd.strip())
+            interactive_ask = request_metadata.get("interactive_ask")
+            if interactive_ask is not None:
+                tokens["interactive_ask"] = set_interactive_ask(bool(interactive_ask))
 
     if parent_session is not None:
         from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (

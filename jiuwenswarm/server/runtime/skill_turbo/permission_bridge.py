@@ -28,39 +28,18 @@ from openjiuwen.core.single_agent.rail.base import (
 # AbortError 经 plan_node 统一 re-export，不在本模块直连 openjiuwen（见 plan_node 注释）。
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 
-# SkillTurbo 自有 session state key -- 与 openjiuwen 自身命名空间区分，所以前后用双下划线。
-SKILL_TURBO_RESUME_CTX_KEY = "__skill_turbo_resume_ctx__"
-
-# SkillTurbo 专用 agent_id 后缀：executor 和 resume 读取时用 '{card.id}__skill_turbo'，
-# 使 checkpointer key 与 DeepAgent 隔离，避免 DeepAgent 的 post_run 覆盖
-# executor 写入的 resume_ctx / node_artifacts。
-SKILL_TURBO_ID_SUFFIX = "__skill_turbo"
+# ── 单一权威定义 re-export ──
+# SKILL_TURBO_RESUME_CTX_KEY / SKILL_TURBO_ID_SUFFIX / set_skill_turbo_id 的
+# 权威定义在 resume_context.py（checkpointer 键同一性是 HITL resume 链路硬约束，
+# 禁止双份字面量漂移）。此处 re-export 仅为兼容既有 import 方（executor /
+# interface_deep / skill_turbo_tools / 测试），调用方全部无需改动。
+from jiuwenswarm.server.runtime.skill_turbo.resume_context import (  # noqa: F401
+    SKILL_TURBO_ID_SUFFIX,
+    SKILL_TURBO_RESUME_CTX_KEY,
+    set_skill_turbo_id,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def set_skill_turbo_id(session: Any, card: Any) -> None:
-    """将 session 的 agent_id 设为 '{card.id}__skill_turbo'，使 SkillTurbo 的 checkpointer
-    key 与 DeepAgent 隔离，避免 post_run 互相覆盖。
-
-    必须在 session.pre_run() 之前调用。
-    对 FakeSession 等无 _inner 的 stub 是 no-op。
-    """
-    if session is None or card is None:
-        return
-    card_id = getattr(card, "id", None)
-    if not card_id:
-        return
-    inner = getattr(session, "_inner", None)
-    if inner is None:
-        return
-    try:
-        config = inner.config()
-        skill_turbo_id = f"{card_id}{SKILL_TURBO_ID_SUFFIX}"
-        config.set_agent_config(type("SkillTurboAgentConfig", (), {"id": skill_turbo_id})())
-        logger.debug("[SkillTurboResume] set_skill_turbo_id: %s", skill_turbo_id)
-    except Exception as exc:
-        logger.warning("[SkillTurboResume] set_skill_turbo_id failed: %s", exc)
 
 
 @dataclass

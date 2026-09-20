@@ -3402,7 +3402,16 @@ class JiuWenSwarmDeepAdapter:
             context.pop_messages(1, with_history=True)
             loop_session.update_state({INTERRUPTION_KEY: None})
             try:
-                await _skill_turbo_clear_resume_ctx(loop_session)
+                # 显式传 card：loop_session（真实 Session）无公开 card 属性，
+                # 隐式提取恒为 None 会退回 DeepAgent 键 fallback，清不到隔离键。
+                from jiuwenswarm.server.runtime.skill_turbo.resume_context import (
+                    ResumeContextManager,
+                )
+
+                _card = getattr(getattr(self, "_instance", None), "card", None)
+                await ResumeContextManager(
+                    loop_session, card=_card
+                ).clear()
             except Exception:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] clear skill_turbo resume ctx failed",
@@ -12862,9 +12871,15 @@ class JiuWenSwarmDeepAdapter:
                 set_todo_resume_snapshot_pending(session, pending=False)
             await post_agent_execute_for_session(session, self._checkpointer)
             # 同时清理 SkillTurbo 自己的 resume 上下文，避免下次 plain chat 时
-            # 误命中"resume 路径"。
+            # 误命中"resume 路径"。显式传 card：真实 Session 无公开 card 属性，
+            # 隐式提取恒为 None 会退回默认键 fallback，清不到隔离键（R1 引信）。
             try:
-                await _skill_turbo_clear_resume_ctx(session)
+                from jiuwenswarm.server.runtime.skill_turbo.resume_context import (
+                    ResumeContextManager,
+                )
+
+                _card = getattr(getattr(self, "_instance", None), "card", None)
+                await ResumeContextManager(session, card=_card).clear()
             except Exception:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] clear skill_turbo resume ctx failed",

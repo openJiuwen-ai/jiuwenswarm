@@ -8,7 +8,7 @@ import asyncio
 import contextvars
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -292,7 +292,9 @@ def _route_test_request(*, stream: bool = False) -> AgentRequest:
 @pytest.mark.asyncio
 async def test_interaction_supplement_clears_pending_ask_user_state() -> None:
     """Supplement text must start a new turn, not answer the interrupted question."""
-    loop_session = MagicMock()
+    # 用 spec 限定 MagicMock 不自动生成 card 属性：真实 Session 无公开 card，
+    # 无限 mock 会造出 Mock card 让 isolated 分支被假触发（测试与生产分叉）。
+    loop_session = MagicMock(spec=["get_session_id", "get_state", "update_state"])
     loop_session.get_session_id.return_value = "tui_sess_1"
     interruption_state = _interruption_state("ask_user")
     loop_session.get_state.return_value = interruption_state
@@ -305,9 +307,13 @@ async def test_interaction_supplement_clears_pending_ask_user_state() -> None:
     context_engine.get_context.return_value = context
     context_engine.save_contexts = AsyncMock()
 
+    # 真实生产路径：instance.card 可得 → clear() 走 isolated 通道，
+    # loop_session 只清 INTERRUPTION_KEY、不写 resume_ctx（键空间语义）。
+    # mock create_agent_session 截获 isolated session 的创建。
     instance = MagicMock()
     instance._interaction_started = True
     instance._loop_session = loop_session
+    instance.card = SimpleNamespace(id="card-supplement-1")
     instance.react_agent = SimpleNamespace(context_engine=context_engine)
     instance.cancel_round = AsyncMock(return_value=False)
 
@@ -319,13 +325,23 @@ async def test_interaction_supplement_clears_pending_ask_user_state() -> None:
         _instance=instance,
     )
 
-    response = await adapter.process_interrupt(_build_supplement_request())
+    isolated_session = MagicMock()
+    isolated_session.pre_run = AsyncMock()
+    isolated_session.post_run = AsyncMock()
+    with patch(
+        "openjiuwen.core.session.agent.create_agent_session",
+        return_value=isolated_session,
+    ):
+        response = await adapter.process_interrupt(_build_supplement_request())
 
-    # resume_ctx 清理已收口至 ResumeContextManager.clear()（isolated 通道强制
-    # 落盘），不再经 loop_session 的 DeepAgent 键写 None——此处仅清 INTERRUPTION_KEY。
+    # resume_ctx 清理走 isolated 通道（隔离键空间），loop_session 仅清
+    # INTERRUPTION_KEY——DeepAgent 键不再收到 resume_ctx 写入。
     assert loop_session.update_state.call_args_list == [
         call({INTERRUPTION_KEY: None}),
     ]
+    isolated_session.update_state.assert_called_once_with(
+        {"__skill_turbo_resume_ctx__": None}
+    )
     context.pop_messages.assert_called_once_with(1, with_history=True)
     context_engine.save_contexts.assert_awaited_once_with(loop_session)
     assert response.payload["intent"] == "supplement"

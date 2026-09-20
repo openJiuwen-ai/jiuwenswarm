@@ -39,10 +39,17 @@ def _get_sid(session: Any) -> str:
 
 
 def _resolve_card(session: Any, card: Any = None) -> Any:
-    """从参数或 session 上提取 card。"""
+    """从参数或 session 上提取 card。
+
+    openjiuwen Session 只把 card 存在私有 ``_card`` 上（无公开属性），
+    需同时回退读 ``_card``，否则仅传 session 的调用 card 恒为 None、
+    isolated 通道无法生效（键空间修复失效）。
+    """
     if card is not None:
         return card
-    return getattr(session, "card", None)
+    if session is None:
+        return None
+    return getattr(session, "card", None) or getattr(session, "_card", None)
 
 
 def set_skill_turbo_id(session: Any, card: Any) -> None:
@@ -186,11 +193,18 @@ class ResumeContextManager:
         自动带 {card.id}__skill_turbo 后缀，与写入同 key——修复 supplement /
         _clear_session_persisted 两处键空间错误。
 
-        card 存在时走 isolated 通道（不依赖 _session）；card 缺失时降级为原 session 清理。
+        card 缺失时无法打开 checkpointer 隔离通道：降级为原 session 写 None
+        并 warning 告警——真实 Session 双键空间下该写入清不到隔离键（残留
+        会触发重跑），但单键空间测试桩/降级环境仍可清到，且优于完全跳过。
+        调用方应显式传 card（adapter 侧取 self._instance.card）。
         """
         if self._card is None:
-            # card 缺失时无法打开 checkpointer 通道，降级为原 session 清理
-            # （键空间可能不命中，但保留原行为兜底）
+            logger.warning(
+                "[ResumeContextManager] clear degraded (no card): writing to "
+                "session-default key sid=%s; isolated channel unavailable, "
+                "stale resume_ctx may trigger task rerun in dual-key setups",
+                self._sid,
+            )
             if self._session is None:
                 return
             try:
@@ -200,7 +214,6 @@ class ResumeContextManager:
                     "[ResumeContextManager] clear (no card) update_state failed",
                     exc_info=True,
                 )
-            logger.info("[ResumeContextManager] clear (no card): sid=%s", self._sid)
             return
         from openjiuwen.core.session.agent import create_agent_session
 

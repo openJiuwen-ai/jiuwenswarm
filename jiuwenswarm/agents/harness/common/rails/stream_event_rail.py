@@ -1176,7 +1176,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 outer_todo_active=_outer_todo_active,
             )
         except Exception:
-            logger.debug(
+            # metadata / resume_answers 绑定失败意味着 HITL 作答注入静默失效，
+            # 升为 warning 保证可观测（debug 会被淹没）。
+            logger.warning(
                 "[StreamEventRail] bind skill_turbo context failed",
                 exc_info=True,
             )
