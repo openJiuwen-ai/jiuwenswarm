@@ -568,6 +568,33 @@ class TestAgentGroupLifecycle:
             / "broken-team"
         ).exists()
 
+    def test_create_rejects_duplicate_display_name(
+        self, extension_workspace: Path
+    ) -> None:
+        self._create_group()
+
+        with pytest.raises(catalog.AgentGroupPackageError) as exc_info:
+            catalog.create_agent_group(
+                {
+                    "id": "another-delivery-review-team",
+                    "name": "交付评审专家团",
+                    "description": "另一个专家团。",
+                    "persona": "独立分析后汇总结论。",
+                    "leaderId": "planning-expert",
+                    "memberIds": ["review-expert"],
+                    "skills": [],
+                }
+            )
+
+        assert exc_info.value.code == "AGENT_GROUP_DUPLICATE"
+        assert not (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "local"
+            / "another-delivery-review-team"
+        ).exists()
+
     def test_import_valid_group_writes_local_uninstalled(
         self, extension_workspace: Path, tmp_path: Path
     ) -> None:

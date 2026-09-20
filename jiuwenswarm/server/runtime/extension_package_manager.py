@@ -1581,6 +1581,29 @@ def _assert_package_id_available(
         raise ValueError(message)
 
 
+def _assert_agent_group_name_available(name: str) -> None:
+    """Reject create when an AgentGroup already has the same display name."""
+    normalized_name = name.casefold()
+    package_dirs = [
+        *_iter_resource_package_dirs(_AGENT_GROUP_KIND),
+        *_iter_local_package_dirs(_built_in_root(_AGENT_GROUP_KIND)),
+        *_iter_local_package_dirs(_local_root(_AGENT_GROUP_KIND)),
+    ]
+    for package_dir in package_dirs:
+        manifest = _read_package_manifest(package_dir)
+        if manifest is None:
+            continue
+        display_names = _i18n(manifest.get("display_name"), package_dir.name)
+        if any(
+            value.strip().casefold() == normalized_name
+            for value in display_names.values()
+        ):
+            raise AgentGroupPackageError(
+                f"agent_group display name already exists: {name}",
+                "AGENT_GROUP_DUPLICATE",
+            )
+
+
 def _skills_manifest_entries(skill_names: list[str]) -> list[dict[str, str]]:
     """Build loader-shaped skills entries with mode fixed to all."""
     return [{"dir": f"./skills/{name}", "mode": "all"} for name in skill_names]
@@ -3244,6 +3267,7 @@ def create_agent_group(params: dict) -> dict:
         kind="agent_group",
         resources_root=_resources_root(_AGENT_GROUP_KIND),
     )
+    _assert_agent_group_name_available(name)
 
     local_root.mkdir(parents=True, exist_ok=True)
     container = Path(tempfile.mkdtemp(prefix=".agent_group_create_", dir=local_root))
