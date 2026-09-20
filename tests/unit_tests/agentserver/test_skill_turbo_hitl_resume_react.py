@@ -485,6 +485,65 @@ async def test_clear_resume_ctx_persists_across_sessions():
 
 
 @pytest.mark.asyncio
+async def test_isolated_clear_prevents_post_run_revival_with_real_session():
+    """真实 Session + 真实 checkpointer：isolated clear 后调用方 post_run 不得复活条目。
+
+    复现 R1 回归：checkpointer post_run 是全量状态覆盖（非增量合并），
+    clear() 若只清磁盘、不同步清调用方 session 的内存快照，随后
+    turbo_session.post_run() 会把含旧条目的内存快照整体写回——
+    resume_ctx 复活、下一次调用重放已完成任务。
+    """
+    from openjiuwen.core.session.agent import create_agent_session
+    from jiuwenswarm.server.runtime.skill_turbo.resume_context import (
+        ResumeContextManager,
+        SKILL_TURBO_RESUME_CTX_KEY,
+        set_skill_turbo_id,
+    )
+
+    class _Card:
+        id = "card-revival-guard"
+
+    def _mk_session():
+        s = create_agent_session(session_id="sess-revival", card=_Card())
+        set_skill_turbo_id(s, _Card())
+        return s
+
+    # 中断：落盘 resume_ctx 条目
+    saver = _mk_session()
+    await saver.pre_run()
+    saver.update_state(
+        {SKILL_TURBO_RESUME_CTX_KEY: {"plan_code": "plan-x", "pending_tool_call_id": "tc-1"}}
+    )
+    await saver.post_run()
+
+    # resume 流程：turbo_session pre_run（内存快照含条目）→ isolated clear
+    turbo = _mk_session()
+    await turbo.pre_run()
+    assert turbo.get_state(SKILL_TURBO_RESUME_CTX_KEY) is not None
+
+    mgr = ResumeContextManager(turbo)
+    await mgr.clear()
+
+    # 磁盘（隔离键空间）已清
+    checker = _mk_session()
+    await checker.pre_run()
+    assert checker.get_state(SKILL_TURBO_RESUME_CTX_KEY) is None, (
+        "isolated clear 后隔离键空间不应有 resume_ctx 条目"
+    )
+
+    # 调用方 session post_run（全量写回）不得复活条目
+    await turbo.post_run()
+    reader = _mk_session()
+    await reader.pre_run()
+    revived = reader.get_state(SKILL_TURBO_RESUME_CTX_KEY)
+    assert revived is None, (
+        f"turbo_session.post_run 全量写回复活了 resume_ctx（{revived}）；"
+        "clear() 必须同步清调用方内存快照，否则 resume 跑通后断点残留、"
+        "下一次调用重放已完成任务（R1 回归）"
+    )
+
+
+@pytest.mark.asyncio
 async def test_emit_skill_turbo_hitl_keeps_pending_tool_call_request_id(monkeypatch):
     """HITL card request_id must stay skill_turbo-tc-* (not HTTP request id)."""
     pending_tcid = "skill_turbo-tc-ask_user-9"

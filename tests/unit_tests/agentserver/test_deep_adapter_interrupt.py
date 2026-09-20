@@ -334,10 +334,12 @@ async def test_interaction_supplement_clears_pending_ask_user_state() -> None:
     ):
         response = await adapter.process_interrupt(_build_supplement_request())
 
-    # resume_ctx 清理走 isolated 通道（隔离键空间），loop_session 仅清
-    # INTERRUPTION_KEY——DeepAgent 键不再收到 resume_ctx 写入。
+    # resume_ctx 清理走 isolated 通道（隔离键空间落盘）+ loop_session 内存
+    # 快照同步清（防 post_run/save_contexts 全量写回复活，R1）——loop_session
+    # 收到 INTERRUPTION_KEY 清除 + resume_ctx 内存同步清除两个调用。
     assert loop_session.update_state.call_args_list == [
         call({INTERRUPTION_KEY: None}),
+        call({"__skill_turbo_resume_ctx__": None}),
     ]
     isolated_session.update_state.assert_called_once_with(
         {"__skill_turbo_resume_ctx__": None}

@@ -232,6 +232,18 @@ class ResumeContextManager:
                     self._sid,
                     exc_info=True,
                 )
+            # 同步清调用方 session 的内存快照：checkpointer 的 post_run 是
+            # 全量状态覆盖（非增量合并），若调用方随后 post_run 本 session，
+            # 含旧条目的内存快照会把磁盘上刚清掉的 resume_ctx 写回复活
+            # （R1「resume 跑通后重放已完成任务」回归）。
+            if self._session is not None:
+                try:
+                    self._session.update_state({SKILL_TURBO_RESUME_CTX_KEY: None})
+                except Exception:
+                    logger.debug(
+                        "[ResumeContextManager] clear in-memory sync failed",
+                        exc_info=True,
+                    )
         logger.info("[ResumeContextManager] clear: cleared sid=%s", self._sid)
 
     async def mark_in_flight(self, resume_ctx: dict[str, Any]) -> None:
