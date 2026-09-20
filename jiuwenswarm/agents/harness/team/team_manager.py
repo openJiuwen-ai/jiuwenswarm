@@ -3164,6 +3164,22 @@ def is_team_session_running(session_id: str) -> bool:
     )
 
 
+def team_session_has_swarmflow_runs(session_id: str) -> bool:
+    """Whether a swarmflow background run is still active or paused.
+
+    Companion of :func:`is_team_session_running`: a swarmflow run
+    outlives the leader round, so once the round ends neither an
+    in-flight request nor an active round reports it, yet it keeps
+    burning tokens. Busy-checks keyed only on admitted turns let a
+    delete pass and fail cleanup afterwards.
+    """
+    manager = _team_manager
+    if manager is None:
+        return False
+    has_runs = getattr(manager, "has_swarmflow_runs", None)
+    return callable(has_runs) and bool(has_runs(session_id))
+
+
 def team_session_has_parked_request(session_id: str, request_ids) -> bool:
     """Whether every listed chat request is parked on a released Team round.
 

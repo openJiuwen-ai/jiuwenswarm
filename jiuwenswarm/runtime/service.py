@@ -2278,9 +2278,14 @@ class AgentRuntime:
             not execution.state.terminal for execution in snapshot.executions
         ):
             return True
-        from jiuwenswarm.agents.harness.team.team_manager import is_team_session_running
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            is_team_session_running,
+            team_session_has_swarmflow_runs,
+        )
 
-        return is_team_session_running(session_id)
+        return is_team_session_running(session_id) or team_session_has_swarmflow_runs(
+            session_id
+        )
 
     def has_parked_team_streams(self, session_id: str) -> bool:
         """Whether every pending chat request is parked on a released Team round.
