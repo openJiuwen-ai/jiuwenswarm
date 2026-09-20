@@ -220,10 +220,6 @@ class PublishedCapabilitySnapshotProvider:
         graph = _read_json_object(artifact_dir / "graph.json")
         identities: list[CapabilityIdentity] = []
         capabilities = graph.get("capabilities")
-        capability_hashes = graph.get("capability_hashes")
-        capability_hashes = (
-            capability_hashes if isinstance(capability_hashes, dict) else {}
-        )
         for raw in capabilities if isinstance(capabilities, list) else ():
             if not isinstance(raw, dict):
                 continue
@@ -234,11 +230,6 @@ class PublishedCapabilitySnapshotProvider:
             capability_name = _snapshot_text(raw.get("name") or capability_id)
             version = _snapshot_text(raw.get("version"))
             description = _snapshot_optional_text(raw.get("description"))
-            content_hash = _snapshot_optional_text(
-                raw.get("content_hash")
-                or capability_hashes.get(f"{capability_type}:{capability_id}")
-                or capability_hashes.get(capability_id)
-            )
             inputs = _snapshot_ports(raw.get("inputs"))
             outputs = _snapshot_ports(raw.get("outputs"))
             if (
@@ -247,7 +238,6 @@ class PublishedCapabilitySnapshotProvider:
                 or not capability_name
                 or not version
                 or description is None
-                or content_hash is None
                 or inputs is None
                 or outputs is None
             ):
@@ -258,7 +248,6 @@ class PublishedCapabilitySnapshotProvider:
                     capability_type=capability_type,
                     capability_name=capability_name,
                     version=version,
-                    content_hash=content_hash,
                     description=description,
                     inputs=inputs,
                     outputs=outputs,
