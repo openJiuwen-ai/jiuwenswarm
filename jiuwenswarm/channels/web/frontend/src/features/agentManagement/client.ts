@@ -196,7 +196,13 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async listMcpOptions() {
       try {
-        const [marketplace, local] = await Promise.all([connectorApi.list('builtin'), connectorApi.list('local')]);
+        const [marketplaceResult, localResult] = await Promise.allSettled([
+          connectorApi.list('builtin'),
+          connectorApi.list('local'),
+        ]);
+        if (localResult.status === 'rejected') throw localResult.reason;
+        const marketplace = marketplaceResult.status === 'fulfilled' ? marketplaceResult.value : [];
+        const local = localResult.value;
         const byRuntimeName = new Map<string, McpOption>();
         [...marketplace, ...local].forEach((item) => {
           const runtimePackageName = item.runtimePackageName || item.name;

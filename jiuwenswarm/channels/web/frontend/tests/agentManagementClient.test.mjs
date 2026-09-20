@@ -113,6 +113,34 @@ test('skill and connector picker adapters retain marketplace/install state', asy
   assert.deepEqual(calls.map(([method]) => method), ['skills.list', 'mcp.list', 'mcp.list']);
 });
 
+test('builtin MCP listing failure does not hide local MCP options', async () => {
+  webClient.request = async (method, params) => {
+    if (method !== 'mcp.list') throw new Error(`Unexpected method: ${method}`);
+    if (params.filter === 'builtin') throw new Error('Builtin MCP catalog unavailable');
+    return {
+      items: [
+        {
+          id: 'local-connector',
+          name: 'local-connector',
+          package_name: 'local-connector',
+          display_name: 'Local Connector',
+          description: 'A local connector',
+          category: 'custom',
+          integration_type: 'remote-mcp',
+          connection_state: 'connected',
+          has_bundled_skills: false,
+          source: 'customize',
+          installed: true,
+          connected: true,
+        },
+      ],
+    };
+  };
+
+  const mcps = await createLiveAgentManagementClient().listMcpOptions();
+  assert.deepEqual(mcps.map((mcp) => mcp.id), ['local-connector']);
+});
+
 test('team skill market options use the SkillPanel type contract and Hub asset install', async () => {
   const calls = [];
   webClient.request = async (method, params) => {
