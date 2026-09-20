@@ -976,11 +976,15 @@ async def test_remote_hub_expert_zip_preview_lists_nested_previewable_files(
                 )
                 archive.writestr(
                     f"{artifact.package_name}/persona/sales.md",
-                    "# persona\n",
+                    "# persona\napi_key: sk-preview-secret-12345678\n",
                 )
                 archive.writestr(
                     f"{artifact.package_name}/tools/secret.bin",
                     b"\x00\x01",
+                )
+                archive.writestr(
+                    f"{artifact.package_name}/docs/guide.pdf",
+                    b"%PDF-1.4",
                 )
             return buffer.getvalue()
 
@@ -996,11 +1000,18 @@ async def test_remote_hub_expert_zip_preview_lists_nested_previewable_files(
     preview = await catalog.read_agent_template_file_with_hub(
         asset_id, "persona/sales.md", hub_port=hub, downloader=downloader
     )
+    pdf_preview = await catalog.read_agent_template_file_with_hub(
+        asset_id, "docs/guide.pdf", hub_port=hub, downloader=downloader
+    )
 
     assert any(entry["path"] == "manifest.json" for entry in tree)
     persona = next(entry for entry in tree if entry["path"] == "persona/")
     assert any(child["path"] == "persona/sales.md" for child in persona["children"])
     assert preview["content"].startswith("# persona")
+    assert "sk-preview-secret-12345678" not in preview["content"]
+    assert "******" in preview["content"]
+    assert pdf_preview["content"] is None
+    assert pdf_preview["download_url"].startswith("data:application/pdf;base64,")
     assert downloader.calls == 1
     assert not (
         extension_workspace / "plugins" / "agent_templates" / "hub_preview"

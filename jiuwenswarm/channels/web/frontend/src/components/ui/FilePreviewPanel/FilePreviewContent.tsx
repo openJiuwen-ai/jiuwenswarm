@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { ArrowDownToLine } from 'lucide-react';
 import { MarkdownRenderer } from '../../MarkdownRenderer';
 import { CodePreview } from '../../ArtifactsPanel/CodePreview';
+import { inlineDownloadUrl } from '../../ArtifactsPanel/filePreviewModel';
 import FileCopyIcon from '../../../assets/agent-management/file-copy.svg?react';
 import {
   downloadPreviewFile,
@@ -9,6 +10,7 @@ import {
   getPreviewFileLabel,
   isJsonFilePath,
   isMarkdownFilePath,
+  isPdfFilePath,
   isPreviewableImagePath,
   isPythonFilePath,
   splitMarkdownFrontMatter,
@@ -65,11 +67,16 @@ export function FilePreviewContent({
   const isMarkdown = file ? isMarkdownFilePath(file.path) : false;
   const isPython = file ? isPythonFilePath(file.path) : false;
   const isJson = file ? isJsonFilePath(file.path) : false;
+  const isPdf = file ? isPdfFilePath(file.path) : false;
   const isImage = file ? isPreviewableImagePath(file.path) : false;
   const markdownParts = useMemo(() => splitMarkdownFrontMatter(file?.content || ''), [file]);
   const formattedContent = useMemo(
     () => (file && isJson ? formatJsonContent(file.content || '') : file?.content || ''),
     [file, isJson],
+  );
+  const binaryPreviewUrl = useMemo(
+    () => (file?.downloadUrl ? inlineDownloadUrl(file.downloadUrl, 'http://localhost') : null),
+    [file?.downloadUrl],
   );
 
   const handleCopy = async () => {
@@ -184,7 +191,15 @@ export function FilePreviewContent({
                 <img src={file.downloadUrl} alt={getPreviewFileLabel(file.path)} />
               </div>
             ) : null}
-            {status === 'success' && file.content == null && !(isImage && file.downloadUrl) ? (
+            {status === 'success' && file.content == null && isPdf && binaryPreviewUrl ? (
+              <iframe
+                title={getPreviewFileLabel(file.path)}
+                src={binaryPreviewUrl}
+                className="file-preview-pdf"
+                data-testid={`${testId}-pdf`}
+              />
+            ) : null}
+            {status === 'success' && file.content == null && !((isImage || isPdf) && file.downloadUrl) ? (
               <div
                 className="file-preview-state"
                 data-testid={stateTestId}

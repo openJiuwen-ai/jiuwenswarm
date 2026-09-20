@@ -32,6 +32,8 @@ export type FilePreviewTreeProps = {
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
   onRetry?: () => void;
+  /** 允许点击不可预览文件，以便内容区展示不支持提示 */
+  allowUnsupportedSelection?: boolean;
   labels: FilePreviewTreeLabels;
   testId?: string;
   ariaLabel?: string;
@@ -84,6 +86,7 @@ function TreeEntry({
   onSelectFile,
   notPreviewableLabel,
   itemTestId,
+  allowUnsupportedSelection,
 }: {
   entry: FilePreviewTreeNode;
   depth: number;
@@ -93,6 +96,7 @@ function TreeEntry({
   onSelectFile: (path: string) => void;
   notPreviewableLabel: string;
   itemTestId: string;
+  allowUnsupportedSelection: boolean;
 }) {
   if (entry.visible === false) return null;
   const isDirectory = entry.kind === 'directory';
@@ -115,7 +119,7 @@ function TreeEntry({
         style={{ paddingLeft: `${depth * 24 + 8}px` }}
         data-testid={itemTestId}
         data-variant={entry.path}
-        disabled={unsupported}
+        disabled={unsupported && !allowUnsupportedSelection}
         onClick={() => (isDirectory ? onToggle(entry.path) : onSelectFile(entry.path))}
         aria-label={entry.label}
         title={entry.path}
@@ -137,7 +141,7 @@ function TreeEntry({
         <span className="file-preview-tree__entry-chevron" aria-hidden="true">
           {isDirectory ? isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : null}
         </span>
-        {unsupported ? (
+        {unsupported && notPreviewableLabel ? (
           <span className="file-preview-tree__entry-badge" data-testid={`${itemTestId}-unsupported`}>
             {notPreviewableLabel}
           </span>
@@ -156,6 +160,7 @@ function TreeEntry({
               onSelectFile={onSelectFile}
               notPreviewableLabel={notPreviewableLabel}
               itemTestId={itemTestId}
+              allowUnsupportedSelection={allowUnsupportedSelection}
             />
           ))}
         </div>
@@ -173,6 +178,7 @@ export function FilePreviewTree({
   selectedPath,
   onSelectFile,
   onRetry,
+  allowUnsupportedSelection = false,
   labels,
   testId = 'file-preview-tree',
   ariaLabel,
@@ -236,6 +242,7 @@ export function FilePreviewTree({
               onSelectFile={onSelectFile}
               notPreviewableLabel={labels.notPreviewable}
               itemTestId={itemTestId}
+              allowUnsupportedSelection={allowUnsupportedSelection}
             />
           ))
         : null}

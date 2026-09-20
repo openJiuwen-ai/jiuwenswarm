@@ -146,6 +146,75 @@ for (const [source, installed, expected] of [['local', true, 'delete'], ['local'
   });
 }
 
+test('unsupported expert files remain selectable and show the unsupported preview state', async () => {
+  const { DefinitionDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const detail = {
+    id: 'test',
+    runtimePackageName: 'test',
+    displayName: 'Test',
+    description: '',
+    source: 'local',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+    skills: [],
+    tools: [],
+    rails: [],
+    mcps: [],
+    suggestedPrompts: [],
+    pendingConnectors: [],
+    details: '',
+    prompt: '',
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(DefinitionDetailPage, {
+      detail,
+      detailStatus: 'success',
+      detailTab: 'files',
+      files: [{ relativePath: 'runtime.bin', kind: 'file', previewable: false }],
+      filesStatus: 'success',
+      selectedFilePath: 'runtime.bin',
+      fileContent: null,
+      fileStatus: 'success',
+      onBack() {},
+      onSelectFile() {},
+    }),
+  );
+  const document = new JSDOM(markup).window.document;
+  const fileButton = document.querySelector('[data-testid="agent-management-file-tree-item"]');
+  assert.equal(fileButton.getAttribute('data-variant'), 'runtime.bin');
+  assert.equal(fileButton.disabled, false);
+  assert.equal(fileButton.textContent, 'runtime.bin');
+  assert.equal(fileButton.querySelector('[data-testid="agent-management-file-tree-item-unsupported"]'), null);
+  assert.ok(
+    document.querySelector('[data-testid="agent-management-file-preview-content-state"][data-variant="unsupported"]'),
+  );
+});
+
+test('expert PDF files render through the shared browser preview', async () => {
+  const { DefinitionDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const detail = {
+    id: 'test', runtimePackageName: 'test', displayName: 'Test', description: '', source: 'local', installed: true,
+    connectionState: 'connected', tags: [], avatarUrl: null, skills: [], tools: [], rails: [], mcps: [],
+    suggestedPrompts: [], pendingConnectors: [], details: '', prompt: '',
+  };
+  const markup = renderToStaticMarkup(React.createElement(DefinitionDetailPage, {
+    detail, detailStatus: 'success', detailTab: 'files',
+    files: [{ relativePath: 'guide.pdf', kind: 'file', previewable: true }], filesStatus: 'success',
+    selectedFilePath: 'guide.pdf',
+    fileContent: { relativePath: 'guide.pdf', content: null, downloadUrl: '/file-api/download?token=pdf' },
+    fileStatus: 'success', onBack() {}, onSelectFile() {},
+  }));
+  const document = new JSDOM(markup).window.document;
+  const pdf = document.querySelector('[data-testid="agent-management-file-preview-content-pdf"]');
+  assert.equal(pdf.getAttribute('src'), '/file-api/download?token=pdf&inline=1');
+});
+
 for (const name of ['MarketCard', 'MyMarketCard']) {
   for (const [state, quickAction, label] of [['connected', 'install', '使用'], ['idle', 'install', '安装'], ['idle', 'connect', '连接']]) {
     test(`${name} ${state}/${quickAction} exposes one text action`, async () => {

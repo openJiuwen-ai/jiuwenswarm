@@ -6,6 +6,7 @@ import {
   normalizeAgentSource,
   normalizeAgentTemplateDetail,
   normalizeAgentTemplateListItem,
+  normalizeAgentFileContent,
   normalizeAgentFileTree,
   normalizeAgentGroupListItem,
 } from '../node_modules/.cache/agent-management/adapter.js';
@@ -311,6 +312,7 @@ test('normalizes package file tree and keeps preview policy extension-based', ()
   assert.equal(isPreviewableFile('README.md'), true);
   assert.equal(isPreviewableFile('manifest.JSON'), true);
   assert.equal(isPreviewableFile('tools/runtime.py'), true);
+  assert.equal(isPreviewableFile('docs/guide.pdf'), true);
   assert.equal(isPreviewableFile('runtime.bin'), false);
 
   const tree = normalizeAgentFileTree([
@@ -323,12 +325,25 @@ test('normalizes package file tree and keeps preview policy extension-based', ()
       ],
     },
     { path: 'manifest.json', type: 'file', size: 42 },
+    { path: 'runtime.bin', type: 'file', size: 1024, previewable: false },
   ]);
 
   assert.equal(tree[0].kind, 'directory');
   assert.equal(tree[0].children[0].visible, false);
   assert.equal(tree[0].children[1].previewable, true);
   assert.equal(tree[1].previewable, true);
+  assert.equal(tree[2].relativePath, 'runtime.bin');
+  assert.equal(tree[2].previewable, false);
+});
+
+test('normalizes binary preview URLs without inventing text content', () => {
+  const file = normalizeAgentFileContent({
+    path: 'docs/guide.pdf',
+    content: null,
+    download_url: '/file-api/download?token=pdf',
+  });
+  assert.equal(file.content, null);
+  assert.equal(file.downloadUrl, '/file-api/download?token=pdf');
 });
 
 test('initial file selection skips hidden previewable files', () => {

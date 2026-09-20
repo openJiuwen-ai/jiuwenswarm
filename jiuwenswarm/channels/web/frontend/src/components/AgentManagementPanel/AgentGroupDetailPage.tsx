@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { openAssetPublish } from '../../features/assetPublishEvents';
-import type { AgentGroupDetail, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
+import type { AgentFileContent, AgentGroupDetail, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
 import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 import { getAvatarTone, GroupAvatar } from './GroupCard';
@@ -19,7 +19,7 @@ type AgentGroupDetailPageProps = {
   filesStatus: RequestStatus;
   filesError: string | null;
   selectedFilePath: string | null;
-  fileContent: { relativePath: string; content: string } | null;
+  fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
   actionError: string | null;

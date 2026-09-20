@@ -514,12 +514,65 @@ class TestAgentGroupLifecycle:
         assert card["capabilities"]["canUse"] is False
         assert str(home) not in json.dumps(card, ensure_ascii=False)
 
+        (package / "guide.pdf").write_bytes(b"%PDF-1.4")
+        (package / "sensitive.json").write_text(
+            json.dumps(
+                {
+                    "api_key": "sk-preview-secret-12345678",
+                    "nested": {"contact": "owner@example.com"},
+                    "safe": "visible",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (package / "notes.md").write_text(
+            "Authorization: Bearer preview-secret-token\n"
+            "-----BEGIN PRIVATE KEY-----\nprivate-material\n"
+            "-----END PRIVATE KEY-----\n",
+            encoding="utf-8",
+        )
         tree = catalog.list_agent_group_files("delivery-review-team")
         assert any(item["path"] == "README.md" for item in tree)
+        pdf = next(item for item in tree if item["path"] == "guide.pdf")
+        assert pdf["previewable"] is True
+        pdf_preview = catalog.read_agent_group_file(
+            "delivery-review-team", "guide.pdf"
+        )
+        assert pdf_preview["content"] is None
+        assert pdf_preview["download_url"].startswith("/file-api/download?")
+        agents = next(item for item in tree if item["path"] == "agents/")
+        leader = next(
+            item for item in agents["children"] if item["path"] == "agents/leader/"
+        )
+        manifest = next(
+            item
+            for item in leader["children"]
+            if item["path"] == "agents/leader/manifest.json"
+        )
+        assert manifest["previewable"] is True
+        assert catalog.read_agent_group_file(
+            "delivery-review-team", "agents/leader/manifest.json"
+        )["content"]
         content = catalog.read_agent_group_file(
             "delivery-review-team", "agents/leader/AGENT.md"
         )
         assert "专家团 Leader" in content["content"]
+        json_preview = json.loads(
+            catalog.read_agent_group_file(
+                "delivery-review-team", "sensitive.json"
+            )["content"]
+        )
+        assert json_preview == {
+            "api_key": "******",
+            "nested": {"contact": "******"},
+            "safe": "visible",
+        }
+        notes_preview = catalog.read_agent_group_file(
+            "delivery-review-team", "notes.md"
+        )["content"]
+        assert "preview-secret-token" not in notes_preview
+        assert "private-material" not in notes_preview
+        assert "******" in notes_preview
 
     def test_install_enables_runtime_and_uninstall_removes_local(
         self, extension_workspace: Path
@@ -1375,13 +1428,13 @@ class TestListShowAndFileRead:
         tree = catalog.list_agent_template_files("alpha")
         paths = {n["path"] for n in tree}
         assert "README.md" in paths
-        assert "model.json" not in paths
+        model = next(node for node in tree if node["path"] == "model.json")
+        assert model["previewable"] is True
         read = catalog.read_agent_template_file("alpha", "README.md")
         assert read["content"] == "body"
         with pytest.raises((ValueError, RuntimeError)):
             catalog.read_agent_template_file("alpha", "../secret.txt")
-        with pytest.raises((ValueError, RuntimeError)):
-            catalog.read_agent_template_file("alpha", "model.json")
+        assert catalog.read_agent_template_file("alpha", "model.json")["content"] == "{}"
 
 
 class TestUpdateAndDeleteAgentTemplate:

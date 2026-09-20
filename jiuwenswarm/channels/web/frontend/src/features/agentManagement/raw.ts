@@ -121,6 +121,7 @@ export type RawAgentFileEntry = {
   type: 'file' | 'dir';
   visible?: boolean;
   size?: number;
+  previewable?: boolean;
   children?: RawAgentFileEntry[];
 };
 
@@ -130,7 +131,8 @@ export type RawAgentFileListPayload = {
 
 export type RawAgentFileReadPayload = {
   path?: string;
-  content?: string;
+  content?: string | null;
+  download_url?: string | null;
 };
 
 export type RawSkillOption = {

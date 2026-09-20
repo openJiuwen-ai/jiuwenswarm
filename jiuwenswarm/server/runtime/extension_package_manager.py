@@ -27,6 +27,7 @@ from jiuwenswarm.common.utils import (
     get_agent_skills_dir,
     get_agent_workspace_dir,
     get_user_workspace_dir,
+    mask_sensitive,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
 from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
@@ -59,12 +60,20 @@ class AgentGroupPackageError(ValueError):
         super().__init__(message)
         self.code = code
 
-_CATALOG_ROOT_PREVIEWABLE_FILES: frozenset[str] = frozenset({"README.md", "manifest.json"})
-_CATALOG_PREVIEWABLE_DIRS: frozenset[str] = frozenset(
-    {"agents", "persona", "skills", "tools", "rails", "subagents"}
+_CATALOG_PREVIEWABLE_EXTS: frozenset[str] = frozenset(
+    {".md", ".mdx", ".json", ".py", ".pdf"}
 )
-_CATALOG_PREVIEWABLE_EXTS: frozenset[str] = frozenset({".md", ".py"})
 _MAX_PREVIEW_FILE_BYTES = 1 * 1024 * 1024
+_PREVIEW_SENSITIVE_KEY_PATTERN = re.compile(
+    r"(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|"
+    r"authorization|auth[_-]?(?:code|token)|credential|private[_-]?key|"
+    r"user[_-]?id|project[_-]?id|amap[_-]?key|map[_-]?ak)"
+)
+_PREVIEW_PRIVATE_KEY_PATTERN = re.compile(
+    r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?"
+    r"-----END [^-\r\n]*PRIVATE KEY-----",
+    re.DOTALL,
+)
 _MAX_IMPORT_FILE_COUNT = 10_000
 _MAX_IMPORT_TOTAL_BYTES = 512 * 1024 * 1024
 _MAX_IMPORT_PATH_DEPTH = 32
@@ -158,19 +167,56 @@ def get_equipment_resources_plugin_packages_dir() -> Path | None:
 
 
 def _is_previewable_file(rel_posix: str) -> bool:
-    """Return whether a package-relative path may be listed or read."""
+    """Return whether a package-relative file can be rendered by the frontend."""
     if not rel_posix:
         return False
     parts = rel_posix.split("/")
     if any(part.startswith(".") for part in parts):
         return False
-    if len(parts) == 1:
-        return parts[0] in _CATALOG_ROOT_PREVIEWABLE_FILES
-    if parts[0] not in _CATALOG_PREVIEWABLE_DIRS:
-        return False
-    if len(parts) < 2:
-        return False
-    return Path(rel_posix).suffix in _CATALOG_PREVIEWABLE_EXTS
+    return Path(rel_posix).suffix.lower() in _CATALOG_PREVIEWABLE_EXTS
+
+
+def _redact_preview_content(content: str, suffix: str) -> str:
+    """Mask credentials and PII before preview content reaches the browser."""
+    def redact_text(text: str) -> str:
+        text = _PREVIEW_PRIVATE_KEY_PATTERN.sub("******", text)
+        redacted: list[str] = []
+        for line in text.splitlines(keepends=True):
+            body = line.rstrip("\r\n")
+            ending = line[len(body):]
+            separators = [index for index in (body.find(":"), body.find("=")) if index >= 0]
+            if separators:
+                index = min(separators)
+                if _PREVIEW_SENSITIVE_KEY_PATTERN.search(body[:index]):
+                    redacted.append(f"{body[: index + 1]} ******{ending}")
+                    continue
+            redacted.append(mask_sensitive(line))
+        return "".join(redacted)
+
+    if suffix.lower() != ".json":
+        return redact_text(content)
+    try:
+        value = json.loads(content)
+    except ValueError:
+        return redact_text(content)
+
+    def redact(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {
+                key: (
+                    "******"
+                    if _PREVIEW_SENSITIVE_KEY_PATTERN.search(str(key))
+                    else redact(child)
+                )
+                for key, child in item.items()
+            }
+        if isinstance(item, list):
+            return [redact(child) for child in item]
+        if isinstance(item, str):
+            return mask_sensitive(item)
+        return item
+
+    return json.dumps(redact(value), ensure_ascii=False, indent=2)
 
 
 def _read_package_manifest(pkg_dir: Path) -> dict | None:
@@ -1308,7 +1354,7 @@ def read_manifest_version(pkg_dir: Path) -> str:
 
 
 def _build_file_tree(directory: Path, root: Path) -> list[dict]:
-    """Build a previewable-only file tree under root."""
+    """Build a file tree under root, excluding hidden files and symlinks."""
     result: list[dict] = []
     try:
         entries = sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name))
@@ -1324,18 +1370,22 @@ def _build_file_tree(directory: Path, root: Path) -> list[dict]:
             if children:
                 result.append({"path": rel + "/", "type": "dir", "children": children})
         else:
-            if _is_previewable_file(rel):
-                result.append(
-                    {"path": rel, "type": "file", "size": entry.stat().st_size}
-                )
+            result.append(
+                {
+                    "path": rel,
+                    "type": "file",
+                    "size": entry.stat().st_size,
+                    "previewable": _is_previewable_file(rel),
+                }
+            )
     return result
 
 
 def _nest_preview_tree(entries: list[tuple[str, int]]) -> list[dict]:
-    """Build the preview tree JSON from package-relative files."""
+    """Build the file tree JSON from package-relative files."""
     root: dict[str, Any] = {}
     for rel, size in entries:
-        if not _is_previewable_file(rel):
+        if any(part.startswith(".") for part in rel.split("/")):
             continue
         node = root
         parts = rel.split("/")
@@ -1358,7 +1408,14 @@ def _nest_preview_tree(entries: list[tuple[str, int]]) -> list[dict]:
                 if children:
                     dirs.append({"path": path + "/", "type": "dir", "children": children})
             else:
-                files.append({"path": path, "type": "file", "size": value})
+                files.append(
+                    {
+                        "path": path,
+                        "type": "file",
+                        "size": value,
+                        "previewable": _is_previewable_file(path),
+                    }
+                )
         return dirs + files
 
     return walk(root, "")
@@ -2838,11 +2895,18 @@ def _read_previewable_file_from_zip(
     size = len(data)
     if size > _MAX_PREVIEW_FILE_BYTES:
         raise ValueError(f"file too large: {rel} ({size} bytes)")
+    if Path(rel).suffix.lower() == ".pdf":
+        encoded = base64.b64encode(data).decode("ascii")
+        return {
+            "path": rel,
+            "content": None,
+            "download_url": f"data:application/pdf;base64,{encoded}",
+        }
     try:
         content = data.decode("utf-8")
     except UnicodeDecodeError:
         content = f"[二进制文件，大小 {size} bytes]"
-    return {"path": rel, "content": content}
+    return {"path": rel, "content": _redact_preview_content(content, Path(rel).suffix)}
 
 
 async def _download_hub_preview_bytes(downloader: Any, artifact: Any) -> bytes:
@@ -2941,17 +3005,31 @@ def _read_previewable_file(pkg_dir: Path, rel_path: str) -> dict:
         raise ValueError(f"file not previewable: {rel}")
     full_path = _reject_preview_path_symlink(pkg_dir, rel)
     size = full_path.stat().st_size
+    if full_path.suffix.lower() == ".pdf":
+        from jiuwenswarm.agents.harness.common.tools.web_file_download import build_file_download_info
+
+        download = build_file_download_info(
+            str(full_path), full_path.name, expires_in=600
+        )
+        return {
+            "path": rel,
+            "content": None,
+            "download_url": download["download_url"],
+        }
     if size > _MAX_PREVIEW_FILE_BYTES:
         raise ValueError(f"file too large: {rel} ({size} bytes)")
     try:
         content = full_path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         content = f"[二进制文件，大小 {size} bytes]"
-    return {"path": rel, "content": content}
+    return {
+        "path": rel,
+        "content": _redact_preview_content(content, full_path.suffix),
+    }
 
 
 def list_agent_template_files(name: str) -> list[dict]:
-    """Return the previewable file tree for one agent_template package."""
+    """Return the file tree for one agent_template package."""
     pkg_dir = _agent_template_preview_dir(name)
     return _build_file_tree(pkg_dir, pkg_dir)
 
@@ -2967,7 +3045,7 @@ async def list_agent_template_files_with_hub(
     hub_port: HubAssetPort | None = None,
     downloader: Any = None,
 ) -> list[dict]:
-    """List previewable files, downloading an uninstalled Hub expert if needed."""
+    """List files, downloading an uninstalled Hub expert if needed."""
     pkg_dir, archive = await _resolve_agent_template_preview_with_hub(
         name, hub_port=hub_port, downloader=downloader
     )
@@ -2999,7 +3077,7 @@ async def read_agent_template_file_with_hub(
 
 
 def list_agent_group_files(name: str) -> list[dict]:
-    """Return the previewable file tree for one AgentGroup definition."""
+    """Return the file tree for one AgentGroup definition."""
     record = _hub_install_state_store(_AGENT_GROUP_KIND).get(name)
     if record is not None and record.kind == "agent_group":
         name = record.package_id
@@ -3019,18 +3097,7 @@ def read_agent_group_file(name: str, rel_path: str) -> dict:
     if resolved is None:
         raise ValueError(f"agent_group not found: {name!r}")
     pkg_dir, _ = resolved
-    rel = str(rel_path or "").strip().replace("\\", "/")
-    if not _is_previewable_file(rel):
-        raise ValueError(f"file not previewable: {rel}")
-    full_path = _reject_preview_path_symlink(pkg_dir, rel)
-    size = full_path.stat().st_size
-    if size > _MAX_PREVIEW_FILE_BYTES:
-        raise ValueError(f"file too large: {rel} ({size} bytes)")
-    try:
-        content = full_path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        content = f"[二进制文件，大小 {size} bytes]"
-    return {"path": rel, "content": content}
+    return _read_previewable_file(pkg_dir, rel_path)
 
 
 async def list_agent_group_files_with_hub(name: str) -> list[dict]:
