@@ -305,10 +305,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   async switchAccount() {
     accountBeforeSwitch = get().userId;
-    await get().logout();
-    // 华为的登录态在它自己的域名下，我们删不掉，也没有登出端点：只能把用户送过去自己退
+    // 华为的登录态在它自己的域名下，我们删不掉，也没有登出端点：只能把用户送过去自己退。
+    // **先开页面再登出**：await 之后的 window.open 丢了用户手势，会被弹窗拦截器挡下。
+    // 拦截了也不算失败，弹窗里同时给了地址让用户自己点
     openExternal(get().accountCenterUrl);
     set({ switchStep: 'signout', sameAccountAfterSwitch: false });
+    await get().logout();
   },
 
   async continueSwitchAccount() {
