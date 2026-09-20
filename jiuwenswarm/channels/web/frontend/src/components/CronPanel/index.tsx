@@ -874,7 +874,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
         onSelectSession(result.session_id);
       }
-      setSuccess(t('cron.success.runNow'));
+      setSuccess(t(isProactiveJob ? 'cron.success.proactiveRunNow' : 'cron.success.runNow'));
       // 刷新左侧栏该定时任务下展开的 session 列表（project.get_cron_sessions）
       const { id: cronId, projectId } = confirmState.job;
       if (cronId && projectId) {
@@ -1138,6 +1138,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               )}
               <div ref={rowMenuJobId === job.id ? rowMenuRef : undefined}>
                 <button
+                  disabled={isProactive}
                   onClick={(e) => {
                     if (rowMenuJobId === job.id) {
                       closeRowMenu();
@@ -1149,11 +1150,13 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                     setRowMenuJobId(job.id);
                   }}
                   data-testid="cron-job-more-btn"
-                  className="flex items-center gap-0.5 text-sm text-cron-action-link hover:opacity-80"
+                  data-variant={isProactive ? 'disabled' : 'enabled'}
+                  className={`flex items-center gap-0.5 text-sm ${isProactive ? 'cursor-not-allowed text-text-muted/50' : 'text-cron-action-link hover:opacity-80'}`}
                 >
                   {t('cron.table.more')} <ChevronDown size={13} />
                 </button>
-                {rowMenuJobId === job.id &&
+                {!isProactive &&
+                  rowMenuJobId === job.id &&
                   rowMenuAnchor &&
                   createPortal(
                     <div
