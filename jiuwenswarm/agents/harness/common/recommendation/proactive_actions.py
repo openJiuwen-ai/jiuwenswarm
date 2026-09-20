@@ -288,6 +288,7 @@ async def _analyze_and_decide(
     skills: list[dict[str, Any]],
     proactive_agent: Any,
     decision_rules_text: str = "（暂无）",
+    language: str = "zh",
 ) -> AnalysisResult:
     """Single call via the proactive agent: decide whether to recommend.
 
@@ -306,14 +307,16 @@ async def _analyze_and_decide(
 
     ``decision_rules_text`` is the decision-layer strategy gradients (target/relation),
     injected into the analysis prompt to influence type/target/reason selection.
+
+    ``language``: preferred_language from config.yaml (read once per tick by the
+    engine and threaded through) — selects the ZH/EN prompt template so decision
+    copy language matches the system language setting.
     """
-    from jiuwenswarm.common.config import get_config
     from jiuwenswarm.agents.harness.common.recommendation.proactive_prompts import (
         unified_analysis_prompt,
     )
 
-    # 决策语言跟随 config.yaml preferred_language（与主对话回复语言同源）。
-    prompt = unified_analysis_prompt(get_config().get("preferred_language", "zh")).format(
+    prompt = unified_analysis_prompt(language).format(
         conversation_summary=report_text,
         decision_rules_text=decision_rules_text,
     )
@@ -433,7 +436,9 @@ async def _trigger_main_agent(
     # 指令语言跟随 config.yaml preferred_language——en 时模型收到的整条指令都是
     # 英文，产出话术才是英文。此前指令硬编码中文，信封里 preferred_response_language=en
     # 的元数据权重压不过整段中文指令，导致"agent 设为英文、推荐仍推中文"。
-    query = directive_prompt(get_config().get("preferred_language", "zh")).format(
+    query = directive_prompt(
+        str(get_config().get("preferred_language") or "zh"),
+    ).format(
         rec_type=decision.type,
         target=decision.target,
         reason=decision.reason,
