@@ -5176,6 +5176,7 @@ class AgentWebSocketServer:
             error = "target expert team is not bound to this session"
         elif not owner_org_id or target_org_id != owner_org_id:
             error = "target expert team does not belong to the owner's organization"
+        precheck_failed = bool(error)
 
         succeeded = False
         if not error:
@@ -5214,6 +5215,18 @@ class AgentWebSocketServer:
                 error = "target expert team is unavailable or busy"
 
         if error:
+            # Precheck only: turn-time skips are logged in ExpertTeamLauncher.
+            if precheck_failed:
+                logger.warning(
+                    "[AgentWebSocketServer] targeted expert chat denied session=%s "
+                    "owner_team=%s target_team=%s owner_org=%s target_org=%s error=%s",
+                    session_id,
+                    owner_team_id,
+                    team_id,
+                    owner_org_id,
+                    target_org_id,
+                    error,
+                )
             yield _chunk(
                 {
                     "event_type": "chat.error",

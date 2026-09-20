@@ -2995,9 +2995,86 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
 
 
 @pytest.mark.anyio
+async def test_finalize_org_bound_team_after_idle_calls_finalize(monkeypatch):
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    finalize_calls: list[tuple[str, str]] = []
+
+    class _Pool:
+        async def get(self, team_name: str):
+            assert team_name == "owner-team"
+            return SimpleNamespace(
+                current_session_id="sess-org",
+                state=RuntimeState.RUNNING,
+                agent=SimpleNamespace(
+                    team_backend=SimpleNamespace(org_task_manager=object()),
+                ),
+            )
+
+    class _Runtime:
+        pool = _Pool()
+
+        async def finalize(self, *, team_name: str, session_id: str) -> None:
+            finalize_calls.append((team_name, session_id))
+
+    import jiuwenswarm.agents.harness.team.team_manager as team_manager_mod
+
+    monkeypatch.setattr(
+        team_manager_mod,
+        "_runner_team_runtime_manager",
+        lambda runner: _Runtime(),
+    )
+
+    await team_helpers._finalize_org_bound_team_after_idle(
+        session_id="sess-org",
+        team_name="owner-team",
+    )
+    assert finalize_calls == [("owner-team", "sess-org")]
+
+
+@pytest.mark.anyio
+async def test_finalize_org_bound_team_after_idle_skips_non_org(monkeypatch):
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    finalize_calls: list[tuple[str, str]] = []
+
+    class _Pool:
+        async def get(self, team_name: str):
+            return SimpleNamespace(
+                current_session_id="sess-plain",
+                state=RuntimeState.RUNNING,
+                agent=SimpleNamespace(team_backend=SimpleNamespace(org_task_manager=None)),
+            )
+
+    class _Runtime:
+        pool = _Pool()
+
+        async def finalize(self, *, team_name: str, session_id: str) -> None:
+            finalize_calls.append((team_name, session_id))
+
+    import jiuwenswarm.agents.harness.team.team_manager as team_manager_mod
+
+    monkeypatch.setattr(
+        team_manager_mod,
+        "_runner_team_runtime_manager",
+        lambda runner: _Runtime(),
+    )
+
+    await team_helpers._finalize_org_bound_team_after_idle(
+        session_id="sess-plain",
+        team_name="plain-team",
+    )
+    assert finalize_calls == []
+
+
+@pytest.mark.anyio
 async def test_consume_stream_with_query_reports_team_idle_as_round_end(monkeypatch):
     """A team.idle marker ends the round for clients, just like team.completed."""
     broadcasted: list[dict] = []
+    finalize_calls: list[tuple[str, str]] = []
+
+    async def _fake_finalize(*, session_id: str, team_name: str) -> None:
+        finalize_calls.append((session_id, team_name))
 
     async def _fake_stream(**kwargs):
         yield SimpleNamespace(
@@ -3058,6 +3135,7 @@ async def test_consume_stream_with_query_reports_team_idle_as_round_end(monkeypa
     monkeypatch.setattr(team_helpers, "ensure_team_evolution_watcher", lambda *args, **kwargs: None)
     monkeypatch.setattr(team_helpers, "get_session_metadata", lambda session_id: {})
     monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: None)
+    monkeypatch.setattr(team_helpers, "_finalize_org_bound_team_after_idle", _fake_finalize)
 
     await _TeamHelpersTestApi.consume_stream_with_query(
         "web",
@@ -3078,6 +3156,8 @@ async def test_consume_stream_with_query_reports_team_idle_as_round_end(monkeypa
     assert idle_status[0]["is_processing"] is False
     assert idle_status[0]["is_complete"] is True
     assert idle_status[0]["rid"] == 1
+    # Finalize runs from stream finally (not from the idle marker itself).
+    assert finalize_calls == [("sess-team-idle", "demo-team")]
 
 
 @pytest.mark.anyio

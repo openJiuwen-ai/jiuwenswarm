@@ -204,10 +204,20 @@ class JiuwenExpertTeamLauncher:
         if is_root_relay:
             source = relay_source
         entry = await runtime.pool.get(team_id)
+        if entry is None or entry.current_session_id != session_id:
+            logger.warning(
+                "[ExpertTeamLauncher] skip org turn team=%s session=%s source=%s "
+                "reason=%s state=%s entry_session=%s",
+                team_id,
+                session_id,
+                source,
+                "missing_entry" if entry is None else "session_mismatch",
+                getattr(entry, "state", None),
+                getattr(entry, "current_session_id", None),
+            )
+            return False
         spec = getattr(getattr(entry, "agent", None), "spec", None)
         spec_metadata = getattr(spec, "metadata", None)
-        if entry is None or entry.current_session_id != session_id:
-            return False
         is_relayed_team = isinstance(spec_metadata, dict) and (
             spec_metadata.get("expert_team") is True
             or (source == "org_summary_background" and spec_metadata.get("summary_team") is True)
@@ -215,9 +225,16 @@ class JiuwenExpertTeamLauncher:
         )
         if not is_relayed_team:
             if source == "org_expert_direct":
+                logger.warning(
+                    "[ExpertTeamLauncher] skip org turn team=%s session=%s source=%s "
+                    "reason=not_expert_team",
+                    team_id,
+                    session_id,
+                    source,
+                )
                 return False
-            # The Organization runner serves both ordinary Root Teams and
-            # launched expert Teams; only the latter need this launcher's relay.
+            # Ordinary teams still use the default runner; Root delivery and
+            # Summary Team output keep the host relay for their Web session.
             return await runtime.run_organization_turn(
                 team_name=team_id,
                 session_id=session_id,
@@ -230,6 +247,13 @@ class JiuwenExpertTeamLauncher:
             or (_resolve_launch_channel_id(None, session_id) if is_root_relay else "")
         )
         if not resolved_channel_id:
+            logger.warning(
+                "[ExpertTeamLauncher] fallback to default org runner team=%s "
+                "session=%s source=%s reason=missing_channel",
+                team_id,
+                session_id,
+                source,
+            )
             return await runtime.run_organization_turn(
                 team_name=team_id,
                 session_id=session_id,
@@ -244,6 +268,14 @@ class JiuwenExpertTeamLauncher:
             or entry.current_session_id != session_id
             or entry.state is not RuntimeState.PAUSED
         ):
+            logger.warning(
+                "[ExpertTeamLauncher] skip org turn team=%s session=%s source=%s "
+                "reason=not_paused state=%s",
+                team_id,
+                session_id,
+                source,
+                getattr(entry, "state", None),
+            )
             return False
         activation = None
         ran_turn = False
@@ -261,6 +293,19 @@ class JiuwenExpertTeamLauncher:
                 RunActionKind.REJECT_ORPHANED,
                 RunActionKind.REJECT_INCONSISTENT,
             }:
+                reject_reason = (
+                    "no_agent"
+                    if agent is None
+                    else f"reject_{str(getattr(action_kind, 'name', action_kind)).lower()}"
+                )
+                logger.warning(
+                    "[ExpertTeamLauncher] skip org turn team=%s session=%s source=%s "
+                    "reason=%s",
+                    team_id,
+                    session_id,
+                    source,
+                    reject_reason,
+                )
                 return False
             ran_turn = True
             stream = agent.stream(turn_inputs, session=activation.session)
@@ -272,6 +317,14 @@ class JiuwenExpertTeamLauncher:
                         "team.completed",
                     }:
                         finalized = True
+                        logger.info(
+                            "[ExpertTeamLauncher] org turn finalize team=%s session=%s "
+                            "source=%s trigger=%s",
+                            team_id,
+                            session_id,
+                            source,
+                            payload.get("event_type"),
+                        )
                         await runtime.finalize(team_name=team_id, session_id=session_id)
                         break
                     relayed = await self._relay_expert_chunk(
@@ -316,9 +369,10 @@ class JiuwenExpertTeamLauncher:
         except Exception as exc:
             logger.warning(
                 "[ExpertTeamLauncher] organization background turn failed "
-                "team=%s session=%s",
+                "team=%s session=%s source=%s",
                 team_id,
                 session_id,
+                source,
                 exc_info=True,
             )
             if source != "org_expert_direct":
@@ -339,6 +393,13 @@ class JiuwenExpertTeamLauncher:
         finally:
             if ran_turn and activation is not None:
                 if not finalized:
+                    logger.info(
+                        "[ExpertTeamLauncher] org turn finalize team=%s session=%s "
+                        "source=%s trigger=finally",
+                        team_id,
+                        session_id,
+                        source,
+                    )
                     await runtime.finalize(team_name=team_id, session_id=session_id)
                 current = await runtime.pool.get(team_id)
                 interact_gate = getattr(current, "interact_gate", None)
@@ -487,6 +548,14 @@ class JiuwenExpertTeamLauncher:
                     if candidate is not None and getattr(candidate, "db", None) is not None:
                         donor_backend = candidate
                         break
+        if donor_backend is None or getattr(donor_backend, "db", None) is None:
+            logger.warning(
+                "[ExpertTeamLauncher] no donor TeamDatabase session=%s team=%s "
+                "share_db_from=%s",
+                session_id,
+                team_id,
+                donor_id or None,
+            )
         return donor_backend
 
     async def _build_enriched_spec(
@@ -677,12 +746,24 @@ class JiuwenExpertTeamLauncher:
                     )
 
             self._team_channels[(session_id, team_id)] = resolved_channel
-            return LaunchedExpertTeam(
+            launched = LaunchedExpertTeam(
                 team_id=team_id,
                 leader_id=_leader_id_from_agent(agent, team_id),
                 capabilities=_capabilities_from_agent(agent),
                 agent_group_name=group_name,
             )
+            logger.info(
+                "[ExpertTeamLauncher] launched org=%s session=%s team_id=%s "
+                "leader_id=%s agent_group=%s share_db_from=%s channel=%s",
+                organization_id,
+                session_id,
+                launched.team_id,
+                launched.leader_id,
+                group_name,
+                share_db_from_team_id,
+                resolved_channel,
+            )
+            return launched
         except Exception:
             if activation_attempted:
                 await self.stop(team_id=team_id, session_id=session_id)

@@ -372,6 +372,44 @@ def test_verify_shared_database_rejects_mismatched_task_manager_db() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_organization_turn_falls_back_for_owner_team() -> None:
+    """Non-expert (owner) teams must use the default org runner, not return False."""
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    default_calls: list[tuple[str, str, object]] = []
+
+    class _OwnerRuntime:
+        def __init__(self) -> None:
+            self.pool = SimpleNamespace(
+                get=self._get,
+            )
+
+        async def _get(self, team_id: str):
+            return SimpleNamespace(
+                current_session_id="sess-owner",
+                state=RuntimeState.PAUSED,
+                agent=SimpleNamespace(
+                    spec=SimpleNamespace(metadata={"capabilities": ["general"]}),
+                ),
+            )
+
+        async def run_organization_turn(self, *, team_name: str, session_id: str, inputs: object) -> bool:
+            default_calls.append((team_name, session_id, inputs))
+            return True
+
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=_OwnerRuntime())
+    ok = await launcher.run_organization_turn(
+        "retry-claim-demo",
+        "sess-owner",
+        {"query": "org unclaimed expired"},
+    )
+    assert ok is True
+    assert default_calls == [
+        ("retry-claim-demo", "sess-owner", {"query": "org unclaimed expired"}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_launch_reflects_metadata_capabilities_from_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
