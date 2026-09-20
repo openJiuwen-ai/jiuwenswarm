@@ -76,10 +76,16 @@ class ResumeContextManager:
     修复 ``interface_deep.py`` supplement / _clear_session_persisted 两处键空间错误。
     """
 
-    def __init__(self, session: Any, *, card: Any = None) -> None:
+    def __init__(
+        self,
+        session: Any = None,
+        *,
+        card: Any = None,
+        session_id: str = "",
+    ) -> None:
         self._session = session
-        self._card = _resolve_card(session, card)
-        self._sid = _get_sid(session)
+        self._card = _resolve_card(session, card) if card is None else card
+        self._sid = (session_id or _get_sid(session)) if (session_id or session) else "?"
 
     @classmethod
     def for_isolated_clear(cls, session_id: str, card: Any) -> "ResumeContextManager":
@@ -88,11 +94,7 @@ class ResumeContextManager:
         供 adapter 侧按目标 session_id 清除隔离键 resume_ctx 使用；
         card 为空时 clear() 自动降级为 no-op。
         """
-        mgr = cls.__new__(cls)
-        mgr._session = None
-        mgr._card = card
-        mgr._sid = str(session_id) if session_id else "?"
-        return mgr
+        return cls(session=None, card=card, session_id=session_id)
 
     async def save(
         self,
