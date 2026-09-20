@@ -732,10 +732,6 @@ def test_published_capability_snapshot_builds_nonempty_execution_edge(
         json.dumps(
             {
                 "capabilities": capabilities,
-                "capability_hashes": {
-                    "skill:search": "hash-search",
-                    "skill:writer": "hash-writer",
-                },
             }
         ),
         encoding="utf-8",
@@ -794,7 +790,6 @@ def test_published_capability_snapshot_builds_nonempty_execution_edge(
     search = next(item for item in identities if item.capability_id == "search")
     writer = next(item for item in identities if item.capability_id == "writer")
     assert search.version == "1.0.0"
-    assert search.content_hash == "hash-search"
     assert search.description == "Search trusted sources."
     assert search.outputs == (
         {
@@ -805,7 +800,6 @@ def test_published_capability_snapshot_builds_nonempty_execution_edge(
         },
     )
     assert writer.version == "2.0.0"
-    assert writer.content_hash == "hash-writer"
     assert writer.inputs == (
         {
             "name": "result",
@@ -817,7 +811,6 @@ def test_published_capability_snapshot_builds_nonempty_execution_edge(
     assert execution_graph["graph"]["nodes"]["search"]["metadata"] == {
         "capability_type": "skill",
         "version": "1.0.0",
-        "content_hash": "hash-search",
         "description": "Search trusted sources.",
         "outputs": [
             {
