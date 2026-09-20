@@ -83,9 +83,18 @@ class JiuwenSummaryTeamLauncher:
                 LaunchedSummaryTeam,
             )
 
-            return LaunchedSummaryTeam(
+            launched = LaunchedSummaryTeam(
                 team_id=team_id, leader_id=_leader_id_from_agent(agent, team_id)
             )
+            logger.info(
+                "[SummaryTeamLauncher] summary team=%s org=%s session=%s "
+                "leader_id=%s action=reuse",
+                launched.team_id,
+                organization_id,
+                session_id,
+                launched.leader_id,
+            )
+            return launched
         from jiuwenswarm.agents.harness.team.summary_org.spec import (
             build_summary_team_spec,
         )
@@ -120,9 +129,19 @@ class JiuwenSummaryTeamLauncher:
                 LaunchedSummaryTeam,
             )
 
-            return LaunchedSummaryTeam(
+            launched = LaunchedSummaryTeam(
                 team_id=team_id, leader_id=_leader_id_from_agent(agent, team_id)
             )
+            logger.info(
+                "[SummaryTeamLauncher] summary team=%s org=%s session=%s "
+                "share_db_from=%s leader_id=%s action=created",
+                launched.team_id,
+                organization_id,
+                session_id,
+                share_db_from_team_id,
+                launched.leader_id,
+            )
+            return launched
         except Exception:
             await self._stop_with_runtime(
                 runtime, team_id=team_id, session_id=session_id
