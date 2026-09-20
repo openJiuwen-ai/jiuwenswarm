@@ -69,7 +69,7 @@
 }
 
 .settings-page__nav-button:hover:not(:disabled) {
-  background: var(--color-sidebar-nav-hover);
+  background: var(--color-sidebar-action-hover);
 }
 
 .settings-page__nav-button:focus-visible {

@@ -1671,15 +1671,14 @@ body.workspace-resize-active iframe {
     position: relative;
   }
 
-  .chat-timeline>* {
-    margin-top: 0;
-    margin-bottom: 0;
+  [data-timeline-scroll-root] {
+    overflow-anchor: none;
   }
 
-  .chat-timeline__history-sentinel {
-    height: 1px;
-    margin-bottom: -9px;
-    pointer-events: none;
+  .chat-timeline > *,
+  .chat-timeline-row > * {
+    margin-top: 0;
+    margin-bottom: 0;
   }
 
   /* ====== Tool Tree ====== */
