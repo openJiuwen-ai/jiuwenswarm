@@ -256,7 +256,7 @@ export function AgentManagementPanel({
   const [groupMineQuery, setGroupMineQuery] = useState('');
   const [groupCatalogPage, setGroupCatalogPage] = useState(1);
   const [groupMinePage, setGroupMinePage] = useState(1);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
   const [busySkillId, setBusySkillId] = useState<string | null>(null);
   const [busyMcpId, setBusyMcpId] = useState<string | null>(null);
   const [detailOrigin, setDetailOrigin] = useState<'catalog' | 'mine'>('catalog');
@@ -351,6 +351,22 @@ export function AgentManagementPanel({
       setActionNotice(current => (current === notice ? null : current));
       actionNoticeTimerRef.current = null;
     }, 3000);
+  }, []);
+  const markBusy = useCallback((id: string) => {
+    setBusyIds((current) => {
+      if (current.has(id)) return current;
+      const next = new Set(current);
+      next.add(id);
+      return next;
+    });
+  }, []);
+  const clearBusy = useCallback((id: string) => {
+    setBusyIds((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
   }, []);
 
   const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
@@ -810,11 +826,11 @@ export function AgentManagementPanel({
       } catch (error) {
         setActionError(formatActionError(error, t('agentManagement.states.actionError')));
       } finally {
-        setBusyId(null);
+        clearBusy(id);
         installFlowModeRef.current = 'catalog';
       }
     },
-    [client, formatActionError, loadCatalog, refreshAfterAction, t],
+    [clearBusy, client, formatActionError, loadCatalog, refreshAfterAction, t],
   );
 
   const refreshAfterReconnect = useCallback(
@@ -825,10 +841,10 @@ export function AgentManagementPanel({
       } catch (error) {
         setActionError(formatActionError(error, t('agentManagement.states.actionError')));
       } finally {
-        setBusyId(null);
+        clearBusy(id);
       }
     },
-    [refreshAfterAction, t],
+    [clearBusy, refreshAfterAction, t],
   );
 
   const installFlow = usePendingConnectorFlow(() => {
@@ -860,10 +876,11 @@ export function AgentManagementPanel({
     installFlowTargetRef.current = null;
     reconnectFlowTargetRef.current = null;
     setConnectorFlowId(null);
-    setBusyId((current) => (current === id ? null : current));
+    if (id) clearBusy(id);
   }, [
     connectorError,
     connectorFlowId,
+    clearBusy,
     formatActionError,
     installFlow.active,
     installFlow.authTarget,
@@ -875,7 +892,7 @@ export function AgentManagementPanel({
   ]);
 
   const handleInstall = async (id: string, options: { includeTeamCompatibility?: boolean } = {}) => {
-    setBusyId(id);
+    markBusy(id);
     setActionError(null);
     setActionNotice(null);
     clearConnectorError();
@@ -900,14 +917,14 @@ export function AgentManagementPanel({
       setActionError(formatActionError(error, t('agentManagement.states.actionError')));
     } finally {
       if (installFlowTargetRef.current !== id) {
-        setBusyId(null);
+        clearBusy(id);
         installFlowModeRef.current = 'catalog';
       }
     }
   };
 
   const handleUninstall = async (id: string) => {
-    setBusyId(id);
+    markBusy(id);
     setActionError(null);
     setActionNotice(null);
     try {
@@ -923,7 +940,7 @@ export function AgentManagementPanel({
     } catch (error) {
       setActionError(formatActionError(error, t('agentManagement.states.actionError')));
     } finally {
-      setBusyId(null);
+      clearBusy(id);
     }
   };
 
@@ -954,7 +971,7 @@ export function AgentManagementPanel({
   };
 
   const handleInstallGroup = async (id: string) => {
-    setBusyId(id);
+    markBusy(id);
     setActionError(null);
     setActionNotice(null);
     try {
@@ -963,12 +980,12 @@ export function AgentManagementPanel({
     } catch (error) {
       setActionError(formatActionError(error, t('agentManagement.group.states.actionError')));
     } finally {
-      setBusyId(null);
+      clearBusy(id);
     }
   };
 
   const handleUninstallGroup = async (id: string) => {
-    setBusyId(id);
+    markBusy(id);
     setActionError(null);
     setActionNotice(null);
     try {
@@ -986,12 +1003,12 @@ export function AgentManagementPanel({
     } catch (error) {
       setActionError(formatActionError(error, t('agentManagement.group.states.actionError')));
     } finally {
-      setBusyId(null);
+      clearBusy(id);
     }
   };
 
   const handleReconnect = async (id: string) => {
-    setBusyId(id);
+    markBusy(id);
     setActionError(null);
     setActionNotice(null);
     clearConnectorError();
@@ -1007,7 +1024,7 @@ export function AgentManagementPanel({
     } catch (error) {
       setActionError(formatActionError(error, t('agentManagement.states.actionError')));
     } finally {
-      if (reconnectFlowTargetRef.current !== id) setBusyId(null);
+      if (reconnectFlowTargetRef.current !== id) clearBusy(id);
     }
   };
 
@@ -1110,7 +1127,7 @@ export function AgentManagementPanel({
   const handleDelete = async (id: string, name: string) => {
     const confirmed = window.confirm(t('agentManagement.confirm.deleteMessage', { name }));
     if (!confirmed) return;
-    setBusyId(id);
+    markBusy(id);
     setActionError(null);
     setActionNotice(null);
     try {
@@ -1120,7 +1137,7 @@ export function AgentManagementPanel({
     } catch (error) {
       setActionError(formatActionError(error, t('agentManagement.states.actionError')));
     } finally {
-      setBusyId(null);
+      clearBusy(id);
     }
   };
 
@@ -1416,7 +1433,7 @@ export function AgentManagementPanel({
               installation={groupInstallationFilter}
               status={view === 'teams' ? groupCatalogStatus : groupMineStatus}
               error={view === 'teams' ? groupCatalogError : groupMineError}
-              busyId={busyId}
+              busyIds={busyIds}
               onCategoryChange={value => { setGroupCategory(value); setGroupCatalogPage(1); }}
               onPageChange={value => view === 'teams' ? setGroupCatalogPage(value) : setGroupMinePage(value)}
               onRetry={() => void loadGroups(view === 'teams' ? 'catalog' : 'mine')}
@@ -1436,7 +1453,7 @@ export function AgentManagementPanel({
               category={category}
               status={state.catalogStatus}
               error={state.catalogError}
-              busyId={busyId}
+              busyIds={busyIds}
               onCategoryChange={value => { setCategory(value); setCatalogPage(1); }}
               onRetry={loadCatalog}
               onOpen={openDetail}
@@ -1463,7 +1480,7 @@ export function AgentManagementPanel({
           fileError={state.fileError}
           actionError={actionError}
           actionNotice={actionNotice}
-          busy={busyId === selectedId}
+          busy={Boolean(selectedId && busyIds.has(selectedId))}
           onBack={goBackToCatalog}
           onRetry={() => selectedId && void openDetail(selectedId)}
           onTabChange={handleTabChange}
@@ -1532,7 +1549,7 @@ export function AgentManagementPanel({
           fileError={groupFileError}
           actionError={actionError}
           actionNotice={actionNotice}
-          busy={busyId === groupSelectedId}
+          busy={Boolean(groupSelectedId && busyIds.has(groupSelectedId))}
           onBack={goBackToGroupCatalog}
           onRetry={() => groupSelectedId && void openGroupDetail(groupSelectedId)}
           onTabChange={handleGroupTabChange}
@@ -1561,7 +1578,7 @@ export function AgentManagementPanel({
           onInstallSkill={(skill) => handleInstallSkill(skill, setActionError)}
           installingSkillId={busySkillId}
           onInstallAgent={(id) => handleInstall(id, { includeTeamCompatibility: true })}
-          installingAgentId={busyId}
+          installingAgentIds={busyIds}
           onCreateAgent={openCreate}
           onCancel={() => { setActionError(null); setActionNotice(null); setView('mine'); setMineKind('group'); }}
           onSave={handleGroupCreate}
