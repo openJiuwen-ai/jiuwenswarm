@@ -95,7 +95,7 @@ _MKDIR_MODE_RE = re.compile(r"^[0-7]{3,4}$")
 # succeed. GET /api/agent/:id reports status; ``running`` means the probed
 # port is accepting connections (then WS/SSH may connect).
 _AGENT_RUNNING_STATUS = "running"
-_AGENT_RUNNING_TIMEOUT_SECONDS = 60.0
+_AGENT_RUNNING_TIMEOUT_SECONDS = 90.0
 _AGENT_RUNNING_RETRY_INTERVAL_SECONDS = 1.0
 _AGENT_FAILED_STATUSES = frozenset(
     {"failed", "error", "deleted", "stopped", "killed"}
@@ -118,7 +118,7 @@ class RuntimeProbeSettings:
     startup_failure_threshold: int = 6
     liveness_timeout_seconds: int = 2
     liveness_failure_threshold: int = 3
-    wait_running_timeout_seconds: float = 60.0
+    wait_running_timeout_seconds: float = 90.0
     wait_running_interval_seconds: float = 1.0
 
     def startup_budget_seconds(self) -> float:
