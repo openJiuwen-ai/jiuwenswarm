@@ -51,6 +51,11 @@ SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
     "_jiuwenswarm_skill_turbo_outer_todo_active"
 )
 
+# 活动直显：工作工具完成后 in_progress 行标题标注当前工具活动的
+# task.update 发送间隔下限（秒），防并行工具突发帧风暴
+# （relay 每帧 task.update 都会刷 task_progress 快照并广播）
+_ACTIVITY_EMIT_MIN_INTERVAL_S = 3.0
+
 
 def get_current_task_id() -> str | None:
     """Return current task id for stream payload correlation."""
@@ -1351,6 +1356,9 @@ class TaskExecutionRail(DeepAgentRail):
         # 暂不发 task.start/complete，等前缀完成后按列表顺序补发。
         self._todo_complete_deferred: set[str] = set()
         self._todo_start_deferred: set[str] = set()
+        # 活动直显节流：最近一次 task.update 发送时间（transition 帧与
+        # 活动标注帧共用），供 _maybe_emit_activity_update 限频
+        self._last_task_update_emit_ts: float = 0.0
 
     def set_skill_turbo_request_metadata(self, metadata: dict | None) -> None:
         """注入当前请求 metadata 副本，供 before_tool_call 解析请求级工作区。"""
@@ -1453,6 +1461,7 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_complete_deferred = set()
         self._todo_start_deferred = set()
         self._tool_start_times = {}
+        self._last_task_update_emit_ts = 0.0
         _ACTIVE_TASK_ID.set(None)
         if isinstance(ctx.inputs, InvokeInputs):
             await self._init_task_tracking(ctx.session)
@@ -1573,6 +1582,8 @@ class TaskExecutionRail(DeepAgentRail):
         )
         if target_id:
             self._set_active_task_binding(target_id)
+
+        await self._maybe_emit_activity_update(ctx, task_id=target_id)
 
         if tool_name in self.ARTIFACT_DETECTION_TOOLS:
             await self._trigger_artifact_hooks(ctx)
@@ -1726,6 +1737,66 @@ class TaskExecutionRail(DeepAgentRail):
             "[TaskExecutionRail] lazy_start: in_progress todo opened on work tool "
             "task_id=%s",
             raw_id,
+        )
+
+    def _current_tool_activity_text(self, ctx: AgentCallbackContext) -> str:
+        """构建当前工具活动的可读描述（如「联网搜索 "牛来 票房"」）。
+
+        复用 _work_tool_match_hints 的展示名推导：tool_call.display_name
+        优先，缺失时回退 build_tool_display_name（动词+关键参数），仍无
+        则用原始工具名兜底。
+        """
+        display_name, _skill_name, tool_name = self._work_tool_match_hints(ctx)
+        display_name = display_name.strip()
+        if display_name:
+            return display_name
+        return tool_name.strip()
+
+    async def _maybe_emit_activity_update(
+        self,
+        ctx: AgentCallbackContext,
+        *,
+        task_id: str | None = None,
+    ) -> None:
+        """活动直显：把当前工具活动标注到 in_progress 行后再发 task.update。
+
+        模型长时间不调 todo_modify 时（见 2026-09-12 事实核查案例：step3
+        标题停留 3 分半），前端 in_progress 行标题静止，用户无法区分
+        「在干活」与「卡死」。这里不写 todo.json（模型共享状态零污染），
+        只改发出帧的 payload：in_progress 行的 task_content 临时标注为
+        「原标题 — 当前工具活动」，模型下次 todo_modify/收尾快照自然恢复
+        干净标题。
+
+        节流：距上一次 task.update 发送 < _ACTIVITY_EMIT_MIN_INTERVAL_S
+        不重发——同时覆盖 auto_advance/lazy_start 刚发过 transition 帧的
+        本轮（避免背靠背双帧）与并行工具突发。
+        """
+        session = ctx.session
+        if session is None:
+            return
+        raw_id = (task_id or "").strip()
+        if not raw_id:
+            active_id = _ACTIVE_TASK_ID.get()
+            if not active_id or not active_id.startswith("todo:"):
+                return
+            raw_id = active_id.removeprefix("todo:")
+        task = self._todo_map.get(raw_id)
+        if not task or str(task.get("status", "")).lower() != "in_progress":
+            return
+        now = time.time()
+        if (
+            self._last_task_update_emit_ts
+            and now - self._last_task_update_emit_ts
+            < _ACTIVITY_EMIT_MIN_INTERVAL_S
+        ):
+            return
+        activity_text = self._current_tool_activity_text(ctx)
+        if not activity_text:
+            return
+        await self._emit_task_update_event(
+            session,
+            self._extract_request_id(ctx),
+            activity=(raw_id, activity_text),
         )
 
     async def _trigger_artifact_hooks(
@@ -2305,8 +2376,15 @@ class TaskExecutionRail(DeepAgentRail):
         self,
         session: Session,
         parent_request_id: str | None = None,
+        *,
+        activity: tuple[str, str] | None = None,
     ) -> None:
-        """Send full task list snapshot (all todos) to the frontend."""
+        """Send full task list snapshot (all todos) to the frontend.
+
+        activity: (task_id, 活动文本) — 活动直显模式下把对应 in_progress
+        行的 task_content 临时标注为「原标题 — 活动文本」（仅改发出帧，
+        不写回 todo.json / _todo_map）。
+        """
         session_id = session.get_session_id()
         todo_items = self._load_todo_from_json(session_id)
         # 兜底过滤：即便 skip 窗口未拦下，也剔除已被 prepare_* 清理的
@@ -2336,6 +2414,19 @@ class TaskExecutionRail(DeepAgentRail):
         todo_tasks = self._format_tasks_for_update(
             todo_items, source="todo"
         )
+
+        # 活动直显：in_progress 行标题临时标注当前工具活动（仅此帧生效）
+        if activity is not None:
+            act_task_id, act_text = activity
+            for task in todo_tasks:
+                if (
+                    task.get("task_id") == act_task_id
+                    and task.get("status") == "in_progress"
+                ):
+                    base = str(task.get("task_content") or "").strip()
+                    if base and act_text:
+                        task["task_content"] = f"{base} — {act_text}"
+                    break
 
         all_tasks = todo_tasks
         total = len(all_tasks)
@@ -2380,12 +2471,15 @@ class TaskExecutionRail(DeepAgentRail):
 
         logger.info(
             "[TaskExecutionRail] task.update: %d tasks - "
-            "%d completed, %d in_progress, %d pending",
+            "%d completed, %d in_progress, %d pending%s",
             total,
             completed,
             in_progress,
             pending,
+            f" activity={activity[1]}" if activity is not None else "",
         )
+        # 活动直显节流锚点：transition 帧与活动标注帧共用
+        self._last_task_update_emit_ts = time.time()
 
     def _format_tasks_for_update(
         self,
