@@ -69,6 +69,8 @@ DeepAgent 在流式文本 iteration 结束时可能发出 **content 为空** 的
 该帧仅表示当前 LLM 轮次结束，**不是**整轮任务完成，脚本会忽略并继续等待。
 权限放行（``auto-allow``）后，忽略紧随其后的假 idle / 子流 ``usage_summary``，
 直至新一轮 ``chat.delta`` 表明 Agent 已继续执行。
+同 session 连续发下一步时，上一轮 travel 的收尾 ``is_processing=false`` 可能晚于
+下一步 ``chat.send`` 到达；脚本会按 ``request_id`` 丢掉过期 idle，避免误判 skill。
 每路真正完成时打印 ``[done]`` 行（含 idx / session_id / 耗时）。Agent 弹出权限/追问（``chat.ask_user_question``）
 时自动全部允许（权限类选「总是允许」）。长任务可通过 ``--final-timeout`` 调整上限。
 资源打满（100001/100002）时 Gateway 常提前 ``is_processing=false`` 且不一定下发
@@ -158,9 +160,8 @@ def build_default_loadtest_steps(essay_path: Path) -> tuple[LoadTestStep, ...]:
         LoadTestStep(
             name="skill",
             content=(
-                "先使用skillnet安装这个旅游攻略技能"
-                "https://github.com/Asif2BD/openclaw.tours/tree/main，"
-                "然后再给我制作一个北京3日游的旅游攻略"
+                "给我制作一个北京3日游的旅游攻略，写完后保存成 markdown 发给我。"
+                "直接开始写，不要安装技能，不要搜索网页，不要提问"
             ),
             expect_file=True,
         ),
@@ -639,6 +640,20 @@ def _event_session_id(frame: dict[str, Any], payload: dict[str, Any]) -> str:
         sid = source.get("session_id")
         if isinstance(sid, str) and sid.strip():
             return sid.strip()
+    return ""
+
+
+def _event_request_id(frame: dict[str, Any], payload: dict[str, Any]) -> str:
+    """从 WS event 帧提取产生该事件的 chat.send request_id。"""
+    for source in (payload, frame):
+        if not isinstance(source, dict):
+            continue
+        rid = source.get("request_id")
+        if isinstance(rid, str) and rid.strip():
+            return rid.strip()
+    rid = frame.get("id") if isinstance(frame, dict) else None
+    if isinstance(rid, str) and rid.strip().startswith("req_"):
+        return rid.strip()
     return ""
 
 
@@ -1219,6 +1234,7 @@ async def run_single_request(
                     hitl_paused = False
                     hitl_suppress_next_idle = False
                     hitl_await_agent_resume = False
+                    saw_this_step_processing = False
                     saw_agent_output = False
                     saw_deliverable_file = False
                     saw_post_deliverable_text = False
@@ -1569,11 +1585,33 @@ async def run_single_request(
                                 ):
                                     saw_step_text = True
                         if event == "chat.processing_status":
+                            event_rid = _event_request_id(frame, payload)
+                            if event_rid and event_rid != req_id:
+                                if ws_event_log:
+                                    logger.info(
+                                        "[ws-event] idx=%d session_id=%s skip stale "
+                                        "processing_status request_id=%s current=%s",
+                                        index,
+                                        session_id,
+                                        event_rid,
+                                        req_id,
+                                    )
+                                continue
                             if payload.get("is_processing") is True:
+                                saw_this_step_processing = True
                                 hitl_paused = False
                                 hitl_suppress_next_idle = False
                                 hitl_await_agent_resume = False
                             elif _is_processing_idle(payload):
+                                if step_idx > 0 and not saw_this_step_processing:
+                                    if ws_event_log:
+                                        logger.info(
+                                            "[ws-event] idx=%d session_id=%s skip leftover "
+                                            "idle before this step started processing",
+                                            index,
+                                            session_id,
+                                        )
+                                    continue
                                 if hitl_suppress_next_idle:
                                     hitl_suppress_next_idle = False
                                     hitl_paused = False

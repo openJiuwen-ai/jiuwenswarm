@@ -203,7 +203,7 @@ def _parse_args() -> argparse.Namespace:
         default=_DEFAULT_SINGLE_CONTENT,
         help="--flow single 时的用户消息",
     )
-    p.add_argument("--mode", default="agent.fast", help="运行模式，默认 agent.fast")
+    p.add_argument("--mode", default="agent", help="运行模式，默认 agent（历史 agent.fast 会归一成 agent）")
     p.add_argument(
         "--accept-timeout",
         type=float,

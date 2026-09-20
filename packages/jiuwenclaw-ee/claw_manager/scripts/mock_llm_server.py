@@ -10,7 +10,7 @@
 - **travel**（默认）：小说《旅行的意义》多工具 Agent 流程
 - **scheduled_task**：用户消息含「定时任务」等关键词
 - **cron_delivery**：定时任务到点触发，返回一句喝水提醒
-- **skill**：用户消息含「skill」「技能」等关键词
+- **skill**：Deep 工具面 todo / write_file / send_file 生成北京 3 日游攻略（不安装 skillnet、不调 skill_step）
 - **file**：用户消息含「文件」关键词
 
 典型用法（项目根目录）::
@@ -48,9 +48,11 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -128,15 +130,26 @@ _FILE_KEYWORDS = ("童趣的春天", "扩写", "作文")
 # 定时任务场景常量
 # ---------------------------------------------------------------------------
 _CRON_INTRO = ""
-_CRON_JOB_ARGS = {
-    "name": "喝水提醒",
-    "delay_seconds": 60,
-    "delete_after_run": True,
-    "timezone": "Asia/Shanghai",
-    "description": "🥤 喝水时间到啦！记得喝杯水，保持水分摄入～",
-    "targets": "web",
-    "enabled": True,
-}
+_CRON_TZ = "Asia/Shanghai"
+_CRON_DELAY_SECONDS = 60
+
+
+def _oneshot_cron_expr(*, delay_seconds: int = _CRON_DELAY_SECONDS, timezone_name: str = _CRON_TZ) -> str:
+    """生成约 delay_seconds 后触发的 7 段一次性 Quartz cron_expr。"""
+    dt = datetime.now(ZoneInfo(timezone_name)) + timedelta(seconds=delay_seconds)
+    return f"{dt.second} {dt.minute} {dt.hour} {dt.day} {dt.month} ? {dt.year}"
+
+
+def _cron_job_args(*, delay_seconds: int = _CRON_DELAY_SECONDS) -> dict[str, Any]:
+    """当前 cron_create_job schema：必填 name/cron_expr/timezone/description。"""
+    return {
+        "name": "喝水提醒",
+        "cron_expr": _oneshot_cron_expr(delay_seconds=delay_seconds),
+        "timezone": _CRON_TZ,
+        "description": "🥤 喝水时间到啦！记得喝杯水，保持水分摄入～",
+        "targets": "web",
+        "enabled": True,
+    }
 _CRON_DONE_MESSAGE = (
     "✅ 喝水提醒已创建！\n\n"
     "⏰ 执行时间：1 分钟后\n\n"
@@ -149,65 +162,26 @@ _CRON_WAKE_MARKERS = ("喝水时间到啦",)
 _CRON_DELIVERY_MESSAGE = "🥤 喝水时间到啦！记得喝杯水，保持水分摄入～"
 _CRON_CONTEXT_PATH_RE = re.compile(r"/context/cron_[a-z0-9_]+_context")
 # ---------------------------------------------------------------------------
-# 技能加载场景常量（openclaw-tour-planner / 北京3日游）
+# 技能场景常量（Deep 已注册工具：todo / write_file / send_file_to_user）
+#
+# 不调用 install_skill（会打真实 GitHub）、skill_step（dev-stable 无此工具）、
+# free_search / fetch_webpage / skill_complete（当前 resource_mgr 未挂这些名字）。
 # ---------------------------------------------------------------------------
-_SKILL_GITHUB_URL = "https://github.com/Asif2BD/openclaw.tours/tree/main"
-_SKILL_NAME = "openclaw-tour-planner"
-_SKILL_INSTALL_ARGS_SHORT = {
-    "identifier": "Asif2BD/openclaw.tours",
-    "source": "skillnet",
-}
-_SKILL_INSTALL_ARGS_FULL = {
-    "identifier": _SKILL_GITHUB_URL,
-    "source": "skillnet",
-}
-_SKILL_STEP_TASKS = [
-    "地理编码 — 通过 Nominatim API 获取北京坐标信息",
-    "天气预报 — 获取北京未来3天天气",
-    "旅游指南 — 收集 Wikivoyage 旅行指南",
-    "行程规划 — 构建北京3日游逐日行程",
-    "生成攻略文档 — 输出完整 Markdown 攻略",
-]
-# 运行时 todo_create 仍接受「分号分隔字符串」（旧格式）；对象数组会导致创建结果为空。
 # 场景切换后 session 内仍有 travel 等待办，skill 需 force=true 才能覆盖创建新任务列表。
-_SKILL_TODO_TASKS = (
-    "安装旅游规划技能;"
-    "收集北京旅游信息;"
-    "生成北京3日游攻略;"
-    "交付攻略文档"
-)
 _SKILL_TODO_CONTENTS = (
-    "安装旅游规划技能",
-    "收集北京旅游信息",
     "生成北京3日游攻略",
     "交付攻略文档",
 )
 _SKILL_INTRO = (
-    "我来帮你完成这个任务。首先，我需要通过 skillnet 安装这个旅游攻略技能，"
-    "然后为你制作北京3日游攻略。\n\n让我先尝试安装这个技能：\n"
-)
-_SKILL_INSTALL_RETRY_INTRO = "让我用完整的 GitHub URL 再试一次：\n"
-_SKILL_AFTER_LOAD_INTRO = (
-    "SKILL.md 已加载完毕！这是一个旅游规划技能，使用免费 API"
-    "（Nominatim 地理编码、天气预报、Wikivoyage 旅行指南）来生成行程。\n\n"
-    "现在我先创建 skill_step 路线图，然后开始为你制作北京3日游攻略。\n"
-)
-_SKILL_AFTER_PLAN_INTRO = (
-    "现在开始执行！我将并行获取北京的地理坐标、天气预报和旅游指南信息。\n\n"
-    "[当前步骤: 地理编码 — 通过 Nominatim API 获取北京坐标信息]\n"
-)
-_SKILL_AFTER_SEARCH_INTRO = (
-    "我已经收集到了足够的北京旅游信息。现在让我标记前三个步骤完成，并开始构建行程。\n"
+    "我来帮你制作北京3日游攻略。先列出待办，再写文档并发给你。"
+    "不安装技能、不搜索网页、不提问。\n\n"
+    "[当前步骤: 生成北京3日游攻略]\n"
 )
 _SKILL_BEFORE_WRITE_INTRO = (
-    "[当前步骤: 行程规划 — 构建北京3日游逐日行程]\n\n"
-    "现在我来构建完整的北京3日游攻略文档：\n"
+    "[当前步骤: 生成北京3日游攻略]\n\n"
+    "现在把北京3日游攻略写入 markdown：\n"
 )
-_SKILL_AFTER_WRITE_INTRO = (
-    "攻略文档已成功生成！现在完成行程生成和预算估算步骤，并发送文件给你：\n"
-)
-_SKILL_BEFORE_SEND_INTRO = "步骤已标记完成，现在把攻略文件发给你：\n"
-_SKILL_BEFORE_COMPLETE_INTRO = "文件已发送！现在释放技能上下文：\n"
+_SKILL_BEFORE_SEND_INTRO = "攻略已写好，现在把文件发给你：\n"
 _BEIJING_GUIDE_FILENAME = "北京3日游旅游攻略.md"
 _BEIJING_GUIDE_PATH = Path(__file__).resolve().parent / _BEIJING_GUIDE_FILENAME
 _BEIJING_GUIDE_CONTENT = """# 🏯 北京3日游旅游攻略
@@ -491,10 +465,7 @@ def _load_beijing_guide_content() -> str:
 _SKILL_DONE_MESSAGE = (
     "全部完成！✅ 以下是任务总结：\n\n"
     "## ✅ 任务完成总结\n\n"
-    "### 第一步：技能安装\n"
-    f"通过 skillnet 成功安装了 **{_SKILL_NAME}** 旅游规划技能"
-    f"（来源：{_SKILL_GITHUB_URL}）\n\n"
-    "### 第二步：北京3日游攻略已生成\n"
+    "### 北京3日游攻略已生成\n"
     f"📄 **攻略文件**：`{_BEIJING_GUIDE_FILENAME}`\n\n"
     "#### 📅 三日行程速览\n\n"
     "| 日期 | 主题 | 核心景点 |\n"
@@ -593,13 +564,6 @@ _INTRO_PERMISSION_TODO_MODIFY = (
 _INTRO_PLAN = (
     "我看到你希望我专注于创作小说的开头部分。让我重新规划，"
     "专注于创作一个引人入胜的开篇，而不是立即尝试完成整部十万字的小说。\n"
-)
-_TODO_TASKS = (
-    "《旅行的意义》开篇;"
-    "人物详细介绍;"
-    "故事背景设定;"
-    "故事冲突与悬念设置;"
-    "整理并发送开篇文件"
 )
 _TODO_CONTENTS = (
     "《旅行的意义》开篇",
@@ -915,8 +879,22 @@ def _is_user_reappend(messages: list[Any], idx: int) -> bool:
     return False
 
 
+def _is_auto_attached_context_text(text: str) -> bool:
+    """Agent 自动注入的 <system-reminder> / 附件上下文，不是用户新意图。"""
+    stripped = (text or "").lstrip()
+    if not stripped:
+        return False
+    return (
+        stripped.startswith("<system-reminder>")
+        or "The following context is automatically attached" in stripped[:240]
+        or "以下上下文会自动附加" in stripped[:80]
+    )
+
+
 def _is_skill_rail_injection(text: str) -> bool:
     """SkillCompliance / SkillUse / 进度提醒等注入，不应作为新用户回合起点。"""
+    if _is_auto_attached_context_text(text):
+        return True
     markers = (
         "[ACTIVE SKILL BODY]",
         "[Skill ",
@@ -1040,7 +1018,7 @@ def _is_routing_noise_user(messages: list[Any], idx: int) -> bool:
     if not isinstance(message, dict) or message.get("role") != "user":
         return True
     text = _message_text(message)
-    if _is_skill_rail_injection(text):
+    if _is_skill_rail_injection(text) or _is_auto_attached_context_text(text):
         return True
     if _is_user_reappend(messages, idx):
         return True
@@ -1048,6 +1026,20 @@ def _is_routing_noise_user(messages: list[Any], idx: int) -> bool:
         return True
     if _is_travel_todo_echo_user(text):
         return True
+    return False
+
+
+def _message_has_file_scenario_upload(message: dict[str, Any]) -> bool:
+    """当前这条 user 是否带了 file 场景附件（忽略 travel 残留交付物）。"""
+    text = _message_text(message)
+    if _text_matches_keywords(text, _FILE_KEYWORDS):
+        return True
+    for item in _files_from_user_message_text(text):
+        blob = " ".join(
+            str(item.get(key) or "") for key in ("name", "path", "url")
+        )
+        if _SPRING_ESSAY_SOURCE in blob or _text_matches_keywords(blob, _FILE_KEYWORDS):
+            return True
     return False
 
 
@@ -1069,7 +1061,7 @@ def _intent_matches_scenario(intent: str, scenario: str, *, messages: list[Any] 
         if messages is not None:
             idx = _find_user_message_index_by_intent(messages, intent)
             if idx is not None:
-                return bool(_extract_uploaded_files(messages[: idx + 1]))
+                return _message_has_file_scenario_upload(messages[idx])
         return False
     if scenario == MockScenario.TRAVEL:
         return _text_matches_keywords(intent, _LOADTEST_NOVEL_MARKERS)
@@ -1323,7 +1315,7 @@ _SESSION_KEY_RE = re.compile(r"sess_[a-z0-9_]+")
 _SCENARIO_FINAL_STAGE: dict[str, int] = {
     MockScenario.TRAVEL: 11,
     MockScenario.SCHEDULED_TASK: 1,
-    MockScenario.SKILL: 17,
+    MockScenario.SKILL: 5,
     MockScenario.FILE: 4,
 }
 
@@ -1462,6 +1454,95 @@ def _advance_loadtest_state(
         state.msg_len_at_done = len(_agent_messages(payload))
     else:
         state.stage = stage_used + 1
+
+
+_TOOL_FAILURE_MARKERS = (
+    "Ability execution error",
+    "Ability not found",
+    "Skill not found",
+    "SkillNet 安装失败",
+    "API rate limit exceeded",
+    "GitHub API Error",
+    "success=False",
+    '"ok": false',
+    '"ok": False',
+    "'ok': False",
+)
+
+
+def _tool_result_failure_reason(text: str) -> str | None:
+    """从单条 tool 返回文本判断是否失败。"""
+    blob = (text or "").strip()
+    if not blob:
+        return None
+    lowered = blob.lower()
+    for marker in _TOOL_FAILURE_MARKERS:
+        if marker.lower() in lowered:
+            return marker
+    if blob.startswith("{"):
+        try:
+            parsed = json.loads(blob)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            if parsed.get("ok") is False:
+                detail = parsed.get("detail") or parsed.get("error") or "ok=false"
+                return str(detail)[:200]
+            if parsed.get("success") is False:
+                detail = parsed.get("error") or parsed.get("detail") or "success=false"
+                return str(detail)[:200]
+    return None
+
+
+def _latest_tool_failure(messages: list[Any]) -> str | None:
+    """最近一轮 assistant tool_calls 对应的 tool 结果若失败，返回简短原因。"""
+    last_assistant_idx = None
+    for idx in range(len(messages) - 1, -1, -1):
+        message = messages[idx]
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            last_assistant_idx = idx
+            break
+    if last_assistant_idx is None:
+        return None
+    tool_names: list[str] = []
+    for call in messages[last_assistant_idx].get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function")
+        if isinstance(fn, dict) and fn.get("name"):
+            tool_names.append(str(fn["name"]))
+    default_name = tool_names[0] if tool_names else "tool"
+    for message in messages[last_assistant_idx + 1:]:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        reason = _tool_result_failure_reason(_tool_message_text(message))
+        if reason:
+            return f"{default_name}: {reason}"
+    return None
+
+
+def _mark_loadtest_scenario_done(key: str | None, payload: dict[str, Any]) -> None:
+    """工具失败后结束当前场景，避免继续点后续工具。"""
+    if not key:
+        return
+    state = _loadtest_states.get(key)
+    if state is None:
+        return
+    state.done = True
+    state.msg_len_at_done = len(_agent_messages(payload))
+
+
+def _fail_fast_plan(scenario: str, stage: int, reason: str) -> _AgentPlan:
+    return _AgentPlan(
+        kind="stream_text",
+        text=(
+            f"[mock-fail-fast] scenario={scenario} stage={stage} "
+            f"上一轮工具失败，停止继续调用后续工具。reason={reason}"
+        ),
+    )
 
 
 def _parse_session_memory_notes_path(messages: list[Any]) -> str | None:
@@ -1658,6 +1739,42 @@ def _is_absolute_path(path: str) -> bool:
     if path.startswith("/"):
         return True
     return len(path) > 2 and path[1] == ":" and path[0].isalpha()
+
+
+def _workspace_relname(value: str, fallback: str) -> str:
+    """只保留工作区文件名，丢掉宿主机 / 沙箱绝对目录。"""
+    text = (value or "").strip()
+    if not text:
+        return fallback
+    name = Path(text.split("?", 1)[0]).name
+    if "%" in name:
+        name = unquote(name)
+    return name or fallback
+
+
+def _is_http_url(value: str) -> bool:
+    text = (value or "").strip()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def _is_host_fixture_path(path: str) -> bool:
+    """压测机仓库路径，沙箱里既读不到也写不进去。"""
+    normalized = (path or "").replace("\\", "/").strip()
+    if not normalized:
+        return False
+    return (
+        "/claw_manager/scripts/" in normalized
+        or normalized.startswith("/root/mz/")
+        or "/root/mz/" in normalized
+    )
+
+
+def _is_sandbox_usable_path(path: str) -> bool:
+    """可从沙箱内 cp 的绝对路径；宿主机脚本目录不算。"""
+    text = (path or "").strip()
+    if not text or not _is_absolute_path(text) or _is_http_url(text):
+        return False
+    return not _is_host_fixture_path(text)
 
 
 def _parse_file_path_from_tool_blob(blob: str, filename: str) -> str | None:
@@ -1938,36 +2055,37 @@ def _build_heredoc_write_bash(filename: str, content: str) -> str:
 
 
 def _build_file_download_bash(upload: dict[str, str]) -> str:
-    """企业版附件需先 curl 下载到工作区，再 read_file。"""
-    name = upload.get("name") or _SPRING_ESSAY_SOURCE
-    url = upload.get("url") or ""
-    path = upload.get("path") or ""
-    if url:
+    """把原文落到工作区：有 URL 就 curl，沙箱内路径才 cp，否则 heredoc。"""
+    name = _workspace_relname(
+        upload.get("name") or upload.get("path") or "",
+        _SPRING_ESSAY_SOURCE,
+    )
+    url = (upload.get("url") or "").strip()
+    path = (upload.get("path") or "").strip()
+    if _is_http_url(url):
         return (
             f"curl -fsSL -o {_shell_single_quote(name)} {_shell_single_quote(url)} "
             f"&& ls -la {_shell_single_quote(name)} "
             f"&& wc -c {_shell_single_quote(name)}"
         )
-    if path and _is_absolute_path(path):
+    if _is_sandbox_usable_path(path):
         return (
             f"cp {_shell_single_quote(path)} {_shell_single_quote(name)} "
             f"&& ls -la {_shell_single_quote(name)} "
             f"&& wc -c {_shell_single_quote(name)}"
         )
-    # 兜底：写入 Mock 原文到当前工作区（避免 find 找不到文件导致 read_file 404）
     return _build_heredoc_write_bash(name, _load_spring_essay_source())
 
 
 def _resolve_spring_local_read_path(messages: list[Any], upload: dict[str, str]) -> str:
-    """read_file 使用的本地路径：优先绝对 path，否则用下载/写入后的文件名。"""
-    path = upload.get("path") or ""
-    if path and _is_absolute_path(path):
-        return path
+    """read_file 只用工作区相对文件名，不用宿主机脚本路径。"""
     resolved = _resolve_spring_source_path(messages)
-    if _is_absolute_path(resolved):
-        return resolved
-    name = upload.get("name") or _SPRING_ESSAY_SOURCE
-    return name
+    if resolved and not _is_host_fixture_path(resolved) and not _is_absolute_path(resolved):
+        return _workspace_relname(resolved, _SPRING_ESSAY_SOURCE)
+    return _workspace_relname(
+        upload.get("name") or upload.get("path") or "",
+        _SPRING_ESSAY_SOURCE,
+    )
 
 
 def _load_spring_essay_source() -> str:
@@ -2004,25 +2122,41 @@ def _resolve_spring_source_path(messages: list[Any]) -> str:
             continue
         text = _tool_message_text(message) if message.get("role") == "tool" else _message_text(message)
         path = _parse_file_path_from_tool_blob(text, _SPRING_ESSAY_SOURCE)
-        if path:
-            return path
+        if path and not _is_host_fixture_path(path):
+            return _workspace_relname(path, _SPRING_ESSAY_SOURCE)
     for args in reversed(_assistant_tool_call_args(messages, "read_file")):
         path = args.get("file_path") or args.get("path")
         if isinstance(path, str) and path and _SPRING_ESSAY_SOURCE in path:
-            return path
+            if not _is_host_fixture_path(path):
+                return _workspace_relname(path, _SPRING_ESSAY_SOURCE)
     return _SPRING_ESSAY_SOURCE
 
 
 def _resolve_spring_output_path(messages: list[Any]) -> str:
+    """write_file 只用工作区相对文件名，避免写到宿主机脚本目录。"""
     for message in reversed(messages):
         if not isinstance(message, dict) or message.get("role") != "tool":
             continue
         path = _parse_file_path_from_tool_blob(_tool_message_text(message), _SPRING_ESSAY_OUTPUT)
-        if path:
+        if path and not _is_host_fixture_path(path) and not _is_absolute_path(path):
+            return _workspace_relname(path, _SPRING_ESSAY_OUTPUT)
+    return _SPRING_ESSAY_OUTPUT
+
+
+def _resolve_spring_send_path(messages: list[Any]) -> str:
+    """send_file_to_user 必须用 write_file 返回的工作区绝对路径。
+
+    相对文件名会按 AgentServer 进程 cwd 查找，找不到已写入的扩写版。
+    """
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        path = _parse_file_path_from_tool_blob(_tool_message_text(message), _SPRING_ESSAY_OUTPUT)
+        if path and _is_sandbox_usable_path(path):
             return path
     for args in reversed(_assistant_tool_call_args(messages, "write_file")):
         path = args.get("file_path") or args.get("path")
-        if isinstance(path, str) and path and _SPRING_ESSAY_OUTPUT in path:
+        if isinstance(path, str) and _SPRING_ESSAY_OUTPUT in path and _is_sandbox_usable_path(path):
             return path
     return _SPRING_ESSAY_OUTPUT
 
@@ -2067,6 +2201,15 @@ class _AgentPlan:
     tool_args: dict[str, Any] | None = None
 
 
+def _todo_create_tasks(contents: tuple[str, ...]) -> list[dict[str, str]]:
+    """Build todo_create ``tasks`` for current agent-core.
+
+    Runtime requires a JSON array of objects with ``content``; a semicolon-
+    separated string is rejected with 182504.
+    """
+    return [{"content": text, "activeForm": f"正在执行：{text}"} for text in contents]
+
+
 def _plan_travel_flow_response(
     payload: dict[str, Any],
     *,
@@ -2084,7 +2227,7 @@ def _plan_travel_flow_response(
             kind="intro_and_tool_call",
             text=_INTRO_PLAN,
             tool_name="todo_create",
-            tool_args={"tasks": _TODO_TASKS},
+            tool_args={"tasks": _todo_create_tasks(_TODO_CONTENTS)},
         )
     if stage == 1:
         return _AgentPlan(kind="stream_text", text=opening)
@@ -2195,7 +2338,7 @@ def _plan_scheduled_task_flow_response(
             kind="intro_and_tool_call",
             text=_CRON_INTRO,
             tool_name="cron_create_job",
-            tool_args=_CRON_JOB_ARGS,
+            tool_args=_cron_job_args(),
         )
     return _AgentPlan(kind="stream_text", text=_CRON_DONE_MESSAGE)
 
@@ -2219,7 +2362,7 @@ def _plan_skill_flow_response(
     novel_chars: int,
     excerpt_chars: int,
 ) -> _AgentPlan:
-    """技能场景：install_skill → skill_tool → skill_step → 搜索 → write_file → skill_complete。"""
+    """技能场景：todo → write_file → send_file_to_user（对齐 Deep 已验证工具）。"""
     _ = novel_chars, excerpt_chars
     messages = _agent_messages(payload)
 
@@ -2227,84 +2370,10 @@ def _plan_skill_flow_response(
         return _AgentPlan(
             kind="intro_and_tool_call",
             text=_SKILL_INTRO,
-            tool_name="install_skill",
-            tool_args=_SKILL_INSTALL_ARGS_SHORT,
+            tool_name="todo_create",
+            tool_args={"tasks": _todo_create_tasks(_SKILL_TODO_CONTENTS), "force": True},
         )
     if stage == 1:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text=_SKILL_INSTALL_RETRY_INTRO,
-            tool_name="install_skill",
-            tool_args=_SKILL_INSTALL_ARGS_FULL,
-        )
-    if stage == 2:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text="技能安装成功！现在让我加载这个技能的 SKILL.md 来了解如何使用它：\n",
-            tool_name="skill_tool",
-            tool_args={"skill_name": _SKILL_NAME, "relative_file_path": "SKILL.md"},
-        )
-    if stage == 3:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text=_SKILL_AFTER_LOAD_INTRO,
-            tool_name="skill_step",
-            tool_args={"action": "create", "tasks": _SKILL_STEP_TASKS},
-        )
-    if stage == 4:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text="接下来为北京3日游攻略创建新的任务清单：\n",
-            tool_name="todo_create",
-            tool_args={"tasks": _SKILL_TODO_TASKS, "force": True},
-        )
-    if stage == 5:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text=_SKILL_AFTER_PLAN_INTRO,
-            tool_name="free_search",
-            tool_args={"query": "北京3日游攻略 故宫 颐和园 长城 2026"},
-        )
-    if stage == 6:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text="让我抓取详细内容来获取景点信息：\n",
-            tool_name="fetch_webpage",
-            tool_args={"url": "https://www.zhihu.com/question/beijing-travel-guide"},
-        )
-    if stage == 7:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text="很好！已获取故宫和颐和园的详细信息。让我继续搜索天气、美食和交通信息：\n",
-            tool_name="free_search",
-            tool_args={"query": "北京7月天气预报 旅游穿衣 美食推荐"},
-        )
-    if stage == 8:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text=_SKILL_AFTER_SEARCH_INTRO,
-            tool_name="skill_step",
-            tool_args={
-                "action": "complete_batch",
-                "indices": [1, 2, 3],
-                "results": ["北京坐标已确认", "天气预报已获取", "景点信息已收集"],
-            },
-        )
-    if stage == 9:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text="信息收集完成。先把「安装旅游规划技能」标记为完成：\n",
-            tool_name="todo_modify",
-            tool_args=_todo_modify_complete_args(messages, 0, fallback_contents=_SKILL_TODO_CONTENTS),
-        )
-    if stage == 10:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text="继续更新任务状态，标记「收集北京旅游信息」已完成：\n",
-            tool_name="todo_modify",
-            tool_args=_todo_modify_complete_args(messages, 1, fallback_contents=_SKILL_TODO_CONTENTS),
-        )
-    if stage == 11:
         return _AgentPlan(
             kind="intro_and_tool_call",
             text=_SKILL_BEFORE_WRITE_INTRO,
@@ -2314,25 +2383,16 @@ def _plan_skill_flow_response(
                 "content": _load_beijing_guide_content(),
             },
         )
-    if stage == 12:
+    if stage == 2:
         return _AgentPlan(
             kind="intro_and_tool_call",
-            text=_SKILL_AFTER_WRITE_INTRO,
-            tool_name="skill_step",
-            tool_args={
-                "action": "complete_batch",
-                "indices": [4, 5],
-                "results": ["3日行程已规划", "攻略文档已生成"],
-            },
-        )
-    if stage == 13:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text="攻略文档已写好，标记「生成北京3日游攻略」完成：\n",
+            text="攻略文档已写入，标记「生成北京3日游攻略」完成：\n",
             tool_name="todo_modify",
-            tool_args=_todo_modify_complete_args(messages, 2, fallback_contents=_SKILL_TODO_CONTENTS),
+            tool_args=_todo_modify_complete_args(
+                messages, 0, fallback_contents=_SKILL_TODO_CONTENTS
+            ),
         )
-    if stage == 14:
+    if stage == 3:
         guide_path = _resolve_beijing_guide_path(messages)
         return _AgentPlan(
             kind="intro_and_tool_call",
@@ -2340,19 +2400,14 @@ def _plan_skill_flow_response(
             tool_name="send_file_to_user",
             tool_args={"abs_file_path_list": [guide_path]},
         )
-    if stage == 15:
+    if stage == 4:
         return _AgentPlan(
             kind="intro_and_tool_call",
             text="文件已发送，标记「交付攻略文档」完成：\n",
             tool_name="todo_modify",
-            tool_args=_todo_modify_complete_args(messages, 3, fallback_contents=_SKILL_TODO_CONTENTS),
-        )
-    if stage == 16:
-        return _AgentPlan(
-            kind="intro_and_tool_call",
-            text=_SKILL_BEFORE_COMPLETE_INTRO,
-            tool_name="skill_complete",
-            tool_args={"skill_name": _SKILL_NAME},
+            tool_args=_todo_modify_complete_args(
+                messages, 1, fallback_contents=_SKILL_TODO_CONTENTS
+            ),
         )
     return _AgentPlan(kind="stream_text", text=_SKILL_DONE_MESSAGE)
 
@@ -2370,11 +2425,7 @@ def _plan_file_flow_response(
     upload = _pick_upload_file(messages)
     source_path = _resolve_spring_local_read_path(messages, upload)
     output_path = _resolve_spring_output_path(messages)
-    if output_path == _SPRING_ESSAY_OUTPUT:
-        # 与源文件同目录写出扩写版，便于 send_file_to_user
-        src_parent = Path(source_path).parent if _is_absolute_path(source_path) else None
-        if src_parent is not None and str(src_parent) not in {".", ""}:
-            output_path = str(src_parent / _SPRING_ESSAY_OUTPUT)
+    send_path = _resolve_spring_send_path(messages)
     expanded_body = _build_spring_essay_expanded(target_chars=_SPRING_ESSAY_TARGET_CHARS)
 
     if stage == 0:
@@ -2382,7 +2433,10 @@ def _plan_file_flow_response(
             kind="intro_and_tool_call",
             text="我先把上传的作文下载到工作区并确认文件：\n",
             tool_name="bash",
-            tool_args={"command": _build_file_download_bash(upload)},
+            tool_args={"command": _build_file_download_bash({
+                **upload,
+                "name": source_path,
+            })},
         )
     if stage == 1:
         return _AgentPlan(
@@ -2399,9 +2453,6 @@ def _plan_file_flow_response(
             tool_args={"file_path": output_path, "content": expanded_body},
         )
     if stage == 3:
-        send_path = _resolve_spring_output_path(messages)
-        if send_path == _SPRING_ESSAY_OUTPUT and output_path != _SPRING_ESSAY_OUTPUT:
-            send_path = output_path
         return _AgentPlan(
             kind="intro_and_tool_call",
             text="扩写完成，现在把文件发回给你：\n",
@@ -2441,6 +2492,17 @@ def _plan_loadtest_response(
 
     routed_scenario = _detect_loadtest_scenario(payload)
     key, stage, scenario = _prepare_loadtest_state(payload, routed_scenario)
+    if stage > 0:
+        failure = _latest_tool_failure(_agent_messages(payload))
+        if failure:
+            logger.warning(
+                "loadtest fail-fast scenario=%s stage=%d reason=%s",
+                scenario,
+                stage,
+                failure,
+            )
+            _mark_loadtest_scenario_done(key, payload)
+            return _fail_fast_plan(scenario, stage, failure), scenario, stage
     planner = _SCENARIO_PLANNERS.get(scenario, _plan_travel_flow_response)
     plan = planner(
         payload,
@@ -2949,8 +3011,6 @@ async def _stats_loop(stats: _RequestStats, interval_s: float) -> None:
 def _configure_logging() -> None:
     class _TimestampFormatter(logging.Formatter):
         def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
-            from datetime import datetime
-
             dt = datetime.fromtimestamp(record.created)
             base = dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
             return f"{base}.{int(record.msecs):03d}"
@@ -3059,6 +3119,7 @@ async def main(
     if profile == "loadtest":
         logger.info(
             "loadtest profile active: per-session stage + done flag; "
+            "tool fail-fast (stop later tools after a failed tool result); "
             "re-route after task done: intent/payload/sequence "
             "(priority: cron_delivery>scheduled_task>skill>file>travel; skip prior completed scenarios)"
         )
