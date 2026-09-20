@@ -34,7 +34,7 @@ _STATUS_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.TERMINATED: frozenset(),
 }
 
-#: 不可删除的状态（一致性规则 §8.2）；排队任务可在删除前转为 TERMINATED。
+#: 不可删除的状态（一致性规则 §8.2）；排队/暂停任务由服务层先转为 TERMINATED。
 _NON_DELETABLE_STATES = frozenset({TaskStatus.RUNNING, TaskStatus.PAUSED})
 
 _LOCK = threading.RLock()
@@ -97,7 +97,7 @@ class RsiTaskStore:
     def delete(self, task_id: str, *, forbid_running: bool = True, forbid_active_artifact: bool = True) -> None:
         """删除任务：先移除列表索引，再尽力清理物理目录。
 
-        一致性规则 §8.2 仍禁止删除运行中/暂停/在用产物；排队任务由服务层先
+        一致性规则 §8.2 仍禁止删除运行中/暂停/在用产物；排队/暂停任务由服务层先
         通过状态机转为 TERMINATED；索引删除失败
         会继续向上抛出，索引成功后的物理清理失败则直接忽略。
         """
