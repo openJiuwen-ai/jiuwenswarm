@@ -274,6 +274,7 @@ def _get_model(temperature: float = 0.0) -> Any:
 
 from jiuwenswarm.agents.harness.common.recommendation.proactive_prompts import (
     directive_prompt,
+    unified_analysis_prompt,
 )
 
 
@@ -312,10 +313,6 @@ async def _analyze_and_decide(
     engine and threaded through) — selects the ZH/EN prompt template so decision
     copy language matches the system language setting.
     """
-    from jiuwenswarm.agents.harness.common.recommendation.proactive_prompts import (
-        unified_analysis_prompt,
-    )
-
     prompt = unified_analysis_prompt(language).format(
         conversation_summary=report_text,
         decision_rules_text=decision_rules_text,
@@ -429,9 +426,6 @@ async def _trigger_main_agent(
     """
     decision = request.decision
     from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.agents.harness.common.recommendation.proactive_prompts import (
-        directive_prompt,
-    )
 
     # 指令语言跟随 config.yaml preferred_language——en 时模型收到的整条指令都是
     # 英文，产出话术才是英文。此前指令硬编码中文，信封里 preferred_response_language=en
