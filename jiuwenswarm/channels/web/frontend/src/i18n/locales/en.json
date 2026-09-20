@@ -3676,6 +3676,9 @@
     "customPlaceholder": "No suitable option? Type your answer...",
     "skippedSummary": "Skipped"
   },
+  "experiencePackagePrompt": {
+    "creating": "Creating…"
+  },
   "qaSummary": {
     "title": "Clarifications"
   },

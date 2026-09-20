@@ -3662,6 +3662,9 @@
     "customPlaceholder": "没有合适的选项？输入您的答案...",
     "skippedSummary": "已跳过"
   },
+  "experiencePackagePrompt": {
+    "creating": "正在创建…"
+  },
   "qaSummary": {
     "title": "问题澄清"
   },
