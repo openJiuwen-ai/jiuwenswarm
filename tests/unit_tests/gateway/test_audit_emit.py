@@ -33,7 +33,7 @@ def test_emit_audit_ua_swallows_log_audit_errors(monkeypatch) -> None:
         "openjiuwen_runtime.foundation.audit.log_audit",
         _boom,
     )
-    emit_audit_ua(SUBMDL="gateway", PROC="ws_resolve_identity", UA="u1")
+    emit_audit_ua(SUBMDL="gateway", PROC="http_agent_send", UA="u1")
 
 
 def test_emit_audit_records_ua_and_evt(_audit_memory: MemoryEmitter) -> None:
@@ -50,6 +50,14 @@ def test_emit_audit_records_ua_and_evt(_audit_memory: MemoryEmitter) -> None:
     assert ua_attrs.get("PROC") == "http_agent_send"
     assert evt_attrs.get("PROC") == "web_rpc_authorize"
     assert evt_attrs.get("RSPCD") == "E001"
+
+
+def test_emit_audit_caller_is_business_site(_audit_memory: MemoryEmitter, monkeypatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    emit_audit_ua(SUBMDL="file", PROC="file_download", filename="hello.md")
+    caller = _audit_memory.records[0]["attributes"]["caller"]
+    assert caller.startswith("test_audit_emit.test_emit_audit_caller_is_business_site:")
+    assert "audit_claw_log" not in caller
 
 
 def test_audit_timer_cost_ms() -> None:

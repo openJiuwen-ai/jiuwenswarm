@@ -10,7 +10,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Literal
 
-from opentelemetry import metrics, trace
+from opentelemetry import _logs, metrics, trace
 
 from openjiuwen.agent_teams.observability import (
     ObservabilityConfig,
@@ -59,6 +59,7 @@ _COMPONENTS = (
     "extension",
     "traces",
     "metrics",
+    "logs",
     "registry",
     "agentcore",
     "callbacks",
@@ -76,6 +77,7 @@ class TelemetryRuntime:
         self._bundle: ProviderBundle | None = None
         self._tracer_provider: Any | None = None
         self._meter_provider: Any | None = None
+        self._logger_provider: Any | None = None
         self._span_registry: SpanRegistryProcessor | None = None
         self._telemetry_metrics: TelemetryMetrics | None = None
         self._trace_bindings = self._new_trace_bindings()
@@ -128,6 +130,7 @@ class TelemetryRuntime:
 
                 tracer_provider = self._install_traces(bundle)
                 meter_provider = self._install_metrics(bundle)
+                logger_provider = self._install_logs(bundle)
                 telemetry_metrics = self._create_metrics(meter_provider)
 
                 if process_role == "agentserver":
@@ -171,6 +174,10 @@ class TelemetryRuntime:
     @property
     def meter_provider(self) -> Any | None:
         return self._meter_provider
+
+    @property
+    def logger_provider(self) -> Any | None:
+        return self._logger_provider
 
     @property
     def span_registry(self) -> SpanRegistryProcessor | None:
@@ -290,6 +297,27 @@ class TelemetryRuntime:
         self._telemetry_metrics = telemetry_metrics
         return telemetry_metrics
 
+
+    def _install_logs(self, bundle: ProviderBundle) -> Any | None:
+        provider = bundle.logger_provider
+        if provider is None:
+            self._set_status("logs", False, "logger provider unavailable")
+            return None
+        error = self._install_global_provider(
+            current=_logs.get_logger_provider(),
+            candidate=provider,
+            setter=_logs.set_logger_provider,
+            getter=_logs.get_logger_provider,
+            proxy_names={"ProxyLoggerProvider"},
+            signal="logger",
+        )
+        if error is not None:
+            self._set_status("logs", False, error)
+            return None
+        self._set_status("logs", True)
+        self._logger_provider = provider
+        return provider
+
     async def _start_agent_components(
         self,
         config: TelemetryConfig,
@@ -386,6 +414,7 @@ class TelemetryRuntime:
             raise
         self._set_status("callbacks", True)
 
+
     async def _stop_locked(self) -> None:
         first_control_error: BaseException | None = None
         cleanup_errors: list[tuple[str, BaseException]] = []
@@ -437,7 +466,7 @@ class TelemetryRuntime:
 
         bundle = self._bundle
         if bundle is not None:
-            for provider in (bundle.tracer_provider, bundle.meter_provider):
+            for provider in (bundle.tracer_provider, bundle.meter_provider, bundle.logger_provider):
                 if provider is None:
                     continue
                 try:
@@ -449,6 +478,7 @@ class TelemetryRuntime:
             for provider, owned in (
                 (bundle.tracer_provider, bundle.owns_tracer),
                 (bundle.meter_provider, bundle.owns_meter),
+                (bundle.logger_provider, bundle.owns_logger),
             ):
                 if provider is None or not owned:
                     continue
@@ -473,6 +503,7 @@ class TelemetryRuntime:
         self._bundle = None
         self._tracer_provider = None
         self._meter_provider = None
+        self._logger_provider = None
         self._span_registry = None
         self._telemetry_metrics = None
         self._trace_bindings = self._new_trace_bindings()
@@ -542,6 +573,7 @@ class TelemetryRuntime:
         self._bundle = None
         self._tracer_provider = None
         self._meter_provider = None
+        self._logger_provider = None
         self._span_registry = None
         self._telemetry_metrics = None
         self._trace_bindings = self._new_trace_bindings()

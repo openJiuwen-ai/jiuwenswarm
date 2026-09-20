@@ -30,6 +30,8 @@ from a2a.types import (
     TaskState,
 )
 
+from jiuwenswarm.common.audit_emit import audit_timer, emit_audit_evt, emit_audit_ua
+
 from .credentials import A2AOutboundCredentialStore
 from .discovery import A2AOutboundDiscoveryService, create_pinned_transport
 from .errors import A2AOutboundError, A2AOutboundErrorCode, safe_error_summary
@@ -42,8 +44,6 @@ from .models import (
     A2AOutboundDispatchStatus,
 )
 from .repository import A2AOutboundRepository, utc_now_text
-
-from jiuwenswarm.common.audit_emit import audit_timer, emit_audit_evt, emit_audit_ua
 
 logger = logging.getLogger(__name__)
 

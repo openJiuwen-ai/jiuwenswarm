@@ -19,6 +19,7 @@ import copy
 import logging
 from typing import Any, Optional
 
+from openjiuwen.core.runner.callback.errors import AbortError
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 
@@ -52,6 +53,26 @@ def _compose_active_skill_permissions(
     return compose_skill_permissions(base_config, active.overlay_snapshot)
 
 
+def _tool_name_from_ctx(ctx: AgentCallbackContext) -> str:
+    inputs = getattr(ctx, "inputs", None)
+    name = str(getattr(inputs, "tool_name", "") or "").strip()
+    if name:
+        return name
+    tool_call = getattr(inputs, "tool_call", None)
+    return str(getattr(tool_call, "name", "") or "").strip()
+
+
+def _permission_choice_label(payload: Any) -> str:
+    """Map a parsed confirm payload to the button the user actually pressed."""
+    if not getattr(payload, "approved", False):
+        return "不允许"
+    if getattr(payload, "auto_confirm", False) and getattr(payload, "persist_allow", False):
+        return "始终允许"
+    if getattr(payload, "auto_confirm", False):
+        return "会话内记住"
+    return "本次允许"
+
+
 class SkillAuthorizationPermissionRail(PermissionInterruptRail):
     """PermissionInterruptRail 子类：Skill 门禁已裁决的调用跳过权限 Rail。"""
 
@@ -60,12 +81,13 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
             return
         try:
             await super().before_tool_call(ctx)
-        except Exception as exc:
+        except AbortError:
+            tool_name = _tool_name_from_ctx(ctx)
             emit_audit_evt(
                 SUBMDL="agent",
                 PROC="skill_authorize",
-                MSG=str(exc),
-                EVT="skill_authorize_denied",
+                MSG=tool_name or "skill_authorize_check",
+                EVT="skill_authorize_check",
             )
             raise
 
@@ -76,6 +98,7 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
         user_input: Optional[Any],
         auto_confirm_config: Optional[dict] = None,
     ):
+        choice_input = user_input
         if is_unparseable_permission_resume_text(user_input):
             logger.info(
                 "[PermissionEngine] permission.rail.invalid_payload_fallback "
@@ -84,9 +107,26 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
                 type(user_input).__name__,
             )
             user_input = None
-        return await super().resolve_interrupt(
+            choice_input = None
+        decision = await super().resolve_interrupt(
             ctx, tool_call, user_input, auto_confirm_config
         )
+        payload = (
+            self.parse_confirm_payload(choice_input)
+            if choice_input is not None
+            else None
+        )
+        if payload is not None:
+            tool_name = str(getattr(tool_call, "name", "") or "").strip()
+            choice = _permission_choice_label(payload)
+            emit_audit_evt(
+                SUBMDL="agent",
+                PROC="skill_authorize",
+                MSG=f"{tool_name}: {choice}" if tool_name else choice,
+                EVT="skill_authorize_decision",
+                choice=choice,
+            )
+        return decision
 
     def _refresh_permissions_for_tool_call(self, ctx: AgentCallbackContext) -> None:
         """Apply the active Skill overlay without mutating the static baseline."""

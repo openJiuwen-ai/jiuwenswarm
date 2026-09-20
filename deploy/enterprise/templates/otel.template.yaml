@@ -1,0 +1,118 @@
+# 部署 OpenTelemetry Collector（logs-only：audit log 打点 → Loki）
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: <<OTEL_NAME>>
+  namespace: <<NAMESPACE>>
+  labels:
+    app: <<OTEL_NAME>>
+spec:
+  selector:
+    matchLabels:
+      app: <<OTEL_NAME>>
+  template:
+    metadata:
+      labels:
+        app: <<OTEL_NAME>>
+    spec:
+      serviceAccountName: <<OTEL_NAME>>-sa
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: <<OTEL_NAME>>
+          image: <<OTEL_IMAGE>>
+          args:
+            - --config=/etc/otelcol/config.yaml
+          volumeMounts:
+            - name: collector-config
+              mountPath: /etc/otelcol/config.yaml
+              subPath: config.yaml
+      volumes:
+        - name: collector-config
+          configMap:
+            name: <<OTEL_NAME>>-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: <<OTEL_NAME>>
+  namespace: <<NAMESPACE>>
+spec:
+  selector:
+    app: <<OTEL_NAME>>
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+  # 强制流量只发往本地节点的 DaemonSet 实例
+  internalTrafficPolicy: Local
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: <<OTEL_NAME>>-config
+  namespace: <<NAMESPACE>>
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+      batch:
+
+    exporters:
+      otlphttp/loki:
+        endpoint: "http://<<LOKI_NAME>>:3100/otlp"
+
+    service:
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlphttp/loki]
+---
+# 授权 Collector 读取 K8s 节点日志所需的 RBAC（filelog 扩展预留）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: <<OTEL_NAME>>-sa
+  namespace: <<NAMESPACE>>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: <<OTEL_NAME>>-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: <<OTEL_NAME>>-rolebinding
+subjects:
+  - kind: ServiceAccount
+    name: <<OTEL_NAME>>-sa
+    namespace: <<NAMESPACE>>
+roleRef:
+  kind: ClusterRole
+  name: <<OTEL_NAME>>-role
+  apiGroup: rbac.authorization.k8s.io

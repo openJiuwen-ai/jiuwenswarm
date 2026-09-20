@@ -70,6 +70,11 @@ spec:
                 name: <<SECRET_CM_NAME>>
             - configMapRef:
                 name: <<GATEWAY_ENV_FILE_CM_NAME>>
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
 
 ---
 # Service：提供稳定 DNS 域名, 供集群内部访问

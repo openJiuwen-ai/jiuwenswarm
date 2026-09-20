@@ -396,14 +396,6 @@ def _openai_account_poll_login_payload(login_id: str) -> dict[str, Any]:
             }
 
         _remove_openai_account_login_job(login_id)
-        from jiuwenswarm.common.audit_emit import emit_audit_ua
-
-        emit_audit_ua(
-            SUBMDL="gateway",
-            PROC="device_login_poll",
-            UA="authenticated",
-            login_id=login_id,
-        )
         return {
             "status": "authenticated",
             "authenticated": True,
@@ -4013,6 +4005,46 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 logger.exception(
                     "[session.delete] PG 删除失败: session_id=%s", session_id_to_delete,
                 )
+                try:
+                    from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                    emit_audit_evt(
+                        SUBMDL="gateway",
+                        PROC="session_delete",
+                        UID=_del_uid if "_del_uid" in locals() else (user_id or "-"),
+                        session_id=session_id_to_delete,
+                        request_id=str(req_id or ""),
+                        MSG="pg_delete_failed",
+                        EVT="session_delete",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("[session.delete] audit evt skipped", exc_info=True)
+            else:
+                try:
+                    from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
+                    if history_store_deleted:
+                        emit_audit_ua(
+                            SUBMDL="gateway",
+                            PROC="session_delete",
+                            UID=_del_uid,
+                            session_id=session_id_to_delete,
+                            request_id=str(req_id or ""),
+                            UA="session_delete",
+                            MSG="deleted",
+                        )
+                    else:
+                        emit_audit_evt(
+                            SUBMDL="gateway",
+                            PROC="session_delete",
+                            UID=_del_uid,
+                            session_id=session_id_to_delete,
+                            request_id=str(req_id or ""),
+                            MSG="ownership_denied_or_missing",
+                            EVT="session_delete",
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.debug("[session.delete] audit emit skipped", exc_info=True)
             await channel.send_response(
                 ws, req_id, ok=True,
                 payload={

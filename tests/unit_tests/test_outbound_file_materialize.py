@@ -140,3 +140,34 @@ def test_assert_minio_url_allowed_rejects_foreign_host():
             assert_minio_url_allowed("http://127.0.0.1:8080/bucket/obj")
         with pytest.raises(ValueError, match="not allowed"):
             assert_minio_url_allowed("http://127.0.0.1/bucket/obj")
+
+
+class _Upstream:
+    status_code = 200
+    headers = {"Content-Type": "text/markdown", "Content-Length": "4"}
+
+    def close(self) -> None:
+        return None
+
+    def iter_content(self, chunk_size: int = 65536):
+        yield b"test"
+
+
+def test_file_download_audit_only_on_user_get(monkeypatch):
+    from jiuwenswarm.gateway.message_handler import outbound_file_materialize as mod
+
+    calls: list[dict] = []
+    monkeypatch.setattr(mod, "assert_minio_url_allowed", lambda _url: None)
+    monkeypatch.setattr(mod, "_open_obs_upstream", lambda **_kwargs: _Upstream())
+    monkeypatch.setattr(mod, "_emit_file_download", lambda **kwargs: calls.append(kwargs))
+
+    common = {
+        "obs_url": "http://127.0.0.1:9000/bucket/hello.md",
+        "filename": "hello.md",
+        "range_header": None,
+    }
+    mod.proxy_obs_download_response(**common, inline=False, head=True)
+    mod.proxy_obs_download_response(**common, inline=True, head=False)
+    mod.proxy_obs_download_response(**common, inline=False, head=False)
+
+    assert calls == [{"success": True, "filename": "hello.md"}]

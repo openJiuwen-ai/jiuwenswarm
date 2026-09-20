@@ -65,6 +65,13 @@ declare -A CONFIG=(
     ["IDENTITY_TEMPLATE_FILE"]="${TEMPLATE_DIR}/identity.template.yaml"
     ["IDENTITY_FILE"]="${CONFIG_DIR}/identity.yaml"
 
+    ["OTEL_TEMPLATE_FILE"]="${TEMPLATE_DIR}/otel.template.yaml"
+    ["OTEL_FILE"]="${CONFIG_DIR}/otel.yaml"
+    ["LOKI_TEMPLATE_FILE"]="${TEMPLATE_DIR}/loki.template.yaml"
+    ["LOKI_FILE"]="${CONFIG_DIR}/loki.yaml"
+    ["OBSERVABILITY_TEMPLATE_FILE"]="${TEMPLATE_DIR}/observability.template.yaml"
+    ["OBSERVABILITY_FILE"]="${CONFIG_DIR}/observability.yaml"
+
     ["AS_JSON_TEMPLATE_FILE"]="${TEMPLATE_DIR}/agentserver.template.json"
     ["AS_JSON_FILE"]="${CONFIG_DIR}/agentserver.json"
     ["AS_ENV_TEMPLATE_FILE"]="${TEMPLATE_DIR}/agentserver.template.env"
@@ -91,7 +98,7 @@ declare -A ARGS=(
 
 
 # ==== All available modules ====
-declare -ga ALL_MODULES=("NFS" "NFS-SC" "RABBITMQ" "MYSQL" "POSTGRESQL" "MINIO" "LOG" "JINA" "PROXY" "GATEWAY" "WEB" "MANAGER" "RUNTIME")
+declare -ga ALL_MODULES=("NFS" "NFS-SC" "RABBITMQ" "MYSQL" "POSTGRESQL" "MINIO" "LOG" "JINA" "PROXY" "MONITOR" "GATEWAY" "WEB" "MANAGER" "RUNTIME")
 
 declare -ga MODULES=()
 
@@ -101,6 +108,7 @@ declare -A DEPLOY_VARS=(
     ["JIUWENSWARM_LINK_MTLS_MODE"]="off"
     ["IS_MOUNT_WEB_CODE"]="false"
     ["IS_MOUNT_MANAGER_WEB_CODE"]="false"
+    ["IS_MOUNT_OBSERVABILITY_CODE"]="false"
     ["CLAW_POD_CODE_PATH"]="/app/jiuwenswarm"
     ["RUNTIME_POD_CODE_PATH"]="/app/agent-runtime"
     ["CORE_POD_PKG_PATH"]="/usr/local/lib/python3.11/site-packages/openjiuwen"
@@ -122,6 +130,8 @@ declare -A DEPLOY_VARS=(
     ["ENABLE_EXTERNAL_PVC"]="false"
     ["ENABLE_EXTERNAL_RABBITMQ"]="false"
     ["ENABLE_EXTERNAL_REDIS"]="false"
+    ["ENABLE_EXTERNAL_LOKI"]="false"
+    ["ENABLE_EXTERNAL_OTEL"]="false"
     ["USER_WEB_IDP_TARGET"]=""
     ["USER_WEB_MANAGER_TARGET"]=""
     ["FLUENT_BIT_NAME"]="fluent-bit"
@@ -176,6 +186,14 @@ declare -A DEPLOY_VARS=(
     # 也可显式写集群DNS的ClusterIP或完整服务名
     ["MANAGER_WEB_RESOLVER"]="auto"
     ["MANAGER_WS_PORT"]="8766"
+    ["OTEL_ENABLED"]="true"
+    ["OTEL_NAME"]="jiuwenclaw-otel-collector"
+    ["OTEL_IMAGE"]="otel/opentelemetry-collector-contrib:0.104.0"
+    ["LOKI_NAME"]="jiuwenclaw-loki"
+    ["LOKI_IMAGE"]="grafana/loki:3.0.0"
+    ["LOKI_STORAGE_SIZE"]="4Gi"
+    ["OBSERVABILITY_NAME"]="jiuwenclaw-observability"
+    ["OBSERVABILITY_IMAGE"]=""
     ["MINIO_IMAGE"]="minio/minio-arm64:RELEASE.2024-12-18T13-15-44Z"
     ["MINIO_NAME"]="minio"
     ["MINIO_STORAGE_SIZE"]="4Gi"

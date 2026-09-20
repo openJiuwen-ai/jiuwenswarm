@@ -329,6 +329,28 @@ check_if_rabbitmq_up() {
     DEPLOY_VARS["MANAGER_RABBITMQ_URL"]="amqp://${user}:${encoded_password}@${url}"
 }
 
+check_if_otel_up() {
+    local name="${DEPLOY_VARS["OTEL_NAME"]}"
+    if [ -n "${DEPLOY_VARS["OTEL_EXPORTER_OTLP_ENDPOINT"]:-}" ]; then
+        info "Use external Opentelemetry Collector"
+        DEPLOY_VARS["ENABLE_EXTERNAL_OTEL"]="true"
+        return
+    fi
+    info "Use built-in Opentelemetry Collector"
+    DEPLOY_VARS["OTEL_EXPORTER_OTLP_ENDPOINT"]="http://${name}:4318"
+}
+
+check_if_loki_up() {
+    local name="${DEPLOY_VARS["LOKI_NAME"]}"
+    if [ -n "${DEPLOY_VARS["LOKI_URL"]:-}" ]; then
+        info "Use external Loki server"
+        DEPLOY_VARS["ENABLE_EXTERNAL_LOKI"]="true"
+        return
+    fi
+    info "Use built-in Loki server"
+    DEPLOY_VARS["LOKI_URL"]="http://${name}:3100"
+}
+
 check_if_gateway_up() {
     if ! check_k8s_resource_exists "deployment" "${DEPLOY_VARS["GATEWAY_NAME"]}" "${DEPLOY_VARS["NAMESPACE"]}"; then
         error "GATEWAY is not deployed. Please deploy it first with: ./$(basename "$0") up gateway"
@@ -409,6 +431,41 @@ check_jina_up_dependency() {
 
 check_proxy_up_dependency() {
     info "PROXY module has no dependencies"
+}
+
+prepare_nfs_path() {
+    local name="$1"
+    local path="${DEPLOY_VARS["NFS_POD_PATH"]}/${name}"
+    local nfs_dname=${DEPLOY_VARS["NFS_NAME"]}
+
+    check_if_nfs_up
+
+    if [ "${DEPLOY_VARS["RENDER_ONLY"]}" == "true" ]; then
+        return
+    fi
+
+    if [ "${DEPLOY_VARS["ENABLE_EXTERNAL_NFS"]}" == "true" ]; then
+        return
+    fi
+
+    info "Preparing ${name} data directory: ${path}"
+    local nfs_pod=$(kubectl get pods -n default -l app=${nfs_dname} -o jsonpath='{.items[0].metadata.name}')
+    info "Executing: kubectl exec ${nfs_pod} -- sh -c \"mkdir -p ${path}\""
+    kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${path}"
+    success "${name} directory created successfully in NFS Pod!"
+}
+
+check_monitor_up_dependency() {
+    if [ "${DEPLOY_VARS["OTEL_ENABLED"]}" == "false" ]; then
+        return
+    fi
+
+    check_if_otel_up
+    check_if_loki_up
+    prepare_nfs_path "${DEPLOY_VARS["LOKI_NAME"]}"
+
+    # 归一化尾斜杠，避免 NFS path 渲染成 "//loki"
+    DEPLOY_VARS["NFS_SHARE_PATH"]="${DEPLOY_VARS["NFS_SHARE_PATH"]%/}"
 }
 
 check_gateway_up_dependency(){

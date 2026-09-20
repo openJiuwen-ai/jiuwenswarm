@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from openjiuwen.core.runner.callback.errors import AbortError
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 
 from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
@@ -100,3 +101,91 @@ async def test_json_confirm_string_is_not_rewritten() -> None:
 
     assert result == "approved"
     assert captured["user_input"] == _CONFIRM_JSON
+
+
+@pytest.mark.asyncio
+async def test_interrupt_emits_check_and_reraises() -> None:
+    rail = object.__new__(SkillAuthorizationPermissionRail)
+    ctx = SimpleNamespace(inputs=SimpleNamespace(tool_name="list_files", tool_call=None))
+
+    async def _parent_before(self, ctx):
+        raise AbortError("Tool execution interrupted: list_files")
+
+    with (
+        patch.object(PermissionInterruptRail, "before_tool_call", _parent_before),
+        patch(
+            "jiuwenswarm.agents.harness.common.rails.permissions."
+            "skill_authorization_permission_rail.emit_audit_evt"
+        ) as emit,
+    ):
+        with pytest.raises(AbortError):
+            await rail.before_tool_call(ctx)
+
+    emit.assert_called_once_with(
+        SUBMDL="agent",
+        PROC="skill_authorize",
+        MSG="list_files",
+        EVT="skill_authorize_check",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_input", "expected_choice"),
+    [
+        ({"approved": True, "auto_confirm": False, "persist_allow": False}, "本次允许"),
+        ({"approved": True, "auto_confirm": True, "persist_allow": False}, "会话内记住"),
+        ({"approved": True, "auto_confirm": True, "persist_allow": True}, "始终允许"),
+        ({"approved": False, "auto_confirm": False, "persist_allow": False}, "不允许"),
+    ],
+)
+async def test_confirm_payload_emits_decision(user_input: dict, expected_choice: str) -> None:
+    rail = object.__new__(SkillAuthorizationPermissionRail)
+
+    async def _parent_resolve(self, ctx, tool_call, user_input, auto_confirm_config=None):
+        return "decided"
+
+    with (
+        patch.object(PermissionInterruptRail, "resolve_interrupt", _parent_resolve),
+        patch(
+            "jiuwenswarm.agents.harness.common.rails.permissions."
+            "skill_authorization_permission_rail.emit_audit_evt"
+        ) as emit,
+    ):
+        result = await rail.resolve_interrupt(
+            ctx=SimpleNamespace(),
+            tool_call=SimpleNamespace(name="list_files"),
+            user_input=user_input,
+        )
+
+    assert result == "decided"
+    emit.assert_called_once_with(
+        SUBMDL="agent",
+        PROC="skill_authorize",
+        MSG=f"list_files: {expected_choice}",
+        EVT="skill_authorize_decision",
+        choice=expected_choice,
+    )
+
+
+@pytest.mark.asyncio
+async def test_plain_chat_resume_does_not_emit_decision() -> None:
+    rail = object.__new__(SkillAuthorizationPermissionRail)
+
+    async def _parent_resolve(self, ctx, tool_call, user_input, auto_confirm_config=None):
+        return "first_check"
+
+    with (
+        patch.object(PermissionInterruptRail, "resolve_interrupt", _parent_resolve),
+        patch(
+            "jiuwenswarm.agents.harness.common.rails.permissions."
+            "skill_authorization_permission_rail.emit_audit_evt"
+        ) as emit,
+    ):
+        await rail.resolve_interrupt(
+            ctx=SimpleNamespace(),
+            tool_call=SimpleNamespace(name="bash"),
+            user_input=_PLAIN_CHAT,
+        )
+
+    emit.assert_not_called()
