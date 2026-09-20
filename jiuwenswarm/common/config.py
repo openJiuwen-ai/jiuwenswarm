@@ -879,7 +879,6 @@ def update_permissions_profile_in_config(profile: str) -> None:
     """Atomically persist the Web permission profile to runtime fields."""
     runtime_values = {
         "default": (True, "manual"),
-        "automatic": (True, "auto"),
         "full_access": (False, "manual"),
     }
     try:

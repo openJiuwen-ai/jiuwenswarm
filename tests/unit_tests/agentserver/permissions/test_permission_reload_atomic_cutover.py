@@ -42,6 +42,7 @@ def _request():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("external", [False, True])
+@pytest.mark.usefixtures("internal_auto_mode")
 async def test_parent_lazy_permission_version_advances_only_on_external_input(external):
     child = _child()
     child.reload_agent_config = AsyncMock()

@@ -913,8 +913,6 @@
       "permission": {
         "default": "Default",
         "defaultDesc": "Always ask when editing external files or accessing the internet",
-        "automatic": "Smart Approval",
-        "automaticDesc": "Reviews tool requests against your task and permissions, asking you when needed",
         "fullAccess": "Full Access",
         "fullAccessDesc": "Unrestricted access to the internet and any files on your computer",
         "fullAccessWarning": {

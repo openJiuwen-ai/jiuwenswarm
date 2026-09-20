@@ -3,9 +3,9 @@ import test from 'node:test';
 
 import { effectivePermissionProfile, permissionOptionsForMode } from '../node_modules/.cache/permission-profiles/config/permissionProfiles.js';
 
-test('single agent exposes automatic approval', () => {
-  assert.deepEqual(permissionOptionsForMode('agent'), ['default', 'automatic', 'full_access']);
-  assert.equal(effectivePermissionProfile('automatic', 'agent'), 'automatic');
+test('single agent exposes only supported profiles', () => {
+  assert.deepEqual(permissionOptionsForMode('agent'), ['default', 'full_access']);
+  assert.equal(effectivePermissionProfile('default', 'agent'), 'default');
 });
 
 test('team and auto harness hide automatic without changing persisted profile', () => {

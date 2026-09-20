@@ -115,8 +115,10 @@ def _capture(
 
 @pytest.mark.parametrize("mode", ["disabled", "manual", "auto"])
 def test_parent_composition_preserves_order_and_wiring(
-    monkeypatch: pytest.MonkeyPatch, mode: str
+    monkeypatch: pytest.MonkeyPatch, mode: str, request,
 ) -> None:
+    if mode == "auto":
+        request.getfixturevalue("internal_auto_mode")
     adapter = _adapter()
     rails, required = _capture(adapter, monkeypatch, mode)
     attrs = (
@@ -174,8 +176,10 @@ def test_parent_composition_preserves_order_and_wiring(
     ],
 )
 def test_required_validation_rejects_invalid_composition(
-    monkeypatch: pytest.MonkeyPatch, case: str, mode: str, message: str
+    monkeypatch: pytest.MonkeyPatch, case: str, mode: str, message: str, request,
 ) -> None:
+    if mode == "auto":
+        request.getfixturevalue("internal_auto_mode")
     adapter = _adapter()
     rails, required = _capture(adapter, monkeypatch, mode)
     queue_rail = required["queue_rail"]
@@ -221,6 +225,7 @@ def test_required_validation_rejects_invalid_composition(
                          sys_operation=adapter._sys_operation)
 
 
+@pytest.mark.usefixtures("internal_auto_mode")
 def test_real_build_rejects_duplicate_required_rail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -242,6 +247,7 @@ def test_real_build_rejects_duplicate_required_rail(
         )
 
 
+@pytest.mark.usefixtures("internal_auto_mode")
 def test_parent_composition_requires_assigned_sys_operation() -> None:
     adapter = JiuWenSwarmDeepAdapter()
     adapter.mark_as_session_scoped("permission-composition-session")
@@ -332,8 +338,10 @@ def test_excluded_scope_keeps_manual_factory_without_smart_lifecycle(
 
 @pytest.mark.parametrize("mode", ["disabled", "manual", "auto"])
 def test_cold_build_passes_session_context_and_gates_strict_questions(
-    monkeypatch: pytest.MonkeyPatch, tmp_path, mode: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path, mode: str, request,
 ) -> None:
+    if mode == "auto":
+        request.getfixturevalue("internal_auto_mode")
     adapter = _adapter("permission-build-session")
     adapter._permission_workspace_root = tmp_path / "project"
     adapter._workspace_dir = str(tmp_path / "workspace")
@@ -373,8 +381,10 @@ def test_cold_build_passes_session_context_and_gates_strict_questions(
 @pytest.mark.parametrize("missing_builder", ["permission", "stream"])
 @pytest.mark.parametrize("smart", [False, True])
 def test_required_factory_failure_blocks_only_smart_build(
-    monkeypatch: pytest.MonkeyPatch, missing_builder: str, smart: bool,
+    monkeypatch: pytest.MonkeyPatch, missing_builder: str, smart: bool, request,
 ) -> None:
+    if smart:
+        request.getfixturevalue("internal_auto_mode")
     adapter = _adapter()
     _stub_profile(adapter, monkeypatch)
     monkeypatch.setattr(
@@ -449,8 +459,10 @@ def test_registered_permission_group_contract(mode, fault) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("smart", [False, True])
 async def test_built_permission_group_registers_once_and_cleans_up_in_real_sdk(
-    monkeypatch: pytest.MonkeyPatch, tmp_path, smart: bool,
+    monkeypatch: pytest.MonkeyPatch, tmp_path, smart: bool, request,
 ) -> None:
+    if smart:
+        request.getfixturevalue("internal_auto_mode")
     from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers
 
     adapter = _adapter()

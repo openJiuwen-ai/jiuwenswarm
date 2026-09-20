@@ -1085,7 +1085,6 @@ permissions:
   shell_guard:
     unknown_structure: false
     interpreter_sink: false
-  # manual keeps the existing approval flow; auto enables Smart Approval.
   mode: manual
 
   defaults:

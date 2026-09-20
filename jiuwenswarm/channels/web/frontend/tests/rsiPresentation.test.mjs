@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   formatArtifactScore,
+  formatGain,
   nodeChangeDisplayLabel,
   nodeScoreLines,
   nodeStageLabel,
@@ -10,7 +11,28 @@ import {
   presentRsiNode,
   scoreScale,
   actionsForStatus,
+  taskProgressPercent,
 } from '../node_modules/.cache/rsi-presentation/rsiPresentation.mjs';
+
+test('completed tasks show full progress even when they finish before the iteration limit', () => {
+  assert.equal(taskProgressPercent('COMPLETED', 1, 5), 100);
+  assert.equal(taskProgressPercent('COMPLETED', 0, 0), 100);
+  for (const status of ['RUNNING', 'PAUSED', 'FAILED', 'TERMINATED']) {
+    assert.equal(taskProgressPercent(status, 1, 5), 20);
+  }
+  assert.equal(taskProgressPercent('QUEUED', 0, 0), 0);
+  assert.equal(taskProgressPercent('RUNNING', 6, 5), 100);
+});
+
+test('score gains display the absolute normalized difference as a percentage', () => {
+  assert.deepEqual(formatGain(1 - 0.6), { text: '40% ↑', kind: 'up' });
+  assert.deepEqual(formatGain(0.4 - 0), { text: '40% ↑', kind: 'up' });
+  assert.deepEqual(formatGain(0.6 - 1), { text: '40% ↓', kind: 'down' });
+  assert.deepEqual(formatGain(0.123), { text: '12.3% ↑', kind: 'up' });
+  for (const value of [null, NaN, 0]) {
+    assert.deepEqual(formatGain(value), { text: '', kind: 'none' });
+  }
+});
 
 const context = (scenario, artifactType, nodes, taskRunning = false) => ({
   scenario,

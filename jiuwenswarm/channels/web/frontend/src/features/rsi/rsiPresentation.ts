@@ -14,6 +14,11 @@ import type {
 // 节点类型 → 展示用状态色类名（对应 rsi.css 的 bar--* 与图例 dot）
 export type NodeStatusKind = 'best-path' | 'evaluated' | 'pending' | 'failed' | 'pruned';
 
+export function taskProgressPercent(status: RsiTaskStatus, iteration: number, total: number): number {
+  if (status === 'COMPLETED') return 100;
+  return total > 0 ? Math.min(100, Math.round((iteration / total) * 100)) : 0;
+}
+
 // 节点 type → 状态色映射（对齐样式概要：最优路径/已评测/待评测/已剪枝）
 // adopted/root → best-path；rejected → evaluated；provisional → pending；pruned → pruned
 export function nodeTypeToStatusKind(type: RsiNodeType): NodeStatusKind {
@@ -671,12 +676,14 @@ export function formatArtifactScore(score: number | null, artifactType?: RsiArti
   return formatScore(score * scoreScale(artifactType), scoreDigits(artifactType));
 }
 
-// 提升百分比：↑ 5.2% / ↓ 2.1%，null 显示空串
+// Display the normalized score difference as a percentage, without dividing by the baseline.
 export function formatGain(gain: number | null): { text: string; kind: 'up' | 'down' | 'none' } {
   if (gain == null || Number.isNaN(gain)) return { text: '', kind: 'none' };
-  const pct = gain * 100;
-  if (pct >= 0) return { text: `${pct.toFixed(1)}% ↑`, kind: 'up' };
-  return { text: `${Math.abs(pct).toFixed(1)}% ↓`, kind: 'down' };
+  const delta = gain * 100;
+  if (delta === 0) return { text: '', kind: 'none' };
+  const magnitude = Number(Math.abs(delta).toFixed(1));
+  if (delta > 0) return { text: `${magnitude}% ↑`, kind: 'up' };
+  return { text: `${magnitude}% ↓`, kind: 'down' };
 }
 
 // token 用量格式化：万 tokens

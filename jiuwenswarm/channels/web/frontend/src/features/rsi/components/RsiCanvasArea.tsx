@@ -17,6 +17,7 @@ import {
   formatCost,
   presentRsiNode,
   statusBadgeInfo,
+  taskProgressPercent,
   type StatusBadgeKind,
   type NodeStatusKind,
   type NodeIconKind,
@@ -701,7 +702,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
   const cost = liveProgress?.usageCost ?? task.usage?.cost_estimate ?? null;
   const progressIter = liveProgress?.iteration ?? task.progress?.iteration ?? 0;
   const progressTotal = liveProgress?.total ?? task.progress?.total_iterations ?? 0;
-  const progressPct = progressTotal > 0 ? Math.min(100, Math.round((progressIter / progressTotal) * 100)) : 0;
+  const progressPct = taskProgressPercent(task.status, progressIter, progressTotal);
 
   return (
     <div className="rsi-canvas-area">
