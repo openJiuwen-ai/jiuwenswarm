@@ -686,3 +686,31 @@ def test_macos_electron_build_ships_tui_binary_next_to_backend() -> None:
         r'tui_binary = Path\(sys\.executable\)\.parent / "jiuwenswarm-tui"',
         _read(DESKTOP_APP_PY),
     ), "desktop_app.py 的 TUI 查找路径漂移, 请同步本测试与打包脚本"
+
+
+def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
+    """macOS 原生关闭仅隐藏窗口，Dock 激活恢复；明确退出仍走完整清理。"""
+    source = _read(MAIN_CJS)
+
+    close_handler = _balanced_braces_block(source, "mainWindow.on('close'")
+    assert "process.platform !== 'darwin' || shuttingDown" in close_handler
+    assert "event.preventDefault()" in close_handler
+    assert "mainWindow.hide()" in close_handler
+
+    activate_handler = _balanced_braces_block(source, "app.on('activate'")
+    assert "mainWindow.show()" in activate_handler
+    assert "mainWindow.focus()" in activate_handler
+
+    second_instance_handler = _balanced_braces_block(source, "app.on('second-instance'")
+    assert "process.platform === 'darwin'" in second_instance_handler
+    assert "mainWindow.show()" in second_instance_handler
+
+    all_closed_handler = _balanced_braces_block(source, "app.on('window-all-closed'")
+    assert "process.platform !== 'darwin'" in all_closed_handler
+    assert "app.quit()" in all_closed_handler
+
+    explicit_close_handler = _balanced_braces_block(
+        source, "registerHandler('desktop:close-window'"
+    )
+    assert "process.platform === 'darwin'" in explicit_close_handler
+    assert "requestShutdown()" in explicit_close_handler

@@ -2090,7 +2090,8 @@ function registerIpcHandlers() {
     return true;
   });
   registerHandler('desktop:close-window', () => {
-    mainWindow.close();
+    if (process.platform === 'darwin') requestShutdown();
+    else mainWindow.close();
     return true;
   });
   registerHandler('desktop:open-external-url', async url => {
@@ -2416,6 +2417,11 @@ async function createMainWindow() {
     },
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.on('close', event => {
+    if (process.platform !== 'darwin' || shuttingDown) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
   mainWindow.webContents.on('zoom-changed', () => {
     setTimeout(emitLayoutInvalidated, 0);
   });
@@ -2532,6 +2538,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => {
     if (!mainWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
+    if (process.platform === 'darwin') mainWindow.show();
     mainWindow.focus();
   });
 
@@ -2577,6 +2584,14 @@ app.on('before-quit', event => {
     app.exit(requestedExitCode);
   });
 });
-app.on('window-all-closed', () => app.quit());
+app.on('activate', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
 app.on('will-quit', () => stopBrowserEndpointsPublisher());
 process.once('exit', forceStopServices);
