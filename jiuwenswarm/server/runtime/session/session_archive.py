@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 # project file is only a fast-path cache, so periodic refreshes suffice.
 _PROJECT_DELETE_CHECKPOINT_EVERY = 10
 
+# A failed delete/unarchive whose runtime will not settle (issue 4268: a
+# swarmflow run kept the session "remains after cleanup" forever) must not
+# hold the lifecycle fence hostage.  After this many recovery attempts the
+# operation is abandoned: the fence comes down, the directory stays, and a
+# fresh explicit request starts a new operation.
+_RECOVERY_ABANDON_AFTER = 5
+
 
 def get_agent_sessions_dir():
     return lc.get_agent_sessions_dir()
@@ -160,6 +167,24 @@ class SessionArchiveService:
                 except Exception:
                     key = operation.get("resource_id", path.name)
                     attempts = failures.get(key, (0, 0))[0] + 1
+                    if attempts > _RECOVERY_ABANDON_AFTER:
+                        # Retries are exhausted and the failure repeats: keep
+                        # the fence down instead of retrying forever, and let
+                        # a fresh explicit request open a new operation.
+                        # abandon() no-ops on a live/finished operation, so a
+                        # concurrent owner is never fenced out from under.
+                        try:
+                            lc.abandon(
+                                "session",
+                                key,
+                                reason=f"recovery retried {attempts - 1} times",
+                            )
+                        except Exception:
+                            logger.exception(
+                                "lifecycle recovery abandon failed: %s", key
+                            )
+                        failures.pop(key, None)
+                        continue
                     failures[key] = (
                         attempts,
                         time.monotonic() + min(60, 2 ** min(attempts, 6)),

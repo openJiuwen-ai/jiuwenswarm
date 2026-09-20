@@ -137,7 +137,10 @@ def begin(
     with resource_lock(kind, resource_id):
         value = state(kind, resource_id)
         operation = value.get("operation")
-        if operation and operation["status"] != "completed":
+        # "abandoned" is as terminal as "completed": the recovery loop gave
+        # up, the fence is down, and a fresh explicit request may start a new
+        # operation (issue 4268).
+        if operation and operation["status"] not in {"completed", "abandoned"}:
             if operation["kind"] != action:
                 raise LifecycleError(
                     "OPERATION_IN_PROGRESS", "another lifecycle operation is pending"
@@ -248,6 +251,32 @@ def complete(
         if deleted:
             value["operation"].pop("delete_metadata", None)
         save_locked(kind, resource_id, value)
+
+
+def abandon(kind: str, resource_id: str, *, reason: str = "") -> dict:
+    """Give up a failed operation and release its execution fence.
+
+    Terminal counterpart of :func:`complete` for the recovery loop: after
+    retries are exhausted the fence must not outlive the operation, or the
+    resource stays blocked forever while no one is executing anything
+    (issue 4268). A ``running`` operation may belong to a live owner and is
+    left untouched.
+    """
+    with resource_lock(kind, resource_id):
+        value = state(kind, resource_id)
+        operation = value.get("operation")
+        if not operation or operation["status"] not in {"failed", "abandoned"}:
+            return operation or {}
+        operation.update(
+            status="abandoned",
+            retryable=False,
+            stop_pending=False,
+        )
+        if reason:
+            operation["abandoned_reason"] = reason
+        value.update(blocked=False, write_blocked=False)
+        save_locked(kind, resource_id, value)
+        return operation
 
 
 def checkpoint_project(resource_id: str, params: dict) -> dict:
