@@ -33,7 +33,7 @@ type AgentGroupEditorProps = {
   onReloadAgents: () => void;
   onReloadSkills: () => void;
   onInstallAgent?: (id: string) => void | Promise<void>;
-  installingAgentId?: string | null;
+  installingAgentIds?: ReadonlySet<string>;
   onInstallSkill?: (skill: SkillOption) => void | Promise<void>;
   installingSkillId?: string | null;
   onCreateAgent?: () => void;
@@ -55,7 +55,7 @@ export function AgentGroupEditor({
   onReloadAgents,
   onReloadSkills,
   onInstallAgent,
-  installingAgentId,
+  installingAgentIds,
   onInstallSkill,
   installingSkillId,
   onCreateAgent,
@@ -451,7 +451,7 @@ export function AgentGroupEditor({
           restoreFocusRef={pickerMode === 'leader' ? leaderPickerTriggerRef : memberPickerTriggerRef}
           selectionError={selectionError}
           onInstallAgent={onInstallAgent}
-          installingAgentId={installingAgentId}
+          installingAgentIds={installingAgentIds}
           onReloadAgents={onReloadAgents}
           onCancel={() => setPickerMode(null)}
           onConfirm={(ids) => {

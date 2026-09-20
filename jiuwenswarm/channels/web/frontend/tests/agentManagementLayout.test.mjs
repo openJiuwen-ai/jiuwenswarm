@@ -609,6 +609,45 @@ test('Expert Team upload dialog puts Expert first and removes the reference link
   assert.doesNotMatch(groupUploadSource, /uploadHintReference|hint-reference/);
 });
 
+test('concurrent Expert installs keep every affected card busy', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const items = ['expert-a', 'expert-b'].map((id) => ({
+    id,
+    runtimePackageName: id,
+    displayName: id,
+    description: '',
+    source: 'hub',
+    installed: false,
+    connectionState: 'disconnected',
+    tags: [],
+    avatarUrl: null,
+  }));
+  const document = new JSDOM(renderToStaticMarkup(React.createElement(CatalogPage, {
+    scope: 'catalog',
+    items,
+    totalItems: items.length,
+    page: 1,
+    query: '',
+    category: '',
+    status: 'success',
+    error: null,
+    busyIds: new Set(items.map((item) => item.id)),
+    onPageChange() {},
+    onCategoryChange() {},
+    onRetry() {},
+    onOpen() {},
+    onUse() {},
+    onReconnect() {},
+    onInstall() {},
+    onCreate() {},
+  }))).window.document;
+  const installButtons = Array.from(document.querySelectorAll('[data-testid="agent-card"] button'));
+  assert.equal(installButtons.length, 2);
+  assert.deepEqual(installButtons.map((button) => button.getAttribute('aria-busy')), ['true', 'true']);
+  assert.deepEqual(installButtons.map((button) => button.textContent), ['安装中…', '安装中…']);
+});
+
 for (const status of ['success', 'loading', 'error']) {
   test(`expert catalog keeps page two cards during ${status}`, async () => {
     const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
@@ -635,6 +674,7 @@ for (const status of ['success', 'loading', 'error']) {
           category: '',
           status,
           error: 'Refresh failed',
+          busyIds: new Set(),
           onPageChange() {},
         }),
       ),

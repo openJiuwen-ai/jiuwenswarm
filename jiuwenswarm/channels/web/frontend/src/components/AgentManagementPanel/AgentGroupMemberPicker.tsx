@@ -24,7 +24,7 @@ type AgentGroupMemberPickerProps = {
   onReloadAgents: () => void;
   selectionError?: string | null;
   onInstallAgent?: (id: string) => void | Promise<void>;
-  installingAgentId?: string | null;
+  installingAgentIds?: ReadonlySet<string>;
   restoreFocusRef?: { current: HTMLElement | null };
 };
 
@@ -54,7 +54,7 @@ export function AgentGroupMemberPicker({
   onReloadAgents,
   selectionError,
   onInstallAgent,
-  installingAgentId,
+  installingAgentIds,
 }: AgentGroupMemberPickerProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
@@ -215,14 +215,14 @@ export function AgentGroupMemberPicker({
                         className="agent-management-inline-action"
                         data-testid="agent-group-member-picker-install"
                         data-variant={agent.id}
-                        disabled={installingAgentId === agent.id}
-                        aria-busy={installingAgentId === agent.id}
+                        disabled={installingAgentIds?.has(agent.id)}
+                        aria-busy={installingAgentIds?.has(agent.id)}
                         onClick={(event) => {
                           event.stopPropagation();
                           void onInstallAgent(agent.id);
                         }}
                       >
-                        {installingAgentId === agent.id
+                        {installingAgentIds?.has(agent.id)
                           ? t('agentManagement.group.picker.installing')
                           : t('agentManagement.group.picker.install')}
                       </button>

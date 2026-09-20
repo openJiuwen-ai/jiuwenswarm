@@ -31,7 +31,7 @@ type CatalogPageProps = {
   category: string;
   status: RequestStatus;
   error: string | null;
-  busyId: string | null;
+  busyIds: ReadonlySet<string>;
   onCategoryChange: (value: string) => void;
   onRetry: () => void;
   onOpen: (id: string) => void;
@@ -51,7 +51,7 @@ export function CatalogPage({
   category,
   status,
   error,
-  busyId,
+  busyIds,
   onCategoryChange,
   onRetry,
   onOpen,
@@ -119,7 +119,7 @@ export function CatalogPage({
           <>
             <div className="card-grid-auto">
               {pageItems.map((item) => {
-                const isBusy = busyId === item.id;
+                const isBusy = busyIds.has(item.id);
                 const avatarUrl = getAgentAvatarUrl(item);
                 const description = item.description || t('agentManagement.unknownDescription');
                 const needsConnection = item.installed && item.connectionState !== 'connected';
