@@ -1,3 +1,7 @@
+.settings-section:not(:last-child) {
+  margin-bottom: 36px;
+}
+
 .settings-section__heading {
   display: flex;
   align-items: flex-end;
