@@ -29,6 +29,61 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
+@pytest.mark.asyncio
+async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
+    from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetSummary, HubSearchPage
+
+    monkeypatch.setattr(catalog, "list_agent_groups", lambda _params=None: [
+        {"id": "built-in-group", "source": "builtin", "installed": False}
+    ])
+    monkeypatch.setattr(catalog, "_hub_install_state_store", lambda _kind: type(
+        "Store", (), {"get_by_package_id": lambda _self, _id: None}
+    )())
+
+    class Port:
+        kinds = []
+
+        async def search_assets(self, request):
+            self.kinds.append(request.kind)
+            item = HubAssetSummary("agent_group", "group-id", "Hub Group", "desc", "1.0.0", "", (), "group-package")
+            return HubSearchPage((item,), 1, 1, 100)
+
+    port = Port()
+    cards = await catalog.list_agent_groups_with_hub({"filter": "builtin+hub"}, hub_port=port)
+    assert port.kinds == ["agent_group"]
+    assert {card["id"] for card in cards} == {"built-in-group", "group-id"}
+    assert next(card for card in cards if card["id"] == "group-id")["source"] == "hub"
+
+
+@pytest.mark.asyncio
+async def test_hub_agent_group_installs_and_uninstalls_by_asset_id(extension_workspace, tmp_path):
+    from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetDetail, HubResolvedDownload
+
+    source = _seed_valid_agent_group(extension_workspace, "remote-group", under="local")
+    archive_source = tmp_path / "archive-source"
+    shutil.move(source, archive_source)
+
+    class Port:
+        async def query_asset(self, request):
+            return HubAssetDetail("agent_group", request.asset_id, "1.0.0", "Remote Group", "Group", "Group", "", (), "remote-group")
+
+        async def resolve_download(self, request):
+            return HubResolvedDownload("agent_group", request.asset_id, request.version, "https://example.test/group.zip", "a" * 64, "remote-group")
+
+    class Downloader:
+        async def download_and_extract(self, _artifact, destination):
+            shutil.copytree(archive_source, destination / "remote-group")
+
+    await catalog.install_agent_group_with_hub(
+        {"id": "group-asset-id"}, hub_port=Port(), downloader=Downloader()
+    )
+    detail = await catalog.show_agent_group_with_hub("group-asset-id")
+    assert detail["id"] == "group-asset-id" and detail["installed"]
+    assert detail["source"] == "hub"
+    catalog.uninstall_agent_group({"id": "group-asset-id"})
+    assert catalog._hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
+
+
 def _seed_valid_agent_group(
     workspace: Path,
     package_id: str,

@@ -101,6 +101,7 @@ export type RawAgentGroupDetail = RawAgentGroupListItem & {
 
 export type RawAgentGroupListPayload = {
   agentGroups?: RawAgentGroupListItem[];
+  cache?: import('../catalogCache').CatalogCacheMetadata;
 };
 
 export type RawAgentGroupDetailPayload = {

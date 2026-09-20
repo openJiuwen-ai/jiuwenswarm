@@ -7,7 +7,8 @@ from jiuwenswarm.server.runtime.marketplace.asset_publish_models import PublishI
 @pytest.mark.parametrize(
     "kind,version",
     [("skill", "1.0.0"), ("agent_template", "abc1234"),
-     ("plugin", "1.0.0"), ("mcp", "abc1234")],
+     ("agent_group", "1.0.0"), ("plugin", "1.0.0"),
+     ("mcp", "abc1234")],
 )
 def test_supported_identity(kind, version):
     assert PublishIdentity(kind, "sales-assistant", version).version == version
@@ -17,11 +18,6 @@ def test_supported_identity(kind, version):
 def test_reject_invalid_version(version):
     with pytest.raises(ValueError):
         PublishIdentity("plugin", "sales-assistant", version)
-
-
-def test_agent_group_is_not_a_publish_kind():
-    with pytest.raises(ValueError):
-        PublishIdentity("agent_group", "sales-assistant", "1.0.0")
 
 
 @pytest.mark.parametrize("name", ["", " sales-assistant", "sales-assistant "])

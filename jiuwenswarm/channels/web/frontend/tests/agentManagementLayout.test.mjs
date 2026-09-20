@@ -472,6 +472,26 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
   assert.doesNotMatch(groupDetailSource, /detail-back mb-\[35px\]/);
   assert.doesNotMatch(groupDetailSource, /overflow-y-auto pb-\[72px\]/);
   assert.doesNotMatch(groupDetailSource, /<header className="agent-management-detail__header">/);
+  assert.match(groupDetailSource, /<PublicationDetailStatus kind="agent_group"/);
+  assert.match(groupDetailSource, /openAssetPublish\(\{ kind: 'agent_group', local_id: detail\.id/);
+});
+
+test('installed Expert Team cards offer use while uninstall stays in detail', async () => {
+  const { GroupCard } = await import('../node_modules/.cache/agent-management-layout/GroupCard.mjs');
+  const { JSDOM } = await import('jsdom');
+  const item = {
+    id: 'group-1', displayName: '测试专家团', description: '测试', category: '',
+    tags: [], avatarUrl: null, installed: true,
+    capabilities: { canUse: true, canInstall: false, canUninstall: true },
+  };
+  const markup = renderToStaticMarkup(React.createElement(GroupCard, {
+    item, busy: false, onOpen: () => {}, onUse: () => {}, onInstall: () => {},
+  }));
+  const card = new JSDOM(markup).window.document;
+  assert.equal(card.querySelectorAll('[data-testid="agent-group-card-action"]').length, 1);
+  assert.equal(card.querySelector('[data-testid="agent-group-card-action"]').getAttribute('data-variant'), 'use');
+  assert.equal(card.querySelector('[data-variant="uninstall"]'), null);
+  assert.match(groupDetailSource, /data-variant="uninstall"/);
 });
 
 test('Expert Team leader badge does not add a redundant status icon', () => {

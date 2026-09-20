@@ -2151,10 +2151,7 @@
       "description": "You need to login to publish skills to SkillHub",
       "gitcodeLogin": "Login with GitCode",
       "githubLogin": "Login with GitHub",
-      "notConfigured": "GitCode OAuth is not configured. Set VITE_GITCODE_OAUTH_CLIENT_ID and VITE_GITCODE_OAUTH_CLIENT_SECRET in .env.local",
-      "githubNotConfigured": "GitHub OAuth is not configured. Set VITE_GITHUB_OAUTH_CLIENT_ID in .env.local",
-      "loading": "Logging in...",
-      "callbackHint": "Please access the frontend via http://127.0.0.1:5173. The OAuth callback URL is set to: http://127.0.0.1:5173/oauth/callback"
+      "loading": "Logging in..."
     },
     "uploadSkillModal": {
       "title": "Upload Skill",

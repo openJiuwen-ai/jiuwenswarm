@@ -2141,10 +2141,7 @@
       "description": "需要登录账号才能发布技能到 SkillHub",
       "gitcodeLogin": "使用 GitCode 登录",
       "githubLogin": "使用 GitHub 登录",
-      "notConfigured": "GitCode OAuth 未配置，请在 .env.local 中设置 VITE_GITCODE_OAUTH_CLIENT_ID 和 VITE_GITCODE_OAUTH_CLIENT_SECRET",
-      "githubNotConfigured": "GitHub OAuth 未配置，请在 .env.local 中设置 VITE_GITHUB_OAUTH_CLIENT_ID",
-      "loading": "登录中...",
-      "callbackHint": "请通过 http://127.0.0.1:5173 访问前端，OAuth 回调地址已设为：http://127.0.0.1:5173/oauth/callback"
+      "loading": "登录中..."
     },
     "uploadSkillModal": {
       "title": "上传技能",

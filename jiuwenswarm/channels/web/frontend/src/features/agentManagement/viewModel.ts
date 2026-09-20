@@ -157,14 +157,17 @@ export function buildGroupCatalogViewModel(
     scope: GroupCatalogScope;
     category: string;
     query: string;
+    installation?: 'all' | 'installed' | 'uninstalled';
     page: number;
     pageSize: number;
   },
 ): GroupCatalogViewModel {
   const query = options.query.trim().toLocaleLowerCase();
   const filtered = catalog.filter(item => {
-    if (options.scope === 'catalog' && item.source !== 'builtin') return false;
+    if (options.scope === 'catalog' && item.source !== 'builtin' && item.source !== 'hub') return false;
     if (options.scope === 'mine' && item.source !== 'local' && !item.installed) return false;
+    if (options.installation && options.installation !== 'all'
+      && item.installed !== (options.installation === 'installed')) return false;
     if (options.scope === 'catalog' && !matchesGroupCategory(options.category, item.category)) return false;
     if (!query) return true;
     const tags = item.tags.map(tag => tag.label).join(' ');

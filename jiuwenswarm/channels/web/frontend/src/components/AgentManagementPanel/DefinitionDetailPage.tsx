@@ -157,7 +157,7 @@ export function DefinitionDetailPage({
                   {t('agentManagement.actions.edit')}
                 </button>
               ) : null}
-              {(detail.installed || detail.source !== 'hub') && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="agent-management-agent-template-publish" onClick={() => openAssetPublish({ kind: 'agent_template', local_id: detail.runtimePackageName })}>{t('skills.actions.publish')}</button>}
+              {(detail.installed || detail.source !== 'hub') && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="agent-management-agent-template-publish" onClick={() => openAssetPublish({ kind: 'agent_template', local_id: detail.runtimePackageName, avatar_url: avatarUrl || undefined })}>{t('skills.actions.publish')}</button>}
               {detail.installed ? (
                 <>
                   {needsConnection ? (

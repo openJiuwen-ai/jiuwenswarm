@@ -351,6 +351,7 @@ export function AgentManagementPanel({
   }, []);
 
   const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
+  const [groupInstallationFilter, setGroupInstallationFilter] = useState<InstallationFilter>('all');
   const catalogView = useMemo(
     () =>
       buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
@@ -375,20 +376,22 @@ export function AgentManagementPanel({
       scope: 'catalog',
       category: groupCategory,
       query: groupCatalogQuery,
+      installation: groupInstallationFilter,
       page: groupCatalogPage,
       pageSize: GROUP_PAGE_SIZE,
     }),
-    [groupCatalog, groupCategory, groupCatalogQuery, groupCatalogPage],
+    [groupCatalog, groupCategory, groupCatalogQuery, groupInstallationFilter, groupCatalogPage],
   );
   const groupMineView = useMemo(
     () => buildGroupCatalogViewModel(groupMine, {
       scope: 'mine',
       category: '',
       query: groupMineQuery,
+      installation: groupInstallationFilter,
       page: groupMinePage,
       pageSize: GROUP_PAGE_SIZE,
     }),
-    [groupMine, groupMineQuery, groupMinePage],
+    [groupMine, groupMineQuery, groupInstallationFilter, groupMinePage],
 
   );
 
@@ -435,8 +438,15 @@ export function AgentManagementPanel({
     setStatus('loading');
     setError(null);
     try {
-      const groups = await groupClient.listGroups({ filter: scope === 'catalog' ? 'builtin' : 'local' });
+      const groups = await groupClient.listGroups({
+        filter: scope === 'catalog' ? 'builtin+hub' : 'local',
+        ...(scope === 'catalog' ? { cache_mode: 'prefer_cache' } : {}),
+      });
       if (revision !== revisionRef.current) return;
+      if (scope === 'catalog') {
+        scheduleCatalogRefresh('agent-group-catalog', catalogCacheOf(groups),
+          () => { void loadGroups('catalog'); }, () => groupCatalogRevisionRef.current === revision);
+      }
       listRef.current = groups;
       setItems(groups);
       setStatus('success');
@@ -931,13 +941,13 @@ export function AgentManagementPanel({
   const handleUseGroup = (id: string) => {
     const item = [...groupCatalogRef.current, ...groupMineRef.current].find(candidate => candidate.id === id);
     if (!item?.installed || !item.capabilities.canUse) return;
-    onUseAgentGroup?.(id);
+    onUseAgentGroup?.(item.name);
   };
 
   const handleUseGroupPrompt = (id: string, prompt: string) => {
     const item = [...groupCatalogRef.current, ...groupMineRef.current].find(candidate => candidate.id === id);
     if (!item?.installed || !item.capabilities.canUse) return;
-    onUseGroupPrompt?.(id, prompt);
+    onUseGroupPrompt?.(item.name, prompt);
   };
 
   const handleInstallGroup = async (id: string) => {
@@ -1287,6 +1297,7 @@ export function AgentManagementPanel({
             ) : null}
             <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
               {!isGroupView && <InstallationFilterSelect value={installationFilter} onChange={value => { setInstallationFilter(value); setCatalogPage(1); setMinePage(1); }} />}
+              {isGroupView && <InstallationFilterSelect value={groupInstallationFilter} onChange={value => { setGroupInstallationFilter(value); setGroupCatalogPage(1); setGroupMinePage(1); }} />}
               <PageToolbarSearch
                 wrapperTestId="agent-management-search"
                 inputTestId="agent-management-search-input"
@@ -1386,7 +1397,7 @@ export function AgentManagementPanel({
             </div>
           ) : null}
           </div>
-          {!isGroupView && <CatalogCacheNotice cache={catalogCacheOf(state.catalog)} />}
+          <CatalogCacheNotice cache={isGroupView ? catalogCacheOf(groupCatalog) : catalogCacheOf(state.catalog)} />
           {isGroupView ? (
             <GroupCatalogPage
               scope={view === 'teams' ? 'catalog' : 'mine'}
@@ -1396,6 +1407,7 @@ export function AgentManagementPanel({
               totalPages={view === 'teams' ? groupCatalogView.totalPages : groupMineView.totalPages}
               query={view === 'teams' ? groupCatalogQuery : groupMineQuery}
               category={view === 'teams' ? groupCategory : ''}
+              installation={groupInstallationFilter}
               status={view === 'teams' ? groupCatalogStatus : groupMineStatus}
               error={view === 'teams' ? groupCatalogError : groupMineError}
               busyId={busyId}

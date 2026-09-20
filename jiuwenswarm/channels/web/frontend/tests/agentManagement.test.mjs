@@ -8,7 +8,19 @@ import {
   normalizeAgentTemplateListItem,
   normalizeAgentFileContent,
   normalizeAgentFileTree,
+  normalizeAgentGroupListItem,
 } from '../node_modules/.cache/agent-management/adapter.js';
+
+test('keeps Hub Expert Teams distinct from local groups', () => {
+  const item = normalizeAgentGroupListItem({
+    id: 'group-asset-id', name: 'runtime-group', source: 'hub', installed: false,
+    capabilities: { canInstall: true, canPublish: false },
+  }, 'en');
+  assert.equal(item.source, 'hub');
+  assert.equal(item.name, 'runtime-group');
+  assert.equal(item.capabilities.canInstall, true);
+  assert.equal(item.capabilities.canPublish, false);
+});
 import {
   buildDefinitionSelectionPayload,
   buildDefinitionSelectionPayloadForMode,
@@ -31,6 +43,7 @@ import {
 } from '../node_modules/.cache/agent-management/selection.js';
 import {
   buildCatalogViewModel,
+  buildGroupCatalogViewModel,
   findFirstPreviewableFile,
   mergeAgentDetailWithCatalog,
 } from '../node_modules/.cache/agent-management/viewModel.js';
@@ -137,6 +150,46 @@ test('team skill filtering accepts marketplace plugin type and installed kind co
   assert.equal(isTeamSkillOption({ kind: 'team-skill' }, 'local'), true);
   assert.equal(isTeamSkillOption({ skillType: 'swarm_skill' }, 'local'), true);
   assert.equal(isTeamSkillOption({ pluginType: 'skill', kind: 'skill', skillType: 'skill' }, 'market'), false);
+});
+
+test('Expert Team plaza includes Hub groups alongside built-in groups', () => {
+  const items = [
+    { id: 'built-in', source: 'builtin', category: '', tags: [], name: 'built-in', displayName: 'Built-in', description: '' },
+    { id: 'remote', source: 'hub', category: '', tags: [], name: 'remote', displayName: 'Remote', description: '' },
+    { id: 'mine', source: 'local', category: '', tags: [], name: 'mine', displayName: 'Mine', description: '' },
+  ];
+  const view = buildGroupCatalogViewModel(items, { scope: 'catalog', category: '', query: '', page: 1, pageSize: 10 });
+  assert.deepEqual(view.items.map(item => item.id), ['built-in', 'remote']);
+});
+
+test('Expert Team plaza filters installed state before pagination', () => {
+  const items = [
+    { id: 'installed', source: 'hub', installed: true, category: '', tags: [], name: 'installed', displayName: 'Installed', description: '' },
+    { id: 'pending', source: 'hub', installed: false, category: '', tags: [], name: 'pending', displayName: 'Pending', description: '' },
+  ];
+  const options = { scope: 'catalog', category: '', query: '', page: 2, pageSize: 1 };
+  const installed = buildGroupCatalogViewModel(items, { ...options, installation: 'installed' });
+  const uninstalled = buildGroupCatalogViewModel(items, { ...options, installation: 'uninstalled' });
+  assert.deepEqual(installed.items.map(item => item.id), ['installed']);
+  assert.deepEqual(uninstalled.items.map(item => item.id), ['pending']);
+  assert.equal(installed.totalItems, 1);
+  assert.equal(installed.page, 1);
+});
+
+test('My Expert Teams filters install state before pagination', () => {
+  const items = [
+    { id: 'local-installed', source: 'local', installed: true, category: '', tags: [], name: 'local-installed', displayName: 'Local installed', description: '' },
+    { id: 'local-pending', source: 'local', installed: false, category: '', tags: [], name: 'local-pending', displayName: 'Local pending', description: '' },
+    { id: 'hub-installed', source: 'hub', installed: true, category: '', tags: [], name: 'hub-installed', displayName: 'Hub installed', description: '' },
+  ];
+  const options = { scope: 'mine', category: '', query: '', page: 2, pageSize: 1 };
+  const installed = buildGroupCatalogViewModel(items, { ...options, installation: 'installed' });
+  const uninstalled = buildGroupCatalogViewModel(items, { ...options, installation: 'uninstalled' });
+  assert.deepEqual(installed.items.map(item => item.id), ['hub-installed']);
+  assert.equal(installed.totalItems, 2);
+  assert.deepEqual(uninstalled.items.map(item => item.id), ['local-pending']);
+  assert.equal(uninstalled.totalItems, 1);
+  assert.equal(uninstalled.page, 1);
 });
 
 test('normalizes interface source variants and bilingual display fields', () => {
