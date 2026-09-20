@@ -569,12 +569,13 @@ export const FREQUENCY_SECONDS: Record<FrequencyUnit, number> = {
 };
 
 /**
- * 单次最大采集条数，对齐后端 config.py: max_items_per_run int|None，ge=1, le=10000。
- * None（前端留空）= 用各 provider 默认值；填值须在 [1,10000]。
+ * 单次最大采集条数，前端业务上限 [1,40]（后端 config.py 仍允许 le=10_000，
+ * 此处按产品要求在前端收窄，后端未同步修改）。
+ * None（前端留空）= 用各 provider 默认值；填值须在 [1,40]。
  * （后端不接受 0；前端以留空表达"不限/用默认"。）
  */
 export const MAX_ITEMS_MIN = 1;
-export const MAX_ITEMS_MAX = 10000;
+export const MAX_ITEMS_MAX = 40;
 
 /**
  * 采集频率上限（秒），对齐后端 PersonalContextFetchServiceConfig.interval_seconds 的 le=31_536_000（365 天）。
@@ -583,16 +584,13 @@ export const MAX_ITEMS_MAX = 10000;
 export const INTERVAL_MAX_SECONDS = 31_536_000;
 
 /**
- * service_id 前端预校验，对齐后端 _safe_segment（config.py: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$，禁 ./..）。
+ * service_id 前端仅做长度限制（≤500），格式校验由后端负责。
  * 返回 null 表示通过；否则返回错误信息。
  */
 export function validateServiceId(value: string): string | null {
   const text = value.trim();
   if (!text) return 'service_id is required';
-  if (text === '.' || text === '..') return 'service_id must not be . or ..';
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(text)) {
-    return 'service_id must start with a letter or digit and contain only letters, digits, . _ - (max 128 chars)';
-  }
+  if (text.length > 500) return 'service_id must be at most 500 characters';
   return null;
 }
 

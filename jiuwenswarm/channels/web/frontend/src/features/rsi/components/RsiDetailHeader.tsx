@@ -1,7 +1,7 @@
 /**
  * RSI 详情 Header：实验名称 + Tag 信息区 + 右侧操作按钮（状态切换）。
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../../utils/desktopSave';
 import completeIcon from '../../../assets/rsi/rsi-complete.svg';
@@ -65,6 +65,44 @@ export function RsiDetailHeader({
   const [confirmAction, setConfirmAction] = useState<'delete' | 'pause' | 'stop' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 错误/成功提示 1 秒后自动消失，避免残留
+  const clearActionMessages = useCallback(() => {
+    if (clearTimerRef.current) {
+      clearTimeout(clearTimerRef.current);
+      clearTimerRef.current = null;
+    }
+    setActionError(null);
+    setActionSuccess(null);
+  }, []);
+
+  const showActionMessage = useCallback((kind: 'error' | 'success', message: string) => {
+    if (clearTimerRef.current) {
+      clearTimeout(clearTimerRef.current);
+      clearTimerRef.current = null;
+    }
+    if (kind === 'error') {
+      setActionError(message);
+    } else {
+      setActionSuccess(message);
+    }
+    clearTimerRef.current = setTimeout(() => {
+      clearTimerRef.current = null;
+      setActionError(null);
+      setActionSuccess(null);
+    }, 1000);
+  }, []);
+
+  // 卸载时清理定时器
+  useEffect(() => {
+    return () => {
+      if (clearTimerRef.current) {
+        clearTimeout(clearTimerRef.current);
+        clearTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const runAction = useCallback(
     async (action: RsiActionKind) => {
@@ -73,8 +111,7 @@ export function RsiDetailHeader({
         return;
       }
       setBusy(true);
-      setActionError(null);
-      setActionSuccess(null);
+      clearActionMessages();
       try {
         if (action === 'pause') {
           const res = await rsiTrainingPause(task.task_id);
@@ -115,7 +152,8 @@ export function RsiDetailHeader({
           await usePluginPackageStore.getState().loadList('mine', { silent: true });
           const snapshotName =
             report?.best_artifact?.name || task.best_artifact?.name;
-          setActionSuccess(
+          showActionMessage(
+            'success',
             t('rsi.detail.actionInstallSuccess', {
               taskName: task.name,
               snapshotName,
@@ -124,7 +162,7 @@ export function RsiDetailHeader({
         }
       } catch (e) {
         const message = e instanceof Error && e.message ? e.message : t('rsi.detail.actionUnknownError');
-        setActionError(t('rsi.detail.actionFailed', { message }));
+        showActionMessage('error', t('rsi.detail.actionFailed', { message }));
         console.error('[rsi] action failed', action, e);
       } finally {
         setBusy(false);
@@ -139,6 +177,8 @@ export function RsiDetailHeader({
       markTaskInstalled,
       onOpenConfig,
       onOpenArtifact,
+      clearActionMessages,
+      showActionMessage,
     ],
   );
 
