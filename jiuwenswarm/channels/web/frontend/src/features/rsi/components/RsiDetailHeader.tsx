@@ -160,7 +160,8 @@ export function RsiDetailHeader({
     await runAction(action);
   }, [confirmAction, runAction]);
 
-  const actions = actionsForStatus(task.status, task.scenario, installed, tree, task.artifact_type);
+  const actions = actionsForStatus(task.status, task.scenario, installed, tree,
+    task.artifact_type, task.harness_installable === true);
   const orderedActions = [...actions];
   const deleteIndex = orderedActions.indexOf('delete');
   if (deleteIndex > 0) {
@@ -225,6 +226,10 @@ export function RsiDetailHeader({
           </div>
         )}
         <div className="rsi-detail__actions">
+          {task.status === 'COMPLETED' && task.scenario === 'HARNESS' && !installed
+            && task.harness_installable === false && (
+              <span role="status">{t('rsi.detail.noPublishedHarness')}</span>
+            )}
           {orderedActions.map((action) => {
             const className =
               action === 'delete'

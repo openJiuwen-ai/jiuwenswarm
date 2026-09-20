@@ -125,6 +125,8 @@ export interface RsiTaskGetResult {
   best_artifact: RsiBestArtifact | null;
   usage?: RsiUsage | null;
   failure_reason?: string | null;
+  harness_installable?: boolean;
+  harness_publication_status?: string | null;
 }
 
 // §7 训练控制（start/pause/resume/terminate 统一入参 task_id）

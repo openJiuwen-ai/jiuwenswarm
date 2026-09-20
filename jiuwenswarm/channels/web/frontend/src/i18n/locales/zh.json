@@ -4126,6 +4126,7 @@
       "actionResume": "继续任务",
       "actionStart": "开始训练",
       "actionInstall": "安装插件",
+      "noPublishedHarness": "本轮暂无可安装的已发布 Harness",
       "actionDownload": "下载",
       "actionTerminate": "终止",
       "actionCancel": "取消",

@@ -324,6 +324,8 @@ function normalizeTask(value: unknown): RsiTaskGetResult {
     best_artifact: normalizeBestArtifact(raw.best_artifact),
     usage: normalizeUsage(raw.usage),
     failure_reason: asNullableString(raw.failure_reason),
+    harness_installable: raw.harness_installable === true,
+    harness_publication_status: asNullableString(raw.harness_publication_status),
   };
 }
 

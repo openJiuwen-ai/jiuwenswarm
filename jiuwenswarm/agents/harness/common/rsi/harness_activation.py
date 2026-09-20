@@ -24,6 +24,7 @@ import yaml
 
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiBadRequest,
+    RsiError,
     RsiHarnessInstallConflict,
     RsiHarnessInstallFailed,
     RsiHarnessInvalid,
@@ -579,6 +580,32 @@ class RsiHarnessInstaller:
         # once.  Serialize copy/load/pointer transitions in this process so
         # both requests cannot race on the same content-addressed version.
         self._install_lock = asyncio.Lock()
+
+    def publication_availability(self, task_id: str) -> dict[str, Any]:
+        """Read publication readiness without installing or activating anything."""
+        result = {"harness_installable": False, "harness_publication_status": "unavailable"}
+        task = self.store.get(task_id)
+        if str(task.scenario).upper() != "HARNESS" or str(task.status).upper() != "COMPLETED":
+            return result
+        try:
+            root = self._task_run_root(task)
+            state = self._read_publication_state(task_id, task, root)
+            status = str(state.get("publication_status") or "unavailable").strip().lower()
+            result["harness_publication_status"] = status
+            if status != "published":
+                return result
+            raw = str(state.get("published_harness_refs_path") or "").strip()
+            if not raw:
+                raise RsiHarnessNotPublished("Missing published refs")
+            refs = Path(raw).expanduser()
+            refs = (refs if refs.is_absolute() else root / refs).resolve(strict=False)
+            _ensure_inside(refs, root, label="published refs")
+            parsed = parse_published_harness_refs(refs, task_run_root=root)
+            _read_manifest_extension_name(parsed.package_path)
+            result["harness_installable"] = True
+        except (RsiError, OSError, ValueError, yaml.YAMLError):
+            result["harness_publication_status"] = "unavailable"
+        return result
 
     async def install(self, task_id: str) -> dict[str, Any]:
         async with self._install_lock:
