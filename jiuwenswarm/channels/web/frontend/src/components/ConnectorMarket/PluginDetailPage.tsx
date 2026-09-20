@@ -1,3 +1,5 @@
+import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
+import { openAssetPublish } from '../../features/assetPublishEvents';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Trash2, Plus, Wrench, Link2, Plug, Loader2, X, ExternalLink, Pencil } from 'lucide-react';
@@ -60,6 +62,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   const detail = usePluginPackageStore((s) => s.detailCache[id]);
   const loadDetail = usePluginPackageStore((s) => s.loadDetail);
   const probeExists = usePluginPackageStore((s) => s.probeExists);
+  const storeBusy = usePluginPackageStore(s => s.busyId === id || !!s.installingIds[id]);
   const installed = usePluginPackageStore((s) => s.installed[id] ?? false);
   const connectionState = usePluginPackageStore((s) => s.connectionStateMap[id] ?? 'disconnected');
   const installPending = usePluginPackageStore((s) => s.installPendingMap[id]);
@@ -145,7 +148,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   const title = localizedText(detail.displayName, i18n.language);
   const avatar = getSkillAvatar(title);
   const linked = connectionState === 'connected';
-  const installBusy = installing || installFlow.active;
+  const installBusy = installing || storeBusy || installFlow.active;
 
   async function handleInstall() {
     setInstalling(true);
@@ -212,6 +215,11 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           </div>
 
           <div className="flex items-center gap-3" data-testid="connector-market-plugin-detail-actions">
+            {(installed || detail.source !== 'hub') && (
+              <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="connector-market-plugin-publish" onClick={() => openAssetPublish({ kind: 'plugin', local_id: id, avatar_url: detail.avatar || undefined })}>
+                {t('skills.actions.publish')}
+              </button>
+            )}
             {/* 自定义插件（source==='local'）的编辑——后端 plugin_packages.* 目前只有
               list/show/create/install/uninstall，没有任何 update/编辑接口（create 对已存在 id
               会直接拒绝，不是隐式 upsert，见 backend-requests.md 需求13），先做降级占位：按钮
@@ -263,6 +271,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
             )}
           </div>
         </div>
+        <PublicationDetailStatus kind="plugin" localId={id} />
 
         {/* "已安装+依赖 connector 未就绪"断联提示（§1.6.4 已装重连）——"连接MCP"直接用
           detail.pendingConnectors 驱动真实连接续跑，不再是空目的地占位。

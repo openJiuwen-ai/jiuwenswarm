@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -59,9 +60,22 @@ class HubPackageInstallResult:
 
 def _find_package_root(extracted: Path, kind: HubAssetKind) -> Path:
     candidates = sorted({path.parent for path in extracted.rglob("manifest.json")})
+    if kind == "agent_group":
+        groups = [path for path in candidates if _manifest_type(path / "manifest.json") == "agent_group"]
+        candidates = groups or [
+            path for path in candidates if _manifest_type(path / "manifest.json") == "agent_template"
+        ]
     if len(candidates) != 1:
         raise ValueError(f"Hub {kind} ZIP must contain exactly one manifest.json")
     return candidates[0]
+
+
+def _manifest_type(path: Path) -> str | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("package_type")
+        return value if isinstance(value, str) else None
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def _assert_no_symlinks(package_root: Path) -> None:

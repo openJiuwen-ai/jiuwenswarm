@@ -1,3 +1,5 @@
+import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
+import { openAssetPublish } from '../../features/assetPublishEvents';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Unlink2, Trash2, Plus, Wrench, Terminal, Loader2, AlertCircle, X, ExternalLink, Pencil } from 'lucide-react';
@@ -201,6 +203,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   //   disconnected，下面 `installed && !linked` 那段断联 banner 会自动渲染出来，用户当场看到结果、
   //   直接重连、编辑，或者卸载（真删除，见 handleDelete）。
   async function handleUnbind() {
+    if (!linked || busy || installing || cardState === 'connecting') return;
     setBusy(true);
     await disconnectAction(runtimeName);
     setBusy(false);
@@ -269,6 +272,11 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           </div>
 
           <div className="flex items-center gap-3" data-testid="connector-market-mcp-detail-actions">
+            {(connector.installed || connector.source !== 'hub') && (
+              <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="connector-market-mcp-publish" onClick={() => openAssetPublish({ kind: 'mcp', local_id: connector.id, avatar_url: connector.icon || undefined })}>
+                {t('skills.actions.publish')}
+              </button>
+            )}
             {/* 自定义 MCP 才能编辑（source==='customize'，built_in 没有可改的连接配置）——放在
               解绑左边，和"卸载/解绑的左边一个小编辑按键"的产品要求对齐。 */}
             {isCustomize && onEdit && (
@@ -327,6 +335,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             )}
           </div>
         </div>
+        <PublicationDetailStatus kind="mcp" localId={connector.id} />
 
         {/* "已安装+未连接"断联提示——新方案要求这个中间态在详情页左上角图标名称下方展示一行提示，
           "连接MCP"按钮复用 handleInstall（和顶部安装按钮走同一个 connect 调用）。

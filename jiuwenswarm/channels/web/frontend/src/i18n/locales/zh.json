@@ -1676,10 +1676,7 @@
       "description": "需要登录账号才能发布技能到 SkillHub",
       "gitcodeLogin": "使用 GitCode 登录",
       "githubLogin": "使用 GitHub 登录",
-      "notConfigured": "GitCode OAuth 未配置，请在 .env.local 中设置 VITE_GITCODE_OAUTH_CLIENT_ID 和 VITE_GITCODE_OAUTH_CLIENT_SECRET",
-      "githubNotConfigured": "GitHub OAuth 未配置，请在 .env.local 中设置 VITE_GITHUB_OAUTH_CLIENT_ID",
-      "loading": "登录中...",
-      "callbackHint": "请通过 http://127.0.0.1:5173 访问前端，OAuth 回调地址已设为：http://127.0.0.1:5173/oauth/callback"
+      "loading": "登录中..."
     },
     "uploadSkillModal": {
       "title": "上传技能",
@@ -2234,6 +2231,7 @@
       "installed": "已安装",
       "loadError": "专家列表加载失败，请重试。",
       "detailError": "专家详情加载失败，请重试。",
+      "hubAssetChanged": "该专家已在 Hub 更新或下架，广场正在刷新，请返回后重新选择。",
       "actionError": "操作未完成，请稍后重试。",
       "duplicateName": "专家名称已存在，请更换名称后重试。",
       "agentUnavailable": "该专家已不存在，请刷新列表后重试。",
@@ -3085,7 +3083,7 @@
       "breadcrumbPlugin": "插件详情",
       "breadcrumbMcp": "连接器详情",
       "mcpDisconnectedBanner": "当前插件依赖的连接器未连接，无法正常使用",
-      "mcpDisconnectedBannerSelf": "当前连接器未连接，无法正常使用",
+      "mcpDisconnectedBannerSelf": "尚未连接，连接后即可使用",
       "connectMcp": "点击连接",
       "sections": {
         "basicInfo": "基本信息",

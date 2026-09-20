@@ -145,8 +145,7 @@ class TestHandleMcpList:
 
     @pytest.mark.anyio
     async def test_list_passes_filter_param(self) -> None:
-        """mcp.list forwards params.filter to list_marketplace_mcps; absent
-        filter defaults to builtin, unknown falls back to builtin."""
+        """mcp.list forwards filter/cache controls; invalid filters use builtin."""
         from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
         server = AgentWebSocketServer.__new__(AgentWebSocketServer)
@@ -155,8 +154,10 @@ class TestHandleMcpList:
 
         captured: dict[str, Any] = {}
 
-        async def _fake(filter: str = "builtin") -> list[dict[str, Any]]:
-            captured["filter"] = filter
+        async def _fake(
+            filter: str = "builtin", *, cache_mode: str | None = None, refresh: bool = False
+        ) -> list[dict[str, Any]]:
+            captured.update(filter=filter, cache_mode=cache_mode, refresh=refresh)
             return [{"name": "github", "connection_state": "disconnected"}]
 
         # 显式 local → 透传 local
@@ -166,10 +167,13 @@ class TestHandleMcpList:
         ):
             await server._handle_mcp_list(
                 ws,
-                _make_request(req_method=ReqMethod.MCP_LIST, params={"filter": "local"}),
+                _make_request(
+                    req_method=ReqMethod.MCP_LIST,
+                    params={"filter": "local", "cache_mode": "prefer_cache", "refresh": True},
+                ),
                 send_lock,
             )
-        assert captured["filter"] == "local"
+        assert captured == {"filter": "local", "cache_mode": "prefer_cache", "refresh": True}
 
         # 无 filter → 兜底 builtin
         with patch(
@@ -181,7 +185,7 @@ class TestHandleMcpList:
                 _make_request(req_method=ReqMethod.MCP_LIST, params={}),
                 send_lock,
             )
-        assert captured["filter"] == "builtin"
+        assert captured == {"filter": "builtin", "cache_mode": None, "refresh": False}
 
         # 非法值 → 兜底 builtin
         with patch(
@@ -193,7 +197,7 @@ class TestHandleMcpList:
                 _make_request(req_method=ReqMethod.MCP_LIST, params={"filter": "bogus"}),
                 send_lock,
             )
-        assert captured["filter"] == "builtin"
+        assert captured == {"filter": "builtin", "cache_mode": None, "refresh": False}
 
 
 class TestHandleMcpShow:

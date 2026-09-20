@@ -1309,6 +1309,9 @@ class AgentWebSocketServer:
         # skills.* 等无状态 RPC：AgentManager 未缓存 agent 时复用的轻量 JiuWenSwarm，
         # 避免每次 cache miss 都 new 导致 SkillNet 异步安装等实例态断裂。
         self._stateless_fallback_agents: dict[str, Any] = {}
+        self._asset_publish_api = None
+        self._asset_publish_lock = asyncio.Lock()
+        self._asset_start_task = None
         # session_id → all live stream tasks. This is host lifecycle tracking
         # for interrupt/connection cleanup only; it never decides interaction
         # output ownership.
@@ -1497,6 +1500,8 @@ class AgentWebSocketServer:
         logger.info(
             "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
         )
+
+        self._asset_start_task = asyncio.create_task(self._start_asset_services())
 
         # The port is already listening. Remote tokenizer downloads must not
         # delay startup; ContextEngine is local-only and uses string fallback
@@ -1878,6 +1883,17 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Run the unchanged AgentServer shutdown before optional PersonalContext cleanup."""
+        task = getattr(self, "_asset_start_task", None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._asset_start_task = None
+        api = getattr(self, "_asset_publish_api", None)
+        if api is not None:
+            await api.close()
+            self._asset_publish_api = None
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import close_hub_catalog_cache
+        await close_hub_catalog_cache()
         tokenizer_tasks = tuple(self._tokenizer_warmup_tasks)
         self._tokenizer_warmup_tasks.clear()
         for task in tokenizer_tasks:
@@ -2201,6 +2217,9 @@ class AgentWebSocketServer:
             )
 
         try:
+            if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
+                await self._handle_asset_publish(ws, request, send_lock)
+                return
             if request.req_method in _PERSONAL_CONTEXT_REQ_METHODS:
                 manager = getattr(self, "_agent_manager", None)
                 runtime_callback = getattr(
@@ -7898,7 +7917,11 @@ class AgentWebSocketServer:
                     request_id=request.request_id,
                     channel_id=request.channel_id,
                     ok=True,
-                    payload={"type": "list", "items": items},
+                    payload={
+                        "type": "list",
+                        "items": items,
+                        **({"cache": items.cache} if hasattr(items, "cache") else {}),
+                    },
                 )
             elif action == "show":
                 name = str(params.get("name", "")).strip()
@@ -8206,6 +8229,56 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
+    async def _get_asset_publish_api(self):
+        async with self._asset_publish_lock:
+            if self._asset_publish_api is None:
+                from jiuwenswarm.common.utils import get_workspace_dir
+                from jiuwenswarm.server.runtime.marketplace.asset_publish_api import AssetPublishAPI
+                api = AssetPublishAPI(get_workspace_dir() / "marketplace" / "publishing")
+                try:
+                    await api.start()
+                except BaseException:
+                    await api.close()
+                    raise
+                self._asset_publish_api = api
+            return self._asset_publish_api
+
+    async def _start_asset_services(self):
+        try:
+            await self._get_asset_publish_api()
+        except Exception:
+            logger.warning("[AssetPublish] startup unavailable; requests may retry initialization")
+        try:
+            from jiuwenswarm.common.utils import get_agent_workspace_dir
+            from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+            from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import start_hub_catalog_preload
+            await start_hub_catalog_preload(SkillManager(workspace_dir=str(get_agent_workspace_dir())))
+        except Exception:
+            logger.warning("[HubCatalog] preload unavailable; requests may load on demand")
+
+    async def _handle_asset_publish(self, ws, request, send_lock):
+        from jiuwenswarm.server.runtime.marketplace.asset_publish_api import PublishAPIError
+        try:
+            if request.channel_id != "web":
+                raise PublishAPIError("WEB_CHANNEL_REQUIRED")
+            api = await self._get_asset_publish_api()
+            payload = await api.call(request.req_method.value.rsplit(".", 1)[-1], request.params or {},
+                                     gateway_user=request.user_id)
+            ok = True
+        except PublishAPIError as exc:
+            payload = {"code": exc.code, "error": exc.code, "can_submit": False,
+                       "errors": [{"code": exc.code, "field": exc.field}]}
+            ok = False
+        except Exception:
+            # Do not log request params, authentication or arbitrary exception bodies.
+            payload = {"code": "PUBLISH_UNAVAILABLE", "error": "PUBLISH_UNAVAILABLE", "can_submit": False}
+            ok = False
+        response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                                 ok=ok, payload=payload, agent_ref=request.agent_ref)
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
     async def _handle_mcp_list(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
@@ -8222,12 +8295,13 @@ class AgentWebSocketServer:
             filter_val = str(params.get("filter") or "builtin").strip().lower() or "builtin"
             if filter_val not in ("builtin", "local"):
                 filter_val = "builtin"
-            items = await list_mcps_with_hub(filter_val)
+            items = await list_mcps_with_hub(filter_val, cache_mode=params.get("cache_mode"),
+                                              refresh=params.get("refresh") is True)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
-                payload={"type": "list", "items": items},
+                payload={"type": "list", "items": items, **({"cache": items.cache} if hasattr(items, "cache") else {})},
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] mcp.list failed: %s", exc)

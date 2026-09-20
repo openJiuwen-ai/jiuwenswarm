@@ -1,3 +1,4 @@
+import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
 import { create } from 'zustand';
 import i18n from '../i18n';
 import { connectorApi } from '../services/connectorApi';
@@ -235,9 +236,12 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
   loadList: async (filter, options) => {
     const silent = options?.silent ?? false;
     const mySeq = ++listRequestSeq[filter];
+    const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
       const response = await connectorApi.list(filter);
+      if (requestScope !== catalogScope()) return;
+      scheduleCatalogRefresh('connectorStore.ts:' + filter, response.cache, () => { void get().loadList(filter, { silent: true }); }, () => listRequestSeq[filter] === mySeq);
       if (listRequestSeq[filter] !== mySeq) return; // 已有更新的同 filter 调用发起过，这次结果作废
       const fresh = response;
       set((state) => ({
@@ -249,7 +253,6 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       if (listRequestSeq[filter] !== mySeq) return;
       if (silent) return;
       set({
-        ...(filter === 'builtin' ? { builtinConnectors: [] } : { myConnectors: [] }),
         isLoading: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -269,6 +272,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
   },
 
   installPackage: async (assetId: string) => {
+    if (get().busyMap[assetId]) return null;
     set((state) => ({
       busyMap: { ...state.busyMap, [assetId]: 'install' },
       error: null,

@@ -1,3 +1,6 @@
+import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
+import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
+import { scheduleCatalogRefresh, catalogCacheOf } from '../../features/catalogCache';
 import { ChevronDown } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -12,9 +15,9 @@ import { CliAuthModal } from '../ConnectorMarket/CliAuthModal';
 import { ConnectTokenModal } from '../ConnectorMarket/ConnectTokenModal';
 import { PendingConnectorModals, usePendingConnectorFlow } from '../ConnectorMarket/usePendingConnectorFlow';
 import { useConnectorStore } from '../../stores/connectorStore';
-import { scheduleCatalogRefresh } from '../../features/catalogCache';
 import {
   AgentInstallPendingError,
+  AgentManagementError,
   createAgentGroupManagementClient,
   createAgentManagementClient,
   type AgentCatalogItem,
@@ -347,47 +350,51 @@ export function AgentManagementPanel({
     }, 3000);
   }, []);
 
+  const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
+  const [groupInstallationFilter, setGroupInstallationFilter] = useState<InstallationFilter>('all');
   const catalogView = useMemo(
     () =>
-      buildCatalogViewModel(state.catalog, {
+      buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
         scope: 'catalog',
         category,
         query,
         page: catalogPage,
         pageSize: PAGE_SIZE,
       }),
-    [state.catalog, category, query, catalogPage],
+    [state.catalog, category, query, installationFilter, catalogPage],
   );
   const mineView = useMemo(
     () =>
-      buildCatalogViewModel(state.catalog, {
+      buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
         scope: 'mine',
         category: '',
         query: mineQuery,
         page: minePage,
         pageSize: PAGE_SIZE,
       }),
-    [state.catalog, mineQuery, minePage],
+    [state.catalog, mineQuery, installationFilter, minePage],
   );
   const groupCatalogView = useMemo(
     () => buildGroupCatalogViewModel(groupCatalog, {
       scope: 'catalog',
       category: groupCategory,
       query: groupCatalogQuery,
+      installation: groupInstallationFilter,
       page: groupCatalogPage,
       pageSize: GROUP_PAGE_SIZE,
     }),
-    [groupCatalog, groupCategory, groupCatalogQuery, groupCatalogPage],
+    [groupCatalog, groupCategory, groupCatalogQuery, groupInstallationFilter, groupCatalogPage],
   );
   const groupMineView = useMemo(
     () => buildGroupCatalogViewModel(groupMine, {
       scope: 'mine',
       category: '',
       query: groupMineQuery,
+      installation: groupInstallationFilter,
       page: groupMinePage,
       pageSize: GROUP_PAGE_SIZE,
     }),
-    [groupMine, groupMineQuery, groupMinePage],
+    [groupMine, groupMineQuery, groupInstallationFilter, groupMinePage],
   );
 
   const loadCatalog = useCallback(async (options: { includeTeamCompatibility?: boolean } = {}) => {
@@ -427,8 +434,15 @@ export function AgentManagementPanel({
     setStatus('loading');
     setError(null);
     try {
-      const groups = await groupClient.listGroups({ filter: scope === 'catalog' ? 'builtin' : 'local' });
+      const groups = await groupClient.listGroups({
+        filter: scope === 'catalog' ? 'builtin+hub' : 'local',
+        ...(scope === 'catalog' ? { cache_mode: 'prefer_cache' } : {}),
+      });
       if (revision !== revisionRef.current) return;
+      if (scope === 'catalog') {
+        scheduleCatalogRefresh('agent-group-catalog', catalogCacheOf(groups),
+          () => { void loadGroups('catalog'); }, () => groupCatalogRevisionRef.current === revision);
+      }
       listRef.current = groups;
       setItems(groups);
       setStatus('success');
@@ -582,6 +596,7 @@ export function AgentManagementPanel({
 
   useEffect(() => {
     return () => {
+      catalogRevisionRef.current++;
       if (actionNoticeTimerRef.current !== null) {
         window.clearTimeout(actionNoticeTimerRef.current);
       }
@@ -614,10 +629,16 @@ export function AgentManagementPanel({
         });
       } catch (error) {
         if (revision !== detailRevisionRef.current) return;
-        dispatch({ type: 'detail.error', message: formatActionError(error, t('agentManagement.states.detailError')) });
+        const payload = error instanceof AgentManagementError ? error.payload as { code?: string } | undefined : undefined;
+        if (payload?.code === 'HUB_ASSET_NOT_FOUND') {
+          void loadCatalog();
+          dispatch({ type: 'detail.error', message: t('agentManagement.states.hubAssetChanged') });
+        } else {
+          dispatch({ type: 'detail.error', message: formatActionError(error, t('agentManagement.states.detailError')) });
+        }
       }
     },
-    [client, formatActionError, t, view],
+    [client, formatActionError, loadCatalog, t, view],
   );
 
   const loadFiles = useCallback(
@@ -916,13 +937,13 @@ export function AgentManagementPanel({
   const handleUseGroup = (id: string) => {
     const item = [...groupCatalogRef.current, ...groupMineRef.current].find(candidate => candidate.id === id);
     if (!item?.installed || !item.capabilities.canUse) return;
-    onUseAgentGroup?.(id);
+    onUseAgentGroup?.(item.name);
   };
 
   const handleUseGroupPrompt = (id: string, prompt: string) => {
     const item = [...groupCatalogRef.current, ...groupMineRef.current].find(candidate => candidate.id === id);
     if (!item?.installed || !item.capabilities.canUse) return;
-    onUseGroupPrompt?.(id, prompt);
+    onUseGroupPrompt?.(item.name, prompt);
   };
 
   const handleInstallGroup = async (id: string) => {
@@ -1124,6 +1145,7 @@ export function AgentManagementPanel({
         await loadCatalog();
         setMineKind('agent');
         setMineQuery('');
+        setMinePage(1);
       }
       setUploadDialogOpen(false);
       setUploadError(null);
@@ -1249,6 +1271,7 @@ export function AgentManagementPanel({
                 { value: 'teams', label: t('agentManagement.tabs.teams') },
                 { value: 'mine', label: t('agentManagement.tabs.mine') },
               ]}
+
             />
             {isMine ? (
               <Tabs
@@ -1266,6 +1289,8 @@ export function AgentManagementPanel({
               />
             ) : null}
             <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
+              {!isGroupView && <InstallationFilterSelect value={installationFilter} onChange={value => { setInstallationFilter(value); setCatalogPage(1); setMinePage(1); }} />}
+              {isGroupView && <InstallationFilterSelect value={groupInstallationFilter} onChange={value => { setGroupInstallationFilter(value); setGroupCatalogPage(1); setGroupMinePage(1); }} />}
               <PageToolbarSearch
                 wrapperTestId="agent-management-search"
                 inputTestId="agent-management-search-input"
@@ -1283,8 +1308,10 @@ export function AgentManagementPanel({
                     setGroupMinePage(1);
                   } else if (isMine) {
                     setMineQuery(nextValue);
+                    setMinePage(1);
                   } else {
                     setQuery(nextValue);
+                    setCatalogPage(1);
                   }
                 }}
                 onClear={() => {
@@ -1296,8 +1323,10 @@ export function AgentManagementPanel({
                     setGroupMinePage(1);
                   } else if (isMine) {
                     setMineQuery('');
+                    setMinePage(1);
                   } else {
                     setQuery('');
+                    setCatalogPage(1);
                   }
                 }}
                 placeholder={t(view === 'teams' ? 'agentManagement.searchTeams' : isGroupView ? 'agentManagement.searchMineGroup' : isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
@@ -1360,6 +1389,7 @@ export function AgentManagementPanel({
             </div>
           ) : null}
           </div>
+          <CatalogCacheNotice cache={isGroupView ? catalogCacheOf(groupCatalog) : catalogCacheOf(state.catalog)} />
           {isGroupView ? (
             <GroupCatalogPage
               scope={view === 'teams' ? 'catalog' : 'mine'}
@@ -1369,6 +1399,7 @@ export function AgentManagementPanel({
               totalPages={view === 'teams' ? groupCatalogView.totalPages : groupMineView.totalPages}
               query={view === 'teams' ? groupCatalogQuery : groupMineQuery}
               category={view === 'teams' ? groupCategory : ''}
+              installation={groupInstallationFilter}
               status={view === 'teams' ? groupCatalogStatus : groupMineStatus}
               error={view === 'teams' ? groupCatalogError : groupMineError}
               busyId={busyId}
@@ -1405,8 +1436,6 @@ export function AgentManagementPanel({
               onUse={handleUse}
               onReconnect={handleReconnect}
               onInstall={handleInstall}
-              onUninstall={handleUninstall}
-              onEdit={handleEdit}
               onCreate={openCreate}
             />
           )}

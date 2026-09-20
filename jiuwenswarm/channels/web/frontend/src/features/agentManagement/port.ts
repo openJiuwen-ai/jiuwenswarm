@@ -1,4 +1,4 @@
-import type { CatalogCacheMetadata } from '../catalogCache';
+import type { CatalogCacheMetadata, CatalogItems } from '../catalogCache';
 import type {
   AgentCatalogItem,
   AgentDetail,
@@ -58,6 +58,23 @@ export interface AgentCatalogListOptions {
   includeTeamCompatibility?: boolean;
 }
 
+type AgentSelectionIdentity = Pick<AgentCatalogItem, 'id' | 'runtimePackageName'>;
+
+/** Keep runtime-package and legacy asset-id selections visible in chat. */
+export function getAgentSelectionId(item: AgentSelectionIdentity): string {
+  return item.runtimePackageName || item.id;
+}
+
+export function findAgentSelection<T extends AgentSelectionIdentity>(
+  items: readonly T[],
+  selectedId: string | null | undefined,
+): T | null {
+  if (!selectedId) return null;
+  return items.find(item => item.runtimePackageName === selectedId)
+    ?? items.find(item => item.id === selectedId)
+    ?? null;
+}
+
 export interface SkillListOptions {
   includeTeamMarketplace?: boolean;
   onTeamMarketplaceLoaded?: (options: SkillOption[], cache?: CatalogCacheMetadata) => void;
@@ -65,7 +82,7 @@ export interface SkillListOptions {
 
 export interface AgentManagementClient {
   readonly source: AgentManagementSource;
-  listCatalog(options?: AgentCatalogListOptions): Promise<AgentCatalogItem[]>;
+  listCatalog(options?: AgentCatalogListOptions): Promise<CatalogItems<AgentCatalogItem>>;
   getDefinition(id: string): Promise<AgentDetail>;
   getDefinitionFiles(id: string): Promise<DefinitionFileEntry[]>;
   getDefinitionFile(id: string, relativePath: string): Promise<AgentFileContent>;
@@ -80,31 +97,14 @@ export interface AgentManagementClient {
   uninstallDefinition(id: string): Promise<{ notice?: string }>;
 }
 
-type AgentSelectionIdentity = Pick<AgentCatalogItem, 'id' | 'runtimePackageName'>;
-
-/** Chat selection is keyed by the runtime package; keep old asset-id selections visible. */
-export function getAgentSelectionId(item: AgentSelectionIdentity): string {
-  return item.runtimePackageName || item.id;
-}
-
-/** Prefer the current runtime identity before falling back to legacy asset ids. */
-export function findAgentSelection<T extends AgentSelectionIdentity>(
-  items: readonly T[],
-  selectedId: string | null | undefined,
-): T | null {
-  if (!selectedId) return null;
-  return items.find((item) => item.runtimePackageName === selectedId)
-    ?? items.find((item) => item.id === selectedId)
-    ?? null;
-}
-
 export interface AgentGroupListOptions {
-  filter?: 'builtin' | 'local' | 'all';
+  filter?: 'builtin' | 'builtin+hub' | 'local' | 'all';
+  cache_mode?: 'prefer_cache';
 }
 
 export interface AgentGroupManagementClient {
   readonly source: AgentManagementSource;
-  listGroups(options?: AgentGroupListOptions): Promise<AgentGroupCatalogItem[]>;
+  listGroups(options?: AgentGroupListOptions): Promise<CatalogItems<AgentGroupCatalogItem>>;
   getGroup(id: string): Promise<AgentGroupDetail>;
   getGroupFiles(id: string): Promise<DefinitionFileEntry[]>;
   getGroupFile(id: string, relativePath: string): Promise<AgentFileContent>;

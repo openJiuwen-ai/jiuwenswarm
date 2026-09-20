@@ -1,6 +1,6 @@
 import { Plus, Loader2, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AvatarStyle } from '../../utils/skillAvatar';
+import { getSkillAvatar, type AvatarStyle } from '../../utils/skillAvatar';
 import { EntityAvatar } from './EntityAvatar';
 import { NewConversationIcon } from './icons';
 import { TruncatedText } from './TruncatedText';
@@ -12,7 +12,9 @@ import './ConnectorMarket.css';
 interface MarketCardProps {
   title: string;
   description: string;
-  avatar: AvatarStyle;
+  avatar?: AvatarStyle;
+  tags?: string[];
+  actionDisabled?: boolean;
   /** 后端真实图标地址，有就优先展示，没有/加载失败回退成 avatar 生成的首字符色块。 */
   iconUrl?: string;
   /**
@@ -46,6 +48,7 @@ export function MarketCard({
   title,
   description,
   avatar,
+  tags,
   iconUrl,
   state,
   busyKind,
@@ -53,6 +56,7 @@ export function MarketCard({
   onOpenDetail,
   onQuickAdd,
   quickAction = 'install',
+  actionDisabled = false,
   onUse,
 }: MarketCardProps) {
   const { t } = useTranslation();
@@ -84,10 +88,11 @@ export function MarketCard({
           <div className="flex min-w-0 items-center gap-2.5">
             <EntityAvatar
               iconUrl={iconUrl}
-              avatar={avatar}
+              avatar={avatar ?? getSkillAvatar(title)}
               className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg text-[16px] font-semibold"
             />
             <span className="truncate text-[18px] font-semibold leading-7 text-text">{title}</span>
+            {tags?.slice(0, 2).map(tag => <span key={tag} className="truncate rounded bg-bg-muted px-1.5 text-xs text-text-muted">{tag}</span>)}
             {state === 'error' && (
               <span
                 data-tooltip={t('connectorMarket.card.stateError')}
@@ -109,6 +114,7 @@ export function MarketCard({
               <button
                 type="button"
                 onClick={onQuickAdd}
+                disabled={actionDisabled}
                 data-tooltip={
                   state === 'error' ? t('connectorMarket.card.retry') : t(`connectorMarket.card.${quickAction}`)
                 }

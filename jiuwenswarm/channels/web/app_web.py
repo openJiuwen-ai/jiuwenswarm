@@ -27,7 +27,7 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import ParseResult, quote, unquote, urlparse
+from urllib.parse import ParseResult, parse_qs, quote, unquote, urlparse
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early
@@ -1849,6 +1849,33 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/oauth/hub/callback":
+            from jiuwenswarm.channels.web.hub_oauth import complete
+
+            query = {key: values[0] for key, values in parse_qs(parsed.query, keep_blank_values=True).items()}
+            status, _ = complete(query)
+            self.send_response(303 if status == 200 else status)
+            if status == 200:
+                self.send_header("Location", "/oauth/hub/done")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if parsed.path == "/oauth/hub/done":
+            body = (
+                '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+                '<title>授权已完成</title><script>window.close()</script>'
+                '<p>授权已完成。如果此标签页没有自动关闭，请手动关闭并返回 JiuwenSwarm。</p>'
+                '</html>'
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)
             return
@@ -1864,6 +1891,31 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
+            from jiuwenswarm.channels.web.hub_oauth import result, start
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096:
+                    raise ValueError("invalid length")
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict):
+                    raise ValueError("invalid payload")
+            except ValueError:
+                self._write_json(400, {"error": "invalid_request"})
+                return
+            if parsed.path.endswith("/start"):
+                status, response = start(payload.get("provider", ""), self.headers.get("Host", ""))
+            else:
+                status, response = result(payload.get("flow", ""), payload.get("claim", ""))
+            data = json.dumps(response, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self._is_file_api_route():
             self._handle_file_api_post(parsed)
             return
@@ -1901,10 +1953,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.info("%s - %s", self.address_string(), format % args)
+        message = re.sub(r"([?&]oauth_session=)[^&\s\"#]*", r"\1[REDACTED]", format % args)
+        self.logger.info("%s - %s", self.address_string(), message)
 
     def log_error(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.error("%s - %s", self.address_string(), format % args)
+        message = re.sub(r"([?&]oauth_session=)[^&\s\"#]*", r"\1[REDACTED]", format % args)
+        self.logger.error("%s - %s", self.address_string(), message)
 
     def send_head(self):
         parsed = urlparse(self.path)

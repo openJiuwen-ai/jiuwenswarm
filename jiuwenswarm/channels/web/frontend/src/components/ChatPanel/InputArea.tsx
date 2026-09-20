@@ -783,11 +783,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (!activeSessionId || (pickerTab !== 'agent' && !selectedAgentId) || (!agentPickerOpen && !selectedAgentId)) return;
     let cancelled = false;
     setAgentOptionsStatus('loading');
-    void agentManagementClient.listCatalog()
+    void agentManagementClient.listCatalog({ filter: 'mine' })
       .then((items) => {
         if (cancelled) return;
         const selectedItem = findAgentSelection(items, selectedAgentId);
-        if (selectedItem?.enabled === false || selectedItem?.connectionState !== 'connected') {
+        if (selectedItem && (selectedItem.enabled === false || selectedItem.connectionState !== 'connected')) {
           setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
         }
         setAgentOptions(items);
@@ -3220,7 +3220,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   ) : pickerTab === 'agent' ? (
                                     filteredAgentOptions.map((item) => {
                                       const avatarUrl = getAgentAvatarUrl(item);
-                                      const isSelected = selectedAgentId === item.id;
+                                      const isSelected = selectedAgentId === item.id || selectedAgentId === item.runtimePackageName;
                                       return (
                                         <button
                                           key={item.id}

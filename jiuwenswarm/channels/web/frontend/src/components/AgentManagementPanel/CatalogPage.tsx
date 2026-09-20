@@ -1,12 +1,15 @@
 import { type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+
 import { useTranslation } from 'react-i18next';
-import { type AgentCatalogItem, getAgentAvatarUrl, type RequestStatus } from '../../features/agentManagement';
+import { type AgentCatalogItem, type RequestStatus } from '../../features/agentManagement';
+import { getAgentAvatarUrl } from '../../features/agentManagement';
 import { CategoryTabs, PageCard } from '../ui';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import ReminderIcon from '../../assets/agent-management/remind.svg?react';
 
-const PAGE_SIZE = 15;
+export const PAGE_SIZE = 15;
+
 const CATEGORIES = [
   'ProductDevelopment',
   'Marketing',
@@ -24,22 +27,18 @@ type CatalogPageProps = {
   totalItems: number;
   page: number;
   totalPages: number;
+  onPageChange: (page: number) => void;
   query: string;
   category: string;
   status: RequestStatus;
   error: string | null;
   busyId: string | null;
   onCategoryChange: (value: string) => void;
-  onPageChange: (page: number) => void;
   onRetry: () => void;
   onOpen: (id: string) => void;
   onUse: (id: string) => void;
   onReconnect: (id: string) => void;
   onInstall: (id: string) => void;
-  // Kept optional for the current panel call seam; catalog actions intentionally
-  // do not expose uninstall/edit. Those actions remain on the detail page.
-  onUninstall?: (id: string) => void;
-  onEdit?: (id: string) => void;
   onCreate: () => void;
 };
 
@@ -47,15 +46,15 @@ export function CatalogPage({
   scope,
   items,
   totalItems,
-  page,
+  page: requestedPage,
   totalPages,
+  onPageChange,
   query,
   category,
   status,
   error,
   busyId,
   onCategoryChange,
-  onPageChange,
   onRetry,
   onOpen,
   onUse,
@@ -65,6 +64,7 @@ export function CatalogPage({
 }: CatalogPageProps) {
   const { t } = useTranslation();
   const isMine = scope === 'mine';
+  const page = Math.min(Math.max(1, requestedPage), totalPages);
   const isEmpty = status === 'success' && totalItems === 0;
   const hasQuery = query.trim().length > 0 || Boolean(category);
 
@@ -87,7 +87,7 @@ export function CatalogPage({
       ) : null}
 
       <div className="page-scroll min-h-0 flex-1 overflow-y-auto" data-testid="agent-management-catalog-content">
-        {status === 'loading' && totalItems === 0 ? null : status === 'error' ? (
+        {status === 'loading' && totalItems === 0 ? null : status === 'error' && totalItems === 0 ? (
           <div className="agent-management-state agent-management-state--error" role="alert">
             <p>{error || t('agentManagement.states.loadError')}</p>
             <button
@@ -123,47 +123,38 @@ export function CatalogPage({
                 const avatarUrl = getAgentAvatarUrl(item);
                 const description = item.description || t('agentManagement.unknownDescription');
                 const needsConnection = item.installed && item.connectionState !== 'connected';
+
                 const avatar = { name: item.displayName, iconUrl: avatarUrl, testId: 'agent-management-card-avatar' };
+
                 const labelTags: string[] | undefined = item.tags.length > 0
-                  ? item.tags.map(tag => tag.label)
+                  ? item.tags.map(tg => tg.label)
                   : undefined;
 
                 let actionContent: ReactNode = null;
                 if (item.installed) {
                   actionContent = (
-                    <div
-                      className="agent-management-card__actions"
-                      aria-label={t('agentManagement.card.actions', { name: item.displayName })}
-                    >
+                    <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })}>
                       <button
                         type="button"
                         className="agent-management-button agent-management-button--primary agent-management-card-action--use"
                         disabled={isBusy || item.enabled === false}
                         aria-disabled={isBusy || item.enabled === false}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          needsConnection ? onReconnect(item.id) : onUse(item.id);
-                        }}
+                        onClick={(e) => { e.stopPropagation(); needsConnection ? onReconnect(item.id) : onUse(item.id); }}
                       >
                         {t('agentManagement.actions.use')}
                       </button>
+
                     </div>
                   );
                 } else {
                   actionContent = (
-                    <div
-                      className="agent-management-card__actions"
-                      aria-label={t('agentManagement.card.actions', { name: item.displayName })}
-                    >
+                    <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })}>
                       <button
                         type="button"
                         className="agent-management-button agent-management-button--primary"
                         disabled={isBusy}
                         aria-busy={isBusy}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onInstall(item.id);
-                        }}
+                        onClick={(e) => { e.stopPropagation(); onInstall(item.id); }}
                       >
                         {isBusy ? t('agentManagement.actions.installing') : t('agentManagement.actions.install')}
                       </button>
@@ -235,13 +226,15 @@ export function CatalogPage({
   );
 }
 
-export { PAGE_SIZE };
-
 function UpdateBadge({ label }: { label: string }) {
   const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top' });
   return (
     <>
-      <span className="agent-management-card__update" data-tooltip={label} {...handlers}>
+      <span
+        className="agent-management-card__update"
+        data-tooltip={label}
+        {...handlers}
+      >
         <ReminderIcon aria-hidden="true" />
         <span className="agent-management-card__update-dot" aria-hidden="true" />
       </span>

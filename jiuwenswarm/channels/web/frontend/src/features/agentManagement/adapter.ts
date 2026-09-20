@@ -47,6 +47,7 @@ export function normalizeAgentSource(source: string | undefined): AgentSource {
 }
 
 export function normalizeAgentGroupSource(source: string | undefined): AgentGroupSource {
+  if (source === 'hub') return 'hub';
   return source === 'built-in' || source === 'builtin-in' || source === 'builtin' ? 'builtin' : 'local';
 }
 

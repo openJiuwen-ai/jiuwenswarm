@@ -600,6 +600,7 @@ def _build_list_card(
         "displayName": manifest.get("display_name") or pkg_dir.name,
         "displayDescription": manifest.get("display_description") or {},
         "category": category if isinstance(category, str) else "",
+        "tags": manifest.get("tags") if isinstance(manifest.get("tags"), list) else [],
         "source": source,
         "avatar": _resolve_package_avatar(pkg_dir, manifest),
     }
@@ -1263,6 +1264,14 @@ def _resolve_agent_group_definition_dir(name: Any) -> tuple[Path, str] | None:
     )
 
 
+def resolve_agent_group_publish_dir(name: Any) -> Path:
+    """Resolve a local, built-in or bundled AgentGroup for publication."""
+    resolved = _resolve_agent_group_definition_dir(name)
+    if resolved is None:
+        raise ValueError(f"agent_group package not found: {name}")
+    return resolved[0]
+
+
 def _resolve_agent_template_definition_dir(name: Any) -> tuple[Path, str] | None:
     """Resolve an expert definition, including an uninstalled resource item."""
     return _resolve_show_package_dir(
@@ -1632,6 +1641,8 @@ def _hub_install_state_store(kind: str) -> HubInstallStateStore:
 def _hub_asset_kind(kind: str) -> HubAssetKind:
     if kind == _AGENT_TEMPLATE_KIND:
         return "agent_template"
+    if kind == _AGENT_GROUP_KIND:
+        return "agent_group"
     if kind == _PLUGIN_PACKAGE_KIND:
         return "plugin"
     raise ValueError(f"unknown Hub asset kind: {kind}")
@@ -1663,7 +1674,9 @@ async def _list_equipment_with_hub(
 ) -> list[dict]:
     hub_asset_kind = _hub_asset_kind(kind)
     local_cards = (
-        list_agent_templates(params)
+        # Resolve Hub provenance before source filtering: local directories can
+        # contain installed Hub assets whose display source is assigned below.
+        list_agent_templates({k: v for k, v in (params or {}).items() if k != "filter"})
         if kind == _AGENT_TEMPLATE_KIND
         else list_plugin_packages(None)
     )
@@ -1690,28 +1703,35 @@ async def _list_equipment_with_hub(
         return _apply_list_source_filter(list(cards_by_id.values()), params)
 
     port = hub_port or create_default_hub_asset_port()
-    try:
-        remote_items: list[HubAssetSummary] = []
-        page_number = 1
-        while page_number <= 100:
-            page = await port.search_assets(
-                HubSearchRequest(
-                    kind=hub_asset_kind,
-                    page=page_number,
-                    page_size=100,
-                )
-            )
-            remote_items.extend(page.items)
-            if not page.items or len(remote_items) >= page.total:
-                break
-            page_number += 1
-    except Exception:
-        logger.warning(
-            "[extension_package_manager] failed to list Hub %s packages",
-            hub_asset_kind,
-            exc_info=True,
+    cache_state = None
+    if isinstance(params, dict) and params.get("cache_mode") == "prefer_cache":
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import cached_asset_catalog
+        remote_items, cache_state = await cached_asset_catalog(
+            port, hub_asset_kind, refresh=bool(params.get("refresh"))
         )
-        return _apply_list_source_filter(list(cards_by_id.values()), params)
+    else:
+        try:
+            remote_items: list[HubAssetSummary] = []
+            page_number = 1
+            while page_number <= 100:
+                page = await port.search_assets(
+                    HubSearchRequest(
+                        kind=hub_asset_kind,
+                        page=page_number,
+                        page_size=100,
+                    )
+                )
+                remote_items.extend(page.items)
+                if not page.items or len(remote_items) >= page.total:
+                    break
+                page_number += 1
+        except Exception:
+            logger.warning(
+                "[extension_package_manager] failed to list Hub %s packages",
+                hub_asset_kind,
+                exc_info=True,
+            )
+            return _apply_list_source_filter(list(cards_by_id.values()), params)
     hub_icons: dict[str, str] = {}
     for item in remote_items:
         if item.kind != hub_asset_kind or not item.icon_uri:
@@ -1727,17 +1747,31 @@ async def _list_equipment_with_hub(
         if icon:
             card["avatar"] = icon
     for item in remote_items:
-        if item.kind != hub_asset_kind or item.asset_id in cards_by_id:
+        if item.kind != hub_asset_kind:
+            continue
+        existing = cards_by_id.get(item.asset_id)
+        if kind == _AGENT_TEMPLATE_KIND and existing and existing.get("source") == "hub":
+            remote_card = _hub_list_card(item)
+            cards_by_id[item.asset_id] = {
+                **existing,
+                **{key: remote_card[key] for key in ("displayName", "displayDescription", "avatar", "tags", "version")},
+            }
+            continue
+        if item.asset_id in cards_by_id:
             continue
         name_taken = (item.package_name or item.asset_id) in local_package_ids
         # Catalog tabs drop source=local. Keep the Hub card so plaza still
         # shows the remote package (and its catalog icon) when a same-named
-        # local copy exists. Unfiltered/mine lists still prefer the local card.
-        if name_taken and source_filter not in {"builtin", "builtin+hub"}:
+        # local copy exists. Experts retain their distinct Hub identity.
+        if kind != _AGENT_TEMPLATE_KIND and name_taken and source_filter not in {"builtin", "builtin+hub"}:
             continue
         cards_by_id[item.asset_id] = _hub_list_card(item)
     cards = [cards_by_id[key] for key in sorted(cards_by_id)]
-    return _apply_list_source_filter(cards, params)
+    result = _apply_list_source_filter(cards, params)
+    if cache_state is not None:
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
+        return CatalogCards(result, cache_state)
+    return result
 
 
 async def list_agent_templates_with_hub(
@@ -1814,6 +1848,78 @@ def list_agent_groups(params: dict | None = None) -> list[dict]:
             continue
         cards.append(card)
     return _apply_list_source_filter(cards, params)
+
+
+async def list_agent_groups_with_hub(
+    params: dict | None = None, *, hub_port: HubAssetPort | None = None
+) -> list[dict]:
+    """Combine local groups with the separately typed Hub group catalog."""
+    cards = list_agent_groups(None)
+    by_id: dict[str, dict] = {}
+    for card in cards:
+        package_id = card["id"]
+        record = _hub_install_state_store(_AGENT_GROUP_KIND).get_by_package_id(package_id)
+        if record is not None and record.kind == "agent_group":
+            card = {**card, "id": record.asset_id, "name": package_id, "source": "hub"}
+        by_id[card["id"]] = card
+    source_filter = params.get("filter") if isinstance(params, dict) else None
+    if source_filter in {"local", "mine"}:
+        return _apply_list_source_filter(list(by_id.values()), params)
+
+    port = hub_port or create_default_hub_asset_port()
+    cache_state = None
+    if isinstance(params, dict) and params.get("cache_mode") == "prefer_cache":
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import cached_asset_catalog
+        remote, cache_state = await cached_asset_catalog(
+            port, "agent_group", refresh=bool(params.get("refresh"))
+        )
+    else:
+        try:
+            remote = []
+            for page_no in range(1, 101):
+                page = await port.search_assets(HubSearchRequest(kind="agent_group", page=page_no))
+                remote.extend(page.items)
+                if not page.items or len(remote) >= page.total:
+                    break
+        except Exception:
+            logger.warning("Failed to list Hub agent groups", exc_info=True)
+            remote = []
+    for item in remote:
+        if item.kind != "agent_group":
+            continue
+        existing = by_id.get(item.asset_id)
+        if existing is not None:
+            by_id[item.asset_id] = {
+                **existing,
+                "displayName": _i18n(item.display_name, item.package_name or item.asset_id),
+                "displayDescription": _i18n(item.short_description),
+                "avatar": item.icon_uri,
+                "tags": [_i18n(tag, tag) for tag in item.tags],
+                "version": item.public_latest_version,
+            }
+            continue
+        by_id[item.asset_id] = {
+            "id": item.asset_id,
+            "name": item.package_name or item.asset_id,
+            "displayName": _i18n(item.display_name, item.package_name or item.asset_id),
+            "displayDescription": _i18n(item.short_description),
+            "category": "",
+            "source": "hub",
+            "installed": False,
+            "avatar": item.icon_uri,
+            "tags": [_i18n(tag, tag) for tag in item.tags],
+            "version": item.public_latest_version,
+            "memberCount": 0,
+            "members": [],
+            "skills": [],
+            "capabilities": {"canUse": False, "canInstall": True, "canUninstall": False,
+                             "canPreviewFiles": True, "canEdit": False, "canPublish": False},
+        }
+    result = _apply_list_source_filter(list(by_id.values()), params)
+    if cache_state is not None:
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
+        return CatalogCards(result, cache_state)
+    return result
 
 
 def _build_agent_group_card(
@@ -1908,7 +2014,7 @@ def _build_agent_group_card(
             "canUninstall": installed or source == "local",
             "canPreviewFiles": True,
             "canEdit": False,
-            "canPublish": False,
+            "canPublish": True,
         },
     }
     if include_details:
@@ -1954,6 +2060,43 @@ def show_agent_group(name: str) -> dict | None:
         load_package=load_agent_group_package,
         include_details=True,
     )
+
+
+async def show_agent_group_with_hub(
+    name: str, *, hub_port: HubAssetPort | None = None
+) -> dict | None:
+    """Return local group details or public Hub metadata before installation."""
+    store = _hub_install_state_store(_AGENT_GROUP_KIND)
+    record = store.get(name)
+    if record is not None and record.kind == "agent_group":
+        local = show_agent_group(record.package_id)
+        if local is not None:
+            return {**local, "id": record.asset_id, "source": "hub"}
+    local = show_agent_group(name)
+    if local is not None:
+        return local
+    port = hub_port or create_default_hub_asset_port()
+    detail = await port.query_asset(HubAssetQuery(kind="agent_group", asset_id=name))
+    if detail.kind != "agent_group" or detail.asset_id != name:
+        raise ValueError("Hub agent group identity mismatch")
+    return {
+        "id": detail.asset_id,
+        "name": detail.package_name or detail.asset_id,
+        "displayName": _i18n(detail.display_name, detail.package_name or detail.asset_id),
+        "displayDescription": _i18n(detail.short_description),
+        "details": detail.detail_description,
+        "category": "",
+        "source": "hub",
+        "installed": False,
+        "avatar": detail.icon_uri,
+        "tags": [_i18n(tag, tag) for tag in detail.tags],
+        "version": detail.version,
+        "memberCount": 0,
+        "members": [],
+        "skills": [],
+        "capabilities": {"canUse": False, "canInstall": True, "canUninstall": False,
+                         "canPreviewFiles": True, "canEdit": False, "canPublish": False},
+    }
 
 
 def list_plugin_packages(params: dict | None = None) -> list[dict]:
@@ -2823,6 +2966,9 @@ async def read_agent_template_file_with_hub(
 
 def list_agent_group_files(name: str) -> list[dict]:
     """Return the previewable file tree for one AgentGroup definition."""
+    record = _hub_install_state_store(_AGENT_GROUP_KIND).get(name)
+    if record is not None and record.kind == "agent_group":
+        name = record.package_id
     resolved = _resolve_agent_group_definition_dir(name)
     if resolved is None:
         raise ValueError(f"agent_group not found: {name!r}")
@@ -2832,6 +2978,9 @@ def list_agent_group_files(name: str) -> list[dict]:
 
 def read_agent_group_file(name: str, rel_path: str) -> dict:
     """Read one previewable file from an AgentGroup definition."""
+    record = _hub_install_state_store(_AGENT_GROUP_KIND).get(name)
+    if record is not None and record.kind == "agent_group":
+        name = record.package_id
     resolved = _resolve_agent_group_definition_dir(name)
     if resolved is None:
         raise ValueError(f"agent_group not found: {name!r}")
@@ -2848,6 +2997,24 @@ def read_agent_group_file(name: str, rel_path: str) -> dict:
     except UnicodeDecodeError:
         content = f"[二进制文件，大小 {size} bytes]"
     return {"path": rel, "content": content}
+
+
+async def list_agent_group_files_with_hub(name: str) -> list[dict]:
+    record = _hub_install_state_store(_AGENT_GROUP_KIND).get(name)
+    package_id = record.package_id if record is not None else name
+    if _resolve_agent_group_definition_dir(package_id) is not None:
+        return list_agent_group_files(package_id)
+    archive = await _load_hub_preview_archive(_AGENT_GROUP_KIND, name)
+    return _build_file_tree_from_zip(archive.body, archive.package_root)
+
+
+async def read_agent_group_file_with_hub(name: str, rel_path: str) -> dict:
+    record = _hub_install_state_store(_AGENT_GROUP_KIND).get(name)
+    package_id = record.package_id if record is not None else name
+    if _resolve_agent_group_definition_dir(package_id) is not None:
+        return read_agent_group_file(package_id, rel_path)
+    archive = await _load_hub_preview_archive(_AGENT_GROUP_KIND, name)
+    return _read_previewable_file_from_zip(archive.body, archive.package_root, rel_path)
 
 
 def _write_agent_template_package(
@@ -3567,6 +3734,154 @@ def install_agent_group(params: dict) -> None:
     )
 
 
+async def install_agent_group_with_hub(
+    params: dict, *, hub_port: HubAssetPort | None = None, downloader: Any = None
+) -> None:
+    """Acquire a Hub group by its asset ID, then install its local runtime package."""
+    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
+
+    requested_id = _lifecycle_package_id(params, "agent_group")
+    store = _hub_install_state_store(_AGENT_GROUP_KIND)
+    record = store.get(requested_id) or store.get_by_package_id(requested_id)
+    package_id = record.package_id if record is not None else requested_id
+    if _resolve_agent_group_definition_dir(package_id) is None:
+        def validate(package_root: Path, expected_name: str) -> None:
+            _restore_published_agent_group(package_root, expected_name)
+            _validate_package_manifest(package_root, "agent_group", "agent_group")
+            manifest = _read_package_manifest(package_root)
+            if (
+                _package_id_from_manifest(manifest, package_type="agent_group", kind_label="agent_group")
+                != expected_name
+            ):
+                raise ValueError("Hub agent_group package name mismatch")
+            load_agent_group_package(package_root)
+
+        result = await install_hub_asset_package(
+            kind="agent_group",
+            asset_id=requested_id,
+            destination_root=_local_root(_AGENT_GROUP_KIND),
+            state_store=store,
+            package_name_validator=lambda value: _reject_package_name(value, "agent_group"),
+            package_validator=validate,
+            conflict_validator=lambda value: _assert_package_id_available(
+                value, local_root=_local_root(_AGENT_GROUP_KIND),
+                built_in_root=_built_in_root(_AGENT_GROUP_KIND),
+                resources_root=_resources_root(_AGENT_GROUP_KIND), kind="agent_group"
+            ),
+            on_committed=lambda value: upsert_agent_group_marketplace_entry(
+                value.package_id, installed=False, source="hub"
+            ),
+            on_rollback=remove_agent_group_marketplace_entry,
+            hub_port=hub_port,
+            downloader=downloader,
+        )
+        package_id = result.package_id
+    install_agent_group({"id": package_id})
+    if store.get(requested_id) or store.get_by_package_id(package_id):
+        upsert_agent_group_marketplace_entry(package_id, installed=True, source="hub")
+
+
+def _restore_published_agent_group(package_root: Path, expected_name: str) -> None:
+    """Turn a Hub expert-team snapshot back into the local AgentGroup layout."""
+    published = _read_package_manifest(package_root)
+    if published is None or published.get("package_type") == "agent_group":
+        return
+    if published.get("package_type") != "agent_template" or published.get("name") != expected_name:
+        raise ValueError("Hub agent_group package type or name mismatch")
+    subagents = published.get("subagents")
+    if not isinstance(subagents, list) or not subagents:
+        raise ValueError("Hub agent_group package has no members")
+
+    members = ["leader"]
+    for entry in subagents:
+        path = entry.get("dir") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not path.startswith("agents/"):
+            raise ValueError("Hub agent_group member path is invalid")
+        name = _reject_package_name(path.removeprefix("agents/"), "agent_group member")
+        if "/" in name or name == "leader" or name in members:
+            raise ValueError("Hub agent_group member name is invalid")
+        members.append(name)
+
+    leader_dir = package_root / "agents" / "leader"
+    if not leader_dir.is_dir() or not (leader_dir / "AGENT.md").is_file():
+        raise ValueError("Hub agent_group leader is missing")
+
+    def localize(value: str) -> str:
+        prefix = "agents/leader"
+        if value == prefix:
+            return "."
+        if value.startswith(prefix + "/"):
+            return value[len(prefix) + 1:]
+        raise ValueError("Hub agent_group leader reference is outside its directory")
+
+    leader = dict(published)
+    leader.pop("subagents", None)
+    leader["name"] = "leader"
+    for field, key in (("persona", "dir"), ("model", "file")):
+        item = leader.get(field)
+        if isinstance(item, dict) and isinstance(item.get(key), str):
+            leader[field] = {**item, key: localize(item[key])}
+
+    shared_skills: list[str] = []
+    for field in ("skills", "tools", "rails", "mcps", "memories", "rubrics"):
+        entries = leader.get(field)
+        if not isinstance(entries, list):
+            continue
+        restored = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                restored.append(entry)
+                continue
+            item = dict(entry)
+            if field == "skills" and isinstance(item.get("dir"), str) and item["dir"].startswith("skills/"):
+                name = _reject_package_name(item["dir"].removeprefix("skills/"), "agent_group skill")
+                if "/" in name or name in shared_skills:
+                    raise ValueError("Hub agent_group shared skill is invalid")
+                shared_skills.append(name)
+                continue
+            for key in ("dir", "file"):
+                if isinstance(item.get(key), str):
+                    item[key] = localize(item[key])
+            restored.append(item)
+        leader[field] = restored
+
+    sections = leader.get("prompt_sections")
+    instruction = ""
+    if isinstance(sections, list):
+        retained = []
+        for section in sections:
+            if isinstance(section, dict) and section.get("name") == "agent_group_instruction":
+                content = section.get("content")
+                if isinstance(content, dict):
+                    instruction = str(content.get("cn") or content.get("en") or "")
+            else:
+                retained.append(section)
+        leader["prompt_sections"] = retained
+
+    for name in members[1:]:
+        directory = package_root / "agents" / name
+        subagent_path = directory / ".subagent.json"
+        member = _read_package_manifest(directory) if (directory / "manifest.json").exists() else None
+        if member is not None or not subagent_path.is_file():
+            raise ValueError("Hub agent_group member manifest is invalid")
+        member = json.loads(subagent_path.read_text(encoding="utf-8"))
+        if not isinstance(member, dict) or member.get("agent_name") != name:
+            raise ValueError("Hub agent_group member identity mismatch")
+        member.pop("agent_name", None)
+        member["package_type"] = "agent_template"
+        member["name"] = str(member.get("display_name") or name)
+        (directory / "manifest.json").write_text(json.dumps(member, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        subagent_path.unlink()
+
+    (leader_dir / "manifest.json").write_text(json.dumps(leader, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    group = {
+        "package_type": "agent_group", "name": expected_name,
+        "description": published.get("description", ""), "agents": members,
+        "skills": shared_skills, "instruction": instruction,
+    }
+    (package_root / "manifest.json").write_text(json.dumps(group, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def install_plugin_package(params: dict) -> None:
     """Install a plugin package."""
     package_id = _lifecycle_package_id(params, "plugin")
@@ -3626,7 +3941,10 @@ def uninstall_agent_template(params: dict) -> None:
 
 def uninstall_agent_group(params: dict) -> None:
     """Uninstall an AgentGroup definition without touching runtime Teams."""
-    package_id = _lifecycle_package_id(params, "agent_group")
+    requested_id = _lifecycle_package_id(params, "agent_group")
+    store = _hub_install_state_store(_AGENT_GROUP_KIND)
+    record = store.get(requested_id) or store.get_by_package_id(requested_id)
+    package_id = record.package_id if record is not None else requested_id
     pkg_dir = _locate_user_package_dir(
         package_id,
         kind=_AGENT_GROUP_KIND,
@@ -3634,6 +3952,8 @@ def uninstall_agent_group(params: dict) -> None:
     )
     _rmtree(pkg_dir)
     remove_agent_group_marketplace_entry(package_id)
+    if record is not None:
+        store.remove(record.asset_id)
 
 
 def uninstall_plugin_package(params: dict) -> None:

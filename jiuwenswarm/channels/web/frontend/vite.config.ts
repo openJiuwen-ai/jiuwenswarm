@@ -968,34 +968,6 @@ function devFileContentApi(): Plugin {
         }
       })
 
-      // SkillHub API 代理 → teamskills.openjiuwen.com
-      // 用于前端直接 POST FormData 发布技能（与 skillhub 架构对齐）
-      const hubBaseUrl = process.env.VITE_HUB_API_BASE_URL || 'https://teamskills.openjiuwen.com'
-      server.middlewares.use('/hub-api', (req, res) => {
-        const proxyPath = (req.url || '').replace(/^\/hub-api/, '');
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-        req.on('end', () => {
-          const body = Buffer.concat(chunks);
-          const proxyReq = https.request({
-            method: req.method,
-            hostname: new URL(hubBaseUrl).hostname,
-            path: proxyPath,
-            headers: { ...req.headers, host: new URL(hubBaseUrl).host },
-          }, (proxyRes) => {
-            res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-            proxyRes.pipe(res);
-          });
-          proxyReq.on('error', (err: Error) => {
-            console.error('[vite] hub-api proxy error:', err.message);
-            res.writeHead(502, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message }));
-          });
-          if (body.length > 0) proxyReq.write(body);
-          proxyReq.end();
-        });
-      });
-
       // 技能上传：接收 multipart 文件，保存到临时目录，返回文件路径
       // 前端拿到路径后再通过 WebSocket 调用 skills.import_upload / skills.create_from_knowledge
       server.middlewares.use('/file-api/skills/upload-temp', (req, res) => {
@@ -1221,6 +1193,7 @@ function portFromEnv(name: string, fallback: number): number {
 const frontendPort = portFromEnv('FRONTEND_PORT', 5173)
 const webPort = portFromEnv('WEB_PORT', 19000)
 const webTarget = `http://127.0.0.1:${webPort}`
+const hubOAuthBroker = process.env.JIUWENSWARM_HUB_OAUTH_BROKER_URL
 
 export default defineConfig({
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
@@ -1238,6 +1211,10 @@ export default defineConfig({
     port: frontendPort,
     strictPort: true,
     proxy: {
+      ...(hubOAuthBroker ? {
+        '/marketplace-oauth/hub': { target: hubOAuthBroker },
+        '/oauth/hub': { target: hubOAuthBroker },
+      } : {}),
       '/api': {
         target: webTarget,
         changeOrigin: true,

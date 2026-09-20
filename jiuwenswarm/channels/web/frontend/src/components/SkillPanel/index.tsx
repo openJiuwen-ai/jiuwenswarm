@@ -1,20 +1,16 @@
-﻿/**
+/**
  * SkillPanel 组件
  *
  * Skills 管理面板
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, ChevronRight, HelpCircle, Loader2, Music2, Upload, X } from 'lucide-react';
+import { ChevronRight, HelpCircle, Loader2, Music2, Upload } from 'lucide-react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
 import NewConversationIcon from '../../assets/new_conversation.svg?react';
-import UpImgIcon from '../../assets/upImg.svg?react';
 import TipIcon from '../../assets/tip.svg?react';
 import UpFileIcon from '../../assets/upFile.svg?react';
-import LinkIcon from '../../assets/link.svg?react';
-import GithubIcon from '../../assets/providers/github.svg?react';
 import { CategoryTabs, PageHeader, PageToolbarSearch } from '../ui';
 import { webRequest } from '../../services/webClient';
 import { SourceManagerModal } from '../../features/SourceManagerModal';
@@ -25,12 +21,9 @@ import { normalizeSkillNetUrl } from '../../utils/skillNetUrl';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import { computeMySkills, filterEnabledMySkills } from '../../utils/mySkills';
 import { buildSkillVersionOptions } from './skillVersionOptions';
-import {
-  getStoredOAuthToken,
-  getStoredOAuthProvider,
-  buildOAuthUrl,
-  type OAuthProvider,
-} from '../../utils/gitcodeOAuth';
+import { useAssetPublication } from '../../hooks/useAssetPublication';
+import { matchesPublicationFilter, publicationLabel } from '../../features/assetPublication';
+import { openAssetPublish } from '../../features/assetPublishEvents';
 import { SkillGraphPanel, type SkillGraphPanelHandle } from '../SkillGraphPanel';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import { Switch } from '../Switch';
@@ -44,15 +37,6 @@ const GRAPH_READING_MIN_VISIBLE_MS = 500;
 
 const CARD_CLASS =
   'page-card h-40 group relative text-left border border-border bg-panel hover:bg-card cursor-pointer rounded-[16px] pt-6 pb-4 px-4 flex flex-col overflow-visible';
-
-// ── 发布表单校验（与 skillhub 对齐） ──
-// 技能名：小写字母开头，小写字母/数字/连字符，最长 64
-const SKILL_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
-const SKILL_NAME_MAX_LEN = 64;
-// 版本号：严格 x.y.z 三段数字
-const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
-// 显示名：非空，最长 128
-const DISPLAY_NAME_MAX_LEN = 128;
 
 const PREVIEWABLE_MIME_TYPES = ['application/json', 'application/xml', 'application/javascript', 'application/x-yaml'];
 const PREVIEWABLE_FILE_EXTS = ['md', 'mdx', 'json', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'];
@@ -330,68 +314,6 @@ function transformSkillContentImages(content: string, skillFilePath: string): st
     if (imgPath.startsWith('/file-api/')) return match;
     return `![${alt}](${toRawFileUrl(imgPath)})`;
   });
-}
-
-/** 表单字段问号 tooltip（position: fixed，不受 overflow 裁剪） */
-function FormFieldTooltip({ text }: { text: string }) {
-  const [show, setShow] = useState(false);
-  const [pos, setPos] = useState<{ bottom: number; left: number }>({ bottom: 0, left: 0 });
-  const ref = useRef<HTMLSpanElement>(null);
-
-  const handleEnter = useCallback(() => {
-    if (ref.current) {
-      const rect = ref.current.getBoundingClientRect();
-      setPos({ bottom: window.innerHeight - rect.top + 6, left: rect.left + rect.width / 2 });
-    }
-    setShow(true);
-  }, []);
-
-  const handleLeave = useCallback(() => setShow(false), []);
-
-  return (
-    <>
-      <span
-        ref={ref}
-        className="ml-1 inline-flex items-center cursor-help"
-        onMouseEnter={handleEnter}
-        onMouseLeave={handleLeave}
-      >
-        <svg
-          className="w-3.5 h-3.5 text-text-muted"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          strokeWidth={2}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.171 1.025 1.171 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.453.73-1.453 1.577v.001m.001 2.174v.01"
-          />
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a.75.75 0 000-1.5.75.75 0 000 1.5z" />
-          <circle cx="12" cy="12" r="9" />
-        </svg>
-      </span>
-      {show &&
-        createPortal(
-          <div
-            className="fixed z-[10000] px-2.5 py-1.5 text-xs text-text bg-[var(--color-surface-popover)] border border-border rounded shadow-lg"
-            style={{
-              bottom: pos.bottom,
-              left: pos.left,
-              transform: 'translateX(-50%)',
-              width: 'max-content',
-              maxWidth: '300px',
-              whiteSpace: 'normal',
-              lineHeight: '1.4',
-            }}
-          >
-            {text}
-          </div>,
-          document.body,
-        )}
-    </>
-  );
 }
 
 /** 按钮上方固定定位提示条（合成新版本 / 去试试 / 链接说明 共用） */
@@ -731,22 +653,10 @@ export function SkillPanel({
   const [synthesizeTooltip, setSynthesizeTooltip] = useState<{ left: number; top: number } | null>(null);
   const [goTryTooltip, setGoTryTooltip] = useState<{ left: number; top: number } | null>(null);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
-  const [publishDrawerOpen, setPublishDrawerOpen] = useState(false);
-  const [publishSkillName, setPublishSkillName] = useState('');
-  const [publishVersion, setPublishVersion] = useState('');
-  const [publishDisplayName, setPublishDisplayName] = useState('');
-  const [publishNoticeVisible, setPublishNoticeVisible] = useState(true);
-  const [oauthLoginOpen, setOauthLoginOpen] = useState(false);
-  const [oauthError, setOauthError] = useState<string | null>(null);
-  const [oauthLoadingProvider, setOauthLoadingProvider] = useState<OAuthProvider | null>(null);
   const [selectedHubSkill, setSelectedHubSkill] = useState<MarketplacePluginItem | null>(null);
   const [hubDetail, setHubDetail] = useState<HubSkillDetail | null>(null);
   const [hubDetailState, setHubDetailState] = useState<LoadState>('idle');
   const [marketplaceSubView, setMarketplaceSubView] = useState<'list' | 'team' | 'detail'>('list');
-  const [publishVersionDesc, setPublishVersionDesc] = useState('');
-  const [publishForce, setPublishForce] = useState(false);
-  const [publishFieldErrors, setPublishFieldErrors] = useState<Record<string, string>>({});
-  const [publishError, setPublishError] = useState<string | null>(null);
   const [detailTab, setDetailTab] = useState<'content' | 'files' | 'experience'>('content');
   const [evolutionEntries, setEvolutionEntries] = useState<EvolutionEntry[]>([]);
   const [evolutionListState, setEvolutionListState] = useState<LoadState>('idle');
@@ -1479,30 +1389,6 @@ export function SkillPanel({
     prevIsActiveRef.current = isActive;
   }, [isActive, activeTab, fetchSkills, mountedRef]);
 
-  // OAuth 回调后恢复技能详情页 + 打开发布抽屉
-  // 在 isActive 变为 true 后执行（确保 WebSocket 已连接、SkillPanel 已挂载）
-  useEffect(() => {
-    if (!isActive) return;
-    const oauthRedirect = sessionStorage.getItem('oauth_redirect');
-    const skillName = sessionStorage.getItem('oauth_redirect_skill');
-    if (oauthRedirect === 'publish' && skillName) {
-      sessionStorage.removeItem('oauth_redirect');
-      sessionStorage.removeItem('oauth_redirect_skill');
-      const oauthError = sessionStorage.getItem('oauth_error');
-      if (oauthError) {
-        sessionStorage.removeItem('oauth_error');
-        sessionStorage.removeItem('oauth_redirect_nav');
-        setOauthError(oauthError);
-        setOauthLoginOpen(true);
-        return;
-      }
-      setActiveTab('my');
-      fetchSkillDetail(skillName).then(() => {
-        setPublishDrawerOpen(true);
-      });
-    }
-  }, [isActive, fetchSkillDetail]);
-
   const handleOpenSkill = useCallback(
     (skillName: string) => {
       fetchSkillDetail(skillName);
@@ -1898,174 +1784,6 @@ export function SkillPanel({
   );
 
   // ── 发布表单校验（与 skillhub 对齐） ──
-  const validatePublishSkillName = useCallback(
-    (name: string): string | null => {
-      const trimmed = name.trim();
-      if (!trimmed) return null; // 空值由必填校验兜底
-      if (trimmed.length > SKILL_NAME_MAX_LEN) {
-        return t('skills.publishForm.errorNameTooLong', { max: SKILL_NAME_MAX_LEN });
-      }
-      if (!SKILL_NAME_PATTERN.test(trimmed)) {
-        return t('skills.publishForm.errorInvalidName');
-      }
-      return null;
-    },
-    [t],
-  );
-
-  const validatePublishVersion = useCallback(
-    (version: string): string | null => {
-      const trimmed = version.trim();
-      if (!trimmed) return null;
-      if (!VERSION_PATTERN.test(trimmed)) {
-        return t('skills.publishForm.errorInvalidVersion');
-      }
-      return null;
-    },
-    [t],
-  );
-
-  const validatePublishDisplayName = useCallback(
-    (displayName: string): string | null => {
-      const trimmed = displayName.trim();
-      if (!trimmed) return null;
-      if (trimmed.length > DISPLAY_NAME_MAX_LEN) {
-        return t('skills.publishForm.errorDisplayNameTooLong', { max: DISPLAY_NAME_MAX_LEN });
-      }
-      return null;
-    },
-    [t],
-  );
-
-  const handlePublish = useCallback(async () => {
-    if (!selectedSkill) return;
-    const token = getStoredOAuthToken();
-    if (!token) {
-      setOauthLoginOpen(true);
-      return;
-    }
-    // 提交前校验（与 skillhub 对齐）
-    const errors: Record<string, string> = {};
-    const nameErr = validatePublishSkillName(publishSkillName);
-    if (nameErr) errors.skillName = nameErr;
-    const verErr = validatePublishVersion(publishVersion);
-    if (verErr) errors.version = verErr;
-    const dnErr = validatePublishDisplayName(publishDisplayName);
-    if (dnErr) errors.displayName = dnErr;
-    if (Object.keys(errors).length > 0) {
-      setPublishFieldErrors(errors);
-      return;
-    }
-    setPublishFieldErrors({});
-    setPublishError(null);
-    setActionTarget('publish');
-    try {
-      // 1. 从 file_path 推导技能目录
-      const filePath = (selectedSkill as SkillDetail).file_path || '';
-      const skillDir = filePath ? filePath.replace(/[\\/][^\\/]+$/, '') : '';
-      if (!skillDir) {
-        setPublishError(t('skills.publishForm.pathNotFound'));
-        return;
-      }
-
-      // 2. WS 打包 zip（后端打包，前端下载）
-      const packResult = await webRequest<{
-        success: boolean;
-        path?: string;
-        checksum_sha256?: string;
-        detail?: string;
-      }>(
-        'skills.teamskillshub.pack',
-        withSession({
-          path: skillDir,
-          output: 'out',
-          version: publishVersion,
-          skill_name: publishSkillName,
-          display_name: publishDisplayName,
-        }),
-        { timeoutMs: 60000 },
-      );
-      if (!packResult.success || !packResult.path) {
-        setPublishError(packResult.detail || t('skills.messages.packFailed'));
-        return;
-      }
-
-      // 3. 下载 zip 为 Blob
-      const zipResp = await fetch(`/file-api/raw-file?path=${encodeURIComponent(packResult.path)}`);
-      if (!zipResp.ok) {
-        setPublishError(t('skills.messages.downloadFailed'));
-        return;
-      }
-      const zipBlob = await zipResp.blob();
-
-      // 4. 使用后端返回的 SHA256（避免 crypto.subtle 在非安全上下文不可用）
-      const checksum = packResult.checksum_sha256 || '';
-
-      // 5. 组装 FormData（前端组装，与 skillhub 对齐）
-      const formData = new FormData();
-      formData.append('file', zipBlob, `${selectedSkill.name}.zip`);
-      formData.append('plugin_version', publishVersion);
-      if (publishVersionDesc) formData.append('version_desc', publishVersionDesc);
-      if (publishForce) formData.append('force', 'true');
-
-      // 6. POST 到 Hub（通过 Vite /hub-api/ 代理）
-      const provider = getStoredOAuthProvider();
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000);
-      const resp = await fetch('/hub-api/api/v1/plugins', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'X-OAuth-Provider': provider,
-          'X-Checksum-SHA256': checksum,
-        },
-        body: formData,
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      const respData = await resp.json();
-
-      if (respData.code === 200 && respData.data?.plugin_id) {
-        showMessage(
-          'success',
-          t('skills.messages.published', {
-            name: publishDisplayName || respData.data?.display_name || respData.data?.name || selectedSkill.name,
-          }),
-        );
-        setPublishDrawerOpen(false);
-        setPublishVersion('');
-        setPublishVersionDesc('');
-        setPublishFieldErrors({});
-        setPublishError(null);
-        await fetchSkills();
-      } else {
-        // 检查版本冲突
-        const detail = respData.detail || {};
-        const errorMsg = detail.message || detail.error || respData.message || '';
-        setPublishError(errorMsg || t('skills.messages.publishFailed'));
-      }
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : '';
-      setPublishError(errMsg || t('skills.messages.publishFailed'));
-    } finally {
-      setActionTarget(null);
-    }
-  }, [
-    selectedSkill,
-    publishVersion,
-    publishVersionDesc,
-    publishSkillName,
-    publishDisplayName,
-    publishForce,
-    withSession,
-    fetchSkills,
-    t,
-    validatePublishSkillName,
-    validatePublishVersion,
-    validatePublishDisplayName,
-  ]);
-
   const handleUninstall = useCallback(
     async (pluginName: string) => {
       if (!pluginName) return;
@@ -2105,6 +1823,7 @@ export function SkillPanel({
 
   // 2026-08-25：改用 utils/mySkills.ts 的共享 isSkillInstalled/filterEnabledMySkills，跟"手动创建
   // 插件"的"添加技能"弹窗（CreatePluginPage.tsx）共用同一份"已启用"判定规则，见该文件头注释。
+  const skillPublication = useAssetPublication(activeTab === 'my' ? visibleSkills.map(s => ({ kind: 'skill', local_id: s.name })) : []);
   const mySkillsFiltered = useMemo(() => {
     let filtered = visibleSkills;
     switch (mySkillsSubTab) {
@@ -2122,12 +1841,12 @@ export function SkillPanel({
     }
     // 发布状态筛选
     if (mySkillsPublishFilter === 'published') {
-      filtered = filtered.filter((s) => s.published === true);
+      filtered = filtered.filter((s) => matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'published'));
     } else if (mySkillsPublishFilter === 'unpublished') {
-      filtered = filtered.filter((s) => s.published !== true);
+      filtered = filtered.filter((s) => matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'unpublished'));
     }
     return filtered;
-  }, [visibleSkills, mySkillsSubTab, mySkillsPublishFilter, installedSkillNames]);
+  }, [visibleSkills, mySkillsSubTab, mySkillsPublishFilter, installedSkillNames, skillPublication]);
 
   // 内置/非内置分组（用于"我的技能"列表分组展示）
   const builtinSkills = useMemo(() => mySkillsFiltered.filter((s) => s.source === 'builtin'), [mySkillsFiltered]);
@@ -2175,7 +1894,7 @@ export function SkillPanel({
                 <span className="px-2 h-5 inline-flex items-center rounded bg-secondary border border-border text-xs text-text-muted">{t('skills.mySkillsTabs.builtin')}</span>
               )}
               {activeTab === 'my' ? (
-                <span className="px-2 h-5 inline-flex items-center rounded bg-secondary border border-border truncate text-xs text-text-muted">{t('skills.publishFilter.unpublished')}</span>
+                <span className="px-2 h-5 inline-flex items-center rounded bg-secondary border border-border truncate text-xs text-text-muted">{publicationLabel(skillPublication({ kind: 'skill', local_id: skill.name }), i18n.language)}</span>
               ) : null}
             </div>
           </div>
@@ -2250,45 +1969,6 @@ export function SkillPanel({
     () => (selectedSkill?.content ? transformSkillContentImages(selectedSkill.content, selectedSkill.file_path) : ''),
     [selectedSkill],
   );
-  // ── OAuth 登录逻辑（当前页跳转） ──
-
-  // 跳转到 OAuth 授权页（当前页跳转，登录后回调 /oauth/callback?code=xxx）
-  // provider: 'gitcode' | 'github'
-  const handleOAuthLogin = useCallback(
-    (provider: OAuthProvider = 'gitcode') => {
-      setOauthError(null);
-      setOauthLoadingProvider(provider);
-      sessionStorage.setItem('oauth_redirect', 'publish');
-      sessionStorage.setItem('oauth_redirect_nav', 'skills');
-      // 保存当前技能名，OAuth 回调后恢复详情页
-      if (selectedSkill?.name) {
-        sessionStorage.setItem('oauth_redirect_skill', selectedSkill.name);
-      }
-      window.location.href = buildOAuthUrl(provider);
-    },
-    [t, selectedSkill],
-  );
-
-  // 监听 OAuth 回调完成事件（App.tsx 处理完 code → token 后触发）
-  // 如果是从发布弹窗触发的登录，恢复技能详情页并打开发布抽屉
-  useEffect(() => {
-    const handleOAuthComplete = () => {
-      // 检查是否有 OAuth 错误（Client ID/Secret 不正确等）
-      const oauthError = sessionStorage.getItem('oauth_error');
-      if (oauthError) {
-        sessionStorage.removeItem('oauth_error');
-        sessionStorage.removeItem('oauth_redirect');
-        sessionStorage.removeItem('oauth_redirect_nav');
-        sessionStorage.removeItem('oauth_redirect_skill');
-        setOauthError(oauthError);
-        setOauthLoginOpen(true); // 重新打开弹窗显示错误
-        return;
-      }
-    };
-    window.addEventListener('oauth-callback-complete', handleOAuthComplete);
-    return () => window.removeEventListener('oauth-callback-complete', handleOAuthComplete);
-  }, []);
-
   return (
     <>
       {knowledgeTaskCount > 0 && (
@@ -2968,6 +2648,14 @@ export function SkillPanel({
 
                     {/* 右侧操作按钮 */}
                     <div className="flex items-center gap-6 flex-shrink-0">
+                      <button
+                        type="button"
+                        className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text"
+                        data-testid="skill-panel-publish"
+                        onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}
+                      >
+                        {t('skills.actions.publish')}
+                      </button>
                       {/* ... 菜单：编辑/卸载 */}
                       <div className="relative">
                         <button
@@ -3803,285 +3491,6 @@ export function SkillPanel({
         {goTryTooltip && <TopAnchorTooltip pos={goTryTooltip} text={t('skills.actions.goTry')} />}
         {docToSkillTooltip && (
           <TopAnchorTooltip pos={docToSkillTooltip} text={t('skills.docToSkillModal.linkTooltip')} />
-        )}
-        {/* 发布技能右侧弹窗 */}
-        {publishDrawerOpen &&
-          selectedSkill &&
-          getStoredOAuthToken() &&
-          (() => {
-            const isPublishDisabled = !publishSkillName || !publishVersion || !publishDisplayName;
-            return (
-              <>
-                <div className="fixed inset-0 z-[9998] bg-black/30" onClick={() => setPublishDrawerOpen(false)} />
-                <div
-                  className="fixed top-0 right-0 bottom-0 z-[9999] bg-panel border-l border-border shadow-2xl flex flex-col"
-                  style={{ width: '550px' }}
-                >
-                  {/* 头部（无分割线） */}
-                  <div className="flex items-center justify-between px-6 pt-4 pb-2 flex-shrink-0">
-                    <span className="text-base font-semibold text-text-strong">{t('skills.publishForm.title')}</span>
-                    <ModalCloseButton
-                      onClick={() => setPublishDrawerOpen(false)}
-                      label={t('skills.publishForm.cancel')}
-                    />
-                  </div>
-                  {/* 提示行（标题下方，可关闭） */}
-                  {publishNoticeVisible && (
-                    <div
-                      className="mx-6 mb-2 flex items-center gap-1.5 rounded-[6px] px-3 text-xs text-text flex-shrink-0 bg-[var(--color-skill-notice-surface)]"
-                      style={{ height: '34px' }}
-                    >
-                      <TipIcon className="w-3.5 h-3.5 shrink-0" />
-                      <span>{t('skills.publishForm.noticeText')}</span>
-                      <a
-                        href={t('skills.publishForm.noticeUrl')}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-0.5 text-chat-accent hover:underline"
-                      >
-                        {t('skills.publishForm.noticeView')}
-                        <LinkIcon className="w-3 h-3" />
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => setPublishNoticeVisible(false)}
-                        className="ml-auto w-5 h-5 flex items-center justify-center rounded hover:bg-accent/10 text-text-muted hover:text-text"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  )}
-                  {/* 发布错误提示 */}
-                  {publishError && (
-                    <div className="mx-6 mt-2 px-3 py-2 rounded-[6px] border border-danger bg-danger/10 text-xs text-danger">
-                      {publishError}
-                    </div>
-                  )}
-                  {/* 表单内容 */}
-                  <div className="flex-1 overflow-y-auto px-6 py-2 space-y-4">
-                    {/* 技能名 */}
-                    <div>
-                      <label className="block text-sm font-medium text-text mb-1.5">
-                        {t('skills.publishForm.skillName')} <span className="text-danger">*</span>
-                        <FormFieldTooltip text={t('skills.publishForm.skillNameTooltip')} />
-                      </label>
-                      <input
-                        type="text"
-                        value={publishSkillName}
-                        onChange={(e) => {
-                          setPublishSkillName(e.target.value);
-                          const err = validatePublishSkillName(e.target.value);
-                          setPublishFieldErrors((prev) => ({ ...prev, skillName: err || '' }));
-                        }}
-                        placeholder="my-demo-skill"
-                        className={`w-full px-3 py-2 rounded-[6px] border bg-panel text-sm text-text ${publishFieldErrors.skillName ? 'border-danger' : 'border-border'}`}
-                      />
-                      {publishFieldErrors.skillName && (
-                        <p className="mt-1 text-xs text-danger">{publishFieldErrors.skillName}</p>
-                      )}
-                    </div>
-                    {/* 版本号 */}
-                    <div>
-                      <label className="block text-sm font-medium text-text mb-1.5">
-                        {t('skills.publishForm.version')} <span className="text-danger">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={publishVersion}
-                        onChange={(e) => {
-                          setPublishVersion(e.target.value);
-                          const err = validatePublishVersion(e.target.value);
-                          setPublishFieldErrors((prev) => ({ ...prev, version: err || '' }));
-                        }}
-                        placeholder="1.0.0"
-                        className={`w-full px-3 py-2 rounded-[6px] border bg-panel text-sm text-text ${publishFieldErrors.version ? 'border-danger' : 'border-border'}`}
-                      />
-                      {publishFieldErrors.version && (
-                        <p className="mt-1 text-xs text-danger">{publishFieldErrors.version}</p>
-                      )}
-                    </div>
-                    {/* 显示名 */}
-                    <div>
-                      <label className="block text-sm font-medium text-text mb-1.5">
-                        {t('skills.publishForm.displayName')} <span className="text-danger">*</span>
-                        <FormFieldTooltip text={t('skills.publishForm.displayNameTooltip')} />
-                      </label>
-                      <input
-                        type="text"
-                        value={publishDisplayName}
-                        onChange={(e) => {
-                          setPublishDisplayName(e.target.value);
-                          const err = validatePublishDisplayName(e.target.value);
-                          setPublishFieldErrors((prev) => ({ ...prev, displayName: err || '' }));
-                        }}
-                        placeholder={t('skills.publishForm.placeholderSelect')}
-                        className={`w-full px-3 py-2 rounded-[6px] border bg-panel text-sm text-text ${publishFieldErrors.displayName ? 'border-danger' : 'border-border'}`}
-                      />
-                      {publishFieldErrors.displayName && (
-                        <p className="mt-1 text-xs text-danger">{publishFieldErrors.displayName}</p>
-                      )}
-                    </div>
-                    {/* 描述（可选） */}
-                    <div>
-                      <label className="block text-sm font-medium text-text mb-1.5">
-                        {t('skills.publishForm.descriptionOptional')}
-                        <FormFieldTooltip text={t('skills.publishForm.descriptionTooltip')} />
-                      </label>
-                      <textarea
-                        defaultValue={selectedSkill.description || ''}
-                        placeholder={t('skills.publishForm.placeholderSelect')}
-                        className="w-full px-3 py-2 rounded-[6px] border border-border bg-panel text-sm text-text min-h-[72px]"
-                      />
-                    </div>
-                    {/* 标签（可选） */}
-                    <div>
-                      <label className="block text-sm font-medium text-text mb-1.5">
-                        {t('skills.publishForm.tagsOptional')}
-                        <FormFieldTooltip text={t('skills.publishForm.tagsTooltip')} />
-                      </label>
-                      <input
-                        type="text"
-                        defaultValue={coerceStringList(selectedSkill.tags).join(', ')}
-                        className="w-full px-3 py-2 rounded-[6px] border border-border bg-panel text-sm text-text"
-                      />
-                    </div>
-                    {/* Skill图标（可选）- 图片上传框 */}
-                    <div>
-                      <label className="block text-sm font-medium text-text mb-1.5">
-                        {t('skills.publishForm.skillIconOptional')}
-                      </label>
-                      <div
-                        className="flex items-center justify-center rounded-[6px] border border-dashed border-border bg-secondary/30 cursor-pointer hover:bg-secondary/50"
-                        style={{ width: '100px', height: '100px' }}
-                      >
-                        <UpImgIcon className="w-8 h-8 text-text-muted" />
-                      </div>
-                      <span className="block mt-1.5 text-xs text-text-muted">
-                        {t('skills.publishForm.skillIconHint')}
-                      </span>
-                    </div>
-                    {/* SHA-256 校验和 */}
-                    <div>
-                      <label className="block text-sm font-medium text-text mb-1.5">
-                        {t('skills.publishForm.sha256')}
-                      </label>
-                      <input
-                        type="text"
-                        value=""
-                        readOnly
-                        placeholder={t('skills.publishForm.placeholderSha256')}
-                        className="w-full px-3 py-2 rounded-[6px] border border-border bg-panel text-sm text-text font-mono opacity-60 cursor-not-allowed"
-                      />
-                    </div>
-                    {/* 版本说明（Swarm Skill，可选） */}
-                    <div>
-                      <label className="block text-sm font-medium text-text mb-1.5">
-                        {t('skills.publishForm.versionNoteOptional')}
-                      </label>
-                      <textarea
-                        value={publishVersionDesc}
-                        onChange={(e) => setPublishVersionDesc(e.target.value)}
-                        className="w-full px-3 py-2 rounded-[6px] border border-border bg-panel text-sm text-text min-h-[72px]"
-                      />
-                    </div>
-                    {/* 强制覆盖 */}
-                    <div>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={publishForce}
-                          onChange={(e) => setPublishForce(e.target.checked)}
-                          className="cursor-pointer"
-                        />
-                        <span className="text-sm text-text">{t('skills.publishForm.forceOverwrite')}</span>
-                      </label>
-                    </div>
-                  </div>
-                  {/* 底部按钮 */}
-                  <div className="flex items-center justify-end gap-3 px-6 pb-4 pt-2 flex-shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setPublishDrawerOpen(false)}
-                      className="flex items-center justify-center rounded-[16px] text-sm text-control-emphasis bg-card border border-control-emphasis hover:bg-secondary/30 whitespace-nowrap"
-                      style={{ height: '32px', padding: '0 32px' }}
-                    >
-                      {t('skills.publishForm.cancel')}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isPublishDisabled || actionTarget === 'publish'}
-                      onClick={() => handlePublish()}
-                      className={`flex items-center justify-center rounded-[16px] text-sm whitespace-nowrap transition-colors ${
-                        isPublishDisabled || actionTarget === 'publish'
-                          ? 'bg-secondary text-text-muted cursor-not-allowed'
-                          : 'text-text-inverse bg-control-emphasis hover:opacity-80'
-                      }`}
-                      style={{ height: '32px', padding: '0 32px' }}
-                    >
-                      {actionTarget === 'publish' ? t('common.processing') : t('skills.publishForm.publish')}
-                    </button>
-                  </div>
-                </div>
-              </>
-            );
-          })()}
-        {/* OAuth 登录弹窗 */}
-        {oauthLoginOpen && (
-          <>
-            <div className="fixed inset-0 z-[9998] bg-black/30" onClick={() => setOauthLoginOpen(false)} />
-            <div
-              className="fixed left-1/2 top-1/2 z-[9999] -translate-x-1/2 -translate-y-1/2 bg-panel rounded-[16px] shadow-2xl border border-border flex flex-col"
-              style={{ width: '420px' }}
-            >
-              {/* 头部 */}
-              <div className="flex items-center justify-between px-6 pt-5 pb-3">
-                <span className="text-base font-semibold text-text-strong">{t('skills.oauthLogin.title')}</span>
-                <ModalCloseButton onClick={() => setOauthLoginOpen(false)} label={t('skills.oauthLogin.title')} />
-              </div>
-              {/* 内容 */}
-              <div className="px-6 pb-6 flex flex-col items-center">
-                <p className="text-sm text-text-muted text-center mb-6">{t('skills.oauthLogin.description')}</p>
-                {/* GitCode 登录按钮（始终显示，未配置时点击会提示） */}
-                <button
-                  type="button"
-                  onClick={() => handleOAuthLogin('gitcode')}
-                  disabled={oauthLoadingProvider === 'gitcode'}
-                  className="flex items-center justify-center gap-2 rounded-[16px] text-sm whitespace-nowrap transition-colors w-full mb-3 bg-control-emphasis text-control-emphasis-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                  style={{ height: '40px' }}
-                >
-                  {oauthLoadingProvider === 'gitcode' ? (
-                    <div className="w-4 h-4 border-2 border-control-emphasis-foreground/30 border-t-control-emphasis-foreground rounded-full animate-spin" />
-                  ) : (
-                    <ArrowLeft className="h-4 w-4" />
-                  )}
-                  {oauthLoadingProvider === 'gitcode'
-                    ? t('skills.oauthLogin.loading')
-                    : t('skills.oauthLogin.gitcodeLogin')}
-                </button>
-                {/* GitHub 登录按钮（始终显示，未配置时点击会提示） */}
-                <button
-                  type="button"
-                  onClick={() => handleOAuthLogin('github')}
-                  disabled={oauthLoadingProvider === 'github'}
-                  className="flex items-center justify-center gap-2 rounded-[16px] text-sm whitespace-nowrap transition-colors w-full bg-card text-control-emphasis border border-control-emphasis disabled:cursor-not-allowed disabled:opacity-60"
-                  style={{ height: '40px' }}
-                >
-                  {oauthLoadingProvider === 'github' ? (
-                    <div className="w-4 h-4 border-2 border-control-emphasis/30 border-t-control-emphasis rounded-full animate-spin" />
-                  ) : (
-                    <GithubIcon className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  {oauthLoadingProvider === 'github'
-                    ? t('skills.oauthLogin.loading')
-                    : t('skills.oauthLogin.githubLogin')}
-                </button>
-                <p className="mt-4 text-xs text-text-muted text-center">{t('skills.oauthLogin.callbackHint')}</p>
-                {oauthError && (
-                  <p className="mt-4 text-xs text-[var(--color-feedback-error)] text-center">{oauthError}</p>
-                )}
-              </div>
-            </div>
-          </>
         )}
       </div>
     </>
