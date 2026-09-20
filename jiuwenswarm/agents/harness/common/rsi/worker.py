@@ -339,6 +339,7 @@ class RsiWorker:
         )
         consume_task = asyncio.create_task(consume_queue(queue, consumer))
         result: Any = None
+        provider_result_ready = False
         cancelled = False
         try:
             if hasattr(adapter, "validate_input"):
@@ -373,8 +374,7 @@ class RsiWorker:
                     result,
                     timeout=self._provider_poll_timeout_for(task_view),
                 )
-            if self._is_current_execution(task_id, generation):
-                self._apply_result_status(task_id, result)
+            provider_result_ready = True
         except asyncio.CancelledError:
             cancelled = True
             logger.info("[RSI] 任务执行被终止 task=%s", task_id)
@@ -409,6 +409,8 @@ class RsiWorker:
                         await consume_task
                     except Exception:  # noqa: BLE001
                         logger.exception("[RSI] 事件消费协程退出异常 task=%s", task_id)
+                    if provider_result_ready and self._is_current_execution(task_id, generation):
+                        self._apply_result_status(task_id, result)
                 if self._is_current_execution(task_id, generation):
                     self._persist_results(task_id, result)
             except asyncio.CancelledError:

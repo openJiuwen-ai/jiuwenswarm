@@ -605,6 +605,13 @@ export function statusLabelKey(status: RsiTaskStatus): string {
   return STATUS_LABEL_KEY[status] ?? 'statusCreated';
 }
 
+// 完成态代表任务生命周期已结束，展示进度必须收敛到 100%，不再受最后一条 P2 迭代值影响。
+export function progressPercent(status: RsiTaskStatus, iteration: number, total: number): number {
+  if (status === 'COMPLETED') return 100;
+  if (total <= 0) return 0;
+  return Math.min(100, Math.round((iteration / total) * 100));
+}
+
 // 运行态操作按钮映射：根据当前状态返回可执行动作集
 export type RsiActionKind = 'config' | 'delete' | 'pause' | 'resume' | 'stop' | 'install' | 'download';
 

@@ -20,6 +20,7 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiTaskNotFound,
     RsiTaskStateConflict,
 )
+from jiuwenswarm.agents.harness.common.rsi.events import EngineEvent
 from jiuwenswarm.agents.harness.common.rsi.models import TaskStatus
 from jiuwenswarm.server.rsi import RsiAgentServerHandlers
 
@@ -600,6 +601,79 @@ class TestPushScheduling:
         assert len(sent) == 1
         assert sent[0]["payload"]["event_type"] == "rsi.training.progress"
         assert sent[0]["payload"]["task_id"] == "t"
+
+    async def test_progress_callback_waits_for_async_send(self, ctx):
+        """最终进度必须在事件消费完成前完成异步发送。"""
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def async_send(_msg):
+            started.set()
+            await release.wait()
+
+        RsiAgentServerHandlers(ctx, send_push=async_send, harness_refs_provider=lambda: None)
+        callback = ctx.worker._push_callbacks["rsi.training.progress"]  # noqa: SLF001
+        delivery = asyncio.create_task(
+            callback(
+                "rsi.training.progress",
+                "t",
+                {"iteration": 5, "total_iterations": 5},
+            )
+        )
+
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert not delivery.done()
+        release.set()
+        await delivery
+
+    async def test_completed_status_waits_for_final_progress_delivery(self, ctx):
+        """Provider 完成后，COMPLETED 必须晚于最终进度推送。"""
+        progress_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def async_send(msg):
+            if msg["payload"]["event_type"] == "rsi.training.progress":
+                progress_started.set()
+                await release.wait()
+
+        RsiAgentServerHandlers(ctx, send_push=async_send, harness_refs_provider=lambda: None)
+
+        class Adapter:
+            def build_request(self, task_view, *, resume=False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                await on_event(
+                    EngineEvent(
+                        family="progress",
+                        kind="metric",
+                        task_id=request.task_id,
+                        payload={
+                            "iteration": 5,
+                            "total_iterations": 5,
+                            "score": None,
+                            "baseline": None,
+                        },
+                    )
+                )
+                return SimpleNamespace(status="completed")
+
+        ctx.register_adapters({"HARNESS": Adapter()})
+        task_id = _create(ctx, "final-progress-order")
+        ctx.worker.enqueue(task_id)
+
+        await asyncio.wait_for(progress_started.wait(), timeout=1)
+        assert ctx.store.get(task_id).status == TaskStatus.RUNNING.value
+        release.set()
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+        assert ctx.store.get(task_id).status == TaskStatus.COMPLETED.value
+
+        runner = ctx.worker._run_task  # noqa: SLF001
+        assert runner is not None
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
 
     def test_push_sync_send_unchanged(self, ctx):
         sent = []
