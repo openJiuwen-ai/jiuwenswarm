@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
+from markdown_it import MarkdownIt
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin import (
     markdown_rewrite_map as rewrite_map_module,
@@ -567,6 +568,50 @@ def test_broken_link_destination_stays_supported_as_literal_text():
 
     assert [slot.text for slot in unit.slots] == [markdown]
     assert unit.protected == ()
+
+
+def test_named_entity_stays_supported_as_one_visible_character():
+    # `&le;` renders as one visible char spanning several raw bytes; the slot
+    # carries the decoded text while its byte range covers the entity source.
+    markdown = "浓度&le;0.5的溶液"
+
+    unit = rewrite_map_module.build_rewrite_map(markdown).units[0]
+
+    assert [slot.text for slot in unit.slots] == ["浓度≤0.5的溶液"]
+    assert unit.protected == ()
+
+
+def test_multi_codepoint_named_entity_fails_closed():
+    # HTML5 named entities can decode to several code points (`&fjlig;` ->
+    # "fj"). Aligning only the first code point would misattribute the rest
+    # to the source following the entity, so the unit fails closed instead.
+    markdown = "荷兰语连字&fjlig;示例"
+
+    rewrite_map = rewrite_map_module.build_rewrite_map(markdown)
+
+    assert rewrite_map.units == ()
+    assert [region.kind for region in rewrite_map.unsupported_regions] == [
+        "unsupported_inline"
+    ]
+
+
+def test_cjk_friendly_rules_do_not_leak_into_stock_parsers():
+    # The CJK-friendly flanking is registered per parser instance: a stock
+    # markdown-it keeps CommonMark semantics (the `**` stays literal next to
+    # CJK punctuation) while the rewrite parser pairs it like the frontend.
+    markdown = "**要点。**的"
+
+    stock = MarkdownIt("commonmark", {"html": True}).enable(
+        ["table", "strikethrough"]
+    )
+    inline = next(token for token in stock.parse(markdown) if token.type == "inline")
+    rewrite_slots = [
+        slot.text
+        for slot in rewrite_map_module.build_rewrite_map(markdown).units[0].slots
+    ]
+
+    assert [token.type for token in inline.children] == ["text"]
+    assert rewrite_slots == ["要点。", "的"]
 
 
 @pytest.mark.parametrize(

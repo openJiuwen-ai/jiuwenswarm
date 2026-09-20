@@ -15,13 +15,22 @@ from markdown_it.common.utils import fromCodePoint, isValidEntityCode
 from markdown_it.token import Token
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.cjk_friendly_emphasis import (
-    apply_cjk_friendly_emphasis,
+    apply_cjk_friendly_rules,
 )
 
-# The rewrite map must classify exactly the paragraphs the relay-claw frontend
-# selection code treats as rewritable, so the parser here uses the frontend's
-# CJK-friendly emphasis rules. See cjk_friendly_emphasis for details.
-apply_cjk_friendly_emphasis()
+
+def _new_rewrite_parser() -> MarkdownIt:
+    """Parser matching the relay-claw frontend's Markdown semantics.
+
+    The rewrite map must classify exactly the paragraphs the frontend
+    selection code treats as rewritable, so this parser carries the
+    frontend's CJK-friendly emphasis rules (instance-scoped; all other
+    MarkdownIt instances keep stock CommonMark flanking). See
+    cjk_friendly_emphasis for details.
+    """
+    return apply_cjk_friendly_rules(
+        MarkdownIt("commonmark", {"html": True}).enable(["table", "strikethrough"])
+    )
 
 
 UnitType = Literal["heading", "paragraph", "list_item"]
@@ -333,10 +342,13 @@ _ENTITY_NAMED_RE = re.compile(r"&([a-z][a-z0-9]{1,31});", re.IGNORECASE)
 
 
 def _decode_entity_at(raw: str, index: int) -> tuple[str, int] | None:
-    """Decode a CommonMark character reference at ``raw[index:]``.
+    """Decode a single-character CommonMark reference at ``raw[index:]``.
 
     Returns ``(decoded character, raw length)``, or ``None`` when the source
-    does not hold a valid entity there (mirrors rules_inline/entity.py).
+    does not hold a valid entity there (mirrors rules_inline/entity.py) or
+    the entity decodes to more than one code point (HTML5 named ligatures
+    and combining sequences such as ``&fjlig;`` -> "fj"; those fail closed
+    so consumers never align only the first code point of an entity).
     """
     if index >= len(raw) or raw[index] != "&":
         return None
@@ -351,7 +363,9 @@ def _decode_entity_at(raw: str, index: int) -> tuple[str, int] | None:
     else:
         match = _ENTITY_NAMED_RE.match(tail)
         if match is not None and match.group(1) in entities:
-            return entities[match.group(1)], match.end()
+            decoded = entities[match.group(1)]
+            if len(decoded) == 1:
+                return decoded, match.end()
     return None
 
 
@@ -780,9 +794,7 @@ def _list_item_kind(tokens: list[Token], open_index: int, close_index: int) -> s
 def build_rewrite_map(markdown: str) -> MarkdownRewriteMap:
     """Classify blocks and map supported inline text to exact source bytes."""
     boundary_table = Utf8BoundaryTable(markdown)
-    parser = MarkdownIt("commonmark", {"html": True}).enable(
-        ["table", "strikethrough"]
-    )
+    parser = _new_rewrite_parser()
     tokens = parser.parse(markdown)
     source_lines = _SourceLines(markdown)
     units: list[RewriteUnit] = []
@@ -973,9 +985,7 @@ def _heading_visible_text(inline: Token) -> tuple[str, bool]:
 
 def build_document_anchor_index(markdown: str) -> DocumentAnchorIndex:
     """Index headings and same-document links across supported and unsupported blocks."""
-    parser = MarkdownIt("commonmark", {"html": True}).enable(
-        ["table", "strikethrough"]
-    )
+    parser = _new_rewrite_parser()
     tokens = parser.parse(markdown)
     source_lines = _SourceLines(markdown)
     boundaries = Utf8BoundaryTable(markdown)

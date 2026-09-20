@@ -9,7 +9,8 @@
 Ports the attention semantics of the relay-claw frontend parser stack
 (remark-cjk-friendly + remark-cjk-friendly-gfm-strikethrough, i.e.
 micromark-extension-cjk-friendly and its util) onto markdown-it-py by
-replacing ``StateInline.scanDelims``.
+swapping the emphasis/strikethrough inline rules on one parser instance for
+variants whose ``scanDelims`` is the CJK-friendly port below.
 
 Why: the deepresearch rewrite map must classify as rewritable exactly the
 paragraphs the frontend selection code does. Both sides decide whether a
@@ -45,16 +46,25 @@ Known, accepted divergence: the frontend allows single-tilde strikethrough
 markdown-it requires ``~~``. A lone ``~`` stays literal text on this side;
 that predates the CJK work and only affects rare tilde runs.
 
-The patch is process-wide: every ``MarkdownIt`` instance gets the new
-behavior once applied. In this codebase the only markdown_it users are the
-rewrite-map parser (patched on purpose) and ``document_rewrite._INLINE_PARSER``
-(link extraction only — emphasis flanking does not change which links are
-found; guarded by tests). HTML export uses python-markdown and the report
-runner runs in a separate process, so neither is affected.
+Scoping: :func:`apply_cjk_friendly_rules` swaps the rules on one parser
+instance only. Every other ``MarkdownIt`` in the process — including
+``document_rewrite._INLINE_PARSER`` and any instance a future module or
+third-party library creates — keeps stock CommonMark flanking, so the
+parsing difference cannot leak across modules. The rule bodies are verbatim
+copies of ``markdown_it.rules_inline.emphasis.tokenize`` and
+``markdown_it.rules_inline.strikethrough.tokenize`` (markdown-it-py 4.0.0,
+only the ``scanDelims`` call swapped); a markdown-it-py upgrade that touches
+those rules must refresh the copies. Their ``postProcess`` halves and the
+pairing algorithm stay stock and are not copied.
 """
 from __future__ import annotations
 
-from markdown_it.rules_inline.state_inline import Scanned, StateInline
+from markdown_it import MarkdownIt
+from markdown_it.rules_inline.state_inline import (
+    Delimiter,
+    Scanned,
+    StateInline,
+)
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.cjk_unicode_tables import (
     CJK,
@@ -156,32 +166,30 @@ def _is_space_or_punctuation(category: int) -> bool:
     return bool(category & (_WHITESPACE | _PUNCTUATION))
 
 
-def _cjk_scan_delims(self: StateInline, start: int, can_split_word: bool) -> Scanned:
-    """CJK-friendly replacement for StateInline.scanDelims.
+def _cjk_scan_delims(state: StateInline, start: int, can_split_word: bool) -> Scanned:
+    """CJK-friendly port of ``StateInline.scanDelims`` for attention markers.
 
-    ``can_split_word`` is kept for signature compatibility (markdown-it-py
-    names it ``canSplitWord``; both callers pass it positionally); the
-    branches below key off the marker character, mirroring how the micromark
-    forks define separate attention ('*'/'_') and strikethrough ('~')
-    tokenizers.
+    Callers (the two rules below) guarantee ``state.src[start]`` is one of
+    ``*``/``_``/``~``. ``can_split_word`` is kept for signature compatibility
+    with stock ``scanDelims`` (markdown-it-py names it ``canSplitWord``; both
+    rules pass it positionally); the branches below key off the marker
+    character, mirroring how the micromark forks define separate attention
+    ('*'/'_') and strikethrough ('~') tokenizers.
     """
-    marker = self.src[start]
-    if marker not in _ATTENTION_MARKERS:
-        # Unknown delimiter rule (third-party): keep stock markdown-it behavior.
-        return _stock_scan_delims(self, start, can_split_word)
+    marker = state.src[start]
 
     pos = start
-    maximum = self.posMax
-    while pos < maximum and self.src[pos] == marker:
+    maximum = state.posMax
+    while pos < maximum and state.src[pos] == marker:
         pos += 1
     count = pos - start
 
     # Neighbors as full code points: Python strings are scalar values, so the
     # UTF-16 surrogate gymnastics of the micromark forks is unnecessary.
-    previous = self.src[start - 1] if start > 0 else None
-    after = self.src[pos] if pos < maximum else None
+    previous = state.src[start - 1] if start > 0 else None
+    after = state.src[pos] if pos < maximum else None
     two_previous = (
-        self.src[start - 2] if start >= 2 and self.src[start - 2] != "\n" else None
+        state.src[start - 2] if start >= 2 and state.src[start - 2] != "\n" else None
     )
 
     before_raw = _classify_character(previous)
@@ -237,23 +245,98 @@ def _cjk_scan_delims(self: StateInline, start: int, can_split_word: bool) -> Sca
     return Scanned(can_open, can_close, count)
 
 
-_stock_scan_delims = StateInline.scanDelims
-_applied = False
+def _cjk_emphasis_tokenize(state: StateInline, silent: bool) -> bool:
+    """markdown-it-py ``emphasis.tokenize`` with CJK-friendly scanning.
+
+    Verbatim copy of ``markdown_it.rules_inline.emphasis.tokenize``
+    (markdown-it-py 4.0.0) with only the ``state.scanDelims`` call swapped
+    for ``_cjk_scan_delims``; the rule's ``postProcess`` half stays stock.
+    """
+    start = state.pos
+    marker = state.src[start]
+
+    if silent:
+        return False
+
+    if marker not in ("_", "*"):
+        return False
+
+    scanned = _cjk_scan_delims(state, state.pos, marker == "*")
+
+    for _ in range(scanned.length):
+        token = state.push("text", "", 0)
+        token.content = marker
+        state.delimiters.append(
+            Delimiter(
+                marker=ord(marker),
+                length=scanned.length,
+                token=len(state.tokens) - 1,
+                end=-1,
+                open=scanned.can_open,
+                close=scanned.can_close,
+            )
+        )
+
+    state.pos += scanned.length
+
+    return True
 
 
-def apply_cjk_friendly_emphasis() -> None:
-    """Install the CJK-friendly scanDelims process-wide (idempotent)."""
-    global _applied
-    if _applied:
-        return
-    StateInline.scanDelims = _cjk_scan_delims
-    _applied = True
+def _cjk_strikethrough_tokenize(state: StateInline, silent: bool) -> bool:
+    """markdown-it-py ``strikethrough.tokenize`` with CJK-friendly scanning.
+
+    Verbatim copy of ``markdown_it.rules_inline.strikethrough.tokenize``
+    (markdown-it-py 4.0.0) with only the ``state.scanDelims`` call swapped
+    for ``_cjk_scan_delims``; the rule's ``postProcess`` half stays stock.
+    """
+    start = state.pos
+    ch = state.src[start]
+
+    if silent:
+        return False
+
+    if ch != "~":
+        return False
+
+    scanned = _cjk_scan_delims(state, state.pos, True)
+    length = scanned.length
+
+    if length < 2:
+        return False
+
+    if length % 2:
+        token = state.push("text", "", 0)
+        token.content = ch
+        length -= 1
+
+    i = 0
+    while i < length:
+        token = state.push("text", "", 0)
+        token.content = ch + ch
+        state.delimiters.append(
+            Delimiter(
+                marker=ord(ch),
+                length=0,  # disable "rule of 3" length checks meant for emphasis
+                token=len(state.tokens) - 1,
+                end=-1,
+                open=scanned.can_open,
+                close=scanned.can_close,
+            )
+        )
+
+        i += 2
+
+    state.pos += scanned.length
+
+    return True
 
 
-def restore_stock_emphasis() -> None:
-    """Undo :func:`apply_cjk_friendly_emphasis` (for A/B tests only)."""
-    global _applied
-    if not _applied:
-        return
-    StateInline.scanDelims = _stock_scan_delims
-    _applied = False
+def apply_cjk_friendly_rules(parser: MarkdownIt) -> MarkdownIt:
+    """Swap emphasis/strikethrough rules on ``parser`` for CJK-friendly ones.
+
+    Instance-scoped: only ``parser`` changes behavior; every other
+    ``MarkdownIt`` instance in the process keeps stock CommonMark flanking.
+    """
+    parser.inline.ruler.at("emphasis", _cjk_emphasis_tokenize)
+    parser.inline.ruler.at("strikethrough", _cjk_strikethrough_tokenize)
+    return parser
