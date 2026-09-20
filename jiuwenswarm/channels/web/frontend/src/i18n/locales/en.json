@@ -1643,7 +1643,8 @@
       "updated": "Task updated successfully",
       "deleted": "Task deleted successfully",
       "statusUpdated": "Task status updated successfully",
-      "runNow": "Task triggered successfully"
+      "runNow": "Task triggered successfully",
+      "proactiveRunNow": "Recommendation check started in the background. It will decide whether to recommend anything and notify you of the result."
     },
     "preview": {
       "loading": "Loading next runs...",

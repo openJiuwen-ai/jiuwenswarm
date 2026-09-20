@@ -1634,7 +1634,8 @@
       "updated": "任务更新成功",
       "deleted": "任务删除成功",
       "statusUpdated": "任务状态更新成功",
-      "runNow": "任务已触发立即执行"
+      "runNow": "任务已触发立即执行",
+      "proactiveRunNow": "推荐任务已在后台启动，将自动判断是否需要推荐，结果稍后提示。"
     },
     "preview": {
       "loading": "正在加载下次触发时间...",

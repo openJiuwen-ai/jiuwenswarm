@@ -818,6 +818,7 @@ class CronSchedulerService:
             exec_user_id=str(job.user_id or "").strip() or None,
             exec_work_mode=job.work_mode or DEFAULT_WEB_WORK_MODE,
             exec_project_id=job.project_id or None,
+            manually_triggered=True,
         )
         # 普通 cron 原先先把本地构造的 ``cron_<timestamp>_<job>`` 返回给 Web，
         # 再在 wake 阶段向 AgentServer 创建真正的 session。两个 ID 不同，前端会
@@ -1037,6 +1038,8 @@ class CronSchedulerService:
         # Handle proactive.tick mode: send WebSocket request to AgentServer
         if job is not None and job.mode == "proactive.tick" and ev.kind == "wake":
             logger.info("[Cron] triggering proactive.tick for job=%s run_id=%s", job.id, ev.run_id)
+            previous_state = self._runs.get(ev.run_id)
+            manually_triggered = bool(previous_state and previous_state.manually_triggered)
             try:
                 # Create run state for tracking
                 tz = ZoneInfo(job.timezone)
@@ -1055,6 +1058,7 @@ class CronSchedulerService:
                     timezone=job.timezone,
                     exec_mode=normalize_cron_job_mode(job.mode),
                     exec_user_id=str(job.user_id or "").strip() or None,
+                    manually_triggered=manually_triggered,
                 )
                 self._runs[ev.run_id] = state
                 state.status = "running"
@@ -1078,16 +1082,28 @@ class CronSchedulerService:
                 if resp.ok:
                     success = resp.payload.get("success", False) if resp.payload else False
                     state.status = "succeeded" if success else "skipped"
-                    # success 现在表示"是否真的推送了推荐"(cooldown/无新内容/配额已满均为 False)。
-                    # 文案与实际一致：不再出现"已发送"但实际没内容的情况。
-                    state.result_text = "推荐已发送" if success else "本次无需推荐（冷却中或无新内容）"
+                    # 主 agent 在后台生成推荐；success 仅表示已经触发。
+                    state.result_text = "推荐已触发" if success else "本次未触发推荐（暂无合适内容、会话忙碌或未满足推荐条件）"
                     logger.info("[Cron] proactive.tick completed job=%s success=%s", job.id, success)
                 else:
                     state.status = "failed"
                     state.error = resp.payload.get("error", "unknown") if resp.payload else "unknown"
                     logger.warning("[Cron] proactive.tick failed job=%s: %s", job.id, state.error)
             except Exception as exc:
+                state = self._runs.get(ev.run_id)
+                if state is not None:
+                    state.status = "failed"
+                    state.error = str(exc)
+                    state.finished_at = self._now_fn()
                 logger.warning("[Cron] proactive.tick failed job=%s: %s", job.id, exc, exc_info=True)
+            state = self._runs.get(ev.run_id)
+            if manually_triggered and state is not None and state.status in {"skipped", "failed"}:
+                text = "主动推荐检查失败，请稍后重试" if state.status == "failed" else state.result_text
+                try:
+                    await self._push_to_targets(job, state, text=text or "本次未触发推荐", is_placeholder=False)
+                    state.pushed_final = True
+                except Exception as exc:
+                    logger.warning("[Cron] proactive result notification failed job=%s: %s", job.id, exc)
             # proactive.tick 走专属分支提前 return，跳过下方 643 通用 reschedule。
             # 必须显式排下一次 wake，否则只在 reload 时才排，期间漏跑
             # （实测：19:56 tick 完，20:00 整点不触发，因为没 reload）。
@@ -1840,7 +1856,7 @@ class CronSchedulerService:
 
     async def _on_push(self, job: CronJob, run_id: str) -> None:
         # proactive.tick 的结果在 wake 分支已同步产出：有推荐时由
-        # trigger_main_agent → send_push 直接推送内容；无推荐时静默。
+        # trigger_main_agent → send_push 直接推送内容；手动检查无推荐时由 wake 分支提示。
         # push 事件不再推 result_text 或"正在执行中"占位，避免 wake 的
         # tick_now 还在跑（LLM 耗时）时误推占位消息。
         if getattr(job, "mode", None) == "proactive.tick":
@@ -1942,6 +1958,10 @@ class CronSchedulerService:
                 "status": state.status,
             },
         }
+        if job.mode == "proactive.tick" and state.manually_triggered:
+            # Reuse the frontend's global toast path; retain cron/user metadata
+            # for tenant routing and avoid inserting a fake chat message.
+            payload_extra["source"] = "proactive_notification"
         channel_id = (job.targets or "").strip()
         if not channel_id:
             # targets 为空：占位/真实结果/push_update 补发均会在此静默丢失。
