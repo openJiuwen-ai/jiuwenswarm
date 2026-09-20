@@ -10,7 +10,7 @@ from openjiuwen.harness.tools.cron import create_cron_tools
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import HeartbeatRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools import acp_output_tools as acp
-from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import _CronToolsCronBackend, _NoCreateCronBackend
+from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import _CronToolsCronBackend, _RestrictedCronBackend
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronTools
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.timestamp_tool import convert_timestamp_to_utc8_time
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import matches_bound_method, resolve_tool_binding
@@ -74,8 +74,8 @@ def trusted_readonly_binding(invocation, session_id: str) -> bool:
             method = name.removeprefix("cron_")
             backend = _closure(func, create_cron_tools, method + "_wrapper")["backend"]
             # Unwrap only this concrete delegating implementation, never a subclass.
-            no_create = type(backend) is _NoCreateCronBackend  # pylint: disable=huawei-unidiomatic-typecheck
-            if no_create:
+            restricted = type(backend) is _RestrictedCronBackend  # pylint: disable=huawei-unidiomatic-typecheck
+            if restricted:
                 delegate = getattr(backend, method)
                 # The private delegate is the actual receiver; no public identity API exists.
                 inner = backend._inner  # pylint: disable=protected-access
