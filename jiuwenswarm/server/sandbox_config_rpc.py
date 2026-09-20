@@ -30,6 +30,7 @@ from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.platform import is_ohos_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +249,12 @@ def dispatch_sandbox_config_request(request: AgentRequest) -> AgentResponse:
 
     Returns: AgentResponse (ok + payload / error + code).
     """
+    if is_ohos_runtime():
+        return _err(
+            request,
+            "JiuwenBox sandbox is not supported on HarmonyOS",
+            code="UNSUPPORTED_PLATFORM",
+        )
     from jiuwenswarm.common.config import (
         get_sandbox_runtime,
         update_sandbox_runtime,

@@ -6,6 +6,7 @@ from collections.abc import Hashable, Iterable
 from typing import Any, ClassVar
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.platform import is_ohos_runtime
 from jiuwenswarm.common.utils import AsyncLRUCache, get_multi_tenant_user_workspace_dir
 from jiuwenswarm.common.mcp_config import invalidate_office_claw_mcp_schema_cache
 from jiuwenswarm.server.runtime.reload_result import (
@@ -699,6 +700,16 @@ class TenantAgentPool:
             # left behind when the key itself changes.
             if self._last_sync_revision.get(service_id) not in (None, revision):
                 invalidate_office_claw_mcp_schema_cache()
+
+            # OHOS 块（新增，收束鸿蒙端）：relay teams 载荷 → modes.team
+            # 注入各 agent spec.config（OHOS 团队模板的唯一来源；Windows
+            # 端 teams 载荷无人消费，行为与基线一致）。
+            if is_ohos_runtime():
+                from jiuwenswarm.server.runtime.ohos_team_sync import (
+                    inject_teams_into_sync_entries,
+                )
+
+                inject_teams_into_sync_entries(params, agents_payload, service_id)
 
             incoming_specs: dict[str, Any] = {}
             for entry in agents_payload:

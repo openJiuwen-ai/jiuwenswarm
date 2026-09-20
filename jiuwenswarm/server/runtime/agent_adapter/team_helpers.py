@@ -28,6 +28,7 @@ from openjiuwen.core.common.logging import server_logger
 from openjiuwen.harness import DeepAgent
 
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
+from jiuwenswarm.common.platform import is_ohos_runtime
 from jiuwenswarm.agents.harness.team.team_session_scope import TeamMonitorAttachOptions
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
 from jiuwenswarm.common.cron_team_completion import (
@@ -1887,6 +1888,15 @@ async def process_team_message_stream(
         # no pre-built parent DeepAgent required.
         runtime_context: dict[str, Any] = {}
         if config_base is not None:
+            # OHOS 块（新增，收束鸿蒙端）：relay tip 鉴权水合进团队成员
+            # 模型配置（缺它团队成员 LLM 调用会缺 Authorization 被 MaaS
+            # 拒绝 APIG.0303）。
+            if is_ohos_runtime():
+                from jiuwenswarm.server.runtime.ohos_team_sync import (
+                    hydrate_team_model_auth,
+                )
+
+                config_base = hydrate_team_model_auth(request, config_base)
             runtime_context["config_base"] = config_base
         if sessions_root is not None:
             runtime_context["sessions_root"] = sessions_root

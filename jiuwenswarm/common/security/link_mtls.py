@@ -13,20 +13,50 @@ import logging
 import os
 import ssl
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
 
-from openjiuwen_runtime.foundation.security.link_mtls_config import (
-    MODE_ENV,
-    MTLSDeploymentIdentity,
-    LinkMTLSMode,
-)
-from openjiuwen_runtime.foundation.security.link_profile import (
-    LinkProfile,
-    LinkProfileError,
-    load_service_identity,
-)
+try:  # openjiuwen_runtime is the enterprise mTLS/material backend; slim
+    # deployments (OHOS personal-edition bundle) do not ship it. The feature
+    # is opt-in and defaults to ``off`` — importing this module must not
+    # require the backend, only *enabling* mTLS does (see from_env).
+    from openjiuwen_runtime.foundation.security.link_mtls_config import (
+        MODE_ENV,
+        MTLSDeploymentIdentity,
+        LinkMTLSMode,
+    )
+    from openjiuwen_runtime.foundation.security.link_profile import (
+        LinkProfile,
+        LinkProfileError,
+        load_service_identity,
+    )
+
+    _RUNTIME_BACKEND = "openjiuwen_runtime"
+except ImportError:  # pragma: no cover - depends on deployment shape
+    _RUNTIME_BACKEND = None
+
+    MODE_ENV = "JIUWENSWARM_LINK_MTLS_MODE"
+
+    class LinkMTLSMode(str, Enum):
+        OFF = "off"
+        OBSERVE = "observe"
+        ENFORCE = "enforce"
+
+    class LinkProfileError(RuntimeError):
+        pass
+
+    class LinkProfile:  # never instantiated without the backend
+        def __init__(self, *_args, **_kwargs):
+            raise LinkProfileError("openjiuwen_runtime is not installed")
+
+    class MTLSDeploymentIdentity:  # never instantiated without the backend
+        def __init__(self, *_args, **_kwargs):
+            raise LinkProfileError("openjiuwen_runtime is not installed")
+
+    def load_service_identity(*_args, **_kwargs):  # pragma: no cover
+        raise LinkProfileError("openjiuwen_runtime is not installed")
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +79,17 @@ class LinkMTLSConfig:
 
     @classmethod
     def from_env(cls, *, role: str = "gateway") -> "LinkMTLSConfig":
+        if _RUNTIME_BACKEND is None:
+            # Backend absent: only the default ``off`` mode is servable. An
+            # explicit observe/enforce request means the deployment expects
+            # mTLS — fail loudly instead of silently degrading security.
+            raw_mode = _env(MODE_ENV)
+            if raw_mode and raw_mode != LinkMTLSMode.OFF.value:
+                raise LinkMTLSError(
+                    f"{MODE_ENV}={raw_mode} requires openjiuwen_runtime, "
+                    "which is not installed in this deployment"
+                )
+            return cls(mode=LinkMTLSMode.OFF)
         try:
             mode = LinkMTLSMode(_env(MODE_ENV) or "off")
         except ValueError as exc:
