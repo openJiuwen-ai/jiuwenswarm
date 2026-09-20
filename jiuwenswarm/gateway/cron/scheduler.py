@@ -873,6 +873,11 @@ class CronSchedulerService:
                 "model_name": job.model_name or None,
                 "cron_id": job.id,
                 "user_id": cron_user_id,
+                # 创建即带标题：标题若为空，则完全依赖首条用户消息的
+                # auto_title；run 在落盘前失败/被跳过（分配后 wake 未执行、
+                # CHAT_SEND 早期失败）会让会话永久空标题，前端显示"未命名
+                # 对话"。与 Web 普通会话创建时传 title 的做法对齐。
+                "title": str(job.name or "").strip(),
             },
             is_stream=False,
             timestamp=self._now_fn(),
@@ -1476,6 +1481,10 @@ class CronSchedulerService:
                 "content": content,
                 "timestamp": self._now_fn(),
                 "mode": mode,
+                # assistant 记录不触发 auto_title；会话分配失败的 run 会把
+                # 失败记录写到占位会话（cron_{ts}_{job}，无标题），这里带上
+                # job.name 让 AgentServer 侧回填空标题。
+                "title": str(job.name or "").strip(),
             },
             is_stream=False,
             timestamp=self._now_fn(),

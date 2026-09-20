@@ -384,6 +384,7 @@ def projection(
     project_id: str = "",
     value: dict | None = None,
     project_value: dict | None = None,
+    archived: bool | None = None,
 ) -> dict:
     """Lifecycle projection of one resource.
 
@@ -398,7 +399,9 @@ def projection(
         operation = None
     blocked = bool(value.get("blocked"))
     if kind == "session":
-        blocked = blocked or session_paths(resource_id)[1].exists()
+        blocked = blocked or (
+            session_paths(resource_id)[1].exists() if archived is None else archived
+        )
         if project_id:
             parent = projection("project", project_id, value=project_value)
             blocked = blocked or parent["execution_blocked"]

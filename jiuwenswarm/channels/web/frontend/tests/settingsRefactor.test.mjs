@@ -245,11 +245,11 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
-test('registry definition preserves the fixed six-module order and fails invalid registrations', () => {
+test('registry definition preserves the registered module order and fails invalid registrations', () => {
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*experimentalModule/,
+    /generalModule,\s*modelsModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
   for (const removedPath of [
@@ -1281,7 +1281,7 @@ test('Settings form dialogs share the same dirty-close contract without disablin
 test('Agent configuration entry points are disabled while the backend is connecting', () => {
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
   assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected\}/g)?.length, 2);
-  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 3);
+  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 9);
   assert.match(agentSettings, /<FormDialog[\s\S]*confirmDisabled=\{!isConnected\}/);
 });
 
@@ -1364,7 +1364,7 @@ test('legacy multimodal configuration remains custom while provider selections p
   assert.equal(legacyDraft.model_name, legacy.vision_model);
   assert.equal(legacyDraft.provider, legacy.vision_provider);
   assert.equal(legacyDraft.context_window_tokens, '256K');
-  assert.equal(legacyDraft.context_window_1m_enabled, false);
+  assert.equal('context_window_1m_enabled' in legacyDraft, false);
 
   const preset = {
     vendor_key: 'example',
@@ -1413,7 +1413,7 @@ test('legacy multimodal configuration remains custom while provider selections p
   assert.equal(editedDraft.plan, 'token_plan');
 });
 
-test('multimodal context windows accept mixed-case units and honor the 1M lock switch', () => {
+test('multimodal context windows accept mixed-case units and remain editable', () => {
   const draft = createMediaModelDraft(
     {
       vision_api_base: 'https://legacy.example/v1',
@@ -1425,21 +1425,21 @@ test('multimodal context windows accept mixed-case units and honor the 1M lock s
     'vision',
   );
   assert.equal(draft.context_window_tokens, '200K');
-  assert.equal(draft.context_window_1m_enabled, false);
 
   const updates = buildMediaModelConfigUpdates(
-    { ...draft, context_window_tokens: '200 k', context_window_1m_enabled: true },
+    { ...draft, context_window_tokens: '200 k' },
     { reasoning: null, token_plan: [], coding_plan: [], custom_api: [] },
     'vision',
     false,
   );
-  assert.equal(updates.vision_context_window_tokens, '1048576');
+  assert.equal(updates.vision_context_window_tokens, '204800');
 
   const dialog = source('src/features/settings/modules/agent/MediaModelConfigDialog.tsx');
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
-  assert.match(dialog, /disabled: contextWindow1mEnabled/);
-  assert.match(dialog, /settingsPanel\.models\.contextWindow1mHint/);
-  assert.match(agentSettings, /disabled: contextWindow1mEnabled/);
+  assert.match(dialog, /<ContextWindowField/);
+  assert.doesNotMatch(dialog, /contextWindow1mEnabled/);
+  assert.match(agentSettings, /<ContextWindowField/);
+  assert.doesNotMatch(agentSettings, /contextWindow1mEnabled/);
 });
 
 test('SettingRow exposes a business-agnostic subSettings slot for dependent rows', () => {
@@ -1507,11 +1507,11 @@ test('Settings tags use the shared UI Tag component and semantic variants', () =
   const modelsSettings = source('src/features/settings/modules/models/ModelsSettings.tsx');
   const settingRow = source('src/features/settings/components/SettingRow.tsx');
 
-  assert.match(generalSettings, /<Tag\s+variant=\{connectionVariant\}\s+role="status">/s);
+  assert.match(generalSettings, /<Tag\s+variant=\{connectionVariant\}\s+role="status"[^>]*>/s);
   assert.match(generalSettings, /const connectionVariant:\s*TagVariant/);
-  assert.match(modelsSettings, /<Tag\s+variant="info">\{t\('settingsPanel\.models\.primary'\)\}<\/Tag>/);
-  assert.match(modelsSettings, /<Tag\s+variant="neutral">\{t\('settingsPanel\.models\.groupDefault'\)\}<\/Tag>/);
-  assert.match(modelsSettings, /<Tag\s+variant="neutral">\{t\('settingsPanel\.models\.agentOsReadonly'\)\}<\/Tag>/);
+  assert.match(modelsSettings, /<Tag\s+variant="info"[^>]*>\{t\('settingsPanel\.models\.primary'\)\}<\/Tag>/s);
+  assert.match(modelsSettings, /<Tag\s+variant="neutral"[^>]*>\{t\('settingsPanel\.models\.groupDefault'\)\}<\/Tag>/s);
+  assert.match(modelsSettings, /<Tag\s+variant="neutral"[^>]*>\{t\('settingsPanel\.models\.agentOsReadonly'\)\}<\/Tag>/s);
   assert.match(uiIndex, /export \{ Tag, type TagProps, type TagVariant \} from '\.\/Tag\/Tag'/);
   assert.match(tagSource, /export type TagVariant = 'success' \| 'info' \| 'warning' \| 'danger' \| 'neutral'/);
   assert.match(
@@ -1774,8 +1774,8 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.match(channelList, /className="settings-channels-panel__add-configuration"/);
   assert.match(channelList, /className="settings-channels-panel__account-actions"/);
   assert.match(channelList, /import \{ Button, Tag \} from '[^']*components\/ui'/);
-  assert.match(channelList, /<Tag variant=\{account\.configured \? 'success' : 'neutral'\}>/);
-  assert.match(channelList, /<Tag variant=\{account\.enabled \? 'success' : 'neutral'\}>/);
+  assert.match(channelList, /<Tag\s+variant=\{account\.configured \? 'success' : 'neutral'\}[^>]*>/s);
+  assert.match(channelList, /<Tag\s+variant=\{account\.enabled \? 'success' : 'neutral'\}[^>]*>/s);
   assert.match(channelList, /t\('common\.modify'\)/);
   assert.match(channelList, /t\('channels\.unbind'\)/);
   assert.match(channelList, /title=\{t\(account\.enabled \? 'channels\.disable' : 'channels\.enable'\)\}/);

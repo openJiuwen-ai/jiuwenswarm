@@ -2151,6 +2151,29 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             message = message.replace(self.desktop_token, "[REDACTED]")
         return message
 
+    # Vite 产物文件名携带内容哈希（assets/<name>-<hash>.<ext>），内容变更即
+    # 换文件名，可安全长缓存（immutable 让浏览器跳过条件请求）；index.html
+    # 与 SPA fallback 引用的是哈希名，必须每次回源验证才能拿到新版本引用。
+    _IMMUTABLE_ASSET_RE = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$")
+    _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+    _REVALIDATE_CACHE_CONTROL = "no-cache"
+
+    @classmethod
+    def _cache_control_for_static(cls, rel_path: str) -> str:
+        if cls._IMMUTABLE_ASSET_RE.match(rel_path):
+            return cls._IMMUTABLE_CACHE_CONTROL
+        return cls._REVALIDATE_CACHE_CONTROL
+
+    def end_headers(self) -> None:
+        # 缓存策略在 send_head 里决定、这里统一落头：super().send_head() 内部
+        # 就会调用 end_headers，之后再追加头已来不及。非静态路径不设置该
+        # 标记，API/代理响应仍走各自的 no-store。
+        cache_control = getattr(self, "_static_cache_control", None)
+        if cache_control:
+            self._static_cache_control = None
+            self.send_header("Cache-Control", cache_control)
+        super().end_headers()
+
     def send_head(self):
         parsed = urlparse(self.path)
         req_path = unquote(parsed.path)
@@ -2170,8 +2193,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return None
 
         if in_base and target.exists():
+            self._static_cache_control = self._cache_control_for_static(rel_path)
             return super().send_head()
 
+        self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
         self.path = "/index.html"
         return super().send_head()
 

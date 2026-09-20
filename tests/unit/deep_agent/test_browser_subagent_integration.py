@@ -27,10 +27,27 @@ from openjiuwen.core.single_agent.rail.base import (
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common import electron_sideview
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep_interface_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.playwright_mcp_runtime import PlaywrightMcpLaunch
+
+
+@pytest.fixture(autouse=True)
+def isolate_browser_runtime_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Adapter synchronization writes to os.environ directly. Keep every test's
+    # launch selection independent of earlier tests and restore all its writes.
+    isolated = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith((
+            "BROWSER_", "PLAYWRIGHT_", "JIUWENSWARM_ELECTRON",
+            "JIUWENSWARM_BROWSER_", "JIUWENSWARM_PLAYWRIGHT_MCP_",
+        ))
+    }
+    monkeypatch.setattr(os, "environ", isolated)
+    monkeypatch.setattr(electron_sideview, "_discovery_original", {})
+    monkeypatch.setattr(electron_sideview, "_discovery_applied", {})
 
 
 class MockLLMModel:
@@ -166,6 +183,8 @@ def test_browser_runtime_environment_tracks_mode_and_chrome_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _TestableJiuWenSwarmDeepAdapter()
+    monkeypatch.delenv("PLAYWRIGHT_MCP_TARGET_ID", raising=False)
+    monkeypatch.delenv("PLAYWRIGHT_MCP_TARGET_RESOLVER", raising=False)
     monkeypatch.setenv("BROWSER_MANAGED_BINARY", "C:\\stale\\chrome.exe")
     monkeypatch.setattr(
         deep_interface_module,
@@ -239,6 +258,62 @@ def test_browser_runtime_bundle_remains_lazy_when_disabled(
     assert "JIUWENSWARM_PLAYWRIGHT_MCP_LAUNCH_SOURCE" not in os.environ
     assert "JIUWENSWARM_PLAYWRIGHT_MCP_MANAGED_COMMAND" not in os.environ
     assert "JIUWENSWARM_PLAYWRIGHT_MCP_MANAGED_ARGS" not in os.environ
+
+
+@pytest.mark.parametrize("binding_key,binding_value", [
+    ("PLAYWRIGHT_MCP_TARGET_ID", "sideview-target"),
+    ("PLAYWRIGHT_MCP_TARGET_RESOLVER", "http://127.0.0.1:43124"),
+])
+def test_browser_runtime_environment_preserves_electron_target_args(
+    monkeypatch: pytest.MonkeyPatch,
+    binding_key: str,
+    binding_value: str,
+) -> None:
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    target_args = json.dumps(
+        [
+            "-y",
+            "--package",
+            "@playwright/mcp@0.0.78",
+            "node",
+            "/electron/target_mcp_wrapper.cjs",
+        ],
+        separators=(",", ":"),
+    )
+    # Match the Electron launcher contract, not just one stale target variable.
+    monkeypatch.setenv("JIUWENSWARM_ELECTRON", "1")
+    monkeypatch.setenv("BROWSER_DRIVER", "remote")
+    monkeypatch.setenv(binding_key, binding_value)
+    monkeypatch.setenv("PLAYWRIGHT_MCP_ARGS", target_args)
+    monkeypatch.setenv("BROWSER_MANAGED_ARGS", "--headless=new")
+
+    adapter._sync_browser_runtime_environment(
+        {"browser": {"chrome_path": "", "headless": True}},
+        runtime_enabled=True,
+    )
+
+    assert os.environ["PLAYWRIGHT_MCP_ARGS"] == target_args
+    assert "BROWSER_MANAGED_ARGS" not in os.environ
+
+
+@pytest.mark.parametrize("driver", ["managed", "extension"])
+def test_browser_runtime_environment_respects_external_driver_with_stale_target(
+    monkeypatch: pytest.MonkeyPatch,
+    driver: str,
+) -> None:
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    monkeypatch.setenv("BROWSER_DRIVER", driver)
+    monkeypatch.setenv("PLAYWRIGHT_MCP_TARGET_ID", "stale-electron-target")
+    monkeypatch.setattr(
+        deep_interface_module, "resolve_playwright_mcp_launch",
+        lambda: PlaywrightMcpLaunch("bundled", "node", ("/bundled/cli.js",), "0.0.78"),
+    )
+    adapter._sync_browser_runtime_environment(
+        {"browser": {"chrome_path": "/chrome", "headless": True}}, runtime_enabled=True,
+    )
+    assert os.environ["BROWSER_DRIVER"] == driver
+    assert json.loads(os.environ["PLAYWRIGHT_MCP_ARGS"]) == ["/bundled/cli.js", "--headless"]
+    assert os.environ["BROWSER_MANAGED_ARGS"] == "--headless=new"
 
 
 def test_deep_adapter_subagents_includes_browser_by_default_when_runtime_enabled(

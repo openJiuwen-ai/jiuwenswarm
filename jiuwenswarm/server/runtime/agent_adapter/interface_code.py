@@ -74,6 +74,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.electron_sideview import apply_session_sideview_target
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
@@ -2058,6 +2059,20 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     ),
                 )
                 self._prepare_browser_runtime_security(browser_spec)
+                # Electron 每会话隔离：把本会话 sideview 的 CDP TargetID 注入
+                # browser subagent 的 MCP env（与 swarm.browser_agent 同一契约；
+                # 放在安全加固之后，注入的 env 落在最终 guarded settings 之上。
+                # resolver 不可用时返回原 settings，回退 openjiuwen 默认行为）。
+                _electron_session_id = str(
+                    getattr(self, "_parent_session_id", "") or ""
+                ).strip()
+                if (
+                    _electron_session_id
+                    and (browser_spec.factory_kwargs or {}).get("settings") is not None
+                ):
+                    browser_spec.factory_kwargs["settings"] = apply_session_sideview_target(
+                        browser_spec.factory_kwargs["settings"], _electron_session_id
+                    )
                 browser_spec.factory_kwargs["auto_create_workspace"] = False
                 subagents.append(browser_spec)
 

@@ -181,12 +181,10 @@
       "protocol": "Protocol",
       "vendor": "Model provider",
       "model": "Model",
-      "contextWindow": "Model context configuration",
+      "contextWindow": "Model context window",
       "contextWindowPlaceholder": "For example, 256K, 1M, or 262144",
-      "contextWindowHint": "Enter a positive token count. Plain numbers and K/M units are supported case-insensitively, such as 256K, 200k, or 1310720.",
-      "contextWindow1m": "Enable 1M context window",
-      "contextWindow1mHint": "When enabled, the context window is fixed at 1M and the model context configuration cannot be edited. Confirm that the model and current provider support 1M context first.",
-      "contextWindow1mWarning": "Make sure the model and current provider support a 1M context window.",
+      "contextWindowHint": "Enter a positive token count; plain numbers and K/M units are supported case-insensitively. You can also choose a common value next to the field.",
+      "contextWindowPresets": "Common context windows",
       "vendorPlaceholder": "Select",
       "selectVendor": "Select model provider",
       "searchVendor": "Search model providers",
@@ -444,7 +442,10 @@
         "title": "Enable RSI",
         "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
-      "trajectory_ui_enabled": { "title": "Enable trajectory UI", "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path." },
+      "trajectory_ui_enabled": {
+        "title": "Enable trajectory UI",
+        "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
+      },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
         "description": "Show a Full-duplex action when the composer is empty; it shares the entire screen and continuously listens to the microphone."
@@ -493,7 +494,6 @@
     "validation": {
       "required": "This field is required",
       "integerRange": "Enter an integer from {{min}} to {{max}}"
-
     }
   },
   "trajectory": {
@@ -785,6 +785,9 @@
     "editTaskDropAttachments": "Editing will remove the {{count}} attachment(s) carried by this task. Continue?",
     "holdToSpeak": "Hold to speak",
     "send": "Send (Enter)",
+    "agentGroupDeletedTitle": "Expert Team Deleted",
+    "agentGroupDeletedDescription": "The Expert Team bound to this conversation has been deleted and can no longer be used. Chat history is still available.",
+    "placeholderAgentGroupDeleted": "This Expert Team has been deleted",
     "stop": "Stop",
     "taskFullDuplexStart": "Share the entire screen and start a Full-duplex conversation",
     "taskFullDuplexStarting": "Starting Full-duplex conversation",
@@ -1670,6 +1673,18 @@
   "browser": {
     "errors": {
       "loadPath": "Failed to load browser settings"
+    },
+    "pane": {
+      "panels": "Browser panels",
+      "mainPanel": "Main browser",
+      "tabLabel": "Browser",
+      "closeTab": "Close browser",
+      "back": "Back",
+      "forward": "Forward",
+      "reload": "Reload",
+      "stop": "Stop",
+      "addressPlaceholder": "Enter URL or search",
+      "unavailable": "Built-in browser unavailable"
     }
   },
   "logsPanel": {
@@ -1846,15 +1861,15 @@
       "autoCollectLabel": "Auto fetch",
       "autoCollectHint": "Fetch automatically at the chosen frequency",
       "timeRangeLabel": "Time Range",
-    "timeRangeWeek": "Last Week",
-    "timeRangeMonth": "Last Month",
-    "timeRangeQuarter": "Last Quarter",
-    "timeRangeCustom": "Custom",
-    "dateRangeTitle": "Select Date Range",
-    "dateRangePlaceholder": "Select a date range",
-    "dateRangeRequired": "Select a custom date range",
-    "addUrl": "+ Add",
-    "frequencyLabel": "Auto fetch frequency",
+      "timeRangeWeek": "Last Week",
+      "timeRangeMonth": "Last Month",
+      "timeRangeQuarter": "Last Quarter",
+      "timeRangeCustom": "Custom",
+      "dateRangeTitle": "Select Date Range",
+      "dateRangePlaceholder": "Select a date range",
+      "dateRangeRequired": "Select a custom date range",
+      "addUrl": "+ Add",
+      "frequencyLabel": "Auto fetch frequency",
       "frequencyHour": "Every {{n}} hour(s)",
       "frequencyDay": "Every {{n}} day(s)",
       "frequencyEvery": "Every",
@@ -1865,7 +1880,7 @@
       "advancedConfig": "Advanced Settings",
       "maxItemsRangeError": "Max items must be 1-10000, or empty for default",
       "previousStep": "Previous",
-    "submit": "Add",
+      "submit": "Add",
       "save": "Save",
       "notConfigured": "Personal context is not configured. Enable it in Settings first.",
       "providerUnauthorized": "Not authorized. Authorize it in Settings first.",
@@ -1985,7 +2000,8 @@
     },
     "mySkillsGroups": {
       "added": "Added Skills",
-      "builtin": "Built-in Skills"
+      "builtin": "Built-in Skills",
+      "skillPack": "Skill Packs"
     },
     "publishFilter": {
       "all": "All",
@@ -1996,6 +2012,10 @@
       "skill": "Skill Pack",
       "team": "Team Skills",
       "multimodal": "Multimodal"
+    },
+    "proprietaryLabels": {
+      "thirdParty": "Third-party",
+      "thirdPartyHint": "Provided by a third party, not built in-house"
     },
     "marketplaceCategories": {
       "all": "All",
@@ -2014,6 +2034,7 @@
     "noEnabledSkills": "No enabled skills",
     "noBuiltinSkills": "No builtin skills",
     "setEnabledError": "Failed to set skill enabled status",
+    "packBlockedHint": "This skill pack contains uninstalled skills. Install them under \"Included Skills\" before enabling.",
     "setEnabledSuccess": "Skill {name} enabled",
     "setDisabledSuccess": "Skill {name} disabled",
     "marketplaceTabs": {
@@ -2176,6 +2197,17 @@
     "featuredTeamSkills": "Featured Team Skills",
     "featuredSkills": "Featured Skills",
     "noMatches": "No matching skills",
+    "featuredSkillPacks": "Featured Skill Packs",
+    "allSkillPacks": "All Skill Packs",
+    "skillPackTag": "Skill Pack",
+    "memberCountSuffix": "{{count}} skills",
+    "includedSkills": "Included Skills",
+    "noPackMembers": "No included skills",
+    "memberUnavailable": "Unavailable",
+    "memberBlockedReasonDisabled": "Disabled",
+    "memberBlockedReasonMissing": "Missing",
+    "memberBlockedReasonInvalid": "Invalid",
+    "memberBlockedReasonUninstalled": "Uninstalled",
     "viewMode": {
       "list": "List view",
       "grid": "Grid view"
@@ -2673,7 +2705,11 @@
     "confirm": {
       "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone."
     },
-    "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}", "moreTagsTooltip": "More tags: {{tags}}" },
+    "card": {
+      "open": "Open {{name}} details",
+      "actions": "Actions for {{name}}",
+      "moreTagsTooltip": "More tags: {{tags}}"
+    },
     "states": {
       "installed": "Installed",
       "loadError": "Unable to load the Expert list. Try again.",
@@ -3794,8 +3830,14 @@
     "schedule": {
       "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
       "interval": { "label": "Every", "unit": "minutes, return to this session" },
-      "cron": { "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)." },
-      "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed", "dateLabel": "Date", "timeLabel": "Time" },
+      "cron": {
+        "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)."
+      },
+      "once": {
+        "hint": "Pick a date and time; the job fires once at that moment and is then marked completed",
+        "dateLabel": "Date",
+        "timeLabel": "Time"
+      },
       "summary": {
         "interval": "Return to this session every {{minutes}} min",
         "cron": "{{expr}} ({{timezone}}), return to this session",

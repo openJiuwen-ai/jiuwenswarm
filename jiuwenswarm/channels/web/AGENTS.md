@@ -133,6 +133,7 @@
 | `components/HarnessPackagePanel` | `harness-package-panel` | harness 包面板 |
 | `components/UpdatePanel` | `update-panel` | 更新面板 |
 | `components/BrowserPanel` | `browser-panel` | 浏览器面板 |
+| `components/DesktopBrowserPane` | `desktop-browser` | Electron 浏览器面板及成员页面切换 |
 | `components/ChannelsPanel` | `channels-panel` | 频道面板 |
 | `features/modelSetupGuide` | `model-setup-guide` | 模型配置引导 |
 | `features/code-mode` | `code-mode` | 代码模式;代码审查面板 |

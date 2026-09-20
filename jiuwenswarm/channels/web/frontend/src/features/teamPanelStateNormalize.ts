@@ -1,4 +1,4 @@
-export type TeamPanelActiveTab = 'planning' | 'team' | 'artifacts' | 'review';
+export type TeamPanelActiveTab = 'planning' | 'team' | 'artifacts' | 'review' | 'browser';
 export type TeamPanelDetailTab = 'members' | 'group';
 
 export interface TeamPanelState {
@@ -20,6 +20,7 @@ const VALID_ACTIVE_TABS = new Set<TeamPanelActiveTab>([
   'team',
   'artifacts',
   'review',
+  'browser',
 ]);
 const VALID_DETAIL_TABS = new Set<TeamPanelDetailTab>(['members', 'group']);
 

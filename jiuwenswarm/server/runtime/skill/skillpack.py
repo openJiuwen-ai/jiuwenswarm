@@ -14,6 +14,7 @@ import yaml
 
 SKILLPACK_KIND = "skillpack"
 SKILLPACK_SKILL_TYPE = "skillpack"
+MEMBER_BACKUP_DIRNAME = "_member_backup"
 
 _FRONTMATTER_RE = re.compile(r"^(?:\s*\n)*---\s*\n(.*?)\n---\s*\n?(.*)", re.DOTALL)
 _WORKFLOW_GRAPH_RE = re.compile(
@@ -239,6 +240,10 @@ def compute_skillpack_status(
     blocked: list[dict[str, str]] = []
     for member in definition.members:
         summary = _inspect_member(skills_dir, member, enabled_for)
+        if summary.get("blocking_reason") == "missing":
+            summary["restorable"] = (
+                skills_dir / definition.name / MEMBER_BACKUP_DIRNAME / member
+            ).is_dir()
         summaries.append(summary)
         reason = summary.get("blocking_reason")
         if isinstance(reason, str) and reason:
@@ -321,6 +326,279 @@ def referencing_skillpacks(skills_dir: Path, member_name: str) -> list[str]:
         if member_name in definition.members:
             references.append(child.name)
     return sorted(references)
+
+
+# ---------------------------------------------------------------------------
+# Container SkillPack（zip 解压形态）
+#
+# 市场技能包 zip 内部根是 ``skills/`` 目录，原样解压后形成
+# ``<workspace>/skills/<容器名>/skills/<成员技能>/SKILL.md`` 的嵌套结构。
+# 容器根下没有 SKILL.md，不满足 SDD-0010 标准包契约，但应当整体作为
+# 一个技能包条目展示，成员即其 ``skills/`` 子目录内的技能。
+# ---------------------------------------------------------------------------
+
+CONTAINER_SKILLS_DIRNAME = "skills"
+
+
+def _dir_has_root_skill_md(directory: Path) -> bool:
+    """Return whether the directory carries a root SKILL.md document."""
+
+    return (directory / "SKILL.md").is_file() or (directory / "skill.md").is_file()
+
+
+def container_members_root(container_dir: Path) -> Path | None:
+    """Return the directory whose direct children are container members.
+
+    支持两种 zip 解压形态：
+    - ``<容器>/skills/<成员>/SKILL.md``（解压工具先建了一层容器目录）
+    - ``<容器>/<成员>/SKILL.md``（zip 的 ``skills/`` 根直接落在 skills 目录下）
+    """
+
+    inner = container_dir / CONTAINER_SKILLS_DIRNAME
+    if inner.is_dir() and any(
+        sub.is_dir() and _dir_has_root_skill_md(sub) for sub in inner.iterdir()
+    ):
+        return inner
+    if any(
+        sub.is_dir() and _dir_has_root_skill_md(sub) for sub in container_dir.iterdir()
+    ):
+        return container_dir
+    return None
+
+
+# 兼容别名：模块内部既有调用沿用私有名
+_container_members_root = container_members_root
+
+
+def is_container_skillpack(skill_dir: Path | None) -> bool:
+    """Return whether the directory is an unzipped SkillPack container.
+
+    识别条件：根下没有 SKILL.md，但直接子目录（或其 ``skills/``
+    子目录的直接子目录）中存在携带 SKILL.md 的成员技能目录。
+    """
+
+    if skill_dir is None or not skill_dir.is_dir():
+        return False
+    if _dir_has_root_skill_md(skill_dir):
+        return False
+    return _container_members_root(skill_dir) is not None
+
+
+def container_member_backup_dir(container_dir: Path) -> Path:
+    """Return the backup root holding member copies captured at uninstall.
+
+    根目录以 ``_`` 开头，会被 _container_members_root / skills.list 等
+    目录扫描跳过，因此备份不会被当成成员或独立技能列出。
+    """
+
+    return container_dir / CONTAINER_SKILLS_DIRNAME / MEMBER_BACKUP_DIRNAME
+
+
+def member_backup_dir(pack_dir: Path) -> Path:
+    """Return the backup root for either SkillPack shape.
+
+    标准包备份在包根 ``_member_backup/``，容器包备份在成员根
+    ``skills/_member_backup/``；两者都以 ``_`` 开头从而被成员扫描跳过。
+    """
+
+    if is_container_skillpack(pack_dir):
+        return container_member_backup_dir(pack_dir)
+    return pack_dir / MEMBER_BACKUP_DIRNAME
+
+
+def summarize_member_dir(member_dir: Path, *, enabled: bool) -> dict[str, Any]:
+    """Build one member summary dict from a member skill directory."""
+
+    try:
+        frontmatter, _ = _read_skill_document(member_dir / "SKILL.md")
+        raw_name = frontmatter.get("name")
+        raw_description = frontmatter.get("description")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        description = (
+            raw_description.strip() if isinstance(raw_description, str) else ""
+        )
+        kind = str(frontmatter.get("kind") or "").strip().casefold()
+        if not name or not description or kind not in {"", "skill", "skillpack"}:
+            raise SkillPackValidationError("member is not an ordinary Skill")
+        _validate_skill_id(name, "member name")
+    except SkillPackValidationError:
+        return {
+            "name": member_dir.name,
+            "display_name": member_dir.name,
+            "description": "",
+            "enabled": False,
+            "available": False,
+            "blocking_reason": "invalid",
+        }
+
+    return {
+        "name": name,
+        "display_name": str(frontmatter.get("display_name") or name).strip() or name,
+        "description": description,
+        "enabled": enabled,
+        "available": True,
+        "blocking_reason": None if enabled else "disabled",
+    }
+
+
+def find_container_member_dir(container_dir: Path, member_name: str) -> Path | None:
+    """Locate a member skill directory inside a container by name.
+
+    成员名匹配目录名或 SKILL.md frontmatter 的 ``name``；供 skills.get /
+    skills.toggle 对容器成员的寻址使用。找不到返回 None。
+    """
+
+    if not member_name:
+        return None
+    root = _container_members_root(container_dir)
+    if root is None:
+        return None
+    for sub in sorted(root.iterdir(), key=lambda p: p.name):
+        if not sub.is_dir() or not _dir_has_root_skill_md(sub):
+            continue
+        if sub.name == member_name:
+            return sub
+        try:
+            frontmatter, _ = _read_skill_document(sub / "SKILL.md")
+        except SkillPackValidationError:
+            continue
+        fm_name = frontmatter.get("name")
+        if isinstance(fm_name, str) and fm_name.strip() == member_name:
+            return sub
+    return None
+
+
+def _backup_member_summary(backup_dir: Path, *, name: str) -> dict[str, Any]:
+    """Build a member summary from a backup copy captured at uninstall.
+
+    卸载成员的目录已从成员根移除，改读包内备份的 SKILL.md 还原
+    展示信息；成员不可用且可通过单个「安装」操作从备份恢复。
+    """
+
+    summary: dict[str, Any] = {
+        "name": name,
+        "display_name": name,
+        "description": "",
+        "enabled": False,
+        "available": False,
+        "blocking_reason": "uninstalled",
+        "restorable": True,
+    }
+    try:
+        frontmatter, _ = _read_skill_document(backup_dir / "SKILL.md")
+    except SkillPackValidationError:
+        return summary
+    raw_name = frontmatter.get("name")
+    raw_description = frontmatter.get("description")
+    raw_display = frontmatter.get("display_name")
+    if isinstance(raw_description, str) and raw_description.strip():
+        summary["description"] = raw_description.strip()
+    if isinstance(raw_name, str) and raw_name.strip():
+        summary["name"] = raw_name.strip()
+    if isinstance(raw_display, str) and raw_display.strip():
+        summary["display_name"] = raw_display.strip()
+    return summary
+
+
+def _uninstalled_backup_members(
+    backup_root: Path,
+    *,
+    known_names: set[str],
+) -> list[dict[str, Any]]:
+    """Summarize backup copies whose member dir is absent from the pack.
+
+    仅收集成员根中已不存在的备份（仍安装的成员由常规扫描列出），
+    按 name 排序保证输出稳定。
+    """
+
+    members: list[dict[str, Any]] = []
+    if not backup_root.is_dir():
+        return members
+    for sub in sorted(backup_root.iterdir(), key=lambda p: p.name):
+        if sub.name.startswith("_") or not sub.is_dir() or not _dir_has_root_skill_md(sub):
+            continue
+        if sub.name in known_names:
+            continue
+        members.append(_backup_member_summary(sub, name=sub.name))
+    return members
+
+
+def container_pack_members(
+    container_dir: Path,
+    *,
+    enabled_for: Callable[[str], bool],
+) -> list[dict[str, Any]]:
+    """Collect member summaries from a container's member directories.
+
+    卸载过的成员（其备份留在 ``skills/_member_backup/``）也会以
+    ``available: False / blocking_reason: "uninstalled"`` 条目列出，
+    供前端展示「安装」按钮从备份恢复。
+    """
+
+    root = _container_members_root(container_dir)
+    members: list[dict[str, Any]] = []
+    known: set[str] = set()
+    if root is None:
+        return members
+    for sub in sorted(root.iterdir(), key=lambda p: p.name):
+        if sub.name.startswith("_") or not sub.is_dir() or not _dir_has_root_skill_md(sub):
+            continue
+        summary = summarize_member_dir(sub, enabled=enabled_for(sub.name))
+        members.append(summary)
+        # 同时记录目录名与 frontmatter name，避免备份去重时漏判
+        known.add(sub.name)
+        known.add(str(summary.get("name") or ""))
+    known.discard("")
+    members.extend(
+        _uninstalled_backup_members(
+            container_member_backup_dir(container_dir),
+            known_names=known,
+        )
+    )
+    return members
+
+
+def _iter_container_pack_roots(container_dir: Path):
+    """Yield member dirs declaring ``kind: skillpack``, sorted by name."""
+
+    root = _container_members_root(container_dir)
+    if root is None:
+        return
+    for sub in sorted(root.iterdir(), key=lambda p: p.name):
+        if not sub.is_dir() or not _dir_has_root_skill_md(sub):
+            continue
+        try:
+            frontmatter, _ = _read_skill_document(sub / "SKILL.md")
+        except SkillPackValidationError:
+            continue
+        if str(frontmatter.get("kind") or "").strip().casefold() == SKILLPACK_KIND:
+            yield frontmatter, sub
+
+
+def container_pack_description(container_dir: Path) -> str:
+    """Return the container description, preferring an inner SkillPack root."""
+
+    for frontmatter, _sub in _iter_container_pack_roots(container_dir):
+        raw = frontmatter.get("description")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return ""
+
+
+def read_container_pack_body(container_dir: Path) -> str:
+    """Return the markdown body of the inner SkillPack root, if any.
+
+    容器详情的内容详情页签展示包本体的说明文档；容器内没有
+    ``kind: skillpack`` 成员时返回空串。
+    """
+
+    for _frontmatter, sub in _iter_container_pack_roots(container_dir):
+        try:
+            _frontmatter, body = _read_skill_document(sub / "SKILL.md")
+        except SkillPackValidationError:
+            continue
+        return body
+    return ""
 
 
 def _read_skill_document(path: Path) -> tuple[dict[str, Any], str]:
@@ -483,6 +761,7 @@ def _inspect_member(
 
 
 __all__ = [
+    "CONTAINER_SKILLS_DIRNAME",
     "SKILLPACK_KIND",
     "SKILLPACK_SKILL_TYPE",
     "SkillPackDefinition",
@@ -491,10 +770,19 @@ __all__ = [
     "SkillPackStatus",
     "SkillPackValidationError",
     "compute_skillpack_status",
+    "container_member_backup_dir",
+    "member_backup_dir",
+    "container_members_root",
+    "container_pack_description",
+    "container_pack_members",
+    "find_container_member_dir",
+    "is_container_skillpack",
     "is_skillpack",
     "load_skillpack",
     "project_skillpack",
+    "read_container_pack_body",
     "read_skill_kind",
     "referencing_skillpacks",
+    "summarize_member_dir",
     "unavailable_skillpacks",
 ]

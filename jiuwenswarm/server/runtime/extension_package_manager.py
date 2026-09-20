@@ -1103,7 +1103,10 @@ def resolve_agent_group_dir(name: Any) -> Path:
     market = _marketplace_index(read_agent_group_marketplace_entries())
     entry = market.get(safe_name)
     if entry is None or not bool(entry.get("installed", False)):
-        raise ValueError(f"agent_group package not installed: {safe_name}")
+        raise AgentGroupPackageError(
+            f"agent_group package not installed: {safe_name}",
+            "AGENT_GROUP_NOT_INSTALLED",
+        )
     candidate = _resolve_package_dir(
         safe_name,
         kind=_AGENT_GROUP_KIND,
