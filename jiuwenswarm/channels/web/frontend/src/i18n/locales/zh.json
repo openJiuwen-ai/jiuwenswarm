@@ -2982,7 +2982,7 @@
         "uploadInvalidType": "仅支持 .zip、.tar 和 .tar.gz 专家团包",
         "errors": {
           "nameRequired": "请输入专家团名称",
-          "descriptionRequired": "请输入专家团介绍",
+          "descriptionRequired": "请输入专家团能力介绍",
           "personaRequired": "请输入专家团介绍",
           "leaderRequired": "请选择负责人"
         }

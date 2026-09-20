@@ -2996,7 +2996,7 @@
         "uploadInvalidType": "Only .zip, .tar and .tar.gz Expert Team packages are supported",
         "errors": {
           "nameRequired": "Enter an Expert Team name",
-          "descriptionRequired": "Enter an Expert Team description",
+          "descriptionRequired": "Enter an Expert Team capability description",
           "personaRequired": "Enter an Expert Team introduction",
           "leaderRequired": "Choose a leader Expert"
         }
