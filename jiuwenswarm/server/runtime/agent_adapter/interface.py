@@ -431,6 +431,59 @@ def _with_heartbeat_history_metadata(
     return result
 
 
+def _history_stream_offset_field(raw: Any) -> dict[str, int]:
+    """Persist the live stream cut point so restore can splice the same turn."""
+    if isinstance(raw, bool) or raw is None:
+        return {}
+    if isinstance(raw, int):
+        return {"stream_offset": raw}
+    if isinstance(raw, float) and raw.is_integer():
+        return {"stream_offset": int(raw)}
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return {"stream_offset": int(raw.strip())}
+        except ValueError:
+            return {}
+    return {}
+
+
+def _history_supplemental_input_extra(params: Any) -> dict[str, Any]:
+    """Mark a steer ACK as belonging to the original execution, not a new turn.
+
+    Distinct from ``is_supplement`` / ``supplement_input`` (plan/evolution
+    follow-up that *does* open a new user turn).
+    """
+    extra: dict[str, Any] = {"is_supplemental_input": True}
+    if not isinstance(params, dict):
+        return extra
+    execution_id = params.get("expected_execution_id") or params.get("execution_id")
+    if isinstance(execution_id, str) and execution_id.strip():
+        extra["execution_id"] = execution_id.strip()
+    stream_message_id = params.get("stream_message_id")
+    if isinstance(stream_message_id, str) and stream_message_id.strip():
+        extra["stream_message_id"] = stream_message_id.strip()
+    extra.update(_history_stream_offset_field(params.get("stream_offset")))
+    return extra
+
+
+def _session_input_history_kind(payload: Any) -> str | None:
+    """Classify the first persistable session-input chunk.
+
+    ``runtime.accepted`` without ``input_delivery=chat`` is a steer ACK: the
+    bubble belongs to the original task. Idle fallback emits ordinary ``chat.*``
+    (or an accepted ACK already marked as chat) and should look like a normal
+    user turn.
+    """
+    if not isinstance(payload, dict):
+        return None
+    event_type = str(payload.get("event_type") or "").strip()
+    if event_type == "runtime.accepted":
+        return "chat" if payload.get("input_delivery") == "chat" else "supplemental"
+    if event_type in {"chat.delta", "chat.final", "chat.reasoning"}:
+        return "chat"
+    return None
+
+
 def _history_user_extra(params: Any) -> dict[str, Any] | None:
     """Extract media/files/skills from ``params`` for the history extra.
 
@@ -3095,8 +3148,32 @@ class JiuWenSwarm:
         session_id = self._session_manager.get_session_id(request.session_id)
         restore_chat_send_equipment_params(session_id, request.params)
         inputs, _memory_mode, _user_turn = self._build_inputs(request)
+        params = request.params if isinstance(request.params, dict) else {}
+        recorded_user = False
         async with aclosing(deliver(request, inputs)) as stream:
             async for chunk in stream:
+                if not recorded_user and _should_record_user_history(params):
+                    kind = _session_input_history_kind(
+                        chunk.payload if isinstance(chunk.payload, dict) else None
+                    )
+                    if kind is not None:
+                        extra = _history_user_extra(params) or {}
+                        if kind == "supplemental":
+                            extra.update(_history_supplemental_input_extra(params))
+                        query = params.get("query") or params.get("content") or ""
+                        await _run_history_io(
+                            append_history_record,
+                            session_id=session_id,
+                            request_id=request.request_id,
+                            channel_id=request.channel_id,
+                            role="user",
+                            content=_history_user_content(params, query),
+                            timestamp=time.time(),
+                            extra=extra or None,
+                            channel_metadata=request.metadata,
+                            mode=params.get("mode", "unknown"),
+                        )
+                        recorded_user = True
                 yield chunk
 
     async def deliver_control_input(

@@ -924,6 +924,40 @@ function isTruthyHistoryFlag(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
 }
 
+function readHistoryStreamOffset(record: Record<string, unknown>): number {
+  const raw = record.stream_offset ?? record.streamOffset;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return raw;
+  }
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+/** Restore a steer bubble as belonging to the original task, not a new turn. */
+function extractSupplementalInput(
+  record: Record<string, unknown>,
+): Message['supplementalInput'] | undefined {
+  const isSupplemental =
+    isTruthyHistoryFlag(record.is_supplemental_input) ||
+    isTruthyHistoryFlag(record.isSupplementalInput);
+  if (!isSupplemental) {
+    return undefined;
+  }
+  const executionId =
+    pickFirstString(record, ['execution_id', 'executionId', 'expected_execution_id']) ?? '';
+  const streamMessageId = pickFirstString(record, ['stream_message_id', 'streamMessageId']);
+  return {
+    executionId,
+    ...(streamMessageId ? { streamMessageId } : {}),
+    streamOffset: readHistoryStreamOffset(record),
+  };
+}
+
 function compactTokenCount(value: number): string {
   const abs = Math.abs(value);
   if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
@@ -1008,6 +1042,7 @@ function parseHistoryTimelineEntry(
     const id = userCrossSession
       ? crossSessionUserMessageId(userCrossSession.messageId)
       : restoredId;
+    const supplementalInput = extractSupplementalInput(record);
     return {
       kind: 'message',
       message: {
@@ -1021,6 +1056,7 @@ function parseHistoryTimelineEntry(
         ...(skills && skills.length > 0 ? { skills } : {}),
         ...(userAutomation ? { automation: userAutomation } : {}),
         ...(userCrossSession ? { crossSession: userCrossSession } : {}),
+        ...(supplementalInput ? { supplementalInput } : {}),
       },
     };
   }
@@ -1373,7 +1409,7 @@ function sinkGoalCompletionCardsToTurnEnd(
     let turnEndMs = cardMs;
     for (let j = i + 1; j < out.length; j += 1) {
       const next = out[j];
-      if (next.kind === 'message' && next.message.role === 'user') {
+      if (next.kind === 'message' && next.message.role === 'user' && !next.message.supplementalInput) {
         break;
       }
       turnEndMs = Math.max(turnEndMs, safeTimestampMs(entryTimestamp(next)));

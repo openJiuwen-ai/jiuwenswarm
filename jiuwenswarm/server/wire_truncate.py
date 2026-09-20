@@ -92,6 +92,10 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "goal_id",
     "is_goal_objective_message",
     "is_goal_completed_message",
+    "is_supplemental_input",
+    "execution_id",
+    "stream_message_id",
+    "stream_offset",
     "evidence",
     "agent_template_name",
 }

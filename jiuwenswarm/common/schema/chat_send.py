@@ -148,6 +148,18 @@ class ChatSendParams(TypedDict, total=False):
     supplement_input: NotRequired[str]
     """补充请求的原始输入。"""
 
+    input_mode: NotRequired[str]
+    """会话输入意图（steer / follow_up）。steer 在任务执行中插入补充，不属于新任务。"""
+
+    expected_execution_id: NotRequired[str]
+    """steer 绑定的原执行 ID；刷新后靠它把补充气泡还原进同一轮。"""
+
+    stream_message_id: NotRequired[str]
+    """补充时正在流式输出的 assistant 消息 ID，供时间线按偏移拆分。"""
+
+    stream_offset: NotRequired[int]
+    """补充时流式正文的切分偏移。"""
+
     plan_approval_kind: NotRequired[str]
     """team.plan 审批类型（如 plan_approval）。"""
 

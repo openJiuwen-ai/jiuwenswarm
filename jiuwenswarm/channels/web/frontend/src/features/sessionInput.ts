@@ -36,7 +36,9 @@ export async function sendQueuedTaskInput(
   }
   let requestId: string | undefined;
   try {
-    const executionId = useChatStore.getState().getRuntime(sessionId)?.activeExecutionId;
+    const runtime = useChatStore.getState().getRuntime(sessionId);
+    const executionId = runtime?.activeExecutionId;
+    const snapshot = runtime?.taskInputReceipts[taskId]?.supplementalInput;
     await request(
       'chat.send',
       {
@@ -45,6 +47,8 @@ export async function sendQueuedTaskInput(
         content: task.content,
         input_mode: 'steer',
         ...(executionId ? { expected_execution_id: executionId } : {}),
+        ...(snapshot?.streamMessageId ? { stream_message_id: snapshot.streamMessageId } : {}),
+        ...(snapshot && Number.isFinite(snapshot.streamOffset) ? { stream_offset: snapshot.streamOffset } : {}),
       },
       {
         awaitRuntimeAccepted: true,

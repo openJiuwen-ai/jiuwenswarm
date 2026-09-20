@@ -589,6 +589,11 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
     if (item.type === 'message' && item.message.role === 'user' && item.message.supplementalInput) {
       // A supplement is visible between output pieces but does not close or restart the task timer.
       out.push(item);
+      // 补充若早于本轮首条 assistant/思考/工具，计时行必须跟着内容区走，
+      // 不能停在原 USER 气泡后面（否则会夹在两条 USER 之间且带不走头像）。
+      if (turnContentStart === out.length - 1) {
+        turnContentStart = out.length;
+      }
       continue;
     }
     if (item.type === 'message' && item.message.role === 'user') {
