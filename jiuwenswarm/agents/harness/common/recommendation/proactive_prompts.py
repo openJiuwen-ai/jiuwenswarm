@@ -63,7 +63,8 @@ c. "need_exploration"：从已有内容延申出用户可能感兴趣的新话�
 - skill_recommend / need_exploration 的 reason 允许概括推断（推断出要做的事 / 延申的
   方向本就是主观判断，不必逐字引用原话）；有合适 [User]: 原话时可优先引用，非硬约束。
 - 如当前无合适推荐，decision 返回 null。
-- target 与 reason 使用用户对话的主要语言书写（下游话术直接复用它们）。
+- target 与 reason 使用简体中文书写（系统语言设置）。skill 名、待办标题、引用用户
+  原话的短语可保留原文，其余必须是中文——下游话术按系统语言生成并原样嵌入这些字段。
 
 输出 JSON 格式：
 {{
@@ -144,8 +145,10 @@ recommendation fabricated, and produces self-contradicting copy.
 task / direction is inherently subjective); quoting a fitting [User]: line is \
 preferred when available, but not mandatory.
 - If nothing fits right now, decision returns null.
-- Write target and reason in the primary language of the user's conversation \
-(downstream copy reuses them directly).
+- ⚠️ Write target and reason in ENGLISH (the system language setting). Skill names, \
+todo titles, and short verbatim quotes from the user's conversation may stay in \
+their original language, but everything else in target/reason must be English — \
+the downstream copy is generated in English and embeds these fields verbatim.
 
 Output JSON format:
 {{
