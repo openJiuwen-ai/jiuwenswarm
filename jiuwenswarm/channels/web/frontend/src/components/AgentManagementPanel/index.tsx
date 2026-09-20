@@ -33,6 +33,7 @@ import {
   type DefinitionFileEntry,
   type McpOption,
   type SkillOption,
+  type SkillListOptions,
   type RequestStatus,
   agentManagementReducer,
   buildCatalogViewModel,
@@ -295,6 +296,7 @@ export function AgentManagementPanel({
   const [groupUploadDialogOpen, setGroupUploadDialogOpen] = useState(false);
   const [groupUploadError, setGroupUploadError] = useState<string | null>(null);
   const catalogRevisionRef = useRef(0);
+  const skillsRevisionRef = useRef(0);
   const panelMountedRef = useRef(false);
   const panelPrevActiveRef = useRef(false);
   const detailRevisionRef = useRef(0);
@@ -444,12 +446,31 @@ export function AgentManagementPanel({
     }
   }, [formatActionError, groupClient, t]);
 
-  const loadSkills = useCallback(async () => {
+  const loadSkills = useCallback(async (options: SkillListOptions = {}) => {
+    const revision = ++skillsRevisionRef.current;
     dispatch({ type: 'skills.loading' });
     try {
-      const options = await client.listSkillOptions();
-      dispatch({ type: 'skills.loaded', options });
+      const skills = await client.listSkillOptions(
+        options.includeTeamMarketplace
+          ? {
+              ...options,
+              onTeamMarketplaceLoaded: (marketplaceSkills, cache) => {
+                if (revision !== skillsRevisionRef.current) return;
+                scheduleCatalogRefresh(
+                  'agent-team-skill-marketplace',
+                  cache,
+                  () => { void loadSkills(options); },
+                  () => skillsRevisionRef.current === revision,
+                );
+                dispatch({ type: 'skills.loaded', options: marketplaceSkills });
+              },
+            }
+          : options,
+      );
+      if (revision !== skillsRevisionRef.current) return;
+      dispatch({ type: 'skills.loaded', options: skills });
     } catch {
+      if (revision !== skillsRevisionRef.current) return;
       dispatch({ type: 'skills.error' });
     }
   }, [client]);
@@ -471,14 +492,14 @@ export function AgentManagementPanel({
       setError(null);
       try {
         await client.installSkill(skill);
-        await loadSkills();
+        await loadSkills(view === 'group-create' ? { includeTeamMarketplace: true } : {});
       } catch (error) {
         setError(formatActionError(error, t('agentManagement.states.actionError')));
       } finally {
         setBusySkillId(null);
       }
     },
-    [client, formatActionError, loadSkills, t],
+    [client, formatActionError, loadSkills, t, view],
   );
 
   const handleMcpFlowCompleted = useCallback(() => {
@@ -998,7 +1019,7 @@ export function AgentManagementPanel({
     setActionNotice(null);
     setView('group-create');
     void loadCatalog({ includeTeamCompatibility: true });
-    if (state.skillsStatus === 'idle') void loadSkills();
+    void loadSkills({ includeTeamMarketplace: true });
   };
 
   const handleEdit = async (id: string) => {
@@ -1508,7 +1529,7 @@ export function AgentManagementPanel({
           selectionError={actionError || groupCreateError}
           onChange={setGroupDraft}
           onReloadAgents={() => { void loadCatalog({ includeTeamCompatibility: true }); }}
-          onReloadSkills={loadSkills}
+          onReloadSkills={() => { void loadSkills({ includeTeamMarketplace: true }); }}
           onInstallSkill={(skill) => handleInstallSkill(skill, setActionError)}
           installingSkillId={busySkillId}
           onInstallAgent={(id) => handleInstall(id, { includeTeamCompatibility: true })}

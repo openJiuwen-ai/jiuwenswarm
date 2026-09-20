@@ -1,3 +1,4 @@
+import type { CatalogCacheMetadata } from '../catalogCache';
 import type { AgentConnectionState } from './types';
 
 export type RawLocalizedText = {
@@ -146,4 +147,21 @@ export type RawSkillOption = {
 
 export type RawSkillListPayload = {
   skills?: RawSkillOption[];
+};
+
+export type RawTeamSkillMarketplaceItem = {
+  asset_id?: string;
+  name?: string;
+  display_name?: string;
+  short_desc?: string;
+  description?: string;
+  plugin_type?: string;
+};
+
+export type RawTeamSkillMarketplacePayload = {
+  success?: boolean;
+  detail?: string;
+  cache?: CatalogCacheMetadata;
+  skills?: RawTeamSkillMarketplaceItem[];
+  items?: RawTeamSkillMarketplaceItem[];
 };

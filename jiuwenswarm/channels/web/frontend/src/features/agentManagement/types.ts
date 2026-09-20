@@ -134,6 +134,10 @@ export type SkillOption = {
   /** Raw SKILL.md frontmatter kind, including swarm-skill/team-skill. */
   kind?: string;
   skillType?: string;
+  /** SkillHub marketplace type, used for uninstalled market entries. */
+  pluginType?: string;
+  /** Stable TeamSkillsHub asset identity used by the marketplace install API. */
+  hubAssetId?: string;
   marketplace?: string;
   installSpec?: string;
 };
