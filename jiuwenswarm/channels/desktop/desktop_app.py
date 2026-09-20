@@ -19,10 +19,11 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO, Callable, Iterator
 from urllib.parse import quote
 
 from logging.handlers import RotatingFileHandler
@@ -447,6 +448,40 @@ def _build_child_env(
     return env
 
 
+@contextmanager
+def _child_log_files(name: str) -> Iterator[tuple[BinaryIO, BinaryIO]]:
+    """为子进程打开 stdout/stderr 日志文件句柄，重定向到 logs 目录下的 child-<name>.log。
+
+    原先子进程 stdout/stderr 丢到 DEVNULL，gateway/agent 孙进程退出（如 code 15 被信号杀）
+    时真实报错/traceback 丢失，desktop.log 只剩 "exited early with code 15"，无法定位。
+    改为落盘后，孙进程的 traceback/报错可直接在 child-<name>.log 末尾查到。
+
+    以上下文管理器形式提供句柄：子进程通过 CreateProcess/fork 继承句柄后，
+    父进程侧不再需要该句柄，随 with 退出关闭，保证资源申请与释放在正常/异常场景下都成对。
+    """
+    out: BinaryIO | None = None
+    try:
+        log_dir = get_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"child-{name}.log"
+        # 追加写：多次启动的输出累积在同一文件，配合下方启动分隔行便于定位最后一次。
+        out = open(log_path, "ab", buffering=0)
+        logger.info("[desktop] %s child stdout/stderr -> %s", name, log_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[desktop] failed to open child log for %s: %s", name, exc)
+        if out is not None:
+            out.close()
+            out = None
+    try:
+        if out is None:
+            yield subprocess.DEVNULL, subprocess.DEVNULL
+        else:
+            yield out, out
+    finally:
+        if out is not None:
+            out.close()
+
+
 def _start_process(
     name: str,
     command: list[str],
@@ -455,18 +490,28 @@ def _start_process(
     desktop_token: str = "",
 ) -> subprocess.Popen[bytes]:
     logger.info("[desktop] starting %s: %s", name, command)
-    kwargs: dict[str, object] = {
-        "env": _build_child_env(name, ports, startup_diagnostics_dir, desktop_token),
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    # macOS/Linux: 用 start_new_session=True 创建新进程组，
-    # 以便后续用 os.killpg 杀掉整个进程树（含孙子进程）。
-    if os.name != "nt":
-        kwargs["start_new_session"] = True
-    else:
-        kwargs["creationflags"] = _creationflags()
-    return subprocess.Popen(command, **kwargs)
+    with _child_log_files(name) as (stdout, stderr):
+        # 写一条启动分隔行，便于在累积日志里定位本次启动段（含进程是否被信号杀的关键信息）。
+        try:
+            if stdout is not subprocess.DEVNULL:
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                marker = f"\n===== [desktop] starting {name} at {timestamp} =====\n"
+                stdout.write(marker.encode("utf-8"))
+        except Exception:  # noqa: BLE001
+            pass
+        kwargs: dict[str, object] = {
+            "env": _build_child_env(name, ports, startup_diagnostics_dir, desktop_token),
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+        # macOS/Linux: 用 start_new_session=True 创建新进程组，
+        # 以便后续用 os.killpg 杀掉整个进程树（含孙子进程）。
+        if os.name != "nt":
+            kwargs["start_new_session"] = True
+        else:
+            kwargs["creationflags"] = _creationflags()
+        # 句柄在 Popen 中子进程已继承，with 退出后关闭父进程侧副本。
+        return subprocess.Popen(command, **kwargs)
 
 
 # frozen exe 冷启动时, C 扩展 (.pyd) 与大量 .py 首次从 _MEIPASS 读盘很慢.
