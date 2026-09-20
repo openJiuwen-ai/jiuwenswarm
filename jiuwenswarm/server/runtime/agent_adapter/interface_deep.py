@@ -1799,10 +1799,14 @@ class JiuWenSwarmDeepAdapter:
     _stream_round_kind_latch: str | None = None
     _stream_round_output_ended: bool = False
     _stream_round_visible_text: str = ""
-    # Whether the registered cron toolset may create jobs (None = not registered
-    # yet). Declared on the class as well so the cron helpers stay safe to call
-    # on an instance that has not run through __init__.
+    # Rebuild fingerprints for the registered cron toolset (None = not
+    # registered yet). Registration now happens only for normal sessions
+    # (full permissions); scheduler / cron execution sessions get no cron
+    # tools at all and reset these to None. Declared on the class as well so
+    # the cron helpers stay safe to call on an instance that has not run
+    # through __init__.
     _cron_tools_registered_allow_create: bool | None = None
+    _cron_tools_registered_allow_update: bool | None = None
 
     """Deep SDK 适配器，实现 AgentAdapter 协议.
 
@@ -2090,8 +2094,46 @@ class JiuWenSwarmDeepAdapter:
         for adapter in self._session_adapters.values():
             adapter.set_heartbeat_service(service)
 
+    def _is_cron_execution_session(self, session_id: str | None) -> bool:
+        """Whether this adapter serves a cron execution session (old or new link).
+
+        判定与 ``_ensure_cron_tools_registered`` 的 cron 执行会话识别对齐并
+        取并集：``__cron__`` 渠道（单 Agent 链路的内部执行渠道）、
+        ``__cron__`` / ``cron_`` 前缀会话 ID（老 / 新链路），或持久化的
+        ``cron_id`` 会话元数据。heartbeat / health_check 调度器会话不算。
+        """
+        if getattr(self, "_is_cron_execution", False):
+            return True
+        normalized = str(session_id or "").strip()
+        if not normalized:
+            return False
+        if normalized.startswith(("heartbeat", "health_check")):
+            return False
+        if normalized.startswith(("__cron__", "cron")):
+            return True
+        try:
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+            session_metadata = get_session_metadata(
+                normalized, cache_bust=True, enable_writeback=False,
+            )
+            return bool(
+                isinstance(session_metadata, dict) and session_metadata.get("cron_id")
+            )
+        except Exception:
+            return False
+
     def _build_heartbeat_rail(self) -> HeartbeatRail | None:
         if self._heartbeat_service is None:
+            return None
+        # cron 执行会话不挂心跳工具：心跳任务绑定创建它的会话，从 cron 运行里
+        # 再派生心跳任务与"禁止 cron 派生 cron"同理；且 cron 执行会话结束后
+        # 绑定它的心跳任务也会随会话回收，派生没有意义。
+        if self._is_cron_execution_session(getattr(self, "_parent_session_id", None)):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] skip HeartbeatRail for cron session %s",
+                getattr(self, "_parent_session_id", None),
+            )
             return None
         return HeartbeatRail(
             service=self._heartbeat_service,
@@ -10120,18 +10162,22 @@ class JiuWenSwarmDeepAdapter:
 
         return tool_cards
 
-    def _build_cron_tools(self, *, allow_create: bool = True) -> list[Any]:
+    def _build_cron_tools(
+        self, *, allow_create: bool = True, allow_update: bool = True
+    ) -> list[Any]:
         """Build cron tools from the shared runtime bridge.
 
-        Args:
-            allow_create: False 时构建禁止创建新 cron 的受限工具集（cron
-                执行会话用），见 ``CronRuntimeBridge.build_tools``。
+        cron 执行会话已全面不下发 cron 工具（见
+        ``_ensure_cron_tools_registered``），本适配器只按默认全量构建；
+        ``allow_create`` / ``allow_update`` 保留为 ``CronRuntimeBridge`` 的
+        透传参数。
         """
         return self._cron_runtime.build_tools(
             context=self._runtime_cron_tool_context,
             agent_id=self._tool_owner_id(),
             language=self._resolve_runtime_language(),
             allow_create=allow_create,
+            allow_update=allow_update,
         )
 
     async def _proc_context_compaction(self) -> None:
@@ -11283,17 +11329,18 @@ class JiuWenSwarmDeepAdapter:
         The tool instances carry no per-request state: their context object and
         owner id are fixed for the adapter's lifetime, and the target channel is
         read from a contextvar at call time (see ``_bind_runtime_cron_context``).
-        Only the language and the create permission are baked into the
-        instances, so they form the whole rebuild condition. Registering them
-        per request instead re-bound eight ids in the process-global resource
-        manager every turn, each one a remove + add pair that logged a refresh
-        warning.
+        Only the language is baked into the instances, so it forms the whole
+        rebuild condition. Registering them per request instead re-bound eight
+        ids in the process-global resource manager every turn, each one a
+        remove + add pair that logged a refresh warning.
 
         Args:
-            session_id: Session the current turn belongs to. Heartbeat and cron
-                prefixed sessions drive the scheduler themselves and get no
-                cron tools. Cron execution sessions (persisted ``cron_id``)
-                keep the management tools but must not create new cron jobs.
+            session_id: Session the current turn belongs to. Scheduler-driven
+                sessions (heartbeat / health_check / cron prefixed) and cron
+                execution sessions (``__cron__`` prefix or persisted
+                ``cron_id``) get no cron tools at all: operating cron from
+                inside a cron run is fully forbidden — manage cron jobs from a
+                normal chat session instead.
         """
         scheduler_session = bool(
             session_id and session_id.startswith(("heartbeat", "health_check", "cron"))
@@ -11313,17 +11360,17 @@ class JiuWenSwarmDeepAdapter:
             cron_execution_session = bool(
                 isinstance(session_metadata, dict) and session_metadata.get("cron_id")
             )
-        if scheduler_session:
-            # 若工具已在初始化阶段注册，后续识别出调度器会话时也要移除。
+        if scheduler_session or cron_execution_session:
+            # 调度器会话与 cron 执行会话都不暴露任何 cron 工具：cron 运行里
+            # 全面禁止操作 cron（创建/修改/删除/查询一律不行，防止派生、改写
+            # 或探测）。若工具已在初始化阶段注册，识别出来源后也要整体移除。
             for existing in list(self._instance.ability_manager.list() or []):
                 if getattr(existing, "name", "") in _CRON_TOOL_NAMES:
                     self._instance.ability_manager.remove(existing.name)
             self._cron_tools_registered_language = None
             self._cron_tools_registered_allow_create = None
+            self._cron_tools_registered_allow_update = None
             return
-        # cron 执行会话禁止创建新 cron（防止 cron 派生 cron），
-        # 但保留 list/get/update/delete 等管理工具。
-        allow_create = not cron_execution_session
         language = self._resolve_runtime_language()
         registered_names = {
             getattr(existing, "name", "")
@@ -11333,14 +11380,21 @@ class JiuWenSwarmDeepAdapter:
         # skill or plugin install re-runs ``create_instance``) hands this adapter
         # a fresh, empty AbilityManager while the fingerprint still reads as
         # registered, which would silently drop the cron tools for good.
+        # The two permission fingerprints are written together (both True on a
+        # full registration, both None on removal), so they form one freshness
+        # check outside the ``if`` to keep its boolean expression count at three.
+        registered_with_full_permissions = (
+            self._cron_tools_registered_allow_create is True
+            and self._cron_tools_registered_allow_update is True
+        )
         if (
             self._cron_tools_registered_language == language
-            and self._cron_tools_registered_allow_create == allow_create
+            and registered_with_full_permissions
             and (registered_names & _CRON_TOOL_NAMES)
         ):
             return
         try:
-            cron_tools = self._build_cron_tools(allow_create=allow_create)
+            cron_tools = self._build_cron_tools()
             if not cron_tools:
                 return
             for existing in list(self._instance.ability_manager.list() or []):
@@ -11350,12 +11404,12 @@ class JiuWenSwarmDeepAdapter:
                 self._register_agent_owned_tool(cron_tool, self._tool_owner_id())
                 self._instance.ability_manager.add(cron_tool.card)
             self._cron_tools_registered_language = language
-            self._cron_tools_registered_allow_create = allow_create
+            self._cron_tools_registered_allow_create = True
+            self._cron_tools_registered_allow_update = True
             logger.info(
-                "[JiuWenSwarmDeepAdapter] %d cron tools registered: language=%s create_enabled=%s",
+                "[JiuWenSwarmDeepAdapter] %d cron tools registered: language=%s",
                 len(cron_tools),
                 language,
-                allow_create,
             )
         except Exception as exc:
             logger.error("[JiuWenSwarmDeepAdapter] 定时工具注册失败: %s", exc)
