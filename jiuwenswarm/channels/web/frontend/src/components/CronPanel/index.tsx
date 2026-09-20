@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronLeft, ChevronRight, TrendingUp, Newspaper, Briefcase } from 'lucide-react';
 import { webRequest, webClient } from '../../services/webClient';
+import { getArchiveErrorCode } from '../../features/workspace/archivedTaskClient';
 import { useCronStore } from '../../stores';
 import { projectRegistryClient } from '../../features/workspace/projectRegistryClient';
 import type { ProjectInfo } from '../../features/workspace/projectTypes';
@@ -898,7 +899,10 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       await loadJobs(projects);
       void reloadCronStore();
     } catch (deleteError) {
-      const message = deleteError instanceof Error ? deleteError.message : t('cron.errors.deleteFailed');
+      const code = getArchiveErrorCode(deleteError);
+      const message = code === 'SESSION_BUSY'
+        ? t('cron.errors.deleteSessionBusy')
+        : (deleteError instanceof Error ? deleteError.message : t('cron.errors.deleteFailed'));
       setError(message);
     } finally {
       setConfirmBusy(false);

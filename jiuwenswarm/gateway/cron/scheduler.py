@@ -783,7 +783,20 @@ class CronSchedulerService:
             timeout_seconds=120,
         )
         if not ok or result.get("failed_count"):
-            raise RuntimeError(result.get("error") or "cron sessions could not be deleted")
+            # delete_cron_sessions returns per-session results; surface the
+            # first failure's code (e.g. SESSION_BUSY) so the web/TUI handler
+            # can translate it via i18n instead of a generic DELETE_FAILED.
+            failed = next(
+                (item for item in (result.get("results") or []) if not item.get("ok")),
+                None,
+            )
+            err = RuntimeError(
+                (failed.get("error") if failed else None)
+                or result.get("error")
+                or "cron sessions could not be deleted"
+            )
+            err.code = (failed.get("code") if failed else None) or result.get("code") or "DELETE_FAILED"
+            raise err
         return result
 
     async def trigger_run_now(self, job_id: str) -> str:

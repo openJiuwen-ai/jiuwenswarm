@@ -514,7 +514,8 @@ class WebClient {
       typeof message.payload.error === 'string'
         ? message.payload.error
         : i18n.t('network.requestFailed');
-    pending.reject(this.createWebError(error, undefined, requestId, true));
+    const code = typeof message.payload.code === 'string' ? message.payload.code : undefined;
+    pending.reject(this.createWebError(error, code, requestId, true));
   }
 
   private dispatchEvent(event: WsEvent): void {

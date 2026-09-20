@@ -256,8 +256,8 @@ class SessionArchiveService:
             # persistent leader stream keeps them alive.  The archive proceeds
             # and leaves that stream alone.
             return False
-        if action == "delete" and is_cron_session:
-            return False
+        # is_cron_session 不再豁免 busy 检查：running 的 cron/heartbeat session
+        # 同样必须先停止才能 delete，避免僵尸流永久锁定会话。
         return self.runtime.is_session_running(session_id)
 
     async def _session(
@@ -974,7 +974,9 @@ class SessionArchiveService:
                         pid = lc.project_id_for(meta)
                         was_active = lc.session_paths(sid)[0].exists()
                     is_cron = bool(meta.get("cron_id")) or sid.startswith(("cron_", "heartbeat_"))
-                    if was_active and not is_cron and self.runtime.is_session_running(sid):
+                    # busy 判定统一下沉到 _session_is_busy_for_action（不再按 is_cron 豁免），
+                    # 这里仅做前置短路以减少对 running cron session 的无谓 stop 尝试。
+                    if was_active and self.runtime.is_session_running(sid):
                         busy_ids.append(sid)
                         continue
                     try:

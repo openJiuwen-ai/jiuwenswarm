@@ -6754,8 +6754,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             deleted = await cc.delete_job(job_id)
         except Exception as exc:
+            from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+            code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
             await channel.send_response(
-                ws, req_id, ok=False, error=str(exc), code="DELETE_FAILED"
+                ws, req_id, ok=False, error=str(exc), code=code
             )
             return
         if not deleted:

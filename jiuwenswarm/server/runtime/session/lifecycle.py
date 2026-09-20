@@ -429,24 +429,32 @@ def guard(session_id: str = "", project_id: str = "") -> None:
         value = state("session", session_id)
         if value.get("blocked"):
             operation = value.get("operation", {})
-            code = (
-                "OPERATION_IN_PROGRESS"
-                if operation.get("status") != "completed"
-                else ("NOT_FOUND" if value.get("deleted") else "SESSION_ARCHIVED")
+            if operation.get("status") != "completed":
+                raise LifecycleError(
+                    "OPERATION_IN_PROGRESS",
+                    "session lifecycle operation in progress",
+                )
+            if value.get("deleted"):
+                raise LifecycleError(
+                    "NOT_FOUND",
+                    "session was permanently deleted",
+                )
+            raise LifecycleError(
+                "SESSION_ARCHIVED",
+                "session is archived",
             )
-            raise LifecycleError(code, "session lifecycle blocks this operation")
         if session_paths(session_id)[1].exists():
             raise LifecycleError("SESSION_ARCHIVED", "session is archived")
         project_id = project_id or project_id_for(raw_metadata(session_id))
     if project_id:
         value = state("project", project_id)
         if value.get("blocked"):
-            code = (
-                "OPERATION_IN_PROGRESS"
-                if value.get("operation", {}).get("status") != "completed"
-                else "NOT_FOUND"
-            )
-            raise LifecycleError(code, "project lifecycle blocks this operation")
+            if value.get("operation", {}).get("status") != "completed":
+                raise LifecycleError(
+                    "OPERATION_IN_PROGRESS",
+                    "project lifecycle operation in progress",
+                )
+            raise LifecycleError("NOT_FOUND", "project was permanently deleted")
 
 
 def fence_writes(kind: str, resource_id: str) -> None:

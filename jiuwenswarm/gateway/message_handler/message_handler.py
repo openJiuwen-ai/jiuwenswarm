@@ -3220,10 +3220,23 @@ class MessageHandler(ABC):
             )
             return
         if self._is_terminal_stream_chunk(chunk):
-            logger.debug(
-                "[MessageHandler] 忽略 server_push 终止 chunk: request_id=%s",
-                chunk.request_id,
-            )
+            # AgentServer 通过 send_push 发来流的终止哨兵 chunk（例如
+            # session.delete 连带取消流时）。不能只丢弃——否则网关侧
+            # process_stream 协程仍挂在 queue.get() 上等待更多 chunk，形成
+            # 僵尸流，导致该会话被生命周期守卫永久锁定。取消对应的 Task，
+            # 触发 process_stream 的 CancelledError → finally 清理 _stream_modes。
+            task = self._stream_tasks.get(rid)
+            if task is not None and not task.done():
+                logger.info(
+                    "[MessageHandler] server_push 终止 chunk → 取消流式 Task: request_id=%s",
+                    rid,
+                )
+                task.cancel()
+            else:
+                logger.debug(
+                    "[MessageHandler] server_push 终止 chunk（无活跃 Task）: request_id=%s",
+                    rid,
+                )
             return
 
         # Track evolution state on the server_push path as well.
