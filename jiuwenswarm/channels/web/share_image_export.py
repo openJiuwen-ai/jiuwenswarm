@@ -18,7 +18,7 @@ import time
 import uuid
 import zipfile
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -32,6 +32,34 @@ _PNG_OUTPUT_WIDTH = 2_250
 _MAX_PNG_OUTPUT_HEIGHT = 128_000
 _JOB_TTL_SECONDS = 60 * 60
 _RENDER_IDLE_TIMEOUT_SECONDS = 15 * 60
+_RENDER_ABSOLUTE_TIMEOUT_SECONDS = 15 * 60
+# page.goto() 200 不代表 React runner 已挂载; 状态窗口必须在该超时内出现,
+# 否则 bundle 加载失败/未挂载/入口分支未命中等静默失败会一直空转。
+_RENDER_INIT_TIMEOUT_SECONDS = 15.0
+_RENDER_POLL_INTERVAL_SECONDS = 0.25
+_PAGE_ERROR_MAX_CHARS = 200
+
+
+@dataclass(frozen=True)
+class ShareImageRenderAuth:
+    """Desktop credentials injected into the headless export browser context.
+
+    ``cookie_value`` carries the desktop access token; it must never reach job
+    state, snapshot files, error strings, or logs, so its repr is suppressed.
+    """
+
+    cookie_name: str
+    cookie_value: str = field(repr=False)
+
+
+def _sanitize_page_error(message: str) -> str:
+    """Keep renderer page errors single-line and bounded for job state."""
+    cleaned = "".join(char if char.isprintable() else " " for char in message).strip()
+    if len(cleaned) > _PAGE_ERROR_MAX_CHARS:
+        cleaned = f"{cleaned[:_PAGE_ERROR_MAX_CHARS]}..."
+    return cleaned
+
+
 _ZIP_PART_NAME_PATTERN = re.compile(
     r"^(?P<stem>[A-Za-z0-9._-]+)-part-(?P<part>[0-9]+)-of-(?P<total>[0-9]+)\.png$",
     re.IGNORECASE,
@@ -171,6 +199,11 @@ def render_share_image(
     job_id: str,
     output_path: Path,
     on_phase: Callable[[str], None] | None = None,
+    render_auth: ShareImageRenderAuth | None = None,
+    init_timeout_seconds: float = _RENDER_INIT_TIMEOUT_SECONDS,
+    idle_timeout_seconds: float = _RENDER_IDLE_TIMEOUT_SECONDS,
+    absolute_timeout_seconds: float = _RENDER_ABSOLUTE_TIMEOUT_SECONDS,
+    poll_interval_seconds: float = _RENDER_POLL_INTERVAL_SECONDS,
 ) -> Path:
     """Render one immutable snapshot in a dedicated headless browser process."""
 
@@ -179,6 +212,10 @@ def render_share_image(
     def report(phase: str) -> None:
         if on_phase is not None:
             on_phase(phase)
+
+    def raise_page_error() -> None:
+        if page_errors:
+            raise RuntimeError(f"share_export_page_error: {_sanitize_page_error(page_errors[-1])}")
 
     executable_path, channel = _configured_browser()
     launch_options: dict[str, Any] = {"headless": True}
@@ -199,38 +236,73 @@ def render_share_image(
                 device_scale_factor=1,
             )
             try:
+                # 桌面模式: 无头 BrowserContext 不共享桌面 WebView 的 Cookie,
+                # 必须把当前实例的 desktop cookie 注入同一 loopback origin,
+                # 否则 /share-export-runner 直接 403。普通 web 模式不注入。
+                if render_auth is not None and render_auth.cookie_name and render_auth.cookie_value:
+                    context.add_cookies([{
+                        "name": render_auth.cookie_name,
+                        "value": render_auth.cookie_value,
+                        "url": base_url,
+                        "httpOnly": True,
+                        "sameSite": "Lax",
+                    }])
                 page = context.new_page()
                 page_errors: list[str] = []
                 page.on("pageerror", lambda error: page_errors.append(str(error)))
                 runner_url = f"{base_url.rstrip('/')}/share-export-runner?job_id={quote(job_id, safe='')}"
-                page.goto(runner_url, wait_until="domcontentloaded", timeout=60_000)
+                response = page.goto(runner_url, wait_until="domcontentloaded", timeout=60_000)
+                if response is None:
+                    raise RuntimeError("share_export_runner_response_missing")
+                if response.status >= 400:
+                    raise RuntimeError(f"share_export_runner_http_{response.status}")
 
-                idle_deadline = time.monotonic() + _RENDER_IDLE_TIMEOUT_SECONDS
-                last_heartbeat: int | float | None = None
-                state: dict[str, Any] = {}
-                while time.monotonic() < idle_deadline:
+                def evaluate_state() -> dict[str, Any] | None:
                     value = page.evaluate("() => window.__SHARE_IMAGE_EXPORT_STATE || null")
-                    state = value if isinstance(value, dict) else {}
-                    status = state.get("status")
-                    if status in {"ready", "error"}:
-                        break
-                    heartbeat = state.get("heartbeat")
-                    if isinstance(heartbeat, (int, float)) and heartbeat != last_heartbeat:
-                        last_heartbeat = heartbeat
-                        idle_deadline = time.monotonic() + _RENDER_IDLE_TIMEOUT_SECONDS
-                    if isinstance(status, str) and status:
-                        report(status)
-                    page.wait_for_timeout(250)
-                else:
-                    raise RuntimeError("share_export_render_stalled")
+                    return value if isinstance(value, dict) else None
+
+                state = evaluate_state()
+                init_deadline = time.monotonic() + init_timeout_seconds
+                while state is None:
+                    raise_page_error()
+                    if time.monotonic() >= init_deadline:
+                        raise RuntimeError("share_export_runner_not_initialized")
+                    page.wait_for_timeout(int(poll_interval_seconds * 1000))
+                    state = evaluate_state()
 
                 if state.get("status") == "error":
                     message = state.get("error")
                     raise RuntimeError(
                         message if isinstance(message, str) and message else "share_export_render_failed"
                     )
-                if page_errors:
-                    raise RuntimeError(f"share_export_page_error: {page_errors[-1]}")
+
+                # idle deadline 只随 heartbeat 刷新; absolute deadline 不可刷新,
+                # 即使前端持续心跳但永远无法完成, 任务也会在绝对超时处终止。
+                absolute_deadline = time.monotonic() + absolute_timeout_seconds
+                idle_deadline = time.monotonic() + idle_timeout_seconds
+                last_heartbeat: int | float | None = None
+                while state.get("status") != "ready":
+                    raise_page_error()
+                    if state.get("status") == "error":
+                        message = state.get("error")
+                        raise RuntimeError(
+                            message if isinstance(message, str) and message else "share_export_render_failed"
+                        )
+                    heartbeat = state.get("heartbeat")
+                    if isinstance(heartbeat, (int, float)) and heartbeat != last_heartbeat:
+                        last_heartbeat = heartbeat
+                        idle_deadline = time.monotonic() + idle_timeout_seconds
+                    now = time.monotonic()
+                    if now >= absolute_deadline:
+                        raise RuntimeError("share_export_render_timeout")
+                    if now >= idle_deadline:
+                        raise RuntimeError("share_export_render_stalled")
+                    status = state.get("status")
+                    if isinstance(status, str) and status:
+                        report(status)
+                    page.wait_for_timeout(int(poll_interval_seconds * 1000))
+                    state = evaluate_state() or state
+                raise_page_error()
 
                 raw_filename = state.get("filename")
                 if not isinstance(raw_filename, str) or not raw_filename.strip():
@@ -310,6 +382,7 @@ class ShareImageExportManager:
         filename: str,
         locale: str,
         base_url: str,
+        render_auth: ShareImageRenderAuth | None = None,
     ) -> dict[str, Any]:
         self._cleanup_expired()
         normalized_session_id = session_id.strip()
@@ -355,15 +428,17 @@ class ShareImageExportManager:
                 return {**self._status(active_job), "reused": True}
             self._jobs[job_id] = job
             self._active_job_ids_by_session[normalized_session_id] = job_id
+        # 认证信息只沿线程参数传入 _run_job, 不写入 _ShareImageJob,
+        # 因此不会进入状态响应 / snapshot / TTL 清理等任何持久化路径。
         threading.Thread(
             target=self._run_job,
-            args=(job_id, base_url),
+            args=(job_id, base_url, render_auth),
             name=f"share-image-export-{job_id[:8]}",
             daemon=True,
         ).start()
         return {**(self.get_status(job_id) or {}), "reused": False}
 
-    def _run_job(self, job_id: str, base_url: str) -> None:
+    def _run_job(self, job_id: str, base_url: str, render_auth: ShareImageRenderAuth | None = None) -> None:
         self._update_job(job_id, state="running", phase="launching", error=None)
         try:
             job = self._get_job(job_id)
@@ -374,6 +449,7 @@ class ShareImageExportManager:
                 job_id=job_id,
                 output_path=job.result_path,
                 on_phase=lambda phase: self._update_job(job_id, phase=phase),
+                render_auth=render_auth,
             ))
             if result_path.parent.resolve() != job.directory.resolve() or not result_path.is_file():
                 raise RuntimeError("share_export_result_path_invalid")
