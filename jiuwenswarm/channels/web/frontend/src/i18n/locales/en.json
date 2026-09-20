@@ -3034,7 +3034,23 @@
       "todoModify": "Update todos",
       "todoList": "List todos",
       "todoGet": "Get todo",
-      "skill": "View skill"
+      "skill": "View skill",
+      "spawnMember": "Create member",
+      "sendMessage": "Send message",
+      "buildTeam": "Create team",
+      "shutdownMember": "Shut down member",
+      "createTask": "Create task",
+      "updateTask": "Update task"
+    },
+    "toolDisplay": {
+      "title": "{{category}} · {{action}}",
+      "category": {
+        "file": "File",
+        "search": "Search",
+        "code": "Code",
+        "system": "System",
+        "other": "Tool"
+      }
     },
     "toolResult": {
       "success": "done",
@@ -3050,9 +3066,9 @@
       "truncated": "result truncated"
     },
     "toolGroup": {
-      "running": "Running {{label}}",
-      "completed": "Completed {{label}}",
-      "failed": "{{label}} failed",
+      "running": "Running: {{label}}",
+      "completed": "Completed: {{label}}",
+      "failed": "Failed: {{label}}",
       "category": {
         "file": "file operations",
         "search": "searches",
