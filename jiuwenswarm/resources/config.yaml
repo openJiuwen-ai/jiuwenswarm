@@ -109,6 +109,9 @@ logging:
   channel: INFO
   agent_server: INFO
   full: INFO
+  # Set false to disable log desensitization (secrets written to log files
+  # in plaintext). Intended for local debugging only. Defaults to true.
+  mask_sensitive: true
 
 memory:
   # ============================================================
