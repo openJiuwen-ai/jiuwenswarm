@@ -937,6 +937,63 @@ async def test_service_start_recovers_candidates_when_flow_is_enabled(
 
 
 @pytest.mark.asyncio
+async def test_partial_run_does_not_deliver_recovered_candidate(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _enable_evolution_config(monkeypatch, tmp_path)
+    service = SwarmSymphonyService()
+    candidate = _candidate()
+    pushes: list[dict] = []
+
+    async def push(message: dict) -> bool:
+        pushes.append(message)
+        return True
+
+    class Flow:
+        @staticmethod
+        async def start():
+            return (candidate,)
+
+    class Runtime:
+        flow_engine = Flow()
+
+        @staticmethod
+        async def submit_evolution(*args, **kwargs):
+            return SimpleNamespace(new_candidates=())
+
+    runtime = Runtime()
+    monkeypatch.setattr(service, "_runtime_for", lambda _config: runtime)
+    await service.start()
+    previous = install_runtime_push_handler(push)
+    try:
+        await service.submit_evolution_and_notify(
+            None,
+            {"outcome": "partial", "graph": {}},
+            session_id="cancelled-session",
+            capture_mode="agent",
+            channel_id="web",
+        )
+        assert pushes == []
+        assert service._recovered_candidates == (candidate,)
+
+        await service.submit_evolution_and_notify(
+            None,
+            {"outcome": "success", "graph": {}},
+            session_id="successful-session",
+            capture_mode="agent",
+            channel_id="web",
+        )
+    finally:
+        restore_runtime_push_handler(push, previous)
+
+    assert len(pushes) == 1
+    assert pushes[0]["payload"]["request_id"] == experience_request_id(
+        candidate.recipe_id, candidate.version
+    )
+    assert service._recovered_candidates == ()
+
+
+@pytest.mark.asyncio
 async def test_candidate_push_is_concurrency_idempotent(monkeypatch) -> None:
     service = SwarmSymphonyService()
     pushes: list[dict] = []

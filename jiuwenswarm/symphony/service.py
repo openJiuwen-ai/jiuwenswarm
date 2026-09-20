@@ -742,7 +742,15 @@ class SwarmSymphonyService:
         recovered = self._recovered_candidates
         try:
             recovered = (*recovered, *await self._start_flow(runtime))
-            self._recovered_candidates = ()
+            if execution_graph.get("outcome") == "success":
+                self._recovered_candidates = ()
+            else:
+                # Startup recovery has no originating session. Keep those
+                # candidates queued until a successful task provides an
+                # appropriate conversation context; a cancelled/partial run
+                # must not surface an unrelated historical recommendation.
+                self._recovered_candidates = _unique_candidates(recovered)
+                recovered = ()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Symphony Flow startup recovery failed (%s)",
