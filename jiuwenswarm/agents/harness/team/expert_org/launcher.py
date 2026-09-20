@@ -197,15 +197,15 @@ class JiuwenExpertTeamLauncher:
         """Run an org background turn and relay expert output to its Web session."""
         runtime = self._get_runtime()
         entry = await runtime.pool.get(team_id)
-        spec = getattr(getattr(entry, "agent", None), "spec", None)
-        spec_metadata = getattr(spec, "metadata", None)
         if entry is None or entry.current_session_id != session_id:
             return False
+        spec = getattr(getattr(entry, "agent", None), "spec", None)
+        spec_metadata = getattr(spec, "metadata", None)
         if not isinstance(spec_metadata, dict) or spec_metadata.get("expert_team") is not True:
             if source == "org_expert_direct":
                 return False
-            # The Organization runner serves both ordinary Root Teams and
-            # launched expert Teams; only the latter need this launcher's relay.
+            # Owner / non-expert teams still need unclaimed revision/expired turns
+            # via the default org runner; only expert teams need this launcher's relay.
             return await runtime.run_organization_turn(
                 team_name=team_id,
                 session_id=session_id,
