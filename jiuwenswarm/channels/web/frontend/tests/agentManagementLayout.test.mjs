@@ -58,6 +58,8 @@ const groupUploadSource = readFileSync(
 );
 const inputAreaSource = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const zhLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
+const enLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
 
 await i18next.use(initReactI18next).init({
   lng: 'zh',
@@ -655,6 +657,11 @@ test('Expert Team upload error prioritizes the latest local validation and stays
     /\.agent-group-upload-dialog \.agent-management-upload-dialog__error\s*\{[\s\S]*order: 4;[\s\S]*margin:/,
   );
   assert.match(agentManagementCss, /\.agent-group-upload-dialog > footer\s*\{[\s\S]*order: 5;/);
+});
+
+test('manual Expert Team validation names the capability description precisely', () => {
+  assert.equal(zhLocale.agentManagement.group.form.errors.descriptionRequired, '请输入专家团能力介绍');
+  assert.equal(enLocale.agentManagement.group.form.errors.descriptionRequired, 'Enter an Expert Team capability description');
 });
 
 for (const status of ['success', 'loading', 'error']) {
