@@ -2003,13 +2003,65 @@ def _normalize_external_cli_team_config(
     transformed_team["external_transport"] = {"type": "hybrid", "params": params}
 
 
-def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str, str]]:
+def _normalize_builtin_models(value: Any, field_name: str) -> list[dict[str, Any]]:
+    """Normalize the built-in model catalog of one external CLI agent.
+
+    The catalog lists the models a CLI offers on its own login (a
+    subscription), which the team leader may pick per member through
+    ``spawn_external_cli(builtin_model=...)`` / ``set_member_model``. It is
+    carried through verbatim to ``ExternalCliAgentSpec.builtin_models``, so
+    dropping unknown keys here would silently disable the capability.
+
+    Args:
+        value: Raw ``builtin_models`` value from the config or the frontend.
+        field_name: Config path used in error messages.
+
+    Returns:
+        The normalized catalog; empty when nothing is declared.
+    """
     if value is None or value == "":
         return []
     if not isinstance(value, list):
         raise ValueError(f"{field_name} must be an array")
 
-    normalized: list[dict[str, str]] = []
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"{field_name}[{index}] must be an object")
+        name = str(item.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"{field_name}[{index}].name must be a non-empty string")
+        if name in seen:
+            continue
+        seen.add(name)
+        entry: dict[str, Any] = {"name": name}
+        description = str(item.get("description") or "").strip()
+        if description:
+            entry["description"] = description
+        efforts_raw = item.get("efforts")
+        if efforts_raw is not None:
+            if not isinstance(efforts_raw, list):
+                raise ValueError(f"{field_name}[{index}].efforts must be an array")
+            efforts = [str(effort).strip() for effort in efforts_raw if str(effort).strip()]
+            if efforts:
+                entry["efforts"] = efforts
+        default_effort = str(item.get("default_effort") or "").strip()
+        if default_effort:
+            if default_effort not in entry.get("efforts", []):
+                raise ValueError(f"{field_name}[{index}].default_effort must be one of its efforts")
+            entry["default_effort"] = default_effort
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str, Any]]:
+    if value is None or value == "":
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be an array")
+
+    normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, item in enumerate(value):
         if isinstance(item, str):
@@ -2026,7 +2078,7 @@ def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str
         if cli_agent in seen:
             continue
         seen.add(cli_agent)
-        normalized_item = {"cli_agent": cli_agent}
+        normalized_item: dict[str, Any] = {"cli_agent": cli_agent}
         if isinstance(item, dict):
             cli_path = str(item.get("cli_path") or "").strip()
             legacy_codex_bin = str(item.get("codex_bin") or "").strip()
@@ -2034,6 +2086,12 @@ def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str
                 normalized_item["cli_path"] = cli_path
             elif cli_agent == "codex" and legacy_codex_bin:
                 normalized_item["cli_path"] = legacy_codex_bin
+            builtin_models = _normalize_builtin_models(
+                item.get("builtin_models"),
+                f"{field_name}[{index}].builtin_models",
+            )
+            if builtin_models:
+                normalized_item["builtin_models"] = builtin_models
         normalized.append(normalized_item)
     return normalized
 
@@ -2095,6 +2153,17 @@ def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
             data.get("web_config_panel", {}).pop("agent_team_agents", None)
     if "modes" not in data or not isinstance(data["modes"], dict):
         data["modes"] = {}
+    # The team editor payload carries no built-in model catalog, so the one
+    # configured for each CLI kind is carried over from the current config.
+    existing_teams = data["modes"].get("team")
+    if isinstance(existing_teams, dict):
+        for team_name, transformed_team in team_mapping.items():
+            existing_team = existing_teams.get(team_name)
+            if not isinstance(existing_team, dict):
+                continue
+            agents = transformed_team.get("external_cli_agents")
+            if isinstance(agents, list):
+                _carry_over_builtin_models(agents, existing_team.get("external_cli_agents"))
     data["modes"]["team"] = team_mapping
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
@@ -2121,6 +2190,31 @@ def update_swarmflow_enabled_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> None:
+    """Keep the configured built-in model catalog of each CLI kind.
+
+    Args:
+        agents: Normalized entries about to be written; mutated in place.
+        existing: The ``external_cli_agents`` value currently in the config.
+    """
+    if not isinstance(existing, list):
+        return
+    catalogs: dict[str, Any] = {}
+    for item in existing:
+        if not isinstance(item, dict):
+            continue
+        cli_agent = str(item.get("cli_agent") or "").strip()
+        builtin_models = item.get("builtin_models")
+        if cli_agent and builtin_models:
+            catalogs[cli_agent] = builtin_models
+    for entry in agents:
+        if "builtin_models" in entry:
+            continue
+        carried = catalogs.get(entry["cli_agent"])
+        if carried:
+            entry["builtin_models"] = carried
+
+
 def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], publish_url: str | None = None) -> None:
     """Update the external CLI agent switches for the default team."""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -2131,6 +2225,9 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
         current = _ensure_config_object(current, segment, ".".join(path_so_far))
 
     normalized_agents = _normalize_external_cli_agents(agents, "external_cli_agents")
+    # The switch payload only names the CLI kinds, so the built-in model
+    # catalog already configured for a kind must survive the rewrite.
+    _carry_over_builtin_models(normalized_agents, current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]))
     if normalized_agents:
         current[EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1]] = normalized_agents
     else:
@@ -2157,6 +2254,42 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
         current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None)
 
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_external_cli_builtin_models_in_config(catalogs: dict[str, list[dict[str, Any]]]) -> None:
+    """Replace the built-in model catalog of the named CLI kinds.
+
+    Args:
+        catalogs: ``cli_agent`` to its corrected catalog; an empty catalog
+            removes the key, leaving that kind on the CLI's default model.
+    """
+    if not catalogs:
+        return
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    current = data
+    for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
+        nested = current.get(segment) if isinstance(current, dict) else None
+        if not isinstance(nested, dict):
+            return
+        current = nested
+    entries = current.get(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1])
+    if not isinstance(entries, list):
+        return
+
+    changed = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        catalog = catalogs.get(str(entry.get("cli_agent") or "").strip())
+        if catalog is None:
+            continue
+        if catalog:
+            entry["builtin_models"] = catalog
+        else:
+            entry.pop("builtin_models", None)
+        changed = True
+    if changed:
+        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def reset_external_cli_agents_in_config() -> None:

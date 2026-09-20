@@ -934,6 +934,24 @@ def external_cli_agents_from_switches(raw: dict[str, Any], params: dict[str, Any
     return agents
 
 
+def refresh_external_cli_builtin_models(external_cli_agents: list[dict[str, str]]) -> None:
+    """Check the configured built-in model catalogs against the enabled CLIs.
+
+    Runs after the dependency check, so the SDK of every enabled kind is
+    installed and its cli_path resolved. A catalog naming a model the CLI
+    does not offer would only fail later, when the leader picks it, so the
+    facts are corrected here. Failure never blocks the switch.
+    """
+    if not external_cli_agents:
+        return
+    try:
+        from jiuwenswarm.common.external_cli_catalog import refresh_external_cli_builtin_models as _refresh
+
+        _refresh()
+    except Exception as exc:  # noqa: BLE001 - a health check must not fail the switch
+        logger.warning("[config.set] external CLI builtin model check failed: %s", exc)
+
+
 def build_external_cli_publish_url() -> str:
     host = str(os.getenv("WEB_HOST") or DEFAULT_EXTERNAL_CLI_PUBLISH_HOST).strip()
     if host in {"", "0.0.0.0", "::", "[::]"}:
@@ -1220,6 +1238,7 @@ def apply_config_payload(
                         external_cli_agents,
                         build_external_cli_publish_url(),
                     )
+                    refresh_external_cli_builtin_models(external_cli_agents)
                     external_cli_agents_updated = True
             elif param_key == "skill_evolution":
                 update_skill_evolution_enabled_in_config(parsed)
