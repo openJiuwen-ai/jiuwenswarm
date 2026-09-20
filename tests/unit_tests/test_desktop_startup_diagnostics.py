@@ -50,6 +50,104 @@ def test_child_env_is_scoped_to_current_startup_session(
     assert json.loads(env["JIUWENSWARM_START_CMD"]) == ["workswarm.exe"]
 
 
+def test_start_process_persists_child_stdout_and_stderr(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    logs_dir = tmp_path / "logs"
+    monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: logs_dir)
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import sys; "
+            "print('issue-4299-stdout'); "
+            "print('issue-4299-stderr', file=sys.stderr); "
+            "raise SystemExit(15)"
+        ),
+    ]
+
+    process = desktop_app._start_process(
+        "probe",
+        command,
+        calculate_instance_ports(0),
+        startup_diagnostics_dir=tmp_path / "startup",
+    )
+
+    assert process.wait(timeout=10) == 15
+    content = (logs_dir / "child-probe.log").read_text(encoding="utf-8")
+    assert "[desktop] starting probe" in content
+    assert "issue-4299-stdout" in content
+    assert "issue-4299-stderr" in content
+
+
+def test_start_process_uses_startup_directory_when_logs_directory_is_unavailable(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    blocked_path = tmp_path / "blocked"
+    blocked_path.write_text("not a directory", encoding="utf-8")
+    startup_dir = tmp_path / "startup"
+    monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: blocked_path)
+
+    process = desktop_app._start_process(
+        "gateway",
+        [sys.executable, "-c", "import sys; print('fallback', file=sys.stderr)"],
+        calculate_instance_ports(0),
+        startup_diagnostics_dir=startup_dir,
+    )
+
+    assert process.wait(timeout=10) == 0
+    assert "fallback" in (startup_dir / "child-gateway.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_start_process_closes_parent_log_handle_when_spawn_fails(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: tmp_path / "logs")
+
+    def fail_spawn(_command, **kwargs):
+        captured["stdout"] = kwargs["stdout"]
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(desktop_app.subprocess, "Popen", fail_spawn)
+
+    with pytest.raises(OSError, match="spawn failed"):
+        desktop_app._start_process(
+            "agent",
+            ["missing-command"],
+            calculate_instance_ports(0),
+            startup_diagnostics_dir=tmp_path / "startup",
+        )
+
+    stream = captured["stdout"]
+    assert getattr(stream, "closed") is True
+
+
+def test_start_process_does_not_spawn_without_a_child_log(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    blocked_logs = tmp_path / "blocked-logs"
+    blocked_startup = tmp_path / "blocked-startup"
+    blocked_logs.write_text("not a directory", encoding="utf-8")
+    blocked_startup.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: blocked_logs)
+
+    def unexpected_spawn(*_args, **_kwargs):
+        raise AssertionError("child started without a persistent log")
+
+    monkeypatch.setattr(desktop_app.subprocess, "Popen", unexpected_spawn)
+
+    with pytest.raises(RuntimeError, match="Unable to create child log for web"):
+        desktop_app._start_process(
+            "web",
+            ["missing-command"],
+            calculate_instance_ports(0),
+            startup_diagnostics_dir=blocked_startup,
+        )
+
+
 def test_failed_status_reports_correlated_system_dependency(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
