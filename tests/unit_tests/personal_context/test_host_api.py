@@ -2769,9 +2769,11 @@ async def test_patch_runtime_config_allows_when_auto_collection_enabled_but_idle
     )
     core.calls.clear()
 
-    after = await host.patch_runtime_config({"strategy_profile": "balanced"})
+    # 用不依赖模型的字段断言「允许修改」本身，避免在无可用模型环境下
+    # balanced/agent 被 _reconcile_model_selection 降级为 rules 导致断言抖动。
+    after = await host.patch_runtime_config({"agent_use_enabled": False})
 
-    assert after["strategy_profile"] == "balanced"
+    assert after["agent_use_enabled"] is False
 
 
 @pytest.mark.asyncio
