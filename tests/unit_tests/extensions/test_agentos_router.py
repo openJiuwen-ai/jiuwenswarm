@@ -2523,7 +2523,7 @@ def test_load_router_config_probe_knobs(monkeypatch) -> None:
     assert defaults.probes.startup_failure_threshold == 6
     assert defaults.probes.liveness_timeout_seconds == 2
     assert defaults.probes.liveness_failure_threshold == 3
-    assert defaults.probes.wait_running_timeout_seconds == 60.0
+    assert defaults.probes.wait_running_timeout_seconds == 90.0
     assert defaults.probes.wait_running_interval_seconds == 1.0
 
     loaded = load_router_config(
@@ -2531,7 +2531,7 @@ def test_load_router_config_probe_knobs(monkeypatch) -> None:
             "gateway": {
                 "agent_client": base_agent_client,
                 "agentos": {
-                    "wait_running_timeout_seconds": 90,
+                    "wait_running_timeout_seconds": 120,
                     "wait_running_interval_seconds": 2.5,
                     "probes": {
                         "startup": {
@@ -2555,7 +2555,7 @@ def test_load_router_config_probe_knobs(monkeypatch) -> None:
     assert loaded.probes.startup_failure_threshold == 8
     assert loaded.probes.liveness_timeout_seconds == 3
     assert loaded.probes.liveness_failure_threshold == 5
-    assert loaded.probes.wait_running_timeout_seconds == 90.0
+    assert loaded.probes.wait_running_timeout_seconds == 120.0
     assert loaded.probes.wait_running_interval_seconds == 2.5
 
     monkeypatch.setenv("AGENTOS_PROBE_STARTUP_INITIAL_DELAY_SECONDS", "7")
