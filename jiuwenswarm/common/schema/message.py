@@ -274,6 +274,16 @@ class ReqMethod(Enum):
     SKILLS_EXPERIENCE_LIST = "skills.experience.list"
     SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
 
+    # 技能同步（Server / Client 分离部署）。外部入口为 HTTP /skill-sync/*
+    # （Bearer token 鉴权）。WS 侧仅保留 reload：web 进程 HTTP apply 落盘后的
+    # 进程间通知（参数仅 applied 名称列表，纯 JSON）；diff / package / apply
+    # 不注册 WS 路由（经 WS 调用会绕过 token 鉴权，且 package 泄漏临时目录、
+    # apply 的 zip_bytes 无法过 JSON 序列化，均不可用）。
+    SKILL_SYNC_DIFF = "skills.sync.diff"
+    SKILL_SYNC_PACKAGE = "skills.sync.package"
+    SKILL_SYNC_APPLY = "skills.sync.apply"
+    SKILL_SYNC_RELOAD = "skills.sync.reload"
+
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
     PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
         "personal_context.runtime.start_collection"

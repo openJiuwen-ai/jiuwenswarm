@@ -959,6 +959,12 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_VISIBILITY_GET: "handle_skills_visibility_get",
     ReqMethod.SKILLS_VISIBILITY_SET: "handle_skills_visibility_set",
     ReqMethod.SKILLS_VISIBILITY_UPDATE: "handle_skills_visibility_update",
+    # skills.sync.* 仅保留 reload：web 进程 HTTP apply 落盘后的进程间通知，
+    # 不落盘、只触发重建。diff / package / apply 不进 WS 路由——它们的
+    # token 鉴权只在 HTTP 层（/skill-sync/*），经 WS 调用会绕过鉴权；
+    # 且 WS package 无人清理临时目录、WS apply 的 zip_bytes 无法过 JSON
+    # 序列化，均不可用。外部统一走 HTTP，进程内测试直调 SkillManager。
+    ReqMethod.SKILL_SYNC_RELOAD: "handle_skill_sync_reload",
 }
 
 # Handlers that persist a Skill visibility document; every one of them must
@@ -968,6 +974,26 @@ _SKILL_VISIBILITY_WRITE_HANDLERS: frozenset[str] = frozenset(
     {
         "handle_skills_visibility_set",
         "handle_skills_visibility_update",
+    }
+)
+
+# 同步 handler 涉及技能目录与 local_skills，处理前须重载磁盘 state，
+# 保证 AgentServer 长生命周期 _skill_manager 实例看到最新状态
+# （handle_skill_sync_reload：web 进程刚落盘，state 必须重读）。
+_SKILL_SYNC_HANDLERS: frozenset[str] = frozenset(
+    {
+        "handle_skill_sync_reload",
+    }
+)
+
+# 已收缩出 WS 路由的同步方法：合法枚举值不会被入口解析拦截，须在
+# _handle_skills_request 显式拒绝，否则落入聊天路径触发空 query 的
+# LLM 调用。
+_SKILL_SYNC_WS_REJECTED: frozenset[ReqMethod] = frozenset(
+    {
+        ReqMethod.SKILL_SYNC_DIFF,
+        ReqMethod.SKILL_SYNC_PACKAGE,
+        ReqMethod.SKILL_SYNC_APPLY,
     }
 )
 
@@ -1125,7 +1151,6 @@ def build_user_prompt(content: str | dict, files: dict, channel: str, language: 
         metadata=metadata,
         origin_kind=origin_kind,
     ).render()
-
 
 
 class JiuWenSwarm:
@@ -2040,6 +2065,26 @@ class JiuWenSwarm:
 
     async def _handle_skills_request(self, request: AgentRequest) -> AgentResponse | None:
         """处理 Skills 相关请求，返回 None 表示不是 Skills 请求."""
+        # skills.sync.diff/package/apply 已收缩出 WS 路由（经 WS 调用会绕过
+        # HTTP 层 token 鉴权），但它们仍是合法 ReqMethod——若不在此显式
+        # 拒绝，请求会沿 facade 链路落入聊天处理路径，空 query 触发一次
+        # 无意义的 LLM 调用（收缩前是干净的 handler 报错）。
+        if request.req_method in _SKILL_SYNC_WS_REJECTED:
+            message = (
+                "skills.sync.diff/package/apply 未开放 WS 调用，"
+                "请使用带鉴权的 HTTP /skill-sync/* 接口"
+            )
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "code": "SKILL_SYNC_WS_UNSUPPORTED",
+                    "error": message,
+                    "message": message,
+                },
+                metadata=request.metadata,
+            )
         if request.req_method not in _SKILL_ROUTES:
             return None
 
@@ -2047,6 +2092,13 @@ class JiuWenSwarm:
         handler = getattr(self._skill_manager, handler_name)
         try:
             params = dict(request.params) if isinstance(request.params, dict) else {}
+            if handler_name in _SKILL_SYNC_HANDLERS:
+                # 长生命周期实例先重载磁盘 state（外部流程可能已写
+                # local_skills / skill_configs），同步结果才与磁盘一致
+                try:
+                    self._skill_manager.reload_state()
+                except Exception:  # noqa: BLE001
+                    logger.warning("[skills] reload state before sync failed")
             if handler_name in (
                 "handle_skills_import_local",
                 "handle_skills_get",
@@ -2083,7 +2135,15 @@ class JiuWenSwarm:
                 "handle_skills_online_search_install",
                 "handle_skills_clawhub_download",
                 "handle_skills_team_skills_hub_install",
+                "handle_skill_sync_reload",
             ]
+            if handler_name == "handle_skill_sync_reload" and not (
+                payload.get("applied") or []
+            ):
+                # 仅当无任何技能实际落盘（web 进程 apply 全部 skipped /
+                # 全部安装失败）时才不重建；通知方只在 applied 非空时
+                # 发送，此处为防御性兜底。
+                _reload_after_skills = False
             if (
                 handler_name
                 in {
