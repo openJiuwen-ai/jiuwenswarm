@@ -310,6 +310,52 @@ def unavailable_skillpacks(
     return sorted(unavailable)
 
 
+def scan_skillpacks(skills_dir: Path) -> list[SkillPackDefinition]:
+    """Scan installed standard SkillPacks under ``skills_dir``, sorted by name.
+
+    与 skills.list 的展示口径一致：无效包跳过（不阻断其余扫描），
+    ``_``/``.`` 前缀目录与容器形态（根下无 SKILL.md）均不收录。
+    """
+
+    if not skills_dir.is_dir():
+        return []
+    packs: list[SkillPackDefinition] = []
+    for child in sorted(skills_dir.iterdir(), key=lambda p: p.name):
+        if not child.is_dir() or child.name.startswith(("_", ".")):
+            continue
+        if not (child / "SKILL.md").is_file():
+            continue
+        try:
+            packs.append(load_skillpack(child, expected_name=child.name))
+        except SkillPackValidationError:
+            continue
+    return packs
+
+
+_SECTION_HEADING_RE = re.compile(r"^##[ \t]+([^\n]+)[ \t]*$", re.MULTILINE)
+
+
+def read_skillpack_section(skill_dir: Path, section: str) -> str:
+    """Return one SKILL.md ``##`` section body, or "" when absent/unreadable."""
+
+    if skill_dir is None or not skill_dir.is_dir():
+        return ""
+    try:
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ""
+    match = _FRONTMATTER_RE.match(text)
+    body = match.group(2) if match else text
+    headings = list(_SECTION_HEADING_RE.finditer(body))
+    for index, heading in enumerate(headings):
+        if heading.group(1).strip().casefold() != section.strip().casefold():
+            continue
+        start = heading.end()
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(body)
+        return body[start:end].strip()
+    return ""
+
+
 def referencing_skillpacks(skills_dir: Path, member_name: str) -> list[str]:
     """Return valid installed SkillPacks that declare ``member_name``."""
 
@@ -782,7 +828,9 @@ __all__ = [
     "project_skillpack",
     "read_container_pack_body",
     "read_skill_kind",
+    "read_skillpack_section",
     "referencing_skillpacks",
+    "scan_skillpacks",
     "summarize_member_dir",
     "unavailable_skillpacks",
 ]
