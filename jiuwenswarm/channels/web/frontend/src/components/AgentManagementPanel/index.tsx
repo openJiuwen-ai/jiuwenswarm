@@ -1090,11 +1090,20 @@ export function AgentManagementPanel({
     setGroupSaving(true);
     setGroupCreateError(null);
     setActionError(null);
-      setActionNotice(null);
-      try {
-        const result = await groupClient.createGroup({ ...groupDraft, id: groupDraft.id || deriveAgentGroupId(groupDraft.name) });
-        await groupClient.installGroup(result.id);
-        await loadGroups('mine');
+    setActionNotice(null);
+    try {
+      const existingGroups = await groupClient.listGroups();
+      const normalizedName = groupDraft.name.trim().toLocaleLowerCase();
+      if (existingGroups.some(group => group.displayName.trim().toLocaleLowerCase() === normalizedName)) {
+        setGroupCreateError(t('agentManagement.group.states.duplicateName'));
+        return;
+      }
+      const result = await groupClient.createGroup({
+        ...groupDraft,
+        id: groupDraft.id || deriveAgentGroupId(groupDraft.name),
+      });
+      await groupClient.installGroup(result.id);
+      await loadGroups('mine');
       setGroupMineQuery('');
       setGroupMinePage(1);
       setMineKind('group');
