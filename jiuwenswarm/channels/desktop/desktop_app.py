@@ -20,10 +20,11 @@ import threading
 import time
 import uuid
 import webbrowser
+from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO, Callable, Iterator
 from urllib.parse import quote
 
 from logging.handlers import RotatingFileHandler
@@ -448,6 +449,53 @@ def _build_child_env(
     return env
 
 
+@contextmanager
+def _child_log_file(
+    name: str,
+    startup_diagnostics_dir: Path | None = None,
+) -> Iterator[BinaryIO]:
+    """Open the persistent stdout/stderr sink for a managed child process."""
+    log_dirs: list[Path] = []
+    last_error: OSError | None = None
+    try:
+        log_dirs.append(get_logs_dir())
+    except OSError as exc:
+        last_error = exc
+
+    if startup_diagnostics_dir is not None and startup_diagnostics_dir not in log_dirs:
+        log_dirs.append(startup_diagnostics_dir)
+
+    for log_dir in log_dirs:
+        log_path = log_dir / f"child-{name}.log"
+        stream: BinaryIO | None = None
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stream = open(log_path, "ab", buffering=0)
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            marker = f"\n===== [desktop] starting {name} at {timestamp} =====\n"
+            stream.write(marker.encode("utf-8"))
+            logger.info("[desktop] %s child stdout/stderr -> %s", name, log_path)
+        except OSError as exc:
+            if stream is not None:
+                stream.close()
+            last_error = exc
+            logger.warning(
+                "[desktop] failed to open child log for %s at %s: %s",
+                name,
+                log_path,
+                exc,
+            )
+            continue
+
+        try:
+            yield stream
+        finally:
+            stream.close()
+        return
+
+    raise RuntimeError(f"Unable to create child log for {name}") from last_error
+
+
 def _start_process(
     name: str,
     command: list[str],
@@ -456,18 +504,19 @@ def _start_process(
     desktop_token: str = "",
 ) -> subprocess.Popen[bytes]:
     logger.info("[desktop] starting %s: %s", name, command)
-    kwargs: dict[str, object] = {
-        "env": _build_child_env(name, ports, startup_diagnostics_dir, desktop_token),
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    # macOS/Linux: 用 start_new_session=True 创建新进程组，
-    # 以便后续用 os.killpg 杀掉整个进程树（含孙子进程）。
-    if os.name != "nt":
-        kwargs["start_new_session"] = True
-    else:
-        kwargs["creationflags"] = _creationflags()
-    return subprocess.Popen(command, **kwargs)
+    with _child_log_file(name, startup_diagnostics_dir) as child_log:
+        kwargs: dict[str, object] = {
+            "env": _build_child_env(name, ports, startup_diagnostics_dir, desktop_token),
+            "stdout": child_log,
+            "stderr": child_log,
+        }
+        # macOS/Linux: 用 start_new_session=True 创建新进程组，
+        # 以便后续用 os.killpg 杀掉整个进程树（含孙子进程）。
+        if os.name != "nt":
+            kwargs["start_new_session"] = True
+        else:
+            kwargs["creationflags"] = _creationflags()
+        return subprocess.Popen(command, **kwargs)
 
 
 # frozen exe 冷启动时, C 扩展 (.pyd) 与大量 .py 首次从 _MEIPASS 读盘很慢.
