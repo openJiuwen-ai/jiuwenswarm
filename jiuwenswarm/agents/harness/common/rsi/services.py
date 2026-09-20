@@ -451,18 +451,18 @@ class RsiTaskService:
                     raise RsiTaskStateConflict(
                         f"任务 {task_id} 持有保留的 Harness 版本，不可删除"
                     )
-        if task.status == TaskStatus.QUEUED.value:
+        if task.status in {TaskStatus.QUEUED.value, TaskStatus.PAUSED.value}:
             config = task.config or {}
             if config.get("harness_refs_path") and not bool(
                 config.get("active_ref_released", False)
             ):
                 raise RsiTaskStateConflict(f"任务 {task_id} 产物仍在生效，不可删除")
-            if worker is not None:
+            if task.status == TaskStatus.QUEUED.value and worker is not None:
                 worker.cancel(task_id, "terminate")
             else:
                 self.store.update_status(
                     task_id,
-                    [TaskStatus.QUEUED.value],
+                    [task.status],
                     TaskStatus.TERMINATED.value,
                     cause="delete",
                 )

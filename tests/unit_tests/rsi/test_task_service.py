@@ -321,6 +321,20 @@ class TestTaskDelete:
         with pytest.raises(RsiTaskNotFound):
             ctx.store.get(task_id)
 
+    def test_delete_paused_updates_state_before_removing_task(self, ctx):
+        ctx.bind_task_service(harness_refs_provider=lambda: None)
+        task_id = ctx.task_service.create(_harness_create_params())["task_id"]
+        ctx.store.update_status(task_id, [TaskStatus.CREATED.value], TaskStatus.QUEUED.value, cause="start")
+        ctx.store.update_status(task_id, [TaskStatus.QUEUED.value], TaskStatus.PAUSED.value, cause="pause")
+        status_changes: list[tuple[str, str, str]] = []
+        ctx.store.set_status_changed_callback(lambda *change: status_changes.append(change))
+
+        assert ctx.task_service.delete({"task_id": task_id}, worker=ctx.worker) == {"ok": True}
+
+        assert status_changes == [(task_id, TaskStatus.PAUSED.value, TaskStatus.TERMINATED.value)]
+        with pytest.raises(RsiTaskNotFound):
+            ctx.store.get(task_id)
+
     def test_delete_queued_with_worker_removes_queue_entry(self, ctx):
         ctx.bind_task_service(harness_refs_provider=lambda: None)
         task_id = ctx.task_service.create(_harness_create_params())["task_id"]
