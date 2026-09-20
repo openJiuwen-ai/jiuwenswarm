@@ -1,8 +1,5 @@
 .pc-settings {
-  height: 100%;
-  overflow-y: auto;
-  background: #ffffff;
-  padding: 24px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -13,15 +10,6 @@
   justify-content: center;
 }
 
-/* 标题：24px semibold #191919 */
-.pc-settings__title {
-  font-size: 24px;
-  font-weight: 600;
-  color: #191919;
-  line-height: 36px;
-  margin: 0;
-}
-
 .pc-settings__error {
   background: rgba(220, 50, 50, 0.08);
   color: #dc3232;
@@ -30,44 +18,35 @@
   font-size: 12px;
 }
 
-/* 配置卡片：r16 描边 #dbdbdb ，透明背景 */
+/* Shared setting rows provide typography, controls and responsive layout. */
 .pc-settings__card {
-  border: 1px solid #dbdbdb;
-  border-radius: 16px;
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-xl);
   overflow: hidden;
+  background: var(--color-surface-card);
+}
+
+.pc-settings__card > .setting-row {
+  border: 0;
+  border-radius: 0;
   background: transparent;
 }
 
-/* 卡片行：高度 76px，分隔线 #f0f0f0 */
-.pc-settings__card-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 16px;
-  border-bottom: 1px solid #f0f0f0;
-  min-height: 76px;
-}
-
-.pc-settings__card-row:last-child {
-  border-bottom: none;
-}
-
-.pc-settings__card-row--inline {
-  align-items: center;
-}
-
-/* 授权行：纵向布局 */
+.pc-settings__card > .setting-row + .setting-row,
 .pc-settings__card-row--auth {
+  border-top: 1px solid var(--color-settings-border);
+}
+
+.pc-settings__card-row--auth {
+  display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 12px;
   padding: 16px;
 }
 
 .pc-settings__row-text {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  gap: 2px;
   min-width: 0;
   flex: 1;
 }
@@ -75,15 +54,15 @@
 .pc-settings__row-label {
   font-size: 14px;
   font-weight: 600;
-  color: #191919;
+  color: var(--color-text-primary);
   line-height: 22px;
 }
 
 .pc-settings__row-hint {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 400;
-  color: #808080;
-  line-height: 18px;
+  color: var(--color-settings-text-secondary);
+  line-height: 22px;
 }
 
 /* 下拉框：160x28 r6 描边 #c2c2c2 */
@@ -315,5 +294,7 @@
 }
 
 @keyframes pc-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
