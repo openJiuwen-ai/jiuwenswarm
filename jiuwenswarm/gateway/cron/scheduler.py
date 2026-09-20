@@ -270,9 +270,14 @@ class CronSchedulerService:
         self._seq = 0
         self._runs: dict[str, CronRunState] = {}  # run_id -> state
         self._run_tasks: dict[str, asyncio.Task] = {}
+        # run_id -> job_id.  A run skipped during crash recovery must stay
+        # suppressed across later store reloads; otherwise a reload after the
+        # boot grace period could schedule the same orphaned wake again.
+        self._crash_recovery_skipped_runs: dict[str, str] = {}
         self._last_store_mtime: float = 0.0
         self._last_store_revision: int = 0
         self._store_poll_interval: float = 5.0  # seconds
+        self._boot_time: float = now_fn()
         self._watch_task: asyncio.Task | None = None
 
     async def _sync_store_revision(self) -> None:
@@ -372,6 +377,10 @@ class CronSchedulerService:
         if self._running:
             return
         self._running = True
+        # 以真正进入启动流程的时刻重置 boot_time：__init__ 到 start() 之间
+        # 可能超过 grace 窗口（初始化耗时长），此时崩溃重启后的首次 reload
+        # 不应被误判为运行期而恢复原先要避免的重复执行风险。
+        self._boot_time = self._now_fn()
         await self.reload()
         self._task = asyncio.create_task(self._loop(), name="cron-scheduler")
         if bool(getattr(self._store, "supports_watch", False)):
@@ -477,6 +486,16 @@ class CronSchedulerService:
             self._runs.pop(rid, None)
 
         now = self._now_fn()
+        # Retain a suppression for as long as its job exists.  The remote
+        # AgentServer task can outlive its push deadline, and using that
+        # deadline for cleanup would allow a later reload to duplicate it.
+        # Entries are only created during the boot grace period (at most one
+        # per job) and no longer match once a recurring job advances run_id.
+        self._crash_recovery_skipped_runs = {
+            run_id: job_id
+            for run_id, job_id in self._crash_recovery_skipped_runs.items()
+            if job_id in new_job_ids
+        }
         for job in jobs:
             try:
                 push_dt, wake_dt, run_id = self._compute_next_run(job, now_ts=now)
@@ -533,9 +552,21 @@ class CronSchedulerService:
             # 上原 task 可能还在跑 → 重复执行。此时跳过 wake 重排，宁可丢结果也
             # 不重复触发。push 事件也不排（崩溃后 _runs 无 state，_on_push 会重建
             # state 并推占位——但此时根本没有执行，推占位会误导用户）。
-            # 仅当内存无该 run 记录时启用此保护（existing is None 即崩溃重启特征）。
+            # 仅当内存无该 run 记录且处于进程启动 grace 窗口内时启用：运行期
+            # reload 也会出现"existing is None + wake 刚过去"（_events.clear()
+            # 抹掉尚未到点的合法 wake），不加 grace 会误丢合法任务。
             wake_already_passed = wake_dt.timestamp() <= now
-            crash_recovery_skip = existing is None and wake_already_passed
+            in_boot_grace = (now - self._boot_time) < self._CRASH_RECOVERY_GRACE_SECONDS
+            crash_recovery_skip = run_id in self._crash_recovery_skipped_runs
+            crash_recovery_candidate = (
+                existing is None and wake_already_passed and in_boot_grace
+            )
+            if not crash_recovery_skip and crash_recovery_candidate:
+                crash_recovery_skip = True
+                # Keep the suppression for this job lifetime.  A remote task
+                # can still be running after its push time, and a later reload
+                # must never revive this exact run_id.
+                self._crash_recovery_skipped_runs[run_id] = job.id
             if not already_active and not crash_recovery_skip:
                 self._schedule_event(wake_dt, "wake", job.id, run_id)
             # push 事件：已 active 时仍需排入——_on_push 内部有 pushed_final 兜底，
@@ -643,6 +674,8 @@ class CronSchedulerService:
             self._reload_event.set()
 
     _MISSED_TRIGGER_WINDOW_SECONDS = 10.0
+
+    _CRASH_RECOVERY_GRACE_SECONDS: float = 60.0
 
     def _compute_next_run(self, job: CronJob, *, now_ts: float) -> tuple[datetime, datetime, str]:
         tz = ZoneInfo(job.timezone)
