@@ -1066,13 +1066,18 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               data-testid="cron-job-actions"
               data-variant={job.id}
             >
-              {/* proactive job 没有真正的"停止"态（enabled 由 config 驱动，不是用户可切的
-                开关，同 StatusBadge 的 enabled 判断），立即执行的禁用条件不看它的 enabled */}
-              {job.expired || (!isProactive && !job.enabled) ? (
+              {/* proactive job 的面板操作（立即执行/编辑/更多）全部置灰：任务由设置→主动推荐
+                  统一管理（后端 web handler / store 层已拦截删除/启停/非调度字段更新，此处
+                  置灰与「停止」的既有口径一致）。proactive 没有真正的"停止"态（enabled 由
+                  config 驱动，不是用户可切的开关，同 StatusBadge 的 enabled 判断），
+                  立即执行的禁用条件不看它的 enabled */}
+              {isProactive || job.expired || !job.enabled ? (
                 <span
                   className="text-sm text-text-muted/50 cursor-not-allowed select-none"
                   title={
-                    t(job.expired ? 'cron.errors.expiredCannotRunNow' : 'cron.errors.disabledCannotRunNow') ?? undefined
+                    isProactive
+                      ? t('cron.autoManagedActionsDisabled') ?? undefined
+                      : t(job.expired ? 'cron.errors.expiredCannotRunNow' : 'cron.errors.disabledCannotRunNow') ?? undefined
                   }
                   data-testid="cron-job-run-now-btn"
                   data-variant="disabled"
@@ -1089,16 +1094,29 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                   {t('cron.table.runNow')}
                 </button>
               )}
-              <button
-                onClick={() => {
-                  void loadChannels();
-                  setDrawer({ mode: 'edit', initial: jobToForm(job), jobId: job.id });
-                }}
-                data-testid="cron-job-edit-btn"
-                className="text-sm text-cron-action-link hover:opacity-80"
-              >
-                {t('cron.table.edit')}
-              </button>
+              {/* proactive job 不可编辑：调度/启停/删除均由设置→主动推荐管理，编辑入口置灰 */}
+              {isProactive ? (
+                <span
+                  className="text-sm text-text-muted/50 cursor-not-allowed select-none"
+                  title={t('cron.autoManagedActionsDisabled') ?? undefined}
+                  data-testid="cron-job-edit-btn"
+                  data-variant="disabled"
+                >
+                  {t('cron.table.edit')}
+                </span>
+              ) : (
+                <button
+                  onClick={() => {
+                    void loadChannels();
+                    setDrawer({ mode: 'edit', initial: jobToForm(job), jobId: job.id });
+                  }}
+                  data-testid="cron-job-edit-btn"
+                  data-variant="enabled"
+                  className="text-sm text-cron-action-link hover:opacity-80"
+                >
+                  {t('cron.table.edit')}
+                </button>
+              )}
               {isProactive ? (
                 <span
                   className="text-sm text-text-muted/50 cursor-not-allowed select-none"
@@ -1137,22 +1155,36 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                 </button>
               )}
               <div ref={rowMenuJobId === job.id ? rowMenuRef : undefined}>
-                <button
-                  onClick={(e) => {
-                    if (rowMenuJobId === job.id) {
-                      closeRowMenu();
-                      return;
-                    }
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    setRowMenuDirection(window.innerHeight - rect.bottom >= 150 ? 'down' : 'up');
-                    setRowMenuAnchor(rect);
-                    setRowMenuJobId(job.id);
-                  }}
-                  data-testid="cron-job-more-btn"
-                  className="flex items-center gap-0.5 text-sm text-cron-action-link hover:opacity-80"
-                >
-                  {t('cron.table.more')} <ChevronDown size={13} />
-                </button>
+                {/* proactive job 不提供"更多"菜单：按钮置灰后 rowMenuJobId 永远不会被本行
+                    设置，下方菜单/弹层对其自然不可达（触发的会话/预览对它无意义，删除已禁用） */}
+                {isProactive ? (
+                  <span
+                    className="flex items-center gap-0.5 text-sm text-text-muted/50 cursor-not-allowed select-none"
+                    title={t('cron.autoManagedActionsDisabled') ?? undefined}
+                    data-testid="cron-job-more-btn"
+                    data-variant="disabled"
+                  >
+                    {t('cron.table.more')} <ChevronDown size={13} />
+                  </span>
+                ) : (
+                  <button
+                    onClick={(e) => {
+                      if (rowMenuJobId === job.id) {
+                        closeRowMenu();
+                        return;
+                      }
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      setRowMenuDirection(window.innerHeight - rect.bottom >= 150 ? 'down' : 'up');
+                      setRowMenuAnchor(rect);
+                      setRowMenuJobId(job.id);
+                    }}
+                    data-testid="cron-job-more-btn"
+                    data-variant="enabled"
+                    className="flex items-center gap-0.5 text-sm text-cron-action-link hover:opacity-80"
+                  >
+                    {t('cron.table.more')} <ChevronDown size={13} />
+                  </button>
+                )}
                 {rowMenuJobId === job.id &&
                   rowMenuAnchor &&
                   createPortal(
