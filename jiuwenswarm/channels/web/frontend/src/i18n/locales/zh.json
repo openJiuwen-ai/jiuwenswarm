@@ -2008,6 +2008,7 @@
     },
     "skillTypes": {
       "skill": "技能包",
+      "skillpack": "技能包",
       "team": "团队技能",
       "multimodal": "多模态"
     },

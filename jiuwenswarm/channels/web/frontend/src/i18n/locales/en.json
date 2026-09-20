@@ -2018,6 +2018,7 @@
     },
     "skillTypes": {
       "skill": "Skill Pack",
+      "skillpack": "Skill Pack",
       "team": "Team Skills",
       "multimodal": "Multimodal"
     },
