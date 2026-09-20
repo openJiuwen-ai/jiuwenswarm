@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 import webbrowser
+import weakref
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,6 +78,7 @@ STARTUP_DOCTOR_TIMEOUT_SECONDS = DOCTOR_TIMEOUT_SECONDS + 15.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
 MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
+_MACOS_RUNTIME_REF: weakref.ReferenceType[Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -1448,6 +1450,69 @@ class DesktopRuntime:
         threading.Thread(target=_delayed_destroy, daemon=True).start()
         return True
 
+    def _configure_macos_window_lifecycle(self) -> None:
+        """Keep the macOS app alive when its main window is closed."""
+        if sys.platform != "darwin" or self.window is None:
+            return
+
+        native_window = getattr(self.window, "native", None)
+        if native_window is None:
+            logger.warning("[desktop] macOS native window is unavailable")
+            return
+
+        try:
+            import AppKit  # type: ignore[import-not-found]
+            import objc  # type: ignore[import-not-found]
+            from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+            from webview.platforms.cocoa import BrowserView
+
+            def _set_window_lifecycle() -> None:
+                global _MACOS_RUNTIME_REF  # pylint: disable=global-statement
+
+                close_button = native_window.standardWindowButton_(
+                    AppKit.NSWindowCloseButton
+                )
+                if close_button is None:
+                    logger.warning("[desktop] macOS close button is unavailable")
+                    return
+                close_button.setTarget_(native_window)
+                close_button.setAction_("orderOut:")
+
+                _MACOS_RUNTIME_REF = weakref.ref(self)
+                reopen_selector = (
+                    b"applicationShouldHandleReopen:hasVisibleWindows:"
+                )
+                if BrowserView.AppDelegate.instancesRespondToSelector_(
+                    reopen_selector
+                ):
+                    return
+
+                def applicationShouldHandleReopen_hasVisibleWindows_(
+                    _delegate, _application, _has_visible_windows
+                ) -> bool:
+                    runtime_ref = _MACOS_RUNTIME_REF
+                    runtime = runtime_ref() if runtime_ref is not None else None
+                    if runtime is not None and runtime.window is not None:
+                        runtime.window.show()
+                    return True
+
+                signature = objc._C_NSBOOL + b"@:@" + objc._C_NSBOOL
+                reopen_handler = objc.selector(
+                    applicationShouldHandleReopen_hasVisibleWindows_,
+                    signature=signature,
+                )
+                setattr(
+                    BrowserView.AppDelegate,
+                    "applicationShouldHandleReopen_hasVisibleWindows_",
+                    reopen_handler,
+                )
+
+            # pywebview dispatches the shown event on a worker thread. Cocoa
+            # controls must be changed on the application thread.
+            AppHelper.callAfter(_set_window_lifecycle)
+        except (AttributeError, ImportError, RuntimeError) as exc:
+            logger.warning("[desktop] failed to configure macOS window lifecycle: %s", exc)
+
     def download_file(self, url: str, filename: str) -> DesktopSaveResult:
         """选择保存位置并在实际写入完成后返回结果。"""
         try:
@@ -2649,6 +2714,10 @@ nohup {q_executable} >/dev/null 2>&1 &
 
         self.window.events.loaded += self._on_loaded_first
         self.window.events.closed += self._on_closed
+        if sys.platform == "darwin":
+            shown_event = getattr(self.window.events, "shown", None)
+            if shown_event is not None:
+                shown_event += self._configure_macos_window_lifecycle
 
         def _start_services_and_report() -> None:
             def _navigate_on_web_ready() -> None:
