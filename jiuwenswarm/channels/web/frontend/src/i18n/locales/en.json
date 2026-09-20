@@ -3781,7 +3781,7 @@
       "loggingIn": "Signing in…",
       "logout": "Sign out",
       "switchAccount": "Switch account",
-      "switchSignOutHint": "You are still signed in to your Huawei account in the browser, so the previous account would be used again. We opened your Huawei account page — sign out there, then come back and continue.",
+      "switchSignOutHint": "You are still signed in to your Huawei account in the browser. Sign out there first, then come back and continue.",
       "switchContinue": "Signed out, continue",
       "switchSameAccount": "Still the same account. Sign out of your Huawei account in the browser, then switch again.",
       "cancel": "Cancel",
