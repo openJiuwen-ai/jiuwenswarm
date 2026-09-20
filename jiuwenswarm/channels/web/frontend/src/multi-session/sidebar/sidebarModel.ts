@@ -1,8 +1,10 @@
 export type SessionIndicator = 'waiting' | 'processing' | 'unread' | 'error' | 'time';
 
 export type SidebarMenuAction =
+  | 'archive-sessions'
   | 'pin'
   | 'rename'
+  | 'archive'
   | 'delete';
 
 export type SidebarMenuItem = {
@@ -10,12 +12,13 @@ export type SidebarMenuItem = {
   label: string;
   danger?: boolean;
   pinned?: boolean;
+  disabled?: boolean;
 };
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 type RuntimeLike = {
-  pendingQuestion?: unknown;
+  pendingQuestions?: readonly unknown[];
   isProcessing?: boolean;
   executionError?: string | null;
 };
@@ -57,7 +60,7 @@ export function getSessionIndicator(
   sessionError = false,
 ): SessionIndicator {
   if (sessionError) return 'error';
-  if (runtime?.pendingQuestion) return 'waiting';
+  if (runtime?.pendingQuestions?.[0]) return 'waiting';
   if (runtime?.isProcessing || sessionProcessing) return 'processing';
   if (unread) return 'unread';
   return 'time';
@@ -85,27 +88,58 @@ function buildSidebarMenuItems(
   isPinned: boolean,
   pinLabels: readonly [string, string],
   translate: Translate,
+  options: { archiveLabel: string },
 ): SidebarMenuItem[] {
-  const items: SidebarMenuItem[] = [
+  return [
     { action: 'pin', label: translate(isPinned ? pinLabels[1] : pinLabels[0]), pinned: isPinned },
-  ];
-  items.push(
     { action: 'rename', label: translate('multiSession.project.rename') },
-    { action: 'delete', label: translate('multiSession.delete'), danger: true },
-  );
-  return items;
+    { action: 'archive', label: options.archiveLabel },
+  ];
 }
 
-export function getProjectMenuItems(isPinned: boolean, translate: Translate): SidebarMenuItem[] {
-  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.project, translate);
+export function getProjectMenuItems(
+  isPinned: boolean,
+  translate: Translate,
+  options: { isDefault?: boolean; archiveSessionsDisabled?: boolean } = {},
+): SidebarMenuItem[] {
+  // “删除已归档会话”属于归档管理页的项目分组操作，项目菜单只保留批量归档。
+  const batchItems: SidebarMenuItem[] = [
+    {
+      action: 'archive-sessions',
+      label: translate('multiSession.project.archiveSessions'),
+      disabled: options.archiveSessionsDisabled,
+    },
+  ];
+  if (options.isDefault) return batchItems;
+  // 项目不再有整体归档；菜单 = 置顶/重命名/删除 + 项目级批量会话操作。
+  return [
+    { action: 'pin', label: translate(isPinned ? PIN_LABEL_PAIRS.project[1] : PIN_LABEL_PAIRS.project[0]), pinned: isPinned },
+    { action: 'rename', label: translate('multiSession.project.rename') },
+    { action: 'delete', label: translate('multiSession.delete'), danger: true },
+    ...batchItems,
+  ];
 }
 
 export function getProjectSessionMenuItems(isPinned: boolean, translate: Translate): SidebarMenuItem[] {
-  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.projectSession, translate);
+  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.projectSession, translate, {
+    archiveLabel: translate('multiSession.project.archiveConversation'),
+  });
 }
 
-export function getConversationMenuItems(isPinned: boolean, translate: Translate): SidebarMenuItem[] {
-  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.conversation, translate);
+export function getConversationMenuItems(
+  isPinned: boolean,
+  translate: Translate,
+  options: { archivable?: boolean; deletable?: boolean } = {},
+): SidebarMenuItem[] {
+  const items = buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.conversation, translate, {
+    archiveLabel: translate('multiSession.project.archiveConversation'),
+  });
+  // cron/heartbeat 触发会话被后端禁止单独归档，不提供必然失败的菜单项。
+  const visible = options.archivable === false
+    ? items.filter((item) => item.action !== 'archive')
+    : items;
+  if (options.deletable) visible.push({ action: 'delete', label: translate('multiSession.delete'), danger: true });
+  return visible;
 }
 
 export function sortSessionsForSidebar<T extends SessionLike>(sessions: T[]): T[] {

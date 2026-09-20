@@ -13,6 +13,7 @@ import {
   ToolResult,
   ToolExecution,
   ToolExecutionStatus,
+  AutoReviewerMetadata,
   InterruptResultPayload,
   AskUserQuestionPayload,
   EvolutionStatusPayload,
@@ -24,11 +25,17 @@ import {
 } from '../types';
 import { useTodoStore } from './todoStore';
 import {
+  mergeReviewerProgress,
   mergeToolResultProgress,
   shouldDropToolResult,
 } from './toolResultLifecycle';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs } from '../utils/timestamp';
+import {
+  consumePendingQuestion as consumeQueuedQuestion,
+  clearPermissionQuestions as clearQueuedPermissionQuestions,
+  enqueuePendingQuestions,
+} from './pendingQuestionQueue';
 
 const TOOL_TIMEOUT_MS = 12_000_000;
 const EVOLUTION_STATUS_END_VISIBLE_MS = 3_000;
@@ -66,8 +73,13 @@ interface TaskItem {
 }
 
 export interface HistoryPagerMeta {
-  loadedPages: number;
-  totalPages: number;
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotId: string | null;
+  snapshotEnd: number;
+  loadedBatchSeq: number;
+  publishedBatchSeq: number;
+  historyComplete: boolean;
 }
 
 /**
@@ -79,16 +91,22 @@ export interface ReasoningSegment {
   text: string;
   startedAt: number;
   closed: boolean;
+  /** 当前流式 reasoning 所属的 Web 单 Agent 专家。 */
+  agentTemplateName?: string;
   /** 最近一个 delta 到达时刻；即使 final 丢失，耗时终点也能落在最后一个真实帧。 */
   updatedAt?: number;
   /** 收尾时刻；用于延迟折进 streak。历史可省略。 */
   closedAt?: number;
+  /** 仅用于大历史渐进发布；实时思考没有该标记。 */
+  historyBatchSeq?: number;
 }
 
 export interface ChatRuntime {
   messages: Message[];
   isProcessing: boolean;
   executionError: string | null;
+  /** The Team session's bound AgentGroup was deleted or uninstalled. */
+  agentGroupUnavailable: boolean;
   isThinking: boolean;
   isLoadingHistory: boolean;
   historyPagerMeta: HistoryPagerMeta | null;
@@ -120,7 +138,7 @@ export interface ChatRuntime {
   };
   taskQueue: TaskItem[];
   queuePaused: boolean;
-  pendingQuestion: AskUserQuestionPayload | null;
+  pendingQuestions: AskUserQuestionPayload[];
   /**
    * 忙碌时设目标：用户气泡暂存在此（界面不立刻显示）；
    * 空 chat.final / processing 结束再正式入 messages。
@@ -138,6 +156,7 @@ function createEmptyRuntime(): ChatRuntime {
     messages: [],
     isProcessing: false,
     executionError: null,
+    agentGroupUnavailable: false,
     isThinking: false,
     isLoadingHistory: false,
     historyPagerMeta: null,
@@ -166,7 +185,7 @@ function createEmptyRuntime(): ChatRuntime {
     },
     taskQueue: [],
     queuePaused: false,
-    pendingQuestion: null,
+    pendingQuestions: [],
     pendingGoalObjectiveBubble: null as ChatRuntime['pendingGoalObjectiveBubble'],
     inputValue: '',
     evolutionStatusClearTimer: null,
@@ -210,9 +229,23 @@ interface ChatState {
   replaceHistoryMessages: (sessionId: string, messages: Message[]) => void;
   updateMessage: (sessionId: string, id: string, updates: Partial<Message>) => void;
   appendStreamContent: (sessionId: string, content: string, streamKey?: string) => void;
-  appendReasoning: (sessionId: string, content: string, options?: { atMs?: number }) => void;
+  appendReasoning: (
+    sessionId: string,
+    content: string,
+    options?: { atMs?: number; agentTemplateName?: string },
+  ) => void;
   closeReasoning: (sessionId: string, options?: { atMs?: number }) => void;
-  restoreReasoningSegments: (sessionId: string, items: { at: string; text: string; updatedAt?: number }[]) => void;
+  restoreReasoningSegments: (
+    sessionId: string,
+    items: {
+      id?: string;
+      at: string;
+      text: string;
+      agentTemplateName?: string;
+      updatedAt?: number;
+      historyBatchSeq?: number;
+    }[],
+  ) => void;
   startStreaming: (sessionId: string, messageId: string, streamKey?: string) => void;
   stopStreaming: (sessionId: string, streamKey?: string) => void;
   finalizeStreamSegment: (sessionId: string, streamKey?: string) => void;
@@ -220,10 +253,17 @@ interface ChatState {
   clearStreamSplit: (sessionId: string) => void;
   collapseTurnFinal: (
     sessionId: string,
-    opts: { kind: 'agent' | 'team'; content: string; finalId: string; timestampIso: string }
+    opts: {
+      kind: 'agent' | 'team';
+      content: string;
+      finalId: string;
+      timestampIso: string;
+      agentTemplateName?: string;
+    }
   ) => void;
   bumpThinkingAnchor: (sessionId: string) => void;
   setExecutionError: (sessionId: string, error: string | null) => void;
+  setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
   setProcessing: (sessionId: string, status: boolean) => void;
   setThinking: (sessionId: string, status: boolean) => void;
   setLoadingHistory: (sessionId: string, status: boolean) => void;
@@ -234,8 +274,18 @@ interface ChatState {
   setInterruptResult: (sessionId: string, result: InterruptResultPayload | null) => void;
   setSwitchingMode: (sessionId: string, switching: boolean) => void;
   setNewSession: (sessionId: string, isNew: boolean) => void;
-  addToolCall: (sessionId: string, toolCall: ToolCall, options?: { startedAt?: string; requestId?: string }) => void;
+  addToolCall: (
+    sessionId: string,
+    toolCall: ToolCall,
+    options?: {
+      startedAt?: string;
+      requestId?: string;
+      agentTemplateName?: string;
+      historyBatchSeq?: number;
+    },
+  ) => void;
   updateToolProgress: (sessionId: string, toolCallId: string, progress: Partial<ToolResult>) => void;
+  updateToolReviewer: (sessionId: string, toolCallId: string, reviewer: AutoReviewerMetadata) => void;
   addToolResult: (sessionId: string, toolResult: ToolResult, options?: { updatedAt?: string }) => void;
   markTimedOutExecutions: (sessionId: string) => void;
   /** 历史回放常只有 tool_call、无 tool_result：把仍 pending 的工具按 startedAt 结算，避免超时巡检用 now 污染耗时 */
@@ -247,10 +297,13 @@ interface ChatState {
   clearTaskQueue: (sessionId: string) => void;
   removeFromTaskQueue: (sessionId: string, id: string) => void;
   reorderTaskQueue: (sessionId: string, fromIndex: number, toIndex: number) => void;
-  setPendingQuestion: (sessionId: string, question: AskUserQuestionPayload | null) => void;
+  enqueuePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
+  consumePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
+  clearPendingQuestions: (sessionId: string) => void;
   setPendingGoalObjectiveBubble: (sessionId: string, content: string | null) => void;
   flushPendingGoalObjectiveBubble: (sessionId: string) => void;
   queueOrAddGoalObjectiveMessage: (sessionId: string, content: string) => void;
+  clearPermissionQuestions: (sessionId: string) => void;
   setInputValue: (sessionId: string, value: string) => void;
   setSessionError: (sessionId: string, error: string | null) => void;
   setUsageSummary: (sessionId: string, messageId: string, usage: UsageSummary) => void;
@@ -322,7 +375,19 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ...runtime,
             messages: [...runtime.messages, ...messages],
             messageRenderKeySeq,
-            ...(message.role === 'user' ? { assistantStreamSplit: false, reasoningSegments: runtime.reasoningSegments.filter((s) => s.closed) } : {}),
+            ...(message.role === 'user'
+              ? {
+                  assistantStreamSplit: false,
+                  // 上一轮被中断（暂停/停止）时思考段可能永远等不到 closeReasoning；
+                  // 新一轮开始只把它冻结收尾，不能整段丢弃——否则上一轮思考块连同头像
+                  // 会凭空消失（刷新后历史又能恢复）。closedAt 落在最后一个真实 delta 帧。
+                  reasoningSegments: runtime.reasoningSegments.map((segment) =>
+                    segment.closed
+                      ? segment
+                      : { ...segment, closed: true, closedAt: segment.updatedAt ?? Date.now() }
+                  ),
+                }
+              : {}),
           },  
         },
       };
@@ -365,7 +430,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolResultDedupDropped: 0,
             },
             taskQueue: [],
-            pendingQuestion: null,
+            pendingQuestions: [],
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -431,7 +496,14 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       let next: ReasoningSegment[];
       if (last && !last.closed) {
         // 每个 delta 都推进 updatedAt，使耗时终点不依赖 closeReasoning 收尾事件
-        next = segments.slice(0, -1).concat({ ...last, text: last.text + content, updatedAt: atMs });
+        next = segments.slice(0, -1).concat({
+          ...last,
+          text: last.text + content,
+          updatedAt: atMs,
+          ...(options?.agentTemplateName && !last.agentTemplateName
+            ? { agentTemplateName: options.agentTemplateName }
+            : {}),
+        });
       } else {
         next = segments.concat({
           id: createReasoningSegmentId(),
@@ -439,6 +511,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           startedAt: atMs,
           updatedAt: atMs,
           closed: false,
+          ...(options?.agentTemplateName ? { agentTemplateName: options.agentTemplateName } : {}),
         });
       }
       return {
@@ -504,13 +577,15 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ? replayUpdatedAt
             : startedAt;
         segments.push({
-          id: `hist-rsn-${sessionId}-${index}-${createReasoningSegmentId()}`,
+          id: item.id ?? `hist-rsn-${sessionId}-${index}-${createReasoningSegmentId()}`,
           text,
           startedAt,
           closed: true,
+          ...(item.agentTemplateName ? { agentTemplateName: item.agentTemplateName } : {}),
           // 历史已结束：closedAt 用 startedAt，立刻 settled，且比魔法 0 更可解释。
           closedAt: startedAt,
           updatedAt,
+          historyBatchSeq: item.historyBatchSeq,
         });
       });
       segments.sort((a, b) => a.startedAt - b.startedAt);
@@ -637,7 +712,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  collapseTurnFinal: (sessionId, { kind, content, finalId, timestampIso }) => {
+  collapseTurnFinal: (sessionId, { kind, content, finalId, timestampIso, agentTemplateName }) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
@@ -674,6 +749,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         timestamp: timestampIso,
         completedAt: timestampIso,
         isStreaming: false,
+        ...(kind === 'agent' && agentTemplateName ? { agentTemplateName } : {}),
       });
       return {
         runtimes: {
@@ -711,6 +787,19 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, executionError: error },
+        },
+      };
+    });
+  },
+
+  setAgentGroupUnavailable: (sessionId, unavailable) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.agentGroupUnavailable === unavailable) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, agentGroupUnavailable: unavailable },
         },
       };
     });
@@ -994,6 +1083,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         updatedAt: startedAt,
         timeoutAt,
         requestId: options?.requestId,
+        agentTemplateName: options?.agentTemplateName,
+        historyBatchSeq: options?.historyBatchSeq,
       });
 
       const nextOrder = [...runtime.toolExecutionOrder, toolCall.id];
@@ -1174,6 +1265,29 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
+  updateToolReviewer: (sessionId, toolCallId, reviewer) => {
+    if (!toolCallId) return;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const execution = runtime.toolExecutions.get(toolCallId);
+      if (!execution) return state;
+      const nextReviewer = mergeReviewerProgress(execution.toolCall.reviewer, reviewer);
+      if (nextReviewer === execution.toolCall.reviewer) return state;
+      const nextExecutions = new Map(runtime.toolExecutions);
+      nextExecutions.set(toolCallId, {
+        ...execution,
+        toolCall: { ...execution.toolCall, reviewer: nextReviewer },
+      });
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, toolExecutions: nextExecutions },
+        },
+      };
+    });
+  },
+
   markTimedOutExecutions: (sessionId) => {
     const now = Date.now();
     set((state) => {
@@ -1279,7 +1393,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolExecutionOrder: nextOrder,
               orphanResults: new Map(),
               interruptResult: null,
-              pendingQuestion: null,
+              pendingQuestions: [],
               toolMetrics: {
                 toolCallDedupDropped: 0,
                 toolResultDedupDropped: 0,
@@ -1297,7 +1411,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             toolExecutionOrder: [],
             orphanResults: new Map(),
             interruptResult: null,
-            pendingQuestion: null,
+            pendingQuestions: [],
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -1360,7 +1474,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolResultDedupDropped: 0,
             },
             taskQueue: [],
-            pendingQuestion: null,
+            pendingQuestions: [],
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -1440,14 +1554,48 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  setPendingQuestion: (sessionId, question) => {
+  enqueuePendingQuestion: (sessionId, question) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = enqueuePendingQuestions(runtime.pendingQuestions, question);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
+  },
+
+  consumePendingQuestion: (sessionId, question) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = consumeQueuedQuestion(runtime.pendingQuestions, question);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
+  },
+
+  clearPendingQuestions: (sessionId) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, pendingQuestion: question },
+          [sessionId]: { ...runtime, pendingQuestions: [] },
         },
       };
     });
@@ -1549,6 +1697,23 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         isGoalObjectiveMessage: true,
       });
     }
+  },
+
+  clearPermissionQuestions: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = clearQueuedPermissionQuestions(runtime.pendingQuestions);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
   },
 
   setInputValue: (sessionId, value) => {

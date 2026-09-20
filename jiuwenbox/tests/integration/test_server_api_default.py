@@ -5,6 +5,7 @@ import copy
 import ipaddress
 import json
 import logging
+import os
 import posixpath
 import re
 import socket
@@ -40,6 +41,20 @@ logger = logging.getLogger(__name__)
 # Test-only loopback CIDR for network policy tests; not a hardcoded production IP.
 _TEST_ALLOWED_LOOPBACK_IP = "127.0.0.1/32"
 _TEST_LOOPBACK_IPV6 = "::1/128"
+
+# Test-only network policy IPs (RFC 5737 documentation / RFC 1918 private);
+# not hardcoded production IPs. Override via environment if needed.
+_TEST_EGRESS_ALLOWED_IP = os.getenv("JIUWENBOX_TEST_EGRESS_ALLOWED_IP", "198.51.100.10/32")
+_TEST_EGRESS_BLOCKED_IP = os.getenv("JIUWENBOX_TEST_EGRESS_BLOCKED_IP", "198.51.100.11/32")
+_TEST_EGRESS_ALLOWED_IP_2 = os.getenv("JIUWENBOX_TEST_EGRESS_ALLOWED_IP_2", "203.0.113.10/32")
+_TEST_METADATA_BLOCKED_IP = os.getenv("JIUWENBOX_TEST_METADATA_BLOCKED_IP", "169.254.169.254/32")
+_TEST_INGRESS_ALLOWED_IP = os.getenv("JIUWENBOX_TEST_INGRESS_ALLOWED_IP", "10.0.0.0/8")
+_TEST_INGRESS_BLOCKED_IP = os.getenv("JIUWENBOX_TEST_INGRESS_BLOCKED_IP", "10.0.5.0/24")
+
+# Test-only uplink subnet pools for isolated network tests; not hardcoded production IPs.
+_TEST_UPLINK_FAIL_POOL = os.getenv("JIUWENBOX_TEST_UPLINK_FAIL_POOL", "169.254.0.0/24")
+_TEST_UPLINK_USER_POOL = os.getenv("JIUWENBOX_TEST_UPLINK_USER_POOL", "10.55.0.0/24")
+_TEST_UPLINK_DEFAULT_POOL = os.getenv("JIUWENBOX_TEST_UPLINK_DEFAULT_POOL", "100.64.0.0/10")
 
 
 class SandboxTrackingClient:
@@ -917,7 +932,7 @@ class TestPolicyAPI:
         assert data["network"]["mode"] == "isolated"
         assert data["network"]["egress"]["allowed_domains"] == ["baidu.com"]
         assert data["network"]["egress"]["allowed_ips"] == [_TEST_ALLOWED_LOOPBACK_IP, _TEST_LOOPBACK_IPV6]
-        assert data["network"]["egress"]["blocked_ips"] == ["169.254.169.254/32"]
+        assert data["network"]["egress"]["blocked_ips"] == [_TEST_METADATA_BLOCKED_IP]
         assert data["network"]["egress"]["blocked_ports"] == [22]
         assert data["network"]["egress"]["default"] == "allow"
         assert data["network"]["egress"]["blocked_domains"] == ["ip.me"]
@@ -957,10 +972,10 @@ class TestPolicyAPI:
                 "network": {
                     "egress": {
                         "allowed_domains": ["extra.example.com"],
-                        "allowed_ips": ["203.0.113.10/32"],
+                        "allowed_ips": [_TEST_EGRESS_ALLOWED_IP_2],
                     },
                     "ingress": {
-                        "allowed_ips": ["10.0.0.0/8"],
+                        "allowed_ips": [_TEST_INGRESS_ALLOWED_IP],
                         "allowed_ports": [9090],
                     },
                 },
@@ -1000,15 +1015,15 @@ class TestPolicyAPI:
         assert data["network"]["egress"]["allowed_ips"] == [
             _TEST_ALLOWED_LOOPBACK_IP,
             _TEST_LOOPBACK_IPV6,
-            "203.0.113.10/32",
+            _TEST_EGRESS_ALLOWED_IP_2,
         ]
-        assert data["network"]["egress"]["blocked_ips"] == ["169.254.169.254/32"]
+        assert data["network"]["egress"]["blocked_ips"] == [_TEST_METADATA_BLOCKED_IP]
         assert data["network"]["egress"]["blocked_ports"] == [22]
         assert data["network"]["ingress"]["allowed_domains"] == ["localhost"]
         assert data["network"]["ingress"]["allowed_ips"] == [
             _TEST_ALLOWED_LOOPBACK_IP,
             _TEST_LOOPBACK_IPV6,
-            "10.0.0.0/8",
+            _TEST_INGRESS_ALLOWED_IP,
         ]
         assert data["network"]["ingress"]["allowed_ports"] == [8080, 9090]
         assert data["filesystem_policy"]["read_only"] == [
@@ -1073,15 +1088,15 @@ class TestPolicyAPI:
                     "egress": {
                         "default": "deny",
                         "allowed_domains": ["override.example.com"],
-                        "allowed_ips": ["198.51.100.10/32"],
-                        "blocked_ips": ["198.51.100.11/32"],
+                        "allowed_ips": [_TEST_EGRESS_ALLOWED_IP],
+                        "blocked_ips": [_TEST_EGRESS_BLOCKED_IP],
                         "allowed_ports": [80],
                         "blocked_ports": [25],
                     },
                     "ingress": {
                         "default": "allow",
-                        "allowed_ips": ["10.0.0.0/8"],
-                        "blocked_ips": ["10.0.5.0/24"],
+                        "allowed_ips": [_TEST_INGRESS_ALLOWED_IP],
+                        "blocked_ips": [_TEST_INGRESS_BLOCKED_IP],
                         "allowed_ports": [9090],
                         "blocked_ports": [22],
                     },
@@ -1120,12 +1135,12 @@ class TestPolicyAPI:
         assert "sandbox_workspace" not in data
         assert data["network"]["mode"] == "host"
         assert data["network"]["egress"]["allowed_domains"] == ["override.example.com"]
-        assert data["network"]["egress"]["allowed_ips"] == ["198.51.100.10/32"]
-        assert data["network"]["egress"]["blocked_ips"] == ["198.51.100.11/32"]
+        assert data["network"]["egress"]["allowed_ips"] == [_TEST_EGRESS_ALLOWED_IP]
+        assert data["network"]["egress"]["blocked_ips"] == [_TEST_EGRESS_BLOCKED_IP]
         assert data["network"]["egress"]["blocked_ports"] == [25]
         assert data["network"]["ingress"]["default"] == "allow"
-        assert data["network"]["ingress"]["allowed_ips"] == ["10.0.0.0/8"]
-        assert data["network"]["ingress"]["blocked_ips"] == ["10.0.5.0/24"]
+        assert data["network"]["ingress"]["allowed_ips"] == [_TEST_INGRESS_ALLOWED_IP]
+        assert data["network"]["ingress"]["blocked_ips"] == [_TEST_INGRESS_BLOCKED_IP]
         assert data["network"]["ingress"]["allowed_ports"] == [9090]
         assert data["network"]["ingress"]["blocked_ports"] == [22]
         assert data["filesystem_policy"]["read_only"] == ["/usr"]
@@ -1294,7 +1309,7 @@ class TestUpdatePolicyAPI:
                     "egress": {
                         "default": "deny",
                         "allowed_domains": ["example.com"],
-                        "allowed_ips": ["198.51.100.10/32"],
+                        "allowed_ips": [_TEST_EGRESS_ALLOWED_IP],
                         "allowed_ports": [443],
                     },
                     "ingress": {
@@ -1309,7 +1324,7 @@ class TestUpdatePolicyAPI:
         put_data = put_resp.json()
         assert put_data["network"]["egress"]["default"] == "deny"
         assert put_data["network"]["egress"]["allowed_domains"] == ["example.com"]
-        assert put_data["network"]["egress"]["allowed_ips"] == ["198.51.100.10/32"]
+        assert put_data["network"]["egress"]["allowed_ips"] == [_TEST_EGRESS_ALLOWED_IP]
         assert put_data["network"]["egress"]["allowed_ports"] == [443]
         assert put_data["network"]["ingress"]["allowed_ports"] == [9090]
         assert put_data["network"]["ingress"]["blocked_ports"] == [22]
@@ -1329,7 +1344,7 @@ class TestUpdatePolicyAPI:
                 egress={
                     "default": "allow",
                     "allowed_domains": ["baidu.com"],
-                    "allowed_ips": ["203.0.113.10/32"],
+                    "allowed_ips": [_TEST_EGRESS_ALLOWED_IP_2],
                 },
                 ingress={
                     "default": "allow",
@@ -1345,7 +1360,7 @@ class TestUpdatePolicyAPI:
                     "egress": {
                         "default": "deny",
                         "allowed_domains": ["example.com", "baidu.com"],
-                        "allowed_ips": ["198.51.100.10/32"],
+                        "allowed_ips": [_TEST_EGRESS_ALLOWED_IP],
                     },
                     "ingress": {
                         "allowed_ports": [9090, 8080],
@@ -1361,8 +1376,8 @@ class TestUpdatePolicyAPI:
             "example.com",
         ]
         assert data["network"]["egress"]["allowed_ips"] == [
-            "203.0.113.10/32",
-            "198.51.100.10/32",
+            _TEST_EGRESS_ALLOWED_IP_2,
+            _TEST_EGRESS_ALLOWED_IP,
         ]
         assert data["network"]["ingress"]["allowed_ports"] == [8080, 9090]
 
@@ -3922,7 +3937,7 @@ class TestSandboxIpAddress:
         response = client.post("/api/v1/sandboxes", json={
             "policy_mode": "override",
             "policy": _with_runtime_support(
-                _isolated_network_policy(uplink_subnet="169.254.0.0/24"),
+                _isolated_network_policy(uplink_subnet=_TEST_UPLINK_FAIL_POOL),
             ),
             "sandbox_id": f"iperr_{uuid.uuid4().hex[:6]}",
         })
@@ -3973,7 +3988,7 @@ class TestNetworkUplink:
     ):
         sandbox = create_sandbox_with_policy(policy=_isolated_network_policy())
         block, sandbox_ip, _gateway = _uplink_info_from_sandbox(client, sandbox["id"])
-        assert block.subnet_of(ipaddress.ip_network("100.64.0.0/10"))
+        assert block.subnet_of(ipaddress.ip_network(_TEST_UPLINK_DEFAULT_POOL))
         assert sandbox_ip == block.network_address + 2
         assert sandbox["ip_address"] == str(sandbox_ip)
 
@@ -3982,7 +3997,7 @@ class TestNetworkUplink:
         client,
         create_sandbox_with_policy,
     ):
-        pool = "10.55.0.0/24"
+        pool = _TEST_UPLINK_USER_POOL
         sandbox = create_sandbox_with_policy(
             policy=_isolated_network_policy(uplink_subnet=pool),
         )
@@ -3991,7 +4006,7 @@ class TestNetworkUplink:
 
     @staticmethod
     def test_isolated_uplink_skips_route_occupied_block(client):
-        pool = "10.55.0.0/24"
+        pool = _TEST_UPLINK_USER_POOL
         policy = _with_runtime_support(_isolated_network_policy(uplink_subnet=pool))
 
         first_response = client.post("/api/v1/sandboxes", json={
@@ -4018,7 +4033,7 @@ class TestNetworkUplink:
     @staticmethod
     def test_isolated_uplink_concurrent_sandboxes_use_distinct_blocks(client):
         policy = _with_runtime_support(
-            _isolated_network_policy(uplink_subnet="10.55.0.0/24"),
+            _isolated_network_policy(uplink_subnet=_TEST_UPLINK_USER_POOL),
         )
 
         def create_one(index: int):
@@ -4049,7 +4064,7 @@ class TestNetworkUplink:
         # Policy allows pools up to /24; /30 is rejected at validation time.
         # 169.254.0.0/24 is a valid pool, but every /30 overlaps the reserved
         # link-local range and is filtered out by the allocator.
-        pool = "169.254.0.0/24"
+        pool = _TEST_UPLINK_FAIL_POOL
         response = client.post("/api/v1/sandboxes", json={
             "policy_mode": "override",
             "policy": _with_runtime_support(

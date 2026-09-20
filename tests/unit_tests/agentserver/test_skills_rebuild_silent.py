@@ -89,7 +89,8 @@ async def test_skills_rebuild_awaits_silent_impl_and_returns_success_only(
     assert outer_called["n"] == 0
     assert len(impl_calls) == 1
     call = impl_calls[0]
-    assert call["session_id"] == "skills-rebuild:req-rebuild-silent"
+    assert call["session_id"] == "skills-rebuild-req-rebuild-silent"
+    assert ":" not in call["session_id"]
     assert call["query"] == "Please rebuild local-doc silently"
     assert call["log_as_user"] is False
     assert call["metadata"].get("skills_rebuild_silent") is True
@@ -179,7 +180,7 @@ async def test_send_file_noop_when_skills_rebuild_silent(tmp_path) -> None:
     file_path.write_text("body", encoding="utf-8")
     toolkit = sfu.SendFileToolkit(
         request_id="r1",
-        session_id="skills-rebuild:req",
+        session_id="skills-rebuild-req",
         channel_id="web",
         metadata={"skills_rebuild_silent": True},
     )

@@ -35,9 +35,15 @@ import { CodeReviewPanel } from '../../features/code-mode/CodeReviewPanel';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
 import { useCodeGitDiffWatch } from '../../features/code-mode/useCodeGitDiffWatch';
 import { type SingleAgentToolTab } from '../../features/singleAgentPanelState';
+import { useBrowserAgentActivity } from '../../features/browserAgentActivity';
+import { closeDesktopBrowserTab, openFileInDesktopBrowser, useDesktopBrowserTabFlags } from '../../features/desktopBrowserFile';
 import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
-import { useSubagentStore } from '../../stores/subagentStore';
+import { SubagentStatusIcon } from '../subagent/SubagentStatusIcon';
+import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
+import { useMinWidth } from '../../hooks/useResponsive';
+import { DesktopBrowserPane } from '../DesktopBrowserPane';
 import './ToolPanel.css';
+import { applicationTasksToTeamTasks, EMPTY_APPLICATION_TASKS, useApplicationTaskStore } from '../../applicationPlugins/taskProgressStore';
 
 /** 规划/性能模式下把 TodoItem 降级映射为 TeamTask，复用 TaskPlanningPanel 紧凑态样式 */
 function todoItemToTeamTask(todo: TodoItem): TeamTask {
@@ -45,6 +51,7 @@ function todoItemToTeamTask(todo: TodoItem): TeamTask {
     pending: 'pending',
     in_progress: 'in_progress',
     completed: 'completed',
+    cancelled: 'cancelled',
   };
   const ts = todo.updatedAt ? Date.parse(todo.updatedAt) : NaN;
   return {
@@ -70,6 +77,7 @@ interface ToolPanelProps {
   singleAgentPanelExpanded: boolean;
   singleAgentPanelActiveTab: SingleAgentToolTab;
   singleAgentPanelSelectedArtifactId?: string;
+  singleAgentPanelSelectedSubagentId?: string | null;
   setTeamAreaExpanded: (expanded: boolean) => void;
   setTeamAreaActiveTab: (tab: TabType) => void;
   setTeamAreaActiveDetailTab: (detailTab: TeamDetailTab) => void;
@@ -79,7 +87,9 @@ interface ToolPanelProps {
   setSingleAgentPanelExpanded: (expanded: boolean) => void;
   setSingleAgentPanelActiveTab: (tab: SingleAgentToolTab) => void;
   setSingleAgentPanelSelectedArtifactId: (artifactId: string) => void;
+  setSingleAgentPanelSelectedSubagentId: (subagentId: string | null) => void;
   shouldFullscreen?: boolean;
+  onCloseFloating?: () => void;
 }
 
 function isEmptyValue(value: unknown): boolean {
@@ -120,6 +130,7 @@ export function ToolPanel({
   singleAgentPanelExpanded,
   singleAgentPanelActiveTab,
   singleAgentPanelSelectedArtifactId,
+  singleAgentPanelSelectedSubagentId,
   setTeamAreaExpanded,
   setTeamAreaActiveTab,
   setTeamAreaActiveDetailTab,
@@ -129,10 +140,12 @@ export function ToolPanel({
   setSingleAgentPanelExpanded,
   setSingleAgentPanelActiveTab,
   setSingleAgentPanelSelectedArtifactId,
+  setSingleAgentPanelSelectedSubagentId,
   shouldFullscreen = false,
+  onCloseFloating,
 }: ToolPanelProps) {
   const { t } = useTranslation();
-  const { isConnected } = useSessionStore();
+  const isConnected = useSessionStore((state) => state.isConnected);
   const activeSessionId = useChatStore(s => s.activeSessionId);
   const mode = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const resolvedSessionId = sessionId ?? activeSessionId ?? '';
@@ -153,6 +166,21 @@ export function ToolPanel({
   const { completedTasks: teamCompletedTasks, progressTasks, teamTasks, totalTasks: teamTotalTasks, now } = useTaskPlanningMetrics();
   const artifactsCount = useSessionArtifactsCount();
   const subagentCount = useSubagentStore(state => Object.keys(state.runtimes[resolvedSessionId]?.subagentsById ?? {}).length);
+  const subagentRuntime = useSubagentStore(state => state.runtimes[resolvedSessionId]);
+  const subagentList = selectSubagents(subagentRuntime);
+  const subagentTasks = useMemo(
+    () =>
+      subagentList.map(subagent => ({
+        task_id: subagent.subagent_id,
+        title: subagent.display_name,
+        content: subagent.role || subagent.task_description || undefined,
+        status: (subagent.status === 'running' ? 'in_progress' : 'completed') as TeamTaskStatus,
+        assignee: subagent.subagent_id,
+        timestamp: subagent.updated_at,
+      })),
+    [subagentList],
+  );
+  const [subagentsExpanded, setSubagentsExpanded] = useState(false);
   const sessionArtifacts = useSessionArtifacts();
   const artifactTasks = useMemo(
     () =>
@@ -248,9 +276,64 @@ export function ToolPanel({
       <CodeReviewPanel project={codeProject} sessionId={sessionId} target={codeReviewTarget} diffWatch={codeGitDiffWatch} isProcessing={isProcessing} />
     ) : undefined;
   const todoTeamTasks = useMemo(() => todos.map(todoItemToTeamTask), [todos]);
-  const todoCompletedTasks = useMemo(() => todos.filter(t => t.status === 'completed').length, [todos]);
+  const applicationTasks = useApplicationTaskStore((s) => s.sessions[activeSessionId ?? ''] ?? EMPTY_APPLICATION_TASKS);
+  const applicationPlanningTasks = useMemo(
+    () => applicationTasksToTeamTasks(applicationTasks, {
+      queued: t('chat.applicationTasks.queued'),
+      running: t('chat.applicationTasks.running'),
+      completed: t('chat.applicationTasks.completed'),
+      failed: t('chat.applicationTasks.failed'),
+      cancelling: t('chat.applicationTasks.cancelling'),
+      cancelled: t('chat.applicationTasks.cancelled'),
+    }),
+    [applicationTasks, t],
+  );
+  const planningTasks = useMemo(
+    () => [...applicationPlanningTasks, ...todoTeamTasks],
+    [applicationPlanningTasks, todoTeamTasks],
+  );
+  const teamPlanningTasks = useMemo(
+    () => [...applicationPlanningTasks, ...teamTasks],
+    [applicationPlanningTasks, teamTasks],
+  );
+  const teamPlanningProgress = useMemo(
+    () => [...applicationPlanningTasks, ...progressTasks],
+    [applicationPlanningTasks, progressTasks],
+  );
+  const applicationCompleted = applicationPlanningTasks.filter((task) => task.status === 'completed').length;
+  const todoCompletedTasks = planningTasks.filter((task) => task.status === 'completed').length;
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
   const loadingTeamHistorySessionRef = useRef<string | null>(null);
+  const floatingPanelRef = useRef<HTMLDivElement>(null);
+
+  const isUltraWide = useMinWidth('ultraWide');
+  const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
+  const hasBrowserAgentActivity = useBrowserAgentActivity(resolvedSessionId);
+  const desktopBrowserTabFlags = useDesktopBrowserTabFlags(resolvedSessionId);
+  const showBrowserTab =
+    isElectron && !desktopBrowserTabFlags.closed && (hasBrowserAgentActivity || desktopBrowserTabFlags.requested);
+  const handleTabClose = (tab: string) => {
+    if (tab === 'browser') closeDesktopBrowserTab();
+  };
+
+  useEffect(() => {
+    if (!onCloseFloating || isUltraWide) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target;
+      if (target instanceof Element && target.closest('[data-team-area-toggle]')) return;
+      const el = floatingPanelRef.current;
+      if (!el) return;
+      if (el.contains(e.target as Node)) return;
+      onCloseFloating();
+    };
+    const timer = window.setTimeout(() => {
+      document.addEventListener('mousedown', handler);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('mousedown', handler);
+    };
+  }, [onCloseFloating, isUltraWide]);
 
   useEffect(() => {
     if (mode !== 'team' || !isConnected || !sessionId || !(sessionId.startsWith('sess_') || sessionId.startsWith('web_'))) {
@@ -354,56 +437,89 @@ export function ToolPanel({
         <div className="h-full bg-panel flex flex-col overflow-hidden">
           <ExpandedPanel
             activeTab={isTeam ? teamAreaActiveTab : singleAgentPanelActiveTab}
-            onTabChange={isTeam ? (tab => setTeamAreaActiveTab(tab as TabType)) : (tab => setSingleAgentPanelActiveTab(tab as SingleAgentToolTab))}
-            onCollapse={isTeam ? () => { setTeamAreaExpanded(false); setTeamAreaSelectedMemberId(''); } : () => { setSingleAgentPanelExpanded(false); }}
+            onTabChange={
+              isTeam
+                ? tab => {
+                    setTeamAreaActiveTab(tab as TabType);
+                    if (tab === 'team') setTeamAreaSelectedMemberId('');
+                  }
+                : tab => setSingleAgentPanelActiveTab(tab as SingleAgentToolTab)
+            }
+            onTabClose={handleTabClose}
+            onCollapse={
+              isTeam
+                ? () => {
+                    setTeamAreaExpanded(false);
+                    setTeamAreaSelectedMemberId('');
+                  }
+                : () => {
+                    setSingleAgentPanelExpanded(false);
+                  }
+            }
             shouldFullscreen={shouldFullscreen}
             reviewPanel={codeReviewPanel}
             selectedArtifactId={isTeam ? teamAreaSelectedArtifactId : singleAgentPanelSelectedArtifactId}
             onArtifactSelect={isTeam ? setTeamAreaSelectedArtifactId : setSingleAgentPanelSelectedArtifactId}
-            middleTab={isTeam ? { key: 'team', label: t('team.membersTab'), icon: <img src={teamIcon} width={16} height={16} aria-hidden="true" /> } : { key: 'subagents', label: t('subagent.title'), icon: <img src={teamIcon} width={16} height={16} aria-hidden="true" /> }}
+            middleTab={
+              isTeam
+                ? { key: 'team', label: t('team.membersTab'), icon: <img src={teamIcon} width={16} height={16} aria-hidden="true" /> }
+                : { key: 'subagents', label: t('subagent.title'), icon: <img src={teamIcon} width={16} height={16} aria-hidden="true" /> }
+            }
             showMiddleTab={isTeam ? true : subagentCount > 0}
+            showBrowserTab={showBrowserTab}
             resolveActiveTab={(tab, count, review) => {
               if (tab === 'artifacts' && count > 0) return 'artifacts';
+              if (tab === 'browser') return showBrowserTab ? 'browser' : 'planning';
               if (isTeam) return tab === 'review' && !review ? 'planning' : tab;
               if (tab === 'subagents' && subagentCount > 0) return 'subagents';
               if (tab === 'review' && review) return 'review';
               return 'planning';
             }}
-            renderMiddleTabContent={() => isTeam ? (
-              <TeamMembersPanel
-                variant="expanded"
-                members={teamMembers}
-                selectedMemberId={teamAreaSelectedMemberId ?? ''}
-                selectedMember={teamMembers.find(m => m.member_id === teamAreaSelectedMemberId) ?? null}
-                activeDetailTab={teamAreaActiveDetailTab}
-                historyMessages={teamHistoryMessages}
-                onSelectMember={setTeamAreaSelectedMemberId}
-                onDetailTabChange={setTeamAreaActiveDetailTab}
-              />
-            ) : (
-              <SubagentExpandedPanel sessionId={resolvedSessionId} />
-            )}
-            renderPlanningContent={() => isTeam ? (
-              <TaskPlanningPanel
-                variant="expanded"
-                tasks={teamTasks}
-                progressTasks={progressTasks}
-                now={now}
-                members={teamMembers}
-                totalTasks={teamTotalTasks}
-                completedTasks={teamCompletedTasks}
-              />
-            ) : (
-              <TaskPlanningPanel
-                variant="expanded"
-                tasks={todoTeamTasks}
-                members={teamMembers}
-                totalTasks={todos.length}
-                completedTasks={todoCompletedTasks}
-                hideAssignee
-                emptyIllustration={emptyPlanningIcon}
-              />
-            )}
+            renderMiddleTabContent={() =>
+              isTeam ? (
+                <TeamMembersPanel
+                  variant="expanded"
+                  members={teamMembers}
+                  selectedMemberId={teamAreaSelectedMemberId ?? ''}
+                  selectedMember={teamMembers.find(m => m.member_id === teamAreaSelectedMemberId) ?? null}
+                  activeDetailTab={teamAreaActiveDetailTab}
+                  historyMessages={teamHistoryMessages}
+                  onSelectMember={setTeamAreaSelectedMemberId}
+                  onDetailTabChange={setTeamAreaActiveDetailTab}
+                />
+              ) : (
+                <SubagentExpandedPanel
+                  sessionId={resolvedSessionId}
+                  selectedSubagentId={singleAgentPanelSelectedSubagentId ?? null}
+                  onSelectSubagent={setSingleAgentPanelSelectedSubagentId}
+                />
+              )
+            }
+            renderPlanningContent={() =>
+              isTeam ? (
+                <TaskPlanningPanel
+                  variant="expanded"
+                  tasks={teamPlanningTasks}
+                  progressTasks={teamPlanningProgress}
+                  now={now}
+                  members={teamMembers}
+                  totalTasks={teamTotalTasks + applicationPlanningTasks.length}
+                  completedTasks={teamCompletedTasks + applicationCompleted}
+                  statusIconAtEnd={isTeam}
+                />
+              ) : (
+                <TaskPlanningPanel
+                  variant="expanded"
+                  tasks={planningTasks}
+                  members={teamMembers}
+                  totalTasks={planningTasks.length}
+                  completedTasks={todoCompletedTasks}
+                  hideAssignee
+                  emptyIllustration={emptyPlanningIcon}
+                />
+              )
+            }
+            renderBrowserContent={() => <DesktopBrowserPane sessionId={resolvedSessionId} />}
           />
         </div>
       </div>
@@ -414,20 +530,23 @@ export function ToolPanel({
   const isTeam = mode === 'team';
   const planningProps = isTeam
     ? {
-        tasks: teamTasks,
-        totalTasks: teamTotalTasks,
-        completedTasks: teamCompletedTasks,
+        tasks: teamPlanningTasks,
+        totalTasks: teamTotalTasks + applicationPlanningTasks.length,
+        completedTasks: teamCompletedTasks + applicationCompleted,
         expanded: teamPlanningExpanded,
       }
     : {
-        tasks: todoTeamTasks,
-        totalTasks: todos.length,
+        tasks: planningTasks,
+        totalTasks: planningTasks.length,
         completedTasks: todoCompletedTasks,
         expanded: planningExpanded,
       };
-  const expandTo = (tab: TabType) => {
+  const expandTo = (tab: TabType | SingleAgentToolTab, teamMemberId?: string) => {
     if (isTeam) {
-      setTeamAreaActiveTab(tab);
+      setTeamAreaActiveTab(tab as TabType);
+      if (tab === 'team') {
+        setTeamAreaSelectedMemberId(teamMemberId ?? '');
+      }
       setTeamAreaExpanded(true);
     } else {
       setSingleAgentPanelActiveTab(tab as SingleAgentToolTab);
@@ -447,6 +566,8 @@ export function ToolPanel({
           maxCollapsedCount={4}
           onExpand={() => expandTo('planning')}
           onExpandAll={() => (isTeam ? setTeamPlanningExpanded(true) : setPlanningExpanded(true))}
+          onCollapseAll={() => (isTeam ? setTeamPlanningExpanded(false) : setPlanningExpanded(false))}
+          expanded={isTeam ? teamPlanningExpanded : planningExpanded}
           dataTestId={isTeam ? 'tool-panel-team-planning' : 'tool-panel-planning'}
         >
           <TaskPlanningPanel
@@ -456,6 +577,7 @@ export function ToolPanel({
             hideHeader
             hideExpandButton
             hideAssignee={!isTeam}
+            statusIconAtEnd={isTeam}
             title={t('chat.recentTasks')}
             maxCollapsedCount={4}
             {...planningProps}
@@ -471,10 +593,12 @@ export function ToolPanel({
         <CollapsibleSection
           title={t('team.membersTab')}
           icon={<img src={teamIcon} width={16} height={16} aria-hidden="true" />}
-          childCount={teamMembers.length}
+          childCount={memberTasks.length}
           maxCollapsedCount={4}
           onExpand={() => expandTo('team')}
           onExpandAll={() => setTeamMembersExpanded(true)}
+          onCollapseAll={() => setTeamMembersExpanded(false)}
+          expanded={teamMembersExpanded}
           dataTestId="tool-panel-team-members"
           defaultCollapsed
           autoExpandOnContent
@@ -490,6 +614,52 @@ export function ToolPanel({
             renderStatusIcon={task => (
               <TeamMemberAvatar member={task.assignee ?? ''} alt={task.title ?? ''} className="h-4 w-4 rounded-full shrink-0" imageClassName="rounded-full" />
             )}
+            onTaskClick={memberId => expandTo('team', memberId)}
+          />
+        </CollapsibleSection>
+      ),
+    },
+    !isTeam && subagentCount > 0 && {
+      key: 'subagents',
+      testId: 'tool-panel-subagents-pane',
+      render: () => (
+        <CollapsibleSection
+          title={t('subagent.title')}
+          icon={<img src={teamIcon} width={16} height={16} aria-hidden="true" />}
+          childCount={subagentTasks.length}
+          maxCollapsedCount={4}
+          onExpand={() => {
+            setSingleAgentPanelSelectedSubagentId(null);
+            expandTo('subagents');
+          }}
+          onExpandAll={() => setSubagentsExpanded(true)}
+          onCollapseAll={() => setSubagentsExpanded(false)}
+          expanded={subagentsExpanded}
+          dataTestId="tool-panel-subagents"
+          defaultCollapsed
+          autoExpandOnContent
+        >
+          <CompactTaskList
+            tasks={subagentTasks}
+            members={[]}
+            hideAssignee
+            statusIconAtEnd
+            maxCollapsedCount={4}
+            expanded={subagentsExpanded}
+            emptyText={t('subagent.empty')}
+            emptyIllustration={emptyMembersIcon}
+            renderStatusIcon={task => {
+              const subagent = subagentList.find(s => s.subagent_id === task.task_id);
+              if (!subagent) return null;
+              return <SubagentStatusIcon status={subagent.status} closedReason={subagent.closed_reason} turnOutcome={subagent.turn_outcome} />;
+            }}
+            renderTaskIcon={task => (
+              <TeamMemberAvatar member={task.assignee ?? ''} alt={task.title ?? ''} className="h-4 w-4 rounded-full shrink-0" imageClassName="rounded-full" />
+            )}
+            onTaskClick={taskId => {
+              setSingleAgentPanelSelectedSubagentId(taskId);
+              expandTo('subagents');
+            }}
           />
         </CollapsibleSection>
       ),
@@ -539,6 +709,8 @@ export function ToolPanel({
           maxCollapsedCount={4}
           onExpand={() => expandTo('artifacts')}
           onExpandAll={() => setArtifactsExpanded(true)}
+          onCollapseAll={() => setArtifactsExpanded(false)}
+          expanded={artifactsExpanded}
           dataTestId="tool-panel-artifacts"
           defaultCollapsed
           autoExpandOnContent
@@ -553,6 +725,8 @@ export function ToolPanel({
             emptyIllustration={emptyArtifactsIcon}
             renderStatusIcon={task => <FileIcon fileName={task.title ?? ''} size={16} className="shrink-0" />}
             onTaskClick={taskId => {
+              const artifact = sessionArtifacts.find(item => item.id === taskId);
+              if (artifact && openFileInDesktopBrowser({ name: artifact.name, download_url: artifact.downloadUrl })) return;
               expandTo('artifacts');
               if (isTeam) {
                 setTeamAreaSelectedArtifactId(taskId);
@@ -595,7 +769,7 @@ export function ToolPanel({
   }[];
 
   return (
-    <div data-testid="tool-panel-collapsed" className="bg-panel py-0 px-6 tool-panel-floating">
+    <div ref={floatingPanelRef} data-testid="tool-panel-collapsed" className="bg-panel py-0 pl-6 pr-4 tool-panel-floating">
       <div className="bg-panel flex flex-col">
         {collapsedSections.map(section => (
           <div key={section.key} data-testid={section.testId}>

@@ -64,6 +64,8 @@ SKILL_RETRIEVAL = _tools.SKILL_RETRIEVAL
 USER_TODOS = _tools.USER_TODOS
 VIDEO = _tools.VIDEO
 IMAGE_GEN = _tools.IMAGE_GEN
+VIDEO_GEN = _tools.VIDEO_GEN
+VISUAL_GEN = _tools.VISUAL_GEN
 XIAOYI_PHONE = _tools.XIAOYI_PHONE
 SYMPHONY_TOOLKIT = _tools.SYMPHONY_TOOLKIT
 CRON_TOOLS = _runtime_tools.CRON_TOOLS
@@ -75,6 +77,7 @@ WEB_FETCH = _OJ_WEB_FETCH
 WEB_PAID_SEARCH = _OJ_WEB_PAID_SEARCH
 VISION = _OJ_VISION
 AUDIO = _OJ_AUDIO
+PERSONAL_CONTEXT = _member_rails.PERSONAL_CONTEXT
 RUNTIME_PROMPT = _member_rails.RUNTIME_PROMPT
 TEAM_SKILL_STORAGE_POLICY = _member_rails.TEAM_SKILL_STORAGE_POLICY
 TEAM_SKILL_LIBRARY_RELOAD = _member_rails.TEAM_SKILL_LIBRARY_RELOAD
@@ -90,6 +93,7 @@ TEAM_SKILL_EVOLUTION = _evolution_rails.TEAM_SKILL_EVOLUTION
 TEAM_SKILL_CREATE = _evolution_rails.TEAM_SKILL_CREATE
 MEMBER_SKILL_EVOLUTION = _evolution_rails.MEMBER_SKILL_EVOLUTION
 EVOLUTION_INTERRUPT = _evolution_rails.EVOLUTION_INTERRUPT
+SYMPHONY_GRAPH_EVOLUTION = _evolution_rails.SYMPHONY_GRAPH_EVOLUTION
 
 # Code-profile (code.team / team.plan.code) swarm-owned rail provider names.
 CODE_EXTRA_TOOLS = _tools.CODE_EXTRA_TOOLS
@@ -146,7 +150,7 @@ def _build_swarm_context_from_seed(seed: dict[str, Any]) -> SwarmBuildContext:
     Registered with openjiuwen so ``from_spawn_payload`` / ``recover_from_session``
     restore the provider build context after deserialization.
     """
-    from jiuwenswarm.agents.harness.observability_runtime import (
+    from openjiuwen.extensions.observability.demand import (
         get_trajectory_span_processor,
     )
 
@@ -181,12 +185,15 @@ def register_swarm_providers() -> None:
 
 
 __all__ = [
+    "PERSONAL_CONTEXT",
     "register_swarm_providers",
     "SKILL_TOOLKIT",
     "SKILL_RETRIEVAL",
     "USER_TODOS",
     "VIDEO",
     "IMAGE_GEN",
+    "VIDEO_GEN",
+    "VISUAL_GEN",
     "XIAOYI_PHONE",
     "SYMPHONY_TOOLKIT",
     "WEB_SEARCH",

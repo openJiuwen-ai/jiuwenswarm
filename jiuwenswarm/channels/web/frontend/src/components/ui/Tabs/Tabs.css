@@ -1,0 +1,47 @@
+/* 下划线页签行（ui/Tabs）。条目规则由原 ChatPanel .chat-picker-panel__tabs 与 PageToolbar
+   --tabs 形态收敛而来：容器只管行布局，字号/外边距/高度等上下文差异由调用方 className 传入
+   （如 picker 面板 mb-4 text-sm、页面工具栏 h-[34px] text-base）。文字颜色不在此声明，统一
+   继承自上游（body / PageToolbar 基类均为 --color-text-primary）。 */
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 18px;
+  min-height: 30px;
+  flex-shrink: 0;
+}
+
+/* 底部 1px 分隔线：inset box-shadow 直接绘制，替代旧 ::after 2px scaleY(0.5) 伪元素缩放法
+   （@DPR1.5 下同为 1.5 设备像素，观感一致，少一层伪元素与负 z-index） */
+.tabs.tabs--bordered {
+  box-shadow: inset 0 -1px 0 var(--color-border-default);
+}
+
+.tabs > span,
+.tabs > button {
+  position: relative;
+  padding: 0 2px 8px;
+  white-space: nowrap;
+}
+
+.tabs > button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tabs > .is-active {
+  font-weight: 600;
+}
+
+.tabs > .is-active::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--color-text-strong);
+  content: '';
+}

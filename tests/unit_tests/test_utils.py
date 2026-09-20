@@ -2,10 +2,17 @@
 
 """Unit tests for utils module."""
 
+# TEST ONLY: credential-shaped values are constructed synthetic fixtures and
+# URL literals use RFC-reserved domains; no external request is performed.
+
 import importlib
+import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from jiuwenswarm.common import utils
 
@@ -123,6 +130,43 @@ class TestLoggerSetup:
         assert "StreamHandler" in handler_types
         assert handler_types.count("SafeRotatingFileHandler") == 5
 
+    @staticmethod
+    @pytest.mark.parametrize("outcome", ["allow", "deny", "block", "cancel"])
+    def test_log_sanitizer_preserves_only_safe_authorization_outcome(outcome: str):
+        """Keep terminal enums observable without exposing authorization data."""
+        raw = (
+            '{"authorization":"Bearer live-token",'
+            f'"authorization_outcome":"{outcome}",'
+            '"other_authorization_outcome":"live-secret"}'
+        )
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert f'"authorization_outcome":"{outcome}"' in sanitized
+        assert "live-token" not in sanitized
+        assert "live-secret" not in sanitized
+        assert sanitized.count("******(fp:") == 2
+
+    @staticmethod
+    def test_log_sanitizer_does_not_unmask_embedded_outcome_field():
+        """An outcome-shaped substring inside a secret remains protected."""
+        raw = (
+            '{"authorization":"secretprefix '
+            '\"authorization_outcome\":\"allow\" secretsuffix",'
+            '"token":"tokenprefix '
+            '\"authorization_outcome\":\"deny\" tokensuffix"}'
+        )
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert "secretprefix" not in sanitized
+        assert "secretsuffix" not in sanitized
+        assert "tokenprefix" not in sanitized
+        assert "tokensuffix" not in sanitized
+        assert '\"authorization_outcome\":\"allow\"' not in sanitized
+        assert '\"authorization_outcome\":\"deny\"' not in sanitized
+        assert sanitized.count("******(fp:") == 2
+
 
 class TestSourceRecordMasking:
     """Test install_source_record_masking (source-level LogRecord factory masking).
@@ -134,7 +178,7 @@ class TestSourceRecordMasking:
     - idempotency.
     """
 
-    PLAINTEXT_KEY = "sk-epignnbeppwjigp932ngefebnof"
+    PLAINTEXT_KEY = "sk-" + ("T" * 28)
 
     @staticmethod
     def _capture_logger(name):
@@ -187,11 +231,13 @@ class TestSourceRecordMasking:
 
             lg, buf = self._capture_logger("openjiuwen.harness.security")
             key = self.PLAINTEXT_KEY
-            lg.info("config: api_key=%s, base=https://x.com", key)
+            lg.info("config: api_key=%s, base=https://log.example.invalid", key)
             out = buf.getvalue()
             assert key not in out, "plaintext api_key leaked from third-party logger"
             assert "******" in out, "api_key not masked"
-            assert "https://x.com" in out, "non-sensitive api_base should be preserved"
+            assert "https://log.example.invalid" in out, (
+                "non-sensitive api_base should be preserved"
+            )
         finally:
             self._restore_state(state)
 
@@ -251,6 +297,35 @@ class TestSourceRecordMasking:
         finally:
             self._restore_state(state)
 
+    def test_cloud_credential_keys_masked(self):
+        """access_key / secret_key / project_id (e.g. HUAWEI_ACCESS_KEY) are
+        masked — the bare ``_KEY`` suffix form was a gap before access[_-]?key
+        / secret[_-]?key / project[_-]?id were added to the keyword list."""
+        raw = (
+            "params={'env': {'HUAWEI_ACCESS_KEY': 'HPUASSNLEYPK55WDLS5X', "
+            "'HUAWEI_PROJECT_ID': '4e273616d7724562be9c286f916cf417', "
+            "'HUAWEI_SECRET_KEY': 'xXznbRtIRS2Zq1QctJ0YgRErGeXP613rPnukZPtb'}}"
+        )
+        masked = utils._sanitize_log_text(raw)
+        assert "HPUASSNLEYPK55WDLS5X" not in masked, "HUAWEI_ACCESS_KEY leaked"
+        assert "xXznbRtIRS2Zq1QctJ0YgRErGeXP613rPnukZPtb" not in masked, "HUAWEI_SECRET_KEY leaked"
+        assert "4e273616d7724562be9c286f916cf417" not in masked, "HUAWEI_PROJECT_ID leaked"
+        assert masked.count("******") == 3, "all three credential fields must be masked"
+
+    def test_cli_flag_credentials_masked(self):
+        """Command-line flags serialized as list elements (pydantic repr of
+        args=['--token', 'xxx', '--api-key', 'yyy']) are masked — KV patterns
+        only match ``key:value`` / ``key=value``, not ``'--flag', 'value'``."""
+        raw = (
+            "args=['--token', 'tok-secret', '--api-key', 'ak-secret', "
+            "'--access-key', 'ak2-secret', '--secret-key', 'sk-secret']"
+        )
+        masked = utils._sanitize_log_text(raw)
+        assert "tok-secret" not in masked, "--token value leaked"
+        assert "ak-secret" not in masked, "--api-key value leaked"
+        assert "ak2-secret" not in masked, "--access-key value leaked"
+        assert "sk-secret" not in masked, "--secret-key value leaked"
+
     def test_install_is_idempotent(self):
         """Repeated install_source_record_masking calls are safe (no-op after first)."""
         import logging
@@ -301,6 +376,66 @@ def test_prepare_workspace_does_not_copy_legacy_heartbeat_template(
     assert not (workspace_dir / "agent" / "workspace" / "HEARTBEAT.md").exists()
 
 
+def test_prepare_workspace_copies_rsi_program_dataset_creator(
+    tmp_path: Path,
+) -> None:
+    """Initial workspace preparation includes the new built-in skill."""
+    workspace_dir = tmp_path / ".jiuwenswarm"
+
+    utils.prepare_workspace(
+        overwrite=False,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    assert (
+        workspace_dir
+        / "agent"
+        / "workspace"
+        / "skills"
+        / "rsi-program-dataset-creator"
+        / "SKILL.md"
+    ).is_file()
+
+
+@pytest.mark.parametrize("skill_name", ["rsi-program-dataset-creator", "agent-group-creator"])
+def test_ensure_default_builtin_skills_installs_program_evolution_design(
+    tmp_path: Path,
+    monkeypatch,
+    skill_name,
+) -> None:
+    """New built-in skills are copied into an existing workspace on startup."""
+    builtin_dir = tmp_path / "builtin-skills"
+    user_skills_dir = tmp_path / "user-skills"
+    source_skill = builtin_dir / skill_name
+    source_skill.mkdir(parents=True)
+    (source_skill / "SKILL.md").write_text(
+        f"---\nname: {skill_name}\ndescription: test\n---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "get_builtin_skills_dir", lambda: builtin_dir)
+    monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: user_skills_dir)
+
+    utils.ensure_default_builtin_skills()
+
+    installed_skill = user_skills_dir / skill_name
+    assert (installed_skill / "SKILL.md").read_text(encoding="utf-8") == (
+        source_skill / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    state = json.loads(
+        (user_skills_dir / "skills_state.json").read_text(encoding="utf-8")
+    )
+    assert any(
+        item.get("name") == skill_name
+        and item.get("source") == "builtin"
+        for item in state["installed_plugins"]
+    )
+
+    installed_skill.joinpath("SKILL.md").write_text("user edit\n", encoding="utf-8")
+    utils.ensure_default_builtin_skills()
+    assert installed_skill.joinpath("SKILL.md").read_text(encoding="utf-8") == "user edit\n"
+
+
 class TestConstants:
     """Test module constants."""
 
@@ -311,8 +446,11 @@ class TestConstants:
         assert isinstance(utils.get_user_home(), Path)
 
     @staticmethod
-    def test_get_user_workspace_dir_defined():
+    def test_get_user_workspace_dir_defined(monkeypatch):
         """Test get_user_workspace_dir is defined."""
+        monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
+        monkeypatch.setattr(utils, "_workspace_base_dir", None)
+        monkeypatch.setattr(utils, "_user_home", None)
         assert hasattr(utils, "get_user_workspace_dir")
         assert isinstance(utils.get_user_workspace_dir(), Path)
         assert ".jiuwenswarm" in str(utils.get_user_workspace_dir())
@@ -408,6 +546,96 @@ class TestMultiInstanceEnvVars:
                 os.environ["JIUWENSWARM_HOME"] = original_home_env
             if original_workspace_env:
                 os.environ["JIUWENSWARM_DATA_DIR"] = original_workspace_env
+
+
+class TestFreeSearchRuntimeDefaults:
+    """Test apply_free_search_runtime_defaults (free-search opt-in survives process start).
+
+    Every entrypoint calls this immediately after loading `.env`. Its predecessor
+    assigned both flags unconditionally, so a value read from `.env` — including one
+    the config UI had just persisted — was discarded one line later, and enabling free
+    search was silently lost on the next restart.
+    """
+
+    DDG_FLAG = "FREE_SEARCH_DDG_ENABLED"
+    BING_FLAG = "FREE_SEARCH_BING_ENABLED"
+
+    @staticmethod
+    def _unset(monkeypatch, *names):
+        """Unset flags so monkeypatch still restores them after the test.
+
+        `delenv` alone records nothing when the variable is already absent, so the
+        `setdefault` under test would leak its value into later tests.
+        """
+        for name in names:
+            monkeypatch.setenv(name, "")
+            monkeypatch.delenv(name)
+
+    def test_explicit_opt_in_survives(self, monkeypatch):
+        """An explicit opt-in from .env, the config UI, or the shell is preserved."""
+        monkeypatch.setenv(self.DDG_FLAG, "true")
+        monkeypatch.setenv(self.BING_FLAG, "true")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.DDG_FLAG] == "true", "explicit DDG opt-in was discarded"
+        assert os.environ[self.BING_FLAG] == "true", "explicit Bing opt-in was discarded"
+
+    def test_explicit_opt_out_is_left_alone(self, monkeypatch):
+        """An explicit "false" stays disabled — the default never re-enables anything."""
+        monkeypatch.setenv(self.DDG_FLAG, "false")
+        monkeypatch.setenv(self.BING_FLAG, "false")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.DDG_FLAG] == "false"
+        assert os.environ[self.BING_FLAG] == "false"
+
+    def test_unset_flags_get_the_disabled_default(self, monkeypatch):
+        """A fresh install that configures nothing still starts with both engines off."""
+        self._unset(monkeypatch, self.DDG_FLAG, self.BING_FLAG)
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.DDG_FLAG] == "false"
+        assert os.environ[self.BING_FLAG] == "false"
+
+    def test_empty_value_is_kept_and_still_reads_as_disabled(self, monkeypatch):
+        """An empty value counts as set, and both consumers still treat it as off."""
+        from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import _is_free_search_enabled
+        from jiuwenswarm.agents.harness.common.tools.search_tools import _env_flag
+
+        monkeypatch.setenv(self.DDG_FLAG, "")
+        monkeypatch.setenv(self.BING_FLAG, "")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert (
+            os.environ[self.DDG_FLAG] == ""
+        ), "an empty value is set, so it is not a default to fill"
+        assert os.environ[self.BING_FLAG] == ""
+        # Blank reads as disabled on both sides, so keeping it changes no behaviour.
+        assert _env_flag(self.DDG_FLAG, default=False) is False
+        assert _env_flag(self.BING_FLAG, default=False) is False
+        assert _is_free_search_enabled() is False
+
+    def test_flags_are_handled_independently(self, monkeypatch):
+        """Opting one engine in leaves the other at the disabled default."""
+        self._unset(monkeypatch, self.BING_FLAG)
+        monkeypatch.setenv(self.DDG_FLAG, "true")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.DDG_FLAG] == "true", "DDG opt-in was discarded"
+        assert os.environ[self.BING_FLAG] == "false", "unset Bing flag should take the default"
+
+        self._unset(monkeypatch, self.DDG_FLAG)
+        monkeypatch.setenv(self.BING_FLAG, "true")
+
+        utils.apply_free_search_runtime_defaults()
+
+        assert os.environ[self.BING_FLAG] == "true", "Bing opt-in was discarded"
+        assert os.environ[self.DDG_FLAG] == "false", "unset DDG flag should take the default"
 
 
 class TestHardcodedPathsPhase2:
@@ -523,3 +751,118 @@ class TestAdditionalHardcodedPaths:
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
             f"Expected: {expected_path.resolve()}, Got: {actual_path.resolve()}"
+
+
+class TestCleanupStaleOpenjiuwenDescs:
+    @staticmethod
+    def _fake_package(tmp_path):
+        import types
+
+        package_dir = tmp_path / "openjiuwen"
+        package_dir.mkdir()
+        fake = types.ModuleType("openjiuwen")
+        fake.__file__ = str(package_dir / "__init__.py")
+        return fake, package_dir / "agent_teams" / "tools" / "locales" / "descs"
+
+    @staticmethod
+    def test_removes_only_flat_files_with_nested_replacements(tmp_path):
+        fake, descs = TestCleanupStaleOpenjiuwenDescs._fake_package(tmp_path)
+
+        for lang in ("cn", "en"):
+            domain_dir = descs / lang / "async_task"
+            domain_dir.mkdir(parents=True)
+            (domain_dir / "async_task_cancel.md").write_text("new", encoding="utf-8")
+            (descs / lang / "async_task_cancel.md").write_text("old", encoding="utf-8")
+            (descs / lang / "flat_only.md").write_text("canonical", encoding="utf-8")
+
+            fragments = descs / lang / "fragments"
+            fragments.mkdir()
+            (fragments / "fragment_name.md").write_text("fragment", encoding="utf-8")
+            (descs / lang / "fragment_name.md").write_text("canonical", encoding="utf-8")
+
+        with patch.dict(sys.modules, {"openjiuwen": fake}):
+            utils.cleanup_stale_openjiuwen_descs()
+
+        for lang in ("cn", "en"):
+            assert not (descs / lang / "async_task_cancel.md").exists()
+            assert (descs / lang / "async_task" / "async_task_cancel.md").exists()
+            assert (descs / lang / "flat_only.md").exists()
+            assert (descs / lang / "fragment_name.md").exists()
+
+    @staticmethod
+    def test_raises_actionable_error_when_stale_file_is_not_writable(tmp_path):
+        fake, descs = TestCleanupStaleOpenjiuwenDescs._fake_package(tmp_path)
+        domain_dir = descs / "cn" / "async_task"
+        domain_dir.mkdir(parents=True)
+        (domain_dir / "async_task_cancel.md").write_text("new", encoding="utf-8")
+        flat = descs / "cn" / "async_task_cancel.md"
+        flat.write_text("old", encoding="utf-8")
+
+        with (
+            patch.dict(sys.modules, {"openjiuwen": fake}),
+            patch.object(Path, "unlink", side_effect=PermissionError("read-only")),
+            pytest.raises(RuntimeError, match="reinstall OpenJiuwen"),
+        ):
+            utils.cleanup_stale_openjiuwen_descs()
+
+        assert flat.exists()
+
+    @staticmethod
+    def test_tolerates_concurrent_removal(tmp_path):
+        fake, descs = TestCleanupStaleOpenjiuwenDescs._fake_package(tmp_path)
+        domain_dir = descs / "cn" / "async_task"
+        domain_dir.mkdir(parents=True)
+        (domain_dir / "async_task_cancel.md").write_text("new", encoding="utf-8")
+        (descs / "cn" / "async_task_cancel.md").write_text("old", encoding="utf-8")
+
+        with (
+            patch.dict(sys.modules, {"openjiuwen": fake}),
+            patch.object(Path, "unlink", side_effect=FileNotFoundError),
+        ):
+            utils.cleanup_stale_openjiuwen_descs()
+
+    @staticmethod
+    def test_skips_cleanup_for_frozen_windows_bundle(tmp_path, monkeypatch):
+        fake, descs = TestCleanupStaleOpenjiuwenDescs._fake_package(tmp_path)
+        domain_dir = descs / "cn" / "async_task"
+        domain_dir.mkdir(parents=True)
+        (domain_dir / "async_task_cancel.md").write_text("new", encoding="utf-8")
+        flat = descs / "cn" / "async_task_cancel.md"
+        flat.write_text("old", encoding="utf-8")
+
+        monkeypatch.setattr(utils.sys, "platform", "win32")
+        monkeypatch.setattr(utils.sys, "frozen", True, raising=False)
+        with (
+            patch.dict(sys.modules, {"openjiuwen": fake}),
+            patch.object(Path, "unlink", side_effect=PermissionError("read-only")),
+        ):
+            utils.cleanup_stale_openjiuwen_descs()
+
+        assert flat.exists()
+
+    @staticmethod
+    def test_noop_when_openjiuwen_missing():
+        with patch.dict(sys.modules, {"openjiuwen": None}):
+            utils.cleanup_stale_openjiuwen_descs()
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        "relative_path",
+        (
+            "jiuwenswarm/app.py",
+            "jiuwenswarm/gateway/app_gateway.py",
+            "jiuwenswarm/server/app_agentserver.py",
+        ),
+    )
+    def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / relative_path).read_text(encoding="utf-8")
+        cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
+
+        openjiuwen_imports = [
+            source.find(marker)
+            for marker in ("from openjiuwen", "import openjiuwen")
+            if source.find(marker) >= 0
+        ]
+        if openjiuwen_imports:
+            assert cleanup_call < min(openjiuwen_imports)

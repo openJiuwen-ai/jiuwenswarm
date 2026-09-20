@@ -1,4 +1,9 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import time
+from concurrent.futures import Future
+
+import pytest
 
 from jiuwenswarm.server.runtime.session import session_history
 
@@ -141,6 +146,106 @@ def test_has_persistable_assistant_payload_subagent_activity():
     ) is True
 
 
+def test_has_persistable_assistant_payload_usage_summary():
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.usage_summary",
+        extra={
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+            },
+            "model": "test-model",
+        },
+    ) is True
+
+
+def test_has_persistable_assistant_payload_context_usage_requires_snapshot_fields():
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="context.usage",
+        extra={"rate": 0},
+    ) is False
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="context.usage",
+        extra={"context_window": {}, "parts": {}},
+    ) is True
+
+
+def test_append_history_persists_complete_context_usage_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    payload = {
+        "event_type": "context.usage",
+        "schema_version": "context-usage.v1",
+        "phase": "post_call",
+        "request_id": "context-request",
+        "product_session_id": "s-context-usage",
+        "context_window": {"limit_tokens": 2000, "input_tokens": 1000},
+        "parts": {"tools": {"category": "tools", "tokens": 136}},
+        "kv_cache": {"session": {"weighted_hit_rate": 0.6}},
+        "measurement": {"tokenizer": "unicode_codepoints"},
+    }
+    session_history.append_history_record(
+        session_id="s-context-usage",
+        request_id="r1",
+        channel_id="web",
+        role="assistant",
+        event_type="context.usage",
+        content="",
+        timestamp=1.0,
+        extra={key: value for key, value in payload.items() if key != "event_type"},
+    )
+
+    data = _wait_history("s-context-usage", min_count=1)
+    assert len(data) == 1
+    assert data[0]["event_type"] == "context.usage"
+    assert data[0]["context_window"] == payload["context_window"]
+    assert data[0]["parts"] == payload["parts"]
+    assert data[0]["kv_cache"] == payload["kv_cache"]
+    assert data[0]["measurement"] == payload["measurement"]
+
+
+def test_append_history_persists_usage_summary(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    session_history.append_history_record(
+        session_id="s-usage-summary",
+        request_id="r1",
+        channel_id="web",
+        role="assistant",
+        event_type="chat.usage_summary",
+        content="",
+        timestamp=1.0,
+        extra={
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+                "input_cost": 0.01,
+                "output_cost": 0.02,
+                "total_cost": 0.03,
+            },
+            "model": "test-model",
+        },
+    )
+
+    data = _wait_history("s-usage-summary", min_count=1)
+    assert len(data) == 1
+    assert data[0]["event_type"] == "chat.usage_summary"
+    assert data[0]["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "total_tokens": 120,
+        "input_cost": 0.01,
+        "output_cost": 0.02,
+        "total_cost": 0.03,
+    }
+    assert data[0]["model"] == "test-model"
+
+
 def test_has_persistable_assistant_payload_processing_status_still_rejected():
     assert session_history._has_persistable_assistant_payload(
         content_text="",
@@ -200,6 +305,46 @@ def test_append_history_persists_tool_result(tmp_path, monkeypatch):
     assert tool_result_record["tool_name"] == "list_files"
 
 
+def test_subagent_history_mode_does_not_replace_parent_session_mode(
+    tmp_path,
+    monkeypatch,
+):
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    metadata_updates = []
+    monkeypatch.setattr(
+        session_metadata,
+        "update_session_metadata",
+        lambda **kwargs: metadata_updates.append(kwargs),
+    )
+
+    session_history.append_history_record(
+        session_id="parent-session",
+        subagent_id="subagent-1",
+        request_id="subagent-1:1",
+        channel_id="subagent",
+        role="assistant",
+        event_type="chat.final",
+        content="subagent result",
+        timestamp=1.0,
+        mode="subagent",
+    )
+
+    deadline = time.time() + 5
+    records = []
+    while time.time() < deadline:
+        records = session_history.load_history_records(
+            "parent-session",
+            subagent_id="subagent-1",
+        )
+        if records:
+            break
+        time.sleep(0.05)
+    assert records[0]["mode"] == "subagent"
+    assert metadata_updates[0]["mode"] is None
+
+
 def test_request_completion_is_persisted_after_prior_history(tmp_path, monkeypatch):
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
 
@@ -226,6 +371,24 @@ def test_request_completion_is_persisted_after_prior_history(tmp_path, monkeypat
         session_history.SESSION_REQUEST_COMPLETED_EVENT,
     ]
     assert records[-1]["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_history_receipt_timeout_does_not_cancel_writer_future() -> None:
+    receipt: Future[None] = Future()
+
+    with pytest.raises(TimeoutError):
+        await session_history.wait_for_history_receipt(receipt, timeout=0.001)
+
+    assert receipt.cancelled() is False
+    receipt.set_result(None)
+
+
+def test_history_worker_ignores_a_cancelled_receipt() -> None:
+    receipt: Future[None] = Future()
+    receipt.cancel()
+
+    session_history._settle_history_receipt(receipt)
 
 
 def test_append_history_persists_tool_result_with_nested_payload(tmp_path, monkeypatch):
@@ -272,3 +435,92 @@ def test_append_history_tool_result_empty_payload_skipped(tmp_path, monkeypatch)
     _t.sleep(0.3)
     data = session_history.load_history_records("s-empty-tr")
     assert data == []
+
+
+def test_append_history_keeps_only_structurally_valid_tool_results(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    records = (
+        ("valid-flat", {"tool_call_id": "call-flat", "success": False}),
+        (
+            "valid-nested",
+            {"tool_result": {"tool_call_id": "call-nested", "status": "denied"}},
+        ),
+        ("missing-id", {"result": "orphan"}),
+        ("empty-shell", {"tool_call_id": "call-empty"}),
+        ("heuristic-only", {"tool_name": "bash", "status": "denied"}),
+    )
+    for request_id, extra in records:
+        session_history.append_history_record(
+            session_id="s-tool-results",
+            request_id=request_id,
+            channel_id="web",
+            role="assistant",
+            event_type="chat.tool_result",
+            content="",
+            timestamp=1.0,
+            extra=extra,
+        )
+
+    data = _wait_history("s-tool-results", min_count=2)
+    assert [item["request_id"] for item in data] == ["valid-flat", "valid-nested"]
+    assert data[0]["tool_call_id"] == "call-flat"
+    assert data[0]["success"] is False
+    assert data[1]["tool_result"]["tool_call_id"] == "call-nested"
+    assert data[1]["tool_result"]["status"] == "denied"
+
+
+def test_tool_result_content_does_not_bypass_structural_validation() -> None:
+    assert session_history._has_persistable_assistant_payload(
+        content_text="orphan result",
+        event_type="chat.tool_result",
+        extra={},
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "extra",
+    (
+        {"tool_call_id": "call-flat", "success": False},
+        {"tool_call_id": "call-flat", "result": ""},
+        {"tool_result": {"tool_call_id": "call-nested", "error": None}},
+        {
+            "tool_call_id": "call-shared",
+            "tool_result": {
+                "tool_call_id": "call-shared",
+                "status": "denied",
+            },
+        },
+    ),
+)
+def test_structurally_valid_tool_result_keeps_falsy_terminal_values(
+    extra: dict,
+) -> None:
+    assert session_history._is_structurally_valid_tool_result(extra) is True
+
+
+@pytest.mark.parametrize(
+    "extra",
+    (
+        {"tool_call_id": 123, "result": "done"},
+        {"tool_call_id": " ", "result": "done"},
+        {"tool_result": {"tool_call_id": None, "result": "done"}},
+        {
+            "tool_call_id": "call-a",
+            "tool_result": {"tool_call_id": "call-b", "result": "done"},
+        },
+        {"tool_call_id": "call-a", "tool_result": {"result": "done"}},
+        {"result": "done", "tool_result": {"tool_call_id": "call-b"}},
+        {"tool_call_id": "call-a", "tool_result": "done"},
+        {"tool_call_id": "call-a", "result": "done", "tool_result": {}},
+        {
+            "tool_call_id": "call-a",
+            "result": "done",
+            "tool_result": {"tool_call_id": "call-a"},
+        },
+    ),
+)
+def test_structurally_invalid_tool_result_is_rejected(extra: dict) -> None:
+    assert session_history._is_structurally_valid_tool_result(extra) is False

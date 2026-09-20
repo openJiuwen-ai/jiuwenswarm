@@ -1,15 +1,12 @@
-import { Check, ChevronRight, Circle } from 'lucide-react';
+import { ChevronRight, Circle } from 'lucide-react';
+import CheckIcon from '../../assets/work-mode/check.svg?react';
 import i18n from '../../i18n';
 import { ParsedTeamEvent, parseTeamEventMessage } from '../ChatPanel/teamEventUtils';
 import type { Message, TodoItem } from '../../types';
 import type { ReactNode } from 'react';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
-import type {
-  TeamTask as SessionTeamTask,
-  TeamMemberExecutionEvent,
-  TeamTaskStatus,
-} from '../../stores/sessionStore';
+import type { TeamTask as SessionTeamTask, TeamMemberExecutionEvent, TeamTaskStatus } from '../../stores/sessionStore';
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
@@ -56,6 +53,8 @@ export interface MemberTask {
   raw?: Record<string, unknown>;
 }
 
+export type ProcessDetailRow = [label: string, value: string];
+
 export interface ProcessItem {
   id: string;
   type: 'execution' | 'message' | 'task';
@@ -68,6 +67,7 @@ export interface ProcessItem {
   execution?: TeamMemberExecutionEvent;
   linkedResult?: TeamMemberExecutionEvent;
   raw?: TeamTaskEvent;
+  detailRows?: ProcessDetailRow[];
 }
 
 interface BaseTeamAreaProps {
@@ -76,27 +76,28 @@ interface BaseTeamAreaProps {
   reviewPanel?: ReactNode;
 }
 
-export type TeamAreaProps = BaseTeamAreaProps & (
-  | {
-    expanded?: false;
-    onExpand?: (tab: TabType, memberId?: string) => void;
-  }
-  | {
-    expanded: true;
-    activeTab: TabType;
-    activeDetailTab: TeamDetailTab;
-    selectedMemberId?: string;
-    selectedArtifactId?: string;
-    onTabChange: (tab: TabType) => void;
-    onDetailTabChange: (tab: TeamDetailTab) => void;
-    onMemberSelect?: (memberId: string) => void;
-    onArtifactSelect?: (artifactId: string) => void;
-    onCollapse?: () => void;
-    shouldFullscreen?: boolean;
-  }
-);
+export type TeamAreaProps = BaseTeamAreaProps &
+  (
+    | {
+      expanded?: false;
+      onExpand?: (tab: TabType, memberId?: string) => void;
+    }
+    | {
+      expanded: true;
+      activeTab: TabType;
+      activeDetailTab: TeamDetailTab;
+      selectedMemberId?: string;
+      selectedArtifactId?: string;
+      onTabChange: (tab: TabType) => void;
+      onDetailTabChange: (tab: TeamDetailTab) => void;
+      onMemberSelect?: (memberId: string) => void;
+      onArtifactSelect?: (artifactId: string) => void;
+      onCollapse?: () => void;
+      shouldFullscreen?: boolean;
+    }
+  );
 
-export type TabType = 'planning' | 'team' | 'artifacts' | 'review';
+export type TabType = 'planning' | 'team' | 'artifacts' | 'review' | 'browser';
 export type TeamDetailTab = 'members' | 'group';
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'error';
 export type TaskColumnKey = 'waiting' | 'running' | 'completed' | 'cancelled';
@@ -109,31 +110,31 @@ export const BOARD_COLUMNS: Array<{
   pillClassName: string;
   dotClassName: string;
 }> = [
-  {
-    key: 'waiting',
-    labelKey: 'team.planning.columns.waiting',
-    pillClassName: 'bg-card text-[var(--color-team-status-waiting)]',
-    dotClassName: 'bg-[var(--color-team-status-waiting)]',
-  },
-  {
-    key: 'running',
-    labelKey: 'team.planning.columns.running',
-    pillClassName: 'bg-[var(--color-team-status-running-surface)] text-[var(--color-team-status-running)]',
-    dotClassName: 'bg-[var(--color-team-status-running)]',
-  },
-  {
-    key: 'completed',
-    labelKey: 'team.planning.columns.completed',
-    pillClassName: 'bg-[var(--color-team-status-completed-surface)] text-[var(--color-team-status-completed)]',
-    dotClassName: 'bg-[var(--color-team-status-completed)]',
-  },
-  {
-    key: 'cancelled',
-    labelKey: 'team.planning.columns.cancelled',
-    pillClassName: 'bg-[var(--color-team-status-cancelled-surface)] text-[var(--color-team-status-cancelled)]',
-    dotClassName: 'bg-[var(--color-team-status-cancelled)]',
-  },
-];
+    {
+      key: 'waiting',
+      labelKey: 'team.planning.columns.waiting',
+      pillClassName: 'bg-card text-[var(--color-team-status-waiting)]',
+      dotClassName: 'bg-[var(--color-team-status-waiting)]',
+    },
+    {
+      key: 'running',
+      labelKey: 'team.planning.columns.running',
+      pillClassName: 'bg-[var(--color-team-status-running-surface)] text-[var(--color-team-status-running)]',
+      dotClassName: 'bg-[var(--color-team-status-running)]',
+    },
+    {
+      key: 'completed',
+      labelKey: 'team.planning.columns.completed',
+      pillClassName: 'bg-[var(--color-team-status-completed-surface)] text-[var(--color-team-status-completed)]',
+      dotClassName: 'bg-[var(--color-team-status-completed)]',
+    },
+    {
+      key: 'cancelled',
+      labelKey: 'team.planning.columns.cancelled',
+      pillClassName: 'bg-[var(--color-team-status-cancelled-surface)] text-[var(--color-team-status-cancelled)]',
+      dotClassName: 'bg-[var(--color-team-status-cancelled)]',
+    },
+  ];
 
 const TASK_STATUS_TO_COLUMN: Record<TeamTaskStatus, TaskColumnKey> = {
   pending: 'waiting',
@@ -179,13 +180,9 @@ export const getMemberPlainName = (member: TeamMember | string): string => {
   return displayName || memberId;
 };
 
-const resolveMemberIdentity = (
-  member: TeamMember | string
-): { memberId: string; displayName: string } => {
+const resolveMemberIdentity = (member: TeamMember | string): { memberId: string; displayName: string } => {
   const memberId = (typeof member === 'string' ? member : member.member_id).trim();
-  const known = typeof member === 'string'
-    ? getSessionTeamRoster().find((item) => item.member_id === memberId)
-    : member;
+  const known = typeof member === 'string' ? getSessionTeamRoster().find(item => item.member_id === memberId) : member;
   return { memberId, displayName: known?.name?.trim() ?? '' };
 };
 
@@ -203,7 +200,7 @@ let ambiguousNamesCache: Set<string> = new Set();
 const getAmbiguousDisplayNames = (roster: TeamMember[]): Set<string> => {
   if (ambiguousNamesRosterRef === roster) return ambiguousNamesCache;
   const seen = new Map<string, number>();
-  roster.forEach((item) => {
+  roster.forEach(item => {
     const key = item.name?.trim().toLowerCase();
     if (!key) return;
     seen.set(key, (seen.get(key) ?? 0) + 1);
@@ -240,14 +237,7 @@ export const normalizeTaskStatus = (status?: string, type?: string): TaskStatus 
 };
 
 const normalizeTeamTaskStatus = (status?: string): TeamTaskStatus => {
-  if (
-    status === 'blocked' ||
-    status === 'planning' ||
-    status === 'in_progress' ||
-    status === 'in_review' ||
-    status === 'completed' ||
-    status === 'cancelled'
-  ) {
+  if (status === 'blocked' || status === 'planning' || status === 'in_progress' || status === 'in_review' || status === 'completed' || status === 'cancelled') {
     return status;
   }
   return 'pending';
@@ -330,6 +320,7 @@ const getTaskEventTitle = (event: TeamTaskEvent): string => {
   if (type.includes('created')) return i18n.t('team.taskEvents.created');
   if (type.includes('cancelled')) return i18n.t('team.taskEvents.cancelled');
   if (type.includes('unblocked')) return i18n.t('team.taskEvents.unblocked');
+  if (type.includes('paused')) return i18n.t('team.taskEvents.paused');
   return i18n.t('team.taskEvents.updated');
 };
 
@@ -351,15 +342,7 @@ const isGenericTaskTitle = (title: string): boolean => {
   return GENERIC_TASK_TITLES.has(title.trim().toLowerCase());
 };
 
-const buildTaskDetail = ({
-  title,
-  content,
-  fallback,
-}: {
-  title: string;
-  content?: string;
-  fallback?: string;
-}): string => {
+const buildTaskDetail = ({ title, content, fallback }: { title: string; content?: string; fallback?: string }): string => {
   const normalizedContent = (content || '').trim();
   if (normalizedContent && normalizedContent !== title) return normalizedContent;
   if (fallback) return i18n.t('team.taskDetail.sourcePrompt', { prompt: truncate(fallback, 96) });
@@ -370,26 +353,19 @@ export function StatusIcon({ status }: { status: TaskStatus }) {
   const completed = status === 'completed';
   const inProgress = status === 'in_progress';
 
+  if (completed) {
+    return <CheckIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed)]" />;
+  }
+
   return (
     <span className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${getTaskStatusIconClass(status)}`}>
-      {completed ? (
-        <Check size={10} strokeWidth={2.5} />
-      ) : inProgress ? (
-        <Circle size={6} strokeWidth={2} />
-      ) : (
-        <Circle size={8} strokeWidth={1.5} />
-      )}
+      {inProgress ? <Circle size={6} strokeWidth={2} /> : <Circle size={8} strokeWidth={1.5} />}
     </span>
   );
 }
 
 export function Chevron({ expanded }: { expanded?: boolean }) {
-  return (
-    <ChevronRight
-      size={16}
-      className={` ${expanded ? 'rotate-90' : ''}`}
-    />
-  );
+  return <ChevronRight size={16} className={` ${expanded ? 'rotate-90' : ''}`} />;
 }
 
 export function buildTaskMap(
@@ -401,7 +377,7 @@ export function buildTaskMap(
 ): MemberTask[] {
   const taskMap = new Map<string, MemberTask>();
 
-  todos.forEach((todo) => {
+  todos.forEach(todo => {
     if (todo.claimedBy !== memberId) return;
     const rawTitle = todo.content || todo.activeForm || i18n.t('team.taskFallback', { id: todo.id.slice(-4) });
     const fallback = isGenericTaskTitle(rawTitle) ? fallbackPrompt : undefined;
@@ -417,7 +393,7 @@ export function buildTaskMap(
     });
   });
 
-  teamTasks.forEach((task) => {
+  teamTasks.forEach(task => {
     if (!task.task_id) return;
     if (task.assignee !== memberId) return;
     const rawTitle = task.title || task.task_id;
@@ -434,7 +410,7 @@ export function buildTaskMap(
     });
   });
 
-  teamTaskEvents.forEach((event) => {
+  teamTaskEvents.forEach(event => {
     if (!event.task_id) return;
     const owner = event.assignee || event.member_id;
     const existing = taskMap.get(event.task_id);
@@ -473,15 +449,15 @@ export function buildProcessItems(
   executionEvents: TeamMemberExecutionEvent[] = [],
   t: Translate = i18n.t.bind(i18n),
 ): ProcessItem[] {
-  const memberTaskIds = new Set(memberTasks.map((task) => task.id));
+  const memberTaskIds = new Set(memberTasks.map(task => task.id));
   const taskItems = teamTaskEvents
-    .filter((event) => event.type !== 'team.task.snapshot')
-    .filter((event) => {
+    .filter(event => event.type !== 'team.task.snapshot')
+    .filter(event => {
       const owner = event.assignee || event.member_id;
       return owner === memberId || (!!event.task_id && memberTaskIds.has(event.task_id));
     })
     .map((event): ProcessItem => {
-      const relatedTask = memberTasks.find((task) => task.id === event.task_id);
+      const relatedTask = memberTasks.find(task => task.id === event.task_id);
       const timestamp = typeof event.timestamp === 'number' ? event.timestamp : Date.now();
       return {
         id: `task-${event.id}-${event.task_id}`,
@@ -524,8 +500,8 @@ export function buildProcessItems(
 
   // 先收集所有 tool_result，按 tool_call_id 分组
   executionEvents
-    .filter((e) => e.kind === 'tool_result' && e.member_id === memberId)
-    .forEach((e) => {
+    .filter(e => e.kind === 'tool_result' && e.member_id === memberId)
+    .forEach(e => {
       if (e.tool_call_id) {
         toolResultsByCallId.set(e.tool_call_id, e);
       }
@@ -533,8 +509,8 @@ export function buildProcessItems(
 
   // 处理所有 execution 事件
   executionEvents
-    .filter((event) => event.member_id === memberId && event.kind !== 'final')
-    .forEach((event) => {
+    .filter(event => event.member_id === memberId && event.kind !== 'final')
+    .forEach(event => {
       // 如果是 tool_call，尝试关联其 tool_result
       if (event.kind === 'tool_call' && event.tool_call_id) {
         const linkedResult = toolResultsByCallId.get(event.tool_call_id);
@@ -559,7 +535,7 @@ export function buildProcessItems(
           type: 'execution',
           timestamp: event.timestamp,
           title: getExecutionEventTitle(event, t),
-          subtitle: truncate(event.content || event.files?.map((file) => file.name).join(', ') || ''),
+          subtitle: truncate(event.content || event.files?.map(file => file.name).join(', ') || ''),
           status: 'execution',
           kind: event.kind,
           execution: event,
@@ -567,9 +543,7 @@ export function buildProcessItems(
       }
     });
 
-  return [...taskItems, ...messageItems, ...pairedExecutionItems]
-    .sort((a, b) => a.timestamp - b.timestamp)
-    .slice(0, 80);
+  return [...taskItems, ...messageItems, ...pairedExecutionItems].sort((a, b) => a.timestamp - b.timestamp).slice(0, 80);
 }
 
 function getExecutionEventTitle(event: TeamMemberExecutionEvent, t: Translate): string {
@@ -594,15 +568,7 @@ export function mergeUniqueMessages(messages: Message[]): Message[] {
   for (const message of messages) {
     const event = parseTeamEventMessage(message);
     const key = event
-      ? [
-          'team',
-          event.type,
-          event.messageId,
-          event.fromMember,
-          event.toMember || '',
-          event.timestamp || '',
-          event.content,
-        ].join(':')
+      ? ['team', event.type, event.messageId, event.fromMember, event.toMember || '', event.timestamp || '', event.content].join(':')
       : `${message.id}:${message.content}`;
     if (seen.has(key)) {
       continue;

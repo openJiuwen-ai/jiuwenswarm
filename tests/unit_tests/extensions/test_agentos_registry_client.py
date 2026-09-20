@@ -10,11 +10,15 @@ import pytest
 
 from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
+    ImageEntry,
     RegistryClient,
     RegistryConfig,
     RegistryConflictError,
     RegistryNotFoundError,
+    cmd_for_access_mode,
+    compute_backoff_delay,
     instance_service_id,
+    parse_access_mode,
     resolve_instance_kind,
 )
 
@@ -34,6 +38,70 @@ def test_resolve_instance_kind() -> None:
     assert resolve_instance_kind("custom-agent") == "三方"
     assert resolve_instance_kind("jiuwenswarm") == "九问"
     assert resolve_instance_kind("jiuwen-report") == "九问"
+
+
+def test_image_entry_prefers_registry_name() -> None:
+    named = ImageEntry.from_dict(
+        {"name": "claude", "framework": "legacy", "framework_version": "2.1.202"}
+    )
+    assert named.name == "claude"
+    assert named.list_name == "claude"
+    assert named.framework == "legacy"
+
+    fallback = ImageEntry.from_dict({"framework": "opencode", "is_default": True})
+    assert fallback.name == "opencode"
+    assert fallback.list_name == "opencode"
+    assert fallback.framework == "opencode"
+
+    mixed = ImageEntry.from_dict(
+        {"name": "Claude-Code", "framework": "claude", "framework_version": "2.1.202"}
+    )
+    assert mixed.name == "Claude-Code"
+    assert mixed.list_name == "Claude-Code"
+
+
+def test_parse_access_mode_and_tui_cmd() -> None:
+    modes = parse_access_mode(
+        [
+            {"name": "tui", "port": "2222", "cmd": "claude"},
+            {"name": "web", "port": "8080", "cmd": "serve"},
+            "skip-me",
+        ]
+    )
+    assert modes == [
+        {"name": "tui", "port": "2222", "cmd": "claude"},
+        {"name": "web", "port": "8080", "cmd": "serve"},
+    ]
+    assert cmd_for_access_mode(modes, "tui") == "claude"
+    assert cmd_for_access_mode(modes, "web") == "serve"
+    assert cmd_for_access_mode(modes, "") == ""
+    assert cmd_for_access_mode(None, "tui") == ""
+    assert parse_access_mode(None) == []
+
+    entry = ImageEntry.from_dict(
+        {
+            "name": "claude-code",
+            "framework": "claude",
+            "access_mode": [{"name": "tui", "port": "2222", "cmd": "claude"}],
+        }
+    )
+    assert entry.access_mode[0]["cmd"] == "claude"
+
+
+def test_compute_backoff_delay_exponential() -> None:
+    # attempt 1 → 1s；attempt 2 → 2s；attempt 3 → 4s；attempt 4 → 8s
+    assert compute_backoff_delay(1) == 1.0
+    # attempt 10 → base 512s，封顶为 30s
+    assert compute_backoff_delay(2) == 2.0
+    assert compute_backoff_delay(3) == 4.0
+    assert compute_backoff_delay(4) == 8.0
+    assert compute_backoff_delay(10) == 30.0
+    assert compute_backoff_delay(100) == 30.0
+    # 自定义参数生效
+    assert compute_backoff_delay(4, initial_delay=1.0, multiplier=2.0, max_delay=16.0) == 8.0
+    assert compute_backoff_delay(10, max_delay=8.0) == 8.0
+    # attempt <= 1 时按 0 处理
+    assert compute_backoff_delay(0) == 1.0
 
 
 @pytest.mark.asyncio
@@ -64,6 +132,8 @@ async def test_local_list_user_images_contains_supported_types() -> None:
     names = {item.image_name for item in images}
     assert names == {"jiuwenswarm"}
     assert all(item.metadata.get("user_id") == "user-01" for item in images)
+    assert all(item.metadata.get("name") == item.image_name for item in images)
+    assert all("framework" not in item.metadata for item in images)
     await client.close()
 
 
@@ -110,7 +180,7 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
                 200,
                 json=[
                     {
-                        "framework": "opencode",
+                        "name": "opencode",
                         "framework_version": "v0.1.0",
                         "is_default": False,
                         "imageurl": "harbor.local/adapted/opencode:v0.1.0",
@@ -119,7 +189,7 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
                         "uploaded_by": "user-01",
                     },
                     {
-                        "framework": "opencode",
+                        "name": "opencode",
                         "framework_version": "v0.2.0",
                         "is_default": True,
                         "imageurl": "harbor.local/adapted/opencode:v0.2.0",
@@ -128,9 +198,21 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
                         "ports": [{"port": 8080, "protocol": "tcp"}],
                         "env": {"A2X_LLM_KEY": "${A2X_LLM_KEY}"},
                         "uploaded_by": "user-01",
+                        "access_mode": [
+                            {"name": "tui", "port": "2222", "cmd": "opencode"},
+                        ],
                     },
                 ],
             )
+
+        if method == "GET" and path.rstrip("/").endswith("/api/instances"):
+            records = list(self._instances.values())
+            if params.get("include_unhealthy") not in ("true", "1", "True"):
+                records = [row for row in records if row.get("status") == "运行"]
+            node = params.get("node")
+            if node:
+                records = [row for row in records if row.get("node") == node]
+            return httpx.Response(200, json=records)
 
         if method == "POST" and path.rstrip("/").endswith("/api/instances"):
             assert body is not None
@@ -154,18 +236,6 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
                 json={"service_id": sid, "dataset": "default", "deleted": existed},
             )
 
-        if method == "POST" and path.endswith("/heartbeat"):
-            node = path.split("/")[-2]
-            return httpx.Response(
-                200,
-                json={
-                    "node": node,
-                    "state": "healthy",
-                    "ttl_seconds": 90,
-                    "expires_at": 1751800000.0,
-                },
-            )
-
         if method == "GET" and path.endswith("/missing/launch-spec"):
             return httpx.Response(404, json={"detail": "image not found"})
 
@@ -173,7 +243,7 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
 
 
 @pytest.mark.asyncio
-async def test_http_launch_spec_register_update_heartbeat() -> None:
+async def test_http_launch_spec_register_update_roundtrip() -> None:
     transport = _FakeRegistryTransport()
     client = RegistryClient(
         RegistryConfig(
@@ -214,17 +284,28 @@ async def test_http_launch_spec_register_update_heartbeat() -> None:
     )
     assert record.status == "运行"
     assert record.service_id == sid
+    assert record.instance_id == ""
+
+    record = await client.register_instance(
+        service_id=sid,
+        kind="三方",
+        framework="opencode",
+        framework_version="v0.2.0",
+        node="192.168.0.12",
+        address="10.244.1.7:4096",
+        instance_id="yr-instance-1",
+        user="user-01",
+    )
+    assert record.instance_id == "yr-instance-1"
+
+    listed = await client.list_instances(include_unhealthy=True)
+    assert [row.instance_id for row in listed] == ["yr-instance-1"]
 
     updated = await client.update_instance(
         sid, node="192.168.0.20", address="10.244.3.9:4096"
     )
     assert updated.node == "192.168.0.20"
     assert updated.address == "10.244.3.9:4096"
-
-    hb = await client.report_node_heartbeat()
-    assert hb.node == "192.168.0.12"
-    assert hb.state == "healthy"
-    assert hb.ttl_seconds == 90
 
     deleted = await client.unregister_instance(sid)
     assert deleted["deleted"] is True
@@ -249,6 +330,8 @@ async def test_http_list_images_flat_entries_prefer_default() -> None:
 
     entries = await client.list_images()
     assert len(entries) == 2
+    assert entries[0].name == "opencode"
+    assert entries[0].list_name == "opencode"
     assert entries[0].framework == "opencode"
     assert entries[0].framework_version == "v0.1.0"
     assert entries[0].is_default is False
@@ -259,8 +342,14 @@ async def test_http_list_images_flat_entries_prefer_default() -> None:
     by_name = {item.image_name: item for item in images}
     assert set(by_name) == {"opencode"}
     assert by_name["opencode"].image_uri.endswith("opencode:v0.2.0")
+    assert by_name["opencode"].metadata["name"] == "opencode"
+    assert by_name["opencode"].metadata["agent_type"] == "opencode"
+    assert "framework" not in by_name["opencode"].metadata
     assert by_name["opencode"].metadata["is_default"] is True
     assert by_name["opencode"].metadata["framework_version"] == "v0.2.0"
+    assert by_name["opencode"].metadata["access_mode"] == [
+        {"name": "tui", "port": "2222", "cmd": "opencode"},
+    ]
     await client.close()
 
 
@@ -291,9 +380,33 @@ async def test_http_register_agent_maps_fields() -> None:
     assert post[2]["kind"] == "三方"
     assert post[2]["node"] == "192.168.0.12"
     assert post[2]["address"] == "10.244.1.7:4096"
+    assert post[2]["instance_id"] == "sbx-1"
     await client.unregister_agent(agent.agent_id)
     delete = next(call for call in transport.calls if call[0] == "DELETE")
     assert delete[1].endswith(f"/api/instances/{instance_service_id('user-01', 'opencode')}")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_register_agent_address_falls_back_to_instance_id() -> None:
+    transport = _FakeRegistryTransport()
+    client = RegistryClient(RegistryConfig(endpoint="http://registry.test"))
+    client._http = httpx.AsyncClient(  # noqa: SLF001
+        base_url="http://registry.test/",
+        transport=transport,
+        timeout=5.0,
+    )
+    agent = AgentInfo(
+        user_id="user-02",
+        agent_type="jiuwenswarm",
+        sandbox_id="sbx-pending-ip",
+        status=AgentStatus.READY,
+    )
+    await client.register_agent(agent)
+    post = next(call for call in transport.calls if call[0] == "POST")
+    assert post[2] is not None
+    assert post[2]["instance_id"] == "sbx-pending-ip"
+    assert post[2]["address"] == "sbx-pending-ip"
     await client.close()
 
 
@@ -341,4 +454,39 @@ async def test_http_errors_mapped() -> None:
         await client.get_launch_spec("missing")
     with pytest.raises(RegistryConflictError):
         await client._request_json("DELETE", "api/images/busy/v1")  # noqa: SLF001
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unregister_instance_missing_is_success() -> None:
+    class _NotFoundDelete(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"detail": "not found"})
+
+    client = RegistryClient(RegistryConfig(endpoint="http://registry.test"))
+    client._http = httpx.AsyncClient(  # noqa: SLF001
+        base_url="http://registry.test/",
+        transport=_NotFoundDelete(),
+        timeout=5.0,
+    )
+    result = await client.unregister_instance("generic_deadbeef")
+    assert result["deleted"] is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_local_stub_list_instances_includes_instance_id() -> None:
+    client = RegistryClient(RegistryConfig())
+    agent = AgentInfo(
+        user_id="u1",
+        agent_type="opencode",
+        sandbox_id="sbx-local",
+        status=AgentStatus.READY,
+        metadata={"node": "10.0.0.1", "address": "10.0.0.8:1"},
+    )
+    await client.register_agent(agent)
+    rows = await client.list_instances(include_unhealthy=True)
+    assert len(rows) == 1
+    assert rows[0].instance_id == "sbx-local"
+    assert rows[0].user == "u1"
     await client.close()

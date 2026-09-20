@@ -9,6 +9,13 @@ import { useTranslation } from 'react-i18next';
 import { ToolCall, ToolResult } from '../../types';
 import { formatToolArguments, formatToolResult } from '../../utils';
 import clsx from 'clsx';
+import {
+  countResultWords,
+  getSymphonyCommandLabel,
+  isSymphonyCommandTool,
+  parseSymphonyCommandAction,
+} from '../../utils/symphonyCommandDisplay';
+import { AutoReviewerDetails, AutoReviewerStatusBadge } from './AutoReviewerStatus';
 
 interface ToolCallDisplayProps {
   toolCall?: ToolCall;
@@ -20,11 +27,25 @@ export function ToolCallDisplay({ toolCall, toolResult }: ToolCallDisplayProps) 
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (toolCall) {
-    // session 类型：仅显示 会话任务：【description】，不显示 "session" 名称
+    // 后端 display_name 始终优先；未下发时，session 不显示原始工具名。
     const isSession = toolCall.name === 'session';
-    const displayTitle = isSession
-      ? (toolCall.formatted_args || '会话任务已完成')
-      : (toolCall.description ? `${toolCall.name}: ${toolCall.description}` : toolCall.name);
+    const displayName = toolCall.display_name?.trim();
+    const isSymphonyCommand = isSymphonyCommandTool(toolCall.name);
+    const symphonyAction = isSymphonyCommand
+      ? parseSymphonyCommandAction(toolCall.arguments)
+      : null;
+    const symphonyTitle = symphonyAction
+      ? (() => {
+          const label = getSymphonyCommandLabel(symphonyAction);
+          return t(label.key, label.values);
+        })()
+      : t('chatUi.toolGroup.symphony.command');
+    const displayTitle = displayName
+      || (isSession
+        ? (toolCall.formatted_args || '会话任务已完成')
+        : isSymphonyCommand
+          ? symphonyTitle
+          : (toolCall.description ? `${toolCall.name}: ${toolCall.description}` : toolCall.name));
 
     // 使用格式化的参数摘要（session 类型时 subtitle 已融入 title，不再重复显示）
     const displaySubtitle = isSession ? '' : (toolCall.formatted_args || '');
@@ -43,6 +64,7 @@ export function ToolCallDisplay({ toolCall, toolResult }: ToolCallDisplayProps) 
               </svg>
             </span>
             <span className="font-mono text-sm font-medium text-text" data-testid="chat-panel-tool-call-card-title">{displayTitle}</span>
+            <AutoReviewerStatusBadge reviewer={toolCall.reviewer} />
             <span className="text-text-muted text-sm">
               {isExpanded ? '▼' : '▶'}
             </span>
@@ -58,6 +80,7 @@ export function ToolCallDisplay({ toolCall, toolResult }: ToolCallDisplayProps) 
             <pre className="font-mono text-sm text-text overflow-x-auto whitespace-pre-wrap">
               {formatToolArguments(toolCall.arguments)}
             </pre>
+            <AutoReviewerDetails reviewer={toolCall.reviewer} />
           </div>
         )}
       </div>
@@ -65,12 +88,20 @@ export function ToolCallDisplay({ toolCall, toolResult }: ToolCallDisplayProps) 
   }
 
   if (toolResult) {
+    const isSymphonyCommand = isSymphonyCommandTool(toolResult.toolName);
     // 使用格式化的摘要或默认显示（session 类型优先用 summary，避免出现 "session 完成"）
     const displaySummary = toolResult.summary
       ? toolResult.summary
       : (toolResult.toolName === 'session'
         ? (toolResult.success ? t('chatUi.toolGroup.sessionCompleted') : t('chatUi.toolGroup.sessionFailed'))
-        : `${toolResult.toolName} ${toolResult.success ? t('chatUi.toolResult.success') : t('chatUi.toolResult.failed')}`);
+        : isSymphonyCommand
+          ? (toolResult.success
+            ? t('chatUi.toolGroup.symphony.completed')
+            : t('chatUi.toolGroup.symphony.failed'))
+          : `${toolResult.toolName} ${toolResult.success ? t('chatUi.toolResult.success') : t('chatUi.toolResult.failed')}`);
+    const resultWordCount = isSymphonyCommand
+      ? countResultWords(toolResult.result)
+      : null;
 
     return (
       <div className="chat-tool-card animate-rise" data-testid="chat-panel-tool-call-card" data-variant="result">
@@ -108,6 +139,7 @@ export function ToolCallDisplay({ toolCall, toolResult }: ToolCallDisplayProps) 
             )} data-testid="chat-panel-tool-call-card-summary">
               {displaySummary}
             </span>
+            <AutoReviewerStatusBadge reviewer={toolResult.reviewer} />
             <span className="text-text-muted text-sm ml-auto">
               {isExpanded ? '▼' : '▶'}
             </span>
@@ -115,9 +147,19 @@ export function ToolCallDisplay({ toolCall, toolResult }: ToolCallDisplayProps) 
         </div>
         {isExpanded && (
           <div className="mt-2 p-2 rounded-md bg-card border border-border" data-testid="chat-panel-tool-call-card-result">
+            {resultWordCount !== null && (
+              <div className="mb-2 flex justify-end">
+                <span className="px-2 py-0.5 rounded-full border border-border text-xs text-text-muted">
+                  {t('chatUi.toolGroup.symphony.resultWords', {
+                    count: resultWordCount,
+                  })}
+                </span>
+              </div>
+            )}
             <pre className="font-mono text-sm text-text overflow-x-auto whitespace-pre-wrap max-h-60">
               {formatToolResult(toolResult.result)}
             </pre>
+            <AutoReviewerDetails reviewer={toolResult.reviewer} />
           </div>
         )}
       </div>

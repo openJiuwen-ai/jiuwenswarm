@@ -19,9 +19,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
 from jiuwenswarm.server.runtime.mcp import registry as reg
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 def _mk_pkg(workspace: Path, name: str, *, mcp: dict[str, Any] | None) -> Path:
@@ -29,6 +28,9 @@ def _mk_pkg(workspace: Path, name: str, *, mcp: dict[str, Any] | None) -> Path:
     pkg.mkdir(parents=True, exist_ok=True)
     if mcp is not None:
         (pkg / "mcp.json").write_text(json.dumps(mcp), encoding="utf-8")
+        server = next(iter(mcp.get("mcpServers", {}).values()), {})
+        integration_type = "stdio-mcp" if server.get("command") else "remote-mcp"
+        write_manifest(pkg, integration_type)
     return pkg
 
 

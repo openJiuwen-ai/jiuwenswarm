@@ -48,7 +48,7 @@ allowed_tools: [read_memory, write_memory, bash, read_file, write_file]
 ## 目录结构
 
 ```
-daily-report/
+advanced-daily-report/
 ├── SKILL.md              # 技能定义（本文件）
 ├── collectors/           # 数据采集模块
 │   ├── __init__.py
@@ -85,19 +85,19 @@ daily-report/
 
 ```bash
 # 生成今日日报（记忆/待办/Git 等；Git 在仓库根目录统计）
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py daily --save
+python ~/.jiuwenswarm/agent/workspace/skills/advanced-daily-report/run_report.py daily --save
 
 # 生成指定日期日报
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py daily --date 2026-03-06 --save
+python ~/.jiuwenswarm/agent/workspace/skills/advanced-daily-report/run_report.py daily --date 2026-03-06 --save
 
 # 生成周报（聚合一周数据）
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py weekly --save
+python ~/.jiuwenswarm/agent/workspace/skills/advanced-daily-report/run_report.py weekly --save
 
 # 生成月报（聚合一月数据，包含每日Git提交统计）
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py monthly --save
+python ~/.jiuwenswarm/agent/workspace/skills/advanced-daily-report/run_report.py monthly --save
 
 # 生成月报（指定月份）
-python ~/.jiuwenswarm/agent/workspace/skills/daily-report/run_report.py monthly --year 2026 --month 3 --save
+python ~/.jiuwenswarm/agent/workspace/skills/advanced-daily-report/run_report.py monthly --year 2026 --month 3 --save
 ```
 
 ### 执行步骤

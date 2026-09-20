@@ -28,14 +28,15 @@ async def test_real_host_core_and_rail_connection(tmp_path: Path) -> None:
 
     host = PersonalContextHostAPI(home=home)
     config = {
-        "enabled": True,
-        "fetching_enabled": True,
+        "collection_enabled": True,
+        "agent_use_enabled": True,
         "strategy_profile": "rules",
         "fetch_services": [
             {
                 "service_id": "smoke-local",
                 "provider": "local_files",
                 "enabled": False,
+                "time_range": {"mode": "all"},
                 "source": {"root_dir": str(source_root)},
                 "credentials": {},
             }
@@ -73,11 +74,11 @@ async def test_real_host_core_and_rail_connection(tmp_path: Path) -> None:
         await rail.after_model_call(ctx)
         assert await manager.collect_for_session("smoke-session") == []
 
-        await host.set_runtime_enabled(False)
+        await host.set_agent_use_enabled(False)
         await rail.before_model_call(ctx)
         assert await manager.collect_for_session("smoke-session") == []
 
-        await host.set_runtime_enabled(True)
+        await host.set_agent_use_enabled(True)
         await rail.before_model_call(ctx)
         attachments = await manager.collect_for_session("smoke-session")
         assert len(attachments) == 1

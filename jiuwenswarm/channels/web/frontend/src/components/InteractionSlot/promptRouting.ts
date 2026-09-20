@@ -36,6 +36,7 @@ export function isPlanApprovalPrompt(pq: AskUserQuestionPayload | null | undefin
 
 export function classifyPrompt(pq: AskUserQuestionPayload | null | undefined): PromptKind {
   if (!pq) return 'none';
+  if (pq.source === 'swarmflow_human') return 'interaction';
   // 技能演进审批（evolution_interrupt）协议已冻结为与 permission_interrupt 一致的
   // allow_once/allow_always/reject 三选一，改走 AuthorizationPrompt；legacy source
   // 别名 skill_evolution_approval（自动接受场景，基本不会真正弹出）维持原状不动。

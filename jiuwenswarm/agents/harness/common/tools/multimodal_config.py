@@ -68,31 +68,22 @@ _EMBED_MODEL_KEY_MAP = {
     "image_gen": "image_gen_model",
 }
 
+_MULTIMODAL_MODEL_TYPES = ("audio", "vision", "video")
 
-def dedicated_multimodal_model_configured(
-    config_base: dict[str, Any] | None, model_type: str
-) -> bool:
-    """Whether ``models.{model_type}`` has its own non-empty ``api_key`` (after YAML env resolution).
 
-    Used to gate image / video / **audio** tools (含 ``audio_metadata`` 与 LLM 音频能力)，在未配置
-    ``models.{type}.model_config`` 独立 ``api_key`` 时不挂载，避免仅存在主对话 ``API_KEY`` 时误注册。
-    （``apply_*_model_config_from_yaml`` 仍可能回落到 embed / 主 API 写环境变量，与是否注册工具无关。）
-    与 ``get_mcp_tools`` 在无付费搜索 key 时不注册 ``mcp_paid_search`` 同理。
-    """
-    if model_type not in ("audio", "vision", "video"):
-        return False
-    if not isinstance(config_base, dict):
-        return False
-    mc = _get_model_config(config_base, model_type)
-    api_key = str(mc.get("api_key") or "").strip()
-    return bool(api_key)
+def _model_provider(model_config: dict[str, Any]) -> str:
+    return str(
+        model_config.get("client_provider")
+        or model_config.get("model_provider")
+        or ""
+    ).strip()
 
 
 def complete_multimodal_model_configured(
     config_base: dict[str, Any] | None, model_type: str
 ) -> bool:
-    """Whether `models.{model_type}` has api key, base URL, and model name."""
-    if model_type not in ("audio", "vision", "video"):
+    """Whether `models.{model_type}` has key, URL, model name, and provider."""
+    if model_type not in _MULTIMODAL_MODEL_TYPES:
         return False
     if not isinstance(config_base, dict):
         return False
@@ -100,7 +91,30 @@ def complete_multimodal_model_configured(
     api_key = str(mc.get("api_key") or "").strip()
     api_base = str(mc.get("api_base") or mc.get("base_url") or "").strip()
     model_name = str(mc.get("model_name") or mc.get("model") or "").strip()
-    return bool(api_key and api_base and model_name)
+    provider = _model_provider(mc)
+    return bool(api_key and api_base and model_name and provider)
+
+
+def multimodal_model_enabled(
+    config_base: dict[str, Any] | None, model_type: str
+) -> bool:
+    """Return the explicit capability switch, preserving complete legacy configs."""
+    if model_type not in _MULTIMODAL_MODEL_TYPES:
+        return False
+
+    enabled_env = os.getenv(f"{model_type.upper()}_ENABLED")
+    if enabled_env is not None:
+        return _parse_bool(enabled_env)
+
+    if isinstance(config_base, dict):
+        raw_models = config_base.get("models")
+        if isinstance(raw_models, dict):
+            model_block = raw_models.get(model_type)
+            if isinstance(model_block, dict) and "enabled" in model_block:
+                return _parse_bool(model_block.get("enabled"))
+
+    # Deterministic compatibility for workspaces created before explicit flags.
+    return complete_multimodal_model_configured(config_base, model_type)
 
 
 def _get_embed_model_name(embed_cfg: dict[str, Any], model_type: str) -> str:
@@ -138,7 +152,7 @@ def apply_audio_model_config_from_yaml(config_base: dict[str, Any] | None) -> No
     api_key = str(mc.get("api_key") or "").strip()
     api_base = str(mc.get("api_base") or "").strip()
     model_name = str(mc.get("model_name") or mc.get("model") or "").strip()
-    provider = str(mc.get("model_provider") or "").strip()
+    provider = _model_provider(mc)
     strict = _parse_bool(mc.get("strict"), default=False)
 
     if not strict:
@@ -186,7 +200,7 @@ def apply_vision_model_config_from_yaml(config_base: dict[str, Any] | None) -> N
     api_key = str(mc.get("api_key") or "").strip()
     api_base = str(mc.get("api_base") or "").strip()
     model_name = str(mc.get("model_name") or mc.get("model") or "").strip()
-    provider = str(mc.get("model_provider") or "").strip()
+    provider = _model_provider(mc)
     strict = _parse_bool(mc.get("strict"), default=False)
 
     if not strict:
@@ -235,7 +249,7 @@ def apply_video_model_config_from_yaml(config_base: dict[str, Any] | None) -> No
     api_key = str(mc.get("api_key") or "").strip()
     api_base = str(mc.get("api_base") or "").strip()
     model_name = str(mc.get("model_name") or mc.get("model") or "").strip()
-    provider = str(mc.get("model_provider") or "").strip()
+    provider = _model_provider(mc)
     strict = _parse_bool(mc.get("strict"), default=False)
 
     if strict:

@@ -1,0 +1,159 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Tests for committed trajectory update hint fan-out."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+import pytest
+
+from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+from jiuwenswarm.observability.models import CommittedTraceUpdate
+
+test_logger = logging.getLogger("tests.trajectory_updates")
+
+
+@dataclass(frozen=True)
+class _RoutingKey:
+    session_id: str
+
+
+class _WebSocket:
+    closed = False
+
+
+@pytest.mark.asyncio
+async def test_webchannel_routes_trace_update_to_matching_session_only() -> None:
+    channel = WebChannel.__new__(WebChannel)
+    first_ws = _WebSocket()
+    other_ws = _WebSocket()
+    channel._clients_by_key = {
+        _RoutingKey(session_id="session-1"): [first_ws],
+        _RoutingKey(session_id="session-2"): [other_ws],
+    }
+    sent: list[tuple[object, str, dict[str, object]]] = []
+
+    async def _send_event(ws, event, payload) -> None:
+        sent.append((ws, event, payload))
+
+    channel.send_event = _send_event
+    update = CommittedTraceUpdate(
+        session_id="session-1",
+        trace_id="2" * 32,
+        revision=9,
+        store_epoch="epoch-2",
+        lifecycle="final",
+    )
+
+    await channel._send_trajectory_updates((update,))
+
+    assert len(sent) == 1
+    assert sent[0][0] is first_ws
+    assert sent[0][1] == "trace.updated"
+    assert sent[0][2] == {
+        "session_id": "session-1",
+        "trace_id": "2" * 32,
+        "revision": 9,
+        "frame_seq": 0,
+        "store_epoch": "epoch-2",
+        "lifecycle": "final",
+    }
+    test_logger.info("trace update hint stayed scoped to its session")
+
+
+@pytest.mark.asyncio
+async def test_webchannel_coalesces_running_backlog_into_latest_final_hint(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect."
+        "_TRAJECTORY_HINT_COALESCE_SECONDS",
+        0,
+    )
+    channel = WebChannel.__new__(WebChannel)
+    channel._trajectory_pending_updates = {}
+    channel._trajectory_send_task = None
+    sent: list[tuple[CommittedTraceUpdate, ...]] = []
+
+    async def _send(updates) -> None:
+        sent.append(tuple(updates))
+
+    channel._send_trajectory_updates = _send
+    running = CommittedTraceUpdate(
+        session_id="session-1",
+        trace_id="3" * 32,
+        revision=100,
+        lifecycle="running",
+    )
+    stale = CommittedTraceUpdate(
+        session_id="session-1",
+        trace_id="3" * 32,
+        revision=99,
+        lifecycle="running",
+    )
+    final = CommittedTraceUpdate(
+        session_id="session-1",
+        trace_id="3" * 32,
+        revision=101,
+        lifecycle="final",
+    )
+
+    channel.schedule_trajectory_updates((running,))
+    channel.schedule_trajectory_updates((stale, final))
+    task = channel._trajectory_send_task
+    assert task is not None
+    await task
+
+    assert sent == [(final,)]
+    assert channel._trajectory_pending_updates == {}
+    assert channel._trajectory_send_task is None
+    test_logger.info("latest final hint absorbed the queued running backlog")
+
+
+@pytest.mark.asyncio
+async def test_webchannel_hint_survives_when_only_frames_advanced(monkeypatch) -> None:
+    """New frames on an unchanged record must still wake the reader.
+
+    A streaming span commits frames far more often than it rewrites its own
+    record. If coalescing ranked hints by revision alone, the hint carrying
+    those frames would tie with the one already queued and could be dropped,
+    leaving a live answer frozen until the span ended.
+    """
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect."
+        "_TRAJECTORY_HINT_COALESCE_SECONDS",
+        0,
+    )
+    channel = WebChannel.__new__(WebChannel)
+    channel._trajectory_pending_updates = {}
+    channel._trajectory_send_task = None
+    sent: list[tuple[CommittedTraceUpdate, ...]] = []
+
+    async def _send(updates) -> None:
+        sent.append(tuple(updates))
+
+    channel._send_trajectory_updates = _send
+    earlier = CommittedTraceUpdate(
+        session_id="session-1",
+        trace_id="4" * 32,
+        revision=50,
+        lifecycle="running",
+        frame_seq=10,
+    )
+    more_frames = CommittedTraceUpdate(
+        session_id="session-1",
+        trace_id="4" * 32,
+        revision=50,
+        lifecycle="running",
+        frame_seq=90,
+    )
+
+    channel.schedule_trajectory_updates((earlier, more_frames))
+    task = channel._trajectory_send_task
+    assert task is not None
+    await task
+
+    assert sent == [(more_frames,)]
+    test_logger.info("frame watermark advanced the hint without a record change")

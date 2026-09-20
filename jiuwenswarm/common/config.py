@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,7 +19,9 @@ import yaml
 import portalocker
 
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    ASCEND_AFFINITY_PROVIDER,
+    APPLICATION_KV_CACHE_CONFIG_KEY,
+    KV_CACHE_AFFINITY_ENABLED_KEY,
+    get_kv_cache_affinity_application_config,
     get_default_model_provider as resolve_default_model_provider,
     set_default_model_provider_in_entries,
     validate_affinity_invariant,
@@ -143,18 +146,17 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
         mcc = react.get("model_client_config")
         if isinstance(mcc, dict) and "custom_headers" in mcc:
             mcc["custom_headers"] = _parse_custom_headers(mcc["custom_headers"])
-        kv_cfg = react.get("kv_cache_affinity_config")
-        if isinstance(kv_cfg, dict) and kv_cfg.get("enable_kv_cache_affinity", False):
-            provider = get_default_model_provider(config)
-            if provider != ASCEND_AFFINITY_PROVIDER:
-                logger.warning(
-                    "KV cache affinity configuration failed closed: default provider=%s requires=%s",
-                    provider or "<empty>",
-                    ASCEND_AFFINITY_PROVIDER,
-                )
-                # Runtime-only normalization: preserve the user's file for
-                # diagnosis, but never activate an inconsistent configuration.
-                kv_cfg["enable_kv_cache_affinity"] = False
+    kv_cfg = get_kv_cache_affinity_application_config(config)
+    if kv_cfg.get(KV_CACHE_AFFINITY_ENABLED_KEY, False):
+        valid, failures = validate_affinity_invariant(config)
+        if not valid:
+            logger.warning(
+                "KV cache affinity configuration failed closed: %s",
+                "; ".join(failures),
+            )
+            # Runtime-only normalization: preserve the user's file for
+            # diagnosis, but never activate an inconsistent configuration.
+            kv_cfg[KV_CACHE_AFFINITY_ENABLED_KEY] = False
     # send_file 工具默认开关：web/feishu/xiaoyi 顶层缺 send_file_allowed 时兜底 True。
     channels = config.get("channels", {})
     for _ch in ("web", "feishu", "xiaoyi"):
@@ -299,6 +301,81 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
     return _get_evolution_config(config).get("skill_evolution") is True
 
 
+def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether both Symphony and its evolution switch are enabled."""
+    if not isinstance(config, dict):
+        return False
+    symphony = config.get("symphony")
+    if not isinstance(symphony, dict):
+        return False
+    evolution = symphony.get("evolution")
+    if not isinstance(evolution, dict):
+        return False
+    enabled_values = {"1", "true", "yes", "on"}
+    return (
+        str(symphony.get("enabled")).strip().lower() in enabled_values
+        and str(evolution.get("enabled")).strip().lower() in enabled_values
+    )
+
+
+def coerce_config_bool(value: Any, default: bool) -> bool:
+    """Parse yaml/json/env booleans; treat ``"false"`` / ``"0"`` as False."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
+def _get_ttse_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the TTSE config block from a full yaml or a react-section cache."""
+    if not isinstance(config, dict):
+        return {}
+    react_config = config.get("react")
+    if isinstance(react_config, dict) and isinstance(react_config.get("ttse"), dict):
+        return react_config["ttse"]
+    ttse_config = config.get("ttse")
+    if isinstance(ttse_config, dict):
+        return ttse_config
+    return {}
+
+
+def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether TTSE (FACT/TIP) rail should be mounted.
+
+    Opt-in: missing / unset ``enabled`` is False.
+    Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
+    """
+    return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
+
+
+def get_ttse_embedding_config(config: dict[str, Any] | None) -> dict[str, str]:
+    """Return normalized ``react.ttse.embedding`` fields for TTSE retrieval.
+
+    Expects ``api_key`` / ``base_url`` / ``model``. Returns an empty dict when
+    the block is missing or any required field is blank after strip (caller
+    should leave embedding disabled and fall back to BM25 / whole-bank paths).
+    """
+    ttse = _get_ttse_config(config)
+    raw = ttse.get("embedding")
+    if not isinstance(raw, dict):
+        return {}
+    api_key = str(raw.get("api_key") or "").strip()
+    base_url = str(raw.get("base_url") or "").strip()
+    model = str(raw.get("model") or "").strip()
+    if not (api_key and base_url and model):
+        return {}
+    return {"api_key": api_key, "base_url": base_url, "model": model}
+
+
 def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return ``react.subagent_runtime.enabled`` for persistent subagent tools."""
     cfg = config or get_config()
@@ -323,6 +400,28 @@ def get_progressive_tool_enabled(config: dict[str, Any] | None = None) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
     return bool(value)
+
+
+def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
+    """Return the user-configured ``api_base host -> endpoint_profile`` map.
+
+    Read from the top-level ``endpoint_profile_overrides`` key in
+    ``config.yaml``. Used for self-hosted gateways whose thinking-control
+    dialect (e.g. DashScope-style ``enable_thinking``) cannot be inferred
+    from the host name; no host is built into the source code. Hosts are
+    normalized to lowercase; blank entries are dropped.
+    """
+    cfg = config if isinstance(config, dict) else get_config()
+    raw = cfg.get("endpoint_profile_overrides")
+    if not isinstance(raw, dict):
+        return {}
+    overrides: dict[str, str] = {}
+    for host, profile in raw.items():
+        host_key = str(host or "").strip().lower()
+        profile_value = str(profile or "").strip()
+        if host_key and profile_value:
+            overrides[host_key] = profile_value
+    return overrides
 
 
 def get_evolution_review_feedback_min_confidence(config: dict[str, Any] | None) -> float:
@@ -424,6 +523,18 @@ def _config_lock_path(config_path: Path) -> Path:
     return config_path.with_name(f"{config_path.stem}.lock")
 
 
+@contextmanager
+def config_write_lock(*, lock_timeout: float = 10.0):
+    """Share the Global write boundary with layered permission transactions."""
+    if not _CONFIG_WRITE_LOCK.acquire(timeout=lock_timeout):
+        raise TimeoutError("config write lock timed out")
+    try:
+        with portalocker.Lock(str(_config_lock_path(CONFIG_YAML_PATH)), timeout=lock_timeout):
+            yield
+    finally:
+        _CONFIG_WRITE_LOCK.release()
+
+
 def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
     """跨进程互斥地读-改-写 config.yaml。
 
@@ -435,19 +546,15 @@ def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
     否则同进程二次获取锁将死锁。如需在写盘后读取展示数据，请在 update_config
     返回后另起一次独立调用（此时锁已释放，安全）。
     """
-    with _CONFIG_WRITE_LOCK:
-        with portalocker.Lock(
-            str(_config_lock_path(CONFIG_YAML_PATH)),
-            timeout=lock_timeout,
-        ):
-            data = load_yaml_round_trip(CONFIG_YAML_PATH)
-            if data is None:
-                data = {}
-            new_data = mutator(data)
-            if new_data is None:
-                return data
-            dump_yaml_round_trip(CONFIG_YAML_PATH, new_data)
-            return new_data
+    with config_write_lock(lock_timeout=lock_timeout):
+        data = load_yaml_round_trip(CONFIG_YAML_PATH)
+        if data is None:
+            data = {}
+        new_data = mutator(data)
+        if new_data is None:
+            return data
+        dump_yaml_round_trip(CONFIG_YAML_PATH, new_data)
+        return new_data
 
 
 # Backward-compat aliases — downstream modules import the underscore-prefixed names
@@ -712,31 +819,20 @@ def update_context_engine_enabled_in_config(value: bool) -> None:
 
 
 def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
-    """更新 react.kv_cache_affinity_config.enable_kv_cache_affinity 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "react" not in data:
-        data["react"] = {}
-    react = data["react"]
-    if "kv_cache_affinity_config" not in react:
-        react["kv_cache_affinity_config"] = {}
-    react["kv_cache_affinity_config"]["enable_kv_cache_affinity"] = value
-    if value:
-        react["kv_cache_affinity_config"]["enable_kv_cache_release"] = False
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """更新 Application 级 KVC 开关，并清理旧 ReAct 配置。"""
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        kv_config = data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
+        if not isinstance(kv_config, dict):
+            kv_config = {}
+            data[APPLICATION_KV_CACHE_CONFIG_KEY] = kv_config
+        kv_config[KV_CACHE_AFFINITY_ENABLED_KEY] = value
 
+        react = data.get("react")
+        if isinstance(react, dict):
+            react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
+        return data
 
-def update_kv_cache_release_enabled_in_config(value: bool) -> None:
-    """更新 react.kv_cache_affinity_config.enable_kv_cache_release 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "react" not in data:
-        data["react"] = {}
-    react = data["react"]
-    if "kv_cache_affinity_config" not in react:
-        react["kv_cache_affinity_config"] = {}
-    react["kv_cache_affinity_config"]["enable_kv_cache_release"] = value
-    if value:
-        react["kv_cache_affinity_config"]["enable_kv_cache_affinity"] = False
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    update_config(_mutate)
 
 
 def _merge_config_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
@@ -775,12 +871,31 @@ def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
 
 
 def update_permissions_enabled_in_config(value: bool) -> None:
-    """更新 permissions.enabled（工具安全护栏开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """Persist the legacy permission switch as a canonical manual profile."""
+    update_permissions_profile_in_config("default" if value else "full_access")
+
+
+def update_permissions_profile_in_config(profile: str) -> None:
+    """Atomically persist the Web permission profile to runtime fields."""
+    runtime_values = {
+        "default": (True, "manual"),
+        "full_access": (False, "manual"),
+    }
+    try:
+        enabled, mode = runtime_values[profile]
+    except KeyError as exc:
+        raise ValueError(f"invalid permissions_profile: {profile}") from exc
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        permissions = data.get("permissions")
+        if not isinstance(permissions, dict):
+            permissions = {}
+            data["permissions"] = permissions
+        permissions["enabled"] = enabled
+        permissions["mode"] = mode
+        return data
+
+    update_config(_mutate)
 
 
 def update_auto_recap_enabled_in_config(value: bool) -> None:
@@ -805,8 +920,21 @@ def update_setup_guide_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
+def update_rsi_enabled_in_config(value: bool) -> None:
+    """原子更新 rsi.enabled（Web RSI 实验入口开关）。"""
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rsi")
+        if not isinstance(section, dict):
+            section = {}
+            data["rsi"] = section
+        section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
 def update_enable_free_models_in_config(value: bool) -> None:
-    """原子更新 models.enable_free_models（Opencode Zen 免费模型开关）。"""
+    """原子更新 models.enable_free_models（历史兼容；前端已不再暴露此开关）。"""
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
         section = data.get("models")
         if not isinstance(section, dict):
@@ -825,6 +953,24 @@ def update_proactive_recommendation_in_config(updates: dict[str, Any]) -> None:
         data["proactive_recommendation"] = {}
     section = data["proactive_recommendation"]
     _merge_config_dict(section, updates)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_trajectory_ui_in_config(enabled: bool) -> None:
+    """Update the trajectory UI feature switch and persist config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "trajectory_ui" not in data or data["trajectory_ui"] is None:
+        data["trajectory_ui"] = {}
+    data["trajectory_ui"]["enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_task_full_duplex_in_config(enabled: bool) -> None:
+    """Update the Task-chat Full-duplex entry switch in config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["task_full_duplex_enabled"] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -880,13 +1026,15 @@ def update_permissions_owner_scopes_in_config(
     deny_guidance_message: str | None = None,
 ) -> None:
     """更新 permissions.owner_scopes（及可选 deny_guidance_message）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["owner_scopes"] = owner_scopes
-    if deny_guidance_message is not None:
-        data["permissions"]["deny_guidance_message"] = deny_guidance_message
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    def _mutate(data):
+        if "permissions" not in data:
+            data["permissions"] = {}
+        data["permissions"]["owner_scopes"] = owner_scopes
+        if deny_guidance_message is not None:
+            data["permissions"]["deny_guidance_message"] = deny_guidance_message
+        return data
+
+    update_config(_mutate)
 
 
 def get_permissions_deny_guidance() -> str:
@@ -897,11 +1045,13 @@ def get_permissions_deny_guidance() -> str:
 
 def update_permissions_deny_guidance_in_config(msg: str) -> None:
     """更新 permissions.deny_guidance_message 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["deny_guidance_message"] = msg
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    def _mutate(data):
+        if "permissions" not in data:
+            data["permissions"] = {}
+        data["permissions"]["deny_guidance_message"] = msg
+        return data
+
+    update_config(_mutate)
 
 
 # ---------- Web UI：permissions.tools / rules / approval_overrides ----------
@@ -923,11 +1073,14 @@ def get_permissions_tools() -> dict[str, Any]:
 def replace_permissions_tools_in_config(tools: Any) -> None:
     """整表替换 ``permissions.tools``；值仅允许 ``allow|ask|deny``（或 legacy ``{\"*\": level}``）。"""
     normalized = _validate_tools_map(tools)
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["tools"] = normalized
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+    def _mutate(data):
+        if "permissions" not in data:
+            data["permissions"] = {}
+        data["permissions"]["tools"] = normalized
+        return data
+
+    update_config(_mutate)
 
 
 def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, Any]:
@@ -944,17 +1097,23 @@ def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, A
     if not name:
         raise ValueError("tool name must be non-empty")
     piece = _validate_tools_map({name: level})
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    existing = data["permissions"].get("tools")
-    if not isinstance(existing, dict):
-        existing = {}
-    merged = {str(k): v for k, v in existing.items()}
-    merged[name] = piece[name]
-    data["permissions"]["tools"] = merged
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return {"tools": dict(merged)}
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            data["permissions"] = {}
+        existing = data["permissions"].get("tools")
+        if not isinstance(existing, dict):
+            existing = {}
+        merged = {str(k): v for k, v in existing.items()}
+        merged[name] = piece[name]
+        data["permissions"]["tools"] = merged
+        result = {"tools": dict(merged)}
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def delete_permissions_tool_in_config(tool_name: str) -> bool:
@@ -962,23 +1121,29 @@ def delete_permissions_tool_in_config(tool_name: str) -> bool:
     name = str(tool_name).strip()
     if not name:
         raise ValueError("tool name must be non-empty")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        return False
-    tools = data["permissions"].get("tools")
-    if not isinstance(tools, dict):
-        return False
-    key_to_drop = None
-    for k in tools:
-        if str(k).strip() == name:
-            key_to_drop = k
-            break
-    if key_to_drop is None:
-        return False
-    new_tools = {k: v for k, v in tools.items() if k != key_to_drop}
-    data["permissions"]["tools"] = new_tools
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            return None
+        tools = data["permissions"].get("tools")
+        if not isinstance(tools, dict):
+            return None
+        key_to_drop = None
+        for k in tools:
+            if str(k).strip() == name:
+                key_to_drop = k
+                break
+        if key_to_drop is None:
+            return None
+        new_tools = {k: v for k, v in tools.items() if k != key_to_drop}
+        data["permissions"]["tools"] = new_tools
+        result = True
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def _validate_tools_map(tools: Any) -> dict[str, str]:
@@ -1038,18 +1203,24 @@ def create_permissions_rule_in_config(rule: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("pattern must be non-empty")
     _normalize_rule_severity_action(stored)
 
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    rules = data["permissions"].get("rules")
-    if not isinstance(rules, list):
-        rules = []
-    if any(isinstance(r, dict) and str(r.get("id") or "").strip() == rid for r in rules):
-        raise ValueError(f"rule id already exists: {rid}")
-    rules.append(stored)
-    data["permissions"]["rules"] = rules
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return stored
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            data["permissions"] = {}
+        rules = data["permissions"].get("rules")
+        if not isinstance(rules, list):
+            rules = []
+        if any(isinstance(r, dict) and str(r.get("id") or "").strip() == rid for r in rules):
+            raise ValueError(f"rule id already exists: {rid}")
+        rules.append(stored)
+        data["permissions"]["rules"] = rules
+        result = stored
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -1060,44 +1231,50 @@ def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> di
     if not isinstance(patch, dict):
         raise ValueError("patch must be an object")
 
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    rules = data["permissions"].get("rules")
-    if not isinstance(rules, list):
-        rules = []
-    idx: int | None = None
-    for i, r in enumerate(rules):
-        if isinstance(r, dict) and str(r.get("id") or "").strip() == rid:
-            idx = i
-            break
-    if idx is None:
-        raise ValueError(f"rule not found: {rid}")
+    result = False
 
-    merged: dict[str, Any] = dict(rules[idx])
-    for k, v in patch.items():
-        if k == "id":
-            continue
-        if k not in _RULE_MUTABLE_KEYS:
-            continue
-        if v is None:
-            merged.pop(k, None)
-        else:
-            merged[k] = v
-    merged["id"] = rid
-    if "tools" in merged:
-        merged["tools"] = _normalize_rule_tools(merged["tools"])
-    if "pattern" in merged:
-        merged["pattern"] = str(merged["pattern"]).strip()
-    if not merged.get("tools"):
-        raise ValueError("tools must be a non-empty list")
-    if not merged.get("pattern"):
-        raise ValueError("pattern must be non-empty")
-    _normalize_rule_severity_action(merged)
-    rules[idx] = merged
-    data["permissions"]["rules"] = rules
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return merged
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            data["permissions"] = {}
+        rules = data["permissions"].get("rules")
+        if not isinstance(rules, list):
+            rules = []
+        idx: int | None = None
+        for i, r in enumerate(rules):
+            if isinstance(r, dict) and str(r.get("id") or "").strip() == rid:
+                idx = i
+                break
+        if idx is None:
+            raise ValueError(f"rule not found: {rid}")
+
+        merged: dict[str, Any] = dict(rules[idx])
+        for k, v in patch.items():
+            if k == "id":
+                continue
+            if k not in _RULE_MUTABLE_KEYS:
+                continue
+            if v is None:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+        merged["id"] = rid
+        if "tools" in merged:
+            merged["tools"] = _normalize_rule_tools(merged["tools"])
+        if "pattern" in merged:
+            merged["pattern"] = str(merged["pattern"]).strip()
+        if not merged.get("tools"):
+            raise ValueError("tools must be a non-empty list")
+        if not merged.get("pattern"):
+            raise ValueError("pattern must be non-empty")
+        _normalize_rule_severity_action(merged)
+        rules[idx] = merged
+        data["permissions"]["rules"] = rules
+        result = merged
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def delete_permissions_rule_in_config(rule_id: str) -> bool:
@@ -1105,18 +1282,24 @@ def delete_permissions_rule_in_config(rule_id: str) -> bool:
     rid = str(rule_id or "").strip()
     if not rid:
         raise ValueError("id is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        return False
-    rules = data["permissions"].get("rules")
-    if not isinstance(rules, list):
-        return False
-    new_rules = [r for r in rules if not (isinstance(r, dict) and str(r.get("id") or "").strip() == rid)]
-    if len(new_rules) == len(rules):
-        return False
-    data["permissions"]["rules"] = new_rules
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            return None
+        rules = data["permissions"].get("rules")
+        if not isinstance(rules, list):
+            return None
+        new_rules = [r for r in rules if not (isinstance(r, dict) and str(r.get("id") or "").strip() == rid)]
+        if len(new_rules) == len(rules):
+            return None
+        data["permissions"]["rules"] = new_rules
+        result = True
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def delete_permissions_approval_override_in_config(override_id: str) -> bool:
@@ -1124,18 +1307,24 @@ def delete_permissions_approval_override_in_config(override_id: str) -> bool:
     oid = str(override_id or "").strip()
     if not oid:
         raise ValueError("id is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        return False
-    ov = data["permissions"].get("approval_overrides")
-    if not isinstance(ov, list):
-        return False
-    new_ov = [x for x in ov if not (isinstance(x, dict) and str(x.get("id") or "").strip() == oid)]
-    if len(new_ov) == len(ov):
-        return False
-    data["permissions"]["approval_overrides"] = new_ov
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            return None
+        ov = data["permissions"].get("approval_overrides")
+        if not isinstance(ov, list):
+            return None
+        new_ov = [x for x in ov if not (isinstance(x, dict) and str(x.get("id") or "").strip() == oid)]
+        if len(new_ov) == len(ov):
+            return None
+        data["permissions"]["approval_overrides"] = new_ov
+        result = True
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def _normalize_rule_tools(raw: Any) -> list[str]:
@@ -1268,11 +1457,61 @@ def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]
     return result
 
 
+def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """读取 models.agentos 备份模型列表，返回带标记的条目。
+
+    与 ``get_default_models`` 的 defaults 条目并列、同等可选可切换，但：
+    - ``is_default`` 始终为 ``False``：绝不抢启动主对话默认（``_create_model``
+      选默认时只取 ``is_default=True`` 的条目作为 ``self._model``）。
+    - ``model_config_obj._source = "agentos"``：仅供前端 ``is_agentos`` 置灰只读
+      展示用。``context_window``（模型支持的上下文总长度）每个模型条目均可配
+      （defaults / agentos / video / audio / vision / image_gen 均可），放进 core 的
+      ``ModelRequestConfig`` 供 core 人员取值。是否在 jiuwenswarm 出口 pop 由
+      ``reasoning_injector.core_has_context_window_field`` 自动适配 core 字段状态：
+      core 未加 context_window 正式字段时 pop 防发厂商，加字段后停止 pop 留给 core。
+
+    仅当 ``models.agentos`` 是 list 且每条 ``model_client_config.model_name`` 非空
+    （即用户已手动在 config.yaml 填入凭证）时才追加；非 list 视为未配置返回空。
+    config.yaml 模板不预置 agentos 字段，需用户手动添加——此函数即"运行时检测
+    config.yaml 是否有 agentos 字段"的落点。
+    """
+    if config is None:
+        config = get_config()
+    models = config.get("models", {})
+    agentos_raw = models.get("agentos")
+    agentos_list = agentos_raw if isinstance(agentos_raw, list) else []
+    entries: list[dict[str, Any]] = []
+    for agentos_block in agentos_list:
+        if not isinstance(agentos_block, dict):
+            continue
+        mcc = agentos_block.get("model_client_config")
+        if not (isinstance(mcc, dict) and mcc.get("model_name")):
+            # model_name 为空 = 该条未配置，跳过不入缓存
+            continue
+        agentos_entry = deepcopy(agentos_block)
+        agentos_entry["is_default"] = False
+        # _source 注入到 model_config_obj 内部，仅供前端 is_agentos 置灰只读展示
+        # （不再参与 context_window 出口判断——所有条目一视同仁）。context_window
+        # 每个模型条目均可配，随之进入 kwargs，是否由 reasoning_injector
+        # _build_model_request_kwargs 公共出口 pop 取决于 core 是否已把 context_window
+        # 加为 ModelRequestConfig 正式字段（core_has_context_window_field 自动适配）：
+        # core 未加字段时 pop 防发厂商，加字段后停止 pop，context_window 留在
+        # ModelRequestConfig 供 core 读取。
+        agentos_mco = agentos_entry.setdefault("model_config_obj", {})
+        if isinstance(agentos_mco, dict):
+            agentos_mco["_source"] = "agentos"
+        entries.append(agentos_entry)
+    return entries
+
+
 def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """获取默认模型列表，兼容新旧格式。
 
     优先级：models.defaults（列表） > models.default（单对象） > 环境变量回退
     返回的 api_key 已解密。每个条目可能含顶层 alias 字段。
+
+    无论走哪个分支，最后都会追加 ``models.agentos`` 备份模型条目（若有）。
+    agentos 与 defaults 并列、同等可选可切换，但 ``is_default=False`` 不抢启动默认。
     """
     if config is None:
         config = get_config()
@@ -1281,37 +1520,14 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     # 新格式：已有 defaults 列表
     if "defaults" in models and isinstance(models["defaults"], list) and models["defaults"]:
         entries = _decrypt_model_entries(models["defaults"])
-        # AgentOS 备份模型：作为额外条目进入缓存（可在 models.list 中按名切换），
-        # 但绝不抢主对话——故显式置 is_default=False（覆盖 _infer_is_default 的"组内唯一=默认"推断）。
-        # 仅在 model_name 非空（即用户已在 YAML 填入凭证）时追加，并打 _source 标记供下游识别。
-        # 列表语义：models.agentos 是列表，可配多个备份模型（同名/异名皆可，填写约束为
-        # (model_name, api_base, api_key) 三元组唯一）。非 list 视为未配置。
-        agentos_raw = models.get("agentos")
-        agentos_list = agentos_raw if isinstance(agentos_raw, list) else []
-        for agentos_block in agentos_list:
-            if not isinstance(agentos_block, dict):
-                continue
-            mcc = agentos_block.get("model_client_config")
-            if not (isinstance(mcc, dict) and mcc.get("model_name")):
-                continue
-            agentos_entry = deepcopy(agentos_block)
-            agentos_entry["is_default"] = False
-            # _source 注入到 model_config_obj 内部，使其经
-            # build_reasoning_model_request_kwargs -> _model_config_to_dict
-            # 展开后进入 kwargs，供 build_model_from_entry 识别该条目为 agentos，
-            # 进而把其 max_tokens（输入侧别名）从 ModelRequestConfig 的输出侧
-            # kwargs 里挪到 extra 键 _agentos_ctx_window（随选中 Model 带入缓存，
-            # 供 _deep_agent_context_engine_config 从选中条目精确取值），绝不作为
-            # 输出上限发往厂商。
-            agentos_mco = agentos_entry.setdefault("model_config_obj", {})
-            if isinstance(agentos_mco, dict):
-                agentos_mco["_source"] = "agentos"
-            entries.append(agentos_entry)
+        entries.extend(get_agentos_models(config))
         return entries
 
     # 旧格式：单个 default 对象 → 包装为列表
     if "default" in models and isinstance(models["default"], dict):
-        return _decrypt_model_entries([models["default"]])
+        entries = _decrypt_model_entries([models["default"]])
+        entries.extend(get_agentos_models(config))
+        return entries
 
     # 回退：从环境变量构造（env var 已在 resolve_env_vars 中解密）
     alias = os.getenv("MODEL_ALIAS", "")
@@ -1321,15 +1537,68 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
             "api_key": os.getenv("API_KEY", ""),
             "model_name": os.getenv("MODEL_NAME", ""),
             "client_provider": os.getenv("MODEL_PROVIDER", ""),
+            # endpoint_profile：仅 OpenAI 协议生效的端点方言；Anthropic 时忽略。
+            "endpoint_profile": os.getenv("ENDPOINT_PROFILE", "") or "",
             "custom_headers": _parse_custom_headers(os.getenv("CUSTOM_HEADERS", None)),
             "timeout": 1800,
             "verify_ssl": False,
         },
-        "model_config_obj": {"temperature": 0.95},
+        "model_config_obj": {},
     }
     if alias:
         entry["alias"] = alias
-    return [entry]
+    entries = [entry]
+    entries.extend(get_agentos_models(config))
+    return entries
+
+
+def get_available_models(
+    config: dict[str, Any] | None = None, session_id: str | None = None
+) -> list[dict[str, Any]]:
+    """配置的模型 + 登录后自动获得的模型。
+
+    ``get_default_models`` 只读 config.yaml，是「写」的唯一真源；登录送的模型是
+    运行时叠加的一层，永远不落 config.yaml（凭据会过期、换账号会变）。所有**读**
+    模型清单的地方（模型缓存、models.list）都该用这个函数，**写**的地方仍用
+    ``get_default_models``。
+
+    登录模块不可用或未登录时，行为与 ``get_default_models`` 完全一致。
+
+    ``session_id`` 是**哪个用户**的登录会话。只有 Gateway 这类有请求上下文的调用方
+    （``models.list``，会话 id 在 WS 握手时拿到）才传；不传就只有配置的模型——
+    登录模型的凭据是按用户的，进程级的模型缓存（AgentServer）不能持有它们，
+    AgentServer 靠 Gateway 随请求带下来的凭据现造（见 common/auth/passthrough.py）。
+    """
+    configured = get_default_models(config)
+    if not session_id:
+        return configured
+    # 登录送的模型始终叠加进列表（不再受 enable_free_models / Opencode Zen 开关约束；
+    # Zen 已停用，免费模型来源就是登录）。
+    try:
+        from jiuwenswarm.common.auth.model_catalog import list_login_model_entries
+
+        login_entries = list_login_model_entries(session_id)
+    except Exception as exc:  # noqa: BLE001 — 登录模型拿不到不该影响已配置模型
+        logger.debug("Skip login-provided models: %s", exc)
+        return configured
+    if not login_entries:
+        return configured
+
+    # 同名以用户自配的为准。按**原样**比较，不做大小写归一：``GLM-5.2``（自配）和
+    # ``glm-5.2``（登录送的）是两个模型，归一化会把其中一个藏掉。
+    configured_names = {
+        str((entry.get("model_client_config") or {}).get("model_name") or "").strip()
+        for entry in configured
+        if isinstance(entry, dict)
+    }
+    extra = [
+        entry
+        for entry in login_entries
+        if str(entry["model_client_config"]["model_name"]).strip() not in configured_names
+    ]
+    # 登录模型只能追加在配置的模型**之后**：models.list 的 origin_index 就是这里的下标，
+    # 保存设置时拿它回查 models.defaults；排到前面会让配置模型的下标错开、保存时写串。
+    return [*configured, *extra]
 
 
 def update_default_models_in_config(models_list: list[dict[str, Any]]) -> None:
@@ -1408,8 +1677,9 @@ def ensure_defaults_list_in_config() -> list[dict[str, Any]]:
                     "api_key": "${API_KEY}",
                     "model_name": "${MODEL_NAME}",
                     "client_provider": "${MODEL_PROVIDER}",
+                    "endpoint_profile": "${ENDPOINT_PROFILE:-openai}",
                 },
-                "model_config_obj": {"temperature": 0.95},
+                "model_config_obj": {},
                 "is_default": True,
             }]
         models["defaults"] = defaults_list
@@ -1480,6 +1750,19 @@ def _transform_front_team_model_config(model_raw: dict[str, Any]) -> dict[str, A
             model_request_config["model"] = raw_model[:raw_model.rfind("#")]
         else:
             model_request_config["model"] = raw_model
+
+    if model_request_config:
+        from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+
+        model_request_config = build_reasoning_model_request_kwargs(
+            model_client_config=model_client_config,
+            model_config_obj=model_request_config,
+            model_name=str(
+                model_request_config.get("model")
+                or model_client_config.get("model_name")
+                or ""
+            ),
+        )
 
     transformed: dict[str, Any] = {}
     if model_client_config:
@@ -1820,6 +2103,23 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def reset_external_cli_agents_in_config() -> None:
+    """Disable all external CLI agents and clear their transport configuration."""
+    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
+        current = data
+        for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
+            nested = current.get(segment)
+            if not isinstance(nested, dict):
+                return None
+            current = nested
+
+        agents_removed = current.pop(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1], None) is not None
+        transport_removed = current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None) is not None
+        return data if agents_removed or transport_removed else None
+
+    update_config(_mutate)
+
+
 def update_swarmflow_budget_in_config(budget: str) -> None:
     """Update ``modes.team.jiuwen_team.swarmflow_budget`` in config.yaml.
 
@@ -2005,27 +2305,29 @@ def _mcp_name_in_config_yaml(name: str) -> bool:
                for s in get_config_yaml_mcp_servers())
 
 
-def upsert_mcp_server(server: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Upsert a TUI-managed MCP, routing by source: update in place if the
-    name already lives in config.yaml (legacy stock) or state.json (TUI-
-    created / web-connected); otherwise create new in state.json.
+def upsert_mcp_server(
+    server: dict[str, Any], *, state: str = "connected"
+) -> tuple[dict[str, Any], bool]:
+    """Upsert a TUI-managed MCP by source: config.yaml (legacy stock) is
+    updated in place; otherwise the record is created/updated in state.json.
 
-    TUI ``add``/``update`` lands here. New MCPs always go to state.json
-    (``enabled`` defaults to the payload's ``enabled``, True for TUI add) —
-    config.yaml is no longer a creation target, only legacy stock edited
-    in place. Returns ``(entry, created)``. Raises ``ValueError`` if no name.
+    ``state`` defaults to ``connected``; the command.mcp add/update handlers
+    pass ``"connecting"`` so a live-connect probe can validate reachability
+    before the record is flipped to ``connected``. Returns ``(entry, created)``.
+    Raises ``ValueError`` if no name.
     """
     name = str(server.get("name", "")).strip()
     if not name:
         raise ValueError("MCP server name is required")
-    # Legacy stock in config.yaml: update in place (keeps its source).
+    # config.yaml entries carry no connection_state (treated as live when
+    # present), so ``state`` only routes through to state.json.
     if _mcp_name_in_config_yaml(name):
         return upsert_mcp_server_in_config(server)
     # Else state.json is the creation/update home for TUI MCPs.
     from jiuwenswarm.server.runtime.mcp.state_store import upsert_mcp_record
     prior = _mcp_name_in_state(name)
     enabled = bool(server.get("enabled", True)) if "enabled" in server else None
-    rec = upsert_mcp_record(name, server, state="connected",
+    rec = upsert_mcp_record(name, server, state=state,
                             integration_type=_integration_type_for(server),
                             enabled=enabled)
     # Shape a config-like entry for the response (carries enabled through).
@@ -2263,6 +2565,26 @@ def _migrate_legacy_agent_submode_memory(user_data: dict[str, Any]) -> None:
         flat_memory["enabled"] = all(legacy_enabled_values)
 
 
+def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
+    """Move the former ReAct-local KVC switch to Application scope."""
+    react = user_data.get("react")
+    if not isinstance(react, dict):
+        return
+    legacy = react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
+    canonical = user_data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
+    if isinstance(canonical, dict):
+        if (
+            KV_CACHE_AFFINITY_ENABLED_KEY not in canonical
+            and isinstance(legacy, dict)
+            and KV_CACHE_AFFINITY_ENABLED_KEY in legacy
+        ):
+            canonical[KV_CACHE_AFFINITY_ENABLED_KEY] = legacy[
+                KV_CACHE_AFFINITY_ENABLED_KEY
+            ]
+    elif isinstance(legacy, dict):
+        user_data[APPLICATION_KV_CACHE_CONFIG_KEY] = deepcopy(legacy)
+
+
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
@@ -2304,6 +2626,7 @@ def migrate_config_from_template(
     # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
     # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
     _migrate_legacy_agent_submode_memory(user_data)
+    _migrate_legacy_kv_cache_affinity_config(user_data)
 
     # Deep merge: template provides defaults, user values preserved
     merged_data = _deep_merge(template_data, user_data)
@@ -2311,6 +2634,12 @@ def migrate_config_from_template(
     # Guard against empty merged_data overwriting valid user config
     if merged_data is None or not merged_data:
         return False
+
+    # 写回程序版本号，与合并内容原子落盘；放在 diff 判断之前，
+    # 使旧 config（无版本号或版本号旧）必走写盘分支把版本号写回，
+    # 已写回的最新 config 下次启动被 ensure_config_migrated_from_template 短路。
+    from jiuwenswarm.common._build_config import VERSION
+    merged_data["config_version"] = VERSION
 
     # Only write if there are actual changes
     if merged_data != user_data:
@@ -2519,16 +2848,33 @@ def _ensure_sandbox_runtime_shape(runtime: Any) -> dict[str, Any]:
     return out
 
 
+def resolve_sandbox_enabled(sandbox: Any) -> bool:
+    """Resolve host-owned sandbox enablement without mutating configuration."""
+
+    if not isinstance(sandbox, dict):
+        return False
+    if "enabled" in sandbox:
+        return bool(sandbox["enabled"])
+    return (
+        str(sandbox.get("type") or "").strip().lower() == "jiuwenbox"
+        and bool(str(sandbox.get("url") or "").strip())
+        and bool(str(sandbox.get("control_token_path") or "").strip())
+    )
+
+
 def get_sandbox_runtime() -> dict[str, Any]:
     """返回 sandbox runtime 当前内容 (含缺省字段填充)。
 
-    直接从 ``sandbox.<key>`` 扁平字段读; 字段缺失时用 ``_SANDBOX_RUNTIME_DEFAULTS``。
+    直接从 ``sandbox.<key>`` 扁平字段读。``enabled`` 缺失时从已配置的
+    JiuwenBox 端点推导，其他字段缺失时用 ``_SANDBOX_RUNTIME_DEFAULTS``。
     """
     cfg = get_config() or {}
     sandbox = cfg.get("sandbox")
     if not isinstance(sandbox, dict):
         return _ensure_sandbox_runtime_shape(None)
     raw = {key: sandbox[key] for key in _SANDBOX_RUNTIME_KEYS if key in sandbox}
+    if "enabled" not in raw:
+        raw["enabled"] = resolve_sandbox_enabled(sandbox)
     return _ensure_sandbox_runtime_shape(raw)
 
 
@@ -2988,8 +3334,11 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
     if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
         data["sandbox"] = {}
     sandbox_block = data["sandbox"]
-    # 写入扁平 runtime 字段, 每次 update 都把全集刷一遍, 保证 yaml 形状稳定。
+    # 写入扁平 runtime 字段。enabled 只持久化调用方的显式更新，
+    # 避免将 get_sandbox_runtime() 的派生值反写为新配置。
     for key in _SANDBOX_RUNTIME_KEYS:
+        if key == "enabled" and "enabled" not in patch:
+            continue
         sandbox_block[key] = merged[key]
     _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
     return merged

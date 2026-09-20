@@ -80,11 +80,12 @@ class AgentOSSshKeyIssuer:
             )
         )
         logger.info(
-            "[AgentOSAuth] issued ephemeral SSH key: user_id=%s session=%s ttl=%.0fs fp=%s",
+            "[AgentOSAuth] issued ephemeral SSH key: user_id=%s session_id=%s ttl=%.0fs fp=%s",
             user_id,
             session_id,
             ttl,
             fingerprint,
+            extra={"session_id": str(session_id or "")} if session_id else {},
         )
         exported = key.export_private_key("openssh")
         if isinstance(exported, bytes):

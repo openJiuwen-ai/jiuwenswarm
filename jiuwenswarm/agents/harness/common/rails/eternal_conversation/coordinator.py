@@ -35,6 +35,8 @@ SNAPSHOT_LIMITS = {
 # while keeping each extraction independently retryable and auditable.
 MAX_TASKS_PER_EXTRACTION = 4
 PROTOCOL_STRING_INLINE_LIMIT = 2048
+PROTOCOL_CONTAINER_INLINE_LIMIT = 256 * 1024
+FROZEN_WORKING_MEMORY_INLINE_LIMIT = 512 * 1024
 
 
 def _compact_protocol_value(value: Any) -> Any:
@@ -60,6 +62,69 @@ def _compact_protocol_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_compact_protocol_value(item) for item in value]
     return value
+
+
+def _compact_protocol_container(value: Any) -> Any:
+    """Content-address an oversized aggregate while Raw History keeps it exact."""
+    if not isinstance(value, (dict, list)):
+        return _compact_protocol_value(value)
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    if len(encoded) <= PROTOCOL_CONTAINER_INLINE_LIMIT:
+        return value
+    return {
+        "$raw_history_container": True,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "utf8_bytes": len(encoded),
+        "item_count": len(value),
+    }
+
+
+def _bound_frozen_working_memory(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep semantic boundary records plus a complete structural ledger when oversized."""
+    encoded = json.dumps(
+        events,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    if len(encoded) <= FROZEN_WORKING_MEMORY_INLINE_LIMIT:
+        return events
+    boundary_types = {
+        "task-started",
+        "user-message",
+        "task-finished",
+        "context-replaced",
+    }
+    boundary_events = [event for event in events if event.get("type") in boundary_types]
+    ledger = [
+        {
+            "cursor": event.get("cursor"),
+            "type": event.get("type"),
+            "task_id": event.get("task_id"),
+            "hash": event.get("hash"),
+        }
+        for event in events
+    ]
+    return [
+        *boundary_events,
+        {
+            "type": "structural-event-ledger",
+            "payload": {
+                "event_count": len(events),
+                "events": ledger,
+                "compacted_view_sha256": hashlib.sha256(encoded).hexdigest(),
+                "compacted_view_utf8_bytes": len(encoded),
+                "complete_raw_history_path": "raw-history/events.jsonl",
+            },
+        },
+    ]
 
 
 def _tool_inventory(value: Any) -> list[str]:
@@ -201,6 +266,18 @@ def _extractor_evidence(events: list[dict[str, Any]]) -> dict[str, Any]:
                 compact = dict(event)
                 compact["payload"] = _compact_protocol_value(event.get("payload"))
                 compact_events.append(compact)
+            elif event.get("type") == "context-replaced":
+                compact = dict(event)
+                payload = dict(event.get("payload") or {})
+                payload["replaced_messages"] = _compact_protocol_container(
+                    payload.get("replaced_messages")
+                )
+                compact["payload"] = payload
+                compact_events.append(compact)
+            elif event.get("type") == "task-finished":
+                compact = dict(event)
+                compact["payload"] = _compact_protocol_value(event.get("payload"))
+                compact_events.append(compact)
             else:
                 compact_events.append(event)
             continue
@@ -211,7 +288,7 @@ def _extractor_evidence(events: list[dict[str, Any]]) -> dict[str, Any]:
             "hash": event.get("hash"),
             "task_id": event.get("task_id"),
             "created_at": event.get("created_at"),
-            "messages": payload.get("messages"),
+            "messages": _compact_protocol_container(payload.get("messages")),
             "tools": _tool_inventory(payload.get("tools")),
             "status": payload.get("status"),
         }
@@ -235,7 +312,7 @@ def _extractor_evidence(events: list[dict[str, Any]]) -> dict[str, Any]:
         )
     return {
         "final_visible_context": latest_visible,
-        "frozen_working_memory": compact_events,
+        "frozen_working_memory": _bound_frozen_working_memory(compact_events),
         "raw_history_manifest": {
             "from_cursor": events[0].get("cursor") if events else None,
             "to_cursor": events[-1].get("cursor") if events else None,
@@ -472,7 +549,7 @@ class SessionCoordinator:
                 "builds", {"batch": str(output), "review": review, "result": result}
             )
 
-    async def projection_for_boundary(self) -> dict[str, Any] | None:
+    async def projection_for_boundary(self, *, force: bool = False) -> dict[str, Any] | None:
         """Return a projection only when no newer foreground task can be lost."""
         if not (self.root / "memory" / "memory.sqlite3").exists():
             return None
@@ -481,7 +558,7 @@ class SessionCoordinator:
         revision = int(formal.get("snapshot_revision") or 0)
         state = read_json(self.state_path, {}) or {}
         applied = int(state.get("applied_snapshot_revision") or 0)
-        if revision <= applied or int(formal.get("covered_through") or 0) != requested:
+        if (revision <= applied and not force) or int(formal.get("covered_through") or 0) != requested:
             return None
         return formal
 

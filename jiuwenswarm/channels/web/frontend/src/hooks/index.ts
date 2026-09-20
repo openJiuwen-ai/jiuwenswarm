@@ -11,5 +11,7 @@ export {
   useMinWidth,
   useResponsiveLayout,
   useResponsivePanelResize,
+  useWelcomeBubblePosition,
 } from './useResponsive';
 export { useFullscreenPanel } from './useFullscreenPanel';
+export { useHorizontalScrollEdges } from './useHorizontalScrollEdges';

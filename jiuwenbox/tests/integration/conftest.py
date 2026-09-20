@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
 import subprocess
 import time
@@ -32,7 +33,7 @@ SYSTEM_BIND_MOUNTS = [
 TMP_DIRECTORY = {"path": "/tmp", "permissions": "1777"}
 logger = logging.getLogger(__name__)
 
-DOCKER_ACCESSIBLE_IP = "172.17.0.1"
+DOCKER_ACCESSIBLE_IP = os.getenv("JIUWENBOX_TEST_DOCKER_GATEWAY_IP", "172.17.0.1")
 # 127.0.0.1 is a test-only loopback address; not a hardcoded production IP.
 _LOOPBACK_IP = "127.0.0.1"
 

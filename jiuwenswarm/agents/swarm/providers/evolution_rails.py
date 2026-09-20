@@ -52,6 +52,48 @@ TEAM_SKILL_EVOLUTION = "swarm.team_skill_evolution"
 TEAM_SKILL_CREATE = "swarm.team_skill_create"
 MEMBER_SKILL_EVOLUTION = "swarm.member_skill_evolution"
 EVOLUTION_INTERRUPT = "swarm.evolution_interrupt"
+SYMPHONY_GRAPH_EVOLUTION = "swarm.symphony_graph_evolution"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=SYMPHONY_GRAPH_EVOLUTION,
+    description="Leader-only Symphony execution graph evolution rail.",
+)
+def build_symphony_graph_evolution_rail(
+    params: dict[str, Any],
+    ctx: SwarmBuildContext,
+) -> Any | None:
+    """Build one Team graph rail only for the leader."""
+
+    del params
+    from jiuwenswarm.symphony.config import load_symphony_config
+
+    config = load_symphony_config(ctx.config)
+    if ctx.role != "leader":
+        return None
+    core_evolution_enabled = config.enabled and config.evolution.enabled
+    if not core_evolution_enabled:
+        return None
+    try:
+        from jiuwenswarm.symphony.adapter import model_from_config
+        from jiuwenswarm.symphony.experience import _build_graph_evolution_rail
+        from jiuwenswarm.symphony.llm import LLMConfig
+
+        return _build_graph_evolution_rail(
+            config.paths.graph_dir,
+            capture_mode="team",
+            model=model_from_config(LLMConfig.from_default_model()),
+            channel_id=lambda: ctx.channel_id,
+            trajectory_span_processor=ctx.trajectory_span_processor,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[swarm.symphony_graph_evolution] build failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return None
 
 
 def _skill_library_dir(ctx: SwarmBuildContext) -> str:
@@ -100,7 +142,7 @@ def _build_team_workspace_info(
     from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
         TeamWorkspaceInfo,
     )
-    from jiuwenswarm.agents.harness.observability_runtime import (
+    from openjiuwen.extensions.observability.demand import (
         get_trajectory_span_processor,
     )
     return TeamWorkspaceInfo(
@@ -535,7 +577,7 @@ def build_team_skill_evolution_rail(
     ):
         return []
 
-    from jiuwenswarm.agents.harness.observability_runtime import (
+    from openjiuwen.extensions.observability.demand import (
         get_trajectory_span_processor,
     )
 
@@ -668,7 +710,7 @@ def build_team_skill_create_rail(
     ):
         return None
 
-    from jiuwenswarm.agents.harness.observability_runtime import (
+    from openjiuwen.extensions.observability.demand import (
         get_trajectory_span_processor,
     )
 
@@ -760,7 +802,7 @@ def build_member_skill_evolution_rail(
     ):
         return []
 
-    from jiuwenswarm.agents.harness.observability_runtime import (
+    from openjiuwen.extensions.observability.demand import (
         get_trajectory_span_processor,
     )
 
@@ -811,6 +853,8 @@ def build_member_skill_evolution_rail(
 
 
 __all__ = [
+    "SYMPHONY_GRAPH_EVOLUTION",
+    "build_symphony_graph_evolution_rail",
     "EVOLUTION_INTERRUPT",
     "TEAM_SKILL_EVOLUTION",
     "TEAM_SKILL_CREATE",

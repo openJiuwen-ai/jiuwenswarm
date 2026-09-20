@@ -582,15 +582,30 @@ class HeartbeatJobStore:
                     run_state=new_rs,
                     updated_at=float(now),
                 )
+            if job.status == STATUS_RUNNING:
+                resume_next = job.next_run_at
+                resume_enabled = job.enabled
+            # A due tick can consume the once slot during a manual run. Keep
+            # that decision instead of restoring scheduled with no next run.
+            # A non-null due time is still pending, even if it is in the past.
+            if (
+                job.schedule.type == SCHEDULE_ONCE
+                and resume_status == STATUS_SCHEDULED
+                and resume_next is None
+            ):
+                resume_status = STATUS_EXPIRED
+                resume_enabled = False
+                new_rs = replace(
+                    new_rs,
+                    queued_run_id=None,
+                    queued_trigger=None,
+                    queued_reschedule=False,
+                )
             return replace(
                 job,
                 status=resume_status,
-                enabled=bool(job.enabled if job.status == STATUS_RUNNING else resume_enabled),
-                next_run_at=(
-                    job.next_run_at
-                    if job.status == STATUS_RUNNING
-                    else resume_next
-                ),
+                enabled=bool(resume_enabled),
+                next_run_at=resume_next,
                 last_run_at=float(now),
                 run_count=run_count,
                 run_state=new_rs,
@@ -606,6 +621,7 @@ class HeartbeatJobStore:
         run_id: str,
         *,
         now: float,
+        preserve_as_queued: bool = False,
     ) -> tuple[bool, HeartbeatJob]:
         """Roll back an exact claim when the session became busy before dispatch."""
         matched = False
@@ -625,6 +641,17 @@ class HeartbeatJobStore:
                 resume_status=None,
                 resume_enabled=None,
                 resume_next_run_at=None,
+                queued_run_id=(run_id if preserve_as_queued else rs.queued_run_id),
+                queued_trigger=(
+                    rs.current_trigger
+                    if preserve_as_queued
+                    else rs.queued_trigger
+                ),
+                queued_reschedule=(
+                    rs.current_reschedule
+                    if preserve_as_queued
+                    else rs.queued_reschedule
+                ),
             )
             if not job.enabled or job.status == STATUS_DISABLED:
                 return replace(
@@ -632,7 +659,12 @@ class HeartbeatJobStore:
                     status=STATUS_DISABLED,
                     enabled=False,
                     next_run_at=None,
-                    run_state=cleared,
+                    run_state=replace(
+                        cleared,
+                        queued_run_id=None,
+                        queued_trigger=None,
+                        queued_reschedule=False,
+                    ),
                     updated_at=float(now),
                 )
             return replace(
@@ -651,34 +683,57 @@ class HeartbeatJobStore:
         result = await self._mutate_job(job_id, _defer)
         return matched, result
 
-    async def pop_queued_run(
-        self, job_id: str
-    ) -> tuple[str, str, bool] | None:
-        queued: tuple[str, str, bool] | None = None
+    async def promote_queued_run(
+        self, job_id: str, *, now: float
+    ) -> tuple[HeartbeatJob, str] | None:
+        """Atomically move one queued reservation into the active run slot."""
+        run_id: str | None = None
 
-        def _pop(job: HeartbeatJob) -> HeartbeatJob:
-            nonlocal queued
+        def _promote(job: HeartbeatJob) -> HeartbeatJob:
+            nonlocal run_id
             rs = job.run_state
-            if not rs.queued_run_id:
+            if rs.current_run_id or not rs.queued_run_id:
                 return job
-            queued = (
-                rs.queued_run_id,
-                rs.queued_trigger or "scheduler",
-                bool(rs.queued_reschedule),
-            )
+            run_limit_reached = job.max_runs is not None and int(
+                job.run_count
+            ) >= int(job.max_runs)
+            if (
+                not job.enabled
+                or job.is_terminal()
+                or run_limit_reached
+            ):
+                return replace(
+                    job,
+                    run_state=replace(
+                        rs,
+                        queued_run_id=None,
+                        queued_trigger=None,
+                        queued_reschedule=False,
+                    ),
+                    updated_at=float(now),
+                )
+            run_id = rs.queued_run_id
             return replace(
                 job,
+                status=STATUS_RUNNING,
                 run_state=replace(
                     rs,
+                    current_run_id=run_id,
+                    current_run_started_at=float(now),
+                    current_trigger=rs.queued_trigger or "scheduler",
+                    current_reschedule=bool(rs.queued_reschedule),
+                    resume_status=job.status,
+                    resume_enabled=job.enabled,
+                    resume_next_run_at=job.next_run_at,
                     queued_run_id=None,
                     queued_trigger=None,
                     queued_reschedule=False,
                 ),
-                updated_at=time.time(),
+                updated_at=float(now),
             )
 
-        await self._mutate_job(job_id, _pop)
-        return queued
+        promoted = await self._mutate_job(job_id, _promote)
+        return None if run_id is None else (promoted, run_id)
 
     async def record_cancel_result(
         self,
@@ -754,7 +809,6 @@ class HeartbeatJobStore:
         concurrency_policy: str = DEFAULT_CONCURRENCY_POLICY,
         session_deleted_policy: str = DEFAULT_SESSION_DELETED_POLICY,
         max_runs: int | None = DEFAULT_MAX_RUNS,
-        delete_after_run: bool = False,
         source: str = SOURCE_AGENT_TOOL,
         metadata: dict[str, Any] | None = None,
         next_run_at: float | None = None,
@@ -768,8 +822,6 @@ class HeartbeatJobStore:
         """
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be boolean")
-        if not isinstance(delete_after_run, bool):
-            raise ValueError("delete_after_run must be boolean")
         ts = float(now) if now is not None else time.time()
         # source 校验:controller 应已校验,此处再校一遍防绕过。
         src = validate_metadata_source(source)
@@ -825,7 +877,6 @@ class HeartbeatJobStore:
                 session_deleted_policy or DEFAULT_SESSION_DELETED_POLICY
             ),
             max_runs=max_runs,
-            delete_after_run=delete_after_run,
             created_at=ts,
             updated_at=ts,
             next_run_at=(
@@ -944,11 +995,6 @@ class HeartbeatJobStore:
                     if mr < 1:
                         raise ValueError("max_runs must be at least 1")
                     updated = replace(updated, max_runs=mr)
-            if "delete_after_run" in patch:
-                value = patch.get("delete_after_run")
-                if not isinstance(value, bool):
-                    raise ValueError("delete_after_run must be boolean")
-                updated = replace(updated, delete_after_run=value)
             if "schedule" in patch:
                 updated = replace(
                     updated,
@@ -972,7 +1018,15 @@ class HeartbeatJobStore:
                     raise ValueError("enabled must be boolean")
                 updated = replace(updated, enabled=enabled_val)
                 if not enabled_val:
-                    updated = replace(updated, status=STATUS_DISABLED, next_run_at=None)
+                    # A stale UI may send its pause toggle after the scheduler
+                    # has already completed/expired the job.  Disabling an
+                    # already terminal job is a no-op for lifecycle status:
+                    # otherwise the late request rewrites "completed" into
+                    # "disabled" (displayed as "paused").
+                    if existing.status not in HEARTBEAT_TERMINAL_STATUSES:
+                        updated = replace(
+                            updated, status=STATUS_DISABLED, next_run_at=None
+                        )
                 elif existing.status in HEARTBEAT_TERMINAL_STATUSES:
                     next_at = patch.get("next_run_at")
                     if next_at is None:

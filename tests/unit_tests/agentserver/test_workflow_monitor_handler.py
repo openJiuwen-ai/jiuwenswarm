@@ -423,6 +423,78 @@ class TestWorkflowMonitorHandlerRunIdRegistry:
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint persistence
+# ---------------------------------------------------------------------------
+
+class TestWorkflowMonitorHandlerPersist:
+    """_persist() must land runs + session_budget in ONE read-modify-write.
+
+    Regression: two separate persists each cache_bust-read the disk before
+    the other's async-queued write is flushed; the second full-file replace
+    reverts the first's workflow_runs (lost update freezing the checkpoint
+    at a stale pre-terminal state).
+    """
+
+    def test_persist_writes_runs_and_budget_in_single_write(self) -> None:
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        import jiuwenswarm.server.runtime.session.session_metadata as sm
+
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-persist")
+        handler._runs = {
+            "wf_run1": WorkflowRunState(
+                id="wf_run1", name="flow", status="stopped",
+                agent_count=5, completed_agent_count=5,
+            )
+        }
+        budget = {"total": 500000, "spent": 400000, "remaining": 100000, "scope": "session", "exhausted": False}
+        handler._session_budget = budget
+
+        store: dict[str, Any] = {"session_id": "sess-persist", "title": "t"}
+        written: list[tuple[str, dict]] = []
+        original_read = sm._read_metadata
+        original_enqueue = sm._enqueue_write
+        sm._read_metadata = lambda session_id, cache_bust=True: dict(store)
+        sm._enqueue_write = lambda session_id, metadata: written.append((session_id, dict(metadata)))
+        try:
+            handler._persist()
+        finally:
+            sm._read_metadata = original_read
+            sm._enqueue_write = original_enqueue
+
+        assert len(written) == 1, "runs + budget must share one enqueue (single RMW)"
+        session_id, payload = written[0]
+        assert session_id == "sess-persist"
+        assert payload["session_budget"] == budget
+        persisted_runs = payload.get("workflow_runs") or {}
+        assert persisted_runs["wf_run1"]["status"] == "stopped"
+        assert persisted_runs["wf_run1"]["completed_agent_count"] == 5
+
+    def test_persist_without_budget_only_writes_runs(self) -> None:
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        import jiuwenswarm.server.runtime.session.session_metadata as sm
+
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-persist2")
+        handler._runs = {"wf_run2": WorkflowRunState(id="wf_run2", name="flow", status="running")}
+
+        written: list[tuple[str, dict]] = []
+        original_read = sm._read_metadata
+        original_enqueue = sm._enqueue_write
+        sm._read_metadata = lambda session_id, cache_bust=True: {"session_id": "sess-persist2"}
+        sm._enqueue_write = lambda session_id, metadata: written.append((session_id, dict(metadata)))
+        try:
+            handler._persist()
+        finally:
+            sm._read_metadata = original_read
+            sm._enqueue_write = original_enqueue
+
+        assert len(written) == 1
+        assert "session_budget" not in written[0][1]
+        assert "wf_run2" in (written[0][1].get("workflow_runs") or {})
+
+
+# ---------------------------------------------------------------------------
 # New-field passthrough (agent_id / node_type / correlation_id / answer)
 # ---------------------------------------------------------------------------
 
@@ -474,6 +546,7 @@ class TestExtractProgressPassthrough:
             phase_type = "child"
             nested_phase = "▸ intro #0"
             parent_phase = "review"
+            script_path = "/abs/path/foo.py"
 
         class _Ev:
             def get_payload(self):  # noqa: ANN202
@@ -485,3 +558,213 @@ class TestExtractProgressPassthrough:
         assert p.phase_type == "child"
         assert p.nested_phase == "▸ intro #0"
         assert p.parent_phase == "review"
+        assert p.script_path == "/abs/path/foo.py"
+
+
+# ---------------------------------------------------------------------------
+# workflow_started script_path passthrough (冷启动续跑情境注入)
+# ---------------------------------------------------------------------------
+
+class TestWorkflowStartedScriptPath:
+    @pytest.mark.anyio
+    async def test_workflow_started_carries_script_path_to_run_state(self) -> None:
+        """workflow_started 携带 script_path → handler 的 run state 记录该路径。
+
+        The engine carries the script's absolute path on workflow_started so a
+        cold-start resume can inject it as context to the leader; the handler
+        must surface it on the WorkflowRunState, not drop it.
+        """
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+
+        await _run_handler_with_events(
+            handler, monitor,
+            [_FakeRawEvent(kind="workflow_started", workflow_name="research-flow",
+                           script_path="/abs/path/foo.py")],
+        )
+
+        runs = handler.get_run_states()
+        assert len(runs) == 1
+        run = next(iter(runs.values()))
+        assert run.script_path == "/abs/path/foo.py"
+
+
+# ---------------------------------------------------------------------------
+# finalize_pending_runs: disposition-aware finalize (not one-size stopped)
+# ---------------------------------------------------------------------------
+
+def _running_run(run_id: str = "wf_run_running") -> WorkflowRunState:
+    """A running run with one running phase carrying one running agent."""
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
+        WorkflowRunState, WorkflowPhaseState, WorkflowAgentState,
+    )
+    return WorkflowRunState(
+        id=run_id,
+        name="flow",
+        status="running",
+        started_at="2026-09-07T10:00:00+08:00",
+        phases=[
+            WorkflowPhaseState(
+                id="p1",
+                name="Phase 1",
+                status="running",
+                agents=[WorkflowAgentState(id="a1", name="agent-a", status="running")],
+            )
+        ],
+    )
+
+
+class TestFinalizePendingRunsDisposition:
+    """finalize by disposition, not one-size stopped.
+
+    A session teardown must not stamp a paused (resumable) run to the terminal
+    ``stopped`` — pause reclaim parks it as ``paused`` so the journal cache
+    prefix survives cold start; only an explicit user stop stamps ``stopped``.
+    """
+
+    def test_paused_run_stays_paused_under_stop_disposition(self, monkeypatch) -> None:
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_paused": WorkflowRunState(id="wf_paused", name="flow", status="paused")},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="stop")
+        assert handler.get_run_states()["wf_paused"].status == "paused"
+
+    def test_paused_run_stays_paused_under_pause_disposition(self, monkeypatch) -> None:
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_paused": WorkflowRunState(id="wf_paused", name="flow", status="paused")},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="pause")
+        assert handler.get_run_states()["wf_paused"].status == "paused"
+
+    def test_running_run_stopped_under_stop_disposition(self, monkeypatch) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_run": _running_run()},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="stop")
+        run = handler.get_run_states()["wf_run"]
+        assert run.status == "stopped"
+        assert run.is_terminal is True
+        assert run.completed_at is not None
+        assert run.phases[0].status == "stopped"
+        assert run.phases[0].agents[0].status == "stopped"
+        assert run.phases[0].agents[0].completed_at is not None
+        assert run.completed_agent_count == 1
+
+    def test_running_run_paused_under_pause_disposition(self, monkeypatch) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_run": _running_run()},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="pause")
+        run = handler.get_run_states()["wf_run"]
+        assert run.status == "paused"
+        assert run.is_terminal is False
+        assert run.completed_at is None  # paused parks, never stamps terminal fields
+        assert run.duration_ms is None
+        assert run.phases[0].status == "paused"
+        assert run.phases[0].agents[0].status == "paused"
+        assert run.phases[0].agents[0].completed_at is None
+
+    @staticmethod
+    def _make_terminal_run(run_id: str = "wf_completed") -> WorkflowRunState:
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        return WorkflowRunState(
+            id=run_id, name="flow", status="completed",
+            completed_at="2026-09-07T10:05:00+08:00",
+        )
+
+    def test_terminal_run_untouched_under_stop_disposition(self, monkeypatch) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_completed": self._make_terminal_run()},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="stop")
+        run = handler.get_run_states()["wf_completed"]
+        assert run.status == "completed"
+        assert run.completed_at == "2026-09-07T10:05:00+08:00"
+
+    def test_terminal_run_untouched_under_pause_disposition(self, monkeypatch) -> None:
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={"wf_completed": self._make_terminal_run()},
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="pause")
+        run = handler.get_run_states()["wf_completed"]
+        assert run.status == "completed"
+
+    def test_mixed_runs_finalize_by_disposition(self, monkeypatch) -> None:
+        """One running + one already-paused run under stop: only the running one is stopped."""
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(
+            monitor=monitor, session_id="sess-1",
+            initial_runs={
+                "wf_run": _running_run("wf_run"),
+                "wf_paused": WorkflowRunState(id="wf_paused", name="flow", status="paused"),
+            },
+        )
+        monkeypatch.setattr(handler, "_persist", lambda: None)
+        handler.finalize_pending_runs(disposition="stop")
+        runs = handler.get_run_states()
+        assert runs["wf_run"].status == "stopped"
+        assert runs["wf_paused"].status == "paused"
+
+
+# ---------------------------------------------------------------------------
+# stop_run: tree-view stop on a paused run must reach the frontend
+# ---------------------------------------------------------------------------
+
+
+class TestStopRun:
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_stop_run_emits_terminal_delta_and_persists(monkeypatch) -> None:
+        """A paused run has no engine task left to emit WORKFLOW_STOPPED, so the
+        handler must synthesize it: terminal delta on the event queue (tree
+        refresh) + persisted snapshot. Same path as an engine stop.
+        """
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+
+        run = WorkflowRunState(status="paused")
+        run.id = "wf_1"
+        handler = WorkflowMonitorHandler(
+            monitor=_FakeTeamMonitor(), session_id="sess-1", initial_runs={"wf_1": run},
+        )
+        persisted: list[int] = []
+        monkeypatch.setattr(handler, "_persist", lambda: persisted.append(1))
+
+        assert await handler.stop_run("wf_1") is True
+
+        assert run.status == "stopped"
+        assert persisted == [1]
+        event = handler._event_queue.get_nowait()
+        assert event["event_type"] == "workflow.updated"
+        assert event["workflow"]["id"] == "wf_1"
+        assert event["workflow"]["status"] == "stopped"
+        # unknown / already terminal → no-op
+        assert await handler.stop_run("wf_1") is False
+        assert await handler.stop_run("nope") is False
+        # active run: the engine announces its own stop while unwinding → no-op
+        live = WorkflowRunState(status="running")
+        live.id = "wf_live"
+        handler._runs["wf_live"] = live
+        assert await handler.stop_run("wf_live") is False
+        assert live.status == "running"
+        assert handler._event_queue.empty()

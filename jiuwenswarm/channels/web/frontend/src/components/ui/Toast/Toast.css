@@ -1,0 +1,194 @@
+/* 命令式 toast（ui/Toast）：视口顶部居中堆叠，自上而下按产生先后排列 */
+
+.ui-toast-stack {
+  position: fixed;
+  top: 16px;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.ui-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(300px, calc(100vw - 32px));
+  min-height: 52px;
+  height: auto;
+  padding: 10px 12px 10px 16px;
+  box-sizing: border-box;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  line-height: 20px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-elevated);
+  box-shadow: var(--effect-shadow-lg);
+  pointer-events: auto;
+  animation: ui-toast-rise 0.18s ease-out;
+}
+
+/* 带操作按钮时按内容撑开，避免文案与操作挤在一起 */
+.ui-toast--with-actions {
+  width: auto;
+  max-width: min(520px, calc(100vw - 32px));
+}
+
+/* 长文案提示按条加宽（调用方传 wide: true），不影响其他 toast 的默认宽度 */
+.ui-toast--wide {
+  width: min(420px, calc(100vw - 32px));
+}
+
+/* 加宽后仍放不下时换行兜底，保证「请先手动停止」这类操作指引能读完 */
+.ui-toast--wide .ui-toast__content {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@keyframes ui-toast-rise {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 关闭中：播放退出动画，期间禁止交互（时长与 toastStore 的 TOAST_EXIT_ANIMATION_MS 对应） */
+.ui-toast--closing {
+  pointer-events: none;
+  animation: ui-toast-fall 0.18s ease-in forwards;
+}
+
+@keyframes ui-toast-fall {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* 状态变体：语义色描边 + 状态图标，正文保持主色；用于成功/警告/失败提示 */
+.ui-toast--success,
+.ui-toast--warning,
+.ui-toast--error {
+  gap: 6px;
+}
+
+.ui-toast--success {
+  border-color: var(--color-feedback-success);
+}
+
+.ui-toast--success .ui-toast__status-icon {
+  color: var(--color-feedback-success);
+}
+
+.ui-toast--warning {
+  border-color: var(--color-feedback-warning);
+}
+
+.ui-toast--warning .ui-toast__status-icon {
+  color: var(--color-feedback-warning);
+}
+
+.ui-toast--error {
+  border-color: var(--color-feedback-danger);
+}
+
+.ui-toast--error .ui-toast__status-icon {
+  color: var(--color-feedback-danger);
+}
+
+.ui-toast__status-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-primary);
+}
+
+.ui-toast__content {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 文本操作（如「查看」「撤销」）：沿用既有链接色，不另造胶囊配色 */
+.ui-toast__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.ui-toast__action {
+  padding: 0;
+  color: var(--color-settings-link);
+  font-size: 13px;
+  line-height: 20px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ui-toast__action:hover {
+  text-decoration: underline;
+}
+
+.ui-toast__action:focus-visible {
+  outline: none;
+  box-shadow: var(--effect-focus-ring);
+}
+
+.ui-toast__close {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--color-settings-text-secondary);
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ui-toast__close:hover {
+  color: var(--color-text-primary);
+  background: var(--color-sidebar-nav-hover);
+}
+
+.ui-toast__close:focus-visible {
+  outline: none;
+  box-shadow: var(--effect-focus-ring);
+}
+
+@media (max-width: 720px) {
+  .ui-toast-stack {
+    top: 8px;
+    gap: 6px;
+  }
+
+  .ui-toast {
+    width: calc(100vw - 24px);
+  }
+
+  .ui-toast--with-actions {
+    width: calc(100vw - 24px);
+    max-width: none;
+  }
+}

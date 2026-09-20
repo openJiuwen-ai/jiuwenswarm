@@ -1,0 +1,262 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+/**
+ * Versioned browser-side archive contract for offline trajectory replay.
+ *
+ * Version 2 has one shape: records state their long attributes by reference,
+ * and the archive carries the dictionaries that resolve them, so a file is
+ * self-contained without restating every conversation prefix. Version 1 files
+ * predate the current span contract and are refused rather than half-read.
+ */
+
+import type { WebConnectionState } from '../../types';
+import type { OtlpExportTraceServiceRequest } from './shared/otlp';
+import type { TrajectoryDetailRecord } from './trajectoryClient';
+import {
+  absorbSequencePage,
+  createSequenceCache,
+  rebuildRecord,
+  type SequenceCache,
+} from './trajectorySequences';
+import {
+  applyTrajectoryDetailRecords,
+  recordIdentity,
+  type TrajectoryRecordVersion,
+  type TrajectoryChainBucket,
+} from './trajectoryWindow';
+
+export const TRAJECTORY_ARCHIVE_FORMAT = 'openjiuwen.trajectory.archive';
+export const TRAJECTORY_ARCHIVE_VERSION = 2;
+export const MAX_TRAJECTORY_ARCHIVE_RECORDS = 200_000;
+
+export type TrajectoryArchiveRecord = Omit<TrajectoryDetailRecord, 'ingest_seq' | 'change_seq'> & {
+  record_id: string;
+  record_revision: number;
+  lifecycle: 'running' | 'final' | 'abandoned';
+  operation: 'upsert';
+  change_seq: string;
+  observed_time_unix_nano: string;
+  trace_id: string;
+  span_id: string;
+  raw_json_base64: string;
+};
+
+export interface TrajectoryArchive {
+  format: typeof TRAJECTORY_ARCHIVE_FORMAT;
+  archive_version: typeof TRAJECTORY_ARCHIVE_VERSION;
+  session_id: string;
+  store_epoch: string;
+  revision: string;
+  exported_at: string;
+  content_addressed: true;
+  sequences: Record<string, string[]>;
+  blobs: Record<string, string>;
+  records: TrajectoryArchiveRecord[];
+}
+
+export interface TrajectoryArchiveView {
+  records: OtlpExportTraceServiceRequest[];
+  rawRecords: TrajectoryDetailRecord[];
+  lifecycleByRecordId: Map<string, TrajectoryRecordVersion['lifecycle']>;
+  traceCount: number;
+  invalidRecordSeen: boolean;
+  rawDataByRecordId: Map<string, unknown>;
+}
+
+export interface TrajectoryReplayExit {
+  archive: null;
+  catchUpLiveRevision: boolean;
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validIdentity(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{32}:[0-9a-f]{16}$/.test(value);
+}
+
+function validOtlp(value: unknown): value is OtlpExportTraceServiceRequest {
+  return object(value) && Array.isArray(value.resourceSpans);
+}
+
+function validBase64(value: unknown): value is string {
+  if (typeof value !== 'string'
+    || value.length === 0
+    || value.length % 4 !== 0
+    || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return false;
+  try {
+    atob(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseRecord(value: unknown): TrajectoryArchiveRecord {
+  if (!object(value)
+    || !validIdentity(value.record_id)
+    || !Number.isSafeInteger(value.record_revision)
+    || Number(value.record_revision) < 0
+    || (value.lifecycle !== 'running'
+      && value.lifecycle !== 'final'
+      && value.lifecycle !== 'abandoned')
+    || value.operation !== 'upsert'
+    || typeof value.change_seq !== 'string'
+    || !/^\d+$/.test(value.change_seq)
+    || typeof value.observed_time_unix_nano !== 'string'
+    || !/^\d+$/.test(value.observed_time_unix_nano)
+    || typeof value.trace_id !== 'string'
+    || typeof value.span_id !== 'string'
+    || `${value.trace_id}:${value.span_id}` !== value.record_id
+    || !validBase64(value.raw_json_base64)
+    || typeof value.raw_valid !== 'boolean'
+    || (value.otlp !== null && !validOtlp(value.otlp))) {
+    throw new Error('Trajectory archive contains an invalid record');
+  }
+  const record = value as unknown as TrajectoryArchiveRecord;
+  if (record.otlp !== null && recordIdentity(record.otlp) !== record.record_id) {
+    throw new Error('Trajectory archive record identity does not match its OTLP span');
+  }
+  return record;
+}
+
+export function parseTrajectoryArchive(text: string): TrajectoryArchive {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error('Trajectory archive is not valid JSON');
+  }
+  if (object(value)
+    && value.format === TRAJECTORY_ARCHIVE_FORMAT
+    && typeof value.archive_version === 'number'
+    && value.archive_version !== TRAJECTORY_ARCHIVE_VERSION) {
+    throw new Error(
+      `Trajectory archive version ${value.archive_version} is no longer supported; `
+      + 'export the session again to replay it',
+    );
+  }
+  if (!object(value)
+    || value.format !== TRAJECTORY_ARCHIVE_FORMAT
+    || value.archive_version !== TRAJECTORY_ARCHIVE_VERSION
+    || value.content_addressed !== true
+    || !object(value.sequences)
+    || !object(value.blobs)
+    || typeof value.session_id !== 'string'
+    || value.session_id.length === 0
+    || typeof value.store_epoch !== 'string'
+    || value.store_epoch.length === 0
+    || typeof value.revision !== 'string'
+    || !/^\d+$/.test(value.revision)
+    || typeof value.exported_at !== 'string'
+    || !Number.isFinite(Date.parse(value.exported_at))
+    || !Array.isArray(value.records)
+    || value.records.length > MAX_TRAJECTORY_ARCHIVE_RECORDS) {
+    throw new Error('Trajectory archive format or version is not supported');
+  }
+  const records = value.records.map(parseRecord);
+  if (new Set(records.map(record => record.record_id)).size !== records.length) {
+    throw new Error('Trajectory archive contains duplicate record identities');
+  }
+  const cache = createSequenceCache();
+  absorbSequencePage(cache, {
+    sequences: value.sequences as Record<string, string[]>,
+    blobs: value.blobs as Record<string, string>,
+  });
+  const rebuilt = records.map(record => rebuildArchiveRecord(record, cache));
+  return { ...value, records: rebuilt } as unknown as TrajectoryArchive;
+}
+
+/** Put a referenced archive record back together from the archive's own dictionaries. */
+function rebuildArchiveRecord(
+  record: TrajectoryArchiveRecord,
+  cache: SequenceCache,
+): TrajectoryArchiveRecord {
+  const references = (record as { sequences?: Record<string, { hash: string }> }).sequences;
+  if (references === undefined || record.otlp === null || record.otlp === undefined) return record;
+  const detail = rebuildRecord(
+    {
+      ingest_seq: 0,
+      raw_valid: true,
+      otlp: record.otlp as never,
+      sequences: references as never,
+    },
+    cache,
+  );
+  if (detail.otlp === record.otlp) return record;
+  // A reference the archive's own dictionaries do not resolve is content the
+  // file does not hold; keep saying so rather than showing the span as silent.
+  return {
+    ...record,
+    otlp: detail.otlp,
+    ...(detail.incomplete_sequences === undefined
+      ? {}
+      : { incomplete_sequences: detail.incomplete_sequences }),
+  } as TrajectoryArchiveRecord;
+}
+
+function decodeRawJson(record: TrajectoryArchiveRecord): unknown {
+  try {
+    const binary = atob(record.raw_json_base64);
+    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  } catch {
+    return record.raw_json_base64;
+  }
+}
+
+export function trajectoryArchiveView(archive: TrajectoryArchive): TrajectoryArchiveView {
+  const buckets = new Map<string, TrajectoryChainBucket>();
+  let invalidRecordSeen = false;
+  const rawDataByRecordId = new Map<string, unknown>();
+  for (const [index, record] of archive.records.entries()) {
+    const current = buckets.get(record.trace_id);
+    const detailRecord: TrajectoryDetailRecord = {
+      ...record,
+      ingest_seq: index + 1,
+      change_seq: undefined,
+    };
+    const applied = applyTrajectoryDetailRecords(current, {
+      schema_version: 1,
+      session_id: archive.session_id,
+      subject_id: 'main',
+      revision: Math.max(current?.revision ?? 0, index + 1),
+      reset: false,
+      records: [detailRecord],
+      has_more: false,
+      next_since_revision: index + 1,
+    });
+    buckets.set(record.trace_id, applied.bucket);
+    invalidRecordSeen = invalidRecordSeen || applied.invalidRecordSeen;
+    rawDataByRecordId.set(record.record_id, decodeRawJson(record));
+  }
+  return {
+    records: [...buckets.values()].flatMap(bucket => [...bucket.records.values()]),
+    rawRecords: [...buckets.values()].flatMap(bucket => [...bucket.rawRecords.values()]),
+    lifecycleByRecordId: new Map(
+      [...buckets.values()].flatMap(bucket => [...(bucket.versions ?? [])].map(
+        ([identity, version]) => [identity, version.lifecycle] as const,
+      )),
+    ),
+    traceCount: buckets.size,
+    invalidRecordSeen,
+    rawDataByRecordId,
+  };
+}
+
+export function shouldCatchUpTrajectory(
+  previous: WebConnectionState,
+  next: WebConnectionState,
+): boolean {
+  return next === 'ready' && (previous === 'reconnecting' || previous === 'closed');
+}
+
+export function exitTrajectoryReplay(archive: TrajectoryArchive | null): TrajectoryReplayExit {
+  return { archive: null, catchUpLiveRevision: archive !== null };
+}

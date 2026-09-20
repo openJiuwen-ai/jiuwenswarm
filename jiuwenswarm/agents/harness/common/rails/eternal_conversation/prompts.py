@@ -40,7 +40,11 @@ answers, tool edits, passing tests, retry counts, and task-completion events nev
 unacknowledged request into an override. If a published UT or Snapshot incorrectly claims such an
 override, repair it from the earliest relevant direct-user evidence and keep the conflict unresolved
 until the user explicitly chooses. Direct user messages outrank Agent narration and implementation
-results for deciding whether a constraint was overridden.
+results for deciding whether a constraint was overridden. Concrete compatibility rule: when an
+earlier commitment keeps v1 available through or beyond release 0.4, a later message that only says
+to delete a v1 entry or compatibility alias is unacknowledged unless it explicitly names that 0.4
+support window or the prior commitment and chooses to replace it. Narrowing the deletion to one
+module, or observing that an Agent already made the edit, does not avoid or resolve that conflict.
 
 Output: {"snapshot": {"resident_memory":[],"recent_context":[],"current_state":[],
 "completed":[],"next_actions":[],"constraints":[]}, "changed_uts": [UT changes],
@@ -68,11 +72,19 @@ impossible build metadata. Review the supplied batch directly and decide without
 investigation. The top-level frozen_at is the time the immutable batch was captured; each item
 updated_at is the time that UT was last published and therefore normally precedes frozen_at.
 Neither field is a UT creation timestamp, and that normal ordering is not an inconsistency.
+The content_hash is SHA-256 of canonical JSON over the UT semantic fields (id, memory_id,
+priority, content, queries, must_include, evidence_refs, source, tags, and status); it is NOT the
+SHA-256 of the content field alone. Never reject a batch by comparing content_hash with a digest
+of content alone. The Harness validates this canonical hash deterministically.
 The Harness performs deterministic construction, Built-only tests, exact-content comparison, and
 atomic migration after your approval."""
 
 
-def render_memory_context(session_root: str | Path, projection: dict[str, Any]) -> str:
+def render_memory_context(
+    session_root: str | Path,
+    projection: dict[str, Any],
+    relevant_memory: dict[str, Any] | None = None,
+) -> str:
     """Render the foreground contract plus the latest atomically published snapshot."""
     root = Path(session_root)
     raw = root / "raw-history" / "search.jsonl"
@@ -80,6 +92,7 @@ def render_memory_context(session_root: str | Path, projection: dict[str, Any]) 
     snapshot = projection.get("snapshot") or {}
     revision = int(projection.get("snapshot_revision") or 0)
     covered = int(projection.get("covered_through") or 0)
+    prefetched = relevant_memory or {"query": "", "matches": []}
     return "\n".join(
         (
             "<memory-access-instruction>",
@@ -95,6 +108,20 @@ def render_memory_context(session_root: str | Path, projection: dict[str, Any]) 
                 "or decision and communicates an intent to replace it. A message that states only "
                 "the new, contradictory behavior is always unacknowledged; never infer "
                 "acknowledgment merely because the requested behavior is clearly opposite."
+            ),
+            (
+                "Compatibility example: if memory promises v1 support through or beyond release "
+                "0.4, a later request that merely says to delete a v1 entry or alias is still an "
+                "unacknowledged conflict. Ask whether to keep the 0.4 support window or override "
+                "it, even if the request can be narrowed to one module or an Agent previously "
+                "reported the deletion as completed."
+            ),
+            (
+                "Evidence wording requirement: when relevant prefetched or searched memory "
+                "contains the literal support boundary 0.4 and the request removes v1, the "
+                "conflict statement and the final clarification question MUST both repeat the "
+                "literal 0.4. A question only about module scope does not resolve that support-"
+                "window conflict."
             ),
             (
                 "For every suspected conflict, make at least two search_long_term_memory calls "
@@ -138,6 +165,20 @@ def render_memory_context(session_root: str | Path, projection: dict[str, Any]) 
             f'<memory-snapshot revision="{revision}" covered-through="{covered}">',
             json.dumps(snapshot, ensure_ascii=False, indent=2),
             "</memory-snapshot>",
+            "<relevant-long-term-memory>",
+            json.dumps(prefetched, ensure_ascii=False, indent=2),
+            "</relevant-long-term-memory>",
+            "<memory-action-gate>",
+            (
+                "Before the first non-memory tool call, inspect every prefetched match above. "
+                "A later implementation report, repeated contradictory request, or narrower "
+                "module scope does not acknowledge or replace an earlier user constraint. If "
+                "any active constraint may conflict, the only permitted tools are the required "
+                "memory searches; do not inspect or change project files until the user resolves "
+                "the conflict. In particular, a retrieved v1 support window through release 0.4 "
+                "requires a clarification that names 0.4 before any v1 entry or alias is removed."
+            ),
+            "</memory-action-gate>",
         )
     )
 

@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from openjiuwen.rsi.auto_harness.pipelines import META_EVOLVE_PIPELINE
+from openjiuwen.rsi.harness_rsi.auto_harness.pipelines import META_EVOLVE_PIPELINE
 from openjiuwen.core.foundation.llm import Model
 
 from .run_log_status import has_terminal_session_event

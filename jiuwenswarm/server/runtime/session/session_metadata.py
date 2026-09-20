@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import Future
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -9,12 +11,19 @@ import queue
 import re
 import shutil
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir
-from jiuwenswarm.common.mode_matrix import deprecate_mode, is_new_canonical_mode, is_team_mode
+from jiuwenswarm.common.mode_matrix import (
+    NEW_AGENT_CODE_NORMAL,
+    NEW_AGENT_WORK_NORMAL,
+    deprecate_mode,
+    is_new_canonical_mode,
+    is_team_mode,
+)
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     SUPPORTED_WORK_MODES,
@@ -24,21 +33,48 @@ from jiuwenswarm.server.runtime.session.work_mode import (
 
 logger = logging.getLogger(__name__)
 
+
+class _ObsoleteMetadataMigration(FileNotFoundError):
+    """The migration's source metadata was removed before writeback."""
+
+
+@dataclass(frozen=True)
+class _MetadataWriteOptions:
+    """控制会话元数据写入时并发字段的保留策略。"""
+
+    preserve_pin_fields: bool = False
+    preserve_rebound_fields: bool = False
+    rebind_gen_at_enqueue: int | None = None
+    merge_fields: frozenset[str] | None = None
+    lifecycle_generation: int | None = None
+    # Inference owns only fields that have not changed since the read snapshot.
+    expected_fields: dict[str, tuple[bool, Any]] | None = None
+    migration_key: tuple[str, str] | None = None
+
+
 # ---------- 异步写入队列(与 session_history 保持一致的模式) ----------
-# 队列项: (session_id, metadata, preserve_pin_fields, rebind_gen_at_enqueue)
+# 队列项: (session_id, metadata, _MetadataWriteOptions)
 # rebind_gen_at_enqueue 用于检测"入队后发生过 rebind"的陈旧快照:
 # worker 处理时若发现该值 < 当前 rebind_gen, 说明此快照早于一次 project 重绑,
 # 需从磁盘保留 rebind 写入的 project 字段, 防止陈旧快照覆盖重绑结果。
-_METADATA_QUEUE: queue.Queue[tuple[str, dict[str, Any], bool, int]] = queue.Queue(maxsize=5000)
+_METADATA_QUEUE: queue.Queue[
+    tuple[str, dict[str, Any], _MetadataWriteOptions]
+] = queue.Queue(maxsize=5000)
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
 # Reentrant: the read path now holds this lock too (see _read_metadata).
 # RLock guards against a same-thread nesting (read->write or write->read)
 # deadlocking in the future.
 _FILE_LOCK = threading.RLock()
+_MIGRATION_LOCK = threading.Lock()
+_PENDING_MIGRATIONS: set[tuple[str, str]] = set()
+_MAX_PENDING_MIGRATIONS = 64
+_COLLECT_LOCK = threading.Lock()
+_COLLECT_INFLIGHT: dict[tuple[str, str], Future] = {}
 
 # 内存缓存: 解决异步写入时读取到陈旧磁盘数据的竞态条件
 _METADATA_CACHE: dict[str, dict[str, Any]] = {}
+_METADATA_CACHE_GENERATIONS: dict[str, int] = {}
 _CACHE_LOCK = threading.Lock()
 
 # 会话级 project 重绑版本号: 每次 rebind_session_project 自增。
@@ -69,6 +105,19 @@ _EPHEMERAL_PROBE_SESSION_PREFIXES = ("health_check_", "heartbeat_")
 _DELIVERY_KIND_SERVER_PUSH = "server_push"
 # user_id 白名单: 仅允许字母数字及 _-, 拒绝路径遍历字符
 _SAFE_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _atomic_replace(src: Path, dst: Path, max_attempts: int = 100) -> None:
+    """Replace atomically, retrying transient Windows sharing violations."""
+    attempts = max(1, max_attempts)
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(min(0.001 * (attempt + 1), 0.01))
 
 # 匹配所有小写 XML 块:
 # 如 <system-reminder>、<file-content>、<command-name> 等系统/工具注入内容
@@ -118,7 +167,7 @@ def _build_project_lookup() -> tuple[
         for p in list_projects(include_hidden=True, cache_bust=True):
             if p.project_id:
                 id_to_work_mode[p.project_id] = p.work_mode
-            if not p.project_dir or p.hidden:
+            if not p.project_dir:
                 continue
             dir_to_projects.setdefault(
                 _normalize_path_for_match(p.project_dir), []
@@ -136,6 +185,7 @@ def _apply_metadata_defaults_with_inference(
     dir_to_projects: dict[str, list[tuple[str, str]]] | None = None,
     id_to_work_mode: dict[str, str] | None = None,
     enable_writeback: bool = True,
+    background_writeback: bool = False,
 ) -> dict[str, Any]:
     """统一兜底 + 推断缺失字段,并在确定性推断时异步写盘。
 
@@ -163,14 +213,16 @@ def _apply_metadata_defaults_with_inference(
             ``None`` 时本函数自行构建(单条读取场景)。
         id_to_work_mode: 批量入口预构建的 project_id → work_mode 映射;
             ``None`` 时与 ``dir_to_projects`` 一起自行构建。
-        enable_writeback: 是否允许写盘。批量入口在循环中调用时传 ``True``,
-            但写盘走异步队列,不会阻塞读路径。
+        enable_writeback: 单条读取是否允许推断后写回。
+        background_writeback: 批量读取使用低优先级写回；队列满时跳过，
+            下次读取重试，不退化为同步写入。
 
     Returns:
         原地修改后的 ``metadata`` dict(保证所有字段齐全且 ``work_mode`` 合法)。
     """
     if not isinstance(metadata, dict) or not metadata:
         return metadata
+    original = metadata.copy() if background_writeback else None
 
     # 标题清理(原三处入口都有,统一到此处)
     if metadata.get("title"):
@@ -187,8 +239,11 @@ def _apply_metadata_defaults_with_inference(
     metadata.setdefault("pinned", False)
     metadata.setdefault("pin_order", 0)
     metadata.setdefault("status", "idle")
+    metadata.setdefault("ephemeral", False)
+    metadata.setdefault("side_parent_session_id", "")
 
     changed = False  # 是否有需要写盘的确定性推断
+    changed_fields: set[str] = set()
 
     # last_user_message_at: 多级回退
     # 优先用已有时间字段;不能用 ``or`` 短路——合法的 0.0 时间戳是 falsy。
@@ -214,6 +269,7 @@ def _apply_metadata_defaults_with_inference(
             else:
                 metadata["last_user_message_at"] = 0.0
         changed = True
+        changed_fields.add("last_user_message_at")
 
     # work_mode: 先按通道推断兜底(保证返回值稳定),再尝试确定性推断写盘
     existing_wm = metadata.get("work_mode")
@@ -231,6 +287,7 @@ def _apply_metadata_defaults_with_inference(
         if resolved_wm is not None:
             metadata["work_mode"] = resolved_wm
             changed = True
+            changed_fields.add("work_mode")
 
     # mode 惰性迁移:旧 canonical（agent / agent.plan / code.team / team.plan.* 等）
     # 静默映射到新三段命名 canonical（agent.work.normal 等）。仅迁移非空且非新
@@ -239,19 +296,43 @@ def _apply_metadata_defaults_with_inference(
     if existing_mode and not is_new_canonical_mode(existing_mode):
         new_mode = deprecate_mode(existing_mode)
         if new_mode != existing_mode:
-            logger.info(
+            logger.log(logging.INFO if enable_writeback else logging.DEBUG,
                 "session_metadata 惰性迁移: session=%s mode '%s' -> '%s'",
                 session_id, existing_mode, new_mode,
             )
             metadata["mode"] = new_mode
             changed = True
+            changed_fields.add("mode")
         elif new_mode == existing_mode:
             # 旧 canonical 但不在 DEPRECATION_MAP（如未识别值），避免静默丢字段
-            logger.warning(
+            logger.log(logging.WARNING if enable_writeback else logging.DEBUG,
                 "session_metadata mode 迁移未命中: session=%s mode='%s' "
                 "非新 canonical 但未在 DEPRECATION_MAP，原样保留",
                 session_id, existing_mode,
             )
+
+    # Older subagent history writes could leak their internal item mode into
+    # the owning Web/TUI product Session. Recover only an unmistakable parent
+    # Session; a real standalone subagent channel keeps its original mode.
+    normalized_mode = str(metadata.get("mode") or "").strip().lower()
+    channel_id = str(metadata.get("channel_id") or "").strip().lower()
+    team_name = str(metadata.get("team_name") or "").strip()
+    if normalized_mode == "subagent" and channel_id != "subagent" and not team_name:
+        work_mode = str(metadata.get("work_mode") or "").strip().lower()
+        repaired_mode = (
+            NEW_AGENT_CODE_NORMAL
+            if work_mode == "code"
+            else NEW_AGENT_WORK_NORMAL
+        )
+        logger.warning(
+            "repair leaked subagent Session mode: session=%s mode='%s' -> '%s'",
+            session_id,
+            metadata.get("mode"),
+            repaired_mode,
+        )
+        metadata["mode"] = repaired_mode
+        changed = True
+        changed_fields.add("mode")
 
     # project_id: 缺失时尝试按 work_mode 反查唯一真实 Project
     if not str(metadata.get("project_id") or "").strip():
@@ -263,6 +344,7 @@ def _apply_metadata_defaults_with_inference(
             if len(candidates) == 1:
                 metadata["project_id"] = candidates[0][0]
                 changed = True
+                changed_fields.add("project_id")
             else:
                 # 同路径双模式:按已确定的 work_mode 选对应 project_id
                 known_wm = metadata["work_mode"]
@@ -270,12 +352,23 @@ def _apply_metadata_defaults_with_inference(
                     if pwm == known_wm:
                         metadata["project_id"] = pid
                         changed = True
+                        changed_fields.add("project_id")
                         break
 
     # 确定性推断成功时异步写盘(不阻塞读路径)
-    if changed and enable_writeback:
+    if changed and background_writeback:
+        _enqueue_inference_write(session_id, metadata, changed_fields, original or {})
+    elif changed and enable_writeback:
         try:
-            _enqueue_write(session_id, metadata, preserve_pin_fields=True)
+            # 读路径的惰性迁移只修改上述推断字段。若把整份读取快照入队,
+            # worker 可能在更新/重绑之后落盘,从而用旧的 message_count 等字段
+            # 覆盖较新的会话状态。
+            _enqueue_write(
+                session_id,
+                metadata,
+                preserve_pin_fields=True,
+                merge_fields=frozenset(changed_fields),
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("惰性迁移写回会话 %s 失败: %s", session_id, exc)
 
@@ -327,7 +420,10 @@ def _metadata_file(session_id: str) -> Path:
     return session_dir / "metadata.json"
 
 
-def _read_metadata(session_id: str, cache_bust: bool = False) -> dict[str, Any]:
+def _read_metadata(
+    session_id: str, cache_bust: bool = False, *,
+    lifecycle_state: dict | None = None, archived: bool | None = None,
+) -> dict[str, Any]:
     """读取会话元数据(优先从内存缓存读取,避免异步写入未落盘时读到陈旧数据)
 
     读路径不应产生副作用：即便 session 目录不存在，也不触发 mkdir，
@@ -338,9 +434,23 @@ def _read_metadata(session_id: str, cache_bust: bool = False) -> dict[str, Any]:
         session_id: 会话 ID
         cache_bust: 强制跳过缓存，直接从磁盘读取（用于跨进程同步场景，如 session.list）
     """
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    if lifecycle_state is None:
+        lifecycle_state = lc.state("session", session_id)
+    generation = lifecycle_state.get("generation", 0)
+    if lifecycle_state.get("write_blocked") or (
+        lc.session_paths(session_id)[1].exists() if archived is None else archived
+    ):
+        return lc.raw_metadata(session_id)
     if not cache_bust:
         with _CACHE_LOCK:
             cached = _METADATA_CACHE.get(session_id)
+            cached_generation = _METADATA_CACHE_GENERATIONS.get(session_id, generation)
+            if cached_generation != generation and not (
+                lifecycle_state.get("blocked") and cached_generation == lifecycle_state.get("drain_generation")
+            ):
+                _METADATA_CACHE.pop(session_id, None)
+                cached = None
             if cached is not None:
                 return cached.copy()
     # cache_bust=True 或缓存没有数据时，强制读磁盘
@@ -405,11 +515,22 @@ def _read_metadata_file_in(session_dir: Path) -> dict[str, Any]:
 
 
 def _write_metadata_sync(
+    session_id: str, metadata: dict[str, Any], options: _MetadataWriteOptions | None = None
+) -> dict[str, Any]:
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    project_id = lc.project_id_for(metadata)
+    with lc.resource_lock("project", project_id), lc.resource_lock("session", session_id):
+        previous = lc.raw_metadata(session_id)
+        if not previous or lc.project_id_for(previous) != project_id:
+            lc.guard(project_id=project_id)
+        lc.write_guard(session_id, options.lifecycle_generation if options else None)
+        return _write_metadata_unfenced(session_id, metadata, options)
+
+
+def _write_metadata_unfenced(
     session_id: str,
     metadata: dict[str, Any],
-    preserve_pin_fields: bool = False,
-    preserve_rebound_fields: bool = False,
-    rebind_gen_at_enqueue: int | None = None,
+    options: _MetadataWriteOptions | None = None,
 ) -> dict[str, Any]:
     """同步写入会话元数据(由后台 worker 或 fallback 调用)
 
@@ -417,15 +538,25 @@ def _write_metadata_sync(
     避免 gateway 进程的 init_session_metadata 污染缓存导致后续
     读取不到 agentserver 进程写入的最新数据。
 
-    rebind 版本检查: 调用方可传入快照入队/捕获时记录的 ``rebind_gen_at_enqueue``。
-    本函数持 ``_FILE_LOCK`` 后重比 ``_get_rebind_gen(session_id)``, 使"gen 比较"与
+    rebind 版本检查: 调用方可在 ``options.rebind_gen_at_enqueue`` 中传入快照
+    入队/捕获时记录的版本。本函数持 ``_FILE_LOCK`` 后重比
+    ``_get_rebind_gen(session_id)``, 使"gen 比较"与
     "文件读写"在同一临界区内完成, 消除 worker 队列路径(P3)的 TOCTOU 窗口:
     即使调用方在持锁前比 gen 为"非陈旧", 持锁后又发生了 rebind, 此处也能发现
     并从磁盘当前值保留 rebind 写入的 project 字段。``rebind_session_project``
-    自身传入的 gen 已被 bump, 等于当前 gen, 不触发合并。``preserve_rebound_fields``
+    自身传入的 gen 已被 bump, 等于当前 gen, 不触发合并。``options.preserve_rebound_fields``
     作为无 gen 追踪路径(外部直写/测试)的回退开关保留。
+
+    options.merge_fields: 惰性迁移等只修改部分字段的写回集合。传入时仅将这些字段
+        合并到磁盘当前值,避免旧快照覆盖其他并发更新;会话文件不存在时仍写入
+        完整 metadata。
     """
-    fpath = _metadata_file(session_id)
+    options = options or _MetadataWriteOptions()
+    # Read-triggered migration must never recreate a deleted/moved directory.
+    fpath = (
+        get_agent_sessions_dir() / session_id / "metadata.json"
+        if options.expected_fields is not None else _metadata_file(session_id)
+    )
     to_write = metadata
     with _FILE_LOCK:
         current: dict[str, Any] | None = None
@@ -436,7 +567,29 @@ def _write_metadata_sync(
                 if isinstance(parsed, dict):
                     current = parsed
             except Exception as exc:  # noqa: BLE001
+                if options.migration_key is not None and isinstance(exc, FileNotFoundError):
+                    raise _ObsoleteMetadataMigration(
+                        f"metadata disappeared before migration: {session_id}"
+                    ) from exc
                 logger.warning("failed to read metadata.json: %s", exc)
+
+        if options.expected_fields is not None and current is None:
+            if not fpath.exists():
+                raise _ObsoleteMetadataMigration(f"metadata disappeared before migration: {session_id}")
+            raise ValueError(f"invalid metadata before migration: {session_id}")
+        # 读路径的惰性迁移只拥有少数字段的更新权。若直接替换整份快照,
+        # 异步 worker 可能把较新的 message_count 等字段回滚到读取时的旧值。
+        if options.merge_fields is not None and current is not None:
+            to_write = current.copy()
+            for field in options.merge_fields:
+                if field not in metadata:
+                    continue
+                if (
+                    options.expected_fields is not None
+                    and options.expected_fields[field] != (field in current, current.get(field))
+                ):
+                    continue
+                to_write[field] = metadata[field]
 
         # Identity guard: a caller that received an empty/partial dict and
         # writes it back would permanently erase session_id, title, created_at
@@ -452,14 +605,14 @@ def _write_metadata_sync(
                 session_id, len(recovered), sorted(recovered),
             )
 
-        if preserve_pin_fields and current is not None:
+        if options.preserve_pin_fields and current is not None:
             to_write = _merge_pin_fields(current, to_write)
         # 权威 rebind 版本检查: 持锁后重比 gen, 判定调用方传入的快照是否已陈旧。
         # 比调用方持锁前的 pre-check 更可靠 —— 消除"gen 比较与文件写入"之间的
         # TOCTOU 窗口(P3)。rebind 自身传入的 gen 已 bump, 等于当前 gen, 不触发合并。
-        effective_preserve_rebound = preserve_rebound_fields
-        if rebind_gen_at_enqueue is not None and current is not None:
-            if rebind_gen_at_enqueue < _get_rebind_gen(session_id):
+        effective_preserve_rebound = options.preserve_rebound_fields
+        if options.rebind_gen_at_enqueue is not None and current is not None:
+            if options.rebind_gen_at_enqueue < _get_rebind_gen(session_id):
                 effective_preserve_rebound = True
         if effective_preserve_rebound and current is not None:
             to_write = _merge_rebound_fields(current, to_write)
@@ -471,7 +624,7 @@ def _write_metadata_sync(
         tmp = fpath.with_name(f"{fpath.name}.{os.getpid()}.tmp")
         try:
             tmp.write_text(payload, encoding="utf-8")
-            os.replace(tmp, fpath)
+            _atomic_replace(tmp, fpath)
         except Exception:
             tmp.unlink(missing_ok=True)
             raise
@@ -518,6 +671,28 @@ def _merge_pin_fields_from_disk(session_id: str, metadata: dict[str, Any]) -> di
     return _merge_pin_fields(current, metadata)
 
 
+def _log_metadata_write_failure(
+    session_id: str, options: _MetadataWriteOptions | None, exc: Exception,
+) -> None:
+    from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+
+    expected_migration_race = (
+        options is not None
+        and options.migration_key is not None
+        and (
+            isinstance(exc, _ObsoleteMetadataMigration)
+            or (
+                isinstance(exc, LifecycleError)
+                and exc.code in {"NOT_FOUND", "SESSION_ARCHIVED", "OPERATION_IN_PROGRESS"}
+            )
+        )
+    )
+    if expected_migration_race:
+        logger.debug("metadata migration skipped: session=%s reason=%s", session_id, exc)
+    else:
+        logger.warning("metadata 异步写入失败: session=%s error=%s", session_id, exc)
+
+
 def _ensure_worker_started() -> None:
     global _WORKER_STARTED
     if _WORKER_STARTED:
@@ -528,24 +703,39 @@ def _ensure_worker_started() -> None:
 
         def _worker() -> None:
             while True:
-                sid, metadata, preserve_pin_fields, rebind_gen_at_enqueue = _METADATA_QUEUE.get()
+                sid, metadata, options = _METADATA_QUEUE.get()
                 try:
+                    if sid is None:
+                        metadata.set()
+                        continue
+                    if options.migration_key is not None and options.migration_key[0] != str(get_agent_sessions_dir()):
+                        continue
                     # rebind 版本检查已下沉到 _write_metadata_sync 内部, 持
                     # _FILE_LOCK 后重比 gen, 消除"gen 比较与文件写入"的 TOCTOU 窗口(P3)。
-                    written = _write_metadata_sync(
-                        sid,
-                        metadata,
-                        preserve_pin_fields=preserve_pin_fields,
-                        rebind_gen_at_enqueue=rebind_gen_at_enqueue,
-                    )
+                    written = _write_metadata_sync(sid, metadata, options)
                     # gen 追踪启用时, _write_metadata_sync 可能在持锁后才发现陈旧
                     # 并合并 rebound 字段, 故只要启用了 gen 追踪就刷新缓存为落盘结果。
-                    if preserve_pin_fields or rebind_gen_at_enqueue is not None:
+                    if options.migration_key is not None:
+                        # A migration must not replace a newer in-memory update
+                        # that is still waiting in the normal write queue.
+                        with _CACHE_LOCK:
+                            cached = _METADATA_CACHE.get(sid)
+                            if cached is not None:
+                                for field, expected in (options.expected_fields or {}).items():
+                                    if expected == (field in cached, cached.get(field)) and field in written:
+                                        cached[field] = written[field]
+                    elif (
+                        options.preserve_pin_fields
+                        or options.rebind_gen_at_enqueue is not None
+                    ):
                         with _CACHE_LOCK:
                             _METADATA_CACHE[sid] = written.copy()
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("metadata 异步写入失败: %s", exc)
+                    _log_metadata_write_failure(sid, options, exc)
                 finally:
+                    if options is not None and options.migration_key is not None:
+                        with _MIGRATION_LOCK:
+                            _PENDING_MIGRATIONS.discard(options.migration_key)
                     _METADATA_QUEUE.task_done()
 
         t = threading.Thread(target=_worker, name="session-metadata-writer", daemon=True)
@@ -553,11 +743,53 @@ def _ensure_worker_started() -> None:
         _WORKER_STARTED = True
 
 
+def flush_pending_writes(timeout: float = 10) -> bool:
+    _ensure_worker_started()
+    deadline = time.monotonic() + timeout
+    barrier = threading.Event()
+    try:
+        _METADATA_QUEUE.put((None, barrier, None), timeout=timeout)
+    except queue.Full:
+        return False
+    return barrier.wait(max(0, deadline - time.monotonic()))
+
+
+def _enqueue_inference_write(
+    session_id: str, metadata: dict[str, Any], fields: set[str], original: dict[str, Any],
+) -> None:
+    """Coalesce migrations without metadata reads or synchronous queue fallback."""
+    if not fields:
+        return
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    key = (str(get_agent_sessions_dir()), session_id)
+    with _MIGRATION_LOCK:
+        if key in _PENDING_MIGRATIONS or len(_PENDING_MIGRATIONS) >= _MAX_PENDING_MIGRATIONS:
+            return
+        _PENDING_MIGRATIONS.add(key)
+    try:
+        options = _MetadataWriteOptions(
+            preserve_pin_fields=True,
+            merge_fields=frozenset(fields),
+            expected_fields={field: (field in original, original.get(field)) for field in fields},
+            rebind_gen_at_enqueue=_get_rebind_gen(session_id),
+            lifecycle_generation=lc.state("session", session_id).get("generation", 0),
+            migration_key=key,
+        )
+        _ensure_worker_started()
+        _METADATA_QUEUE.put_nowait((session_id, metadata.copy(), options))
+    except Exception as exc:
+        with _MIGRATION_LOCK:
+            _PENDING_MIGRATIONS.discard(key)
+        if not isinstance(exc, queue.Full):
+            logger.warning("failed to enqueue metadata migration: session=%s error=%s", session_id, exc)
+
+
 def _enqueue_write(
     session_id: str,
     metadata: dict[str, Any],
     sync_write: bool = False,
     preserve_pin_fields: bool = False,
+    merge_fields: frozenset[str] | None = None,
 ) -> None:
     """将写入操作放入异步队列,队列满时退化为同步写。
 
@@ -570,22 +802,26 @@ def _enqueue_write(
     """
     # 立即更新缓存,确保后续读取能看到最新状态
     # 入队前捕获 rebind 版本号: worker 处理时据此判断本快照是否早于一次重绑
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    generation = lc.state("session", session_id).get("generation", 0)
     rebind_gen_at_enqueue = _get_rebind_gen(session_id)
     if preserve_pin_fields:
         metadata = _merge_pin_fields_from_disk(session_id, metadata)
     with _CACHE_LOCK:
         _METADATA_CACHE[session_id] = metadata.copy()
+        _METADATA_CACHE_GENERATIONS[session_id] = generation
+    options = _MetadataWriteOptions(
+        preserve_pin_fields=preserve_pin_fields,
+        rebind_gen_at_enqueue=rebind_gen_at_enqueue,
+        lifecycle_generation=generation,
+        merge_fields=merge_fields,
+    )
     if sync_write:
         # P2: sync_write 路径同样需要 rebind 版本检查 —— set_session_pinned 等
         # sync_write=True 调用方读取磁盘早于一次 rebind 时, 其快照含旧 project
         # 字段, 回写会覆盖 rebind。版本检查下沉到 _write_metadata_sync 持锁后执行,
         # 与 queue.Full 退化路径、worker 异步路径保持同一保护级别。
-        written = _write_metadata_sync(
-            session_id,
-            metadata,
-            preserve_pin_fields=preserve_pin_fields,
-            rebind_gen_at_enqueue=rebind_gen_at_enqueue,
-        )
+        written = _write_metadata_sync(session_id, metadata, options)
         if preserve_pin_fields or rebind_gen_at_enqueue is not None:
             with _CACHE_LOCK:
                 _METADATA_CACHE[session_id] = written.copy()
@@ -593,7 +829,11 @@ def _enqueue_write(
     _ensure_worker_started()
     try:
         _METADATA_QUEUE.put_nowait(
-            (session_id, metadata, preserve_pin_fields, rebind_gen_at_enqueue)
+            (
+                session_id,
+                metadata,
+                options,
+            )
         )
     except queue.Full:
         if preserve_pin_fields:
@@ -601,12 +841,7 @@ def _enqueue_write(
             with _CACHE_LOCK:
                 _METADATA_CACHE[session_id] = metadata.copy()
         # 队列满退化为同步写: 版本检查同样下沉到 _write_metadata_sync 持锁后执行
-        written = _write_metadata_sync(
-            session_id,
-            metadata,
-            preserve_pin_fields=preserve_pin_fields,
-            rebind_gen_at_enqueue=rebind_gen_at_enqueue,
-        )
+        written = _write_metadata_sync(session_id, metadata, options)
         if preserve_pin_fields or rebind_gen_at_enqueue is not None:
             with _CACHE_LOCK:
                 _METADATA_CACHE[session_id] = written.copy()
@@ -696,6 +931,7 @@ def update_session_metadata(
     team_name: str | None = None,
     team_template_id: str | None = None,
     agent_group_name: str | None = None,
+    team_leader_identity: dict[str, Any] | None = None,
     accent_color: str | None = None,
     project_dir: str | None = None,
     project_id: str | None = None,
@@ -708,6 +944,7 @@ def update_session_metadata(
     sync: bool = False,
     sync_write: bool = False,
     work_mode: str | None = None,
+    session_equipment: dict[str, Any] | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -785,6 +1022,10 @@ def update_session_metadata(
         # 首次创建时写入 channel_metadata
         if channel_metadata:
             metadata["channel_metadata"] = channel_metadata
+        if session_equipment is not None:
+            metadata["session_equipment"] = copy.deepcopy(session_equipment)
+        if isinstance(team_leader_identity, dict):
+            metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
     else:
         # 更新现有元数据
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
@@ -805,6 +1046,12 @@ def update_session_metadata(
             metadata["team_template_id"] = team_template_id
         if agent_group_name is not None:
             metadata["agent_group_name"] = agent_group_name
+        # AgentGroup leader identity is a first-binding snapshot. Never replace
+        # an existing value, including an invalid legacy value; old sessions
+        # must keep the ordinary Team fallback instead of being re-derived from
+        # a changed package definition.
+        if isinstance(team_leader_identity, dict) and "team_leader_identity" not in metadata:
+            metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
         if accent_color is not None:
             metadata["accent_color"] = accent_color
         # model：覆盖式——每次请求更新为本次模型
@@ -848,6 +1095,8 @@ def update_session_metadata(
         # channel_metadata 仅在首次为空时补充写入（不覆盖）
         if channel_metadata and not metadata.get("channel_metadata"):
             metadata["channel_metadata"] = channel_metadata
+        if session_equipment is not None:
+            metadata["session_equipment"] = copy.deepcopy(session_equipment)
 
         # 更新最后消息时间(可由 touch_last_message_at=False 关闭,供置顶重编号等
         # 非消息操作复用本函数而不腐蚀 last_message_at 语义)
@@ -1086,6 +1335,9 @@ def get_session_metadata(
             ``False``,避免读路径触发写盘副作用,同时仍享受推断能力(存量会话
             缺 ``project_id`` 时可从 ``project_dir`` 反查补全,避免误拒)。
     """
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    if lc.state("session", session_id).get("write_blocked") or lc.session_paths(session_id)[1].exists():
+        return lc.raw_metadata(session_id)
     metadata = _read_metadata(session_id, cache_bust)
     if isinstance(metadata, dict) and metadata:
         metadata = _apply_metadata_defaults_with_inference(
@@ -1098,6 +1350,75 @@ def get_session_metadata(
         metadata.setdefault("team_template_id", "")
         metadata.setdefault("agent_group_name", "")
     return metadata
+
+
+def _normalize_session_equipment_names(value: Any) -> list[str]:
+    """Return stable, de-duplicated package names for a metadata snapshot."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def save_session_equipment(
+    session_id: str,
+    *,
+    agent_template_name: Any = "",
+    plugin_names: Any = None,
+    mcp: Any = None,
+) -> None:
+    """Persist the effective chat equipment after a successful mount."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        return
+    snapshot = {
+        "agent_template_name": (
+            agent_template_name.strip()
+            if isinstance(agent_template_name, str)
+            else ""
+        ),
+        "plugin_names": _normalize_session_equipment_names(plugin_names),
+        "mcp": _normalize_session_equipment_names(mcp),
+    }
+    if get_session_equipment(session_id, cache_bust=True) == snapshot:
+        return
+    update_session_metadata(
+        session_id=session_id,
+        session_equipment=snapshot,
+        touch_last_message_at=False,
+        cache_bust=True,
+        sync_write=True,
+    )
+
+
+def get_session_equipment(
+    session_id: str,
+    *,
+    cache_bust: bool = False,
+) -> dict[str, Any]:
+    """Read a normalized chat equipment snapshot, or an empty mapping."""
+    metadata = get_session_metadata(session_id, cache_bust=cache_bust)
+    raw = metadata.get("session_equipment") if isinstance(metadata, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    agent_template_name = raw.get("agent_template_name")
+    return {
+        "agent_template_name": (
+            agent_template_name.strip()
+            if isinstance(agent_template_name, str)
+            else ""
+        ),
+        "plugin_names": _normalize_session_equipment_names(raw.get("plugin_names")),
+        "mcp": _normalize_session_equipment_names(raw.get("mcp")),
+    }
 
 
 # 会话级 pin 重编号全局序列化锁:保障「设置目标 → 收集所有置顶 → 重编号 → 写回」全过程原子性。
@@ -1270,6 +1591,7 @@ def remove_session_metadata_cache(session_id: str) -> None:
     """Remove cached session metadata after the session directory is deleted."""
     with _CACHE_LOCK:
         _METADATA_CACHE.pop(session_id, None)
+        _METADATA_CACHE_GENERATIONS.pop(session_id, None)
     with _REBIND_GEN_LOCK:
         _SESSION_REBIND_GEN.pop(session_id, None)
 
@@ -1517,6 +1839,8 @@ def get_all_sessions_metadata(
     sessions = []
     # 批量入口构建一次 project 映射,所有会话共用,避免 N+1 扫描 project_store。
     dir_to_projects, id_to_work_mode = _build_project_lookup()
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    project_states: dict[str, dict] = {}
     for session_dir in sessions_dir.iterdir():
         if not session_dir.is_dir():
             continue
@@ -1524,7 +1848,11 @@ def get_all_sessions_metadata(
         session_id = session_dir.name
         if session_id.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
             continue
-        metadata = _read_metadata(session_id)
+        state = lc.state("session", session_id)
+        archived = lc.session_paths(session_id)[1].exists()
+        if archived:
+            continue
+        metadata = _read_metadata(session_id, lifecycle_state=state, archived=False)
 
         if not metadata:
             # 没有 metadata.json 的旧会话: 只构造最小信息,不读取 history.json
@@ -1554,8 +1882,7 @@ def get_all_sessions_metadata(
                 enable_writeback=False,
             )
         else:
-            # 批量入口不写盘:避免首次 session.list 触发大量异步写入导致队列满退化为同步写。
-            # 缺失字段会在后续单条 get_session_metadata 读取时按需写回(真正的惰性迁移)。
+            # 低优先级迁移去重入队；队列满时留待下次扫描，不同步写盘。
             metadata = _apply_metadata_defaults_with_inference(
                 session_id,
                 metadata,
@@ -1563,8 +1890,13 @@ def get_all_sessions_metadata(
                 dir_to_projects=dir_to_projects,
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
+                background_writeback=not state.get("write_blocked"),
             )
 
+        if metadata.get("ephemeral") is True:
+            continue
+        _apply_batch_projection(metadata, session_id, state, project_states,
+                                (dir_to_projects, id_to_work_mode))
         sessions.append(metadata)
 
     # 按最后消息时间倒序排序
@@ -1575,6 +1907,43 @@ def get_all_sessions_metadata(
 
 
 def collect_all_sessions_metadata(
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Share only overlapping scans; later requests still read fresh disk state."""
+    key = (str(get_agent_sessions_dir()), user_id or "")
+    with _COLLECT_LOCK:
+        pending = _COLLECT_INFLIGHT.get(key)
+        owner = pending is None
+        if owner:
+            pending = Future()
+            _COLLECT_INFLIGHT[key] = pending
+    if not owner:
+        return copy.deepcopy(pending.result())
+    try:
+        result = _collect_all_sessions_metadata(user_id)
+        pending.set_result(result)
+        return copy.deepcopy(result)
+    except BaseException as exc:
+        pending.set_exception(exc)
+        raise
+    finally:
+        with _COLLECT_LOCK:
+            _COLLECT_INFLIGHT.pop(key, None)
+
+
+def _apply_batch_projection(
+    meta: dict[str, Any], sid: str, state: dict, project_states: dict[str, dict],
+    project_lookup: tuple[dict[str, list[tuple[str, str]]], dict[str, str]],
+) -> None:
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    pid = lc.project_id_for(meta, project_lookup=project_lookup)
+    if pid not in project_states:
+        project_states[pid] = lc.state("project", pid)
+    meta.update(lc.projection("session", sid, project_id=pid, value=state,
+                              project_value=project_states[pid], archived=False))
+
+
+def _collect_all_sessions_metadata(
     user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """收集全部会话元数据(不分页、不排序),供项目统计与置顶会话聚合使用。
@@ -1601,18 +1970,23 @@ def collect_all_sessions_metadata(
     result: list[dict[str, Any]] = []
     # 批量入口构建一次 project 映射,所有会话共用,避免 N+1 扫描 project_store。
     dir_to_projects, id_to_work_mode = _build_project_lookup()
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    project_states: dict[str, dict] = {}
     for session_dir in sessions_dir.iterdir():
         if not session_dir.is_dir():
             continue
         sid = session_dir.name
         if sid.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
             continue
+        state = lc.state("session", sid)
+        if lc.session_paths(sid, sessions_root=sessions_dir)[1].exists():
+            continue
         if user_id:
             # 按用户家目录读时,绕过走全局单例的 _read_metadata,直接读该目录下文件,
             # 避免改全局态(并发安全)。仅 cache_bust 语义:直接读盘。
             meta = _read_metadata_file_in(session_dir)
         else:
-            meta = _read_metadata(sid, cache_bust=True)
+            meta = _read_metadata(sid, cache_bust=True, lifecycle_state=state, archived=False)
         if not meta:
             # 旧会话无 metadata.json: 构造最小兜底,归入默认项目。
             # 不做推断写盘(无 metadata.json 通常是异常残留)。
@@ -1643,8 +2017,7 @@ def collect_all_sessions_metadata(
                 enable_writeback=False,
             )
         else:
-            # 批量入口不写盘:避免首次 collect 触发大量异步写入导致队列满退化为同步写。
-            # 缺失字段会在后续单条 get_session_metadata 读取时按需写回(真正的惰性迁移)。
+            # 用户指定目录不走当前进程的 writer，防止写入错误的用户目录。
             meta = _apply_metadata_defaults_with_inference(
                 sid,
                 meta,
@@ -1652,6 +2025,11 @@ def collect_all_sessions_metadata(
                 dir_to_projects=dir_to_projects,
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
+                background_writeback=not user_id and not state.get("write_blocked"),
             )
+        if meta.get("ephemeral") is True:
+            continue
+        _apply_batch_projection(meta, sid, state, project_states,
+                                (dir_to_projects, id_to_work_mode))
         result.append(meta)
     return result

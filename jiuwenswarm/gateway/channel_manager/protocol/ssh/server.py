@@ -99,11 +99,14 @@ class ProxySSHServer(asyncssh.SSHServer if ASYNCSSH_AVAILABLE else object):  # t
         if entry is None:
             return False
         self.authenticated_entry = entry
+        session_id = str(entry.session_id or "")
         logger.info(
-            "[SSHChannel] public key accepted: user_id=%s username=%s source=%s",
+            "[SSHChannel] public key accepted: user_id=%s username=%s source=%s session_id=%s",
             entry.user_id,
             entry.username,
             entry.source,
+            session_id,
+            extra={"session_id": session_id} if session_id else {},
         )
         return True
 

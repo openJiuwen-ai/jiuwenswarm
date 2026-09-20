@@ -90,19 +90,20 @@ def _make_proactive_agent(tick_responses: list[dict]):
 
 # Capture _trigger_main_agent calls (session_id, channel_id, query, decision)
 def _capture_trigger(triggered_list):
-    async def _trigger(session_id, channel_id, query, decision, on_delivered=None):
+    async def _trigger(request):
         triggered_list.append({
-            "session_id": session_id,
-            "channel_id": channel_id,
-            "query": query,
-            "decision": decision,
+            "session_id": request.session_id,
+            "channel_id": request.channel_id,
+            "query": request.query,
+            "decision": request.decision,
+            "rec_id": request.rec_id,
         })
         # 真实 trigger_main_agent 是 fire-and-forget：主 agent 跑完才回调 on_delivered
         # 做 Step 7（计数 + save_recommendation_state）。测试 mock 这里同步模拟"后台送达"，
         # 立即回调，让 history/count 断言能验证 Step 7 逻辑。
-        if on_delivered is not None:
+        if request.on_delivered is not None:
             try:
-                on_delivered()
+                request.on_delivered()
             except Exception:
                 # 测试只关心触发与 history，回调异常不掩盖触发本身
                 pass
@@ -138,7 +139,6 @@ async def test_tick1_recommend_skill():
         with patch(f"{_PATCH_TARGETS['utils']}.get_agent_workspace_dir", return_value=ws_path), \
              patch(f"{_PATCH_TARGETS['situation_report']}.build_situation_report", return_value=_fake_report()), \
              patch(f"{_PATCH_TARGETS['actions']}._today_recommend_count", return_value=0), \
-             patch(f"{_PATCH_TARGETS['actions']}._is_cooled_down", return_value=True), \
              patch(f"{_PATCH_TARGETS['actions']}._get_all_skills", return_value=(set(), SAMPLE_SKILLS)):
 
             from jiuwenswarm.agents.harness.common.recommendation.proactive_engine import ProactiveEngine
@@ -191,7 +191,6 @@ async def test_tick2_recommend_different_skill():
         with patch(f"{_PATCH_TARGETS['utils']}.get_agent_workspace_dir", return_value=ws_path), \
              patch(f"{_PATCH_TARGETS['situation_report']}.build_situation_report", return_value=_fake_report()), \
              patch(f"{_PATCH_TARGETS['actions']}._today_recommend_count", return_value=0), \
-             patch(f"{_PATCH_TARGETS['actions']}._is_cooled_down", return_value=True), \
              patch(f"{_PATCH_TARGETS['actions']}._get_all_skills", return_value=(set(), SAMPLE_SKILLS)):
 
             from jiuwenswarm.agents.harness.common.recommendation.proactive_engine import ProactiveEngine
@@ -212,8 +211,14 @@ async def test_tick2_recommend_different_skill():
 # ── Tick 3: No recommendation when cooldown active ─────
 
 @pytest.mark.asyncio
-async def test_tick3_cooldown_blocks_recommendation():
-    """Tick 3: When target is in cooldown, no recommendation is emitted."""
+async def test_tick3_cooldown_no_longer_blocks():
+    """Cooldown gate removed: dedup is now the decision LLM's job (it sees
+    recommendation_history with type/target/reason and is told not to re-select).
+
+    Same target no longer gets hard-blocked at the code layer just because it was
+    pushed recently. The engine proceeds to trigger after the decision (dedup is
+    enforced by the LLM seeing history, not by a cooldown dict).
+    """
     emitted = []
 
     with tempfile.TemporaryDirectory() as ws:
@@ -227,15 +232,15 @@ async def test_tick3_cooldown_blocks_recommendation():
                 "tick_at": time.time() - 7200,
                 "session_id": "test-session-001",
             }],
-            "cooldown_records": {
-                "auto-test-runner": time.time() - 3600  # 1 hour ago, still in cooldown
-            },
+            # cooldown_records 字段已完全移除，recommendation.json 不再有该键。
             "last_updated": "",
         })
 
+        # LLM 决策出与历史同 target——以前会被 cooldown 硬挡，现在不再挡：
+        # 去重交给 LLM 看 history（这里 mock 固定它就是选了同 target，验证不被代码挡）。
         tick3_llm = {
             "decision": {
-                "type": "skill_recommend",
+                "type": "need_exploration",
                 "target": "auto-test-runner",
                 "reason": "再次推荐",
                 "urgency": 0.4,
@@ -247,7 +252,6 @@ async def test_tick3_cooldown_blocks_recommendation():
         with patch(f"{_PATCH_TARGETS['utils']}.get_agent_workspace_dir", return_value=ws_path), \
              patch(f"{_PATCH_TARGETS['situation_report']}.build_situation_report", return_value=_fake_report()), \
              patch(f"{_PATCH_TARGETS['actions']}._today_recommend_count", return_value=0), \
-             patch(f"{_PATCH_TARGETS['actions']}._is_cooled_down", return_value=False), \
              patch(f"{_PATCH_TARGETS['actions']}._get_all_skills", return_value=(set(), SAMPLE_SKILLS)):
 
             from jiuwenswarm.agents.harness.common.recommendation.proactive_engine import ProactiveEngine
@@ -257,8 +261,8 @@ async def test_tick3_cooldown_blocks_recommendation():
             engine.set_trigger_main_agent_callback(_capture_trigger(emitted))
             await engine.tick_now()
 
-            # No recommendation triggered (target in cooldown)
-            assert len(emitted) == 0
+            # cooldown 不再硬挡：决策后直接触发（去重交 LLM，不是代码层 return False）。
+            assert len(emitted) == 1, f"cooldown 不应再硬挡，应触发 1 次，got {len(emitted)}"
 
 
 # ── No recommendation when decision is null ───────
@@ -291,7 +295,6 @@ async def test_no_recommendation_when_decision_null():
         with patch(f"{_PATCH_TARGETS['utils']}.get_agent_workspace_dir", return_value=ws_path), \
              patch(f"{_PATCH_TARGETS['situation_report']}.build_situation_report", return_value=_fake_report()), \
              patch(f"{_PATCH_TARGETS['actions']}._today_recommend_count", return_value=0), \
-             patch(f"{_PATCH_TARGETS['actions']}._is_cooled_down", return_value=True), \
              patch(f"{_PATCH_TARGETS['actions']}._get_all_skills", return_value=(set(), SAMPLE_SKILLS)):
 
             from jiuwenswarm.agents.harness.common.recommendation.proactive_engine import ProactiveEngine
@@ -329,7 +332,6 @@ async def test_daily_limit_blocks_tick():
         with patch(f"{_PATCH_TARGETS['utils']}.get_agent_workspace_dir", return_value=ws_path), \
              patch(f"{_PATCH_TARGETS['situation_report']}.build_situation_report", return_value=_fake_report()), \
              patch(f"{_PATCH_TARGETS['actions']}._today_recommend_count", return_value=5), \
-             patch(f"{_PATCH_TARGETS['actions']}._is_cooled_down", return_value=True), \
              patch(f"{_PATCH_TARGETS['actions']}._get_all_skills", return_value=(set(), SAMPLE_SKILLS)):
 
             from jiuwenswarm.agents.harness.common.recommendation.proactive_engine import ProactiveEngine
@@ -364,8 +366,8 @@ async def test_skip_when_main_agent_busy():
 
     triggered = []
 
-    async def _busy_trigger(session_id, channel_id, query, decision, on_delivered=None):
-        triggered.append((session_id, channel_id, decision))
+    async def _busy_trigger(request):
+        triggered.append((request.session_id, request.channel_id, request.decision))
         return False  # session 正忙（不触发，on_delivered 不该被调）
 
     with tempfile.TemporaryDirectory() as ws:
@@ -377,7 +379,6 @@ async def test_skip_when_main_agent_busy():
         with patch(f"{_PATCH_TARGETS['utils']}.get_agent_workspace_dir", return_value=ws_path), \
              patch(f"{_PATCH_TARGETS['situation_report']}.build_situation_report", return_value=_fake_report()), \
              patch(f"{_PATCH_TARGETS['actions']}._today_recommend_count", return_value=0), \
-             patch(f"{_PATCH_TARGETS['actions']}._is_cooled_down", return_value=True), \
              patch(f"{_PATCH_TARGETS['actions']}._get_all_skills", return_value=(set(), SAMPLE_SKILLS)):
 
             from jiuwenswarm.agents.harness.common.recommendation.proactive_engine import ProactiveEngine
@@ -410,9 +411,8 @@ async def test_proactive_agent_output_parsed_to_decision():
         },
     }
     dedicated = _make_proactive_agent([tick_llm])
-    state = MagicMock()
 
-    result = await _analyze_and_decide("report text", state, SAMPLE_SKILLS, dedicated)
+    result = await _analyze_and_decide("report text", SAMPLE_SKILLS, dedicated)
 
     assert result.decision is not None
     assert result.decision.type == "skill_recommend"
@@ -431,8 +431,7 @@ async def test_proactive_agent_invalid_json_returns_empty():
         async def invoke(self, inputs, session=None):
             return {"output": "这不是JSON", "result_type": "answer"}
 
-    state = MagicMock()
-    result = await _analyze_and_decide("report", state, SAMPLE_SKILLS, _BadAgent())
+    result = await _analyze_and_decide("report", SAMPLE_SKILLS, _BadAgent())
     assert result.decision is None
 
 

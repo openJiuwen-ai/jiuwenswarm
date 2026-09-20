@@ -15,8 +15,8 @@ import json
 from typing import Any, Dict, Optional
 
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import get_xiaoyi_channel
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.runtime.host_services import get_runtime_xiaoyi_channel
 
 
 def _is_data_event_status_success(status: Any) -> bool:
@@ -77,7 +77,7 @@ async def execute_device_command(
     logger.info(f"[{intent_name}_TOOL] Starting execution")
 
     # 获取 XiaoyiChannel 实例
-    channel = get_xiaoyi_channel()
+    channel = get_runtime_xiaoyi_channel()
     if channel is None:
         logger.error(f"[{intent_name}_TOOL] FAILED: No active session found!")
         raise RuntimeError(

@@ -1,0 +1,21 @@
+.ui-loading {
+  flex: 0 0 auto;
+  animation: ui-loading-spin 0.9s linear infinite;
+}
+.ui-loading--sm {
+  width: 14px;
+  height: 14px;
+}
+.ui-loading--md {
+  width: 18px;
+  height: 18px;
+}
+.ui-loading--lg {
+  width: 24px;
+  height: 24px;
+}
+@keyframes ui-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

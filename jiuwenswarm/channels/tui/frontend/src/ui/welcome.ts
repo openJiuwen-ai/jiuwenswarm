@@ -78,13 +78,21 @@ export function buildWelcomeLines(
   mode: string = "",
   memoryWarnings: { path: string; kind: string; char_count: number; threshold: number; message: string }[] = [],
   preferredLanguage: PreferredLanguage = "zh",
+  selectedAgentosModel: string | null = null,
+  selectedAgentosProvider: string = "",
 ): string[] {
   const artWidth = Math.max(...ART_TITLE_RAW.map((line) => visibleWidth(line)));
   const hint = connectionHint(connectionStatus, preferredLanguage);
   const isEnglish = preferredLanguage === "en";
   const version = modelInfo.version || "0.1.0";
-  const provider = modelInfo.provider || "";
-  const model = modelInfo.model || "";
+  // 若全局选中了 agentos 模型（请求级注入），头部展示该模型作为当前 Model；
+  // provider 同步取 agentos 条目的 provider。否则回退到启动默认 modelInfo。
+  const provider = selectedAgentosModel
+    ? (selectedAgentosProvider || modelInfo.provider || "")
+    : (modelInfo.provider || "");
+  const model = selectedAgentosModel
+    ? `${selectedAgentosModel}`
+    : (modelInfo.model || "");
   const displayMode = formatModeForDisplay(mode);
   if (width >= artWidth + 6) {
     const coloredArt = ART_TITLE_RAW.map((line, index) => {

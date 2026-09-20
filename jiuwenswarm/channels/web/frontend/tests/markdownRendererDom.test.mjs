@@ -6,7 +6,7 @@ import i18next from 'i18next';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
 
-import { MarkdownRenderer } from '../node_modules/.cache/markdown-renderer/MarkdownRenderer.js';
+import { MarkdownIncludeMathMLContext, MarkdownRenderer } from '../node_modules/.cache/markdown-renderer/MarkdownRenderer.js';
 import { convertSvgToPng, downloadBlob, saveBlob } from '../node_modules/.cache/markdown-renderer/diagrams/diagramExport.js';
 import { MermaidDiagram } from '../node_modules/.cache/markdown-renderer/diagrams/MermaidDiagram.js';
 import { SvgDiagram } from '../node_modules/.cache/markdown-renderer/diagrams/SvgDiagram.js';
@@ -238,13 +238,16 @@ test('renders Mermaid through the shared viewer and preserves the code fallback 
   let root;
   try {
     root = createRoot(container);
-    const renderSvg = async () => '<svg viewBox="0 0 120 60"><rect width="120" height="60" /></svg>';
+    const renderSvg = async () => '<svg width="100%" height="100%" viewBox="0 0 120 60" style="max-width: 120px"><rect width="120" height="60" /></svg>';
     await act(async () => {
       root.render(createElement(I18nextProvider, { i18n }, createElement(MermaidDiagram, { code: 'graph TD; A-->B', renderSvg })));
     });
 
     const diagram = container.querySelector('[data-mermaid-status="rendered"]');
-    assert.ok(diagram?.querySelector('.mermaid-svg-wrapper svg'));
+    const renderedSvg = diagram?.querySelector('.mermaid-svg-wrapper svg');
+    assert.ok(renderedSvg);
+    assert.equal(renderedSvg.style.width, '120px');
+    assert.equal(renderedSvg.style.height, '60px');
     assert.equal(diagram.getAttribute('data-markdown-block'), 'wide');
     assert.equal(diagram.querySelector('[aria-label="More diagram actions"]').getAttribute('aria-haspopup'), 'menu');
 
@@ -269,6 +272,80 @@ test('renders Mermaid through the shared viewer and preserves the code fallback 
       );
     });
     assert.equal(container.querySelector('pre.mermaid-error[data-mermaid-status="error"] code').textContent, 'invalid diagram');
+  } finally {
+    if (root) await act(async () => root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('preserves Mermaid zoom when the canvas is re-measured', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://example.test/' });
+  let resizeCallback;
+  class ResizeObserverStub {
+    constructor(callback) {
+      resizeCallback = callback;
+    }
+    observe() {}
+    disconnect() {}
+  }
+  const restore = installGlobals({
+    HTMLElement: dom.window.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
+    MouseEvent: dom.window.MouseEvent,
+    ResizeObserver: ResizeObserverStub,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    window: dom.window,
+  });
+  const container = dom.window.document.querySelector('#root');
+  const i18n = createI18n();
+  let root;
+  try {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        createElement(
+          I18nextProvider,
+          { i18n },
+          createElement(MermaidDiagram, {
+            code: 'graph TD; A-->B',
+            canvasMinHeight: 168,
+            renderSvg: async () => '<svg viewBox="0 0 120 60"><rect width="120" height="60" /></svg>',
+          }),
+        ),
+      );
+    });
+
+    const diagram = container.querySelector('[data-mermaid-status="rendered"]');
+    const zoomIn = diagram?.querySelector('[aria-label="Zoom in"]');
+    const wrapper = diagram?.querySelector('.mermaid-svg-wrapper');
+    const canvas = diagram?.querySelector('[data-testid="markdown-mermaid-canvas"]');
+    assert.ok(zoomIn);
+    assert.ok(wrapper);
+    assert.ok(canvas);
+    Object.defineProperties(canvas, {
+      clientHeight: { configurable: true, value: 168 },
+      clientWidth: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 600 },
+      scrollWidth: { configurable: true, value: 1000 },
+    });
+    canvas.scrollLeft = 100;
+    canvas.scrollTop = 50;
+    assert.equal(wrapper.style.transformOrigin, 'top left');
+    assert.match(wrapper.style.transform, /scale\(1\)$/);
+
+    await act(async () => {
+      zoomIn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.match(wrapper.style.transform, /scale\(1\.25\)$/);
+    assert.equal(canvas.scrollLeft, 163);
+    assert.equal(canvas.scrollTop, 84);
+
+    await act(async () => {
+      resizeCallback?.();
+    });
+    assert.match(wrapper.style.transform, /scale\(1\.25\)$/);
   } finally {
     if (root) await act(async () => root.unmount());
     restore();
@@ -447,6 +524,50 @@ test('keeps Markdown behavior compatible while dispatching supported fenced bloc
     assert.match(container.textContent, /<section data-host-injection="blocked">raw html<\/section>/);
   } finally {
     if (root) await act(async () => root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('preserves internal link handling with either MathML export setting', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const restore = installGlobals({
+    HTMLElement: dom.window.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
+    Node: dom.window.Node,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    window: dom.window,
+  });
+  const container = dom.window.document.querySelector('#root');
+  const handledLinks = [];
+  const root = createRoot(container);
+  try {
+    for (const includeMathML of [true, false]) {
+      await act(async () => {
+        root.render(createElement(MarkdownIncludeMathMLContext.Provider, { value: includeMathML },
+          createElement(MarkdownRenderer, {
+            content: '$x^2$ [internal](./guide.md) [external](https://example.com) [anchor](#section)',
+            onLinkClick: (href) => {
+              handledLinks.push(href);
+              return true;
+            },
+          }),
+        ));
+      });
+      assert.ok(container.querySelector('.katex-html'));
+      assert.equal(container.querySelector('.katex-mathml') !== null, includeMathML);
+      const internalLink = container.querySelector('a[href="./guide.md"]');
+      assert.equal(internalLink.hasAttribute('target'), false);
+      const event = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+      await act(async () => { internalLink.dispatchEvent(event); });
+      assert.equal(event.defaultPrevented, true);
+      assert.equal(container.querySelector('a[href="https://example.com"]').target, '_blank');
+      assert.equal(container.querySelector('a[href="#section"]').hasAttribute('target'), false);
+    }
+    assert.deepEqual(handledLinks, ['./guide.md', './guide.md']);
+  } finally {
+    await act(async () => root.unmount());
     restore();
     dom.window.close();
   }

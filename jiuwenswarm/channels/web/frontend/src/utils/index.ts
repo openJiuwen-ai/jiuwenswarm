@@ -8,5 +8,7 @@ export * from './tts';
 export * from './finalContent';
 export * from './chatFinalProtocol';
 export * from './timestamp';
-export * from './harnessErrors';
 export * from './fileDownloadDedup';
+export * from './heartbeatAutomation';
+export * from './crossSessionMessage';
+export * from './uuid';

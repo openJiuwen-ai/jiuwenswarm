@@ -30,6 +30,7 @@ def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
         "message_count": int(meta.get("message_count", 0)),
         "mode": str(meta.get("mode", "unknown")),
         "team_name": str(meta.get("team_name", "")),
+        "agent_group_name": str(meta.get("agent_group_name", "")),
         "pinned": bool(meta.get("pinned", False)),
         "pin_order": int(meta.get("pin_order", 0)),
         "project_dir": str(meta.get("project_dir", "")),
@@ -42,4 +43,7 @@ def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
         ),
         "model": str(meta.get("model", "")),
         "work_mode": str(meta.get("work_mode") or DEFAULT_WEB_WORK_MODE),
+        "lifecycle_operation": meta.get("lifecycle_operation"),
+        "execution_blocked": bool(meta.get("execution_blocked", False)),
+        "stop_pending": bool(meta.get("stop_pending", False)),
     }

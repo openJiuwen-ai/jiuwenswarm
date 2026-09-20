@@ -38,6 +38,7 @@ export function LogoutButton() {
       onClick={handleLogout}
       disabled={busy}
       aria-label={t('auth.logout')}
+      data-testid="auth-logout-button"
       className="fixed top-3 right-3 z-[9999] flex items-center gap-1.5 px-3.5 h-8 rounded-full border border-black/10 bg-white/70 hover:bg-white text-[#1d1d1f] text-[13px] font-medium backdrop-blur-md shadow-sm transition-colors duration-200 disabled:opacity-50"
       style={{
         fontFamily:

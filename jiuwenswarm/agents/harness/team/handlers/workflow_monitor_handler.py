@@ -12,7 +12,7 @@ Lifecycle mirrors TeamMonitorHandler via BaseMonitorHandler.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from openjiuwen.agent_teams.monitor.team_monitor import TeamMonitor
 from jiuwenswarm.agents.harness.team.handlers.base_monitor_handler import BaseMonitorHandler
@@ -46,6 +46,19 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         super().__init__(monitor, session_id)
         self._channel_id = channel_id
         self._runs: dict[str, WorkflowRunState] = dict(initial_runs or {})
+        # Session-wide (leader-shared) budget snapshot, updated from each
+        # progress event's ``budget`` field and persisted to session metadata.
+        self._session_budget: Optional[dict] = None
+        # team.task/team.member conversion dedup. Session-scoped on purpose:
+        # the consumer loop is cancelled on team pause and restarted on wake,
+        # and a resume relaunch REPLAYS the cached prefix (completed agents
+        # re-emit started+completed) — a per-loop table would re-emit the
+        # replay and double-count finished work on the task board. Public:
+        # the consumer (_consume_workflow_events) owns the emission contract
+        # and reads them cross-class.
+        self.seen_phase: dict[str, str] = {}
+        self.seen_agent: dict[str, str] = {}
+        self.spawned_members: set[str] = set()
 
     # ------------------------------------------------------------------
     # Properties
@@ -118,6 +131,10 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
             )
             return
 
+        # Track the session-wide budget snapshot from each event (leader-shared).
+        if progress.budget is not None:
+            self._session_budget = progress.budget
+
         delta = run_state.apply(progress)
         if delta is None:
             logger.debug(
@@ -155,8 +172,17 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
 
     def _persist(self) -> None:
         try:
-            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import persist_workflow_runs
-            persist_workflow_runs(self._runs, self._session_id)
+            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                persist_workflow_runs,
+            )
+            # runs + session_budget must land in ONE read-modify-write: two
+            # separate persists each cache_bust-read the disk before the
+            # other's queued write is flushed, and the second full-file
+            # replace reverts the first's workflow_runs (lost update that
+            # froze the checkpoint at a stale pre-terminal state).
+            persist_workflow_runs(
+                self._runs, self._session_id, session_budget=self._session_budget
+            )
         except Exception as e:
             logger.warning("[WorkflowMonitorHandler] checkpoint persist failed: %s", e)
 
@@ -168,24 +194,47 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         """Return a list of all workflow run dicts for ``command.workflows``."""
         return [run.to_workflow_run_dict() for run in self._runs.values()]
 
-    def finalize_pending_runs(self, terminal_status: str = "stopped") -> None:
-        """Mark every non-terminal run as terminal and persist the result.
+    def finalize_pending_runs(self, *, disposition: Literal["stop", "pause"] = "stop") -> None:
+        """Finalize every non-terminal run by real state, not one-size stopped.
 
-        Called on non-resumable teardown (session cancel / stop / destroy) so a
-        torn-down runtime never leaves a workflow stuck in ``running`` on the
-        checkpoint — once the runtime is gone no further ``workflow.updated``
-        events can arrive, so a restored snapshot must show a terminal status.
+        Called on non-resumable teardown. ``disposition="stop"`` (user
+        termination) stamps non-terminal runs to ``stopped``; ``disposition=
+        "pause"`` (disconnect/crash reclaim) parks them to ``paused`` so the
+        journal cache prefix stays resumable on cold start.
         """
         changed = False
         for run in self._runs.values():
-            if run.finalize_if_running(terminal_status):
-                changed = True
+            if run.is_terminal or run.status == "paused":
+                continue  # terminal / already parked → nothing to do
+            if disposition == "pause":
+                changed = run.pause_if_running() or changed
+            else:
+                changed = run.finalize_if_running("stopped") or changed
         if changed:
             self._persist()
 
     def get_run_states(self) -> dict[str, WorkflowRunState]:
         """Return a shallow copy of in-memory workflow run states."""
         return dict(self._runs)
+
+    async def stop_run(self, run_id: str) -> bool:
+        """Stamp a paused run ``stopped`` and push the delta like an engine stop.
+
+        A paused run has already unwound, so no WORKFLOW_STOPPED will ever
+        arrive from the engine; the tree-view stop must synthesize it here or
+        the frontend keeps the paused card until a reload. Only paused runs:
+        an active run's stop is announced by the engine itself while it
+        unwinds, and stamping it here too would double-finalize. Returns False
+        when the run is unknown or not paused.
+        """
+        run = self._runs.get(run_id)
+        if run is None or run.status != "paused":
+            return False
+        delta = run.apply(WorkflowProgress(kind="workflow_stopped", run_id=run_id))
+        if delta is not None:
+            await self._event_queue.put(self._build_updated_event(delta))
+        self._persist()
+        return True
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -235,9 +284,14 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 answer=getattr(payload, "answer", None),
                 tokens=getattr(payload, "tokens", None),
                 budget=getattr(payload, "budget", None),
+                workflow_budget=getattr(payload, "workflow_budget", None),
+                budget_exhausted_scope=getattr(payload, "budget_exhausted_scope", None),
+                relaunch_kind=getattr(payload, "relaunch_kind", None),
+                script_path=getattr(payload, "script_path", None),
                 phase_type=getattr(payload, "phase_type", None),
                 nested_phase=getattr(payload, "nested_phase", None),
                 parent_phase=getattr(payload, "parent_phase", None),
+                phase_iteration=getattr(payload, "phase_iteration", None),
             )
         except Exception:
             logger.warning("[WorkflowMonitorHandler] Failed to extract progress from event")

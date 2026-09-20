@@ -22,7 +22,10 @@ from .skill_toolkits import (
     SkillToolkit,
 )
 from .skill_retrieval_toolkits import (
+    build_model_discovery_settings,
     is_skill_retrieval_enabled,
+    is_skill_retrieval_index_enabled,
+    skill_sources_from_manager,
     SkillRetrievalToolkit,
 )
 from .symphony_toolkits import (
@@ -64,7 +67,10 @@ __all__ = [
     "is_group_chat_mode",
     "SendFileToolkit",
     "SkillToolkit",
+    "build_model_discovery_settings",
     "is_skill_retrieval_enabled",
+    "is_skill_retrieval_index_enabled",
+    "skill_sources_from_manager",
     "SkillRetrievalToolkit",
     "SymphonyToolkit",
     # openjiuwen re-exports

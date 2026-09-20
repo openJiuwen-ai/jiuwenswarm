@@ -19,51 +19,83 @@ import logging
 import logging.handlers
 import os
 import sys
+import time
 
-from openjiuwen.core.common.logging import LogManager
+
+# Include entry-module import/configuration work in later startup phase logs.
+# PyInstaller boot time is intentionally outside this boundary.
+_PROCESS_START_T0 = time.monotonic()
+_STARTUP_IMPORT_PHASES: list[tuple[str, float]] = [("entry", _PROCESS_START_T0)]
+
+
+def _mark_startup_import_phase(stage: str) -> None:
+    _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 parse_dotenv_early("jiuwenswarm-agentserver")
+_mark_startup_import_phase("dotenv_parsed")
+
+# Standalone entrypoints retain workspace preparation; Desktop/app already do
+# it before spawning us and pass the marker to avoid duplicate disk work.
+from jiuwenswarm.common.utils import (
+    cleanup_stale_openjiuwen_descs,
+    prepare_runtime_workspace,
+)
+
+cleanup_stale_openjiuwen_descs()
+if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
+    prepare_runtime_workspace(cleanup_stale_descs=False)
+_mark_startup_import_phase("runtime_workspace_ready")
+
+from openjiuwen.core.common.logging import LogManager  # pylint: disable=wrong-import-order
+_mark_startup_import_phase("openjiuwen_logging_imported")
 
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
+from jiuwenswarm.common.media_capability_config import (
+    migrate_media_capability_switches,
+)
 from jiuwenswarm.common.utils import (
-    ensure_default_builtin_skills,
+    apply_free_search_runtime_defaults,
     get_env_file,
     get_root_dir,
-    get_user_workspace_dir,
     logger,
-    prepare_workspace,
-    reset_free_search_runtime_flags,
 )
-
-# Ensure workspace initialized
-_workspace_dir = get_user_workspace_dir()
-_config_file = _workspace_dir / "config" / "config.yaml"
-_new_workspace = _workspace_dir / "agent" / "workspace"
-_old_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
-
-# Initialize if config doesn't exist, or if legacy workspace exists but new doesn't (migration),
-# or if the preset MCP package dir isn't seated yet (an install predating the
-# mcp_builtins zip-seed feature would otherwise skip an already-initialized
-# workspace, leaving mcp_builtins absent and mcp.list empty).
-_mcp_builtins_dir = _new_workspace / "mcp" / "mcp_builtins"
-config_missing = not _config_file.exists()
-workspace_migration_needed = _old_workspace.exists() and not _new_workspace.exists()
-mcp_builtins_missing = not _mcp_builtins_dir.is_dir()
-
-if config_missing or workspace_migration_needed or mcp_builtins_missing:
-    prepare_workspace(overwrite=False)
-
-# 幂等地补齐默认内置技能（对已有工作区也生效，新增默认技能时自动安装）
-ensure_default_builtin_skills()
+_mark_startup_import_phase("core_runtime_imports_loaded")
 
 _logging_yaml = get_root_dir() / "config" / "logging.yaml"
 if _logging_yaml.exists():
     from openjiuwen.core.common.logging.log_config import configure_log
     configure_log(str(_logging_yaml))
 else:
+    # Inject openjiuwen log_path to user dir ~/.jiuwenswarm/logs/ so agentcore
+    # logs land beside jiuwenswarm's own logs, independent of process cwd.
+    # openjiuwen reads HOME (sandbox: /root), not JIUWENSWARM_HOME, so resolve
+    # the root ourselves and inject an absolute log_path. Failure falls back
+    # to the original degraded logging below without blocking startup.
+    try:
+        from openjiuwen.core.common.logging.log_config import configure_log_config
+
+        _oj_home = os.environ.get("JIUWENSWARM_HOME") or os.path.expanduser("~")
+        _oj_log_dir = f"{_oj_home}/.jiuwenswarm/logs/"
+        configure_log_config({
+            "backend": "default",
+            "level": "INFO",
+            "log_path": _oj_log_dir,
+            "log_file": "run/jiuwen.log",
+            "output": ["console", "file"],
+            "structured_output_format": "json",
+            "interface_log_file": "interface/jiuwen_interface.log",
+            "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
+            "performance_log_file": "performance/jiuwen_performance.log",
+        })
+    # Startup must never block on logging config; degraded logging follows.
+    except Exception as _log_cfg_exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "openjiuwen log config failed; using degraded logging: %s", _log_cfg_exc
+        )
+
     for _lg in LogManager.get_all_loggers().values():
         _lg.set_level(logging.CRITICAL)
 
@@ -124,16 +156,25 @@ else:
         _perm_ns_logger.addHandler(_perm_fh)
         _perm_ns_logger.addHandler(_perm_sh)
     _perm_ns_logger.propagate = False
+_mark_startup_import_phase("logging_configured")
 
 # Load env from user workspace config/.env
-load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
-reset_free_search_runtime_flags()
+_env_file = get_env_file()
+load_dotenv_runtime(dotenv_path=_env_file, override=True)
+migrate_media_capability_switches(_env_file)
+apply_free_search_runtime_defaults()
+_mark_startup_import_phase("runtime_environment_applied")
 
 from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
     install_shell_tool_safety_hooks,
 )
 
 install_shell_tool_safety_hooks()
+
+# Normalize known provider compatibility gaps before any runtime Model is built.
+from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
+
+apply_provider_compat_patches()
 
 # 兼容 SSE-only 网关：让非流式 invoke()（subagent / 心跳等）能解析 text/event-stream 响应
 # 仅当 channels.xiaoyi.mode == xiaoyi_claw 时才打补丁（该网关以 SSE-only 方式返回非流式响应）。
@@ -164,23 +205,17 @@ def _should_apply_sse_invoke_patch() -> bool:
 if _should_apply_sse_invoke_patch():
     apply_openai_sse_invoke_patch()
 
-# /debug 模式下捕获 builtin TaskTool 分发的 subagent 流（reasoning/tool_call/usage），
-# 内联写入主 dump。非 debug 或 include_subagent_flow 关闭时走原始 invoke，零回归。
-from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
-    apply_task_tool_debug_patch,
-)
+# 登录模型的api_key是凭据句柄
+try:
+    from jiuwenswarm.common.auth.login_credentials import apply_login_credential_patch
 
-apply_task_tool_debug_patch()
+    apply_login_credential_patch()
+except Exception:  # noqa: BLE001 — 补丁装不上不该拖垮启动
+    logging.getLogger(__name__).warning("[LoginCredential] 凭据钩子安装失败", exc_info=True)
+_mark_startup_import_phase("entry_module_ready")
 
-# 让所有分发路径创建的 subagent 都带上 OTel 观测 rail（内置 task_tool、自定义
-# agent 工具、后台 subagent），这样子 agent 的 llm/tool span 归属自己的
-# agent.<type>.invoke span，而不是挂到派发它的 agent 身上。
-from jiuwenswarm.agents.harness.agent_observability import (
-    install_subagent_observability_hook,
-)
-
-install_subagent_observability_hook()
-
+# ``TaskTool`` 的 /debug 跟踪补丁按首个开启 subagent trace 的请求再加载。
+# 普通启动无需导入 SDK 的 TaskTool 实现；实际补丁仍会在请求 dispatch 前完成。
 
 
 async def _run(host: str, port: int) -> None:
@@ -191,7 +226,25 @@ async def _run(host: str, port: int) -> None:
     from jiuwenswarm.extensions.registry import ExtensionRegistry
     from jiuwenswarm.common.config import get_config
 
+    # 阶段耗时基准:冻结 EXE 排查启动超时要用各阶段时间戳对齐 Desktop 日志。
+    startup_t0 = time.monotonic()
+
+    def log_startup_stage(stage: str) -> None:
+        logger.info(
+            "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs",
+            stage,
+            time.monotonic() - _PROCESS_START_T0,
+            time.monotonic() - startup_t0,
+        )
+
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
+    for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
+        logger.info(
+            "[AgentServer] startup import stage=%s process_elapsed=%.2fs",
+            import_stage,
+            marked_at - _PROCESS_START_T0,
+        )
+    log_startup_stage("run_entered")
 
     # ---------- 扩展系统初始化 ----------
     callback_framework = Runner.callback_framework
@@ -203,30 +256,84 @@ async def _run(host: str, port: int) -> None:
     extension_manager = ExtensionManager(
         registry=extension_registry,
     )
+    log_startup_stage("extension_manager_created")
     await extension_manager.load_all_extensions()
-    logger.info("[AgentServer] 扩展加载完成，共 %d 个", len(extension_manager.list_extensions()))
+    logger.info(
+        "[AgentServer] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
+        len(extension_manager.list_extensions()),
+        time.monotonic() - startup_t0,
+    )
+    log_startup_stage("extensions_loaded")
 
     # 会话 metadata 的字段补全已改为惰性迁移:读取时按需推断并写回磁盘
     # (见 session_metadata._apply_metadata_defaults_with_inference),无需启动全量扫描。
 
-    # ---------- 图像模态探针预热 ----------
-    # 在开始接受连接之前把探针缓存坐实：晚于这里的话，第一批 agent（含每个
-    # subagent）会各自在后台补探，多发无谓的 LLM 请求。
-    from jiuwenswarm.server.runtime.image_modality_warmup import warm_image_modality_cache
-
-    await warm_image_modality_cache(get_config(), reason="startup")
-
-    # ---------- Opencode Zen 免费模型注入 ----------
-    # 开箱即用：从 Zen 拉取限时免费模型，追加到 models.defaults。失败兜底、不阻断启动。
-    from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
-
-    await warm_zen_free_models(reason="startup")
-
+    zen_free_models_task: asyncio.Task | None = None
     server = AgentWebSocketServer.get_instance(
         host=host,
         port=port
     )
     await server.start()
+    logger.info(
+        "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
+        host,
+        port,
+        time.monotonic() - startup_t0,
+    )
+    log_startup_stage("agent_ws_listening")
+
+    # 观测 hook 只会在后续创建子 Agent 时生效，不是首页 RPC 的前置条件。
+    # 延后其依赖导入可让冻结进程先开放 AgentServer 端口；在事件循环处理首个
+    # 请求前仍会同步安装完成，保持所有执行路径的 span 归属不变。
+    from openjiuwen.harness.observability import install_subagent_observability_hook
+
+    install_subagent_observability_hook()
+    log_startup_stage("observability_installed")
+
+    # ---------- 图像模态探针预热 ----------
+    # listen 之后后台 fire-and-forget:探针只往进程级缓存写 (api_base, model_name)
+    # ->bool, agent 用时缓存未命中会自己 schedule 后台探针并降级 metadata-only,
+    # 所以预热挪到 listen 之后不影响首请求可用性,只把端口开放从"等探针跑完"
+    # 解放出来(单模型最坏 10s、整体 30s 上限,原是 listen 前最大耗时项)。
+    # 经 server 统一任务槽位调度:模型配置变更会取消本轮预热、避免写回过期结论;
+    # shutdown 时由 server.stop() -> _stop_main_services 统一 cancel 回收。
+    server.schedule_image_modality_warmup(reason="startup")
+    log_startup_stage("nonblocking_warmups_scheduled")
+
+    # ---------- Opencode Zen 免费模型注入 ----------
+    # listen 之后后台 fire-and-forget:从 Zen 拉限时免费模型追加到可选池,失败自带
+    # 后台重试自动恢复(高频 30s→低频 60s),且免费模型只是额外追加项、主流程用
+    # 用户自配模型,所以挪到 listen 之后不影响主链路,只把端口开放从"等 Zen 拉取
+    # (15s 上限)"解放出来。shutdown 时 cancel,避免任务悬挂(见 _run finally)。
+    from jiuwenswarm.server.runtime.opencode_zen import (
+        warm_zen_free_models,
+        set_main_event_loop,
+        register_models_ready_callback,
+    )
+
+    # 注册 event loop,供后台重试线程通过 call_soon_threadsafe 调度回调。
+    set_main_event_loop(asyncio.get_running_loop())
+
+    # Zen 免费模型就绪回调:预热改异步后,首个请求可能早于 Zen 拉取完成构建
+    # _model_cache(一次性懒构建、永不重建),导致免费模型及占位符默认模型的
+    # Zen 兜底在该进程内一直解析不到。此处清空缓存,下次 _resolve_model 自然
+    # 重建并带上 Zen 条目(与 Gateway 的 _models_ready_cb 对称)。
+    def _on_zen_models_ready() -> None:
+        server.reset_model_cache()
+        logger.info(
+            "[AgentServer] zen free models ready: model cache reset for rebuild"
+        )
+
+    register_models_ready_callback(_on_zen_models_ready)
+
+    zen_free_models_task = asyncio.create_task(
+        warm_zen_free_models(reason="startup"),
+        name="zen-free-models-warmup",
+    )
+
+    from jiuwenswarm.observability.gateway_hints import trajectory_gateway_hint_bridge
+
+    trajectory_gateway_hint_bridge.bind(asyncio.get_running_loop(), server.send_push)
 
     # ---------- ProactiveEngine 初始化 ----------
     # 适配逻辑（建专用 agent + 触发主 agent 回调）封装在 proactive_adapter，
@@ -235,8 +342,15 @@ async def _run(host: str, port: int) -> None:
     full_cfg = get_config()
     proactive_config = full_cfg.get("proactive_recommendation", {}) if isinstance(full_cfg, dict) else {}
     await init_proactive_engine(server, proactive_config)
+    log_startup_stage("proactive_engine_initialized")
 
-    logger.info("[AgentServer] ready: ws://%s:%s  Ctrl+C to stop", host, port)
+    logger.info(
+        "[AgentServer] ready: ws://%s:%s  Ctrl+C to stop (elapsed %.2fs)",
+        host,
+        port,
+        time.monotonic() - startup_t0,
+    )
+    log_startup_stage("ready")
 
     stop_event = asyncio.Event()
     teammate_bootstrap_task: asyncio.Task | None = None
@@ -244,7 +358,10 @@ async def _run(host: str, port: int) -> None:
     # Distributed teammate can receive bootstrap before any team-mode request arrives.
     # Keep a lightweight daemon alive so remote member bootstrap is consumed proactively.
     teammate_bootstrap_task = asyncio.create_task(
-        run_teammate_bootstrap_daemon(stop_event=stop_event)
+        run_teammate_bootstrap_daemon(
+            stop_event=stop_event,
+            agent_manager=server.get_agent_manager(),
+        )
     )
 
     def _on_signal() -> None:
@@ -265,6 +382,7 @@ async def _run(host: str, port: int) -> None:
         pass
     finally:
         logger.info("[AgentServer] stopping…")
+        await trajectory_gateway_hint_bridge.unbind()
         if teammate_bootstrap_task is not None:
             teammate_bootstrap_task.cancel()
             try:
@@ -273,6 +391,16 @@ async def _run(host: str, port: int) -> None:
                 pass
             except Exception as exc:
                 logger.warning("[AgentServer] teammate bootstrap daemon stop failed: %s", exc)
+        # 图像模态预热任务在 server 的统一槽位里,由下方 server.stop() 内的
+        # _stop_main_services cancel 回收,这里不重复处理。
+        if zen_free_models_task is not None:
+            zen_free_models_task.cancel()
+            try:
+                await zen_free_models_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("[AgentServer] zen free models warmup stop failed: %s", exc)
         await server.stop()
         # Shutdown team observability (flush & close spans)
         try:
@@ -291,6 +419,62 @@ async def _run(host: str, port: int) -> None:
         except Exception as exc:
             logger.warning("[AgentServer] agent observability shutdown failed: %s", exc)
         logger.info("[AgentServer] stopped")
+
+
+def _detect_sandbox_local_ip() -> str | None:
+    """Best-effort 检测当前进程所在网络命名空间的非 loopback IPv4。
+
+    用 UDP socket 连一个远端地址(不实际发包),取 ``getsockname()`` 的本端 IP。
+    ISOLATED 沙箱(独立 netns)里拿到 veth 地址;HOST 模式拿到宿主出口 IP。
+    失败或仅有 loopback 时返回 None,由调用方回退 127.0.0.1。
+    """
+    import socket
+
+    # 候选探测目标:先链路本地网关,再公网兜底。UDP connect 不发包,
+    # 仅让内核选出口网卡并解析本端地址,沙箱内无路由也会快速失败。
+    for target in ("169.254.1.1", "1.1.1.1", "8.8.8.8"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(0.2)
+                s.connect((target, 80))
+                ip = s.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_bind_host() -> str:
+    """决定 agentserver 的 bind host,兼顾单机版与沙箱一体机模式。
+
+    优先级:
+    1. ``AGENT_SERVER_HOST`` 环境变量(显式指定,含 127.0.0.1)——保持单机版与显式配置兼容;
+    2. 沙箱环境(``JIUWENBOX_LISTEN`` 存在,表明处于 jiuwenbox 沙箱管控下)且 env 为空:
+       检测沙箱本地非 loopback IP,ISOLATED 模式拿到 veth 地址,外部可达;
+    3. 其余(单机版 env 为空)回退 127.0.0.1,保持 ``os.getenv("AGENT_SERVER_HOST", "127.0.0.1")``
+       的单机默认语义不变。
+    """
+    env_host = os.getenv("AGENT_SERVER_HOST", "").strip()
+    if env_host:
+        return env_host
+
+    # 沙箱标志:jiuwenbox runtime 起沙箱时设置,单机版直接跑 agentserver 时不存在。
+    if os.getenv("JIUWENBOX_LISTEN"):
+        detected = _detect_sandbox_local_ip()
+        if detected:
+            logger.info(
+                "[AgentServer] AGENT_SERVER_HOST unset in sandbox; "
+                "detected sandbox local IP: %s",
+                detected,
+            )
+            return detected
+        logger.info(
+            "[AgentServer] AGENT_SERVER_HOST unset in sandbox but no non-loopback "
+            "IP detected; falling back to 127.0.0.1"
+        )
+
+    return "127.0.0.1"
 
 
 def main() -> None:
@@ -326,7 +510,7 @@ def main() -> None:
         # Early parsing failed - error was already printed
         raise SystemExit(1)
 
-    host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1")
+    host = _resolve_bind_host()
     port = args.port
     if port is None:
         for key in ("AGENT_SERVER_PORT", "AGENT_PORT"):
@@ -343,5 +527,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

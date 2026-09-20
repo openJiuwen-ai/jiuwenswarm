@@ -20,6 +20,7 @@
 import { makeItem } from "../helpers.js";
 import { HANDOFF_TARGET_CC_TUI } from "../../supervision/protocol.js";
 import { CommandKind, type CommandContext, type SlashCommand } from "../types.js";
+import type { PendingQuestionOption } from "../../event-handlers.js";
 
 /** /switch 等待型取消的默认超时时间。 */
 const SWITCH_CANCEL_TIMEOUT_MS = 5000;
@@ -27,9 +28,8 @@ const SWITCH_CANCEL_TIMEOUT_MS = 5000;
 /** 3rdagent.list 响应中的 agent 条目。 */
 interface ThirdAgentEntry {
   agent_type: string;
-  image_name?: string;
-  image_uri?: string;
-  metadata?: Record<string, unknown>;
+  /** 可选的远端启动/执行命令；非空时原样透传到 handoff JSON，不拼接进 agent_type。 */
+  cmd?: string;
 }
 
 /** 3rdagent.list 响应 payload。 */
@@ -45,7 +45,7 @@ interface ThirdAgentListPayload {
 async function performSwitch(
   ctx: CommandContext,
   agentType: string,
-  displayLabel: string,
+  cmd?: string,
 ): Promise<void> {
   // 1. 预检 handoff（必须在询问和取消任务之前失败）
   if (!ctx.checkHandoff || !ctx.requestHandoff) {
@@ -53,7 +53,7 @@ async function performSwitch(
       makeItem(
         ctx.sessionId,
         "error",
-        `Switch to ${displayLabel} unavailable: running outside agentos-tui launcher`,
+        `Switch to ${agentType} unavailable: running outside agentos-tui launcher`,
       ),
     );
     return;
@@ -77,11 +77,11 @@ async function performSwitch(
       [
         {
           header: "切换 TUI",
-          question: `当前有正在运行的任务，切换到 ${displayLabel} 会中断这些任务。`,
+          question: `当前有正在运行的任务，切换到 ${agentType} 会中断这些任务。`,
           options: [
             {
               label: "中断任务并切换",
-              description: `停止当前任务，切换到 ${displayLabel}`,
+              description: `停止当前任务，切换到 ${agentType}`,
             },
             {
               label: "取消切换",
@@ -123,8 +123,9 @@ async function performSwitch(
   //    requestHandoff 会构造 handoff JSON 输出到 stdout（供 launcher 读取），
   //    然后以动作退出码 88 退出。launcher 从 stdout 读取 JSON 后，
   //    由 launcher 连接 gateway 发起 3rdagent.switch RPC 并建立 SSH 隧道。
+  //    cmd（可选）作为独立字段写入 handoff JSON，原样透传，不拼接进 content/parsed。
   try {
-    await ctx.requestHandoff(HANDOFF_TARGET_CC_TUI, `switch ${agentType}`);
+    await ctx.requestHandoff(HANDOFF_TARGET_CC_TUI, `switch ${agentType}`, cmd);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     ctx.addItem(makeItem(ctx.sessionId, "error", `Handoff failed: ${msg}`));
@@ -171,21 +172,19 @@ async function listAndSelectAgent(ctx: CommandContext): Promise<void> {
     return;
   }
 
-  // 渲染 agent 列表
+  // 渲染 agent 列表（仅显示 agent_type）
   const listLines = [
     "Registered third-party agents:",
     ...agents.map((a, i) => {
       const marker = a.agent_type === currentAgentType ? " (current)" : "";
-      const desc = a.image_name || a.agent_type;
-      return `${i + 1}. ${a.agent_type}${marker} — ${desc}`;
+      return `${i + 1}. ${a.agent_type}${marker}`;
     }),
   ];
   ctx.addItem(makeItem(ctx.sessionId, "info", listLines.join("\n"), "i"));
 
-  // 构造选择选项
-  const options = agents.map((a) => ({
+  // 构造选择选项（仅显示 agent_type，不带 description）
+  const options: PendingQuestionOption[] = agents.map((a) => ({
     label: a.agent_type,
-    description: a.image_name || a.image_uri || a.agent_type,
   }));
   options.push({
     label: "取消切换",
@@ -210,8 +209,9 @@ async function listAndSelectAgent(ctx: CommandContext): Promise<void> {
     return;
   }
 
-  // 执行切换
-  await performSwitch(ctx, selected, selected);
+  // 执行切换：查找完整 agent 对象，透传可选 cmd（找不到时 cmd 为 undefined，行为同旧版）
+  const selectedAgent = agents.find((agent) => agent.agent_type === selected);
+  await performSwitch(ctx, selected, selectedAgent?.cmd);
 }
 
 export function createSwitchCommand(): SlashCommand {

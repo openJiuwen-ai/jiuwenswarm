@@ -45,6 +45,33 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def render_ask_user_answer(payload: dict[str, Any]) -> str:
+    """Render structured ask-user evidence as text without losing option details."""
+    questions = payload.get("questions")
+    if not isinstance(questions, list):
+        content = payload.get("content")
+        return content if isinstance(content, str) else ""
+    rendered: list[str] = []
+    for item in questions:
+        if not isinstance(item, dict):
+            continue
+        header = str(item.get("header") or "").strip()
+        options = item.get("options")
+        if isinstance(options, list):
+            for option in options:
+                if not isinstance(option, dict):
+                    continue
+                label = str(option.get("label") or "").strip()
+                description = str(option.get("description") or "").strip()
+                detail = "：".join(part for part in (label, description) if part)
+                if detail:
+                    rendered.append(detail)
+        question = str(item.get("question") or "").strip()
+        if question:
+            rendered.append(f"{header}：{question}" if header else question)
+    return "\n".join(rendered)
+
+
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -287,6 +314,95 @@ def task_evidence(feature_root: Path, task_id: str) -> dict[str, Any]:
             if (row.get("payload") or {}).get("tool_name") == "search_long_term_memory"
         ),
     }
+
+
+def transport_task_evidence(
+    transport_path: Path,
+    task_id: str,
+    start_offset: int = 0,
+) -> dict[str, Any]:
+    """Build non-persist task evidence from its product WebSocket window."""
+    window: list[dict[str, Any]] = []
+    collecting = False
+
+    def window_rows():
+        try:
+            with transport_path.open("r", encoding="utf-8") as handle:
+                handle.seek(start_offset)
+                for line in handle:
+                    if line.strip():
+                        yield json.loads(line)
+        except FileNotFoundError:
+            return
+
+    for row in window_rows():
+        if row.get("direction") == "out" and row.get("kind") == "natural-task":
+            frame = row.get("frame") or {}
+            matches = str(frame.get("id") or "") == task_id
+            if collecting and not matches:
+                break
+            collecting = matches
+            if collecting:
+                window = []
+            continue
+        if collecting:
+            window.append(row)
+
+    calls: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    for row in window:
+        if row.get("direction") != "in":
+            continue
+        frame = row.get("frame") or {}
+        payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+        event_type = str(payload.get("event_type") or frame.get("event") or "")
+        if event_type == "chat.tool_call" and isinstance(payload.get("tool_call"), dict):
+            calls.append(payload["tool_call"])
+        elif event_type == "chat.tool_result":
+            result = payload.get("result")
+            if not (isinstance(result, str) and "success=False" in result):
+                results.append(payload)
+
+    def tool_args(call: dict[str, Any]) -> dict[str, Any]:
+        value = call.get("arguments")
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    commands = [
+        str(tool_args(call).get("command") or tool_args(call).get("cmd") or "")
+        for call in calls
+    ]
+    return {
+        "raw_events": sum(row.get("direction") == "in" for row in window),
+        "tool_calls": len(calls),
+        "successful_tool_results": len(results),
+        "tool_names": sorted({str(call.get("name") or "") for call in calls}),
+        "verification_commands": [command for command in commands if "pytest" in command.casefold()],
+        "memory_searches": sum(
+            1 for call in calls if call.get("name") == "search_long_term_memory"
+        ),
+    }
+
+
+def transport_metrics(transport_path: Path) -> dict[str, Any]:
+    metrics = {"records": 0, "model_calls": 0, "context_replacements": 0}
+    for row in iter_jsonl(transport_path):
+        metrics["records"] += 1
+        frame = row.get("frame") or {}
+        payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+        event_type = str(payload.get("event_type") or frame.get("event") or "")
+        if row.get("direction") == "out" and row.get("kind") == "natural-task":
+            metrics["model_calls"] += 1
+        if event_type in {"context.replaced", "chat.context_replaced"}:
+            metrics["context_replacements"] += 1
+    return metrics
 
 
 def raw_history_metrics(feature_root: Path, covered_through: int = 0) -> dict[str, Any]:
@@ -578,6 +694,7 @@ async def receive_turn(
     work_mode: str,
     workspace: Path,
     model_name: str,
+    persist_session: bool,
 ) -> str:
     deadline = asyncio.get_running_loop().time() + timeout
     chunks: list[str] = []
@@ -616,7 +733,7 @@ async def receive_turn(
                 "workspace_dir": str(workspace),
                 "trusted_dirs": [str(workspace)],
                 "model_name": model_name,
-                "eternal_conversation_enabled": True,
+                "eternal_conversation_enabled": persist_session,
                 "request_id": interrupt_request_id,
                 "source": str(payload.get("source")),
                 "answers": [
@@ -661,6 +778,10 @@ async def receive_turn(
             continue
         if event_type == "chat.delta" and isinstance(content, str):
             chunks.append(content)
+        elif event_type == "chat.ask_user_question":
+            saw_terminal = True
+            structured = render_ask_user_answer(payload)
+            final = "\n".join(part for part in ("".join(chunks).strip(), structured) if part)
         elif event_type in FINAL_EVENTS:
             saw_terminal = True
             if isinstance(content, str):
@@ -730,18 +851,22 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
     if args.formal and len(all_tasks) != 200:
         raise RuntimeError("formal quadrant must execute all 200 tasks")
     model = resolve_configured_model(args.model_name)
+    run_kind = "ablation" if args.ablation_no_eternal else "eternal"
     run_root: Path | None = None
     rows: list[dict[str, Any]] = []
     if args.resume:
         candidates = sorted(
-            args.evidence_root.glob(f"{channel}-{mode}-eternal-{channel}-{mode}-*"),
+            args.evidence_root.glob(f"{channel}-{mode}-{run_kind}-{channel}-{mode}-*"),
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
         if candidates:
             run_root = candidates[0]
             existing_proof = load_json(run_root / "proof.json", {}) or {}
-            if existing_proof.get("accepted") is True:
+            if (
+                existing_proof.get("accepted") is True
+                and int(existing_proof.get("tasks_required") or 0) == args.task_limit
+            ):
                 proof_path = run_root / "proof.json"
                 return {
                     **existing_proof,
@@ -751,7 +876,10 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             session_id = run_root.name.removeprefix(f"{channel}-{mode}-")
             previous = load_jsonl(run_root / "progress.jsonl")
             for row in previous:
-                if row.get("passed") and int(row.get("number") or 0) == len(rows) + 1:
+                if (
+                    int(row.get("number") or 0) == len(rows) + 1
+                    and (row.get("passed") or args.continue_after_failure)
+                ):
                     rows.append(row)
                 else:
                     append_interrupted_once(run_root / "interrupted-tasks.jsonl", row)
@@ -763,11 +891,15 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                 run_root / "checkpoint-restores.jsonl",
             )
         else:
-            session_id = args.session_id or f"eternal-{channel}-{mode}-{uuid.uuid4().hex}"
+            session_id = args.session_id or f"{run_kind}-{channel}-{mode}-{uuid.uuid4().hex}"
     else:
-        session_id = args.session_id or f"eternal-{channel}-{mode}-{uuid.uuid4().hex}"
+        session_id = args.session_id or f"{run_kind}-{channel}-{mode}-{uuid.uuid4().hex}"
     session_root = get_agent_sessions_dir() / session_id
     feature_root = session_root / "eternal-conversation"
+    resume_path_missing = not args.workspace.exists() or not session_root.exists()
+    required_feature_missing = (
+        not args.ablation_no_eternal and not feature_root.exists()
+    )
     if run_root is None:
         if feature_root.exists() or session_root.exists() and any(session_root.iterdir()):
             raise RuntimeError(f"acceptance requires a fresh empty Session: {session_root}")
@@ -775,15 +907,51 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
         scenario["initialize_project"](args.workspace)
         run_root = args.evidence_root / f"{channel}-{mode}-{session_id}"
         run_root.mkdir(parents=True, exist_ok=False)
-    elif not feature_root.exists() or not args.workspace.exists():
+    elif resume_path_missing or required_feature_missing:
         raise RuntimeError("resume requires the original Session and project workspace")
     transport_path = run_root / "transport.jsonl"
     url = args.web_url if channel == "web" else args.tui_url
     canonical_mode = "agent" if mode == "work" else "code.normal"
 
+    async def interrupt_timed_out_turn(ws, request_id: str) -> dict[str, Any]:
+        """Cancel a timed-out foreground turn before restoring its workspace."""
+        interrupt_id = f"{request_id}-timeout-interrupt"
+        request = {
+            "type": "req",
+            "id": interrupt_id,
+            "method": "chat.interrupt",
+            "params": {
+                "intent": "cancel",
+                "session_id": session_id,
+                "mode": canonical_mode,
+                "trusted_dirs": [str(args.workspace)],
+            },
+        }
+        append_jsonl(
+            transport_path,
+            {"direction": "out", "kind": "task-timeout-interrupt", "frame": request},
+        )
+        await ws.send(json.dumps(request, ensure_ascii=False))
+        deadline = asyncio.get_running_loop().time() + 30.0
+        while asyncio.get_running_loop().time() < deadline:
+            raw = await asyncio.wait_for(
+                ws.recv(),
+                timeout=max(0.1, deadline - asyncio.get_running_loop().time()),
+            )
+            frame = json.loads(raw)
+            append_jsonl(transport_path, {"direction": "in", "frame": frame})
+            if frame.get("type") == "res" and frame.get("id") == interrupt_id:
+                return {
+                    "request_id": interrupt_id,
+                    "accepted": bool(frame.get("ok")),
+                    "payload": frame.get("payload") or {},
+                }
+        return {"request_id": interrupt_id, "accepted": False, "reason": "timeout"}
+
     async def execute_task(ws, task: dict[str, Any], attempt: int) -> dict[str, Any]:
         request_id = f"acceptance-{int(task['number']):03d}-{uuid.uuid4().hex[:8]}"
         before = project_manifest(args.workspace)
+        transport_start_offset = transport_path.stat().st_size if transport_path.exists() else 0
         request = {
             "type": "req",
             "id": request_id,
@@ -799,7 +967,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                 "workspace_dir": str(args.workspace),
                 "trusted_dirs": [str(args.workspace)],
                 "model_name": model["model_name"],
-                "eternal_conversation_enabled": True,
+                "eternal_conversation_enabled": not args.ablation_no_eternal,
             },
         }
         started = time.monotonic()
@@ -808,20 +976,51 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             {"direction": "out", "kind": "natural-task", "attempt": attempt, "frame": request},
         )
         await ws.send(json.dumps(request, ensure_ascii=False))
-        answer = await receive_turn(
-            ws,
-            request_id,
-            args.turn_timeout,
-            transport_path,
-            session_id=session_id,
-            canonical_mode=canonical_mode,
-            work_mode=mode,
-            workspace=args.workspace,
-            model_name=model["model_name"],
-        )
+        try:
+            answer = await receive_turn(
+                ws,
+                request_id,
+                args.turn_timeout,
+                transport_path,
+                session_id=session_id,
+                canonical_mode=canonical_mode,
+                work_mode=mode,
+                workspace=args.workspace,
+                model_name=model["model_name"],
+                persist_session=not args.ablation_no_eternal,
+            )
+        except TimeoutError as exc:
+            interrupt = await interrupt_timed_out_turn(ws, request_id)
+            after = project_manifest(args.workspace)
+            changed = sorted(
+                path for path in set(before) | set(after) if before.get(path) != after.get(path)
+            )
+            evidence = (
+                transport_task_evidence(transport_path, request_id, transport_start_offset)
+                if args.ablation_no_eternal
+                else task_evidence(feature_root, request_id)
+            )
+            return {
+                **task,
+                "attempt": attempt,
+                "request_id": request_id,
+                "duration_seconds": round(time.monotonic() - started, 3),
+                "answer": "",
+                "changed_paths": changed,
+                "evidence": evidence,
+                "question_evidence": False,
+                "marker_evidence": None,
+                "timeout_interrupt": interrupt,
+                "failures": [f"{type(exc).__name__}: {exc}"],
+                "passed": False,
+            }
         after = project_manifest(args.workspace)
         changed = sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
-        evidence = task_evidence(feature_root, request_id)
+        evidence = (
+            transport_task_evidence(transport_path, request_id, transport_start_offset)
+            if args.ablation_no_eternal
+            else task_evidence(feature_root, request_id)
+        )
         is_probe = bool(task.get("conflict_probe"))
         marker = task.get("probe_marker")
         question = bool(re.search(r"[?？][\s*_`'\"）)\]]*$", answer.strip()))
@@ -838,7 +1037,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                 failures.append("blind conflict probe did not end with one question")
             if not marker_found:
                 failures.append("blind conflict probe did not recover hidden marker")
-            if evidence["memory_searches"] < 1:
+            if not args.ablation_no_eternal and evidence["memory_searches"] < 1:
                 failures.append("blind conflict probe did not call memory search")
         else:
             if not changed:
@@ -872,6 +1071,20 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                 )
                 row = await execute_task(ws, task, attempt)
                 if row["passed"]:
+                    if args.ablation_no_eternal:
+                        row["memory_barrier_waited"] = False
+                        row["uncovered_finished_tasks"] = None
+                        rows.append(row)
+                        append_jsonl(run_root / "progress.jsonl", row)
+                        write_json(
+                            run_root / "heartbeat.json",
+                            {
+                                "completed": len(rows),
+                                "passed": sum(bool(item.get("passed")) for item in rows),
+                                "updated_at": utc_now(),
+                            },
+                        )
+                        break
                     projection_before_barrier = load_json(
                         feature_root / "state" / "eternal-conversation.json", {}
                     ) or {}
@@ -913,7 +1126,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                                 run_root / "heartbeat.json",
                                 {
                                     "completed": len(rows),
-                                    "passed": len(rows),
+                                    "passed": sum(bool(item.get("passed")) for item in rows),
                                     "memory_barrier_error": row["memory_barrier_error"],
                                     "updated_at": utc_now(),
                                 },
@@ -926,7 +1139,11 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                     append_jsonl(run_root / "progress.jsonl", row)
                     write_json(
                         run_root / "heartbeat.json",
-                        {"completed": len(rows), "passed": len(rows), "updated_at": utc_now()},
+                        {
+                            "completed": len(rows),
+                            "passed": sum(bool(item.get("passed")) for item in rows),
+                            "updated_at": utc_now(),
+                        },
                     )
                     break
                 restore_incomplete_checkpoint(
@@ -936,7 +1153,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                     run_root / "checkpoint-restores.jsonl",
                 )
                 row["workspace_restored_to_task_baseline"] = True
-                if attempt < args.max_task_attempts:
+                if attempt < args.max_task_attempts and not args.ablation_no_eternal:
                     try:
                         retry_projection = await wait_memory_idle(
                             feature_root, args.background_timeout
@@ -956,29 +1173,68 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
                     append_jsonl(run_root / "progress.jsonl", row)
                     write_json(
                         run_root / "heartbeat.json",
-                        {"completed": len(rows), "passed": len(rows) - 1, "updated_at": utc_now()},
+                        {
+                            "completed": len(rows),
+                            "passed": sum(bool(item.get("passed")) for item in rows),
+                            "updated_at": utc_now(),
+                        },
                     )
-                    stop_quadrant = True
+                    stop_quadrant = not args.continue_after_failure
             if stop_quadrant:
                 break
-    projection = await wait_memory_idle(feature_root, args.background_timeout)
+    projection = (
+        {}
+        if args.ablation_no_eternal
+        else await wait_memory_idle(feature_root, args.background_timeout)
+    )
     final_pytest = await run_final_pytest(args.workspace, args.final_pytest_timeout)
     write_json(run_root / "final-pytest.json", final_pytest)
-    histories = {
-        role: str(feature_root / "agent-history" / role / "conversation.jsonl")
-        for role in ("foreground", "extractor", "builder")
-    }
-    histories["raw"] = str(feature_root / "raw-history" / "events.jsonl")
-    raw_metrics = raw_history_metrics(feature_root)
+    if args.ablation_no_eternal:
+        histories = {"foreground": str(session_root / "history.jsonl")}
+        raw_metrics = transport_metrics(transport_path)
+    else:
+        histories = {
+            role: str(feature_root / "agent-history" / role / "conversation.jsonl")
+            for role in ("foreground", "extractor", "builder")
+        }
+        histories["raw"] = str(feature_root / "raw-history" / "events.jsonl")
+        raw_metrics = raw_history_metrics(feature_root)
     blind_probe_rows = [row for row in rows if row.get("conflict_probe")]
     blind_probes_using_memory_search = sum(
         row["passed"] and int(row["evidence"]["memory_searches"]) > 0
         for row in blind_probe_rows
     )
-    inventory = evidence_inventory(feature_root)
-    formal_gates = (
-        not args.formal
-        or (
+    metadata = load_json(session_root / "metadata.json", {}) or {}
+    if args.ablation_no_eternal:
+        eternal_artifacts = sorted(
+            str(path.relative_to(session_root))
+            for path in feature_root.rglob("*")
+            if path.is_file()
+        ) if feature_root.exists() else []
+        foreground_history = session_root / "history.jsonl"
+        inventory = {
+            "transport": history_file_inventory(transport_path),
+            "foreground_history": (
+                history_file_inventory(foreground_history)
+                if foreground_history.exists()
+                else None
+            ),
+            "eternal_artifacts": eternal_artifacts,
+        }
+        formal_gates = (
+            not args.formal
+            or (
+                metadata.get("persist_session") is False
+                and not eternal_artifacts
+                and foreground_history.exists()
+                and len(blind_probe_rows) == 5
+            )
+        )
+    else:
+        inventory = evidence_inventory(feature_root)
+        formal_gates = (
+            not args.formal
+            or (
             len(blind_probe_rows) == 5
             and blind_probes_using_memory_search == 5
             and int(raw_metrics["context_replacements"]) > 0
@@ -988,8 +1244,8 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
             and inventory["raw_hash_chain"]["verified"] is True
             and int(inventory["raw_hash_chain"]["records"]) == int(raw_metrics["records"])
             and inventory["derived_evidence_views"]["verified"] is True
+            )
         )
-    )
     accepted = (
         len(rows) == len(all_tasks)
         and all(row["passed"] for row in rows)
@@ -998,6 +1254,7 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
     )
     proof = {
         "accepted": accepted,
+        "ablation_no_eternal": args.ablation_no_eternal,
         "channel": channel,
         "mode": mode,
         "session_id": session_id,
@@ -1038,6 +1295,21 @@ async def run_quadrant(args: argparse.Namespace, channel: str, mode: str) -> dic
         "evidence_inventory": inventory,
         "feature_root": str(feature_root),
         "project_root": str(args.workspace),
+        "persist_session": metadata.get("persist_session"),
+        "first_failure": next(
+            (
+                {
+                    "number": row.get("number"),
+                    "phase": row.get("phase"),
+                    "component": row.get("component"),
+                    "failures": row.get("failures"),
+                    "request_id": row.get("request_id"),
+                }
+                for row in rows
+                if not row.get("passed")
+            ),
+            None,
+        ),
     }
     proof_path = run_root / "proof.json"
     write_json(proof_path, proof)
@@ -1119,7 +1391,17 @@ def main() -> int:
     )
     parser.add_argument("--matrix-concurrency", type=int, default=4)
     parser.add_argument("--max-task-attempts", type=int, default=3)
+    parser.add_argument(
+        "--continue-after-failure",
+        action="store_true",
+        help="record an exhausted failed task and continue the remaining workload",
+    )
     parser.add_argument("--formal", action="store_true")
+    parser.add_argument(
+        "--ablation-no-eternal",
+        action="store_true",
+        help="run the full workload with Persist Session disabled and score from transport evidence",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--task-limit", type=int, default=200)
     parser.add_argument("--turn-timeout", type=float, default=30 * 60)

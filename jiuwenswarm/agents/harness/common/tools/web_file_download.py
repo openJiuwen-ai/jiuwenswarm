@@ -7,7 +7,10 @@
 
 协议：
 - 令牌格式: Base64URL(payload_json) + "." + Hex(HMAC-SHA256)
-- payload 包含: path, exp, session_id
+- 普通下载 payload: path, sid；可选 exp（省略则不过期，用于 send_file_to_user 交付产物）
+- Skill 正文图片 / 上传等短期令牌仍携带 exp
+- Skill 正文图片 payload: purpose=skill_content_image, name, version, relative_path, exp, sid（无 path）
+- 受管资产令牌额外绑定: asset_id, size, digest, name
 - 密钥来源: 环境变量 JIUWENSWARM_FILE_DOWNLOAD_SECRET 或自动生成并写入共享文件
 """
 
@@ -22,8 +25,14 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
+
+if TYPE_CHECKING:
+    from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
+        VerifiedDownloadAsset,
+        VerifiedDownloadAssetOwner,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +42,11 @@ _SECRET_FILE_NAME = ".file_download_secret"
 _DOWNLOAD_HTTP_BASE_ENV_KEY = "JIUWENSWARM_AGENT_DOWNLOAD_HTTP_BASE"
 _UPLOAD_HTTP_BASE_ENV_KEY = "JIUWENSWARM_AGENT_UPLOAD_HTTP_BASE"
 _LEGACY_HTTP_BASE_ENV_KEY = "JIUWENSWARM_AGENT_HTTP_BASE"
+_VERIFIED_ASSET_TOKEN_KIND = "verified_asset_v1"
+_LEGACY_TOKEN_KEYS = frozenset({"path", "sid"})
+_ROUTED_DOWNLOAD_TOKEN_KEYS = frozenset(
+    {"path", "sid", "download_http_base"}
+)
 PURPOSE_SKILL_CONTENT_IMAGE = "skill_content_image"
 
 
@@ -77,8 +91,14 @@ class WebFileDownloadManager:
 
     _instance: WebFileDownloadManager | None = None
 
-    def __init__(self, secret: str | None = None) -> None:
+    def __init__(
+        self,
+        secret: str | None = None,
+        *,
+        asset_owner: VerifiedDownloadAssetOwner | None = None,
+    ) -> None:
         self._secret = secret or _load_or_create_secret()
+        self._asset_owner = asset_owner
 
     @classmethod
     def get_instance(cls) -> WebFileDownloadManager:
@@ -96,20 +116,43 @@ class WebFileDownloadManager:
         signature = hmac.new(self._secret.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
         return f"{payload_b64}.{signature}"
 
+    def generate_verified_asset_token(
+        self,
+        asset: VerifiedDownloadAsset,
+        *,
+        file_name: str,
+        session_id: str = "",
+    ) -> str:
+        """Generate a token bound to one durable verified asset registration."""
+
+        payload = {
+            "kind": _VERIFIED_ASSET_TOKEN_KIND,
+            "asset_id": asset.asset_id,
+            "path": asset.sealed_path.as_posix(),
+            "exp": asset.expires_at,
+            "size": asset.size_bytes,
+            "digest": asset.content_digest,
+            "name": Path(file_name).name,
+            "sid": session_id,
+        }
+        return self._sign_payload(payload)
+
     def generate_token(
         self,
         file_path: str,
         session_id: str = "",
-        expires_in: int = _DEFAULT_EXPIRES_SECONDS,
+        expires_in: int | None = None,
         *,
         agent_http_base: str | None = None,
         agent_http_base_key: str = "",
     ) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "path": file_path,
-            "exp": int(time.time()) + expires_in,
             "sid": session_id,
         }
+        # expires_in=None：不写入 exp，校验侧视为不过期（send_file 交付产物）。
+        if expires_in is not None:
+            payload["exp"] = int(time.time()) + int(expires_in)
         # AgentOS 下 token 由目标 AgentServer 签发。将部署注入的、可访问该
         # sandbox 的 HTTP bridge 基址随 token 返回，使独立运行的 Web 静态进程
         # 不必持有用户态目录或 AgentOS Router 对象也能代理到正确用户。
@@ -153,11 +196,37 @@ class WebFileDownloadManager:
             if not isinstance(payload, dict):
                 return None
             if check_expiry:
+                # 兼容无 exp 字段的交付令牌：不强制过期；有 exp 则严格校验。
                 exp = payload.get("exp")
-                if exp is not None and (not isinstance(exp, (int, float)) or int(exp) < int(time.time())):
+                if exp is None and not _is_legacy_no_expiration_payload(payload):
+                    return None
+                if exp is not None and (
+                    not isinstance(exp, (int, float)) or int(exp) < int(time.time())
+                ):
+                    logger.warning("[WebFileDownload] 令牌已过期")
                     return None
             if session_id is not None and str(session_id).strip():
                 if str(payload.get("sid") or "").strip() != str(session_id).strip():
+                    return None
+            token_kind = payload.get("kind")
+            if token_kind not in (None, _VERIFIED_ASSET_TOKEN_KIND):
+                return None
+            if token_kind == _VERIFIED_ASSET_TOKEN_KIND:
+                expires_at = float(payload.get("exp"))
+                owner = self._asset_owner
+                if owner is None:
+                    from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
+                        get_verified_download_asset_owner,
+                    )
+
+                    owner = get_verified_download_asset_owner()
+                if not owner.is_active(
+                    asset_id=str(payload.get("asset_id") or ""),
+                    sealed_path=str(payload.get("path") or ""),
+                    expires_at=expires_at,
+                    size_bytes=int(payload.get("size")),
+                    content_digest=str(payload.get("digest") or ""),
+                ):
                     return None
             return payload
         except Exception:
@@ -173,11 +242,25 @@ class WebFileDownloadManager:
         return f"/file-api/download?{urlencode(query)}"
 
 
+def _is_legacy_no_expiration_payload(payload: dict[str, Any]) -> bool:
+    """Accept only the two exact signed download schemas allowed without ``exp``."""
+
+    keys = set(payload)
+    if keys not in {_LEGACY_TOKEN_KEYS, _ROUTED_DOWNLOAD_TOKEN_KEYS}:
+        return False
+    return all(isinstance(payload[key], str) and payload[key] for key in keys)
+
+
 def generate_file_download_token(
     file_path: str,
     session_id: str = "",
-    expires_in: int = _DEFAULT_EXPIRES_SECONDS,
+    expires_in: int | None = None,
 ) -> str:
+    """签发文件下载令牌。
+
+    ``expires_in=None``（默认）表示不过期，供 ``send_file_to_user`` 等持久交付使用；
+    需要短期有效时显式传入秒数。
+    """
     return WebFileDownloadManager.get_instance().generate_token(
         file_path,
         session_id,
@@ -290,9 +373,13 @@ def build_file_download_info(
     file_path: str,
     file_name: str,
     session_id: str = "",
-    expires_in: int = _DEFAULT_EXPIRES_SECONDS,
+    expires_in: int | None = None,
     user_id: str = "",
 ) -> dict[str, Any]:
+    """构建可投递的文件下载信息。
+
+    默认签发不过期令牌（``expires_in=None``），与 ``send_file_to_user`` 产物语义一致。
+    """
     token = generate_file_download_token(file_path, session_id, expires_in)
     download_url = WebFileDownloadManager.get_instance().generate_download_url(token, user_id)
 
@@ -314,5 +401,36 @@ def build_file_download_info(
         "size": file_size,
         "mime_type": mime_type,
         "download_url": download_url,
+        "download_token": token,
+    }
+
+
+def build_verified_asset_download_info(
+    asset: VerifiedDownloadAsset,
+    file_name: str,
+    session_id: str = "",
+    user_id: str = "",
+) -> dict[str, Any]:
+    """Build download metadata whose token is backed by a staged asset."""
+
+    manager = WebFileDownloadManager.get_instance()
+    token = manager.generate_verified_asset_token(
+        asset,
+        file_name=file_name,
+        session_id=session_id,
+    )
+    mime_type = "application/octet-stream"
+
+    import mimetypes
+
+    guessed_type, _ = mimetypes.guess_type(file_name)
+    if guessed_type:
+        mime_type = guessed_type
+
+    return {
+        "name": Path(file_name).name,
+        "size": asset.size_bytes,
+        "mime_type": mime_type,
+        "download_url": manager.generate_download_url(token, user_id),
         "download_token": token,
     }

@@ -284,6 +284,16 @@ In Agent Team mode, each team has two-layer memory: each member's own **personal
 
 For the full storage layout, extraction categories (`[decision]` / `[lesson]` / `[member]` / `[context]`), and cross-team / cross-member isolation, see [Memory → Agent Team Memory](Memory.md#advanced-agent-swarm-team-memory).
 
+### 2.6 Pausing and resuming SwarmFlow workflows
+
+When a session has running SwarmFlow workflows (visible in the tree view), their start/stop follows the session/team lifecycle:
+
+- **Pause** — clicking the **Stop** button in the send area pauses background workflows too; they stay resumable, not terminated.
+- **Switch / new session** — resumable workflows of that session are cleaned up (progress is kept; switching back can cold-resume them).
+- **Close the browser tab** — nothing changes; the team and its workflows keep running and the live state is there when you reopen the session. TUI `/exit` / double Ctrl+C trigger a fallback pause that keeps the progress ledger.
+
+Paused workflows do **not** auto-resume: after you send a message, the Leader decides whether (and which) to resume; you can also **pause / resume / stop** an individual run in the tree view. After a restart or switching back, unfinished workflows are restored in the tree view as “paused, pending resume”, with their buttons greyed out until the Leader resumes them.
+
 ---
 
 ## Case study
@@ -322,9 +332,9 @@ The Leader assigns roles, for example:
 
 ![Leader forms the team](../assets/images/leader组建团队.png)
 
-**Team Agent executes**
+**Teammate Agent executes**
 
-After assignment, team agents execute their tasks.
+After assignment, teammate agents execute their tasks.
 
 ![Teammates receive and run tasks](../assets/images/团队成员接收任务.png)
 
@@ -525,6 +535,8 @@ Yes. Users can observe:
 Local runtime supports multiple concurrent Team sessions in the same channel. Switching the currently viewed session only affects the UI display and does not stop background tasks of other sessions; pause, cancel, and delete operations act on the specified session only.
 
 Distributed runtime keeps single-active-session semantics per channel. Creating or switching to another Team session first stops the existing active or pending session in that channel, so remote member bootstrap, transport connections, and runtime resources are not reused across sessions.
+
+**SwarmFlow background workflows** started by the Leader in a session follow the same team lifecycle: pause → the workflows pause too (resumable); switch / new session → resumable workflows are cleaned up (progress kept, resumable when switching back); close the browser tab → untouched, keeps running; TUI exit → a fallback pause keeps progress. See “2.6 Pausing and resuming SwarmFlow workflows” above for the full behavior.
 
 ---
 

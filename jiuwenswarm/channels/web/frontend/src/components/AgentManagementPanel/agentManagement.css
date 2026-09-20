@@ -1,0 +1,3167 @@
+.page-content[data-testid='agent-management-panel'] {
+  --agent-content-max: 1400px;
+  --agent-page-gutter: 32px;
+  --agent-opacity-disabled: 0.45;
+  --agent-opacity-muted: 0.55;
+  --agent-opacity-hidden: 0;
+  --agent-opacity-visible: 1;
+  --agent-radius-chip: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--color-surface-content);
+  color: var(--color-text-primary);
+}
+
+.page-content[data-testid="agent-management-panel"][data-variant="mine"] .page-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: var(--space-agent-group-grid);
+  margin-bottom: 0;
+}
+
+/* 二级类型切换（我的专家内 专家/专家团）：已改用 ui/CategoryTabs，
+   这里只保留 page-toolbar 网格里的定位，视觉交给 categoryTabs 自身样式 */
+.page-content[data-variant="mine"] .agent-management-secondary-tabs {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.page-content[data-variant="mine"] .agent-management-primary-actions {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.agent-group-detail > *,
+.agent-group-editor > * {
+  flex-shrink: 0;
+}
+
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail,
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="create"] .agent-group-editor {
+  transform: none;
+}
+
+[data-testid="agent-management-panel"][data-variant="catalog"],
+[data-testid="agent-management-panel"][data-variant="mine"],
+.page-content[data-testid="agent-management-panel"][data-variant="teams"],
+[data-testid="agent-management-panel"][data-variant="detail"],
+[data-testid="agent-management-panel"][data-variant="create"] {
+  overflow-y: hidden;
+  scrollbar-gutter: auto;
+}
+
+[data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor,
+[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail,
+[data-testid="agent-management-panel"][data-variant="create"] .agent-group-editor,
+[data-testid="agent-management-panel"][data-variant="detail"] .agent-group-detail {
+  transform: translateX(4px);
+}
+
+.agent-management-detail,
+.agent-management-editor {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.agent-management-editor h1 {
+  margin: 0;
+  color: var(--color-text-strong);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 36px;
+}
+
+.agent-management-primary-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 0 0 auto;
+  padding-bottom: 0;
+}
+
+.agent-management-create-menu {
+  position: relative;
+}
+
+.agent-management-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  padding: 0 14px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.agent-management-button:disabled {
+  cursor: wait;
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-management-button--primary {
+  border-color: var(--color-action-primary);
+  background: var(--color-action-primary);
+  color: var(--color-action-primary-text);
+}
+
+.agent-management-button--primary:hover:not(:disabled) {
+  background: var(--color-action-primary-hover);
+}
+
+.agent-management-button--secondary {
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+}
+
+.agent-management-button--secondary:hover:not(:disabled) {
+  border-color: var(--color-border-hover);
+  background: var(--color-action-secondary);
+}
+
+.agent-management-create {
+  min-width: 88px;
+  min-height: 32px;
+  border-color: var(--color-text-strong);
+  border-radius: var(--radius-full);
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+}
+
+.agent-management-create:hover:not(:disabled) {
+  border-color: var(--color-text-primary);
+  background: var(--color-text-primary);
+}
+
+.agent-management-toolbar {
+  min-height: 24px;
+}
+
+[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-card {
+  height: 160px;
+}
+
+.agent-management-card {
+  position: relative;
+  height: 160px;
+  overflow: visible;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  transition:
+    border-color var(--duration-normal) var(--ease-out),
+    box-shadow var(--duration-normal) var(--ease-out),
+    transform var(--duration-normal) var(--ease-out);
+}
+
+.agent-group-avatar,
+.agent-group-member-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-agent-group-avatar-surface);
+  color: var(--color-agent-group-avatar-text);
+  font-weight: 600;
+}
+
+.agent-group-avatar img,
+.agent-group-member-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-group-avatar--card {
+  width: 44px;
+  height: 44px;
+  font-size: 18px;
+}
+
+.agent-group-member-avatar {
+  width: 36px;
+  height: 36px;
+  font-size: 15px;
+}
+
+.agent-group-editor__selection-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.agent-group-editor__selection-label > span {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.agent-group-editor__selection-label button {
+  border: 0;
+  background: transparent;
+  color: var(--color-text-link);
+  padding: 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.agent-group-editor__selection-label button:disabled {
+  cursor: wait;
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-group-editor__selected-agent {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  padding: 8px 10px;
+}
+
+.agent-group-editor__selected-agent strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-upload-dialog__kind {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border-default);
+  padding: 0 24px;
+}
+
+.agent-group-upload-dialog__kind button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 10px 4px 9px;
+  cursor: pointer;
+}
+
+.agent-group-upload-dialog__kind button.is-active {
+  border-bottom-color: var(--color-action-primary);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.agent-management-card:hover,
+.agent-management-card:focus-within {
+  border-color: var(--color-border-hover);
+  box-shadow: var(--effect-shadow-md);
+  transform: translateY(-1px);
+}
+
+.agent-management-card__body {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  padding: 23px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-management-card__heading {
+  display: flex;
+  height: 56px;
+  flex: 0 0 56px;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.agent-management-card__content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 0;
+}
+
+.agent-management-card:hover .agent-management-card__content,
+.agent-management-card:focus-within .agent-management-card__content {
+  padding-right: 64px;
+}
+
+.agent-management-card--multi-action:hover .agent-management-card__content,
+.agent-management-card--multi-action:focus-within .agent-management-card__content {
+  padding-right: 148px;
+}
+
+.agent-management-card__title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-management-card__title {
+  overflow: hidden;
+  color: var(--color-text-strong);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-card__description {
+  display: -webkit-box;
+  overflow: hidden;
+  flex: 0 0 auto;
+  margin-top: 12px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-management-card__meta {
+  --agent-management-tag-overflow-width: 20px;
+  display: flex;
+  min-width: 0;
+  min-height: 24px;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.agent-management-card__meta>.agent-management-tag {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-card__tag-overflow {
+  display: inline-flex;
+  width: var(--agent-management-tag-overflow-width);
+  height: 24px;
+  flex: 0 0 var(--agent-management-tag-overflow-width);
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+}
+
+.agent-management-card__meta-measure {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  display: flex;
+  gap: 8px;
+  visibility: hidden;
+  width: max-content;
+  pointer-events: none;
+}
+.agent-management-card__update {
+  position: relative;
+  display: inline-flex;
+  width: 18px;
+  height: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-primary);
+}
+
+.agent-management-card__update-dot {
+  position: absolute;
+  top: 0;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--color-surface-card);
+  border-radius: var(--radius-full);
+  background: var(--color-feedback-success);
+}
+
+.agent-management-card__actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  opacity: var(--opacity-agent-hidden);
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.agent-management-page-card .entity-header__actions {
+  display: contents;
+}
+
+.agent-management-page-card .entity-header__identity {
+  flex: 1 1 auto;
+}
+
+/* Expert and Expert Team cards share PageCard; allow unbroken names/descriptions
+   to use the same two-line clamp as naturally wrapping text. */
+.agent-management-page-card .page-card__body {
+  overflow-wrap: anywhere;
+}
+
+.agent-management-page-card .agent-management-card__actions {
+  position: absolute;
+  top: 36px;
+  right: 24px;
+  margin-left: 0;
+}
+
+.page-card:hover .agent-management-card__actions,
+.agent-management-page-card:focus-within .agent-management-card__actions {
+  opacity: var(--opacity-agent-visible);
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+@media (min-width: 801px) {
+  .agent-management-page-card:hover .entity-header__identity,
+  .agent-management-page-card:focus-within .entity-header__identity {
+    padding-right: 128px;
+  }
+}
+
+.agent-management-card__actions .agent-management-button {
+  min-width: 56px;
+  min-height: 28px;
+  border-radius: var(--radius-full);
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+.agent-management-card__actions .agent-management-button--primary,
+.agent-management-detail-action--install {
+  border-color: var(--color-text-strong);
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+}
+
+.agent-management-card__actions .agent-management-button--primary:hover:not(:disabled),
+.agent-management-detail-action--install:hover:not(:disabled) {
+  border-color: var(--color-text-primary);
+  background: var(--color-text-primary);
+}
+
+.agent-management-card__actions .agent-management-button--secondary {
+  border-color: var(--color-text-primary);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+}
+
+.agent-management-card__actions .agent-management-button--secondary:hover:not(:disabled) {
+  border-color: var(--color-text-strong);
+  background: var(--color-action-secondary);
+}
+
+.agent-management-card-action--use:disabled,
+.agent-management-detail-action--use:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-agent-disabled);
+}
+
+/* 详情页头像已迁移到共享组件 ui/EntityHeader（.entity-header__avatar） */
+
+.agent-management-state,
+.agent-management-detail--state {
+  display: flex;
+  min-height: 240px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.agent-management-state p,
+.agent-management-detail--state p {
+  margin: 0;
+}
+
+/* 详情加载中：参考 .skill-detail-state（index.css）——flex:1 撑满详情可用区域，
+   返回按钮贴顶（.detail-back 自带限宽居中），文案区 flex:1 占满剩余空间并水平垂直居中，
+   避免返回按钮/文案悬在页面垂直中部；错误态仍沿用上方整体居中样式 */
+.agent-management-detail--state[data-variant='loading'] {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+}
+
+.agent-management-detail--state[data-variant='loading'] p {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 详情错误态：与加载态同构——返回按钮贴顶，文案+重试按钮整体在剩余空间垂直居中
+   （auto margin 分摊剩余空间实现居中，不改 DOM 结构） */
+.agent-management-detail--state[data-variant='error'] {
+  justify-content: flex-start;
+  gap: 0;
+}
+
+.agent-management-detail--state[data-variant='error'] .detail-back {
+  margin-bottom: auto;
+}
+
+.agent-management-detail--state[data-variant='error'] p {
+  margin: 16px 0 0;
+}
+
+.agent-management-detail--state[data-variant='error'] .agent-management-button {
+  margin: 16px 0 auto;
+}
+
+.agent-management-inline-error,
+.agent-management-form-error {
+  border: 1px solid var(--color-border-danger);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-feedback-danger);
+  padding: 12px 16px;
+}
+
+.agent-management-inline-error {
+  margin: 16px 0 0;
+}
+
+.agent-management-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 24px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.agent-management-pagination__buttons {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.agent-management-pagination__buttons button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.agent-management-pagination__buttons button:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-agent-disabled);
+}
+.agent-management-editor {
+  padding-bottom: 72px;
+}
+
+/* 详情页：返回按钮固定在顶部，其余内容（含 header）在 detail-body 内整体滚动 */
+.agent-management-detail {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  font-family: var(--font-body);
+}
+
+/* detail-body 已移至 index.css 统一管理（限宽由 .detail-body > * 规则承担） */
+
+.agent-management-editor h1 {
+  font-size: 20px;
+  line-height: 30px;
+}
+
+/* detail-back 已移至 index.css 统一管理 */
+
+/* 详情头部（identity/标题/徽标）已迁移到共享组件 ui/EntityHeader */
+
+/* 详情页能力 chip 已迁移到共享类 ui 层 index.css（.detail-chip-row / .detail-chip） */
+
+.agent-management-detail__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* 详情头部操作按钮统一 28px 高、药丸形（含带边框的连接/使用/安装按钮，对齐 use-btn） */
+.agent-management-detail__actions .agent-management-button {
+  min-height: 28px;
+  border-radius: var(--radius-full);
+}
+
+.agent-management-detail-action--install {
+  min-width: 56px;
+  min-height: 28px;
+  padding: 0 28px;
+  border-radius: var(--radius-full);
+}
+
+.agent-management-detail-action--use {
+  min-width: 56px;
+  min-height: 28px;
+  padding: 0 28px;
+  border-radius: var(--radius-full);
+}
+
+.agent-management-detail-action--uninstall {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-primary);
+  padding: 0 8px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.agent-management-detail-action--uninstall:hover:not(:disabled) {
+  background: var(--color-action-secondary);
+}
+
+.agent-management-detail-action--uninstall:disabled {
+  cursor: wait;
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-management-inline-error {
+  margin-top: 20px;
+}
+
+.agent-management-inline-notice,
+.agent-management-connection-warning {
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-feedback-success);
+  padding: 12px 16px;
+}
+
+.agent-management-inline-notice {
+  margin: 16px 0 0;
+}
+
+.agent-management-connection-warning {
+  margin-top: 16px;
+  color: var(--color-text-secondary);
+}
+
+/* 详情体（.detail-body）已改为 flex+gap 统一 32px 间距：详情页内的提示条清零自带 margin，
+   避免与 gap 叠加；列表页 index.tsx 的提示条不在 .agent-management-detail 内，保留原间距 */
+.agent-management-detail .agent-management-inline-error,
+.agent-management-detail .agent-management-inline-notice,
+.agent-management-detail .agent-management-connection-warning {
+  margin: 0;
+}
+
+.agent-management-form-section h2 {
+  margin: 0 0 16px;
+  color: var(--color-text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+/* 详情页能力 chip（原 .agent-management-detail .agent-management-chip）已迁移到
+   共享类 index.css（.detail-chip），规格不变：32px 药丸 / tag-surface 底 / 14px */
+
+/* 详情页快捷输入列表/行（原 .agent-management-prompt-list / .agent-management-prompt /
+   .agent-management-prompt__icon）已迁移到共享类 index.css：容器 .detail-prompt-list +
+   chip .detail-chip.detail-chip--link.detail-chip--spread + 图标位 .detail-chip__icon，
+   chip 规格与连接器详情示例统一为 32px 药丸（原 40px 带边框行不再保留）。 */
+
+.agent-management-detail-capability-group {
+  min-width: 0;
+}
+
+.agent-management-detail-capability-group h2 {
+  margin-bottom: 8px;
+}
+
+.agent-management-detail-capability-group .agent-management-chip {
+  min-height: 32px;
+  border-radius: var(--agent-radius-chip);
+  background: var(--color-sidebar-nav-hover);
+  color: var(--color-text-primary);
+  padding: 0 16px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-management-detail-capability-group+.agent-management-detail-capability-group {
+  margin-top: 32px;
+}
+
+.agent-management-prompt-list {
+  display: grid;
+  max-width: 696px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.agent-management-prompt {
+  display: flex;
+  min-width: 0;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--color-sidebar-nav-hover);
+  border-radius: var(--radius-md);
+  background: var(--color-task-card-surface);
+  color: var(--color-chat-supporting-text);
+  padding: 0 16px;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.agent-management-prompt span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-prompt__send {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-chat-supporting-text);
+  padding: 0;
+  cursor: pointer;
+}
+
+.agent-management-detail .detail-chip--link:disabled,
+.agent-management-prompt__send:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-agent-disabled);
+}
+
+.agent-management-detail-tabs {
+  display: flex;
+  gap: 32px;
+  margin-top: 32px;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.agent-management-detail-tabs button {
+  min-height: 42px;
+  padding: 0 0 12px;
+  color: var(--color-text-primary);
+  font-size: 16px;
+  line-height: 24px;
+  min-width: 64px;
+}
+
+.agent-management-detail-tabs button:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-agent-disabled);
+}
+
+.agent-management-file-preview {
+  height: 650px;
+  margin-top: 24px;
+}
+
+.agent-management-file-preview--unavailable {
+  display: flex;
+  height: auto;
+  min-height: 240px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+}
+
+.agent-management-markdown {
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.agent-management-markdown :where(code)::before,
+.agent-management-markdown :where(code)::after {
+  content: none !important;
+}
+
+.agent-management-editor__header {
+  margin-top: 29px;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.agent-management-editor__tabs {
+  display: flex;
+  gap: 14px;
+  margin-top: 32px;
+}
+
+.agent-management-editor__tabs span {
+  position: relative;
+  min-height: 32px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-management-editor__tabs button {
+  position: relative;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0 0 8px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 24px;
+  white-space: nowrap;
+}
+
+.agent-management-editor__tabs button:hover,
+.agent-management-editor__tabs button:focus-visible {
+  color: var(--color-text-strong);
+  outline: 0;
+}
+
+.agent-management-editor__tabs span:nth-child(-n + 2) {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.agent-management-editor__tabs span:nth-child(1) {
+  width: max-content;
+  min-width: 80px;
+  white-space: nowrap;
+}
+
+.agent-management-editor__tabs span:nth-child(2) {
+  width: 64px;
+}
+
+.agent-management-editor__tabs span:nth-child(3) {
+  width: 70px;
+}
+
+.agent-management-editor__tabs span:first-child {
+  margin-right: 18px;
+}
+
+.agent-management-editor__tabs span.is-active {
+  color: var(--color-text-strong);
+  font-weight: 600;
+}
+
+.agent-management-editor__tabs span.is-active::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--color-text-strong);
+  content: '';
+}
+
+.agent-management-editor__tabs span.is-disabled {
+  color: var(--color-text-tertiary);
+}
+
+.agent-management-form-section {
+  margin-top: 32px;
+}
+
+.agent-management-editor > .agent-management-form-section:first-of-type {
+  margin-top: 32px;
+}
+
+.agent-management-form-section > h2 {
+  margin-bottom: 24px;
+  font-size: 18px;
+  line-height: 28px;
+}
+
+.agent-management-editor > .agent-management-form-section:first-of-type > h2 {
+  margin-bottom: 16px;
+  line-height: 28px;
+}
+
+.agent-management-form-section__header p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.agent-management-form-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.agent-management-form-grid label {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-management-form-grid > .agent-management-form-field--wide {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-management-form-grid > .agent-management-form-field--runtime-id {
+  order: 5;
+}
+
+.agent-management-form-grid > .agent-management-form-field--tag-picker {
+  gap: 2px;
+  margin-bottom: 16px;
+  min-width: 0;
+}
+
+.agent-management-tag-picker {
+  position: relative;
+}
+
+.agent-management-tag-picker__trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  height: 32px;
+  padding: 0 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-management-tag-picker__scroll {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0;
+  cursor: pointer;
+}
+
+.agent-management-tag-picker__scroll[data-hidden='true'] {
+  visibility: hidden;
+}
+
+.agent-management-tag-picker__scroll--prev[data-hidden='true'] {
+  display: none;
+}
+
+.agent-management-tag-picker__trigger[data-empty='true'] > .agent-management-tag-picker__scroll {
+  display: none;
+}
+
+.agent-management-tag-picker__scroll:hover,
+.agent-management-tag-picker__scroll:focus-visible {
+  background: var(--color-action-secondary);
+  outline: 0;
+}
+
+.agent-management-tag-picker__trigger:focus-visible {
+  border-color: var(--color-border-focus);
+  box-shadow: var(--effect-focus-ring);
+  outline: 0;
+}
+
+.agent-management-tag-picker__values {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+
+.agent-management-tag-picker__values::-webkit-scrollbar {
+  display: none;
+}
+
+.agent-management-tag--selected {
+  appearance: none;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  border: 0;
+  gap: 8px;
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  font: inherit;
+}
+
+.agent-management-tag--selected > button {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+
+.agent-management-tag--selected:hover {
+  background: var(--color-border-default);
+}
+
+.agent-management-tag-picker__chevron {
+  color: var(--color-text-secondary);
+}
+
+.agent-management-tag-picker__toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0;
+  cursor: pointer;
+}
+
+.agent-management-tag-picker__toggle:hover {
+  background: var(--color-action-secondary);
+}
+
+.agent-management-tag-picker__toggle:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 1px;
+}
+
+.agent-management-form-placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.agent-management-tag-picker__options {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  z-index: 10;
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-md);
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.agent-management-tag-picker__options button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  font: inherit;
+}
+
+.agent-management-tag-picker__options button:hover,
+.agent-management-tag-picker__options button.is-selected {
+  background: var(--color-action-secondary);
+}
+
+.agent-management-tag-picker__options button svg {
+  flex: 0 0 auto;
+  color: var(--color-text-link);
+}
+
+.agent-management-tag-picker__custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-top: 1px solid var(--color-border-default);
+  margin-top: 4px;
+  padding: 8px 4px 2px;
+}
+
+.agent-management-tag-picker__custom input {
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 32px;
+}
+
+.agent-management-tag-picker__custom button {
+  flex: 0 0 auto;
+  justify-content: center;
+  gap: 4px;
+  background: var(--color-action-secondary);
+  padding: 7px 9px;
+  font-size: 13px;
+}
+
+.agent-management-tag-picker__custom button:disabled {
+  color: var(--color-text-placeholder);
+  cursor: not-allowed;
+}
+
+.agent-management-form-grid input,
+.agent-management-form-grid textarea {
+  width: 100%;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  outline: 0;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 20px;
+  resize: vertical;
+}
+
+.agent-management-form-grid input {
+  height: 32px;
+}
+
+.agent-management-form-grid textarea:focus,
+.agent-management-form-grid input:focus {
+  border-color: var(--color-border-default);
+  box-shadow: none;
+}
+
+.agent-management-form-grid textarea {
+  min-height: 64px;
+}
+
+.agent-management-form-grid textarea:not(.agent-management-persona) {
+  height: 64px;
+}
+
+.agent-management-form-grid .agent-management-persona {
+  height: 280px;
+  min-height: 280px;
+  line-height: 1.7;
+}
+
+.agent-management-form-grid > label:has(.agent-management-persona) {
+  gap: 14px;
+}
+
+.agent-management-persona-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-management-persona-surface {
+  min-height: 280px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+}
+
+.agent-management-persona-surface:focus-within {
+  border-color: var(--color-border-default);
+  box-shadow: none;
+}
+
+.agent-management-persona-surface .agent-management-persona {
+  display: block;
+  height: 280px;
+  min-height: 280px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  padding: 10px 12px;
+  line-height: 1.7;
+}
+
+.agent-management-persona-rendered {
+  min-height: 280px;
+  cursor: text;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.agent-management-persona-rendered:focus {
+  outline: 0;
+}
+
+.agent-management-persona-placeholder {
+  color: var(--color-text-placeholder);
+}
+
+.agent-management-persona-rendered .agent-management-markdown {
+  overflow: auto;
+  max-height: 258px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-management-persona-rendered .agent-management-markdown > h1,
+.agent-management-persona-rendered .agent-management-markdown > h2,
+.agent-management-persona-rendered .agent-management-markdown > h3 {
+  color: var(--color-text-strong);
+}
+
+.agent-management-persona-rendered .agent-management-markdown > h1 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+
+.agent-management-persona-rendered .agent-management-markdown > h2 {
+  margin: 24px 0 8px;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+
+.agent-management-persona-rendered .agent-management-markdown > p {
+  margin: 0 0 24px;
+  font-size: 16px;
+  line-height: 24px;
+  white-space: pre-line;
+}
+
+.agent-management-field-error {
+  color: var(--color-feedback-danger);
+  font-size: 12px;
+}
+
+.agent-management-form-field__label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-management-field-counter {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.agent-management-field-counter.is-limit {
+  color: var(--color-feedback-warning);
+}
+
+.agent-management-form-section__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.agent-management-form-section__heading {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.agent-management-section-toggle {
+  display: inline-flex;
+  width: 22px;
+  height: 28px;
+  flex: 0 0 22px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  padding: 0;
+  cursor: pointer;
+}
+
+.agent-management-section-toggle:hover,
+.agent-management-section-toggle:focus-visible {
+  color: var(--color-text-strong);
+  outline: 0;
+}
+
+.agent-management-form-section__header h2 {
+  margin-bottom: 4px;
+  font-size: 18px;
+  line-height: 28px;
+}
+
+.agent-management-prompt-editor-list {
+  display: grid;
+  gap: 16px;
+}
+
+.agent-management-prompt-editor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-management-prompt-editor input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  outline: 0;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 0 12px;
+  font: inherit;
+}
+
+.agent-management-prompt-editor input:focus {
+  border-color: var(--color-border-default);
+  box-shadow: none;
+}
+
+.agent-management-prompt-editor button {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-card);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.agent-management-prompt-editor button:hover,
+.agent-management-prompt-editor button:focus-visible {
+  background: var(--color-action-secondary);
+  color: var(--color-text-strong);
+  outline: 0;
+}
+
+.agent-management-selected-capabilities {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.agent-management-capability-card,
+.agent-management-selection-card {
+  display: flex;
+  min-width: 0;
+  min-height: 116px;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 20px;
+  text-align: left;
+}
+
+.agent-management-capability-card > span:nth-child(2),
+.agent-management-selection-card > span:nth-child(2) {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-management-capability-card strong,
+.agent-management-selection-card strong {
+  overflow: hidden;
+  color: var(--color-text-strong);
+  font-size: 14px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-capability-card small,
+.agent-management-selection-card small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 20px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.agent-management-capability-card__icon {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-action-primary-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-action-primary-subtle);
+  color: var(--color-text-link);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.agent-management-capability-card__remove {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0;
+  cursor: pointer;
+  opacity: var(--opacity-agent-hidden);
+  pointer-events: none;
+  transition: opacity var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.agent-management-capability-card:hover .agent-management-capability-card__remove,
+.agent-management-capability-card:focus-within .agent-management-capability-card__remove,
+.agent-group-editor__member-card:hover .agent-management-capability-card__remove,
+.agent-group-editor__member-card:focus-within .agent-management-capability-card__remove,
+.agent-management-capability-card__remove:focus-visible {
+  opacity: var(--opacity-agent-visible);
+  pointer-events: auto;
+}
+
+.agent-management-capability-card__remove:hover,
+.agent-management-capability-card__remove:focus-visible {
+  color: var(--color-text-strong);
+  outline: 0;
+}
+
+.agent-management-selected-capabilities .agent-management-capability-card {
+  height: 156px;
+  min-height: 156px;
+  flex-direction: column;
+  gap: 16px;
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: 24px;
+  box-shadow: var(--effect-shadow-md);
+}
+
+.agent-management-selected-capabilities .agent-management-capability-card__heading {
+  display: flex;
+  width: 100%;
+  height: 48px;
+  min-width: 0;
+  flex: 0 0 48px;
+  align-items: center;
+  gap: 16px;
+}
+
+.agent-management-selected-capabilities .agent-management-capability-card__heading strong {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-size: 18px;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-selected-capabilities .agent-management-capability-card__icon {
+  width: 48px;
+  height: 48px;
+  flex-basis: 48px;
+  border-radius: 10px;
+  font-size: 20px;
+}
+
+.agent-management-selected-capabilities .agent-management-capability-card > small {
+  display: -webkit-box;
+  width: 100%;
+  height: 44px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-management-selected-capabilities .agent-management-capability-card__remove {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+}
+
+.agent-management-upload-dialog {
+  display: flex;
+  width: min(550px, calc(100vw - 48px));
+  height: min(460px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-xl);
+  padding: 24px;
+}
+
+.agent-management-upload-dialog > header,
+.agent-management-upload-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.agent-management-upload-dialog > header {
+  justify-content: space-between;
+}
+
+.agent-management-upload-dialog > header h2 {
+  margin: 0;
+  color: var(--color-text-strong);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.agent-management-upload-dialog:focus {
+  outline: 0;
+  box-shadow: none;
+}
+
+.agent-management-upload-dialog > header button {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0;
+  cursor: pointer;
+}
+
+.agent-management-upload-dialog > header button:hover,
+.agent-management-upload-dialog > header button:focus-visible {
+  background: var(--color-action-secondary);
+  color: var(--color-text-strong);
+  outline: 0;
+}
+
+.agent-management-upload-dialog__hint {
+  display: flex;
+  min-height: 56px;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-chat-accent-subtle);
+  color: var(--color-text-primary);
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.agent-management-upload-dialog__hint svg {
+  flex: 0 0 14px;
+  margin-top: 2px;
+  color: var(--color-chat-accent);
+}
+
+.agent-management-upload-picker {
+  display: flex;
+  min-height: 212px;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px dashed var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-tag-neutral-surface);
+  color: var(--color-text-secondary);
+  padding: 24px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.agent-management-upload-picker:hover,
+.agent-management-upload-picker:focus-visible,
+.agent-management-upload-picker.is-dragging {
+  border-color: var(--color-border-hover);
+  outline: 0;
+}
+
+.agent-management-upload-picker.has-error {
+  border-color: var(--color-border-danger);
+}
+
+.agent-management-upload-picker > span {
+  color: var(--color-chat-supporting-text);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.agent-management-upload-picker__selected {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+}
+
+.agent-management-upload-picker__selected > svg {
+  flex: 0 0 22px;
+  color: var(--color-text-secondary);
+}
+
+.agent-management-upload-picker__selected > div {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.agent-management-upload-picker__selected p,
+.agent-management-upload-picker__selected small {
+  display: block;
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-upload-picker__selected p {
+  color: var(--color-text-primary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.agent-management-upload-picker__selected small {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.agent-management-upload-picker__selected button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0;
+  cursor: pointer;
+}
+
+.agent-management-upload-picker__selected button:hover,
+.agent-management-upload-picker__selected button:focus-visible {
+  background: var(--color-action-secondary);
+  color: var(--color-text-strong);
+  outline: 0;
+}
+
+.agent-management-upload-picker__spinner {
+  animation: agent-management-upload-spin 1s linear infinite;
+}
+
+.agent-management-upload-dialog__error {
+  margin: -12px 0 0;
+  color: var(--color-feedback-danger);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.agent-management-upload-dialog > footer .agent-management-button {
+  min-height: 32px;
+  border-radius: var(--radius-full);
+  padding-right: 16px;
+  padding-left: 16px;
+}
+
+.agent-management-upload-dialog > footer .agent-management-button--primary {
+  border-color: var(--color-text-strong);
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+}
+
+.agent-management-upload-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
+  border-color: var(--color-text-primary);
+  background: var(--color-text-primary);
+}
+
+@keyframes agent-management-upload-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.agent-management-selection-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: var(--color-backdrop);
+  padding: 24px;
+}
+
+.agent-management-selection-dialog {
+  display: flex;
+  width: min(720px, calc(100vw - 48px));
+  height: min(720px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  flex-direction: column;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-xl);
+}
+
+.agent-management-selection-dialog > header,
+.agent-management-selection-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 0;
+  padding: 16px 24px;
+}
+
+.agent-management-selection-dialog > header h2 {
+  margin: 0;
+  color: var(--color-text-strong);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.agent-management-selection-search {
+  display: flex;
+  flex: 0 0 32px;
+  height: 32px;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 24px 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  color: var(--color-text-tertiary);
+  padding: 0 12px;
+}
+
+.agent-management-selection-controls {
+  position: relative;
+  display: flex;
+  flex: 0 0 32px;
+  gap: 8px;
+  align-items: center;
+  margin: 16px 24px 0;
+}
+
+.agent-management-selection-source-tabs {
+  margin: 16px 24px 0;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.agent-management-selection-controls .agent-management-selection-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+.agent-management-selection-filter {
+  position: relative;
+  flex: 0 0 132px;
+  width: 132px;
+}
+
+.agent-management-selection-filter__trigger {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  outline: 0;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 0 12px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.agent-management-selection-filter__trigger:hover,
+.agent-management-selection-filter__trigger:focus-visible {
+  border-color: var(--color-border-default);
+  box-shadow: none;
+}
+
+.agent-management-selection-filter__menu {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-md);
+  padding: 4px;
+}
+
+.agent-management-selection-filter__menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.agent-management-selection-filter__menu button:hover,
+.agent-management-selection-filter__menu button[aria-selected='true'] {
+  background: var(--color-action-secondary);
+}
+
+.agent-management-selection-search:focus-within {
+  border-color: var(--color-border-default);
+  box-shadow: none;
+}
+
+.agent-management-selection-search input {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
+.agent-management-selection-search input:focus,
+.agent-management-selection-search input:focus-visible {
+  box-shadow: none;
+}
+
+.agent-management-selection-dialog > header button {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0;
+  cursor: pointer;
+}
+
+.agent-management-selection-dialog > header button:hover,
+.agent-management-selection-dialog > header button:focus-visible {
+  background: var(--color-action-secondary);
+  color: var(--color-text-strong);
+  outline: 0;
+}
+
+.agent-management-selection-dialog__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 24px 24px;
+}
+
+.agent-management-selection-dialog__body.is-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-management-selection-empty-state {
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+  text-align: center;
+}
+
+.agent-management-selection-empty-state p {
+  margin: 0;
+}
+
+.agent-management-selection-empty-state.is-loading {
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-management-selection-dialog > footer {
+  border-top: 1px solid var(--color-border-default);
+  border-bottom: 0;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+.agent-management-selection-dialog > footer .agent-management-button {
+  min-height: 32px;
+  border-radius: var(--radius-full);
+  padding-right: 16px;
+  padding-left: 16px;
+}
+
+.agent-management-selection-dialog > footer .agent-management-button--primary {
+  border-color: var(--color-text-strong);
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+}
+
+.agent-management-selection-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
+  border-color: var(--color-text-primary);
+  background: var(--color-text-primary);
+}
+
+.agent-management-selection-dialog > footer > div {
+  display: flex;
+  gap: 12px;
+}
+
+.agent-management-selection-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.agent-management-selection-card {
+  position: relative;
+  min-height: 140px;
+  cursor: pointer;
+}
+
+.agent-management-selection-card__action {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-card);
+  color: var(--color-text-inverse);
+}
+
+.agent-management-selection-card__action svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.agent-management-selection-card:hover,
+.agent-management-selection-card:focus-visible,
+.agent-management-selection-card.is-selected {
+  border-color: var(--color-action-primary);
+  outline: 0;
+}
+
+.agent-management-selection-card.is-selected {
+  background: var(--color-feedback-info-subtle);
+}
+
+.agent-management-selection-card.is-selected .agent-management-selection-card__action {
+  border-color: var(--color-action-primary);
+  background: var(--color-action-primary);
+}
+
+.agent-management-selection-card:disabled,
+.agent-management-selection-card.is-disabled {
+  border-color: var(--color-border-default);
+  background: var(--color-action-secondary);
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-management-selection-card:disabled .agent-management-selection-card__action,
+.agent-management-selection-card.is-disabled .agent-management-selection-card__action {
+  border-color: var(--color-border-default);
+  background: var(--color-action-secondary);
+  color: var(--color-text-tertiary);
+}
+
+.agent-management-selection-card:disabled:hover,
+.agent-management-selection-card:disabled:focus-visible,
+.agent-management-selection-card.is-disabled:hover,
+.agent-management-selection-card.is-disabled:focus-visible {
+  border-color: var(--color-border-default);
+  outline: 0;
+}
+
+/* Leader/member pickers use the same PageCard → EntityHeader → body structure
+   as the Expert cards in My Experts. Only the picker card's dimensions and
+   selection affordance differ for the dialog grid. */
+.agent-management-selection-card.page-card {
+  min-width: 0;
+  height: 160px;
+  min-height: 0;
+  gap: 18px;
+  padding: 24px;
+}
+
+.agent-management-selection-card.page-card.is-selected {
+  box-shadow: inset 0 0 0 1px var(--color-action-primary);
+}
+
+.agent-management-selection-card.page-card.page-card--disabled,
+.agent-management-selection-card.page-card.is-disabled {
+  background: var(--color-action-secondary);
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
+  opacity: 1;
+}
+
+.agent-management-selection-card.page-card.is-disabled .entity-header__title,
+.agent-management-selection-card.page-card.is-disabled .page-card__body {
+  color: var(--color-text-tertiary);
+}
+
+.agent-management-selection-card.page-card.is-disabled .entity-header__tag {
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-tertiary);
+}
+
+.agent-management-selection-card.page-card.is-disabled .entity-header__avatar {
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-management-selection-card.page-card.is-loading {
+  background: var(--color-surface-card);
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
+  cursor: wait;
+  opacity: 1;
+}
+
+.agent-management-selection-card.page-card.is-loading .entity-header__title,
+.agent-management-selection-card.page-card.is-loading .entity-header__tag,
+.agent-management-selection-card.page-card.is-loading .page-card__body {
+  color: var(--color-text-secondary);
+}
+
+.agent-management-selection-card.page-card .entity-header__actions {
+  align-self: flex-start;
+}
+
+.agent-management-selection-card.page-card .entity-header {
+  width: 100%;
+  min-width: 0;
+}
+
+.agent-management-selection-card.page-card .entity-header__identity,
+.agent-management-selection-card.page-card .entity-header__text,
+.agent-management-selection-card.page-card .entity-header__title {
+  min-width: 0;
+}
+
+.agent-management-selection-card.page-card .entity-header__identity {
+  flex: 1 1 auto;
+}
+
+.agent-management-selection-card.page-card .page-card__body {
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.agent-management-selection-card.page-card .agent-management-selection-card__action {
+  margin-top: 0;
+}
+
+.agent-management-selection-card__loading {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-action-primary);
+}
+
+.agent-management-selection-card__loading-icon {
+  animation: agent-management-selection-spin 1s linear infinite;
+}
+
+@keyframes agent-management-selection-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.agent-management-inline-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 2px 0;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.agent-management-inline-action:hover {
+  color: var(--color-text-strong);
+}
+
+.agent-management-selection-card__install {
+  min-height: 28px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-card);
+  color: var(--color-action-primary);
+  padding: 4px 10px;
+}
+
+.agent-management-selection-card__install:hover {
+  border-color: var(--color-action-primary);
+  background: var(--color-action-primary-subtle);
+  color: var(--color-action-primary);
+}
+
+.agent-management-selection-card__install:focus-visible {
+  border-color: var(--color-action-primary);
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
+.agent-management-selection-card__install:disabled {
+  cursor: wait;
+  opacity: var(--opacity-agent-disabled);
+}
+
+.agent-management-form-muted {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.agent-management-form-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.agent-management-form-error button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.agent-management-form-error--submit {
+  margin-top: 24px;
+}
+
+.agent-management-editor__footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 40px;
+  border-top: 1px solid var(--color-border-default);
+  background: var(--color-surface-content);
+  padding: 16px 0;
+}
+
+.agent-management-editor__footer .agent-management-button--primary {
+  border-color: var(--color-text-strong);
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+}
+
+.agent-management-editor__footer .agent-management-button--primary:hover:not(:disabled) {
+  border-color: var(--color-text-primary);
+  background: var(--color-text-primary);
+}
+
+.agent-management-editor__footer .agent-management-button {
+  min-height: 36px;
+  min-width: 76px;
+  border-radius: var(--radius-full);
+  padding-right: 18px;
+  padding-left: 18px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 800px) {
+  .page-content[data-testid='agent-management-panel'] {
+    --agent-page-gutter: 20px;
+  }
+
+  .agent-management-primary-actions {
+    width: 100%;
+    padding-bottom: 16px;
+  }
+
+  .agent-group-detail__members {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-management-detail-capabilities,
+  .agent-management-prompt-list,
+  .agent-management-selected-capabilities,
+  .agent-management-selection-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-management-selection-dialog {
+    width: 100%;
+  }
+
+  .agent-management-card {
+    height: auto;
+    min-height: 160px;
+  }
+
+  [data-testid='agent-management-panel'][data-variant='mine'] .agent-management-card {
+    height: auto;
+  }
+
+  .agent-management-page-card .agent-management-card__actions {
+    right: 16px;
+    top: auto;
+    bottom: 16px;
+    opacity: var(--opacity-agent-visible);
+    pointer-events: auto;
+    transform: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .agent-management-card {
+    height: auto;
+  }
+}
+/* 0807 high-fidelity alignment: keep the existing live seams and tune only
+   the Agent/AgentGroup surfaces covered by the design exports. */
+.page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+  width: 360px !important;
+}
+
+.page-content[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail,
+.page-content[data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor {
+  padding-top: 0;
+}
+
+.agent-group-avatar {
+  width: 48px;
+  height: 48px;
+  flex-basis: 48px;
+  border: 1px solid var(--color-agent-group-avatar-border, var(--color-border-default));
+  border-radius: var(--radius-agent-group-avatar);
+  background: var(--color-agent-group-avatar-surface);
+  color: var(--color-agent-group-avatar-text);
+}
+
+.agent-group-avatar--variant-1,
+.agent-group-member-avatar--variant-1 {
+  border-color: var(--color-agent-group-avatar-variant-1-border);
+  background: var(--color-agent-group-avatar-variant-1-surface);
+  color: var(--color-agent-group-avatar-variant-1-text);
+}
+
+.agent-group-avatar--variant-2,
+.agent-group-member-avatar--variant-2 {
+  border-color: var(--color-agent-group-avatar-variant-2-border);
+  background: var(--color-agent-group-avatar-variant-2-surface);
+  color: var(--color-agent-group-avatar-variant-2-text);
+}
+
+.agent-group-avatar--variant-3,
+.agent-group-member-avatar--variant-3 {
+  border-color: var(--color-agent-group-avatar-variant-3-border);
+  background: var(--color-agent-group-avatar-variant-3-surface);
+  color: var(--color-agent-group-avatar-variant-3-text);
+}
+
+.agent-group-avatar--variant-4,
+.agent-group-member-avatar--variant-4 {
+  border-color: var(--color-agent-group-avatar-variant-4-border);
+  background: var(--color-agent-group-avatar-variant-4-surface);
+  color: var(--color-agent-group-avatar-variant-4-text);
+}
+
+.agent-group-avatar--variant-5,
+.agent-group-member-avatar--variant-5 {
+  border-color: var(--color-agent-group-avatar-variant-5-border);
+  background: var(--color-agent-group-avatar-variant-5-surface);
+  color: var(--color-agent-group-avatar-variant-5-text);
+}
+
+.agent-group-avatar--variant-6,
+.agent-group-member-avatar--variant-6 {
+  border-color: var(--color-agent-group-avatar-variant-6-border);
+  background: var(--color-agent-group-avatar-variant-6-surface);
+  color: var(--color-agent-group-avatar-variant-6-text);
+}
+
+.agent-group-detail .agent-management-detail__identity h1 {
+  font-size: 20px;
+  line-height: 30px;
+}
+
+.agent-group-detail .agent-management-detail__badges {
+  gap: 8px;
+}
+
+.agent-group-detail .agent-management-detail__badges .agent-management-tag {
+  min-height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.agent-group-detail__capabilities {
+  margin-top: 32px;
+}
+
+.agent-group-editor__header {
+  display: block;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  margin-top: 29px;
+  margin-bottom: 32px;
+}
+
+.agent-group-editor__header h1 {
+  font-size: 20px;
+  line-height: 30px;
+}
+
+.agent-group-editor .agent-management-editor__tabs {
+  width: 100%;
+  align-items: flex-start;
+  gap: 14px;
+  margin-top: 32px;
+}
+
+.agent-group-editor .agent-management-editor__tabs button,
+.agent-group-editor .agent-management-editor__tabs span {
+  position: relative;
+  width: max-content !important;
+  min-width: max-content;
+  min-height: 32px;
+  height: 32px !important;
+  box-sizing: border-box;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0 0 8px;
+  font-size: 16px;
+  line-height: 24px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.agent-group-editor .agent-management-editor__tabs button:first-child {
+  min-width: 80px;
+  margin-right: 18px;
+}
+
+.agent-group-editor .agent-management-editor__tabs button.is-active,
+.agent-group-editor .agent-management-editor__tabs span.is-active {
+  color: var(--color-text-strong);
+  font-weight: 600;
+}
+
+.agent-group-editor .agent-management-editor__tabs span.is-active::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--color-text-strong);
+  content: '';
+}
+
+.agent-group-editor .agent-management-form-section {
+  margin-top: 32px;
+}
+
+.agent-group-editor .agent-management-form-section > h2 {
+  margin-bottom: 24px;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  line-height: 28px;
+}
+
+.agent-group-editor .agent-management-form-field--wide {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-group-editor .agent-management-form-field--tag-picker {
+  gap: 2px;
+  margin-bottom: 16px;
+  min-width: 0;
+}
+
+.agent-group-editor .agent-management-form-field--wide input,
+.agent-group-editor .agent-management-form-field--wide textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 20px;
+}
+
+.agent-group-editor .agent-management-form-field--wide input {
+  height: 32px;
+}
+
+.agent-group-editor .agent-management-form-field--wide textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.agent-group-editor .agent-group-editor__intro-section textarea {
+  min-height: 184px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-field {
+  margin-top: 16px;
+}
+
+.agent-group-editor__selected-agent {
+  min-height: 64px;
+  box-sizing: border-box;
+  align-items: center;
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+}
+
+.agent-group-editor__selection-label button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.agent-group-upload-dialog__kind {
+  order: 2;
+}
+
+.agent-group-upload-dialog__radio {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+}
+
+.agent-group-upload-dialog__radio::after {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  content: '';
+}
+
+.agent-group-upload-dialog__kind button.is-active .agent-group-upload-dialog__radio {
+  border-color: var(--color-action-primary);
+}
+
+.agent-group-upload-dialog__kind button.is-active .agent-group-upload-dialog__radio::after {
+  background: var(--color-action-primary);
+}
+
+.agent-group-upload-dialog .agent-management-upload-dialog__hint {
+  order: 1;
+}
+
+.agent-group-upload-dialog .agent-management-upload-picker {
+  order: 3;
+}
+
+.agent-group-upload-dialog > footer {
+  order: 4;
+}
+
+@media (max-width: 900px) {
+  .page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+    width: min(320px, 100%) !important;
+  }
+
+  .agent-group-detail__members {
+    grid-template-columns: repeat(auto-fit, minmax(174px, 1fr));
+  }
+}
+
+@media (max-width: 1000px) {
+  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .page-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-primary-actions {
+    grid-column: 1;
+    grid-row: 2;
+    justify-content: flex-end;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-secondary-tabs {
+    grid-column: 1;
+    grid-row: 3;
+  }
+}
+
+@media (max-width: 720px) {
+  .page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+    width: min(228px, 100%) !important;
+  }
+
+  .agent-group-editor__member-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.agent-group-upload-dialog-overlay {
+  align-items: flex-start;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: var(--space-agent-group-upload-top) var(--space-agent-group-gutter) var(--space-agent-group-gutter);
+}
+
+.agent-management-upload-dialog.agent-group-upload-dialog {
+  width: var(--size-agent-group-upload-dialog-width);
+  height: auto;
+  box-sizing: border-box;
+  gap: 0;
+  overflow-y: auto;
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-agent-group-upload-inset);
+}
+
+.agent-group-upload-dialog > header {
+  height: var(--size-agent-group-drawer-control);
+  flex: 0 0 var(--size-agent-group-drawer-control);
+}
+
+.agent-group-upload-dialog > header button {
+  width: var(--size-agent-group-drawer-control);
+  height: var(--size-agent-group-drawer-control);
+}
+
+.agent-group-upload-dialog .agent-management-upload-dialog__hint {
+  height: auto;
+  min-height: 0;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  box-sizing: border-box;
+  margin: var(--space-agent-group-grid) 0 0;
+}
+
+.agent-group-upload-dialog__kind {
+  order: 2;
+  height: 50px;
+  flex: 0 0 50px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  box-sizing: border-box;
+  margin: var(--space-agent-group-control) 0 14px;
+  border: 0;
+  padding: var(--space-agent-group-control) 0 0;
+}
+
+.agent-group-upload-dialog__label {
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-group-upload-dialog__options {
+  display: flex;
+  height: 20px;
+  align-items: center;
+  gap: 20px;
+}
+
+.agent-group-upload-dialog__options button {
+  display: inline-flex;
+  height: 20px;
+  align-items: center;
+  gap: var(--space-agent-group-control);
+  border: 0;
+  padding: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.agent-group-upload-dialog__options button.is-active {
+  border-bottom: 0;
+  font-weight: 400;
+}
+
+.agent-group-upload-dialog .agent-management-upload-picker {
+  order: 3;
+  height: var(--size-agent-group-upload-drop-height);
+  min-height: var(--size-agent-group-upload-drop-height);
+  flex: 0 0 var(--size-agent-group-upload-drop-height);
+  box-sizing: border-box;
+  border-radius: var(--radius-xl);
+}
+
+.agent-group-upload-dialog > footer {
+  order: 4;
+  height: var(--size-agent-group-drawer-control);
+  min-height: var(--size-agent-group-drawer-control);
+  flex: 0 0 var(--size-agent-group-drawer-control);
+  gap: var(--space-agent-group-control);
+  margin-top: var(--space-agent-group-grid) !important;
+  padding: 0;
+}
+
+.agent-group-upload-dialog > footer .agent-management-button {
+  width: var(--size-agent-group-upload-button-width);
+  min-width: var(--size-agent-group-upload-button-width);
+  height: var(--size-agent-group-drawer-control);
+  min-height: var(--size-agent-group-drawer-control);
+  padding: 0 16px;
+  border-radius: var(--radius-full);
+}
+
+.agent-management-upload-dialog__hint-copy {
+  min-width: 0;
+}
+
+.agent-group-editor__header {
+  margin-bottom: 0;
+}
+
+[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail {
+  transform: none;
+}
+
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="create"] .agent-group-editor {
+  transform: translateX(4px);
+}
+
+.agent-group-editor__intro-field textarea {
+  min-height: 184px;
+}
+
+.agent-group-editor__selection-label .agent-management-inline-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* Keep the Expert Team detail page on the same centered detail container and
+   metadata rhythm as the ordinary Expert detail page. */
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail {
+  transform: translateX(4px);
+}
+
+.agent-group-detail .agent-management-detail__badges {
+  gap: 17px;
+}
+
+.agent-group-detail .agent-management-detail__badges .agent-management-tag {
+  min-height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Expert Team pickers share the same selection-card seam as the Expert skill
+   picker. Keep the avatar inside the existing capability-card icon geometry. */
+.agent-management-selection-avatar {
+  overflow: hidden;
+}
+
+.agent-management-selection-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-management-selection-avatar > span {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Newly added Expert Team fields keep the same quiet focus treatment as the
+   ordinary Expert Team name input. */
+.agent-group-editor input:focus,
+.agent-group-editor input:focus-visible,
+.agent-group-editor textarea:focus,
+.agent-group-editor textarea:focus-visible {
+  border-color: var(--color-border-default);
+  outline: 0;
+  box-shadow: none;
+}
+
+.agent-group-member-card__identity {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.agent-group-member-card__identity > strong {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-member-card__identity > .agent-group-member-card__badge {
+  margin-top: 0;
+}
+
+/* Expert Team creation follows the original high-fidelity hierarchy: one
+   selected leader card, followed by a three-column member card grid. Empty
+   states remain actions, not fake inputs. */
+.agent-group-editor__team-config-section .agent-group-editor__selection-grid {
+  display: block;
+  margin-top: 12px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-field {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  margin-top: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-field + .agent-group-editor__selection-field {
+  margin-top: 20px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-label {
+  margin-bottom: 12px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-label > span {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-label .agent-management-inline-action {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.agent-group-editor__selected-agent {
+  display: flex;
+  width: min(100%, 456px);
+  min-height: 132px;
+  align-items: flex-start;
+  box-sizing: border-box;
+  gap: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  padding: 16px;
+}
+
+.agent-group-editor__selected-agent-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-group-editor__selected-agent-copy strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-editor__selected-agent-copy p,
+.agent-group-editor__member-card-copy p {
+  display: -webkit-box;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-group-editor__selected-agent-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 4px;
+  cursor: pointer;
+}
+
+.agent-group-editor__member-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 0;
+}
+
+.agent-group-editor__member-card {
+  display: block;
+  min-width: 0;
+  min-height: 132px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  padding: 16px;
+}
+
+.agent-group-editor__member-card-top {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-group-editor__member-card-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-group-editor__member-card-copy strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-editor__member-card-top > button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  padding: 4px;
+  cursor: pointer;
+}
+
+.agent-group-editor__member-card .agent-management-capability-card__remove {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  padding: 0;
+}
+
+/* Detail roster cards follow the high-fidelity member tile: avatar first,
+   then the compact name row. The native title keeps long names discoverable
+   without adding another visible line to the card. */
+.agent-group-detail__members {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 174px);
+  gap: 16px;
+}
+
+.agent-group-member-card {
+  display: flex;
+  width: 174px;
+  height: 104px;
+  min-width: 0;
+  min-height: 104px;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  padding: 12px 16px;
+  text-align: center;
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.agent-group-member-card:hover {
+  border-color: var(--color-border-hover);
+  box-shadow: var(--effect-shadow-sm);
+}
+
+.agent-group-member-card__avatar-wrap {
+  display: flex;
+  width: 100%;
+  justify-content: center;
+}
+
+.agent-group-member-avatar {
+  width: 40px;
+  height: 40px;
+  flex-basis: 40px;
+}
+
+.agent-group-member-card__identity {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.agent-group-member-card__identity > strong {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.agent-group-member-card__badge {
+  min-height: 20px;
+  border-radius: var(--radius-sm);
+  background: var(--color-member-card-badge-surface);
+  color: var(--color-text-link);
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .agent-group-editor__selected-agent {
+    width: 100%;
+  }
+
+  .agent-group-editor__member-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-group-member-card {
+    width: 100%;
+  }
+}
+
+/* Actions share the title row; tags retain the full width after installation. */
+.agent-management-catalog-card .page-card__header {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  row-gap: 4px;
+}
+.agent-management-catalog-card .page-card__avatar {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+.agent-management-catalog-card .page-card__title-area {
+  display: contents;
+}
+.agent-management-catalog-card .page-card__title-row {
+  grid-column: 2;
+  grid-row: 1;
+}
+.agent-management-catalog-card .page-card__action {
+  grid-column: 3;
+  grid-row: 1;
+}
+.agent-management-catalog-card .page-card__label {
+  grid-column: 2 / -1;
+  grid-row: 2;
+}
+.agent-management-catalog-card:focus-within .agent-management-card__actions {
+  opacity: 1;
+}
+/* Measure available space rather than the width of already-truncated tags. */
+.agent-management-catalog-card .page-card__tags {
+  width: 100%;
+}
+
+.agent-management-detail-action--use {
+  border-color: var(--color-text-strong);
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+}
+.agent-management-detail-action--use:hover:not(:disabled) {
+  background: var(--color-text-primary);
+}

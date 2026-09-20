@@ -1,3 +1,9 @@
+import {
+  getSymphonyCommandLabel,
+  isSymphonyCommandTool,
+  parseSymphonyCommandAction,
+} from '../../utils/symphonyCommandDisplay';
+
 export type ToolCategory = 'file' | 'search' | 'code' | 'system' | 'other';
 
 export const TOOL_CATEGORY_ORDER: ToolCategory[] = ['file', 'search', 'code', 'system', 'other'];
@@ -189,11 +195,20 @@ function basename(path: string): string {
  */
 export function describeToolCall(
   toolCall: { name: string; arguments?: Record<string, unknown>; description?: string; formatted_args?: string; display_name?: string },
-  t: (key: string) => string
+  t: (key: string, options?: Record<string, unknown>) => string
 ): string {
   const displayName = toolCall.display_name?.trim();
   if (displayName) {
     return displayName;
+  }
+
+  if (isSymphonyCommandTool(toolCall.name)) {
+    const action = parseSymphonyCommandAction(toolCall.arguments);
+    if (action) {
+      const label = getSymphonyCommandLabel(action);
+      return t(label.key, label.values);
+    }
+    return t('chatUi.toolGroup.symphony.command');
   }
 
   const n = normalize(toolCall.name);
@@ -212,6 +227,8 @@ export function describeToolCall(
 
 export function classifyToolCall(name: string): ToolCategory {
   const n = normalize(name);
+
+  if (isSymphonyCommandTool(name)) return 'search';
 
   // 显式集合：system 优先，避免与文件类关键字歧义（如 read_terminal_output）
   if (SYSTEM_TOOLS.has(n)) return 'system';

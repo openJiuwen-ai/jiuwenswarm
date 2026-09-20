@@ -20,6 +20,9 @@ from typing import TYPE_CHECKING
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
 from jiuwenswarm.agents.harness.common.rails.project_memory import (
     SECTION_NAME,
     build_project_memory_section,
@@ -59,10 +62,11 @@ class ProjectMemoryRail(DeepAgentRail):
         "rename_file",
     })
 
-    # Higher than MEMORY(85) / TOOLS(~100); lower than RUNTIME (see
+    # Higher than the regular workspace/runtime sections; lower than the
+    # host-specific context sections (see
     # agent-core ``prompts/sections/__init__.py`` SectionName for the
     # conventional range).
-    SECTION_PRIORITY = 120
+    SECTION_PRIORITY = SystemPromptPriority.PROJECT_MEMORY
 
     def __init__(
         self,
@@ -77,6 +81,7 @@ class ProjectMemoryRail(DeepAgentRail):
         # Workspace 对象（DeepAgent.register_rail 内部强制注入）。这里改用
         # 私有属性 _workspace_path 保存构造期传入的字符串路径，避免被覆盖。
         self._workspace_path: str = workspace
+        self._runtime_workspace_path: str | None = None
         self._language: str = language
         self._max_chars: int = max_chars
         self._additional_directories: tuple[str, ...] = tuple(additional_directories or ())
@@ -113,6 +118,14 @@ class ProjectMemoryRail(DeepAgentRail):
         """Per-request language switch (cn/en). No-op if value unchanged."""
         if language and language != self._language:
             self._language = language
+
+    def set_workspace_path(self, workspace: str) -> None:
+        """Use the request-bound Code workspace for project memory lookup."""
+        normalized = str(workspace or "").strip()
+        if normalized and normalized != self._runtime_workspace_path:
+            if self._runtime_workspace_path is not None:
+                clear_project_memory_cache(self._runtime_workspace_path)
+            self._runtime_workspace_path = normalized
 
     def get_language(self) -> str:
         """Get current language setting."""
@@ -196,10 +209,13 @@ class ProjectMemoryRail(DeepAgentRail):
         """Resolve the workspace root as a string path.
 
         Order of precedence:
-          1. ``self.workspace.root_path`` -- injected by ``DeepAgent.register_rail``
+          1. Per-request Code workspace set by the adapter.
+          2. ``self.workspace.root_path`` -- injected by ``DeepAgent.register_rail``
              via ``DeepAgentRail.set_workspace(Workspace(...))``. Most up-to-date.
-          2. ``self._workspace_path`` -- string path passed at construction.
+          3. ``self._workspace_path`` -- string path passed at construction.
         """
+        if self._runtime_workspace_path:
+            return self._runtime_workspace_path
         ws_obj = getattr(self, "workspace", None)
         if ws_obj is not None:
             root = getattr(ws_obj, "root_path", None)

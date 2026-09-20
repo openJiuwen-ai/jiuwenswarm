@@ -8,7 +8,7 @@ import logging
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
@@ -167,12 +167,26 @@ class WebSocketAgentServerClient(AgentServerClient):
         self._running = False
         # AgentServer send_push：旁路投递，勿进入与 request_id 绑定的 RPC 等待队列
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+        # receiver 致命错误（连接断开 / ping 超时 / 发送失败）后的断连通知回调
+        self._on_disconnect: Callable[[BaseException], Awaitable[None]] | None = None
 
     def set_server_push_handler(
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
     ) -> None:
         """注册 Agent 主动推送处理回调（metadata 含 ``E2A_WIRE_SERVER_PUSH_KEY`` 的帧）。"""
         self._on_server_push = handler
+
+    def set_disconnect_handler(
+        self, handler: Callable[[BaseException], Awaitable[None]] | None
+    ) -> None:
+        """注册南向断连通知回调（参数为触发 ``_stop_receiver_after_fatal_error`` 的异常）。
+
+        receiver 捕获 ConnectionClosed / PayloadTooBig，或发送路径捕获
+        ConnectionClosed / OSError 后触发；正常 ``disconnect()``（取消
+        receiver 任务）不触发。回调以 fire-and-forget 任务派发，异常被
+        吞掉记日志，不影响 receiver / 发送路径。
+        """
+        self._on_disconnect = handler
 
     def _diagnostic_state(self, ws: Any | None = None) -> dict[str, Any]:
         target_ws = self._ws if ws is None else ws
@@ -201,35 +215,48 @@ class WebSocketAgentServerClient(AgentServerClient):
         """AgentServer 是否已发送 connection.ack 确认就绪."""
         return self._server_ready
 
-    async def connect(self, uri: str) -> None:
+    async def connect(
+        self,
+        uri: str,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> None:
         if self._ws is not None:
             await self.disconnect()
-        logger.info("[WebSocketAgentServerClient] 正在连接: %s", uri)
+        logger.debug("[WebSocketAgentServerClient] 正在连接: %s", uri)
         self._uri = uri
         self._server_ready = False
         origin = _build_ws_origin(uri)
+        connect_kwargs: dict[str, Any] = {
+            "origin": origin,
+            "ping_interval": self._ping_interval,
+            "ping_timeout": self._ping_timeout,
+            "close_timeout": 5.0,
+            "max_size": AGENT_WS_MAX_MESSAGE_BYTES,
+        }
+        cleaned_headers = {
+            str(key): str(value)
+            for key, value in dict(extra_headers or {}).items()
+            if str(value).strip()
+        }
         try:
             from websockets.legacy.client import connect as legacy_connect
             connect_fn = legacy_connect
+            if cleaned_headers:
+                connect_kwargs["extra_headers"] = list(cleaned_headers.items())
         except ImportError:
             import websockets
             connect_fn = websockets.connect
-        self._ws = await connect_fn(
-            uri,
-            origin=origin,
-            ping_interval=self._ping_interval,
-            ping_timeout=self._ping_timeout,
-            close_timeout=5.0,
-            max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-        )
+            if cleaned_headers:
+                connect_kwargs["additional_headers"] = cleaned_headers
+        self._ws = await connect_fn(uri, **connect_kwargs)
         logger.info("[WebSocketAgentServerClient] 已连接: %s", uri)
 
         # 读取 AgentServer 的 connection.ack 事件
         try:
             raw = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
-            logger.info("[WebSocketAgentServerClient] connect 首帧(raw): %s", raw)
+            logger.debug("[WebSocketAgentServerClient] connect 首帧(raw): %s", raw)
             data = json.loads(raw)
-            logger.info("[WebSocketAgentServerClient] connect 首帧(parsed): %s", _to_json(data))
+            logger.debug("[WebSocketAgentServerClient] connect 首帧(parsed): %s", _to_json(data))
             if data.get("type") == "event" and data.get("event") == "connection.ack":
                 self._server_ready = True
                 logger.info("[WebSocketAgentServerClient] 收到 connection.ack，AgentServer 已就绪")
@@ -354,6 +381,31 @@ class WebSocketAgentServerClient(AgentServerClient):
             for queue in self._message_queues.values():
                 queue.put_nowait(failure)
         logger.info("[WebSocketAgentServerClient] 接收任务已停止并通知等待队列: %s", detail)
+        self._fire_disconnect_handler(exc)
+
+    def _fire_disconnect_handler(self, exc: BaseException) -> None:
+        """派发断连通知回调：fire-and-forget，不阻塞 receiver / 发送路径。"""
+        handler = self._on_disconnect
+        if handler is None:
+            return
+
+        async def _run() -> None:
+            try:
+                await handler(exc)
+            except Exception:
+                logger.warning(
+                    "[WebSocketAgentServerClient] 断连回调执行失败",
+                    exc_info=True,
+                )
+
+        try:
+            asyncio.create_task(_run())
+        except RuntimeError:
+            # 无运行中的事件循环（同步关停路径）：无处派发，静默放弃
+            logger.warning(
+                "[WebSocketAgentServerClient] 断连回调无处派发（无运行中的事件循环）: %s",
+                type(exc).__name__,
+            )
 
     async def disconnect(self) -> None:
         # 停止接收任务
@@ -442,12 +494,15 @@ class WebSocketAgentServerClient(AgentServerClient):
         effective_timeout = (
             float(timeout) if timeout is not None else _UNARY_REQUEST_TIMEOUT_SECONDS
         )
+        sid = str(envelope.session_id or "")
         logger.info(
-            "[E2A][out][nostream] request_id=%s channel=%s method=%s is_stream=%s",
+            "[E2A][out][nostream] request_id=%s channel=%s method=%s session_id=%s is_stream=%s",
             rid,
             envelope.channel,
             envelope.method,
+            sid,
             envelope.is_stream,
+            extra={"session_id": sid} if sid else {},
         )
         logger.debug(
             "[WebSocketAgentServerClient] 发送请求(非流式) E2A: %s",
@@ -468,7 +523,7 @@ class WebSocketAgentServerClient(AgentServerClient):
             # 发送请求
             async with self._lock:
                 payload = _e2a_to_wire(envelope)
-                logger.info("[WebSocketAgentServerClient] 发送请求(非流式) payload: %s", _to_json(payload))
+                logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) payload: %s", _to_json(payload))
                 await self._send_wire_payload(payload)
 
             try:
@@ -494,12 +549,15 @@ class WebSocketAgentServerClient(AgentServerClient):
         await self._ensure_connected_for_request()
         envelope.is_stream = True
         rid = _wire_request_id_key(envelope.request_id)
+        sid = str(envelope.session_id or "")
         logger.info(
-            "[E2A][out][stream] request_id=%s channel=%s method=%s is_stream=%s",
+            "[E2A][out][stream] request_id=%s channel=%s method=%s session_id=%s is_stream=%s",
             rid,
             envelope.channel,
             envelope.method,
+            sid,
             envelope.is_stream,
+            extra={"session_id": sid} if sid else {},
         )
         logger.debug(
             "[WebSocketAgentServerClient] 发送请求(流式) E2A: %s",
@@ -520,7 +578,7 @@ class WebSocketAgentServerClient(AgentServerClient):
             # 发送请求
             async with self._lock:
                 payload = _e2a_to_wire(envelope)
-                logger.info("[WebSocketAgentServerClient] 发送请求(流式) payload: %s", _to_json(payload))
+                logger.debug("[WebSocketAgentServerClient] 发送请求(流式) payload: %s", _to_json(payload))
                 await self._send_wire_payload(payload)
 
             # 从队列中接收流式响应
@@ -544,7 +602,7 @@ class WebSocketAgentServerClient(AgentServerClient):
                 if chunk_count <= 3:
                     _pl = getattr(chunk, "payload", None) or {}
                     _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
-                    logger.info(
+                    logger.debug(
                         "[WebSocketAgentServerClient] stream chunk received:"
                         " request_id=%s seq=%s event_type=%s",
                         rid, chunk_count, _et,

@@ -9,11 +9,9 @@ import { CreatePluginPage } from './CreatePluginPage';
 import { RegisterMcpPage } from './RegisterMcpPage';
 import { UploadFileCreateModal } from './UploadFileCreateModal';
 import { Toast } from './Toast';
-
-// 列表轮询间隔：和 CronPanel/index.tsx 的定时任务列表用同一套静默刷新节奏（见该文件
-// "定时任务列表除了...没有别的刷新入口"一段注释）——插件/MCP 也可能被其他渠道（Agent工具、
-// 其他会话）改动，同样缺少推送通知机制，只能轮询兜底。
-const LIST_POLL_INTERVAL_MS = 10_000;
+import { equipmentListFilter } from '../../features/equipmentMarketplace';
+import { ApplicationPluginsPanel } from '../../applicationPlugins/ApplicationPluginsPanel';
+import type { ApplicationPluginContribution } from '../../applicationPlugins/types';
 
 // "管理我的插件/MCP" 一次性跳转握手：调用方（InputArea.tsx 的扩展面板）先把目标 tab 存进这个
 // 模块级变量，再触发 `jiuwen:nav` 切到 connectorMarket——ConnectorMarketPanel 挂载是这次导航
@@ -29,6 +27,7 @@ export function requestManageView(myKind: MarketKind) {
 
 type View =
   | { name: 'market' }
+  | { name: 'application-plugins' }
   | { name: 'plugin-detail'; id: string; fromMy: boolean }
   | { name: 'mcp-detail'; connectorName: string }
   | { name: 'create-manual' }
@@ -48,7 +47,7 @@ interface ConnectorMarketPanelProps {
    * onUse/handleUseNotWired）。跟 CronPanel「通过对话创建」onCreateViaChat 是同一条路径
    * （App.tsx:2431），只是入口从定时任务面板换成了 MCP 详情页。
    */
-  onUseExample?: (text: string, mcpName: string) => void;
+  onUseExample?: (text: string, mcpName: string, displayName?: string) => void;
   /**
    * 插件详情页"试试这样用"里点某条示例——跟 onUseExample 是同一个设计，但插件版 quickInputs
    * 是后端 2026-08-21 新增的字段，第二个参数是 pluginId（不是 mcpName），单独开一个 prop
@@ -73,9 +72,22 @@ interface ConnectorMarketPanelProps {
    * 不传这个 prop 就退化成原来的"尚未接入"提示（同款可选 prop 处理）。
    */
   onCreateViaChat?: () => void;
+  applicationPlugins?: ApplicationPluginContribution[];
+  applicationPluginsLoading?: boolean;
+  applicationPluginsError?: string;
+  onRefreshApplicationPlugins?: () => Promise<void>;
 }
 
-export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseExtension, onCreateViaChat }: ConnectorMarketPanelProps = {}) {
+export function ConnectorMarketPanel({
+  onUseExample,
+  onUsePluginExample,
+  onUseExtension,
+  onCreateViaChat,
+  applicationPlugins = [],
+  applicationPluginsLoading = false,
+  applicationPluginsError = '',
+  onRefreshApplicationPlugins = async () => {},
+}: ConnectorMarketPanelProps = {}) {
   const { t } = useTranslation();
   const [view, setView] = useState<View>({ name: 'market' });
   const [topTab, setTopTab] = useState<TopTab>(() => (pendingManageView ? 'my' : 'plugin'));
@@ -85,6 +97,7 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
     return kind;
   });
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const loadPluginList = usePluginPackageStore((s) => s.loadList);
@@ -103,6 +116,8 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
   const clearConnectorError = useConnectorStore((s) => s.clearError);
   const connectorSuccess = useConnectorStore((s) => s.successMessage);
   const clearConnectorSuccess = useConnectorStore((s) => s.clearSuccess);
+  const connectorNotice = useConnectorStore((s) => s.noticeMessage);
+  const clearConnectorNotice = useConnectorStore((s) => s.clearNotice);
   const pluginError = usePluginPackageStore((s) => s.error);
   const clearPluginError = usePluginPackageStore((s) => s.clearError);
   const pluginNotice = usePluginPackageStore((s) => s.noticeMessage);
@@ -136,6 +151,13 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
     }
   }, [connectorSuccess, clearConnectorSuccess, t]);
 
+  useEffect(() => {
+    if (connectorNotice) {
+      setSuccessToast(connectorNotice);
+      clearConnectorNotice();
+    }
+  }, [connectorNotice, clearConnectorNotice]);
+
   // 插件版同款——install() 落盘成功后 set 的 i18n key，覆盖卡片网格快速安装 + 详情页安装按钮
   // 两个入口（2026-08-21 用户明确要求两处都要有提示）。
   useEffect(() => {
@@ -161,9 +183,7 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
   // 就是它本身，topTab 是 'my'（我的扩展）时看 myKind 子筛选。
   const activeKind: MarketKind = topTab === 'my' ? myKind : topTab;
 
-  // 切换 activeKind（点了插件/MCP/我的扩展下的子筛选）或从详情/创建页返回市场页时，立即
-  // 重新拉一次当前页对应的列表（不用之前缓存的旧数据）；同时每 10s 静默轮询一次，保持列表
-  // 跟后端同步——两者都只作用于 activeKind 对应的那一个 store，不触碰另一侧。
+  // 进入市场或切换插件/连接器范围时，直接请求当前列表。
   useEffect(() => {
     if (view.name !== 'market') return;
     // MCP/插件都按 filter 分别拉"广场"(builtin)/"我的"(local) 两份列表（MCP 见 connectorStore.ts
@@ -171,20 +191,12 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
     // 固定传 undefined 拿混合列表，靠 MarketplacePage.tsx 前端按 pkg.source 二次过滤，用户反馈
     // "为什么不直接用后端 filter 分开"，两边现在都是"具体拉哪个由 topTab 决定"，不是固定一次调用
     // 能覆盖两个 tab 的。
-    const load = (options?: { silent?: boolean }) => {
-      const filter = topTab === 'my' ? 'local' : 'builtin';
-      return activeKind === 'mcp' ? loadConnectorList(filter, options) : loadPluginList(filter, options);
-    };
-    load();
-    const intervalId = window.setInterval(() => load({ silent: true }), LIST_POLL_INTERVAL_MS);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') load({ silent: true });
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => {
-      window.clearInterval(intervalId);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    };
+    const scope = topTab === 'my' ? 'mine' : 'catalog';
+    if (activeKind === 'mcp') {
+      void loadConnectorList(equipmentListFilter('mcp', scope));
+    } else {
+      void loadPluginList(equipmentListFilter('plugin', scope));
+    }
   }, [activeKind, topTab, view.name, loadConnectorList, loadPluginList]);
 
   // "会话使用"按钮目前没有真实目的地——真正的会话内使用入口是 ChatPanel 输入框的"+"面板
@@ -193,7 +205,7 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
   const handleUseNotWired = () => window.alert(t('connectorMarket.card.useNotWired'));
 
   return (
-    <div className="relative h-full w-full bg-bg">
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-panel">
       {view.name === 'market' && (
         <MarketplacePage
           topTab={topTab}
@@ -211,8 +223,22 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
           // 本次需求取代。不传这个 prop（理论上不会发生，App.tsx 恒传）才退化成提示未接入，跟
           // onUse/handleUseNotWired 同款可选 prop 兜底处理。
           onCreateWithSkill={onCreateViaChat ?? (() => window.alert(t('connectorMarket.create.withSkillNotWired')))}
-          onCreateWithUpload={() => setUploadModalOpen(true)}
+          onCreateWithUpload={() => {
+            setUploadError(null);
+            setUploadModalOpen(true);
+          }}
           onRegisterCustomMcp={() => setView({ name: 'register-mcp' })}
+          onOpenApplicationPlugins={() => setView({ name: 'application-plugins' })}
+        />
+      )}
+
+      {view.name === 'application-plugins' && (
+        <ApplicationPluginsPanel
+          plugins={applicationPlugins}
+          loading={applicationPluginsLoading}
+          error={applicationPluginsError}
+          onRefresh={onRefreshApplicationPlugins}
+          onBack={() => setView({ name: 'market' })}
         />
       )}
 
@@ -222,7 +248,11 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
           fromMy={view.fromMy}
           onBack={() => setView({ name: 'market' })}
           onDeleted={() => setView({ name: 'market' })}
-          onUse={onUseExtension ? () => onUseExtension({ kind: 'plugin', id: view.id }) : handleUseNotWired}
+          onUse={
+            onUseExtension
+              ? (runtimePackageName) => onUseExtension({ kind: 'plugin', id: runtimePackageName })
+              : handleUseNotWired
+          }
           onUseExample={onUsePluginExample}
         />
       )}
@@ -231,7 +261,18 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
         <McpDetailPage
           name={view.connectorName}
           onBack={() => setView({ name: 'market' })}
-          onUse={onUseExtension ? () => onUseExtension({ kind: 'mcp', id: view.connectorName }) : handleUseNotWired}
+          onUse={
+            onUseExtension
+              ? () => {
+                  const connector = useConnectorStore
+                    .getState()
+                    .connectors.find(
+                      (item) => item.id === view.connectorName || item.runtimePackageName === view.connectorName,
+                    );
+                  onUseExtension({ kind: 'mcp', id: connector?.runtimePackageName ?? view.connectorName });
+                }
+              : handleUseNotWired
+          }
           onUseExample={onUseExample}
           onEdit={() => setView({ name: 'register-mcp', editName: view.connectorName })}
         />
@@ -246,7 +287,9 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
           editName={view.editName}
           // 编辑态取消/返回：回到刚才那个 MCP 的详情页（编辑本来就是从那进来的）；新建态维持
           // 原来退回市场页的行为。
-          onBack={() => setView(view.editName ? { name: 'mcp-detail', connectorName: view.editName } : { name: 'market' })}
+          onBack={() =>
+            setView(view.editName ? { name: 'mcp-detail', connectorName: view.editName } : { name: 'market' })
+          }
           // 注册/编辑成功后的落点不一样：编辑态回到该 MCP 详情页（McpDetailPage 挂载时会重新
           // loadDetail，自然显示编辑后的最新配置）；新建态沿用原逻辑——切到"我的扩展 / MCP"
           // 子筛选而不是退回 MCP 广场，理由见下方原注释：新注册的 MCP 是 source==='customize'，
@@ -266,16 +309,24 @@ export function ConnectorMarketPanel({ onUseExample, onUsePluginExample, onUseEx
 
       {uploadModalOpen && (
         <UploadFileCreateModal
-          onCancel={() => setUploadModalOpen(false)}
+          error={uploadError}
+          onCancel={() => {
+            setUploadModalOpen(false);
+            setUploadError(null);
+          }}
           onConfirm={async (filePath) => {
             // 截图接口里的 session_id 用户明确要求先不带（2026-08-20），见 pluginPackagesApi.ts
-            // importLocal 注释。失败不在这里重复处理——pluginError 已经通过上面的 useEffect
-            // 统一弹红色 Toast，弹窗本身保持打开方便用户重试。
-            const ok = await importPluginLocal({ path: filePath });
-            if (ok) {
+            // importLocal 注释。失败在弹窗内展示映射后的中文，与专家上传对齐；不走 store.error
+            // Toast，避免和弹窗重复、也避免 Toast 一闪而过用户只看到英文原文。
+            setUploadError(null);
+            const result = await importPluginLocal({ path: filePath });
+            if (result.ok) {
               setUploadModalOpen(false);
+              setUploadError(null);
               setSuccessToast(t('connectorMarket.upload.importSuccess'));
+              return;
             }
+            setUploadError(result.error);
           }}
         />
       )}

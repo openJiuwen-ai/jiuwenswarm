@@ -1,0 +1,1 @@
+export { browserModule } from './definition';

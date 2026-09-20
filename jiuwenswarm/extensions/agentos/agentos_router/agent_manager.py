@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.extensions.agentos.agentos_router.logutil import format_agentos, log_agentos
 from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+
+logger = logging.getLogger(__name__)
 
 
 AgentCreator = Callable[[AgentInfo], Awaitable[AgentInfo | None]]
@@ -72,6 +76,10 @@ class AgentDeleted(RuntimeError):
 
 class AgentCreateFailed(RuntimeError):
     """Previous create failed; automatic retry is disabled to avoid double create."""
+
+
+class AgentPreCreateError(ValueError):
+    """Creator failed before any sandbox creation; safe to retry."""
 
 
 @dataclass
@@ -153,9 +161,16 @@ class AgentRuntime:
 
     @staticmethod
     def normalize_agent_type(raw: Any) -> str:
-        """Normalize agent_type; any non-empty name is accepted (no allowlist)."""
-        agent_type = str(raw or "").strip().lower()
-        return agent_type or BUILTIN_AGENT_TYPE
+        """Normalize agent_type; any non-empty name is accepted (no allowlist).
+
+        Registry ``name`` is case-sensitive and is kept as-is (strip only).
+        Builtin ``jiuwenswarm`` stays case-insensitive and is canonicalized
+        to lowercase so mixed-case chat/switch still reuse the same agent.
+        """
+        agent_type = str(raw or "").strip()
+        if not agent_type or agent_type.lower() == BUILTIN_AGENT_TYPE:
+            return BUILTIN_AGENT_TYPE
+        return agent_type
 
     @staticmethod
     def normalize_session_id(raw: Any) -> str:
@@ -323,6 +338,7 @@ class AgentManager:
             else max(0.1, float(timeout_seconds))
         )
         key_desc = AgentRuntime.format_key(key, self._key_fields)
+        session_id = str((key_values or {}).get("session_id") or (metadata or {}).get("session_id") or "")
 
         while True:
             owner = False
@@ -366,9 +382,27 @@ class AgentManager:
                     acquire=acquire,
                 )
 
+            log_agentos(
+                logger,
+                logging.DEBUG,
+                "sandbox.create.wait",
+                user_id=key_user_id,
+                session_id=session_id,
+                agent_type=key_agent_type,
+                key=key_desc,
+            )
             try:
                 await runtime.wait_until_settled(wait_timeout)
             except asyncio.TimeoutError as exc:
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    "sandbox.create.timeout",
+                    user_id=key_user_id,
+                    session_id=session_id,
+                    agent_type=key_agent_type,
+                    key=key_desc,
+                )
                 raise AgentCreatingTimeout(
                     f"AGENT_CREATING_TIMEOUT: {key_desc}"
                 ) from exc
@@ -457,6 +491,10 @@ class AgentManager:
         async with self._runtimes_lock:
             return list(self._runtimes.keys())
 
+    async def list_all_agents(self) -> list[AgentRuntime]:
+        async with self._runtimes_lock:
+            return [runtime.snapshot() for runtime in self._runtimes.values()]
+
     async def list_user_agents(self, user_id: str) -> list[AgentRuntime]:
         normalized_user_id = str(user_id or "").strip()
         async with self._runtimes_lock:
@@ -477,6 +515,42 @@ class AgentManager:
             if self._runtimes.get(key) is not owner_runtime:
                 return
             owner_runtime.mark_failed(exc)
+        session_id = str(owner_runtime.info.metadata.get("session_id") or "")
+        sandbox_id = str(owner_runtime.info.sandbox_id or "")
+        fields = {
+            "user_id": owner_runtime.info.user_id,
+            "session_id": session_id,
+            "sandbox_id": sandbox_id,
+            "agent_type": owner_runtime.info.agent_type,
+            "error": type(exc).__name__,
+            "key": AgentRuntime.format_key(key, self._key_fields),
+        }
+        if isinstance(exc, asyncio.CancelledError):
+            log_agentos(logger, logging.WARNING, "sandbox.create.fail", **fields)
+            return
+        logger.exception(
+            format_agentos("sandbox.create.fail", **fields),
+            extra={k: v for k, v in (("session_id", session_id), ("sandbox_id", sandbox_id)) if v},
+        )
+
+    async def _discard_precreate_failure(
+        self,
+        key: AgentKey,
+        *,
+        owner_runtime: AgentRuntime,
+    ) -> None:
+        """丢弃创建前失败的内存 runtime，让下一次请求重新走 owner 路径重试。
+
+        与 ``mark_failed`` 不同：pre-create 失败发生在 YuanRong ``create`` 之前，
+        不存在“可能已建了一半沙箱”的双创建风险。此时若缓存为 FAILED，瞬时错误
+        （如 workspace 目录未就绪）会被永久钉死，故直接移除 runtime，并唤醒等待者
+        使其重新参与 single-flight 创建。
+        """
+        async with self._runtimes_lock:
+            if self._runtimes.get(key) is not owner_runtime:
+                return
+            self._runtimes.pop(key, None)
+            owner_runtime.creating_event.set()
 
     async def _run_creator(
         self,
@@ -488,6 +562,16 @@ class AgentManager:
         acquire: bool = False,
     ) -> AgentRuntime:
         key_desc = AgentRuntime.format_key(key, self._key_fields)
+        session_id = str(agent.metadata.get("session_id") or "")
+        log_agentos(
+            logger,
+            logging.INFO,
+            "sandbox.create.start",
+            user_id=agent.user_id,
+            session_id=session_id,
+            agent_type=agent.agent_type,
+            key=key_desc,
+        )
         try:
             created = await creator(agent.copy()) if creator is not None else agent
             resolved = AgentRuntime.apply_creator_result(created, base=agent)
@@ -504,6 +588,13 @@ class AgentManager:
             )
             raise
         except AgentDeleted:
+            raise
+        except AgentPreCreateError:
+            # 沙箱创建前失败（如 workspace 校验）：尚未调用 YuanRong create，
+            # 不存在“半创建”沙箱，直接丢弃内存 runtime 让下一次请求重试。
+            await self._discard_precreate_failure(
+                key, owner_runtime=owner_runtime
+            )
             raise
         except Exception as exc:
             await self._mark_creator_failed(

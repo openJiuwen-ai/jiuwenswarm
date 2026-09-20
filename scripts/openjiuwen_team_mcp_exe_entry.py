@@ -68,6 +68,9 @@ def main() -> None:
     os.environ["PYTHONIOENCODING"] = "utf-8"
     os.environ["PYTHONUTF8"] = "1"
     if getattr(sys, "frozen", False):
+        from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
+
+        activate_external_cli_runtime_paths()
         _ensure_stdio()
 
     from openjiuwen.agent_teams.mcp.server import main as server_main

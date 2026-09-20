@@ -189,22 +189,12 @@ class ConfigAdapter(GatewayAdapter):
 
         if request.req_method == ReqMethod.PATH_GET:
             browser = (get_config() or {}).get("browser") or {}
-            browser_type = "auto"
-            if isinstance(browser, dict):
-                raw_type = browser.get("browser_type", "auto")
-                if isinstance(raw_type, str) and raw_type.strip():
-                    normalized = raw_type.strip().lower()
-                    if normalized in {"chrome", "google-chrome", "google_chrome"}:
-                        browser_type = "chrome"
-                    elif normalized in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-                        browser_type = "msedge"
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
                 payload={
                     "chrome_path": _resolve_browser_path(browser) if isinstance(browser, dict) else "",
-                    "browser_type": browser_type,
                     "headless": browser.get("headless") if isinstance(browser.get("headless"), bool) else True,
                 },
                 metadata=request.metadata,
@@ -215,25 +205,10 @@ class ConfigAdapter(GatewayAdapter):
             return build_error_response(request, "chrome_path must be string", code="BAD_REQUEST")
         chrome_path = chrome_path.strip()
 
-        raw_browser_type = params.get("browser_type", "auto")
-        if not isinstance(raw_browser_type, str):
-            return build_error_response(request, "browser_type must be string", code="BAD_REQUEST")
-        normalized_type = raw_browser_type.strip().lower()
-        if normalized_type in {"chrome", "google-chrome", "google_chrome"}:
-            browser_type = "chrome"
-        elif normalized_type in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-            browser_type = "msedge"
-        elif normalized_type in {"", "auto"}:
-            browser_type = "auto"
-        else:
-            return build_error_response(
-                request, "browser_type must be one of: auto, chrome, msedge", code="BAD_REQUEST"
-            )
-
         headless = params.get("headless", True)
         if not isinstance(headless, bool):
             headless = True
-        update_browser_in_config({"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless})
+        update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
         metadata = dict(request.metadata or {})
         metadata["config_changed"] = True
         metadata["browser_runtime_restart"] = True
@@ -241,7 +216,7 @@ class ConfigAdapter(GatewayAdapter):
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless},
             metadata=metadata,
         )
 

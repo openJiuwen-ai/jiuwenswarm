@@ -119,6 +119,7 @@ def test_agent_tool_subagent_reuses_parent_sys_operation(tmp_path):
     parent_config.max_iterations = 15
     parent_config.prompt_mode = None
     parent_config.sys_operation = sys_operation
+    parent_config.enable_read_image_multimodal = False
 
     parent_agent = MagicMock()
     parent_agent.deep_config = parent_config
@@ -134,3 +135,7 @@ def test_agent_tool_subagent_reuses_parent_sys_operation(tmp_path):
         tool._create_sub_agent(agent_def, "session_custom_reviewer_1")
 
     assert create_deep_agent.call_args.kwargs["sys_operation"] is sys_operation
+    assert (
+        create_deep_agent.call_args.kwargs["enable_read_image_multimodal"]
+        is False
+    )

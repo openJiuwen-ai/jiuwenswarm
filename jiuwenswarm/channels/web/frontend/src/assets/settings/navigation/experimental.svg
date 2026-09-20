@@ -1,0 +1,8 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="16.000000" height="16.000000" fill="none">
+	<rect id="实验功能" width="16.000000" height="16.000000" x="0.000000" y="0.000000" />
+	<path id="矩形 544567" d="M13 3C13.8285 3 14.5 3.67157 14.5 4.5L14.5 11.5C14.5 12.3284 13.8285 13 13 13L4.5 13C3.67157 13 3 12.3284 3 11.5L3 4.5C3 3.67157 3.67157 3 4.5 3L13 3Z" fill-rule="evenodd" stroke="currentColor" stroke-width="1.000000" />
+	<path id="直线 105" d="M0 -0.5L2 -0.5L2 0.5L0 0.5L0 -0.5ZM1.98 -0.48L2 -0.5C2.28 -0.5 2.5 -0.28 2.5 0C2.5 0.28 2.28 0.5 2 0.5L1.98 0.48L1.98 -0.48Z" fill="currentColor" fill-rule="nonzero" transform="matrix(-1,0,0,-1,3,6.5)" />
+	<path id="直线 107" d="M0 0L2.50001 0" stroke="currentColor" stroke-linecap="round" stroke-width="1.000000" transform="matrix(-1,0,0,-1,8,6)" />
+	<path id="直线 108" d="M0 0L1.49981 0" stroke="currentColor" stroke-linecap="round" stroke-width="1.000000" transform="matrix(0,-1,1,0,5.5,10)" />
+	<path id="直线 106" d="M0 -0.5L2 -0.5L2 0.5L0 0.5L0 -0.5ZM1.98 -0.48L2 -0.5C2.28 -0.5 2.5 -0.28 2.5 0C2.5 0.28 2.28 0.5 2 0.5L1.98 0.48L1.98 -0.48Z" fill="currentColor" fill-rule="nonzero" transform="matrix(-1,0,0,-1,3,9.5)" />
+</svg>

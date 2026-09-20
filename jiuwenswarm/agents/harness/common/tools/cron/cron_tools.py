@@ -2,34 +2,49 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import uuid
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
-from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
-from jiuwenswarm.gateway.cron.store import CronJobStore, _PROACTIVE_TICK_MODE
-from jiuwenswarm.gateway.cron.scheduler import _cron_next_push_dt, CronSchedulerService
-from jiuwenswarm.gateway.cron.models import (
+from jiuwenswarm.runtime.cron.cron_expr import normalize_cron_expr
+from jiuwenswarm.runtime.cron.store import CronJobStore, _PROACTIVE_TICK_MODE
+from jiuwenswarm.runtime.cron.models import (
     CronJob,
     CronTargetChannel,
     cron_job_modes_for_tools,
     is_valid_target_channel_id,
+    normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_target_channel_id,
     validate_cron_model,
 )
-from jiuwenswarm.server.gateway_push import (
-    GatewayPushTransport,
-    WebSocketGatewayPushTransport,
-)
 from jiuwenswarm.common.utils import get_cron_jobs_path
+from jiuwenswarm.runtime.host_services import send_runtime_push
 
 logger = logging.getLogger(__name__)
+
+
+def _cron_next_push_dt(cron_expr: str, base_dt: datetime) -> datetime:
+    """Compute the next cron time without importing the Gateway scheduler."""
+    from croniter import croniter  # type: ignore
+
+    second_at_beginning = len(cron_expr.strip().split()) == 7
+    next_dt = croniter(
+        cron_expr,
+        base_dt,
+        second_at_beginning=second_at_beginning,
+    ).get_next(datetime)
+    if not isinstance(next_dt, datetime):
+        raise RuntimeError("croniter returned invalid datetime")
+    if next_dt.tzinfo is None:
+        return next_dt.replace(tzinfo=base_dt.tzinfo)
+    return next_dt
+
 
 # AgentOS 下 job store 只属于 Gateway。该进程内快照由 Gateway 在每次用户
 # Agent 请求前经 E2A 下发，仅用于 cron 工具的读取和后续 mutation 校验；绝不
@@ -71,6 +86,8 @@ def resolve_gateway_cron_command_ack(command_id: str, result: dict[str, Any]) ->
     future = _gateway_command_acks.pop(str(command_id or ""), None)
     if future is not None and not future.done():
         future.set_result(dict(result or {}))
+
+
 _RUN_NOW_ACK_TIMEOUT_SEC = 10.0
 
 # ── pending scope 回收 ────────────────────────────────────────────────────────
@@ -128,7 +145,6 @@ class CronTools:
 
     路由用 ContextVar 按 Task 隔离（与 interface 中 ``push_cron_route`` / ``reset_cron_route`` 配对）；
     同进程一套 LocalFunction，并发安全依赖当前 asyncio 任务的上下文而非单例可变字段。
-
     收敛约束（方案 §4 / §10.9）：
       - 不在 AgentServer 本地持久化 job、不写用户目录 ``cron_jobs.json``；
       - 不启动第二个调度器（job store / 调度 / 触发 / 生命周期统一由 Gateway 持有）；
@@ -136,16 +152,19 @@ class CronTools:
     本地 ``_local_store`` 仅作已落库任务的只读视图（单用户下与 Gateway
     共享同一文件）。本进程另维护未确认 mutation 的内存投影，以保证一次工具
     调用中 create → list/update/preview 具有一致视图，但绝不写用户目录。
+
+    数据模型、校验和持久化实现位于 Runtime；常驻调度生命周期仍由 Gateway
+    单一持有。一次一进程的 CLI 没有 resident host，不会启动后台调度服务。
     """
 
     def __init__(
         self,
-        gateway_push: GatewayPushTransport | None = None,
+        gateway_push: Any | None = None,
         *,
         agent_client: Any | None = None,
         message_handler: Any | None = None,
     ) -> None:
-        self._gateway_push: GatewayPushTransport = gateway_push or WebSocketGatewayPushTransport()
+        self._gateway_push = gateway_push
         # 只读视图：不落库；create/update/delete/toggle 均经 E2A 转发 Gateway 单源。
         self._local_store = CronJobStore(
             path=get_cron_jobs_path()
@@ -159,12 +178,12 @@ class CronTools:
         # 无 turn 结束钩子，用惰性 TTL + 上限驱逐回收 pending scope，防止
         # scope（request:<id> 等）随请求无限累积。
         self._pending_scope_last_used: dict[str, float] = {}
-        self._scheduler: CronSchedulerService | None = None
+        self._scheduler: None = None
         self._agent_client = agent_client
         self._message_handler = message_handler
         self._scheduler_started = False
 
-    async def ensure_scheduler(self) -> CronSchedulerService | None:
+    async def ensure_scheduler(self) -> None:
         """AgentServer 不再持有调度器（Phase 4 单源收敛），恒返回 ``None``。
 
         保留方法签名兼容调用方（如 ``CronRuntimeBridge.ensure_scheduler_started``），
@@ -250,14 +269,17 @@ class CronTools:
         return _gateway_jobs_snapshots.get(user_id)
 
     def _uses_gateway_command_ack(self) -> bool:
-        # The ack mechanism works whenever the built-in WebSocket push transport
-        # is present — it does not depend on ``user_id``.  In legacy single-user
-        # mode ``route_user_id`` is empty, but the push transport, Gateway
-        # processing, and ``CRON_COMMAND_ACK`` round-trip all function the same.
-        # Requiring ``route_user_id`` here previously caused single-user mode to
-        # return "submitted" immediately, silently dropping Gateway-side
-        # validation errors (e.g. invalid cron_expr, deleted project).
-        return isinstance(self._gateway_push, WebSocketGatewayPushTransport)
+        """Whether the selected host transport supports command acknowledgements.
+
+        Production AgentServer uses the host-services path (``gateway_push is
+        None``), whose Gateway round trip delivers ``CRON_COMMAND_ACK``.  A
+        custom transport remains fire-and-forget unless it explicitly opts in;
+        this keeps test/legacy transports compatible without importing Server
+        or WebSocket implementations into the Runtime-owned cron tools.
+        """
+        if self._gateway_push is None:
+            return True
+        return bool(getattr(self._gateway_push, "supports_cron_command_ack", False))
 
     async def _send_split(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_CRON
@@ -297,7 +319,14 @@ class CronTools:
         if self._uses_gateway_command_ack():
             ack = asyncio.get_running_loop().create_future()
             _gateway_command_acks[command_id] = ack
-        delivered = await self._gateway_push.send_push(payload)
+        try:
+            if self._gateway_push is not None:
+                delivered = await self._gateway_push.send_push(payload)
+            else:
+                delivered = await send_runtime_push(payload)
+        except BaseException:
+            _gateway_command_acks.pop(command_id, None)
+            raise
         # 传输层明确返回 False 代表 Gateway 不可达/写入失败。不能再把这种情况
         # 伪装成已转发，否则 create/update 只停留在本进程 pending view、任务永不落库。
         # 为兼容旧的自定义 transport，None 仍视为未知但已接受；内置 WS transport
@@ -520,6 +549,13 @@ class CronTools:
         model_name_raw = normalized.get("model_name")
         if model_name_raw is not None and str(model_name_raw).strip():
             model_kw["model_name"] = validate_cron_model(model_name_raw)
+        # mcp：会话级 MCP 选择（backend 层已继承 chat-session 快照或显式传入），
+        # 只做类型规范化（strip/去空/去重），不校验存在性——MCP 断连后 job 应降级运行。
+        mcp_kw: dict[str, Any] = {}
+        if "mcp" in normalized:
+            mcp_val = normalize_cron_job_mcp(normalized.get("mcp"))
+            if mcp_val is not None:
+                mcp_kw["mcp"] = mcp_val
         # project_dir -> project_id follows the same rules as the gateway controller.
         # 用 key presence 区分「未传」和「显式空串」：显式传 "" 归默认项目，
         # 未传时从 route 上下文取 project_dir（设计文档 §5.1）。
@@ -549,8 +585,6 @@ class CronTools:
             raw_project_id = str(r.project_id or "").strip()
         binding = resolve_cron_project_binding(raw_project_id, project_dir_val, work_mode)
         if binding.error is not None:
-            if binding.hidden:
-                raise ValueError(f"project not found: {raw_project_id!r}")
             raise ValueError(binding.error)
         resolved_project_id = binding.project_id
         work_mode = binding.work_mode
@@ -575,6 +609,7 @@ class CronTools:
             **session_kw,
             **mode_kw,
             **model_kw,
+            **mcp_kw,
         )
         sync_payload = job.to_dict()
         sync_payload["project_dir"] = project_dir_val
@@ -603,6 +638,9 @@ class CronTools:
             normalized_patch["mode"] = normalize_cron_job_mode(normalized_patch.get("mode"))
         if "model_name" in normalized_patch:
             normalized_patch["model_name"] = validate_cron_model(normalized_patch.get("model_name"))
+        if "mcp" in normalized_patch:
+            # 显式传 null/[] 归 None（清除选择）；元素不规范的非列表值同样归 None。
+            normalized_patch["mcp"] = normalize_cron_job_mcp(normalized_patch.get("mcp"))
 
         # work_mode / project_id / project_dir 重解析(共享 helper):
         # 与 CronController.update_job 共用同一 ``resolve_cron_job_patch``,
@@ -807,6 +845,9 @@ class CronTools:
         model_name = kwargs.get("model_name")
         if model_name is not None and str(model_name).strip():
             params["model_name"] = model_name
+        mcp = kwargs.get("mcp")
+        if mcp is not None:
+            params["mcp"] = mcp
         if "project_dir" in kwargs and kwargs.get("project_dir") is not None:
             params["project_dir"] = str(kwargs.get("project_dir") or "").strip()
         if "project_id" in kwargs and kwargs.get("project_id") is not None:
@@ -872,6 +913,15 @@ class CronTools:
                             "type": "string",
                             "description": "Model name or alias to use. Omit for default.",
                         },
+                        "mcp": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Session-scoped MCP server names to enable when "
+                                "the job runs. Omit to inherit the creating "
+                                "session's MCP selection; pass [] for none."
+                            ),
+                        },
                         "project_dir": {
                             "type": "string",
                             "description": "Absolute path to the project directory. \
@@ -904,7 +954,7 @@ class CronTools:
                 description=(
                     "Update an existing cron job. Pass job_id and a patch dict with fields to update "
                     "(name, enabled, cron_expr, timezone, description, wake_offset_seconds, "
-                    "targets, mode, model_name, project_dir, project_id)."
+                    "targets, mode, model_name, mcp, project_dir, project_id)."
                 ),
                 input_params={
                     "type": "object",
@@ -915,7 +965,7 @@ class CronTools:
                             "description": (
                                 "Fields to update (name, enabled, cron_expr, timezone, "
                                 "description, wake_offset_seconds, targets, mode, model_name, "
-                                "project_dir, project_id). work_mode is not accepted as an "
+                                "mcp, project_dir, project_id). work_mode is not accepted as an "
                                 "independent patch field; to change work_mode, patch project_id "
                                 "or project_dir + work_mode (work_mode only disambiguates the "
                                 "target project when resolving project_dir)."
@@ -943,6 +993,14 @@ class CronTools:
                                 "model_name": {
                                     "type": "string",
                                     "description": "Model name or alias. Set to empty string to reset to default.",
+                                },
+                                "mcp": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Session-scoped MCP server names to enable when the "
+                                        "job runs. Set to [] to clear (use default set only)."
+                                    ),
                                 },
                                 "project_dir": {
                                     "type": "string",

@@ -310,6 +310,7 @@ class GitDiffWebSocketHandler:
                     "branch": repo.get("branch"),
                     "head": repo.get("head"),
                     "transient": repo.get("transient", False),
+                    "repo_is_parent_of_project": repo.get("repo_is_parent_of_project", False),
                 },
                 "current": build_summary_entry(current),
                 "last_turn": build_turn_summary_entry(last_turn),

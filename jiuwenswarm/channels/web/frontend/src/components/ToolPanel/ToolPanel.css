@@ -21,13 +21,14 @@
   width: 340px;
   max-height: calc(100vh - 68px - 32px);
   overflow-y: auto;
+  scrollbar-gutter: stable;
   border-left: 1px solid var(--color-border-default, rgb(240, 240, 240));
   border-radius: 16px;
   box-shadow: 0 2px 16px 0 rgba(0, 0, 0, 0.08);
   z-index: 30;
 }
 
-.tool-panel-floating > div > div:not(:last-child) {
+.tool-panel-floating>div>div:not(:last-child) {
   border-bottom: 1px solid var(--color-border-default);
 }
 
@@ -37,8 +38,7 @@
   transform: translateY(-1px);
 }
 
-
-.toolpanel-collapsed-task-section > * {
+.toolpanel-collapsed-task-section>* {
   min-height: 0;
   flex: 1 1 auto;
   border-bottom: 0;
@@ -96,7 +96,7 @@
 
 .collapsible-section__content {
   overflow: visible;
-  padding-bottom: 24px;
+  padding-bottom: 16px;
 }
 
 .collapsible-section__expand-all {
@@ -112,6 +112,7 @@
   background: var(--color-surface-card);
   transition: color 0.2s ease;
   cursor: pointer;
+  padding-bottom: 8px;
 }
 
 .collapsible-section__expand-all button:hover {

@@ -3,25 +3,134 @@
 """Unit tests for config module."""
 
 import math
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+
+# TEST ONLY: new URL fixtures use RFC-reserved domains; provider URLs are compared
+# only as configuration strings. These tests do not open sockets.
 
 import pytest
 import yaml
 
+from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.config import (
+    _transform_front_team_model_config,
+    coerce_config_bool,
     get_configured_read_image_multimodal,
     get_config_raw,
     get_evolution_auto_save_enabled,
     get_evolution_review_feedback_min_confidence,
+    get_sandbox_runtime,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
+    get_ttse_embedding_config,
+    get_ttse_enabled,
     migrate_config_from_template,
     replace_teams_in_config,
+    reset_external_cli_agents_in_config,
+    resolve_sandbox_enabled,
     resolve_env_vars,
     update_external_cli_agents_in_config,
+    update_sandbox_runtime,
+    update_permissions_profile_in_config,
     update_skill_retrieval_in_config,
     update_setup_guide_enabled_in_config,
     update_xiaoyi_runtime_in_config,
 )
+from jiuwenswarm.symphony import config as symphony_config_module
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("evolution_enabled", [False, True])
+def test_symphony_evolution_requires_both_switches(
+    enabled: bool,
+    evolution_enabled: bool,
+) -> None:
+    config = {
+        "symphony": {"enabled": enabled, "evolution": {"enabled": evolution_enabled}}
+    }
+    assert get_symphony_evolution_enabled(config) is (enabled and evolution_enabled)
+
+
+@pytest.mark.parametrize("switch", ["symphony", "evolution"])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (1, True),
+        (0, False),
+        (2, False),
+        (1.0, False),
+        ("1", True),
+        (" true ", True),
+        ("YES", True),
+        ("On", True),
+        ("0", False),
+        ("false", False),
+        ("NO", False),
+        (" off ", False),
+        ("enabled", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_symphony_evolution_switch_matches_full_parser(
+    switch: str,
+    value: Any,
+    expected: bool,
+) -> None:
+    raw: dict[str, Any] = {"enabled": True, "evolution": {"enabled": True}}
+    target = raw if switch == "symphony" else raw["evolution"]
+    target["enabled"] = value
+    parsed = symphony_config_module.symphony_config_from_dict(raw)
+    assert get_symphony_evolution_enabled({"symphony": raw}) is expected
+    assert expected is (parsed.enabled and parsed.evolution.enabled)
+
+
+@pytest.mark.parametrize("value", [None, {}, [], "invalid", True, 1])
+@pytest.mark.parametrize("level", ["config", "symphony", "evolution"])
+def test_symphony_evolution_missing_or_malformed_mapping_is_disabled(
+    level: str,
+    value: Any,
+) -> None:
+    config = value
+    if level == "symphony":
+        config = {"symphony": value}
+    elif level == "evolution":
+        config = {"symphony": {"enabled": True, "evolution": value}}
+    assert get_symphony_evolution_enabled(config) is False
+
+
+def test_symphony_evolution_getter_reads_only_passed_switches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Unexpected global config, full parser, or path lookup")
+
+    monkeypatch.setattr(config_module, "get_config", fail)
+    for name in (
+        "load_symphony_config",
+        "symphony_config_from_dict",
+        "get_agent_workspace_dir",
+        "_resolve_path",
+    ):
+        monkeypatch.setattr(symphony_config_module, name, fail)
+    assert get_symphony_evolution_enabled(None) is False
+    assert get_symphony_evolution_enabled({}) is False
+    evolution_only = {"symphony": {"evolution": {"enabled": True}}}
+    assert get_symphony_evolution_enabled(evolution_only) is False
+    assert get_symphony_evolution_enabled({"symphony": {"enabled": True}}) is False
+    enabled_config = {
+        "symphony": {
+            "enabled": True,
+            "evolution": {"enabled": True},
+            "paths": "invalid",
+            "orchestration": {"mode": "invalid"},
+        },
+    }
+    assert get_symphony_evolution_enabled(enabled_config) is True
 
 
 def test_configured_read_image_multimodal_preserves_explicit_value() -> None:
@@ -34,6 +143,322 @@ def test_configured_read_image_multimodal_returns_none_for_auto() -> None:
     assert get_configured_read_image_multimodal(
         {"react": {"enable_read_image_multimodal": None}}
     ) is None
+
+
+def test_reset_external_cli_agents_removes_runtime_config_and_preserves_other_values(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_config_file: Path,
+) -> None:
+    temp_config_file.write_text(
+        yaml.safe_dump(
+            {
+                "preferred_language": "zh",
+                "modes": {
+                    "team": {
+                        "jiuwen_team": {
+                            "enable_swarmflow": True,
+                            "external_cli_agents": [
+                                {"cli_agent": "claude"},
+                                {"cli_agent": "codex"},
+                            ],
+                            "external_transport": {
+                                "type": "hybrid",
+                                "params": {"external_publish_url": "ws://127.0.0.1:19000/ws"},
+                            },
+                        }
+                    }
+                },
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
+
+    reset_external_cli_agents_in_config()
+
+    saved = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+    team = saved["modes"]["team"]["jiuwen_team"]
+    assert "external_cli_agents" not in team
+    assert "external_transport" not in team
+    assert team["enable_swarmflow"] is True
+    assert saved["preferred_language"] == "zh"
+
+
+def test_reset_external_cli_agents_uses_update_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    data: dict[str, Any] = {
+        "modes": {
+            "team": {
+                "jiuwen_team": {
+                    "external_cli_agents": [{"cli_agent": "claude"}],
+                    "external_transport": {"type": "hybrid"},
+                }
+            }
+        }
+    }
+
+    def _update_config(
+        mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ) -> dict[str, Any]:
+        calls.append(data)
+        result = mutator(data)
+        return data if result is None else result
+
+    monkeypatch.setattr(config_module, "update_config", _update_config)
+
+    reset_external_cli_agents_in_config()
+
+    assert len(calls) == 1
+    team = data["modes"]["team"]["jiuwen_team"]
+    assert "external_cli_agents" not in team
+    assert "external_transport" not in team
+
+
+def test_reset_external_cli_agents_does_not_write_when_config_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_config_file: Path,
+) -> None:
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
+    monkeypatch.setattr(
+        config_module,
+        "dump_yaml_round_trip",
+        lambda *_args: pytest.fail("no-op reset must not write config"),
+    )
+
+    reset_external_cli_agents_in_config()
+
+
+def test_config_migration_preserves_explicit_image_policy(tmp_path: Path) -> None:
+    template_path = (
+        Path(__file__).resolve().parents[2]
+        / "jiuwenswarm"
+        / "resources"
+        / "config.yaml"
+    )
+    user_config_path = tmp_path / "config.yaml"
+    user_config_path.write_text(
+        "react:\n  enable_read_image_multimodal: false\n",
+        encoding="utf-8",
+    )
+
+    assert migrate_config_from_template(template_path, user_config_path) is True
+
+    migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+    assert migrated["react"]["enable_read_image_multimodal"] is False
+
+@pytest.mark.parametrize(
+    ("sandbox", "expected"),
+    [
+        (None, False),
+        ({}, False),
+        ({"type": "jiuwenbox"}, False),
+        ({"type": "jiuwenbox", "url": "http://sandbox.invalid:8321"}, False),
+        ({"url": "http://sandbox.invalid:8321", "control_token_path": "/tmp/token"}, False),
+        ({"type": "jiuwenbox", "control_token_path": "/tmp/token"}, False),
+        (
+            {
+                "type": "jiuwenbox",
+                "url": "   ",
+                "control_token_path": "/tmp/token",
+            },
+            False,
+        ),
+        (
+            {
+                "type": "jiuwenbox",
+                "url": "http://sandbox.invalid:8321",
+                "control_token_path": "   ",
+            },
+            False,
+        ),
+        (
+            {
+                "type": " JiuWenBox ",
+                "url": " http://sandbox.invalid:8321 ",
+                "control_token_path": " ~/.jiuwenbox/token ",
+            },
+            True,
+        ),
+        (
+            {
+                "type": "yuanrong",
+                "url": "http://yuanrong.invalid",
+                "control_token_path": "/tmp/token",
+            },
+            False,
+        ),
+        (
+            {
+                "type": "jiuwenbox",
+                "url": "http://sandbox.invalid:8321",
+                "control_token_path": "/tmp/token",
+                "enabled": False,
+            },
+            False,
+        ),
+        ({"enabled": True}, True),
+        (
+            {
+                "runtime": {"enabled": True},
+                "type": "jiuwenbox",
+                "url": "http://sandbox.invalid:8321",
+                "control_token_path": None,
+            },
+            False,
+        ),
+    ],
+)
+def test_resolve_sandbox_enabled_uses_provisioned_jiuwenbox_shape(
+    sandbox: object,
+    expected: bool,
+) -> None:
+    assert resolve_sandbox_enabled(sandbox) is expected
+
+
+def test_resolve_sandbox_enabled_does_not_mutate_input() -> None:
+    sandbox = {
+        "type": "jiuwenbox",
+        "url": "http://sandbox.invalid:8321",
+        "control_token_path": "/tmp/token",
+    }
+
+    assert resolve_sandbox_enabled(sandbox) is True
+    assert "enabled" not in sandbox
+
+
+def test_get_sandbox_runtime_derives_enabled_without_persisting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = {
+        "type": "jiuwenbox",
+        "url": "http://sandbox.invalid:8321",
+        "control_token_path": "/tmp/token",
+    }
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config", lambda: {"sandbox": sandbox}
+    )
+
+    runtime = get_sandbox_runtime()
+
+    assert runtime["enabled"] is True
+    assert runtime["fallback_on_failure"] is False
+    assert "enabled" not in sandbox
+
+
+def test_get_sandbox_runtime_preserves_explicit_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = {
+        "type": "jiuwenbox",
+        "url": "http://sandbox.invalid:8321",
+        "control_token_path": "/tmp/token",
+        "enabled": False,
+    }
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config", lambda: {"sandbox": sandbox}
+    )
+
+    assert get_sandbox_runtime()["enabled"] is False
+
+
+def test_update_sandbox_runtime_does_not_persist_derived_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = {
+        "type": "jiuwenbox",
+        "url": "http://sandbox.invalid:8321",
+        "control_token_path": "/tmp/token",
+    }
+    persisted = {"sandbox": sandbox}
+    written: dict[str, object] = {}
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_sandbox_runtime",
+        lambda: {
+            "enabled": True,
+            "fallback_on_failure": False,
+            "excluded_commands": [],
+            "files": {"allow": [], "deny": []},
+            "idle_ttl_seconds": None,
+            "idle_check_interval": None,
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config._load_yaml_round_trip", lambda _path: persisted
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config._dump_yaml_round_trip",
+        lambda _path, data: written.update(data),
+    )
+
+    runtime = update_sandbox_runtime({"excluded_commands": ["git status"]})
+
+    assert runtime["enabled"] is True
+    assert written["sandbox"]["excluded_commands"] == ["git status"]
+    assert "enabled" not in written["sandbox"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_update_sandbox_runtime_persists_explicit_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: bool,
+) -> None:
+    persisted = {"sandbox": {}}
+    written: dict[str, object] = {}
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_sandbox_runtime",
+        lambda: {
+            "enabled": False,
+            "fallback_on_failure": False,
+            "excluded_commands": [],
+            "files": {"allow": [], "deny": []},
+            "idle_ttl_seconds": None,
+            "idle_check_interval": None,
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config._load_yaml_round_trip", lambda _path: persisted
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config._dump_yaml_round_trip",
+        lambda _path, data: written.update(data),
+    )
+
+    update_sandbox_runtime({"enabled": enabled})
+
+    assert written["sandbox"]["enabled"] is enabled
+
+
+def test_update_sandbox_runtime_preserves_existing_enabled_on_unrelated_patch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persisted = {"sandbox": {"enabled": False}}
+    written: dict[str, object] = {}
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_sandbox_runtime",
+        lambda: {
+            "enabled": False,
+            "fallback_on_failure": False,
+            "excluded_commands": [],
+            "files": {"allow": [], "deny": []},
+            "idle_ttl_seconds": None,
+            "idle_check_interval": None,
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config._load_yaml_round_trip", lambda _path: persisted
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config._dump_yaml_round_trip",
+        lambda _path, data: written.update(data),
+    )
+
+    update_sandbox_runtime({"excluded_commands": ["git status"]})
+
+    assert written["sandbox"]["enabled"] is False
 
 
 class TestResolveEnvVars:
@@ -96,7 +521,7 @@ class TestResolveEnvVars:
 
     @staticmethod
     def test_resolve_nested_structure(monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("HOST", "example.com")
+        monkeypatch.setenv("HOST", "example.invalid")
         input_dict = {
             "server": {
                 "host": "${HOST}",
@@ -107,7 +532,7 @@ class TestResolveEnvVars:
         result = resolve_env_vars(input_dict)
         assert result == {
             "server": {
-                "host": "example.com",
+                "host": "example.invalid",
                 "port": "8080",
             },
             "features": ["default_a", "feature_b"],
@@ -116,9 +541,9 @@ class TestResolveEnvVars:
     @staticmethod
     def test_resolve_multiple_vars_in_string(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("USER", "john")
-        monkeypatch.setenv("DOMAIN", "example.com")
+        monkeypatch.setenv("DOMAIN", "example.invalid")
         result = resolve_env_vars("${USER}@${DOMAIN}")
-        assert result == "john@example.com"
+        assert result == "john@example.invalid"
 
     @staticmethod
     def test_resolve_non_string_types():
@@ -211,7 +636,7 @@ class TestResolveEnvVars:
         lookalike = {
             "transport": "streamable-http",
             "name": "some-service",
-            "url": "https://example.com/svc",
+            "url": "https://example.invalid/svc",
             "api_key": "${SVC_API_KEY}",
         }
         # Has no headers/env/staticHeaders — is_mcp_server_entry keys only on
@@ -237,6 +662,43 @@ class TestConfigFunctions:
 
         raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
         assert raw["setup_guide"] == {"enabled": False}
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("profile", "enabled", "mode"),
+        [
+            ("default", True, "manual"),
+            ("full_access", False, "manual"),
+        ],
+    )
+    def test_update_permissions_profile_is_canonical_and_preserves_other_config(
+        monkeypatch: pytest.MonkeyPatch,
+        temp_config_file: Path,
+        profile: str,
+        enabled: bool,
+        mode: str,
+    ) -> None:
+        monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", temp_config_file)
+
+        update_permissions_profile_in_config(profile)
+
+        raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+        assert raw["permissions"]["enabled"] is enabled
+        assert raw["permissions"]["mode"] == mode
+        assert raw["channels"]["web"]["enabled"] is True
+
+    @staticmethod
+    def test_invalid_permission_profile_does_not_modify_config(
+        monkeypatch: pytest.MonkeyPatch,
+        temp_config_file: Path,
+    ) -> None:
+        monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", temp_config_file)
+        original = temp_config_file.read_bytes()
+
+        with pytest.raises(ValueError, match="invalid permissions_profile"):
+            update_permissions_profile_in_config("future")
+
+        assert temp_config_file.read_bytes() == original
 
     @pytest.mark.parametrize(
         ("config", "expected"),
@@ -314,6 +776,159 @@ class TestConfigFunctions:
         ):
             monkeypatch.setenv(env_name, "true")
         assert get_skill_evolution_enabled(config) is expected
+
+    @pytest.mark.parametrize(
+        ("value", "default", "expected"),
+        [
+            (True, False, True),
+            (False, True, False),
+            (None, True, True),
+            ("true", False, True),
+            ("false", True, False),
+            ("0", True, False),
+            ("1", False, True),
+            ("yes", False, True),
+            ("no", True, False),
+            ("", True, False),
+            (1, False, True),
+            (0, True, False),
+        ],
+    )
+    def test_coerce_config_bool_values(self, value, default, expected):
+        assert coerce_config_bool(value, default) is expected
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"react": {"ttse": {"enabled": True}}}, True),
+            ({"react": {"ttse": {"enabled": False}}}, False),
+            ({"ttse": {"enabled": True}}, True),
+            ({"ttse": {"enabled": False}}, False),
+            (
+                {
+                    "react": {"ttse": {"enabled": True}},
+                    "ttse": {"enabled": False},
+                },
+                True,
+            ),
+            ({"react": {"ttse": {"enabled": "true"}}}, True),
+            ({"react": {"ttse": {"enabled": "false"}}}, False),
+            ({"react": {"ttse": {}}}, False),
+            ({"react": {"ttse": {"inject_enabled": True}}}, False),
+        ],
+    )
+    def test_ttse_enabled_config_values(self, config, expected):
+        assert get_ttse_enabled(config) is expected
+
+    def test_shipped_template_ttse_disabled_by_default(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["react"]["ttse"]["enabled"] is False
+        assert get_ttse_enabled(config) is False
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"react": {"ttse": {}}}, {}),
+            ({"react": {"ttse": {"embedding": {"api_key": "k"}}}}, {}),
+            (
+                {
+                    "react": {
+                        "ttse": {
+                            "embedding": {
+                                "api_key": "k",
+                                "base_url": "https://example.invalid/v1",
+                                "model": "m",
+                            }
+                        }
+                    }
+                },
+                {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                },
+            ),
+            (
+                {
+                    "ttse": {
+                        "embedding": {
+                            "api_key": " k ",
+                            "base_url": " https://example.invalid/v1 ",
+                            "model": " m ",
+                        }
+                    }
+                },
+                {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                },
+            ),
+        ],
+    )
+    def test_ttse_embedding_config_values(self, config, expected):
+        assert get_ttse_embedding_config(config) == expected
+
+    def test_ttse_embedding_resolves_secret_registry_embed_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("EMBED_API_KEY", "k")
+        monkeypatch.setenv("EMBED_API_BASE", "https://example.invalid/v1")
+        monkeypatch.setenv("EMBED_MODEL", "m")
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "model": "m",
+        }
+
+    def test_ttse_embedding_unresolved_embed_env_falls_back_to_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("EMBED_API_KEY", raising=False)
+        monkeypatch.delenv("EMBED_API_BASE", raising=False)
+        monkeypatch.delenv("EMBED_MODEL", raising=False)
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {}
+
+    def test_shipped_ttse_embedding_uses_embed_env_placeholders(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        embedding = config["react"]["ttse"]["embedding"]
+        assert embedding["api_key"] == "${EMBED_API_KEY}"
+        assert embedding["base_url"] == "${EMBED_API_BASE}"
+        assert embedding["model"] == "${EMBED_MODEL}"
 
     @pytest.mark.parametrize(
         ("raw", "expected"),
@@ -409,16 +1024,167 @@ react:
             encoding="utf-8",
         )
 
-        # The user's canonical values are already complete, so migration is a no-op.
-        assert migrate_config_from_template(template_path, user_config_path) is False
+        # The user's canonical evolution values are already complete, so the
+        # merge itself is a no-op. Migration still returns True because
+        # migrate_config_from_template writes back the program config_version
+        # stamp (added before the diff check) whenever the file lacks it.
+        assert migrate_config_from_template(template_path, user_config_path) is True
 
         migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
         assert migrated["react"]["evolution"] == {
             "skill_evolution": True,
             "auto_save": True,
         }
+        # config_version is always stamped on a write-back path.
+        from jiuwenswarm.common._build_config import VERSION
+
+        assert migrated.get("config_version") == VERSION
+        # A second migration now that the version stamp is present is a true
+        # no-op: no structural changes, no version to write -> returns False.
+        assert migrate_config_from_template(template_path, user_config_path) is False
         assert get_skill_evolution_enabled(migrated) is True
         assert get_evolution_auto_save_enabled(migrated) is True
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("user_permissions", "expected_mode"),
+        [
+            (
+                {
+                    "enabled": True,
+                    "mode": "auto",
+                    "defaults": {"*": "deny"},
+                },
+                "auto",
+            ),
+            (
+                {
+                    "enabled": True,
+                    "defaults": {"*": "deny"},
+                },
+                "manual",
+            ),
+        ],
+    )
+    def test_migrate_config_preserves_smart_approval_mode(
+        tmp_path: Path,
+        user_permissions: dict,
+        expected_mode: str,
+    ):
+        template_path = tmp_path / "template.yaml"
+        user_config_path = tmp_path / "config.yaml"
+        template_path.write_text(
+            """
+permissions:
+  enabled: false
+  mode: manual
+  defaults:
+    "*": allow
+""",
+            encoding="utf-8",
+        )
+        user_config_path.write_text(
+            yaml.safe_dump({"permissions": user_permissions}, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        # The first migration also writes the missing program config version.
+        assert migrate_config_from_template(template_path, user_config_path) is True
+
+        migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        assert migrated["permissions"] == {
+            "enabled": True,
+            "mode": expected_mode,
+            "defaults": {"*": "deny"},
+        }
+        assert migrate_config_from_template(template_path, user_config_path) is False
+
+    @staticmethod
+    def test_ensure_config_migrated_from_template_adds_missing_keys(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from jiuwenswarm.common.utils import ensure_config_migrated_from_template
+
+        template_path = tmp_path / "template.yaml"
+        workspace_dir = tmp_path / "workspace"
+        config_dir = workspace_dir / "config"
+        config_dir.mkdir(parents=True)
+        user_config_path = config_dir / "config.yaml"
+
+        template_path.write_text(
+            """
+react:
+  answer_chunk_size: 500
+  subagent_runtime:
+    enabled: true
+""",
+            encoding="utf-8",
+        )
+        user_config_path.write_text(
+            """
+react:
+  answer_chunk_size: 300
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(
+            "jiuwenswarm.common.utils._find_config_template_path",
+            lambda: template_path,
+        )
+
+        assert ensure_config_migrated_from_template(workspace_dir) is True
+
+        migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        assert migrated["react"]["answer_chunk_size"] == 300
+        assert migrated["react"]["subagent_runtime"]["enabled"] is True
+
+        assert ensure_config_migrated_from_template(workspace_dir) is False
+
+    @staticmethod
+    def test_migrate_config_moves_kv_cache_switch_to_application_scope(tmp_path: Path):
+        template_path = tmp_path / "template.yaml"
+        user_config_path = tmp_path / "config.yaml"
+        template_path.write_text(
+            "kv_cache_affinity_config:\n"
+            "  enable_kv_cache_affinity: false\n"
+            "react:\n"
+            "  answer_chunk_size: 500\n",
+            encoding="utf-8",
+        )
+        user_config_path.write_text(
+            "react:\n"
+            "  answer_chunk_size: 300\n"
+            "  kv_cache_affinity_config:\n"
+            "    enable_kv_cache_affinity: true\n",
+            encoding="utf-8",
+        )
+
+        assert migrate_config_from_template(template_path, user_config_path) is True
+
+        migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        assert migrated["kv_cache_affinity_config"]["enable_kv_cache_affinity"] is True
+        assert "kv_cache_affinity_config" not in migrated["react"]
+
+    @staticmethod
+    def test_update_kv_cache_switch_writes_only_application_scope(
+        monkeypatch: pytest.MonkeyPatch,
+        temp_config_file: Path,
+    ):
+        temp_config_file.write_text(
+            "react:\n"
+            "  kv_cache_affinity_config:\n"
+            "    enable_kv_cache_affinity: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
+
+        config_module.update_kv_cache_affinity_enabled_in_config(False)
+
+        updated = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+        assert updated["kv_cache_affinity_config"]["enable_kv_cache_affinity"] is False
+        assert "kv_cache_affinity_config" not in updated["react"]
 
     @staticmethod
     def test_update_skill_retrieval_preserves_existing_hidden_config(
@@ -931,6 +1697,42 @@ modes:
 
         raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
         assert "team" not in raw["modes"]
+
+    @staticmethod
+    def test_transform_front_team_model_config_maps_reasoning_level(
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config.get_config_raw",
+            lambda: {
+                "models": {
+                    "defaults": [
+                        {
+                            "model_client_config": {
+                                "model_name": "Deepseek-V4-Flash-0731",
+                                "client_provider": "OpenAI",
+                                "api_base": "https://example.test/v1",
+                                "api_key": "sk-test",
+                            },
+                            "model_config_obj": {
+                                "temperature": 0.95,
+                                "reasoning_level": "off",
+                            },
+                        }
+                    ]
+                }
+            },
+        )
+
+        transformed = _transform_front_team_model_config(
+            {"model": "Deepseek-V4-Flash-0731#0"}
+        )
+        request_config = transformed["model_request_config"]
+
+        assert "reasoning_level" not in request_config
+        assert request_config["reasoning"] == {"mode": "disabled"}
+        assert request_config["temperature"] == 0.95
+        assert request_config["model"] == "Deepseek-V4-Flash-0731"
 
 
 class TestUpdateXiaoyiRuntimeInConfig:

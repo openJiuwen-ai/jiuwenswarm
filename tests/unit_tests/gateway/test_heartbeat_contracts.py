@@ -50,6 +50,7 @@ def test_legacy_health_check_relay_normalizes_at_gateway_ingress() -> None:
             payload={"event_type": "heartbeat.relay", "heartbeat": "HEALTH_CHECK_OK"},
             metadata={},
             agent_ref=None,
+            ok=True,
         ),
         "health-check-session",
     )
@@ -99,25 +100,59 @@ async def test_agent_tools_call_agentserver_local_service() -> None:
 
     tools = HeartbeatRuntimeBridge(Service()).build_tools(context=_Context())
     assert len(tools) == 9
+    list_jobs = next(tool for tool in tools if tool.card.name == "heartbeat_list_jobs")
     create = next(tool for tool in tools if tool.card.name == "heartbeat_create_job")
+    assert "delete_after_run" not in create.card.input_params["properties"]
+    assert "active_count, not len(jobs)" in list_jobs.card.description
+    assert "authoritative active-job limit check" in create.card.description
+    max_runs_schema = create.card.input_params["properties"]["max_runs"]
+    assert max_runs_schema["type"] == ["integer", "null"]
+    assert max_runs_schema["default"] == 12
+    run_at_schema = create.card.input_params["properties"]["schedule"]["properties"]["run_at"]
+    assert run_at_schema["maximum"] == 253_402_300_799.0
+    assert "Unix timestamp in seconds" in run_at_schema["description"]
     result = await create._func(
         name="follow up",
         prompt="continue",
         schedule={"type": "interval", "interval_seconds": 120},
         max_runs=None,
-        delete_after_run=None,
     )
     assert result == {"ok": True}
     action, data, context = calls[-1]
     assert action == "create"
-    assert "max_runs" not in data
-    assert "delete_after_run" not in data
+    assert data["max_runs"] is None
     assert context == {
         "channel_id": "web",
         "session_id": "session-1",
         "user_id": "user-1",
         "source": "agent_tool",
     }
+
+    await create.invoke(
+        {
+            "name": "default finite follow up",
+            "prompt": "continue",
+            "schedule": {"type": "interval", "interval_seconds": 120},
+        }
+    )
+    assert calls[-1][1]["max_runs"] == 12
+
+    await create.invoke(
+        {
+            "name": "explicit unlimited follow up",
+            "prompt": "continue",
+            "schedule": {"type": "interval", "interval_seconds": 120},
+            "max_runs": None,
+        }
+    )
+    assert calls[-1][1]["max_runs"] is None
+
+    await create._func(
+        name="finite follow up",
+        prompt="continue",
+        schedule={"type": "interval", "interval_seconds": 120},
+    )
+    assert "max_runs" not in calls[-1][1]
 
 
 async def test_agent_tools_are_hidden_without_local_service() -> None:
@@ -149,6 +184,7 @@ async def test_gateway_proxy_uses_one_unary_heartbeat_rpc() -> None:
 
 async def test_gateway_proxy_roundtrips_over_real_agentserver_websocket() -> None:
     calls: list[tuple[str, dict, dict]] = []
+    cancel_calls: list[dict] = []
 
     class Execution:
         @staticmethod
@@ -166,6 +202,7 @@ async def test_gateway_proxy_roundtrips_over_real_agentserver_websocket() -> Non
 
     class Manager:
         async def cancel_all_inflight_work(self, **kwargs):  # noqa: ANN003
+            cancel_calls.append(kwargs)
             return None
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
@@ -214,6 +251,10 @@ async def test_gateway_proxy_roundtrips_over_real_agentserver_websocket() -> Non
         listener.close()
         await listener.wait_closed()
         await asyncio.sleep(0)
+
+    assert len(cancel_calls) == 1
+    assert "gateway ws closed" in cancel_calls[0]["reason"]
+    assert cancel_calls[0]["exclude_session_ids"] == set()
 
 
 @pytest.mark.parametrize(

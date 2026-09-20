@@ -1,4 +1,4 @@
-import type { Message, WebError } from '../../types';
+import type { WebError } from '../../types';
 import type { GitTurnChangeAction, GitTurnDiff } from './types';
 
 interface TurnChangeResultIdentity {
@@ -10,49 +10,18 @@ export function turnDiffKey(turn: Pick<GitTurnDiff, 'change_set_id' | 'turn_inde
   return turn.change_set_id || `turn-${turn.turn_index}`;
 }
 
-export function latestTurnDiffKey(turns: GitTurnDiff[], latestUserMessageId?: string | null): string | null {
-  let latest: GitTurnDiff | null = null;
-  for (const turn of turns) {
-    if (!latest || turn.turn_index > latest.turn_index) latest = turn;
-  }
-  if (latestUserMessageId && latest?.user_message_id !== latestUserMessageId) return null;
-  return latest ? turnDiffKey(latest) : null;
+export function hasFileChanges(turn: Pick<GitTurnDiff, 'files' | 'stats'>): boolean {
+  // Expired snapshots retain change counts even when file details are unavailable.
+  return Object.keys(turn.files ?? {}).length > 0 || turn.stats.files_changed > 0;
 }
 
-/**
- * Resolve the undo target for both restored history and the live chat timeline.
- * Live user messages use a temporary frontend id that can differ from the id
- * persisted by the backend, so the rendered card position is the safe fallback.
- */
-export function latestTurnDiffKeyForMessages(
-  messages: Pick<Message, 'id' | 'role'>[],
-  turns: GitTurnDiff[],
-  turnsByMessageId: Map<string, GitTurnDiff[]>,
-): string | null {
-  let latestTurn: GitTurnDiff | null = null;
+/** The review card and both mutations always target the last file-editing turn. */
+export function latestModifiedTurn(turns: GitTurnDiff[]): GitTurnDiff | null {
+  let latest: GitTurnDiff | null = null;
   for (const turn of turns) {
-    if (!latestTurn || turn.turn_index > latestTurn.turn_index) latestTurn = turn;
+    if (hasFileChanges(turn) && (!latest || turn.turn_index > latest.turn_index)) latest = turn;
   }
-  if (!latestTurn) return null;
-
-  let latestUserIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'user') {
-      latestUserIndex = index;
-      break;
-    }
-  }
-  if (latestUserIndex < 0) return turnDiffKey(latestTurn);
-
-  const latestUserMessageId = messages[latestUserIndex].id;
-  const latestKey = turnDiffKey(latestTurn);
-  if (latestTurn.user_message_id === latestUserMessageId) return latestKey;
-
-  for (let index = latestUserIndex + 1; index < messages.length; index += 1) {
-    const boundTurns = turnsByMessageId.get(messages[index].id) ?? [];
-    if (boundTurns.some(turn => turnDiffKey(turn) === latestKey)) return latestKey;
-  }
-  return null;
+  return latest;
 }
 
 export function updateTurnChangeStatus(turns: GitTurnDiff[], result: TurnChangeResultIdentity, status: 'completed' | 'discarded'): GitTurnDiff[] {
@@ -66,7 +35,10 @@ const ERROR_MESSAGES: Record<string, string> = {
   PROJECT_SESSION_MISMATCH: '当前会话与代码项目不匹配，请刷新后重试',
   NO_TURN_TO_DISCARD: '当前会话没有可撤销的修改',
   NO_TURN_TO_REDO: '当前会话没有可重新应用的修改',
+  NOTHING_TO_DISCARD: '最后一轮修改已撤销，无需重复撤销',
   NOTHING_TO_REDO: '最后一轮修改尚未撤销，无需重新应用',
+  TURN_TARGET_CHANGED: '修改目标已变化，请刷新后重试',
+  DIFF_HISTORY_EXPIRED: '修改记录已过期，无法定位该轮修改，请刷新后重试',
   REDO_HISTORY_MISSING: '撤销记录不完整，无法重新应用修改',
   PARTIAL_RESTORE_FAILED: '部分文件撤销失败，请重试',
   PARTIAL_REDO_FAILED: '部分文件重新应用失败，请重试',

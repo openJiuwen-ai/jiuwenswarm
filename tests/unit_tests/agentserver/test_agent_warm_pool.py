@@ -195,6 +195,27 @@ def test_warm_key_normalizes_project_directory(tmp_path: Path) -> None:
     assert key.agent_sub_mode == "normal"
 
 
+def test_new_session_id_preserves_channel_id(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_warm_pool.time.time",
+        lambda: 1_787_629_558.0,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_warm_pool.secrets.token_hex",
+        lambda _size: "123456789abc",
+    )
+    channel_id = (
+        "bench_20260901T101256Z_0037_"
+        "scikit-learn__scikit-learn-12973"
+    )
+
+    session_id = AgentWarmPool._new_session_id(channel_id)
+
+    assert session_id == (
+        f"{channel_id}_{int(1_787_629_558.0 * 1000):x}_123456789abc"
+    )
+
+
 @pytest.mark.asyncio
 async def test_code_prewarm_uses_same_manager_cache_identity_as_code_chat(
     isolated_pool,

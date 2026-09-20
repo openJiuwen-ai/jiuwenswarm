@@ -441,6 +441,9 @@ function buildEventPayloadForRecord(record: Record<string, unknown>): Record<str
   if (typeof record.result === "string" && typeof base.result !== "string") {
     base.result = record.result;
   }
+  if (typeof record.rendered_result === "string" && typeof base.rendered_result !== "string") {
+    base.rendered_result = record.rendered_result;
+  }
   return base;
 }
 
@@ -472,7 +475,14 @@ function inferMediaType(
 
 export function extractMediaItems(payload: Record<string, unknown>): MediaItem[] {
   const files = Array.isArray(payload.files) ? payload.files : [];
-  const mediaItems = Array.isArray(payload.media_items) ? payload.media_items : [];
+  // Support new scoped structure: { items: [...], scope: "current_turn" }
+  const rawMediaItems = payload.media_items;
+  let mediaItems: unknown[] = [];
+  if (Array.isArray(rawMediaItems)) {
+    mediaItems = rawMediaItems;
+  } else if (rawMediaItems && typeof rawMediaItems === "object" && "items" in rawMediaItems) {
+    mediaItems = (rawMediaItems as { items: unknown[] }).items;
+  }
   const rawItems = [...mediaItems, ...files].filter((item): item is Record<string, unknown> =>
     Boolean(item && typeof item === "object"),
   );
@@ -602,6 +612,7 @@ export function applyToolResult(
     ...tool,
     status: isError ? "error" : "completed",
     result,
+    renderedResult: asString(toolPayload.rendered_result),
     summary: asString(toolPayload.summary),
     isError,
   };

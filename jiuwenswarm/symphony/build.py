@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -28,6 +29,7 @@ from jiuwenswarm.symphony.config import (
     default_symphony_config,
 )
 from jiuwenswarm.symphony.adapter import (
+    FingerprintArtifactCapabilityProvider,
     FingerprintLLMAdapter,
     ScanResultCapabilityProvider,
     fingerprint_settings_from_swarm,
@@ -163,6 +165,7 @@ class SymphonyGraphBuilder:
     ) -> None:
         self.runtime_factory = runtime_factory or GraphBuildRuntimeFactory()
         self.state_builder = state_builder or GraphStateBuilder()
+        self._active_checkpoint: _BuildCheckpoint | None = None
 
     def status(
         self,
@@ -215,9 +218,15 @@ class SymphonyGraphBuilder:
                         source_snapshot if isinstance(source_snapshot, dict) else {}
                     ),
                 )
+                expected_snapshot.update(
+                    scan_result.source_snapshot.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    )
+                )
                 identity_runtime = SymphonyRuntime(
                     graph_artifact_root=output_dir,
-                    capability_provider=capabilities,
+                    capability_provider=(),
                     model=None,
                     orchestration_config=graph_build_orchestration_config_from_swarm(
                         runtime_config
@@ -225,7 +234,9 @@ class SymphonyGraphBuilder:
                     source_snapshot=expected_snapshot,
                     graph_config=graph_config_from_swarm(runtime_config),
                 )
-                stale = not identity_runtime.orchestration.status().fresh
+                stale = not identity_runtime.orchestration.status(
+                    expected_snapshot=expected_snapshot
+                ).fresh
             except (FileNotFoundError, ValueError):
                 stale = True
         resume_from = latest_incomplete_build(output_dir)
@@ -278,6 +289,7 @@ class SymphonyGraphBuilder:
             force=force,
             resume_from=str(resume_from) if resume_from is not None else "",
         )
+        self._active_checkpoint = checkpoint
         if resume_from is not None:
             _record_build_log(
                 build_log,
@@ -464,7 +476,9 @@ class SymphonyGraphBuilder:
 
         runtime = SymphonyRuntime(
             graph_artifact_root=output_dir,
-            capability_provider=capabilities,
+            capability_provider=FingerprintArtifactCapabilityProvider(
+                fingerprint_artifact
+            ),
             model=(model_from_config(llm_config) if llm_config is not None else None),
             model_response_observer=(
                 model_response_observer_from_config(llm_config)
@@ -520,6 +534,26 @@ class SymphonyGraphBuilder:
             version=graph_build.version,
         )
 
+    def cancel_active_checkpoint(self, *, reason: str = "cancelled") -> bool:
+        """Mark this builder's in-flight checkpoint cancelled after task abort."""
+
+        checkpoint = self._active_checkpoint
+        if checkpoint is None or not checkpoint.path.is_file():
+            return False
+        try:
+            payload = json.loads(checkpoint.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if str(payload.get("status") or "") != "running":
+            return False
+        checkpoint.record("update.cancelled", status="cancelled", reason=reason)
+        return True
+
+    def clear_active_checkpoint(self) -> None:
+        """Release the checkpoint reference once the public build call ends."""
+
+        self._active_checkpoint = None
+
 
 def graph_status(
     skills_root: str | Path,
@@ -554,17 +588,24 @@ async def build_graph(
     """Build or refresh the offline Symphony graph."""
 
     del workers
-    return await SymphonyGraphBuilder(
+    builder = SymphonyGraphBuilder(
         runtime_factory=runtime_factory,
-    ).build(
-        skills_root,
-        graph_dir,
-        llm_config,
-        force=force,
-        build_log=build_log,
-        symphony_config=symphony_config,
-        resume=resume,
     )
+    try:
+        return await builder.build(
+            skills_root,
+            graph_dir,
+            llm_config,
+            force=force,
+            build_log=build_log,
+            symphony_config=symphony_config,
+            resume=resume,
+        )
+    except asyncio.CancelledError:
+        builder.cancel_active_checkpoint()
+        raise
+    finally:
+        builder.clear_active_checkpoint()
 
 
 def _public_progress_adapter(

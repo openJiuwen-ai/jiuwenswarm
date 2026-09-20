@@ -16,7 +16,7 @@ from openjiuwen.core.foundation.tool import Tool, ToolCard, McpServerConfig, too
 from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.core.sys_operation import SysOperation
-from openjiuwen.core.foundation.kv_cache import resolve_session_lineage
+from openjiuwen.core.kv_cache import resolve_session_lineage
 from openjiuwen.core.session import get_current_session
 from openjiuwen.core.session.agent import Session
 from openjiuwen.harness.deep_agent import DeepAgent
@@ -431,13 +431,12 @@ def _create_llm_wiki(
     """
 
     config = get_config()
-    react_config = config.get("react") if isinstance(config, dict) else None
-    react_config = react_config if isinstance(react_config, dict) else {}
     configured = get_configured_read_image_multimodal(config)
     kwargs: Dict[str, Any] = {
         "kv_cache_affinity_config": build_kv_cache_affinity_config(
-            react_config,
+            config,
             provider=model_provider(model),
+            model_client_config=getattr(model, "model_client_config", None),
         ),
     }
     if isinstance(configured, bool):

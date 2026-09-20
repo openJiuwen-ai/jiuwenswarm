@@ -29,6 +29,7 @@ export interface AppScreenKeymapDelegate {
   toggleTodos(): void;
   toggleTeamPanel(): void;
   toggleTranscript(): void;
+  viewHumanInputs(): void;
   redraw(): void;
   clearInput(): void;
   isIdle(): boolean;
@@ -107,6 +108,7 @@ const GLOBAL_ACTION_HANDLERS: Partial<Record<KeybindingAction, (d: AppScreenKeym
   "app:toggleTodos": (d) => d.toggleTodos(),
   "app:toggleTeamPanel": (d) => d.toggleTeamPanel(),
   "app:toggleTranscript": (d) => d.toggleTranscript(),
+  "app:viewHumanInputs": (d) => d.viewHumanInputs(),
 };
 
 /**
@@ -121,6 +123,7 @@ export const APP_SCREEN_KEY_BINDINGS: readonly KeyBindingDisplay[] = [
   { key: "ctrl+t", label: "ctrl+t", description: "显示/隐藏 Todos 面板", action: "app:toggleTodos" },
   { key: "ctrl+g", label: "ctrl+g", description: "显示/隐藏 Team 面板", action: "app:toggleTeamPanel" },
   { key: "ctrl+o", label: "ctrl+o", description: "切换 transcript 紧凑/详细视图", action: "app:toggleTranscript" },
+  { key: "alt+h", label: "alt+h", description: "查看等待回复的 Human 输入", action: "app:viewHumanInputs" },
 ] as const;
 
 export function handleAppScreenKeyInput(data: string, delegate: AppScreenKeymapDelegate): boolean {

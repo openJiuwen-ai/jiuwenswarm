@@ -86,11 +86,11 @@ class BuildConfig:
 
     @property
     def dmg_filename(self) -> str:
-        return f"{self.package_name}-{self.version}-macos.dmg"
+        return f"{self.display_name}-{self.version}-macos.dmg"
 
     @property
     def setup_base_name(self) -> str:
-        return f"{self.package_name}-{self.version}-windows"
+        return f"{self.display_name}-{self.version}-windows"
 
     @property
     def setup_filename(self) -> str:

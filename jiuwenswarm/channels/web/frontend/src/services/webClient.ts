@@ -22,6 +22,7 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timeoutId: number;
+  awaitRuntimeAccepted: boolean;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -94,10 +95,6 @@ class WebClient {
 
   getState(): WebConnectionState {
     return this.state;
-  }
-
-  getInflightCount(): number {
-    return this.pending.size;
   }
 
   onStateChange(handler: StateHandler): () => void {
@@ -222,6 +219,20 @@ class WebClient {
     return this.connectPromise;
   }
 
+  /**
+   * 断开后立刻用同一组参数重连。
+   *
+   * 登录态变化时必须调这个：登录会话 id 是 **WS 握手时**从 cookie / 请求头读的，
+   * 之后这条连接就一直用那份值。而登录走的是 HTTP，发生在握手之后——不重连的话，
+   * 连接上停留的还是登录前那份，服务端据此取凭据会取不到，
+   * 表现为"选了免费模型却跑了配置的模型"。
+   */
+  async reconnect(reason = 'Auth changed'): Promise<void> {
+    const options = this.lastConnectOptions;
+    await this.disconnect(reason);
+    await this.connect(options);
+  }
+
   disconnect(reason = 'User disconnect'): Promise<void> {
     this.manualClose = true;
     this.clearReconnectTimer();
@@ -291,6 +302,7 @@ class WebClient {
         resolve: (value) => resolve(value as T),
         reject,
         timeoutId,
+        awaitRuntimeAccepted: options.awaitRuntimeAccepted === true,
       };
       this.pending.set(id, pending);
 
@@ -393,6 +405,7 @@ class WebClient {
       return;
     }
 
+    this.resolveRuntimeAcceptedPending(message);
     this.dispatchEvent(message);
   }
 
@@ -457,6 +470,9 @@ class WebClient {
     if (!pending) {
       return;
     }
+    if (message.ok && pending.awaitRuntimeAccepted) {
+      return;
+    }
     window.clearTimeout(pending.timeoutId);
     this.pending.delete(message.id);
 
@@ -474,6 +490,31 @@ class WebClient {
         message.payload
       )
     );
+  }
+
+  private resolveRuntimeAcceptedPending(message: WsEvent): void {
+    if (message.event !== 'runtime.accepted' && message.event !== 'chat.error') {
+      return;
+    }
+    const requestId = message.payload.request_id;
+    if (typeof requestId !== 'string') {
+      return;
+    }
+    const pending = this.pending.get(requestId);
+    if (!pending?.awaitRuntimeAccepted) {
+      return;
+    }
+    window.clearTimeout(pending.timeoutId);
+    this.pending.delete(requestId);
+    if (message.event === 'runtime.accepted') {
+      pending.resolve(message.payload);
+      return;
+    }
+    const error =
+      typeof message.payload.error === 'string'
+        ? message.payload.error
+        : i18n.t('network.requestFailed');
+    pending.reject(this.createWebError(error, undefined, requestId, true));
   }
 
   private dispatchEvent(event: WsEvent): void {
@@ -588,6 +629,100 @@ export async function webRequest<T = unknown>(
   options?: WebRequestOptions
 ): Promise<T> {
   return webClient.request<T>(method, params, options);
+}
+
+// ── SwarmFlow workflow 分页 RPC 封装（command.workflows） ─────────
+
+export interface WorkflowListResponse {
+  type?: string;
+  workflows?: unknown[];
+  session_id?: string;
+  total?: number;
+  has_more?: boolean;
+}
+
+export interface WorkflowDetailResponse {
+  type?: string;
+  workflow?: unknown;
+  session_id?: string;
+  phase_total?: number;
+  has_more?: boolean;
+}
+
+export interface WorkflowPhaseResponse {
+  type?: string;
+  phase?: unknown;
+  session_id?: string;
+  agent_total?: number;
+  has_more?: boolean;
+  error?: unknown;
+}
+
+export interface WorkflowAgentResponse {
+  type?: string;
+  agent?: unknown;
+  session_id?: string;
+  error?: unknown;
+}
+
+export async function requestWorkflowList(
+  sessionId: string,
+  offset = 0,
+  limit?: number,
+): Promise<WorkflowListResponse> {
+  return webRequest<WorkflowListResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'list',
+    offset,
+    ...(limit == null ? {} : { limit }),
+  });
+}
+
+export async function requestWorkflowDetail(
+  sessionId: string,
+  workflowId: string,
+  phaseOffset = 0,
+  phaseLimit?: number,
+): Promise<WorkflowDetailResponse> {
+  return webRequest<WorkflowDetailResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_workflow',
+    workflow_id: workflowId,
+    phase_offset: phaseOffset,
+    ...(phaseLimit == null ? {} : { phase_limit: phaseLimit }),
+  });
+}
+
+export async function requestPhaseAgents(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentOffset = 0,
+  agentLimit?: number,
+): Promise<WorkflowPhaseResponse> {
+  return webRequest<WorkflowPhaseResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_phase',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_offset: agentOffset,
+    ...(agentLimit == null ? {} : { agent_limit: agentLimit }),
+  });
+}
+
+export async function requestAgentDetail(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentId: string,
+): Promise<WorkflowAgentResponse> {
+  return webRequest<WorkflowAgentResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_agent',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_id: agentId,
+  });
 }
 
 interface GoalCommandResponsePayload {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from typing import Any
 
@@ -11,12 +13,21 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 from .coordinator import SessionCoordinator
 from .evidence import jsonable, read_json
 from .prompts import render_memory_context
 from .registry import get_session_coordinator
+
+
+logger = logging.getLogger(__name__)
+
+FOREGROUND_CONTEXT_REPLACEMENT_MESSAGE_LIMIT = 1000
+FOREGROUND_CONTEXT_REPLACEMENT_BYTE_LIMIT = 512 * 1024
 
 
 class EternalConversationRail(DeepAgentRail):
@@ -29,7 +40,7 @@ class EternalConversationRail(DeepAgentRail):
 
     priority = 80
     SECTION_NAME = "eternal_conversation"
-    SECTION_PRIORITY = 90
+    SECTION_PRIORITY = SystemPromptPriority.ETERNAL_CONVERSATION
     TOOL_NAME = "search_long_term_memory"
 
     def __init__(self) -> None:
@@ -50,6 +61,7 @@ class EternalConversationRail(DeepAgentRail):
         self._task_id: str | None = None
         self._interaction_resume = False
         self._pending_projection: dict[str, Any] | None = None
+        self._prefetched_memory: dict[str, Any] | None = None
 
     def init(self, agent: Any) -> None:
         self._agent = agent
@@ -162,6 +174,68 @@ class EternalConversationRail(DeepAgentRail):
             )
             return
         self._task_id = self._request_id or f"task-{uuid.uuid4().hex}"
+        query = str(getattr(ctx.inputs, "query", None) or "").strip()
+        self._prefetched_memory = None
+        if query:
+            try:
+                result = await self._coordinator.memory.search(query)
+                matches = list(result.get("matches") or [])
+                matches.sort(
+                    key=lambda item: (
+                        "support-window" not in set(item.get("tags") or []),
+                        "constraint" not in set(item.get("tags") or []),
+                    )
+                )
+                self._prefetched_memory = {
+                    "query": query,
+                    "matches": matches[:12],
+                }
+            except Exception as exc:  # noqa: BLE001
+                # Automatic prefetch enriches the prompt but is not required for
+                # the foreground task. The explicit search tool remains available.
+                logger.exception(
+                    "Eternal-conversation automatic memory prefetch failed "
+                    "for session=%s task=%s",
+                    self._session_id,
+                    self._task_id,
+                )
+                try:
+                    await self._coordinator.evidence.append_audit(
+                        "foreground-memory-searches",
+                        {
+                            "task_id": self._task_id,
+                            "query": query,
+                            "source": "automatic-request-prefetch",
+                            "status": "failed",
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Failed to record automatic memory prefetch failure "
+                        "for session=%s task=%s",
+                        self._session_id,
+                        self._task_id,
+                    )
+            else:
+                try:
+                    await self._coordinator.evidence.append_audit(
+                        "foreground-memory-searches",
+                        {
+                            "task_id": self._task_id,
+                            "query": query,
+                            "result": self._prefetched_memory,
+                            "source": "automatic-request-prefetch",
+                            "status": "succeeded",
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Failed to audit automatic memory prefetch "
+                        "for session=%s task=%s",
+                        self._session_id,
+                        self._task_id,
+                    )
         # In the real ReactAgent lifecycle BEFORE_INVOKE fires before the
         # ModelContext is initialized. Prepare the revision here, then apply it
         # in ON_USER_MESSAGE, which runs after context initialization but before
@@ -188,6 +262,24 @@ class EternalConversationRail(DeepAgentRail):
                 self._pending_projection = (
                     await self._coordinator.projection_for_boundary()
                 )
+            context = getattr(ctx, "context", None)
+            if self._pending_projection is None and context is not None:
+                messages = context.get_messages()
+                encoded_size = len(
+                    json.dumps(
+                        jsonable(messages),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                if (
+                    len(messages) > FOREGROUND_CONTEXT_REPLACEMENT_MESSAGE_LIMIT
+                    or encoded_size > FOREGROUND_CONTEXT_REPLACEMENT_BYTE_LIMIT
+                ):
+                    self._pending_projection = (
+                        await self._coordinator.projection_for_boundary(force=True)
+                    )
             await self._apply_pending_projection(ctx)
         await self._coordinator.evidence.append(
             "user-message",
@@ -222,7 +314,11 @@ class EternalConversationRail(DeepAgentRail):
         if not self._enabled or self._coordinator is None or self._builder is None:
             return
         projection = read_json(self._coordinator.projection_path, {}) or {}
-        content = render_memory_context(self._coordinator.root, projection)
+        content = render_memory_context(
+            self._coordinator.root,
+            projection,
+            self._prefetched_memory,
+        )
         language = getattr(self._builder, "language", "cn") or "cn"
         self._builder.add_section(
             PromptSection(
@@ -314,6 +410,7 @@ class EternalConversationRail(DeepAgentRail):
         self._agent = None
         self._builder = None
         self._pending_projection = None
+        self._prefetched_memory = None
 
     async def wait_idle(self) -> None:
         if self._coordinator is not None:

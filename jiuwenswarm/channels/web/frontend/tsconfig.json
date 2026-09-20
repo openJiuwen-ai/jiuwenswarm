@@ -27,6 +27,6 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src"],
+  "include": ["src", "tests/fixtures/settings-extension"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

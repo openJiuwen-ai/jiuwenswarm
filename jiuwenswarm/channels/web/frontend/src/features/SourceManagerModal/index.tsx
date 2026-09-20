@@ -8,17 +8,17 @@ interface SourceManagerModalProps {
   open: boolean;
   sessionId: string;
   onClose: () => void;
-  onNavigateToConfig?: () => void;
+  onNavigateToSettings?: () => void;
 }
 
 export function SourceManagerModal({
   open,
   sessionId,
   onClose,
-  onNavigateToConfig,
+  onNavigateToSettings,
 }: SourceManagerModalProps) {
   const { t } = useTranslation();
-  const [selectedSource, setSelectedSource] = useState<SourceType>("skillnet");
+  const [selectedSource, setSelectedSource] = useState<SourceType>("clawhub");
   const [clawhubToken, setClawhubToken] = useState("");
   const [tokenLoading, setTokenLoading] = useState(false);
   const [tokenSaving, setTokenSaving] = useState(false);
@@ -129,7 +129,7 @@ export function SourceManagerModal({
                 onClick={() => setSelectedSource("skillnet")}
                 data-testid="source-manager-modal-source-tab-skillnet"
                 aria-pressed={selectedSource === "skillnet"}
-                className={`flex-1 py-3 px-4 rounded-lg border  ${
+                className={`hidden flex-1 py-3 px-4 rounded-lg border  ${
                   selectedSource === "skillnet"
                     ? "border-text bg-[var(--color-source-selected-surface)] text-text"
                     : "border-border bg-card text-text-muted hover:border-gray-400"
@@ -235,12 +235,12 @@ export function SourceManagerModal({
                   <Trans
                     i18nKey="sourceManager.skillnet.usageNotice3"
                     components={{
-                      configLink: (
+                      settingsLink: (
                         <button
                           type="button"
-                          data-testid="source-manager-modal-navigate-config-button"
-                          aria-label={t("sourceManager.skillnet.configPageLinkAria")}
-                          onClick={() => onNavigateToConfig?.()}
+                          data-testid="source-manager-modal-navigate-settings-button"
+                          aria-label={t("sourceManager.skillnet.settingsPageLinkAria")}
+                          onClick={() => onNavigateToSettings?.()}
                           className="inline p-0 m-0 align-baseline border-0 bg-transparent cursor-pointer font-medium text-accent underline decoration-accent/35 underline-offset-2 hover:text-accent-hover hover:decoration-accent/60"
                         />
                       ),

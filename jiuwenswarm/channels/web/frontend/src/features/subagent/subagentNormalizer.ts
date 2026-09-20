@@ -213,6 +213,9 @@ function normalizeToolStatus(value: unknown): SubagentStatus | null {
   return null;
 }
 
+// Parses the compatibility `result` string (str() of the structured tool
+// result) for subagent ids and statuses; removed once the UI reads structured
+// data instead.
 function extractToolResultText(value: RecordValue): string {
   const nested = asRecord(value.tool_result) ?? value;
   const rawOutput = asRecord(nested.raw_output ?? nested.rawOutput);

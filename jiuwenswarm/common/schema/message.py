@@ -39,6 +39,9 @@ class ReqMethod(Enum):
     COMMAND_SESSION = "command.session"
     COMMAND_WORKFLOWS = "command.workflows"
     COMMAND_STATUS = "command.status"
+    SWARMFLOW_PAUSE = "swarmflow.pause"
+    SWARMFLOW_RESUME = "swarmflow.resume"
+    SWARMFLOW_STOP = "swarmflow.stop"
 
     CONFIG_GET = "config.get"
     CONFIG_SET = "config.set"
@@ -53,13 +56,14 @@ class ReqMethod(Enum):
 
     SESSION_LIST = "session.list"
     SESSION_GET_METADATA = "session.get_metadata"
+    SESSION_PLAN_STATUS = "session.plan_status"
     SESSION_PIN = "session.pin"
     SESSION_COLOR_SET = "session.color_set"
     SESSION_PREVIEW = "session.preview"
     SESSION_CREATE = "session.create"
     SESSION_SWITCH = "session.switch"
     SESSION_DELETE = "session.delete"
-    SESSION_KVC_PREPARE = "session.kvc.prepare"
+    SESSION_INPUT_INTENT = "session.input.intent"
     SESSION_RENAME = "session.rename"
     SESSION_FORK = "session.fork"
     SESSION_REBIND_PROJECT = "session.rebind_project"
@@ -87,6 +91,8 @@ class ReqMethod(Enum):
     CONFIG_CACHE_CLEAR = "config.cache_clear"
     AGENT_RELOAD_CONFIG = "agent.reload_config"
     AGENT_PREWARM_SYNC = "agent.prewarm.sync"
+    # Gateway → AgentServer：登录模型凭据续期后的新 token / 会话注销后的撤销
+    AUTH_CREDENTIALS_UPDATE = "auth.credentials.update"
 
     MEMORY_COMPUTE = "memory.compute"
     # TUI memory management (Phase 3: execute in the target AgentServer's
@@ -110,8 +116,14 @@ class ReqMethod(Enum):
     PROJECT_CREATE = "project.create"
     PROJECT_RENAME = "project.rename"
     PROJECT_PIN = "project.pin"
-    PROJECT_REMOVE = "project.remove"
-    PROJECT_RESTORE = "project.restore"
+    SESSION_ARCHIVE = "session.archive"
+    SESSION_UNARCHIVE = "session.unarchive"
+    SESSION_ARCHIVED_LIST = "session.archived.list"
+    CRON_SESSIONS_DELETE = "cron.sessions.delete"
+    PROJECT_DELETE = "project.delete"
+    PROJECT_LIFECYCLE = "project.lifecycle"
+    PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"
+    PROJECT_SESSIONS_DELETE_ARCHIVED = "project.sessions.delete_archived"
     PROJECT_GIT_STATUS = "project.git.status"
     PROJECT_GIT_PROBE = "project.git.probe"
     PROJECT_GIT_INIT = "project.git.init"
@@ -126,6 +138,7 @@ class ReqMethod(Enum):
     PROJECT_GIT_REDO_TURN_CHANGES = "project.git.redo_turn_changes"
 
     PROACTIVE_TICK = "proactive.tick"  # Trigger proactive recommendation tick (from Cron)
+    PROACTIVE_FEEDBACK = "proactive.feedback"  # User feedback on proactive recommendation (like/dislike)
     COMMAND_GOAL = "command.goal"
     COMMANDS_LIST = "commands.list"
 
@@ -140,6 +153,9 @@ class ReqMethod(Enum):
     FILE_IMPORT_URL = "file.import_url"
     # 分块上传：用于 AgentOS 多用户场景的大文件，避免单个 E2A WebSocket 帧超过限制。
     FILE_UPLOAD_CHUNK = "file.upload_chunk"
+    # Smart Approval sealed assets: validate and read one bounded chunk in the
+    # routed AgentServer. Gateway must never authorize these from token paths.
+    FILE_DOWNLOAD_VERIFIED_CHUNK = "file.download_verified_chunk"
 
     # IM 平台附件落盘（Phase 3：Gateway 下载字节后经 base64 交给 AgentServer
     # 落盘至其注入目录的 <平台>_files/downloads/，Gateway 不直写用户目录）
@@ -168,9 +184,19 @@ class ReqMethod(Enum):
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
 
+    # Unified asset publishing; dispatched by AgentServer independently of chats.
+    ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
+    ASSETS_PUBLISH_PREPARE = "assets.publish.prepare"
+    ASSETS_PUBLISH_COMMIT = "assets.publish.commit"
+    ASSETS_PUBLISH_STATUS = "assets.publish.status"
+    ASSETS_PUBLISH_RECORDS = "assets.publish.records"
+    ASSETS_PUBLISH_LOCAL_STATUS = "assets.publish.local_status"
+
     # mcp management.
     MCP_LIST = "mcp.list"
     MCP_SHOW = "mcp.show"
+    MCP_INSTALL = "mcp.install"
+    MCP_UNINSTALL = "mcp.uninstall"
     MCP_CONNECT = "mcp.connect"
     MCP_WAIT_AUTH = "mcp.wait_auth"
     MCP_DISCONNECT = "mcp.disconnect"
@@ -194,12 +220,16 @@ class ReqMethod(Enum):
     SKILLS_VISIBILITY_SET = "skills.visibility.set"
     SKILLS_VISIBILITY_UPDATE = "skills.visibility.update"
     SKILLS_INSTALL = "skills.install"
+    SKILLS_PACK_MEMBER_INSTALL = "skills.pack_member.install"
     SKILLS_IMPORT_LOCAL = "skills.import_local"
+    SKILLS_IMPORT_UPLOAD = "skills.import_upload"
+    SKILLS_CREATE_FROM_KNOWLEDGE = "skills.create_from_knowledge"
     SKILLS_MARKETPLACE_ADD = "skills.marketplace.add"
     SKILLS_MARKETPLACE_REMOVE = "skills.marketplace.remove"
     SKILLS_MARKETPLACE_TOGGLE = "skills.marketplace.toggle"
     SKILLS_UNINSTALL = "skills.uninstall"
     SKILLS_ONLINE_SEARCH = "skills.online_search.search"
+    SKILLS_ONLINE_SEARCH_INSTALL = "skills.online_search.install"
     SKILLS_SKILLNET_SEARCH = "skills.skillnet.search"
     SKILLS_SKILLNET_INSTALL = "skills.skillnet.install"
     SKILLS_SKILLNET_INSTALL_STATUS = "skills.skillnet.install_status"
@@ -233,10 +263,20 @@ class ReqMethod(Enum):
     SKILLS_GRAPH_STATUS = "skills.graph.status"
     SKILLS_GRAPH_GET = "skills.graph.get"
     SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
+    SKILLS_EXPERIENCE_LIST = "skills.experience.list"
+    SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
 
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
-    PERSONAL_CONTEXT_RUNTIME_START = "personal_context.runtime.start"
-    PERSONAL_CONTEXT_RUNTIME_STOP = "personal_context.runtime.stop"
+    PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
+        "personal_context.runtime.start_collection"
+    )
+    PERSONAL_CONTEXT_RUNTIME_STOP_COLLECTION = (
+        "personal_context.runtime.stop_collection"
+    )
+    PERSONAL_CONTEXT_RUNTIME_START_AGENT_USE = (
+        "personal_context.runtime.start_agent_use"
+    )
+    PERSONAL_CONTEXT_RUNTIME_STOP_AGENT_USE = "personal_context.runtime.stop_agent_use"
     PERSONAL_CONTEXT_RUNTIME_GET_CONFIG = "personal_context.runtime.get_config"
     PERSONAL_CONTEXT_RUNTIME_PATCH_CONFIG = "personal_context.runtime.patch_config"
     PERSONAL_CONTEXT_RUNTIME_SELECT_MODEL = "personal_context.runtime.select_model"
@@ -246,10 +286,9 @@ class ReqMethod(Enum):
     PERSONAL_CONTEXT_FETCH_PATCH_SERVICE = "personal_context.fetch.patch_service"
     PERSONAL_CONTEXT_FETCH_START_SERVICE = "personal_context.fetch.start_service"
     PERSONAL_CONTEXT_FETCH_STOP_SERVICE = "personal_context.fetch.stop_service"
-    PERSONAL_CONTEXT_FETCH_START_SCHEDULER = "personal_context.fetch.start_scheduler"
-    PERSONAL_CONTEXT_FETCH_STOP_SCHEDULER = "personal_context.fetch.stop_scheduler"
     PERSONAL_CONTEXT_FETCH_RUN_ALL = "personal_context.fetch.run_all"
     PERSONAL_CONTEXT_FETCH_RUN_ONE = "personal_context.fetch.run_one"
+    PERSONAL_CONTEXT_FETCH_STOP_RUN = "personal_context.fetch.stop_run"
     PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS = "personal_context.fetch.get_run_status"
     PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS = (
         "personal_context.fetch.get_authorization_status"
@@ -258,8 +297,10 @@ class ReqMethod(Enum):
         "personal_context.fetch.authorize_provider"
     )
     PERSONAL_CONTEXT_CONTEXT_STREAM_GRAPH = "personal_context.context.stream_graph"
+    PERSONAL_CONTEXT_CONTEXT_STREAM_TREE = "personal_context.context.stream_tree"
     PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES = "personal_context.context.search_pages"
     PERSONAL_CONTEXT_CONTEXT_GET_NODE = "personal_context.context.get_node"
+    PERSONAL_CONTEXT_CONTEXT_GET_SOURCE = "personal_context.context.get_source"
 
     # Plugin management (reuses skills marketplace infrastructure)
     PLUGINS_LIST = "plugins.list"
@@ -274,12 +315,22 @@ class ReqMethod(Enum):
     EXTENSIONS_DELETE = "extensions.delete"
     EXTENSIONS_TOGGLE = "extensions.toggle"
 
-    # agent_template / plugin package catalog + lifecycle RPCs.
+    # AgentGroup selection + agent_template / plugin package catalog RPCs.
+    AGENT_GROUPS_LIST = "agent_groups.list"
+    AGENT_GROUPS_SHOW = "agent_groups.show"
+    AGENT_GROUPS_FILE_LIST = "agent_groups.file.list"
+    AGENT_GROUPS_FILE_READ = "agent_groups.file.read"
+    AGENT_GROUPS_CREATE = "agent_groups.create"
+    AGENT_GROUPS_IMPORT_LOCAL = "agent_groups.import_local"
+    AGENT_GROUPS_INSTALL = "agent_groups.install"
+    AGENT_GROUPS_UNINSTALL = "agent_groups.uninstall"
     AGENT_TEMPLATES_LIST = "agent_templates.list"
     AGENT_TEMPLATES_SHOW = "agent_templates.show"
     AGENT_TEMPLATES_FILE_LIST = "agent_templates.file.list"
     AGENT_TEMPLATES_FILE_READ = "agent_templates.file.read"
     AGENT_TEMPLATES_CREATE = "agent_templates.create"
+    AGENT_TEMPLATES_UPDATE = "agent_templates.update"
+    AGENT_TEMPLATES_DELETE = "agent_templates.delete"
     AGENT_TEMPLATES_IMPORT_LOCAL = "agent_templates.import_local"
     AGENT_TEMPLATES_INSTALL = "agent_templates.install"
     AGENT_TEMPLATES_UNINSTALL = "agent_templates.uninstall"
@@ -359,6 +410,26 @@ class ReqMethod(Enum):
     HARNESS_PACKAGES_IMPORT = "harness.packages.import"
     HARNESS_PACKAGES_EXPORT = "harness.packages.export"
 
+    # RSI 优化平台（web → gateway → agentserver 全链路，web 契约 v0.3 §4）
+    RSI_DATASET_VALIDATE = "rsi.dataset.validate"
+    RSI_TASK_CREATE = "rsi.task.create"
+    RSI_TASK_LIST = "rsi.task.list"
+    RSI_TASK_GET = "rsi.task.get"
+    RSI_TASK_DELETE = "rsi.task.delete"
+    RSI_TRAINING_START = "rsi.training.start"
+    RSI_TRAINING_PAUSE = "rsi.training.pause"
+    RSI_TRAINING_RESUME = "rsi.training.resume"
+    RSI_TRAINING_TERMINATE = "rsi.training.terminate"
+    RSI_REPORT_GET = "rsi.report.get"
+    RSI_USAGE_GET = "rsi.usage.get"
+    RSI_ARTIFACT_DOWNLOAD = "rsi.artifact.download"
+    RSI_ARTIFACT_FILES_LIST = "rsi.artifact.files.list"
+    RSI_ARTIFACT_FILES_GET = "rsi.artifact.files.get"
+    RSI_TREE_GET = "rsi.tree.get"
+    RSI_HARNESS_INSTALL = "rsi.harness.install"
+    RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
+    RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
+
     # Schedule task management
     SCHEDULE_CHECK_CONFIG = "schedule.check_config"
     SCHEDULE_UPDATE_CONFIG = "schedule.update_config"
@@ -376,6 +447,12 @@ class ReqMethod(Enum):
 
 
 class EventType(Enum):
+    SESSION_ARCHIVED = "session.archived"
+    SESSION_UNARCHIVED = "session.unarchived"
+    SESSION_DELETED = "session.deleted"
+    PROJECT_DELETED = "project.deleted"
+    SESSION_LIFECYCLE_UPDATED = "session.lifecycle.updated"
+    PROJECT_LIFECYCLE_UPDATED = "project.lifecycle.updated"
     CONNECTION_ACK = "connection.ack"
     HELLO = "hello"
     CHAT_DELTA = "chat.delta"
@@ -390,6 +467,7 @@ class EventType(Enum):
     CHAT_TOOL_UPDATE = "chat.tool_update"
     CHAT_TOOL_RESULT = "chat.tool_result"
     CHAT_SYMPHONY_STATUS = "chat.symphony_status"
+    CHAT_MESSAGE_UPDATED = "chat.message_updated"
     CONTEXT_USAGE = "context.usage"
     TODO_UPDATED = "todo.updated"
     CHAT_PROCESSING_STATUS = "chat.processing_status"
@@ -416,7 +494,6 @@ class EventType(Enum):
     # _missing_ so every downstream channel sees HEALTH_CHECK_RELAY.
     HEARTBEAT_RELAY = "health_check.relay"
     HISTORY_GET = "history.message"
-    PROACTIVE_RECOMMENDATION = "proactive_recommendation"
 
     @classmethod
     def _missing_(cls, value):

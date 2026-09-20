@@ -27,6 +27,13 @@ from openjiuwen.core.sys_operation.shell_process_registry import (
 )
 
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.agents.harness.common.tools.command_execution_context import (
+    current_command_execution,
+)
+from jiuwenswarm.agents.harness.common.tools.command_runtime import (
+    CommandRuntimePaths,
+    resolve_command_workdir,
+)
 
 
 class CommandCancelled(Exception):
@@ -131,19 +138,6 @@ def _enforce_tui_spawn_budget(command: str, session_id: str) -> str | None:
 
 
 _DANGEROUS_COMMAND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\brm\s+-rf\b", re.IGNORECASE), "blocked pattern: rm -rf"),
-    (re.compile(r"\bdel\s+/[a-z]*[fsq][a-z]*\b", re.IGNORECASE), "blocked pattern: del /f /s /q"),
-    (re.compile(r"\brd\s+/s\s+/q\b", re.IGNORECASE), "blocked pattern: rd /s /q"),
-    (re.compile(r"\bformat\s+[a-z]:", re.IGNORECASE), "blocked pattern: format drive"),
-    (re.compile(r"\bshutdown\b", re.IGNORECASE), "blocked pattern: shutdown"),
-    (re.compile(r"\breboot\b", re.IGNORECASE), "blocked pattern: reboot"),
-    (re.compile(r"\bdiskpart\b", re.IGNORECASE), "blocked pattern: diskpart"),
-    (re.compile(r"\bmkfs\b", re.IGNORECASE), "blocked pattern: mkfs"),
-    (re.compile(r"\breg\s+delete\b", re.IGNORECASE), "blocked pattern: reg delete"),
-    (
-        re.compile(r"\bremove-item\b[^\n\r]*-recurse[^\n\r]*-force", re.IGNORECASE),
-        "blocked pattern: Remove-Item -Recurse -Force",
-    ),
     (
         re.compile(r"\bpkill\b[^\n\r;|&]*jiuwenswarm", re.IGNORECASE),
         "blocked pattern: pkill targeting jiuwenswarm (includes user TUI)",
@@ -409,22 +403,15 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def _resolve_command_workdir(workdir: str) -> Path:
-    current_cwd = _context_cwd()
-    project_root = _context_project_root()
-    candidate = Path(workdir) if workdir else current_cwd
-    if not candidate.is_absolute():
-        candidate = current_cwd / candidate
-    candidate = candidate.resolve()
-
-    allowed_roots = [project_root]
-    workspace_root = _context_workspace_root()
-    if workspace_root is not None:
-        allowed_roots.append(workspace_root)
-    allowed_roots.append(get_agent_workspace_dir().resolve())
-
-    if not any(_is_relative_to(candidate, root) for root in allowed_roots):
-        raise ValueError("workdir is outside project workspace")
-    return candidate
+    return resolve_command_workdir(
+        workdir,
+        runtime_paths=CommandRuntimePaths(
+            current_cwd=_context_cwd(),
+            project_root=_context_project_root(),
+            workspace_root=_context_workspace_root(),
+            agent_workspace_root=get_agent_workspace_dir().resolve(),
+        ),
+    )
 
 
 def _normalize_shell_type(shell_type: str) -> str:
@@ -784,6 +771,108 @@ def _run_command_background(
     return proc.pid, resolved_shell, None
 
 
+def _value_field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _sandbox_host_fallback_reason(sys_operation: Any) -> str | None:
+    run_config = _value_field(sys_operation, "_run_config")
+    gateway_config = _value_field(run_config, "config")
+    launcher_config = _value_field(gateway_config, "launcher_config")
+    extra_params = _value_field(launcher_config, "extra_params", {})
+    if not isinstance(extra_params, dict):
+        return None
+    if extra_params.get("fallback_on_failure") is True:
+        return "sandbox host fallback is enabled"
+    if extra_params.get("excluded_commands"):
+        return "sandbox excluded commands may route to the host"
+    return None
+
+
+def _sandbox_resolved_shell(shell_type: str) -> str:
+    return "bash" if shell_type == "auto" else shell_type
+
+
+async def _run_command_in_bound_sandbox(
+    *,
+    sys_operation: Any,
+    command: str,
+    timeout_seconds: int,
+    workdir: Path,
+    max_output_chars: int,
+    shell_type: str,
+    background: bool,
+) -> str:
+    fallback_reason = _sandbox_host_fallback_reason(sys_operation)
+    if fallback_reason:
+        return f"[ERROR]: command execution failed closed: {fallback_reason}."
+    shell_factory = getattr(sys_operation, "shell", None)
+    if not callable(shell_factory):
+        return "[ERROR]: sandbox shell operation is unavailable."
+    try:
+        shell = shell_factory()
+        if background:
+            execute = getattr(shell, "execute_cmd_background", None)
+            if not callable(execute):
+                return "[ERROR]: sandbox background shell operation is unavailable."
+            result = await execute(
+                command,
+                cwd=str(workdir),
+                grace=5.0,
+                shell_type=shell_type,
+            )
+        else:
+            execute = getattr(shell, "execute_cmd", None)
+            if not callable(execute):
+                return "[ERROR]: sandbox shell operation is unavailable."
+            result = await execute(
+                command,
+                cwd=str(workdir),
+                timeout=timeout_seconds,
+                shell_type=shell_type,
+            )
+    except Exception as exc:
+        return f"[ERROR]: sandbox command execution failed: {exc}"
+
+    if _value_field(result, "code", 1) != 0:
+        message = str(_value_field(result, "message", "sandbox execution failed"))
+        if "timeout" in message.lower():
+            return f"[ERROR]: command timed out after {timeout_seconds}s."
+        return f"[ERROR]: sandbox command execution failed: {message}"
+    data = _value_field(result, "data")
+    if data is None:
+        return "[ERROR]: sandbox command execution returned no result."
+
+    if background:
+        payload = {
+            "command": command,
+            "cwd": str(workdir),
+            "shell_type": shell_type,
+            "resolved_shell": _sandbox_resolved_shell(shell_type),
+            "background": True,
+            "pid": _value_field(data, "pid"),
+            "status": "started",
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    payload = {
+        "command": command,
+        "cwd": str(workdir),
+        "shell_type": shell_type,
+        "resolved_shell": _sandbox_resolved_shell(shell_type),
+        "exit_code": _value_field(data, "exit_code", -1),
+        "stdout": _clip_text(
+            str(_value_field(data, "stdout", "") or ""), max_output_chars
+        ),
+        "stderr": _clip_text(
+            str(_value_field(data, "stderr", "") or ""), max_output_chars
+        ),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 @tool(
     name="mcp_exec_command",
     description=(
@@ -845,6 +934,18 @@ async def mcp_exec_command(
     if max_output_chars < 0:
         max_output_chars = 0
     normalized_shell_type = _normalize_shell_type(shell_type)
+    execution_binding = current_command_execution()
+
+    if execution_binding is not None and execution_binding.sandboxed:
+        return await _run_command_in_bound_sandbox(
+            sys_operation=execution_binding.sys_operation,
+            command=command,
+            timeout_seconds=timeout_seconds,
+            workdir=resolved_workdir,
+            max_output_chars=max_output_chars,
+            shell_type=normalized_shell_type,
+            background=background,
+        )
 
     if background:
         try:

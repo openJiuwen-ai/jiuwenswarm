@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -15,13 +15,31 @@ from .models import HeartbeatJob
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300.0
+DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS = 10.0
+_FINALIZATION_RETRY_SECONDS = 0.1
+
+
+def _consume_background_task_result(task: asyncio.Task[Any]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # noqa: BLE001
+        logger.exception("[HeartbeatAdmission] background preemption failed")
+
 
 @dataclass
 class _SessionAdmissionState:
     active_users: int = 0
     user_waiters: int = 0
+    team_user_submissions: int = 0
+    team_user_active: bool = False
     heartbeat_run_id: str | None = None
     heartbeat_blocked: bool = False
+    pending_interrupt_ids: set[str] = field(default_factory=set)
+    session_message_run_id: str | None = None
+    session_message_waiters: int = 0
 
 
 class SessionRunAdmission:
@@ -33,16 +51,40 @@ class SessionRunAdmission:
     Heartbeat.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        user_preemption_timeout_seconds: float = (
+            DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS
+        ),
+    ) -> None:
         self._condition = asyncio.Condition()
         self._states: dict[str, _SessionAdmissionState] = {}
+        self._heartbeat_preemptor: Callable[[str], Awaitable[bool]] | None = None
+        self._user_preemption_timeout_seconds = max(
+            0.001,
+            float(user_preemption_timeout_seconds),
+        )
+
+    def set_heartbeat_preemptor(
+        self,
+        preemptor: Callable[[str], Awaitable[bool]],
+    ) -> None:
+        """Attach the execution owner used to cancel an active Heartbeat."""
+        self._heartbeat_preemptor = preemptor
 
     def _state(self, session_id: str) -> _SessionAdmissionState:
         return self._states.setdefault(session_id, _SessionAdmissionState())
 
     def is_user_active(self, session_id: str) -> bool:
         state = self._states.get(session_id)
-        return bool(state and (state.active_users or state.user_waiters))
+        if state is None:
+            return False
+        direct_user_work = bool(state.active_users or state.user_waiters)
+        team_user_work = bool(
+            state.team_user_submissions or state.team_user_active
+        )
+        return direct_user_work or team_user_work
 
     def active_heartbeat_sessions(self) -> set[str]:
         return {
@@ -58,6 +100,37 @@ class SessionRunAdmission:
         if state is None or state.heartbeat_run_id is None:
             return False
         return state.heartbeat_run_id != str(exclude_run_id or "")
+
+    def has_pending_interaction(self, session_id: str) -> bool:
+        state = self._states.get(session_id)
+        return bool(state and state.pending_interrupt_ids)
+
+    async def mark_interaction_pending(
+        self, session_id: str, request_id: str
+    ) -> None:
+        """Keep automated turns out while a tool interrupt awaits its answer."""
+        async with self._condition:
+            state = self._state(session_id)
+            state.pending_interrupt_ids.add(str(request_id or ""))
+
+    async def clear_interaction_pending(
+        self, session_id: str, request_id: str | None = None
+    ) -> None:
+        """Clear the matching answered interrupt, or all interrupts on teardown."""
+        async with self._condition:
+            state = self._states.get(session_id)
+            if state is None:
+                return
+            if request_id is None:
+                state.pending_interrupt_ids.clear()
+            else:
+                state.pending_interrupt_ids.discard(str(request_id or ""))
+            self._drop_idle_state(session_id, state)
+            self._condition.notify_all()
+
+    def is_session_message_active(self, session_id: str) -> bool:
+        state = self._states.get(session_id)
+        return bool(state is not None and state.session_message_run_id)
 
     async def block_heartbeats(self, session_id: str) -> str | None:
         """Prevent new Heartbeats while a Session deletion is prepared."""
@@ -75,17 +148,169 @@ class SessionRunAdmission:
             self._drop_idle_state(session_id, state)
             self._condition.notify_all()
 
+    async def _preempt_heartbeat_for_user(
+        self,
+        session_id: str,
+        run_id: str | None,
+    ) -> None:
+        preemptor = self._heartbeat_preemptor
+        if not run_id or preemptor is None:
+            return
+        logger.info(
+            "[HeartbeatAdmission] user request preempting heartbeat: "
+            "session=%s run=%s",
+            session_id,
+            run_id,
+        )
+        preemption_task = asyncio.create_task(
+            preemptor(run_id),
+            name=f"heartbeat-user-preempt-{run_id}",
+        )
+        try:
+            done, _ = await asyncio.wait(
+                {preemption_task},
+                timeout=self._user_preemption_timeout_seconds,
+            )
+        except BaseException:
+            preemption_task.add_done_callback(_consume_background_task_result)
+            preemption_task.cancel()
+            raise
+        if not done:
+            timeout = self._user_preemption_timeout_seconds
+            logger.error(
+                "[HeartbeatAdmission] heartbeat preemption timed out: "
+                "session=%s run=%s timeout=%.3fs",
+                session_id,
+                run_id,
+                timeout,
+            )
+            preemption_task.add_done_callback(_consume_background_task_result)
+            preemption_task.cancel()
+            raise RuntimeError(
+                f"heartbeat preemption timed out after {timeout:g} seconds"
+            )
+        if not preemption_task.result():
+            raise RuntimeError(f"active heartbeat {run_id} could not be preempted")
+
+        # A cancellation is complete only after the exact admission marker is
+        # released. Another concurrent user may also already own that cleanup.
+        try:
+            async with asyncio.timeout(self._user_preemption_timeout_seconds):
+                async with self._condition:
+                    await self._condition.wait_for(
+                        lambda: (
+                            self._states.get(session_id) is None
+                            or self._states[session_id].heartbeat_run_id != run_id
+                        )
+                    )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"active heartbeat {run_id} could not be preempted"
+            ) from exc
+
+    async def _begin_interactive_user(
+        self,
+        session_id: str,
+        *,
+        team: bool,
+    ) -> None:
+        async with self._condition:
+            state = self._state(session_id)
+            state.user_waiters += 1
+            heartbeat_run_id = state.heartbeat_run_id
+        try:
+            await self._preempt_heartbeat_for_user(session_id, heartbeat_run_id)
+            async with self._condition:
+                await self._condition.wait_for(
+                    lambda: (
+                        self._state(session_id).heartbeat_run_id is None
+                        and self._state(session_id).session_message_run_id is None
+                        and (not team or self._state(session_id).active_users == 0)
+                    )
+                )
+                state = self._state(session_id)
+                if team:
+                    state.team_user_submissions += 1
+                else:
+                    state.active_users += 1
+        finally:
+            async with self._condition:
+                state = self._states.get(session_id)
+                if state is not None:
+                    state.user_waiters -= 1
+                    self._drop_idle_state(session_id, state)
+                    self._condition.notify_all()
+
     async def begin_user(self, session_id: str) -> None:
+        await self._begin_interactive_user(session_id, team=False)
+
+    async def begin_control(self, session_id: str) -> None:
+        """Block new Heartbeats while input resumes existing Session work."""
+        async with self._condition:
+            self._state(session_id).active_users += 1
+
+    async def begin_team_user(self, session_id: str) -> None:
+        """Mark an interactive Team iteration without serializing its steers.
+
+        Team decides whether an input is an immediate steer or a follow-up.
+        Admission only keeps Heartbeat outside the active user iteration.
+        Multiple inputs therefore register concurrent pending submissions and
+        never wait for one another.
+        """
+        await self._begin_interactive_user(session_id, team=True)
+
+    async def complete_team_user_submission(
+        self,
+        session_id: str,
+        *,
+        accepted: bool,
+    ) -> None:
+        """Resolve one steer submission and retain activity only if accepted."""
+        async with self._condition:
+            state = self._states.get(session_id)
+            if state is None:
+                return
+            state.team_user_submissions = max(0, state.team_user_submissions - 1)
+            if accepted:
+                state.team_user_active = True
+            self._drop_idle_state(session_id, state)
+            self._condition.notify_all()
+
+    async def begin_bounded_team_user(self, session_id: str) -> None:
+        """Exclusively admit bounded Cron automation around Team activity."""
         async with self._condition:
             state = self._state(session_id)
             state.user_waiters += 1
             try:
                 await self._condition.wait_for(
-                    lambda: self._state(session_id).heartbeat_run_id is None
+                    lambda: self._bounded_team_user_can_begin(session_id)
                 )
                 state.active_users += 1
             finally:
                 state.user_waiters -= 1
+
+    def _bounded_team_user_can_begin(self, session_id: str) -> bool:
+        state = self._state(session_id)
+        direct_user_active = state.active_users > 0
+        team_user_active = bool(
+            state.team_user_submissions or state.team_user_active
+        )
+        return (
+            state.heartbeat_run_id is None
+            and state.session_message_run_id is None
+            and not direct_user_active
+            and not team_user_active
+        )
+
+    async def end_team_user(self, session_id: str) -> None:
+        """Release the interactive Team marker at its runtime terminal event."""
+        async with self._condition:
+            state = self._states.get(session_id)
+            if state is None:
+                return
+            state.team_user_active = False
+            self._drop_idle_state(session_id, state)
+            self._condition.notify_all()
 
     async def end_user(self, session_id: str) -> None:
         async with self._condition:
@@ -96,16 +321,72 @@ class SessionRunAdmission:
             self._drop_idle_state(session_id, state)
             self._condition.notify_all()
 
+    async def end_control(self, session_id: str) -> None:
+        await self.end_user(session_id)
+
     async def try_begin_heartbeat(self, session_id: str, run_id: str) -> bool:
         async with self._condition:
             state = self._state(session_id)
-            session_has_work = bool(
-                state.active_users or state.user_waiters or state.heartbeat_run_id
+            direct_user_work = bool(state.active_users or state.user_waiters)
+            team_user_work = bool(
+                state.team_user_submissions or state.team_user_active
+            )
+            user_has_work = direct_user_work or team_user_work
+            session_has_work = (
+                user_has_work
+                or state.heartbeat_run_id is not None
+                or bool(state.pending_interrupt_ids)
+                or state.session_message_run_id is not None
+                or state.session_message_waiters > 0
             )
             if state.heartbeat_blocked or session_has_work:
                 return False
             state.heartbeat_run_id = run_id
             return True
+
+    async def begin_session_message(self, session_id: str, run_id: str) -> None:
+        """Exclusively admit one queued cross-Session turn.
+
+        A user waiter always keeps the mailbox turn outside the Runtime. Once
+        this method returns, later ordinary user turns wait for this exact run;
+        interrupt answers bypass re-admission in ``AgentRuntime`` so an active
+        ask-user interaction cannot deadlock itself.
+        """
+
+        async with self._condition:
+            state = self._state(session_id)
+            state.session_message_waiters += 1
+            try:
+                await self._condition.wait_for(
+                    lambda: self._session_message_can_begin(session_id)
+                )
+                state.session_message_run_id = run_id
+            finally:
+                state.session_message_waiters = max(
+                    0, state.session_message_waiters - 1
+                )
+                self._condition.notify_all()
+
+    def _session_message_can_begin(self, session_id: str) -> bool:
+        state = self._state(session_id)
+        return bool(
+            not state.heartbeat_blocked
+            and state.heartbeat_run_id is None
+            and state.session_message_run_id is None
+            and state.active_users == 0
+            and state.user_waiters == 0
+            and state.team_user_submissions == 0
+            and not state.team_user_active
+        )
+
+    async def end_session_message(self, session_id: str, run_id: str) -> None:
+        async with self._condition:
+            state = self._states.get(session_id)
+            if state is None or state.session_message_run_id != run_id:
+                return
+            state.session_message_run_id = None
+            self._drop_idle_state(session_id, state)
+            self._condition.notify_all()
 
     async def end_heartbeat(self, session_id: str, run_id: str) -> None:
         async with self._condition:
@@ -119,8 +400,17 @@ class SessionRunAdmission:
     def _drop_idle_state(
         self, session_id: str, state: _SessionAdmissionState
     ) -> None:
-        session_has_work = bool(
-            state.active_users or state.user_waiters or state.heartbeat_run_id
+        direct_user_work = bool(state.active_users or state.user_waiters)
+        team_user_work = bool(
+            state.team_user_submissions or state.team_user_active
+        )
+        user_has_work = direct_user_work or team_user_work
+        session_has_work = (
+            user_has_work
+            or state.heartbeat_run_id is not None
+            or bool(state.pending_interrupt_ids)
+            or state.session_message_run_id is not None
+            or state.session_message_waiters > 0
         )
         if not session_has_work and not state.heartbeat_blocked:
             self._states.pop(session_id, None)
@@ -136,6 +426,7 @@ class _SchedulerCallback(Protocol):
         error: str | None = None,
         pause_schedule: bool = False,
         consume_queue: bool = True,
+        before_queue: Callable[[], Awaitable[None]] | None = None,
     ) -> bool:
         ...
 
@@ -143,12 +434,29 @@ class _SchedulerCallback(Protocol):
 class HeartbeatExecutionService:
     """Run claimed Heartbeat jobs through the AgentServer's normal agent path."""
 
-    def __init__(self, server: Any, admission: SessionRunAdmission) -> None:
+    def __init__(
+        self,
+        server: Any,
+        admission: SessionRunAdmission,
+        *,
+        execution_timeout_seconds: float = DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+        cancel_timeout_seconds: float = DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS,
+    ) -> None:
         self._server = server
         self._admission = admission
+        self._execution_timeout_seconds = max(
+            0.001,
+            float(execution_timeout_seconds),
+        )
         self._scheduler: _SchedulerCallback | None = None
         self._completion_hook: Callable[[str], Awaitable[None]] | None = None
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._finalizers: dict[str, asyncio.Task[None]] = {}
+        self._jobs: dict[str, HeartbeatJob] = {}
+        self._user_preempted_runs: set[str] = set()
+        self._stopping = False
+        self._cancel_timeout_seconds = max(0.001, float(cancel_timeout_seconds))
+        self._admission.set_heartbeat_preemptor(self.preempt_for_user)
 
     def set_scheduler(self, scheduler: _SchedulerCallback) -> None:
         self._scheduler = scheduler
@@ -165,11 +473,15 @@ class HeartbeatExecutionService:
         ) or self._admission.is_heartbeat_active(
             session_id,
             exclude_run_id=exclude_run_id,
-        )
+        ) or self._admission.has_pending_interaction(session_id)
 
     def has_active_run(self, run_id: str) -> bool:
         task = self._tasks.get(run_id)
-        return task is not None and not task.done()
+        finalizer = self._finalizers.get(run_id)
+        return bool(
+            (task is not None and not task.done())
+            or (finalizer is not None and not finalizer.done())
+        )
 
     def active_session_ids(self) -> set[str]:
         return self._admission.active_heartbeat_sessions()
@@ -181,13 +493,19 @@ class HeartbeatExecutionService:
         request_message: Any,
     ) -> bool:
         """Atomically admit and start a run; return False on a busy race."""
+        if self._stopping:
+            return False
         if not await self._admission.try_begin_heartbeat(job.session_id, run_id):
+            return False
+        if self._stopping:
+            await self._admission.end_heartbeat(job.session_id, run_id)
             return False
         task = asyncio.create_task(
             self._run(job, run_id, request_message),
             name=f"heartbeat-run-{run_id}",
         )
         self._tasks[run_id] = task
+        self._jobs[run_id] = job
         return True
 
     async def _run(
@@ -209,9 +527,19 @@ class HeartbeatExecutionService:
                 user_id=str(request_message.user_id or ""),
                 agent_ref=request_message.agent_ref,
             )
-            await self._server.execute_internal_heartbeat(request)
+
+            async def execute() -> None:
+                await self._server.execute_internal_heartbeat(request)
+
+            await self._server.get_runtime().run_heartbeat(
+                request,
+                execute,
+                timeout_seconds=self._execution_timeout_seconds,
+            )
         except asyncio.CancelledError:
             outcome = "cancelled"
+            if run_id in self._user_preempted_runs:
+                error = "heartbeat preempted by user request"
         except Exception as exc:  # noqa: BLE001
             outcome = "failed"
             error = str(exc)
@@ -219,39 +547,181 @@ class HeartbeatExecutionService:
                 "[HeartbeatExecution] run failed: job=%s run=%s", job.id, run_id
             )
         finally:
-            self._tasks.pop(run_id, None)
+            await self._finalize_run(job, run_id, outcome=outcome, error=error)
+
+    async def _finalize_run(
+        self,
+        job: HeartbeatJob,
+        run_id: str,
+        *,
+        outcome: str,
+        error: str | None,
+    ) -> None:
+        finalizer = self._finalizers.get(run_id)
+        if finalizer is None:
+            finalizer = asyncio.create_task(
+                self._finish_run(job, run_id, outcome=outcome, error=error),
+                name=f"heartbeat-finalize-{run_id}",
+            )
+            self._finalizers[run_id] = finalizer
+        while not finalizer.done():
+            try:
+                await asyncio.shield(finalizer)
+            except asyncio.CancelledError:
+                continue
+        finalizer.result()
+
+    async def _finish_run(
+        self,
+        job: HeartbeatJob,
+        run_id: str,
+        *,
+        outcome: str,
+        error: str | None,
+    ) -> None:
+        admission_ended = False
+
+        async def end_admission() -> None:
+            nonlocal admission_ended
             await self._admission.end_heartbeat(job.session_id, run_id)
-            if self._scheduler is not None:
-                await self._scheduler.on_run_finished(
+            admission_ended = True
+
+        while True:
+            try:
+                if self._scheduler is not None:
+                    await self._scheduler.on_run_finished(
+                        job.id,
+                        run_id,
+                        outcome=outcome,
+                        error=error,
+                        consume_queue=not self._stopping,
+                        before_queue=end_admission,
+                    )
+                if not admission_ended:
+                    await end_admission()
+                break
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "[HeartbeatExecution] durable finalization failed; retrying: "
+                    "job=%s run=%s",
                     job.id,
                     run_id,
-                    outcome=outcome,
-                    error=error,
                 )
-            if self._completion_hook is not None:
+                await asyncio.sleep(_FINALIZATION_RETRY_SECONDS)
+        if self._completion_hook is not None:
+            while True:
                 try:
                     await self._completion_hook(job.session_id)
+                    break
+                except asyncio.CancelledError:
+                    continue
                 except Exception:  # noqa: BLE001
                     logger.exception(
-                        "[HeartbeatExecution] completion hook failed: session=%s",
+                        "[HeartbeatExecution] completion hook failed; retrying: "
+                        "session=%s",
                         job.session_id,
                     )
+                    await asyncio.sleep(_FINALIZATION_RETRY_SECONDS)
+        self._tasks.pop(run_id, None)
+        self._jobs.pop(run_id, None)
+        self._finalizers.pop(run_id, None)
+        self._user_preempted_runs.discard(run_id)
 
-    async def cancel(self, run_id: str) -> bool:
-        task = self._tasks.get(run_id)
-        if task is None or task.done():
+    async def _finish_run_safely(
+        self,
+        job: HeartbeatJob,
+        run_id: str,
+        *,
+        outcome: str,
+        error: str | None,
+        operation: str,
+    ) -> bool:
+        try:
+            await self._finalize_run(
+                job,
+                run_id,
+                outcome=outcome,
+                error=error,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[HeartbeatExecution] %s cleanup failed: run=%s",
+                operation,
+                run_id,
+            )
             return False
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
         return True
 
-    async def stop(self) -> None:
-        tasks = list(self._tasks.values())
-        for task in tasks:
+    async def cancel(self, run_id: str, *, reason: str = "") -> bool:
+        task = self._tasks.get(run_id)
+        finalizer = self._finalizers.get(run_id)
+        if task is None and finalizer is None:
+            return False
+        if reason == "user_request":
+            self._user_preempted_runs.add(run_id)
+        if task is not None and not task.done() and finalizer is None:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._tasks.clear()
+        pending = {
+            candidate
+            for candidate in (task, self._finalizers.get(run_id))
+            if candidate is not None and not candidate.done()
+        }
+        if pending:
+            _done, pending = await asyncio.wait(
+                pending, timeout=self._cancel_timeout_seconds
+            )
+        if pending:
+            return False
+        # Cancellation before the coroutine's first step bypasses _run.finally.
+        if task is not None and self._tasks.get(run_id) is task:
+            job = self._jobs.get(run_id)
+            if job is not None:
+                error = (
+                    "heartbeat preempted by user request"
+                    if reason == "user_request"
+                    else None
+                )
+                await self._finish_run_safely(
+                    job,
+                    run_id,
+                    outcome="cancelled",
+                    error=error,
+                    operation="cancel",
+                )
+        return True
+
+    async def preempt_for_user(self, run_id: str) -> bool:
+        return await self.cancel(run_id, reason="user_request")
+
+    def begin_stop(self) -> None:
+        self._stopping = True
+
+    async def stop(self) -> None:
+        self._stopping = True
+        try:
+            await asyncio.gather(
+                *(self.cancel(run_id) for run_id in tuple(self._tasks)),
+                return_exceptions=True,
+            )
+            pending = {
+                task
+                for task in (*self._tasks.values(), *self._finalizers.values())
+                if not task.done()
+            }
+            while pending:
+                try:
+                    _done, pending = await asyncio.wait(pending)
+                except asyncio.CancelledError:
+                    continue
+        finally:
+            self._stopping = False
 
 
-__all__ = ["HeartbeatExecutionService", "SessionRunAdmission"]
+__all__ = [
+    "DEFAULT_EXECUTION_TIMEOUT_SECONDS",
+    "DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS",
+    "HeartbeatExecutionService",
+    "SessionRunAdmission",
+]

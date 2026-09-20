@@ -8,6 +8,7 @@ from typing import Any
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
+from openjiuwen.harness.rails._multimodal import should_enable_read_image_multimodal
 
 from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
     current_multimodal_image_files,
@@ -33,11 +34,7 @@ class MultimodalImageRail(DeepAgentRail):
     def _read_image_multimodal_enabled(self) -> bool:
         if self._enable_image_multimodal is not None:
             return self._enable_image_multimodal
-        deep_config = (
-            getattr(self._deep_agent, "deep_config", None)
-            or getattr(self._deep_agent, "_deep_config", None)
-        )
-        return bool(getattr(deep_config, "enable_read_image_multimodal", False))
+        return should_enable_read_image_multimodal(self._deep_agent)
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         if ctx.context is None:

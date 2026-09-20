@@ -20,10 +20,9 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from jiuwenswarm.server.runtime.mcp import registry
-from jiuwenswarm.server.runtime.mcp import state_store
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 class _ws_ctx:
@@ -79,6 +78,7 @@ def _mk_skill_only_pkg(workspace: Path, name: str, skill: str = "mail") -> Path:
     (skill_dir / "SKILL.md").write_text(
         f"---\nname: {skill}\ndescription: x\n---\nbody", encoding="utf-8"
     )
+    write_manifest(pkg, "skill-only", skills=True)
     return pkg
 
 
@@ -90,6 +90,7 @@ def _mk_remote_mcp_pkg(workspace: Path, name: str) -> Path:
         json.dumps({"mcpServers": {name: {"url": "https://example.com/mcp"}}}),
         encoding="utf-8",
     )
+    write_manifest(pkg, "remote-mcp")
     return pkg
 
 
@@ -177,6 +178,7 @@ def test_disconnect_cli_still_uninstalls_skills(tmp_path: Path) -> None:
         "---\nname: lark-doc\ndescription: x\n---\nbody", encoding="utf-8"
     )  # noqa: E501
     (pkg / "cli.json").write_text(json.dumps({"binary": "lark-cli"}), encoding="utf-8")
+    write_manifest(pkg, "cli", credentials_type="cli-oauth", skills=True)
     _install_skill_marker(tmp_path, "feishu", "lark-doc")
     _seed_skill_config(tmp_path, "lark-doc", enabled=True)
     with _ws(tmp_path), patch(

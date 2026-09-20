@@ -49,6 +49,7 @@ _ALLOWED_WHEN_JOINED: frozenset[ParsedControlAction] = frozenset(
         ParsedControlAction.NONE,           # 非控制指令，走正常消息流程
         # 各 *_BAD 仅为格式错误回执，无状态变更，放行让其正常报错
         ParsedControlAction.NEW_SESSION_BAD,
+        ParsedControlAction.PERSIST_BAD,
         ParsedControlAction.MODE_BAD,
         ParsedControlAction.SWITCH_BAD,
         ParsedControlAction.REWIND_BAD,

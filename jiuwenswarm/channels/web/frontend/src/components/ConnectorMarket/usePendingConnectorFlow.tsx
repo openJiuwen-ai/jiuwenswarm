@@ -16,7 +16,18 @@ import { CliAuthModal } from './CliAuthModal';
  * 不变，直接复用——它们的 onConnected 语义已经是"连接确认成功才回调"（见各自文件内
  * saveCredentialsAndConnect/waitAuth 的 type==='connected' 判断），这里不需要在 onConnected 后
  * 再二次校验。
+ *
+ * 2026-08-31 修死循环：某个 pending connector 硬失败（connect() 返回 null，比如依赖的 MCP 根本
+ * 连不上）或用户中途关掉授权弹窗时，这个 hook 以前只是静默 setQueue(null) 收摊，既不通知调用方、
+ * 也不碰驱动它的 installPendingMap。而插件侧三处调用点都是「effect 侦测到 installPendingMap[id]
+ * 非空就 start()」的写法——名单没被清掉，effect 就会反复重启连接续跑（MarketplacePage 那处
+ * effect 依赖里还有 flow.active，active 一变 false 直接又触发 → 死循环狂打 mcp.connect）。
+ * 加一个 onAborted 回调，硬失败/用户取消时触发，调用方在里面 clearInstallPending(id) 让 effect
+ * 条件转 false，安装到此终止，用户处理好依赖后再手动重来。
  */
+/** onAborted 的中止原因：连接硬失败，还是用户主动关掉授权弹窗。 */
+export type PendingConnectorAbortReason = 'failed' | 'cancelled';
+
 export interface PendingConnectorFlow {
   /** 是否正处于连接续跑中（用于按钮 disabled/loading 态）。 */
   active: boolean;
@@ -32,7 +43,10 @@ export interface PendingConnectorFlow {
   handleAuthConnected: () => void;
 }
 
-export function usePendingConnectorFlow(onAllConnected: () => void): PendingConnectorFlow {
+export function usePendingConnectorFlow(
+  onAllConnected: () => void,
+  onAborted?: (reason: PendingConnectorAbortReason) => void,
+): PendingConnectorFlow {
   const [queue, setQueue] = useState<string[] | null>(null);
   const [tokenTarget, setTokenTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
   const [authTarget, setAuthTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
@@ -49,7 +63,10 @@ export function usePendingConnectorFlow(onAllConnected: () => void): PendingConn
     if (!response) {
       // 硬失败：store 已经把 error 写进 connectorStore.error，顶层会弹红色 Toast，这里只需
       // 中止续跑，不重复展示错误（同款处理见 McpDetailPage.tsx handleInstall 的既有逻辑）。
+      // onAborted 让调用方清掉驱动 effect 的 pending 名单，否则 effect 会反复重启这个流程
+      // （2026-08-31 修死循环，见文件头注释）。
       setQueue(null);
+      onAborted?.('failed');
       return;
     }
     if (response.credentialsRequired) {
@@ -71,9 +88,13 @@ export function usePendingConnectorFlow(onAllConnected: () => void): PendingConn
   }
 
   function cancel() {
+    const wasActive = queue !== null || tokenTarget !== null || authTarget !== null;
     setQueue(null);
     setTokenTarget(null);
     setAuthTarget(null);
+    // 用户中途关掉授权弹窗也要通知调用方清 pending 名单，否则 effect 会立刻把同一个流程再拉起来、
+    // 弹窗又冒出来，用户根本关不掉（2026-08-31 修死循环）。
+    if (wasActive) onAborted?.('cancelled');
   }
 
   function handleTokenCancel() {

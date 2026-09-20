@@ -7,11 +7,16 @@ from openjiuwen.symphony import (
     FINGERPRINT_ARTIFACT_FILENAME,
     FingerprintService,
     SkillFolderScanner,
+    SymphonyRuntime,
 )
 
 from jiuwenswarm.symphony.adapter import (
+    FingerprintArtifactCapabilityProvider,
+    FingerprintLLMAdapter,
     ScanResultCapabilityProvider,
     fingerprint_settings_from_swarm,
+    graph_build_orchestration_config_from_swarm,
+    graph_config_from_swarm,
 )
 from jiuwenswarm.symphony.config import symphony_config_from_dict
 from jiuwenswarm.symphony.build import build_graph, graph_status
@@ -71,6 +76,11 @@ Write a concise document for the supplied topic.
     assert payload["fingerprints"][0]["capability_id"] == "writer"
     assert "id" not in payload["fingerprints"][0]
     assert not (artifact_root / "fingerprints.json").exists()
+
+    provider = FingerprintArtifactCapabilityProvider(artifact)
+    provider_snapshot, provider_fingerprints = await provider.inventory_snapshot()
+    assert provider_snapshot == artifact.source_snapshot
+    assert provider_fingerprints == artifact.fingerprints
 
 
 def test_swarm_settings_map_only_supported_core_controls(tmp_path):
@@ -156,11 +166,19 @@ Summarize the source faithfully.
     )
 
     version_dir = resolve_graph_artifact_dir(graph_dir)
+    graph_payload = json.loads((version_dir / "graph.json").read_text(encoding="utf-8"))
     assert first.extracted_count == 1
     assert second.reused_count == 1
     assert (graph_dir / FINGERPRINT_ARTIFACT_FILENAME).is_file()
     assert (version_dir / FINGERPRINT_ARTIFACT_FILENAME).is_file()
     assert not (version_dir / "fingerprints.json").exists()
+    assert graph_payload["provider_source_snapshot"]["snapshot_id"]
+    assert (
+        graph_payload["provider_source_snapshot"]["snapshot_id"]
+        == json.loads(
+            (version_dir / FINGERPRINT_ARTIFACT_FILENAME).read_text(encoding="utf-8")
+        )["source_snapshot"]["snapshot_id"]
+    )
     assert (
         graph_status(
             skills_root,
@@ -169,6 +187,113 @@ Summarize the source faithfully.
             symphony_config=config,
         ).stale
         is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_swarm_full_build_artifact_is_immediately_mutation_ready(
+    monkeypatch,
+    tmp_path,
+):
+    skills_root = tmp_path / "skills"
+    summarizer_dir = skills_root / "summarizer"
+    summarizer_dir.mkdir(parents=True)
+    (summarizer_dir / "SKILL.md").write_text(
+        """---
+name: Summarizer
+description: Summarize supplied text.
+inputs:
+  - name: source_text
+    type: string
+outputs:
+  - name: summary
+    type: string
+---
+Summarize the source faithfully.
+""",
+        encoding="utf-8",
+    )
+    graph_dir = tmp_path / "graph"
+    config = symphony_config_from_dict(
+        {
+            "paths": {
+                "skills_root": str(skills_root),
+                "graph_dir": str(graph_dir),
+            }
+        }
+    )
+    model = _FingerprintAndGraphModel()
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.adapter.model_from_config",
+        lambda _config: model,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.build.model_from_config",
+        lambda _config: model,
+    )
+    llm_config = LLMConfig(model="offline-test")
+
+    baseline_build = await build_graph(
+        skills_root,
+        graph_dir,
+        llm_config=llm_config,
+        symphony_config=config,
+    )
+    baseline = json.loads(
+        (resolve_graph_artifact_dir(graph_dir) / "graph.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    translator_dir = skills_root / "translator"
+    translator_dir.mkdir()
+    (translator_dir / "SKILL.md").write_text(
+        """---
+name: Translator
+description: Translate supplied text.
+inputs:
+  - name: source_text
+    type: string
+outputs:
+  - name: translated_text
+    type: string
+---
+Translate the source faithfully.
+""",
+        encoding="utf-8",
+    )
+    target_scan = SkillFolderScanner(skills_root).scan()
+    target_artifact = await FingerprintService(
+        ScanResultCapabilityProvider(target_scan),
+        tmp_path / "target-fingerprints",
+        llm=FingerprintLLMAdapter(llm_config),
+        settings=fingerprint_settings_from_swarm(config, llm_config),
+    ).build(force=True)
+    runtime = SymphonyRuntime(
+        graph_artifact_root=graph_dir,
+        capability_provider=FingerprintArtifactCapabilityProvider(target_artifact),
+        model=model,
+        orchestration_config=graph_build_orchestration_config_from_swarm(config),
+        source_snapshot=baseline["source_snapshot"],
+        graph_config=graph_config_from_swarm(config),
+    )
+
+    result = await runtime.graph_engine.add_skills(
+        ["translator"],
+        request_id="consumer-full-build-add",
+        source_revision=target_artifact.source_snapshot.snapshot_id,
+    )
+    published = runtime.graph_engine.read().to_dict()
+
+    assert result.status == "published"
+    assert result.previous_version == baseline_build.version
+    assert {node["id"] for node in published["nodes"]} == {
+        "capability:summarizer",
+        "capability:translator",
+    }
+    assert (
+        published["provider_source_snapshot"]["snapshot_id"]
+        == target_artifact.source_snapshot.snapshot_id
     )
 
 

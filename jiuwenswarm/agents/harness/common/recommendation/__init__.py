@@ -4,7 +4,7 @@
 need exploration, and skill matching based on current conversation.
 
 Modules:
-- profile_extractor.py  — RecommendationState (cooldown + history) persistence
+- profile_extractor.py  — RecommendationState (history + buffer + gradients) persistence
 - proactive_engine.py    — Background tick loop (ProactiveEngine)
 - proactive_actions.py   — Decision types, skill discovery, rate limiting, trigger
 - proactive_prompts.py   — LLM prompt templates

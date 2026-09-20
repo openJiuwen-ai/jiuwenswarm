@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { executeDesktopSave, saveBlob } from '../node_modules/.cache/desktop-save/desktopSave.mjs';
+import {
+  executeDesktopSave,
+  saveBlob,
+  saveBlobWithResult,
+} from '../node_modules/.cache/desktop-save/desktopSave.mjs';
 
 function installDesktopGlobals(windowValue, fileReaderValue) {
   const hadWindow = Object.hasOwn(globalThis, 'window');
@@ -69,6 +73,182 @@ test('saveBlob sends large desktop exports as bounded sequential chunks', async 
     ['transfer-1', 'QQ=='],
     ['transfer-1', 'QQ=='],
   ]);
+});
+
+test('saveBlob reports explicit desktop cancellation and bridge failure', async () => {
+  let restore = installDesktopGlobals({
+    pywebview: {
+      api: {
+        begin_blob_save: async () => ({ ok: false, cancelled: true }),
+        append_blob_save: async () => true,
+        finish_blob_save: async () => ({ ok: true, cancelled: false }),
+        abort_blob_save: async () => true,
+      },
+    },
+  }, class FileReaderStub {});
+  try {
+    assert.deepEqual(
+      await saveBlobWithResult(
+        new Blob(['{}'], { type: 'application/json;charset=utf-8' }),
+        'trajectory.archive.json',
+      ),
+      { outcome: 'cancelled', transport: 'desktop' },
+    );
+  } finally {
+    restore();
+  }
+
+  const errors = [];
+  const originalConsoleError = console.error;
+  console.error = (...args) => errors.push(args);
+  restore = installDesktopGlobals({ pywebview: { api: {} } }, class FileReaderStub {});
+  try {
+    assert.deepEqual(
+      await saveBlobWithResult(new Blob(['{}']), 'trajectory.archive.json'),
+      { outcome: 'failed', transport: 'desktop' },
+    );
+  } finally {
+    restore();
+    console.error = originalConsoleError;
+  }
+  assert.equal(errors.length, 1);
+});
+
+test('browser blob save dispatches a non-empty named download before revoking its URL', async () => {
+  const clicks = [];
+  const revoked = [];
+  const timers = [];
+  const originalDocument = globalThis.document;
+  const originalCreateObjectUrl = URL.createObjectURL;
+  const originalRevokeObjectUrl = URL.revokeObjectURL;
+  const anchor = {
+    click: () => clicks.push({ download: anchor.download, href: anchor.href }),
+    remove: () => {},
+    style: {},
+  };
+  globalThis.document = {
+    body: { appendChild: () => {} },
+    createElement: () => anchor,
+  };
+  URL.createObjectURL = blob => {
+    assert.ok(blob.size > 0);
+    return 'blob:trajectory-archive';
+  };
+  URL.revokeObjectURL = url => revoked.push(url);
+  const restore = installDesktopGlobals({
+    setTimeout: callback => {
+      timers.push(callback);
+      return 1;
+    },
+  }, class FileReaderStub {});
+  try {
+    const result = await saveBlobWithResult(
+      new Blob(['{"archive_version":1}'], { type: 'application/json;charset=utf-8' }),
+      'trajectory-session.archive.json',
+    );
+    assert.deepEqual(result, { outcome: 'saved', transport: 'browser-download' });
+    assert.deepEqual(clicks, [{
+      download: 'trajectory-session.archive.json',
+      href: 'blob:trajectory-archive',
+    }]);
+    assert.deepEqual(revoked, []);
+    timers[0]();
+    assert.deepEqual(revoked, ['blob:trajectory-archive']);
+  } finally {
+    restore();
+    globalThis.document = originalDocument;
+    URL.createObjectURL = originalCreateObjectUrl;
+    URL.revokeObjectURL = originalRevokeObjectUrl;
+  }
+});
+
+test('browser file picker confirms save completion and preserves archive metadata', async () => {
+  const writes = [];
+  let closed = false;
+  let pickerOptions;
+  const restore = installDesktopGlobals({
+    showSaveFilePicker: async (options) => {
+      pickerOptions = options;
+      return {
+        createWritable: async () => ({
+          write: async blob => writes.push(await blob.text()),
+          close: async () => { closed = true; },
+        }),
+      };
+    },
+  }, class FileReaderStub {});
+  try {
+    const result = await saveBlobWithResult(
+      new Blob(['{"format":"openjiuwen.trajectory.archive"}'], {
+        type: 'application/json;charset=utf-8',
+      }),
+      'trajectory-session.archive.json',
+      { preferBrowserFilePicker: true },
+    );
+    assert.deepEqual(result, { outcome: 'saved', transport: 'browser-file-picker' });
+  } finally {
+    restore();
+  }
+  assert.deepEqual(pickerOptions, {
+    suggestedName: 'trajectory-session.archive.json',
+    types: [{
+      description: 'Export file',
+      accept: { 'application/json': ['.json'] },
+    }],
+  });
+  assert.deepEqual(writes, ['{"format":"openjiuwen.trajectory.archive"}']);
+  assert.equal(closed, true);
+});
+
+test('browser file picker reports cancellation and write failure without anchor fallback', async () => {
+  let anchorCreated = false;
+  const originalDocument = globalThis.document;
+  globalThis.document = { createElement: () => { anchorCreated = true; } };
+  let restore = installDesktopGlobals({
+    showSaveFilePicker: async () => {
+      throw new DOMException('cancelled', 'AbortError');
+    },
+  }, class FileReaderStub {});
+  try {
+    assert.deepEqual(
+      await saveBlobWithResult(
+        new Blob(['{}']),
+        'trajectory.archive.json',
+        { preferBrowserFilePicker: true },
+      ),
+      { outcome: 'cancelled', transport: 'browser-file-picker' },
+    );
+  } finally {
+    restore();
+  }
+
+  const errors = [];
+  const originalConsoleError = console.error;
+  console.error = (...args) => errors.push(args);
+  restore = installDesktopGlobals({
+    showSaveFilePicker: async () => ({
+      createWritable: async () => ({
+        write: async () => { throw new Error('disk full'); },
+        close: async () => {},
+      }),
+    }),
+  }, class FileReaderStub {});
+  try {
+    assert.deepEqual(
+      await saveBlobWithResult(
+        new Blob(['{}']),
+        'trajectory.archive.json',
+        { preferBrowserFilePicker: true },
+      ),
+      { outcome: 'failed', transport: 'browser-file-picker' },
+    );
+  } finally {
+    restore();
+    console.error = originalConsoleError;
+    globalThis.document = originalDocument;
+  }
+  assert.equal(errors.length, 1);
+  assert.equal(anchorCreated, false);
 });
 
 test('saveBlob aborts the desktop transaction after a chunk failure', async () => {

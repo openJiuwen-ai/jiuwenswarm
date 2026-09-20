@@ -111,9 +111,19 @@
       <td width="50%">系统参数、大模型 API、运行环境相关配置。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>IDE 插件</strong></td>
+      <td width="28%"><a href="zh/ide/jetbrains/JetBrains插件.md">JetBrains</a> / <a href="zh/ide/vscode/VSCode插件.md">VS Code</a>（<a href="zh/ide/jetbrains/JetBrains插件指南.md">指南</a> · <a href="zh/ide/vscode/VSCode插件指南.md">指南</a>）</td>
+      <td width="50%">在 JetBrains IDE 与 VS Code 中嵌入 JiuwenSwarm 智能体，提供原生聊天面板。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>浏览器服务</strong></td>
       <td width="28%"><a href="zh/浏览器.md">浏览器</a></td>
       <td width="50%">网页访问、信息获取与浏览器工具调用能力。</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>浏览器扩展</strong></td>
+      <td width="28%"><a href="zh/browser-extension/浏览器扩展.md">浏览器扩展</a> / <a href="zh/browser-extension/浏览器扩展指南.md">指南</a> / <a href="zh/browser-extension/浏览器扩展安装.md">安装</a></td>
+      <td width="50%">一款 Chromium 扩展，将 JiuwenSwarm 智能体带到你阅读的任意页面旁。</td>
     </tr>
     <tr>
       <td width="22%"><strong>日志</strong></td>
@@ -154,6 +164,11 @@
       <td width="50%">技能迭代、自我优化与能力沉淀机制。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>TTSE 双轨自演进</strong></td>
+      <td width="28%"><a href="zh/TTSE.md">TTSE</a></td>
+      <td width="50%">FACT/TIP 双轨经验归纳与 consult，独立于 Skill 正文演进。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>工具权限与安全</strong></td>
       <td width="28%"><a href="zh/工具权限与安全防护.md">工具权限与安全防护</a></td>
       <td width="50%">系统命令、文件操作、工具调用中的安全拦截与权限管控。</td>
@@ -175,8 +190,8 @@
     </tr>
     <tr>
       <td width="22%"><strong>记忆</strong></td>
-      <td width="28%"><a href="zh/记忆.md">记忆</a> / <a href="zh/自动记忆.md">自动记忆</a> / <a href="zh/编码记忆.md">编码记忆</a> / <a href="zh/经验记忆.md">经验记忆</a></td>
-      <td width="50%">支持长短期记忆管理、对话后自动提取记忆、编码场景下的专属记忆沉淀，以及任务经验的检索、复用与持续积累。</td>
+      <td width="28%"><a href="zh/记忆.md">记忆</a> / <a href="zh/自动记忆.md">自动记忆</a> / <a href="zh/编码记忆.md">编码记忆</a> / <a href="zh/经验记忆.md">经验记忆</a> / <a href="zh/JiuwenMemory-SDK接入.md">JiuwenMemory SDK</a></td>
+      <td width="50%">支持长短期记忆管理、对话后自动提取记忆、编码场景下的专属记忆沉淀，任务经验的检索、复用与持续积累，以及以 SDK 模式接入 agent-memory 记忆引擎。</td>
     </tr>
     <tr>
       <td width="22%"><strong>TUI 模式</strong></td>

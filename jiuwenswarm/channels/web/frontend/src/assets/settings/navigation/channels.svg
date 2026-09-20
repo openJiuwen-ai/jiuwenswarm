@@ -1,0 +1,6 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="16.000000" height="16.000000" fill="none">
+	<rect id="频道" width="16.000000" height="16.000000" x="0.000000" y="0.000000" />
+	<path id="矩形 544565" d="M12.3 5C13.2389 5 14 5.76112 14 6.7L14 12.3C14 13.2389 13.2389 14 12.3 14L3.7 14C2.76112 14 2 13.2389 2 12.3L2 6.7C2 5.76112 2.76112 5 3.7 5L12.3 5Z" fill-rule="evenodd" stroke="currentColor" stroke-width="1.000000" />
+	<path id="直线 103" d="M0 5.65746L3.03771 5.38031C3.52744 5.33563 3.91199 4.94152 3.94465 4.45085L4.24086 0" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.000000" transform="matrix(0.707107,0.707107,-0.707107,0.707107,8.50128,-1.5)" />
+	<path id="多边形 9" d="M4.52188 3.235C4.73002 3.56802 4.49059 4 4.09788 4L0.902124 4C0.509406 4 0.269985 3.56802 0.478125 3.235L2.076 0.678399C2.27183 0.365065 2.72817 0.365065 2.924 0.678399L4.52188 3.235Z" fill-rule="evenodd" stroke="currentColor" stroke-width="1.000000" transform="matrix(0,1,-1,0,10.5,7)" />
+</svg>

@@ -45,6 +45,7 @@ export const KEYBINDING_ACTIONS = [
   "app:toggleTodos",
   "app:toggleTeamPanel",
   "app:toggleTranscript",
+  "app:viewHumanInputs",
   "app:cancelWork",
   // Scroll
   "scroll:pageUp",
@@ -76,6 +77,8 @@ export const KEYBINDING_ACTIONS = [
   "swarm:viewOutcome",
   "swarm:viewError",
   "swarm:budget",
+  "swarm:pauseResume",
+  "swarm:stop",
   "swarm:refresh",
   // StatusView (tab navigation; search/text entry stays hardcoded)
   "status:close",
@@ -105,6 +108,7 @@ export const KEYBINDING_ACTION_DESCRIPTIONS: Record<KeybindingAction, string> = 
   "app:toggleTodos": "显示/隐藏 Todos 面板",
   "app:toggleTeamPanel": "显示/隐藏 Team 面板",
   "app:toggleTranscript": "切换 transcript 紧凑/详细视图",
+  "app:viewHumanInputs": "查看等待回复的 Human 输入",
   "app:cancelWork": "取消/暂停当前任务（Esc）；空闲时连按两次 Esc 清空输入框",
   "scroll:pageUp": "向上翻页",
   "scroll:pageDown": "向下翻页",
@@ -131,6 +135,8 @@ export const KEYBINDING_ACTION_DESCRIPTIONS: Record<KeybindingAction, string> = 
   "swarm:viewOutcome": "查看 agent outcome",
   "swarm:viewError": "查看 agent error",
   "swarm:budget": "查看 Team Budget",
+  "swarm:pauseResume": "暂停/恢复工作流",
+  "swarm:stop": "停止工作流",
   "swarm:refresh": "刷新工作流视图",
   "status:close": "关闭状态/配置视图",
   "status:prevTab": "上一个标签页",

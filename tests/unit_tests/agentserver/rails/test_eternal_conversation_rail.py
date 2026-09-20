@@ -45,6 +45,7 @@ from scripts.acceptance.eternal_conversation_200 import (
     evidence_inventory,
     raw_history_metrics,
     raw_hash_chain_inventory,
+    render_ask_user_answer,
     restore_incomplete_checkpoint,
     task_evidence,
     write_project_checkpoint,
@@ -53,6 +54,29 @@ from scripts.acceptance.eternal_conversation_200 import (
 
 def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def test_acceptance_renders_structured_conflict_question_with_option_evidence() -> None:
+    answer = render_ask_user_answer(
+        {
+            "event_type": "chat.ask_user_question",
+            "questions": [
+                {
+                    "header": "删除范围",
+                    "question": "v1 入口和兼容别名的删除范围？",
+                    "options": [
+                        {
+                            "label": "全部模块",
+                            "description": "compat.v1/0.4 窗口另行处理",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert "0.4" in answer
+    assert answer.endswith("？")
 
 
 def test_acceptance_checkpoint_restores_only_incomplete_task(tmp_path: Path) -> None:
@@ -164,6 +188,65 @@ async def test_two_writer_instances_share_one_cursor_authority(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_evidence_writer_takes_cross_process_cursor_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.agents.harness.common.rails.eternal_conversation import evidence
+
+    entered: list[Path] = []
+
+    class TrackingLock:
+        def __init__(self, path: str, *, timeout: float) -> None:
+            assert timeout == 60
+            self.path = Path(path)
+
+        def __enter__(self) -> None:
+            entered.append(self.path)
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(evidence.portalocker, "Lock", TrackingLock)
+    writer = EvidenceWriter(tmp_path, "session-a")
+
+    await writer.append("tool-call", {"name": "one"}, task_id="t1")
+
+    assert entered == [tmp_path / "state" / "evidence.lock"]
+
+
+@pytest.mark.asyncio
+async def test_audit_writer_takes_cross_process_named_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.agents.harness.common.rails.eternal_conversation import evidence
+
+    entered: list[Path] = []
+
+    class TrackingLock:
+        def __init__(self, path: str, *, timeout: float) -> None:
+            assert timeout == 60
+            self.path = Path(path)
+
+        def __enter__(self) -> None:
+            entered.append(self.path)
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(evidence.portalocker, "Lock", TrackingLock)
+    writer = EvidenceWriter(tmp_path, "session-a")
+
+    await writer.append_audit("memory-cli-calls", {"args": ["search", "灯塔日"]})
+
+    assert len(entered) == 1
+    assert entered[0].parent == tmp_path / "state" / "auxiliary-locks"
+    row = json.loads(
+        (tmp_path / "audit" / "memory-cli-calls.jsonl").read_text(encoding="utf-8")
+    )
+    assert row["args"] == ["search", "灯塔日"]
+
+
+@pytest.mark.asyncio
 async def test_acceptance_raw_metrics_stream_replacement_and_uncovered_tasks(
     tmp_path: Path,
 ) -> None:
@@ -219,6 +302,46 @@ async def test_large_background_history_is_content_addressed_and_reconstructable
     assert reconstructed == request
     assert hashlib.sha256(canonical).hexdigest() == reference["sha256"]
     assert len(canonical) == reference["bytes"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", ["plain response", ["first", "second"], 7])
+async def test_agent_history_accepts_non_mapping_payloads(
+    tmp_path: Path, payload: object
+) -> None:
+    writer = EvidenceWriter(tmp_path, "session-a")
+
+    await writer.append_agent_history("extractor", payload)
+
+    row = _read_jsonl(
+        tmp_path / "agent-history" / "extractor" / "conversation.jsonl"
+    )[0]
+    assert row["value"] == payload
+
+
+@pytest.mark.asyncio
+async def test_audit_accepts_non_mapping_payload(tmp_path: Path) -> None:
+    writer = EvidenceWriter(tmp_path, "session-a")
+
+    await writer.append_audit("diagnostic", "plain diagnostic")
+
+    row = _read_jsonl(tmp_path / "audit" / "diagnostic.jsonl")[0]
+    assert row["value"] == "plain diagnostic"
+
+
+@pytest.mark.asyncio
+async def test_large_non_mapping_agent_history_is_content_addressed(tmp_path: Path) -> None:
+    writer = EvidenceWriter(tmp_path, "session-a")
+
+    await writer.append_agent_history("builder", "x" * (300 * 1024))
+
+    row = _read_jsonl(
+        tmp_path / "agent-history" / "builder" / "conversation.jsonl"
+    )[0]
+    assert row["value"]["$evidence_blob"].startswith("blobs/")
+    assert resolve_evidence_blobs(
+        row["value"], tmp_path / "agent-history" / "builder"
+    ) == "x" * (300 * 1024)
 
 
 @pytest.mark.asyncio
@@ -403,6 +526,106 @@ def test_extractor_evidence_structurally_bounds_large_protocol_payloads() -> Non
     assert view["final_visible_context"]["tools"] == ["read_file"]
 
 
+def test_extractor_evidence_content_addresses_large_message_container() -> None:
+    messages = [f"message-{index}:" + "x" * 512 for index in range(700)]
+    events = [
+        {
+            "cursor": 1,
+            "type": "user-message",
+            "hash": "h1",
+            "payload": {"parts": ["NimbusGate must remain exact"]},
+        },
+        {
+            "cursor": 2,
+            "type": "model-visible-envelope",
+            "hash": "h2",
+            "payload": {"messages": messages, "tools": [], "status": "succeeded"},
+        },
+    ]
+
+    view = _extractor_evidence(events)
+
+    descriptor = view["final_visible_context"]["messages"]
+    encoded = json.dumps(
+        messages,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert descriptor == {
+        "$raw_history_container": True,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "utf8_bytes": len(encoded),
+        "item_count": len(messages),
+    }
+    assert view["frozen_working_memory"][0]["payload"]["parts"] == [
+        "NimbusGate must remain exact"
+    ]
+
+
+def test_extractor_evidence_bounds_oversized_event_batch_without_losing_boundaries() -> None:
+    events = [
+        {
+            "cursor": 1,
+            "type": "user-message",
+            "task_id": "task-1",
+            "hash": "h1",
+            "payload": {"parts": ["NimbusGate must remain enabled until 0.4"]},
+        }
+    ]
+    events.extend(
+        {
+            "cursor": index + 2,
+            "type": "tool-result",
+            "task_id": "task-1",
+            "hash": f"h{index + 2}",
+            "payload": {
+                "tool_name": "read_file",
+                "status": "succeeded",
+                "tool_result": "x" * 1900,
+            },
+        }
+        for index in range(600)
+    )
+    events.append(
+        {
+            "cursor": 602,
+            "type": "context-replaced",
+            "task_id": "task-1",
+            "hash": "h602",
+            "payload": {
+                "snapshot_revision": 4,
+                "replaced_messages": ["old-context" * 100 for _ in range(3000)],
+                "safe_boundary": "before-user-message-admission",
+            },
+        }
+    )
+    events.append(
+        {
+            "cursor": 603,
+            "type": "task-finished",
+            "task_id": "task-1",
+            "hash": "h603",
+            "payload": {"result": "asked the user to resolve the conflict"},
+        }
+    )
+
+    view = _extractor_evidence(events)
+    frozen = view["frozen_working_memory"]
+
+    assert frozen[0]["payload"]["parts"] == [
+        "NimbusGate must remain enabled until 0.4"
+    ]
+    assert frozen[-2]["type"] == "task-finished"
+    assert frozen[-1]["type"] == "structural-event-ledger"
+    assert frozen[-1]["payload"]["event_count"] == len(events)
+    assert len(frozen[-1]["payload"]["events"]) == len(events)
+    assert len(json.dumps(frozen, ensure_ascii=False).encode("utf-8")) < 512 * 1024
+    replacement = next(item for item in frozen if item["type"] == "context-replaced")
+    assert replacement["payload"]["snapshot_revision"] == 4
+    assert replacement["payload"]["replaced_messages"]["$raw_history_container"] is True
+
+
 def test_raw_range_batches_only_at_complete_natural_task_boundaries(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     rows: list[dict] = []
@@ -459,12 +682,18 @@ def test_builder_prompt_cannot_take_over_extractor_semantic_judgment() -> None:
     assert "extraction Agent exclusively owns" in BUILDER_SYSTEM_PROMPT
     assert "Do not reject because a" in BUILDER_SYSTEM_PROMPT
     assert "UT or Snapshot omits a historical item" in BUILDER_SYSTEM_PROMPT
+    assert "it is NOT the" in BUILDER_SYSTEM_PROMPT
+    assert "Never reject a batch by comparing content_hash with a digest" in BUILDER_SYSTEM_PROMPT
+    assert "of content alone" in BUILDER_SYSTEM_PROMPT
+    assert "Harness validates this canonical hash deterministically" in BUILDER_SYSTEM_PROMPT
 
 
 def test_extractor_never_infers_override_from_repetition_or_agent_work() -> None:
     assert "repeating the same contradictory request any number of times" in EXTRACTOR_SYSTEM_PROMPT
     assert "answers, tool edits, passing tests" in EXTRACTOR_SYSTEM_PROMPT
     assert "Direct user messages outrank Agent narration" in EXTRACTOR_SYSTEM_PROMPT
+    assert "keeps v1 available through or beyond release 0.4" in EXTRACTOR_SYSTEM_PROMPT
+    assert "Narrowing the deletion" in EXTRACTOR_SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio
@@ -952,6 +1181,7 @@ async def test_rail_is_inert_by_default_then_mounts_prompt_and_tool_per_session(
     assert "repeat that exact original term" in prompt
     assert "final character MUST be ? or ？" in prompt
     assert "Published memory records prior decisions" in prompt
+    assert "final clarification question MUST both repeat the literal 0.4" in prompt
 
     rail.configure_runtime(
         enabled=False,
@@ -975,6 +1205,120 @@ async def test_rail_is_inert_by_default_then_mounts_prompt_and_tool_per_session(
             project_dir=str(tmp_path),
             model=_FakeModel(),
         )
+
+
+@pytest.mark.asyncio
+async def test_rail_prefetches_relevant_pending_and_built_memory_for_user_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jiuwenswarm.agents.harness.common.rails.eternal_conversation.rail as rail_module
+
+    monkeypatch.setattr(rail_module, "get_agent_sessions_dir", lambda: tmp_path)
+    builder = SystemPromptBuilder(language="cn")
+    rail = EternalConversationRail()
+    rail.init(
+        SimpleNamespace(system_prompt_builder=builder, ability_manager=_AbilityManager())
+    )
+    rail.configure_runtime(
+        enabled=True,
+        session_id="session-prefetch",
+        request_id="task-prefetch",
+        mode="code.normal",
+        channel="web",
+        project_dir=str(tmp_path),
+        model=_FakeModel(),
+    )
+    coordinator = rail._coordinator
+    assert coordinator is not None
+
+    async def search(query: str) -> dict:
+        assert "删除 v1" in query
+        return {
+            "matches": [
+                {
+                    "id": "ut-v1-window",
+                    "build_state": "built",
+                    "tags": ["constraint", "support-window"],
+                    "content": "v1 support remains available through release 0.4.",
+                },
+                {
+                    "id": "ut-current-request",
+                    "build_state": "pending",
+                    "content": "A later request asks to delete the v1 alias.",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(coordinator.memory, "search", search)
+    await rail.before_invoke(
+        SimpleNamespace(context=None, inputs=SimpleNamespace(query="请删除 v1 入口"))
+    )
+    await rail.before_model_call(SimpleNamespace())
+    prompt = builder.build()
+
+    assert "<relevant-long-term-memory>" in prompt
+    assert "<memory-action-gate>" in prompt
+    assert prompt.index("ut-v1-window") < prompt.index("ut-current-request")
+    assert "ut-v1-window" in prompt
+    assert "release 0.4" in prompt
+    assert '"build_state": "pending"' in prompt
+
+
+@pytest.mark.asyncio
+async def test_rail_continues_when_automatic_memory_prefetch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jiuwenswarm.agents.harness.common.rails.eternal_conversation.rail as rail_module
+
+    monkeypatch.setattr(rail_module, "get_agent_sessions_dir", lambda: tmp_path)
+    rail = EternalConversationRail()
+    rail.init(
+        SimpleNamespace(
+            system_prompt_builder=SystemPromptBuilder(language="cn"),
+            ability_manager=_AbilityManager(),
+        )
+    )
+    rail.configure_runtime(
+        enabled=True,
+        session_id="session-prefetch-failure",
+        request_id="task-prefetch-failure",
+        mode="code.normal",
+        channel="web",
+        project_dir=str(tmp_path),
+        model=_FakeModel(),
+    )
+    coordinator = rail._coordinator
+    assert coordinator is not None
+    logged: list[str] = []
+
+    async def failed_search(_query: str) -> dict:
+        raise OSError("database is locked")
+
+    monkeypatch.setattr(coordinator.memory, "search", failed_search)
+    monkeypatch.setattr(
+        rail_module.logger,
+        "exception",
+        lambda message, *_args: logged.append(message),
+    )
+
+    await rail.before_invoke(
+        SimpleNamespace(context=None, inputs=SimpleNamespace(query="继续当前任务"))
+    )
+
+    assert rail._prefetched_memory is None
+    assert any("automatic memory prefetch failed" in message for message in logged)
+    task_events = _read_jsonl(coordinator.evidence.raw_path)
+    assert task_events[-1]["type"] == "task-started"
+    audit = _read_jsonl(
+        tmp_path
+        / "session-prefetch-failure"
+        / "eternal-conversation"
+        / "audit"
+        / "foreground-memory-searches.jsonl"
+    )[-1]
+    assert audit["status"] == "failed"
+    assert audit["error_type"] == "OSError"
 
 
 @pytest.mark.asyncio
@@ -1044,6 +1388,112 @@ async def test_snapshot_replacement_waits_for_real_pre_admission_context_boundar
         replaced[-1]["payload"]["safe_boundary"]
         == "before-user-message-admission"
     )
+
+
+@pytest.mark.asyncio
+async def test_large_foreground_context_reuses_fully_covered_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jiuwenswarm.agents.harness.common.rails.eternal_conversation.rail as rail_module
+
+    monkeypatch.setattr(rail_module, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(rail_module, "FOREGROUND_CONTEXT_REPLACEMENT_MESSAGE_LIMIT", 2)
+    rail = EternalConversationRail()
+    rail.init(
+        SimpleNamespace(
+            system_prompt_builder=SystemPromptBuilder(language="cn"),
+            ability_manager=_AbilityManager(),
+        )
+    )
+    rail.configure_runtime(
+        enabled=True,
+        session_id="session-large-context",
+        request_id="task-first",
+        mode="code.normal",
+        channel="web",
+        project_dir=str(tmp_path),
+        model=_FakeModel(),
+    )
+    coordinator = rail._coordinator
+    assert coordinator is not None
+    old_finished = await coordinator.evidence.append(
+        "task-finished", {"result": "old"}, task_id="task-old"
+    )
+    await coordinator.request_extract(old_finished["cursor"])
+    await coordinator.wait_idle()
+    await coordinator.mark_projection_applied(1)
+
+    messages = ["one", "two", "three"]
+    context = SimpleNamespace(
+        get_messages=lambda: list(messages),
+        set_messages=lambda value: messages.__setitem__(slice(None), value),
+    )
+    await rail.before_invoke(SimpleNamespace(context=None, inputs=SimpleNamespace(query="next")))
+    assert rail._pending_projection is None
+    await rail.on_user_message(
+        SimpleNamespace(
+            context=context,
+            inputs=SimpleNamespace(parts=["next"], source="query"),
+        )
+    )
+
+    assert messages == []
+    replacements = [
+        row
+        for row in _read_jsonl(coordinator.evidence.raw_path)
+        if row["type"] == "context-replaced"
+    ]
+    assert replacements[-1]["payload"]["snapshot_revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_large_foreground_context_uses_post_processor_byte_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jiuwenswarm.agents.harness.common.rails.eternal_conversation.rail as rail_module
+
+    monkeypatch.setattr(rail_module, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(rail_module, "FOREGROUND_CONTEXT_REPLACEMENT_MESSAGE_LIMIT", 1000)
+    monkeypatch.setattr(rail_module, "FOREGROUND_CONTEXT_REPLACEMENT_BYTE_LIMIT", 100)
+    rail = EternalConversationRail()
+    rail.init(
+        SimpleNamespace(
+            system_prompt_builder=SystemPromptBuilder(language="cn"),
+            ability_manager=_AbilityManager(),
+        )
+    )
+    rail.configure_runtime(
+        enabled=True,
+        session_id="session-large-bytes",
+        request_id="task-large-bytes",
+        mode="code.normal",
+        channel="web",
+        project_dir=str(tmp_path),
+        model=_FakeModel(),
+    )
+    coordinator = rail._coordinator
+    assert coordinator is not None
+    old_finished = await coordinator.evidence.append(
+        "task-finished", {"result": "old"}, task_id="task-old"
+    )
+    await coordinator.request_extract(old_finished["cursor"])
+    await coordinator.wait_idle()
+    await coordinator.mark_projection_applied(1)
+
+    messages = ["x" * 120]
+    context = SimpleNamespace(
+        get_messages=lambda: list(messages),
+        set_messages=lambda value: messages.__setitem__(slice(None), value),
+    )
+    await rail.before_invoke(SimpleNamespace(context=None, inputs=SimpleNamespace(query="next")))
+    await rail.on_user_message(
+        SimpleNamespace(
+            context=context,
+            inputs=SimpleNamespace(parts=["next"], source="query"),
+        )
+    )
+
+    assert messages == []
 
 
 @pytest.mark.asyncio

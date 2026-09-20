@@ -1,0 +1,668 @@
+import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { settingsActionIcons } from '../../../../assets/settings';
+import { Button, Switch } from '../../../../components/ui';
+import {
+  Form,
+  FormDialog,
+  useForm,
+  useFormState,
+  type FormItem,
+  type FormRules,
+} from '../../../../components/form';
+import { SettingRow, SettingsConfirmDialog } from '../../components';
+import type { SettingsCustomItemProps } from '../../registry/types';
+import { parseConfigBoolean, toConfigBoolean } from '../../services/settingsContract';
+import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
+import { useSettingsServices } from '../../services/SettingsServicesProvider';
+import { useSettingsSource } from '../../services/SettingsSourceProvider';
+import {
+  normalizeContextWindowTokens,
+  parseContextWindowTokens,
+  resolveDraftContextWindowTokens,
+} from '../models/contextWindow';
+import { ContextWindowField } from '../models/ContextWindowField';
+import {
+  isMediaCapabilityConfigured,
+  mediaCapabilityEnabledField,
+  mediaCapabilityPersistenceFields,
+  wasConfigAppliedWithoutRestart,
+  type MediaCapabilityModality,
+} from './mediaCapabilities';
+import { MediaModelConfigDialog } from './MediaModelConfigDialog';
+import './AgentSettings.css';
+
+const keyFields = ['jina_api_key', 'bocha_api_key', 'perplexity_api_key', 'serper_api_key'] as const;
+const modalities = ['vision', 'audio', 'video'] as const;
+const videoGenFields = [
+  'video_gen_provider',
+  'video_gen_protocol',
+  'video_gen_api_base',
+  'video_gen_api_key',
+  'video_gen_model',
+] as const;
+const videoGenContextWindowField = 'video_gen_context_window_tokens';
+const visualGenFields = [
+  'visual_gen_provider',
+  'visual_gen_protocol',
+  'visual_gen_api_base',
+  'visual_gen_api_key',
+  'visual_gen_model',
+] as const;
+const visualGenContextWindowField = 'visual_gen_context_window_tokens';
+
+type SaveConfig = (updates: Record<string, string>, operation: string) => Promise<unknown>;
+
+function AgentConfigDialog({
+  titleKey,
+  fields,
+  config,
+  save,
+  onClose,
+  contextWindowField,
+}: {
+  titleKey: string;
+  fields: readonly string[];
+  config: Record<string, unknown>;
+  save: SaveConfig;
+  onClose: () => void;
+  contextWindowField?: string;
+}) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const form = useForm({
+    initialValues: Object.fromEntries([
+      ...fields.map((name) => [name, String(config[name] ?? '')]),
+      ...(contextWindowField ? [[contextWindowField, normalizeContextWindowTokens(config[contextWindowField])]] : []),
+    ]),
+  });
+  useFormState(form);
+  const [submitting, setSubmitting] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const closeBlocked = submitting;
+  const { discardConfirmationOpen, requestClose, cancelDiscard, confirmDiscard } = useSettingsFormDialogClose({
+    id: 'agent-config-dialog',
+    form,
+    closeBlocked,
+    onClose,
+  });
+  const items = useMemo(() => {
+    const nextItems: FormItem<Record<string, unknown>>[] = fields.map((name) => {
+      const key = name.includes('key');
+      return {
+        name,
+        label: t(`settingsPanel.fields.${name}.title`),
+        component: 'input' as const,
+        type: key ? ('password' as const) : ('text' as const),
+        required: true,
+        passwordVisibilityLabels: key
+          ? { show: t('settingsPanel.common.showValue'), hide: t('settingsPanel.common.hideValue') }
+          : undefined,
+        placeholder: t('config.enterValue'),
+      };
+    });
+    if (contextWindowField) {
+      nextItems.push({
+        name: contextWindowField,
+        label: t('settingsPanel.models.contextWindow'),
+        component: 'custom' as const,
+        required: true,
+        helpTips: t('settingsPanel.models.contextWindowHint'),
+        render: ({ id, value, error, disabled, onChange, onBlur }) => (
+          <ContextWindowField
+            id={id}
+            value={value}
+            error={error}
+            disabled={disabled}
+            placeholder={t('settingsPanel.models.contextWindowPlaceholder')}
+            presetLabel={t('settingsPanel.models.contextWindowPresets')}
+            onChange={onChange}
+            onBlur={onBlur}
+          />
+        ),
+      });
+    }
+    return nextItems;
+  }, [contextWindowField, fields, form, t]);
+  const rules = useMemo(() => {
+    const nextRules: FormRules<Record<string, unknown>> = Object.fromEntries(
+      fields.map((name) => [
+        name,
+        [
+          {
+            trigger: 'blur' as const,
+            validator: (value: unknown) =>
+              typeof value === 'string' && value.trim().length > 0 ? undefined : t('settingsPanel.validation.required'),
+          },
+        ],
+      ]),
+    );
+    if (contextWindowField) {
+      nextRules[contextWindowField] = [
+        {
+          trigger: ['change', 'blur'] as const,
+          validator: (value: unknown) =>
+            parseContextWindowTokens(value) !== null
+              ? undefined
+              : t('settingsPanel.models.validation.contextWindowInvalid'),
+        },
+      ];
+    }
+    return nextRules;
+  }, [contextWindowField, fields, t]);
+  const confirm = async () => {
+    const result = form.validate();
+    if (!result.valid) return;
+    setSubmitting(true);
+    setSaveError('');
+    try {
+      await save(
+        Object.fromEntries([
+          ...fields.map((name) => [name, String(result.values[name] ?? '').trim()]),
+          ...(contextWindowField
+            ? [[contextWindowField, String(resolveDraftContextWindowTokens(result.values[contextWindowField]))]]
+            : []),
+        ]),
+        titleKey,
+      );
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  return (
+    <>
+      <FormDialog
+        open
+        title={t(titleKey)}
+        submitting={closeBlocked}
+        confirmDisabled={!isConnected}
+        confirmLabel={t('common.confirm')}
+        cancelLabel={t('common.cancel')}
+        testIdPrefix="settings-agent-config-dialog"
+        testVariant={titleKey}
+        onConfirm={() => void confirm()}
+        onCancel={requestClose}
+      >
+        <Form form={form} items={items} rules={rules} optionalText={t('common.optional')} />
+        {saveError ? (
+          <div className="settings-page__error" role="alert" data-testid="settings-agent-config-dialog-error">
+            {saveError}
+          </div>
+        ) : null}
+      </FormDialog>
+      <SettingsConfirmDialog
+        open={discardConfirmationOpen}
+        title={t('settingsPanel.dialog.discardTitle')}
+        message={t('settingsPanel.dialog.discardConfirm')}
+        onConfirm={confirmDiscard}
+        onCancel={cancelDiscard}
+      />
+    </>
+  );
+}
+
+export function AgentSearchSettings({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const { values, save } = useSettingsSource();
+  const [dialog, setDialog] = useState<{ titleKey: string; fields: readonly string[] } | null>(null);
+  const [clearing, setClearing] = useState<{ name: string; titleKey: string } | null>(null);
+  const [clearingBusy, setClearingBusy] = useState(false);
+  const [clearError, setClearError] = useState('');
+  const saveConfig: SaveConfig = (updates, operation) => save(updates, operation);
+  const confirmClear = async () => {
+    if (!clearing) return;
+    setClearingBusy(true);
+    setClearError('');
+    try {
+      await save({ [clearing.name]: '' }, clearing.titleKey);
+      setClearing(null);
+    } catch (error) {
+      setClearError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setClearingBusy(false);
+    }
+  };
+  return (
+    <>
+      {keyFields.map((name) => (
+        <SettingRow
+          key={name}
+          title={t(`settingsPanel.fields.${name}.title`)}
+          description={values[name] ? t('settingsPanel.common.configured') : t('settingsPanel.common.notConfigured')}
+        >
+          <Button
+            disabled={disabled || !isConnected}
+            onClick={() => setDialog({ titleKey: `settingsPanel.fields.${name}.title`, fields: [name] })}
+            data-testid="settings-agent-key-configure-btn"
+            data-variant={name}
+          >
+            {t('settingsPanel.common.configure')}
+          </Button>
+          {values[name] ? (
+            <Button
+              disabled={disabled || !isConnected}
+              onClick={() => {
+                setClearError('');
+                setClearing({ name, titleKey: `settingsPanel.fields.${name}.title` });
+              }}
+              data-testid="settings-agent-key-clear-btn"
+              data-variant={name}
+            >
+              {t('settingsPanel.common.clear')}
+            </Button>
+          ) : null}
+        </SettingRow>
+      ))}
+      {dialog ? (
+        <AgentConfigDialog {...dialog} config={values} save={saveConfig} onClose={() => setDialog(null)} />
+      ) : null}
+      <SettingsConfirmDialog
+        open={clearing !== null}
+        title={clearing ? t('settingsPanel.dialog.clearTitle', { name: t(clearing.titleKey) }) : ''}
+        message={clearing ? t('settingsPanel.dialog.clearConfirm', { name: t(clearing.titleKey) }) : ''}
+        confirming={clearingBusy}
+        error={clearError || undefined}
+        confirmLabel={t('settingsPanel.common.clear')}
+        confirmVariant="danger"
+        onConfirm={() => void confirmClear()}
+        onCancel={() => {
+          if (!clearingBusy) setClearing(null);
+        }}
+      />
+    </>
+  );
+}
+
+export function AgentMediaSettings({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const { values, savingKeys, save } = useSettingsSource();
+  const [dialog, setDialog] = useState<{
+    modality: MediaCapabilityModality;
+    enableOnSave: boolean;
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<MediaCapabilityModality | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const [restartRequired, setRestartRequired] = useState(false);
+  const saveConfig: SaveConfig = (updates, operation) => save(updates, operation);
+  const handleSaveResult = (result: unknown) => {
+    setRestartRequired(!wasConfigAppliedWithoutRestart(result));
+  };
+
+  const confirmDeleteModel = async () => {
+    if (!deleteTarget) return;
+    const enabledField = mediaCapabilityEnabledField(deleteTarget);
+    const updates: Record<string, string> = Object.fromEntries(
+      mediaCapabilityPersistenceFields(deleteTarget).map((field) => [field, '']),
+    );
+    if (parseConfigBoolean(values[enabledField])) {
+      updates[enabledField] = toConfigBoolean(false);
+    }
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      const result = await saveConfig(updates, `settingsPanel.agent.${deleteTarget}`);
+      handleSaveResult(result);
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const toggleCapability = async (modality: MediaCapabilityModality, nextEnabled: boolean) => {
+    if (nextEnabled && !isMediaCapabilityConfigured(values, modality)) {
+      setDialog({ modality, enableOnSave: true });
+      return;
+    }
+
+    setRestartRequired(false);
+    try {
+      const result = await saveConfig(
+        { [mediaCapabilityEnabledField(modality)]: toConfigBoolean(nextEnabled) },
+        `settingsPanel.agent.${modality}`,
+      );
+      handleSaveResult(result);
+    } catch {
+      setRestartRequired(false);
+    }
+  };
+
+  return (
+    <>
+      {restartRequired ? (
+        <div className="settings-agent-media__restart-notice" role="status" data-testid="settings-agent-media-restart-notice">
+          {t('settingsPanel.agent.savedRestartRequired')}
+        </div>
+      ) : null}
+      {modalities.map((modality) => {
+        const configured = isMediaCapabilityConfigured(values, modality);
+        const enabledField = mediaCapabilityEnabledField(modality);
+        const enabled = configured && parseConfigBoolean(values[enabledField]);
+        const capabilityFields = [...mediaCapabilityPersistenceFields(modality), enabledField];
+        const busy = capabilityFields.some((field) => savingKeys.has(field));
+        const name = t(`settingsPanel.agent.${modality}`);
+        return (
+          <SettingRow
+            key={modality}
+            className="settings-agent-media__row"
+            title={name}
+            description={t(`settingsPanel.agent.${modality}Description`)}
+            subSettings={
+              configured ? (
+                <div className="settings-agent-media__model-card">
+                  <strong className="settings-agent-media__model-name">{String(values[`${modality}_model`])}</strong>
+                  <div className="settings-agent-media__actions">
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      icon={<settingsActionIcons.edit aria-hidden />}
+                      title={t('common.modify')}
+                      aria-label={`${t('common.modify')} ${name}`}
+                      disabled={disabled || !isConnected || busy}
+                      onClick={() => setDialog({ modality, enableOnSave: false })}
+                      data-testid="settings-agent-modality-edit-btn"
+                      data-variant={modality}
+                    />
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      icon={<settingsActionIcons.delete aria-hidden />}
+                      title={t('common.delete')}
+                      aria-label={`${t('common.delete')} ${name}`}
+                      disabled={disabled || !isConnected || busy}
+                      onClick={() => {
+                        setDeleteError('');
+                        setDeleteTarget(modality);
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : null
+            }
+          >
+            <Switch
+              checked={enabled}
+              disabled={disabled || !isConnected || busy}
+              aria-label={t('settingsPanel.agent.toggleCapability', { name })}
+              onChange={(nextEnabled) => void toggleCapability(modality, nextEnabled)}
+              data-testid="settings-agent-modality-toggle"
+              data-variant={modality}
+            />
+          </SettingRow>
+        );
+      })}
+      {dialog ? (
+        <MediaModelConfigDialog
+          modality={dialog.modality}
+          config={values}
+          save={saveConfig}
+          enableOnSave={dialog.enableOnSave}
+          onSaved={handleSaveResult}
+          onClose={() => setDialog(null)}
+        />
+      ) : null}
+      <SettingsConfirmDialog
+        open={deleteTarget !== null}
+        title={t('settingsPanel.agent.deleteModelTitle')}
+        message={
+          deleteTarget
+            ? t('settingsPanel.agent.deleteModelConfirm', { name: t(`settingsPanel.agent.${deleteTarget}`) })
+            : ''
+        }
+        confirming={deleting}
+        error={deleteError}
+        onConfirm={() => void confirmDeleteModel()}
+        onCancel={() => {
+          if (!deleting) setDeleteTarget(null);
+        }}
+      />
+    </>
+  );
+}
+
+export function VideoGenSettings({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const { values, savingKeys, save } = useSettingsSource();
+  const [dialog, setDialog] = useState<{ enableOnSave: boolean } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const saveConfig: SaveConfig = (updates, operation) => save(updates, operation);
+
+  const configured = videoGenFields.every((name) => String(values[name] ?? '').trim());
+  const enabled = configured && parseConfigBoolean(values.video_gen_enabled);
+  const busy = [...videoGenFields, videoGenContextWindowField, 'video_gen_enabled'].some((field) => savingKeys.has(field));
+  const name = t('settingsPanel.fields.video_gen_enabled.title');
+
+  const toggle = async (nextEnabled: boolean) => {
+    if (nextEnabled && !configured) {
+      setDialog({ enableOnSave: true });
+      return;
+    }
+    try {
+      await saveConfig({ video_gen_enabled: toConfigBoolean(nextEnabled) }, 'settingsPanel.fields.video_gen_enabled.title');
+    } catch {
+      // Surfaced via savingKeys/isConnected state already; nothing further to do here.
+    }
+  };
+
+  const confirmDelete = async () => {
+    const updates: Record<string, string> = Object.fromEntries([
+      ...videoGenFields.map((field) => [field, '']),
+      [videoGenContextWindowField, ''],
+    ]);
+    if (parseConfigBoolean(values.video_gen_enabled)) {
+      updates.video_gen_enabled = toConfigBoolean(false);
+    }
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await saveConfig(updates, 'settingsPanel.fields.video_gen_enabled.title');
+      setDeleteTarget(false);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <>
+      <SettingRow
+        className="settings-agent-media__row"
+        title={name}
+        description={t('settingsPanel.fields.video_gen_enabled.description')}
+        subSettings={
+          configured ? (
+            <div className="settings-agent-media__model-card">
+              <strong className="settings-agent-media__model-name">{String(values.video_gen_model)}</strong>
+              <div className="settings-agent-media__actions">
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  icon={<settingsActionIcons.edit aria-hidden />}
+                  title={t('common.modify')}
+                  aria-label={`${t('common.modify')} ${name}`}
+                  disabled={disabled || !isConnected || busy}
+                  onClick={() => setDialog({ enableOnSave: false })}
+                />
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  icon={<settingsActionIcons.delete aria-hidden />}
+                  title={t('common.delete')}
+                  aria-label={`${t('common.delete')} ${name}`}
+                  disabled={disabled || !isConnected || busy}
+                  onClick={() => {
+                    setDeleteError('');
+                    setDeleteTarget(true);
+                  }}
+                />
+              </div>
+            </div>
+          ) : null
+        }
+      >
+        <Switch
+          checked={enabled}
+          disabled={disabled || !isConnected || busy}
+          aria-label={t('settingsPanel.agent.toggleCapability', { name })}
+          onChange={(nextEnabled) => void toggle(nextEnabled)}
+        />
+      </SettingRow>
+      {dialog ? (
+        <AgentConfigDialog
+          titleKey="settingsPanel.agent.videoGenConfigTitle"
+          fields={videoGenFields}
+          contextWindowField={videoGenContextWindowField}
+          config={values}
+          save={
+            dialog.enableOnSave
+              ? (updates, operation) => saveConfig({ ...updates, video_gen_enabled: toConfigBoolean(true) }, operation)
+              : saveConfig
+          }
+          onClose={() => setDialog(null)}
+        />
+      ) : null}
+      <SettingsConfirmDialog
+        open={deleteTarget}
+        title={t('settingsPanel.agent.deleteModelTitle')}
+        message={t('settingsPanel.agent.deleteModelConfirm', { name })}
+        confirming={deleting}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => {
+          if (!deleting) setDeleteTarget(false);
+        }}
+      />
+    </>
+  );
+}
+
+export function VisualGenSettings({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const { values, savingKeys, save } = useSettingsSource();
+  const [dialog, setDialog] = useState<{ enableOnSave: boolean } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const saveConfig: SaveConfig = (updates, operation) => save(updates, operation);
+
+  const configured = visualGenFields.every((name) => String(values[name] ?? '').trim());
+  const enabled = configured && parseConfigBoolean(values.visual_gen_enabled);
+  const busy = [...visualGenFields, visualGenContextWindowField, 'visual_gen_enabled'].some((field) => savingKeys.has(field));
+  const name = t('settingsPanel.fields.visual_gen_enabled.title');
+
+  const toggle = async (nextEnabled: boolean) => {
+    if (nextEnabled && !configured) {
+      setDialog({ enableOnSave: true });
+      return;
+    }
+    try {
+      await saveConfig({ visual_gen_enabled: toConfigBoolean(nextEnabled) }, 'settingsPanel.fields.visual_gen_enabled.title');
+    } catch {
+      // Surfaced via savingKeys/isConnected state already; nothing further to do here.
+    }
+  };
+
+  const confirmDelete = async () => {
+    const updates: Record<string, string> = Object.fromEntries([
+      ...visualGenFields.map((field) => [field, '']),
+      [visualGenContextWindowField, ''],
+    ]);
+    if (parseConfigBoolean(values.visual_gen_enabled)) {
+      updates.visual_gen_enabled = toConfigBoolean(false);
+    }
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await saveConfig(updates, 'settingsPanel.fields.visual_gen_enabled.title');
+      setDeleteTarget(false);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <>
+      <SettingRow
+        className="settings-agent-media__row"
+        title={name}
+        description={t('settingsPanel.fields.visual_gen_enabled.description')}
+        subSettings={
+          configured ? (
+            <div className="settings-agent-media__model-card">
+              <strong className="settings-agent-media__model-name">{String(values.visual_gen_model)}</strong>
+              <div className="settings-agent-media__actions">
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  icon={<settingsActionIcons.edit aria-hidden />}
+                  title={t('common.modify')}
+                  aria-label={`${t('common.modify')} ${name}`}
+                  disabled={disabled || !isConnected || busy}
+                  onClick={() => setDialog({ enableOnSave: false })}
+                />
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  icon={<settingsActionIcons.delete aria-hidden />}
+                  title={t('common.delete')}
+                  aria-label={`${t('common.delete')} ${name}`}
+                  disabled={disabled || !isConnected || busy}
+                  onClick={() => {
+                    setDeleteError('');
+                    setDeleteTarget(true);
+                  }}
+                />
+              </div>
+            </div>
+          ) : null
+        }
+      >
+        <Switch
+          checked={enabled}
+          disabled={disabled || !isConnected || busy}
+          aria-label={t('settingsPanel.agent.toggleCapability', { name })}
+          onChange={(nextEnabled) => void toggle(nextEnabled)}
+        />
+      </SettingRow>
+      {dialog ? (
+        <AgentConfigDialog
+          titleKey="settingsPanel.agent.visualGenConfigTitle"
+          fields={visualGenFields}
+          contextWindowField={visualGenContextWindowField}
+          config={values}
+          save={
+            dialog.enableOnSave
+              ? (updates, operation) => saveConfig({ ...updates, visual_gen_enabled: toConfigBoolean(true) }, operation)
+              : saveConfig
+          }
+          onClose={() => setDialog(null)}
+        />
+      ) : null}
+      <SettingsConfirmDialog
+        open={deleteTarget}
+        title={t('settingsPanel.agent.deleteModelTitle')}
+        message={t('settingsPanel.agent.deleteModelConfirm', { name })}
+        confirming={deleting}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => {
+          if (!deleting) setDeleteTarget(false);
+        }}
+      />
+    </>
+  );
+}

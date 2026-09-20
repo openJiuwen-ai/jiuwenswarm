@@ -10,6 +10,7 @@ export interface FencedCodeRendererProps {
   code: string;
   complete: boolean;
   isStreaming: boolean;
+  canvasMinHeight?: number;
 }
 
 export interface FencedCodeAdapter {

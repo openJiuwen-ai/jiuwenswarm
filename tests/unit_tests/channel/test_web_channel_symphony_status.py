@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import asyncio
 import json
 
@@ -11,6 +13,46 @@ from jiuwenswarm.gateway.channel_manager.web.web_connect import (
 )
 from jiuwenswarm.gateway.routing.keys import RoutingKey
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+
+
+@pytest.mark.asyncio
+async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect.get_logs_dir",
+        lambda: tmp_path,
+    )
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    frame = {
+        "event": "context.usage",
+        "payload": {"session_id": "sess-context", "tokens_used": 12},
+    }
+
+    await channel._persist_frontend_context_usage(frame)
+
+    records = (tmp_path / "context_usage.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(record) for record in records] == [frame]
+
+
+def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect.get_logs_dir",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
+        12,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.web_connect._CONTEXT_USAGE_BACKUP_COUNT",
+        2,
+    )
+
+    WebChannel._write_frontend_context_usage("first")
+    WebChannel._write_frontend_context_usage("second")
+
+    assert (tmp_path / "context_usage.jsonl").read_text(encoding="utf-8") == "second\n"
+    assert (tmp_path / "context_usage.jsonl.1").read_text(encoding="utf-8") == "first\n"
+    assert not (tmp_path / "context_usage.jsonl.2").exists()
 
 
 class _FakeClient:
@@ -50,6 +92,47 @@ def test_web_channel_exposes_heartbeat_marker_without_routing_metadata():
     assert frame["payload"]["metadata"] == {"automation": automation}
     assert "ws_id" not in payload["metadata"]
     assert "ws_id" not in frame["payload"]["metadata"]
+
+
+def test_web_channel_preserves_cross_session_stream_identity():
+    cross_session = {
+        "message_id": "sm-1",
+        "source_session_id": "source-1",
+        "source_title": "Source",
+        "content": "check",
+    }
+    msg = Message(
+        id="execution-1",
+        type="event",
+        channel_id="web",
+        session_id="target-1",
+        params={},
+        timestamp=1.0,
+        ok=True,
+        payload={
+            "event_type": "chat.final",
+            "content": "done",
+            "turn_request_id": "execution-1",
+            "final_mode": "patch_segment",
+            "message_origin": "cross_session_agent",
+            "session_message_id": "sm-1",
+            "cross_session": cross_session,
+        },
+        event_type=EventType.CHAT_FINAL,
+    )
+
+    payload = WebChannel._build_event_payload(msg, "chat.final")
+
+    assert payload == {
+        "session_id": "target-1",
+        "request_id": "execution-1",
+        "turn_request_id": "execution-1",
+        "content": "done",
+        "final_mode": "patch_segment",
+        "message_origin": "cross_session_agent",
+        "session_message_id": "sm-1",
+        "cross_session": cross_session,
+    }
 
 
 def test_web_channel_preserves_goal_structured_payloads():

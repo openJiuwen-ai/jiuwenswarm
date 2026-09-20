@@ -1,0 +1,28 @@
+{
+  "name": "jiuwenswarm-electron",
+  "version": "0.2.5.beta1",
+  "private": true,
+  "description": "Electron desktop shell for JiuwenSwarm",
+  "main": "main.cjs",
+  "scripts": {
+    "build:web": "npm --prefix ../../web/frontend run build",
+    "start": "node launch.cjs",
+    "prestart": "npm run check:contract",
+    "dev": "node launch.cjs --vite-dev",
+    "predev": "npm run check:contract",
+    "dev:build": "npm run build:web && node launch.cjs",
+    "check": "node --check launch.cjs && node --check main.cjs && node --check preload.cjs && node --check target_mcp_wrapper.cjs && node --check browser_panels.cjs",
+    "test:browser": "node --test ../../../../tests/electron/browser_panels.test.cjs",
+    "test:browser:integration": "node ../../../../tests/electron/browser_integration.cjs",
+    "check:contract": "uv run --no-sync --directory ../../../../ pytest tests/unit_tests/test_desktop_electron_contract.py --no-cov -q",
+    "electron:build": "powershell -ExecutionPolicy Bypass -File ../../../../scripts/build-electron-exe.ps1",
+    "electron:build:test": "powershell -ExecutionPolicy Bypass -File ../../../../scripts/build-electron-exe.ps1 -Test",
+    "electron:build:frontend-test": "powershell -ExecutionPolicy Bypass -File ../../../../scripts/build-electron-exe.ps1 -Test -FrontendOnly",
+    "electron:build:mac": "bash ../../../../scripts/build-electron-exe.sh",
+    "electron:build:mac:test": "bash ../../../../scripts/build-electron-exe.sh --test",
+    "electron:build:mac:frontend-test": "bash ../../../../scripts/build-electron-exe.sh --test --frontend-only"
+  },
+  "devDependencies": {
+    "electron": "^43.5.1"
+  }
+}

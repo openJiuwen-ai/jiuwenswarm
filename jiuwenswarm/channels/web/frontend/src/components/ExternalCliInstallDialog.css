@@ -1,0 +1,190 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
+
+.external-cli-install-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  max-height: min(760px, calc(100vh - 32px));
+}
+
+.external-cli-install-dialog__header,
+.external-cli-install-dialog__body,
+.external-cli-install-dialog__footer {
+  padding: 20px 24px;
+}
+
+.external-cli-install-dialog__header {
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.external-cli-install-dialog__header h2,
+.external-cli-install-dialog__header p {
+  margin: 0;
+}
+
+.external-cli-install-dialog__header h2 {
+  font-size: 20px;
+  line-height: 28px;
+}
+
+.external-cli-install-dialog__header p {
+  margin-top: 6px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.external-cli-install-dialog__body {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.external-cli-install-dialog__task {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-card);
+}
+
+.external-cli-install-dialog__task-heading,
+.external-cli-install-dialog__metrics,
+.external-cli-install-dialog__state {
+  display: flex;
+  align-items: center;
+}
+
+.external-cli-install-dialog__task-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.external-cli-install-dialog__agent {
+  font-weight: 600;
+}
+
+.external-cli-install-dialog__state {
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.external-cli-install-dialog__state svg {
+  width: 16px;
+  height: 16px;
+}
+
+.external-cli-install-dialog__state--succeeded {
+  color: var(--color-feedback-success);
+}
+
+.external-cli-install-dialog__state--failed,
+.external-cli-install-dialog__error {
+  color: var(--color-feedback-danger);
+}
+
+.external-cli-install-dialog__artifact {
+  margin-top: 10px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.external-cli-install-dialog__progress {
+  height: 8px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+}
+
+.external-cli-install-dialog__progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-action-primary);
+  transition: width 180ms ease;
+}
+
+.external-cli-install-dialog__progress--indeterminate > span {
+  width: 35%;
+  animation: external-cli-install-indeterminate 1.2s ease-in-out infinite;
+}
+
+.external-cli-install-dialog__metrics {
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.external-cli-install-dialog__metrics strong {
+  color: var(--color-text-primary);
+}
+
+.external-cli-install-dialog__error,
+.external-cli-install-dialog__retry {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.external-cli-install-dialog__retry {
+  color: var(--color-text-secondary);
+}
+
+.external-cli-install-dialog__activity {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  margin-top: 10px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.external-cli-install-dialog__activity code {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--color-text-primary);
+  font-family: inherit;
+}
+
+.external-cli-install-dialog__artifact,
+.external-cli-install-dialog__error,
+.external-cli-install-dialog__retry {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.external-cli-install-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--color-border-default);
+}
+
+.external-cli-install-dialog__spinner {
+  animation: external-cli-install-spin 1s linear infinite;
+}
+
+@keyframes external-cli-install-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes external-cli-install-indeterminate {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}

@@ -1,13 +1,60 @@
 import { parseSkillTreePath, type SkillTreePath } from '../../types/skillTree';
+import { parseBeamSearchProgress, type BeamSearchProgress } from '../../types/beamSearch';
+import type { AutoReviewerMetadata } from '../../types';
 import {
-  parseBeamSearchProgress,
-  type BeamSearchProgress,
-} from '../../types/beamSearch';
+  effectiveReviewerStatus,
+  normalizeReviewerMetadata,
+  reviewerIndicatesFailure,
+} from './reviewerMetadata';
 
 type UnknownPayload = Record<string, unknown>;
 
+const MERMAID_DIRECT_ID_PATTERN = /^[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*$/;
+const UNICODE_CAPABILITY_ID_PATTERN = /^[\p{L}\p{M}\p{N}_-]+$/u;
+const MERMAID_RESERVED_IDS = new Set([
+  'acc_descr',
+  'acc_descr_multiline',
+  'acc_title',
+  'alt',
+  'and',
+  'architecture-beta',
+  'block-beta',
+  'c4context',
+  'class',
+  'classdef',
+  'click',
+  'default',
+  'direction',
+  'else',
+  'end',
+  'flowchart',
+  'gantt',
+  'gitgraph',
+  'graph',
+  'journey',
+  'linkstyle',
+  'loop',
+  'mindmap',
+  'opt',
+  'par',
+  'participant',
+  'pie',
+  'rect',
+  'requirementdiagram',
+  'sankey-beta',
+  'sequencediagram',
+  'style',
+  'state',
+  'subgraph',
+  'timeline',
+  'xychart-beta',
+]);
+const PLANNED_GRAPH_NODE_RADIUS = 8;
+const PLANNED_GRAPH_FONT_FAMILY = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace';
+const PLANNED_GRAPH_FONT_SIZE = '11px';
+
 function asRecord(value: unknown): UnknownPayload | null {
-  if (!value || typeof value !== 'object') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
   return value as UnknownPayload;
@@ -30,14 +77,17 @@ function parseArguments(raw: unknown): Record<string, unknown> {
   return {};
 }
 
+function isPermissionFailureResult(result: string): boolean {
+  const normalized = result.trim();
+  return normalized.startsWith('[PERMISSION_DENIED]') || normalized.startsWith('[PERMISSION_REJECTED]') || normalized.startsWith('[PERMISSION_BLOCKED]');
+}
+
+function isFailureStatus(status: string): boolean {
+  return ['error', 'failed', 'failure', 'rejected', 'denied', 'blocked'].includes(status.trim().toLowerCase());
+}
+
 function resolveToolCallId(payload: UnknownPayload, fallback?: UnknownPayload): string | undefined {
-  const candidates = [
-    payload.id,
-    payload.tool_call_id,
-    payload.toolCallId,
-    fallback?.tool_call_id,
-    fallback?.toolCallId,
-  ];
+  const candidates = [payload.id, payload.tool_call_id, payload.toolCallId, fallback?.tool_call_id, fallback?.toolCallId];
   for (const item of candidates) {
     if (typeof item === 'string' && item) {
       return item;
@@ -47,10 +97,7 @@ function resolveToolCallId(payload: UnknownPayload, fallback?: UnknownPayload): 
 }
 
 function resolveMemberName(payload: UnknownPayload, fallback?: UnknownPayload): string | undefined {
-  const candidates = [
-    payload.member_name,
-    fallback?.member_name,
-  ];
+  const candidates = [payload.member_name, fallback?.member_name];
   for (const item of candidates) {
     if (typeof item === 'string' && item.trim()) {
       return item.trim();
@@ -66,6 +113,110 @@ function resolveMemberName(payload: UnknownPayload, fallback?: UnknownPayload): 
   return role.trim().toLowerCase() === 'teammate' ? 'teammate' : undefined;
 }
 
+function isValidCapabilityId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    UNICODE_CAPABILITY_ID_PATTERN.test(value) &&
+    !MERMAID_RESERVED_IDS.has(value.toLowerCase())
+  );
+}
+
+function isDirectMermaidId(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    MERMAID_DIRECT_ID_PATTERN.test(value) &&
+    !Array.from(MERMAID_RESERVED_IDS).some((keyword) => normalized.startsWith(keyword))
+  );
+}
+
+function mermaidNodeIds(nodeIds: string[]): Map<string, string> {
+  const usedIds = new Set(nodeIds.filter(isDirectMermaidId));
+  const renderedIds = new Map<string, string>();
+  let aliasIndex = 0;
+
+  for (const nodeId of nodeIds) {
+    if (isDirectMermaidId(nodeId)) {
+      renderedIds.set(nodeId, nodeId);
+      continue;
+    }
+
+    let alias = `capability_${aliasIndex++}`;
+    while (usedIds.has(alias)) {
+      alias = `capability_${aliasIndex++}`;
+    }
+    usedIds.add(alias);
+    renderedIds.set(nodeId, alias);
+  }
+
+  return renderedIds;
+}
+
+function compareStable(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** 将合法的 planned_graph JGF 投影成 Mermaid，必要时用安全别名保留原始标签。 */
+export function plannedGraphToMermaid(rawOutput: unknown): string | undefined {
+  const output = asRecord(rawOutput);
+  const plannedGraph = asRecord(output?.planned_graph);
+  const graph = asRecord(plannedGraph?.graph);
+  const nodes = asRecord(graph?.nodes);
+  const edges = graph?.edges;
+  if (!graph || !nodes || !Array.isArray(edges)) {
+    return undefined;
+  }
+
+  const nodeIds = Object.keys(nodes);
+  if (
+    nodeIds.length === 0 ||
+    nodeIds.some((nodeId) => !isValidCapabilityId(nodeId) || !asRecord(nodes[nodeId]))
+  ) {
+    return undefined;
+  }
+
+  const nodeIdSet = new Set(nodeIds);
+  const normalizedEdges: Array<{ source: string; target: string }> = [];
+  for (const edge of edges) {
+    const edgeRecord = asRecord(edge);
+    const source = edgeRecord?.source;
+    const target = edgeRecord?.target;
+    if (
+      !edgeRecord ||
+      edgeRecord.relation !== 'can_feed' ||
+      !isValidCapabilityId(source) ||
+      !isValidCapabilityId(target) ||
+      !nodeIdSet.has(source) ||
+      !nodeIdSet.has(target)
+    ) {
+      return undefined;
+    }
+    normalizedEdges.push({ source, target });
+  }
+
+  normalizedEdges.sort((left, right) =>
+    compareStable(left.source, right.source) || compareStable(left.target, right.target)
+  );
+  nodeIds.sort(compareStable);
+  const renderedNodeIds = mermaidNodeIds(nodeIds);
+
+  return [
+    `%%{init: ${JSON.stringify({
+      fontFamily: PLANNED_GRAPH_FONT_FAMILY,
+      themeVariables: {
+        fontSize: PLANNED_GRAPH_FONT_SIZE,
+        radius: PLANNED_GRAPH_NODE_RADIUS,
+      },
+    })}}%%`,
+    'flowchart LR',
+    ...nodeIds.map((nodeId) =>
+      `${renderedNodeIds.get(nodeId)}(${JSON.stringify(String(asRecord(nodes[nodeId])?.label || nodeId))})`
+    ),
+    ...normalizedEdges.map(
+      ({ source, target }) => `${renderedNodeIds.get(source)} --> ${renderedNodeIds.get(target)}`,
+    ),
+  ].join('\n');
+}
+
 export interface NormalizedToolCall {
   id: string;
   name: string;
@@ -75,6 +226,7 @@ export interface NormalizedToolCall {
   /** 后端下发的可读展示名（部分工具带），前端优先直接展示，省去本地推断。 */
   display_name?: string;
   memberName?: string;
+  reviewer?: AutoReviewerMetadata;
 }
 
 export interface NormalizedToolResult {
@@ -89,29 +241,24 @@ export interface NormalizedToolResult {
   summary?: string;
   skillTree?: SkillTreePath;
   beamSearch?: BeamSearchProgress;
+  /** 仅 symphony_compose_graph 的合法 planned_graph 前端展示投影。 */
+  mermaid?: string;
+  reviewer?: AutoReviewerMetadata;
 }
 
 export interface NormalizedToolUpdate {
   toolName: string;
   toolCallId?: string;
   beamSearch?: BeamSearchProgress;
+  reviewer?: AutoReviewerMetadata;
 }
 
 export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToolCall {
   const toolCallPayload = asRecord(payload.tool_call) ?? payload;
   const id = resolveToolCallId(toolCallPayload, payload) || `tool-${Date.now()}`;
-  const name =
-    (typeof toolCallPayload.name === 'string' && toolCallPayload.name) ||
-    (typeof payload.tool_name === 'string' && payload.tool_name) ||
-    'unknown';
-  const description =
-    typeof toolCallPayload.description === 'string'
-      ? toolCallPayload.description
-      : undefined;
-  const formatted_args =
-    typeof toolCallPayload.formatted_args === 'string'
-      ? toolCallPayload.formatted_args
-      : undefined;
+  const name = (typeof toolCallPayload.name === 'string' && toolCallPayload.name) || (typeof payload.tool_name === 'string' && payload.tool_name) || 'unknown';
+  const description = typeof toolCallPayload.description === 'string' ? toolCallPayload.description : undefined;
+  const formatted_args = typeof toolCallPayload.formatted_args === 'string' ? toolCallPayload.formatted_args : undefined;
   const displayNameRaw =
     (typeof toolCallPayload.display_name === 'string' && toolCallPayload.display_name) ||
     (typeof toolCallPayload.displayName === 'string' && toolCallPayload.displayName) ||
@@ -127,6 +274,7 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
     formatted_args,
     display_name,
     memberName,
+    reviewer: normalizeReviewerMetadata(payload),
   };
 }
 
@@ -152,12 +300,26 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
       : typeof directDataRecord?.message === 'string'
         ? directDataRecord.message
         : undefined;
+  const rawOutputFallback =
+    typeof rawOutputRecord?.output === 'string'
+      ? rawOutputRecord.output
+      : undefined;
+  // `rendered_result` is the text the model read for the call. `result` is the
+  // compatibility str() of the structured tool result; it is only a fallback
+  // for events that predate `rendered_result` and is removed once the UI reads
+  // structured data.
+  const renderedResult =
+    typeof toolResultPayload.rendered_result === 'string'
+      ? toolResultPayload.rendered_result
+      : undefined;
   const result =
     rawOutputResult ||
     nestedDataResult ||
+    renderedResult ||
     (typeof toolResultPayload.result === 'string' &&
       toolResultPayload.result) ||
     directDataResult ||
+    rawOutputFallback ||
     (typeof toolResultPayload.data === 'string' ? toolResultPayload.data : '') ||
     (typeof toolResultPayload.error === 'string'
       ? toolResultPayload.error
@@ -172,22 +334,28 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
           : '';
   const pending = status === 'pending';
   const timedOut = status === 'timeout' || status === 'timed_out';
-  const statusFailed =
-    !pending &&
-    (timedOut || status === 'error' || status === 'failed' || status === 'failure');
-  const success =
-    pending
-      ? true
-      : typeof toolResultPayload.success === 'boolean'
-        ? toolResultPayload.success && !timedOut
-        : status
-          ? !statusFailed
-          : true;
+  const statusFailed = !pending && (timedOut || ['error', 'failed', 'failure'].includes(status));
+  const reviewer = normalizeReviewerMetadata(payload) ?? normalizeReviewerMetadata(toolResultPayload);
+  const reviewerStatus = effectiveReviewerStatus(reviewer);
+  const hasExplicitSuccess = typeof toolResultPayload.success === 'boolean';
+  const trustedApproval = reviewerStatus === 'approved' || reviewerStatus === 'deterministic_allow';
+  // Old text-only failures have no approval identity; never infer a reviewer.
+  const legacyMarkerFailure =
+    !hasExplicitSuccess && !status && !trustedApproval &&
+    [payload, toolResultPayload, rawOutputRecord, rawOutputData].every(item => item?.pending === undefined) &&
+    isPermissionFailureResult(result);
+  const permissionFailure = reviewerIndicatesFailure(reviewer);
+  const effectivePending = pending && !permissionFailure;
+  const baseSuccess = pending
+    ? true
+    : hasExplicitSuccess
+      ? toolResultPayload.success === true && !timedOut
+      : status ? !statusFailed : true;
+  const success = baseSuccess && !permissionFailure && !legacyMarkerFailure &&
+    !(reviewerStatus && !pending && isFailureStatus(status));
   const toolName =
-    (typeof toolResultPayload.tool_name === 'string' &&
-      toolResultPayload.tool_name) ||
-    (typeof toolResultPayload.name === 'string' &&
-      toolResultPayload.name) ||
+    (typeof toolResultPayload.tool_name === 'string' && toolResultPayload.tool_name) ||
+    (typeof toolResultPayload.name === 'string' && toolResultPayload.name) ||
     'unknown';
   const toolCallId = resolveToolCallId(toolResultPayload, payload);
   const summary =
@@ -199,26 +367,35 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     parseSkillTreePath(toolResultPayload.rawOutput);
   const beamSearch =
     parseBeamSearchProgress(rawOutputRecord?.beam_search);
+  const mermaid =
+    toolName === 'symphony_compose_graph' &&
+    success &&
+    !pending &&
+    !timedOut
+      ? plannedGraphToMermaid(rawOutputRecord)
+      : undefined;
 
   return {
     toolName,
     toolCallId,
     result,
     success,
-    ...(pending ? { pending: true } : {}),
+    ...(effectivePending ? { pending: true } : {}),
     ...(timedOut ? { timedOut: true } : {}),
     summary,
     skillTree,
     beamSearch,
+    ...(mermaid ? { mermaid } : {}),
+    reviewer,
   };
 }
 
 export function normalizeToolUpdatePayload(payload: UnknownPayload): NormalizedToolUpdate {
   const update = asRecord(payload.tool_update) ?? payload;
   return {
-    toolName:
-      (typeof update.tool_name === 'string' && update.tool_name) || 'unknown',
+    toolName: (typeof update.tool_name === 'string' && update.tool_name) || 'unknown',
     toolCallId: resolveToolCallId(update, payload),
     beamSearch: parseBeamSearchProgress(update.beam_search_event),
+    reviewer: normalizeReviewerMetadata(update) ?? normalizeReviewerMetadata(payload),
   };
 }

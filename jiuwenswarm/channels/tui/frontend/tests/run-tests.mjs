@@ -22,7 +22,6 @@ import {
   resolveModeTarget,
 } from "../dist/core/commands/builtins/mode.js";
 import { resolvePlanTarget, resolveNormalTarget } from "../dist/core/commands/builtins/plan.js";
-import { handleIncomingFrame } from "../dist/core/event-handlers.js";
 import { buildAppScreenLines } from "../dist/ui/screen-layout.js";
 import { buildWelcomeLines } from "../dist/ui/welcome.js";
 import {
@@ -35,6 +34,7 @@ import {
   isWorkflowBudgetLow,
   isSessionNode,
   mergeWorkflowRun,
+  pendingHumanViewHint,
   shouldShowSessionTree,
   shouldShowTurnInDetailOrReply,
   sessionTurnLabelNumber,
@@ -51,6 +51,10 @@ import { buildHarmonyOSProjectInitPrompt } from "../dist/core/commands/builtins/
 import { formatModeForDisplay, normalizeToClientMode } from "../dist/core/modes.js";
 import { createInitCommand } from "../dist/core/commands/builtins/init.js";
 import { createSimplifyCommand } from "../dist/core/commands/builtins/simplify.js";
+import {
+  bindPermissionCardAnswer,
+  handleIncomingFrame,
+} from "../dist/core/event-handlers.js";
 
 const planQuestion = "**Plan Approval**\n\nThe agent has completed a plan.";
 const planApprovalKind = "plan_approval";
@@ -234,6 +238,69 @@ assert.equal(
 );
 assert.deepEqual(getPlanApprovalListLayout(), { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 });
 
+assert.deepEqual(
+  bindPermissionCardAnswer(
+    [
+      { selected_options: ["本次允许"], card_id: "caller" },
+    ],
+    [
+      { header: "one", question: "one", options: [], cardId: "inv-1" },
+    ],
+  ),
+  [
+    { selected_options: ["本次允许"], card_id: "inv-1" },
+  ],
+);
+assert.deepEqual(
+  bindPermissionCardAnswer(
+    [{ selected_options: ["本次允许"] }],
+    [{ header: "missing", question: "missing", options: [] }],
+  ),
+  [],
+);
+const capturedPermissionQuestions = [];
+const permissionDelegate = new Proxy(
+  {},
+  {
+    get: (_target, property) => {
+      if (property === "getSessionId") return () => "root-session";
+      if (property === "getMode") return () => "agent.fast";
+      if (property === "setPendingQuestion") {
+        return (question) => capturedPermissionQuestions.push(question);
+      }
+      return () => undefined;
+    },
+  },
+);
+for (const cardId of ["card-1", "card-2", "card-3"]) {
+  handleIncomingFrame(permissionDelegate, {
+    event: "chat.ask_user_question",
+    payload: {
+      request_id: `request-${cardId}`,
+      source: "permission_interrupt",
+      questions: [
+        {
+          header: "Permission",
+          question: "Continue?",
+          options: [],
+          card_id: cardId,
+        },
+      ],
+    },
+  });
+}
+assert.deepEqual(
+  capturedPermissionQuestions.map((pending) => pending.questions[0]?.cardId),
+  ["card-1", "card-2", "card-3"],
+);
+assert.deepEqual(
+  bindPermissionCardAnswer(
+    [{ selected_options: ["本次允许"] }],
+    capturedPermissionQuestions[1].questions,
+  ),
+  [{ selected_options: ["本次允许"], card_id: "card-2" }],
+);
+
 const narrowQuestionTitle =
   "[Redis 方案] Redis 接入有三种方案，范围和依赖递增。请根据当前项目选择。";
 const wrappedQuestionTitle = wrapPlainText(narrowQuestionTitle, 30);
@@ -377,6 +444,88 @@ const teamLayoutOptions = {
   overlayTranscriptLines: [],
 };
 const stripAnsi = (value) => value.replace(/\u001b\[[0-9;]*m/g, "");
+
+// /resume should spend its limited primary-column width on the human-readable
+// title before the opaque session id.
+const resumeSessionIds = ["tui_sameprefix_A_common_abcd", "tui_sameprefix_B_common_abcd"];
+const resumeSessionTitle = "这是一个用于验证恢复列表展示完整性的很长会话名称";
+async function openResumeScreen(sessions) {
+  const screen = Object.create(AppScreen.prototype);
+  Object.assign(screen, {
+    resumeSessionList: null,
+    state: {
+      getSnapshot: () => ({ sessionId: "current-session" }),
+      request: async (method, params) => {
+        assert.equal(method, "session.list");
+        assert.deepEqual(params, { all_projects: false });
+        return {
+          sessions,
+          total: sessions.length,
+          current_branch: "HEAD",
+        };
+      },
+      addItem: () => undefined,
+    },
+    tui: { terminal: { rows: 40 }, requestRender: () => undefined },
+  });
+  await screen.openResumeSessionList(false);
+  return screen;
+}
+
+const resumeSessions = resumeSessionIds.map((sessionId) => ({
+  session_id: sessionId,
+  title: resumeSessionTitle,
+  last_message_at: Date.now() / 1000,
+  message_count: 3,
+}));
+const resumeScreen = await openResumeScreen(resumeSessions);
+const resumeItem = resumeScreen.resumeSessionList.list.getSelectedItem();
+assert.equal(resumeItem?.value, resumeSessionIds[0]);
+for (const width of [80, 60, 40]) {
+  const resumeLines = resumeScreen.resumeSessionList.list.render(width).map(stripAnsi);
+  const resumeRows = resumeLines.map((line) => line.replace(/^[→ ]+/, ""));
+  assert.equal(resumeLines.length, resumeSessionIds.length);
+  assert.ok(resumeLines.every((line) => visibleWidth(line) <= width));
+  assert.ok(resumeRows.every((line) => line.startsWith(resumeSessionTitle.slice(0, 12))));
+  assert.ok(resumeRows.every((line, index) => line.includes(`#${index + 1}:abcd`)));
+  assert.notEqual(resumeLines[0], resumeLines[1]);
+  if (width === 80) {
+    assert.ok(resumeRows.every((line, index) => line.includes(resumeSessionIds[index])));
+  }
+}
+resumeScreen.updateResumeSearchQuery("B_common");
+assert.equal(resumeScreen.resumeSessionList.list.getSelectedItem()?.value, resumeSessionIds[1]);
+
+const uniqueResumeScreen = await openResumeScreen([resumeSessions[0]]);
+const uniqueResumeLine = stripAnsi(uniqueResumeScreen.resumeSessionList.list.render(80)[0] ?? "");
+assert.ok(uniqueResumeLine.includes(resumeSessionTitle.slice(0, 18)));
+assert.equal(uniqueResumeLine.includes("#1:"), false);
+
+const activeResumeScreen = await openResumeScreen([
+  { ...resumeSessions[0], active_in_window: true },
+]);
+const activeResumeLine = stripAnsi(activeResumeScreen.resumeSessionList.list.render(80)[0] ?? "");
+assert.ok(activeResumeLine.includes("in another window"));
+assert.ok(activeResumeLine.includes(resumeSessionIds[0].slice(0, 10)));
+
+const untitledSessionId = "tui_untitled_session";
+const untitledResumeScreen = await openResumeScreen([{ session_id: untitledSessionId }]);
+const untitledResumeLine = stripAnsi(
+  untitledResumeScreen.resumeSessionList.list.render(40)[0] ?? "",
+);
+assert.ok(untitledResumeLine.includes(untitledSessionId));
+
+const longPreviewSessionId = `tui_${"a".repeat(120)}`;
+const resumePreviewLines = activeResumeScreen.buildResumeSessionPreviewLines(
+  80,
+  { ...resumeSessions[0], session_id: longPreviewSessionId },
+  [],
+).map(stripAnsi);
+const compactResumePreview = resumePreviewLines.join("").replace(/\s/g, "");
+assert.ok(resumePreviewLines.every((line) => visibleWidth(line) <= 80));
+assert.ok(compactResumePreview.includes(resumeSessionTitle));
+assert.ok(compactResumePreview.includes(`Session:${longPreviewSessionId}`));
+
 const collapsedTeamLines = buildAppScreenLines(teamSnapshot, teamLayoutOptions);
 assert.equal(collapsedTeamLines.some((line) => line.includes("teammate")), false);
 assert.equal(collapsedTeamLines.some((line) => line.includes("Member 1")), false);
@@ -629,6 +778,108 @@ const slashCommands = AppScreen.prototype.buildSlashCommands.call({
 assert.deepEqual(
   slashCommands.map((command) => command.name),
   ["swarmflows", "workspace"],
+);
+
+function createHumanInputShortcutScreen({ hasPendingHumanInput = true } = {}) {
+  const editorInputs = [];
+  const notices = [];
+  let pendingListOpenCount = 0;
+  const pendingHumanPrompts = hasPendingHumanInput
+    ? new Map([["workflow-1:human-1", { workflowId: "workflow-1", agentId: "human-1" }]])
+    : new Map();
+  const snapshot = {
+    pendingQuestion: null,
+    btwOverlay: null,
+    btwActive: false,
+    cancellableWork: null,
+    runningCommand: null,
+    pendingHumanPrompts,
+    isProcessing: false,
+  };
+  const editor = {
+    text: "draft ",
+    getText() {
+      return this.text;
+    },
+    setText(value) {
+      this.text = value;
+    },
+    handleInput(data) {
+      editorInputs.push(data);
+      if (data.length === 1) this.text += data;
+    },
+  };
+  const screen = Object.create(AppScreen.prototype);
+  Object.assign(screen, {
+    transcriptScrollOffset: 0,
+    btwOverlayScrollOffset: 0,
+    escClearPending: false,
+    transientNotice: null,
+    startupPromptList: null,
+    resumeSessionList: null,
+    statusViewState: null,
+    mcpDetail: null,
+    mcpToolDetail: null,
+    mcpList: null,
+    mcpTools: null,
+    modelList: null,
+    toolSelector: null,
+    themeList: null,
+    swarmWorkflowsViewState: null,
+    configEditorState: null,
+    fileViewerState: null,
+    diffViewerState: null,
+    mvController: null,
+    showTeamPanel: false,
+    replyingToHumanPrompt: null,
+    editor,
+    state: {
+      recordActivity: () => undefined,
+      getSnapshot: () => snapshot,
+      isHelpVisible: () => false,
+      hasServerTask: () => false,
+      requestLocalInterrupt: () => false,
+    },
+    tui: {
+      terminal: { rows: 40 },
+      requestRender: () => undefined,
+      invalidate: () => undefined,
+    },
+    enterSwarmWorkflowsPendingList: async () => {
+      pendingListOpenCount += 1;
+    },
+    showTransientNotice: (message) => {
+      notices.push(message);
+    },
+  });
+  return {
+    screen,
+    editorInputs,
+    notices,
+    getPendingListOpenCount: () => pendingListOpenCount,
+  };
+}
+
+const humanInputShortcut = createHumanInputShortcutScreen();
+humanInputShortcut.screen.handleInput("h");
+assert.deepEqual(humanInputShortcut.editorInputs, ["h"]);
+assert.equal(humanInputShortcut.getPendingListOpenCount(), 0);
+
+humanInputShortcut.screen.handleInput("\x1bh");
+assert.deepEqual(humanInputShortcut.editorInputs, ["h"]);
+assert.equal(humanInputShortcut.getPendingListOpenCount(), 1);
+
+const noPendingHumanInputShortcut = createHumanInputShortcutScreen({
+  hasPendingHumanInput: false,
+});
+noPendingHumanInputShortcut.screen.handleInput("\x1bh");
+assert.equal(noPendingHumanInputShortcut.getPendingListOpenCount(), 0);
+assert.deepEqual(noPendingHumanInputShortcut.notices, ["No human inputs waiting."]);
+
+assert.equal(pendingHumanViewHint("alt+h"), "alt+h to view human inputs");
+assert.equal(
+  pendingHumanViewHint(null),
+  "use /swarmflows to view human inputs",
 );
 
 // Escape and left both move from the workflow's agents panel back to phases.
@@ -1780,7 +2031,8 @@ await devInitCommand.action({
             name: "harmonyos_developer_knowledge",
             enabled: true,
             transport: "sse",
-            url: "https://example.com/other",
+            // Reserved test-only host: this URL must never reach a live service.
+            url: "https://example.invalid/other",
           },
         ],
       };

@@ -40,6 +40,7 @@ from openjiuwen.harness.schema.deep_agent_spec import (
 from jiuwenswarm.common.config import (
     get_progressive_tool_enabled,
     get_skill_evolution_enabled,
+    is_subagent_runtime_enabled,
 )
 from jiuwenswarm.common.tool_ownership import register_tool
 
@@ -282,6 +283,7 @@ def convert_code_config_to_deep_agent_spec(
             bool(react_snapshot.get("enable_task_loop", True))
             or get_skill_evolution_enabled(config_snapshot)
         ),
+        enable_subagent_runtime=is_subagent_runtime_enabled(config_snapshot),
         max_iterations=int(react_snapshot.get("max_iterations", 15)),
         workspace=WorkspaceSpec(root_path=workspace_root or "./", language=language),
         sys_operation=_sys_operation_spec(sys_operation, sys_operation_card),

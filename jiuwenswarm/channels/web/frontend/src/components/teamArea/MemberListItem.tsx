@@ -1,5 +1,5 @@
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
-import pendingIcon from '../../assets/pending.svg';
+import PendingIcon from '../../assets/pending.svg?react';
 import {
   getMemberPlainName,
   getMemberStatusKey,
@@ -44,10 +44,10 @@ export function MemberListItem({
       data-testid="team-area-member-item"
       data-variant={member.member_id}
       className={`flex w-full items-center gap-3 rounded-md text-left  ${
-        compact ? 'p-2' : 'p-3'
+        compact ? 'p-2' : 'px-[8px] py-[9px]'
       } ${
         selected
-          ? 'border border-accent bg-accent-subtle'
+          ? 'border border-transparent bg-[var(--color-tool-tab-active-bg)]'
           : 'border border-transparent hover:bg-secondary'
       }`}
     >
@@ -55,14 +55,14 @@ export function MemberListItem({
         <TeamMemberAvatar
           member={member.member_id}
           alt={displayName}
-          className={`${compact ? 'h-8 w-8' : 'h-10 w-10'} rounded-full`}
+          className="h-8 w-8 rounded-full"
           imageClassName="rounded-full"
         />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span
-            className={`${compact ? 'text-xs' : 'text-sm'} truncate font-medium text-text`}
+            className={`${compact ? 'text-xs' : 'text-sm'} truncate font-semibold text-text`}
             data-testid="team-area-member-item-name"
           >
             {displayName}
@@ -88,7 +88,7 @@ export function MemberListItem({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m4.9 4.9 2.9 2.9" />
           </svg>
         ) : (
-          <img src={pendingIcon} alt="" className="w-4 h-4" />
+          <PendingIcon className="w-4 h-4 text-text-muted" />
         )
       ) : taskProgress && taskProgress.total > 0 ? (
         <div className="shrink-0 relative">
@@ -133,7 +133,7 @@ export function MemberListItem({
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m4.9 4.9 2.9 2.9" />
         </svg>
       ) : (
-        <img src={pendingIcon} alt="" className="w-4 h-4 shrink-0" />
+        <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
       )}
     </button>
   );

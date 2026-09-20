@@ -564,3 +564,41 @@ async def test_manual_cancel_keeps_session_runtime() -> None:
     )
 
     assert await _handle_cancel_cleanup_case(env) == []
+
+
+@pytest.mark.asyncio
+async def test_before_chat_hook_runs_before_auto_team_binding_and_only_once() -> None:
+    server = _AgentWsTestHarness()
+    order: list[str] = []
+
+    async def hook(request) -> None:
+        order.append("hook")
+        request.params["hook_marker"] = "ready"
+
+    async def bind(request) -> None:
+        assert request.params["hook_marker"] == "ready"
+        order.append("binding")
+
+    async def unary(ws, request, send_lock) -> None:
+        order.append("unary")
+
+    server._trigger_before_chat_request_hook = hook
+    server._ensure_auto_team_binding_for_chat = bind
+    server._handle_unary = unary
+    env = e2a_from_agent_fields(
+        request_id="hook-order",
+        channel_id="tui",
+        session_id="session-1",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "hello", "mode": "agent"},
+        is_stream=False,
+        timestamp=0.0,
+    )
+
+    await server.handle_message_for_test(
+        FakeWebSocket(),
+        json.dumps(env.to_dict(), ensure_ascii=False),
+        asyncio.Lock(),
+    )
+
+    assert order == ["hook", "binding", "unary"]

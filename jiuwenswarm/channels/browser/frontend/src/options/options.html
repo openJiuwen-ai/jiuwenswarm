@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JiuwenSwarm — Settings</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      /* JiuwenSwarm default theme (light) — styles/themes/default/light.css */
+      --bg: #f5f7f9;
+      --surface: #ffffff;
+      --border: #e4e4e7;
+      --border-strong: #d4d4d8;
+      --accent: #2563eb;
+      --accent-hover: #3b82f6;
+      --text: #191919;
+      --text-secondary: #777777;
+      --green: #16a34a;
+      color-scheme: light;
+    }
+
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+      font-size: 14px;
+      padding: 32px; max-width: 560px; margin: 0 auto;
+    }
+
+    h1 { font-size: 20px; margin-bottom: 24px; color: var(--text); }
+    h1 span { color: var(--accent); }
+
+    .section {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px; margin-bottom: 16px;
+    }
+    .section h2 { font-size: 13px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 14px; }
+
+    .field { margin-bottom: 14px; }
+    .field:last-child { margin-bottom: 0; }
+    label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+
+    input[type="text"], input[type="number"], select {
+      width: 100%; padding: 8px 10px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); font-size: 14px;
+    }
+    input:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+
+    .row { display: flex; gap: 10px; }
+    .row .field { flex: 1; }
+
+    input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+    .check-row { display: flex; align-items: center; gap: 8px; }
+    .check-row label { margin-bottom: 0; color: var(--text); }
+
+    #save-btn {
+      background: var(--accent); color: #fff; border: none;
+      padding: 10px 24px; border-radius: 6px; cursor: pointer;
+      font-size: 14px; font-weight: 600;
+    }
+    #save-btn:hover { background: var(--accent-hover); }
+
+    #status-msg {
+      display: inline-block; margin-left: 12px;
+      color: var(--green); font-size: 13px;
+      opacity: 0; transition: opacity .3s;
+    }
+    #status-msg.visible { opacity: 1; }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #17181c; --surface: #212226; --border: #33353d;
+        --border-strong: #4a4c55; --text: #e8e8ea; --text-secondary: #9a9ba3;
+        --accent: #5b8def; --accent-hover: #6f9cf1; --green: #4ade80;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1><span>JiuwenSwarm</span> <span data-i18n="options.titleSuffix">— Settings</span></h1>
+
+  <div class="section">
+    <h2 data-i18n="options.serverSection">Server connection</h2>
+    <div class="row">
+      <div class="field">
+        <label for="host" data-i18n="options.host">Host</label>
+        <input id="host" type="text" value="127.0.0.1" placeholder="127.0.0.1" />
+      </div>
+      <div class="field" style="max-width:100px;">
+        <label for="port" data-i18n="options.port">Port</label>
+        <input id="port" type="number" value="19000" min="1" max="65535" />
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2 data-i18n="options.behavior">Behavior</h2>
+    <div class="field">
+      <div class="check-row">
+        <input id="auto-extract" type="checkbox" checked />
+        <label for="auto-extract" data-i18n="options.autoExtract">Auto-extract page context when panel opens</label>
+      </div>
+    </div>
+    <div class="field">
+      <div class="check-row">
+        <input id="auto-summarize" type="checkbox" />
+        <label for="auto-summarize" data-i18n="options.autoSummarize">Ask for a short summary when a page is pinned</label>
+      </div>
+    </div>
+  </div>
+
+  <button id="save-btn" data-i18n="options.save">Save settings</button>
+  <span id="status-msg" data-i18n="options.saved">Saved ✓</span>
+
+  <script type="module" src="index.js"></script>
+</body>
+</html>

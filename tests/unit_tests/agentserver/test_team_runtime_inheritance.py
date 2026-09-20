@@ -14,6 +14,7 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     MemberInfo,
     RuntimeInfo,
     TeamWorkspaceInfo,
+    _build_context_processor_rail,
     build_evolution_llm,
     build_member_rails,
     build_skill_evolution_rail,
@@ -22,6 +23,9 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
 from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig
+from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
+    SymphonyRetrievalCompactProcessorConfig,
+)
 
 
 class _FakeAbilityManager:
@@ -50,6 +54,17 @@ def _make_tool_card(name: str) -> ToolCard:
         name=name,
         description=f"{name} description",
         input_params={"type": "object"},
+    )
+
+
+def test_team_context_processor_rail_includes_symphony_retrieval_compactor() -> None:
+    rail = _build_context_processor_rail({})
+
+    assert rail is not None
+    assert rail._user_processors[-1][0] == "SymphonyRetrievalCompactProcessor"
+    assert isinstance(
+        rail._user_processors[-1][1],
+        SymphonyRetrievalCompactProcessorConfig,
     )
 
 
@@ -109,8 +124,8 @@ async def test_build_member_rails_separates_project_and_team_file_destinations(
     section = builder.sections["team_workspace_report_paths"]
     content = section.render("cn")
     assert f"User project root: `{project_dir}`" in content
-    assert f"Team collaboration workspace: `{team_ws_root}`" in content
-    assert "Do not place final project files in the team collaboration workspace" in content
+    assert f"Team shared workspace (config / internal data): `{team_ws_root}`" in content
+    assert "Do not place final project files in the team shared workspace root" in content
     assert "When worktree isolation is active" in content
 
 

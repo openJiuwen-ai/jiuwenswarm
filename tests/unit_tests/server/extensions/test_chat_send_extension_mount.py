@@ -17,6 +17,7 @@ from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
     CLI_FORWARD_REQ_METHODS,
 )
 from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
+from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
 
@@ -27,7 +28,13 @@ from tests.unit_tests.server.extensions.conftest import (
 )
 
 _LIFECYCLE_METHODS: tuple[tuple[ReqMethod, str], ...] = (
+    (ReqMethod.AGENT_GROUPS_CREATE, "agent_groups.create"),
+    (ReqMethod.AGENT_GROUPS_IMPORT_LOCAL, "agent_groups.import_local"),
+    (ReqMethod.AGENT_GROUPS_INSTALL, "agent_groups.install"),
+    (ReqMethod.AGENT_GROUPS_UNINSTALL, "agent_groups.uninstall"),
     (ReqMethod.AGENT_TEMPLATES_CREATE, "agent_templates.create"),
+    (ReqMethod.AGENT_TEMPLATES_UPDATE, "agent_templates.update"),
+    (ReqMethod.AGENT_TEMPLATES_DELETE, "agent_templates.delete"),
     (ReqMethod.AGENT_TEMPLATES_IMPORT_LOCAL, "agent_templates.import_local"),
     (ReqMethod.AGENT_TEMPLATES_INSTALL, "agent_templates.install"),
     (ReqMethod.AGENT_TEMPLATES_UNINSTALL, "agent_templates.uninstall"),
@@ -38,6 +45,10 @@ _LIFECYCLE_METHODS: tuple[tuple[ReqMethod, str], ...] = (
 )
 
 _CATALOG_METHODS: tuple[ReqMethod, ...] = (
+    ReqMethod.AGENT_GROUPS_LIST,
+    ReqMethod.AGENT_GROUPS_SHOW,
+    ReqMethod.AGENT_GROUPS_FILE_LIST,
+    ReqMethod.AGENT_GROUPS_FILE_READ,
     ReqMethod.AGENT_TEMPLATES_LIST,
     ReqMethod.AGENT_TEMPLATES_SHOW,
     ReqMethod.AGENT_TEMPLATES_FILE_LIST,
@@ -133,6 +144,79 @@ class TestChatSendParamsAndMcpUnion:
         assert iface.compute_chat_send_mcp_needed({"query": "hi", "mcp": ["x"]}) == ["x"]
         assert iface.compute_chat_send_mcp_needed({"query": "hi"}) == []
 
+    def test_restore_chat_equipment_params_from_session_metadata(
+        self, extension_workspace
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import session_metadata
+
+        iface = _iface()
+        session_metadata.save_session_equipment(
+            "saved-session",
+            agent_template_name="alpha",
+            plugin_names=["beta"],
+            mcp=["filesystem"],
+        )
+        params = {"query": "continue"}
+
+        iface.restore_chat_send_equipment_params("saved-session", params)
+
+        assert params == {
+            "query": "continue",
+            "agent_template_name": "alpha",
+            "plugin_names": ["beta"],
+            "mcp": ["filesystem"],
+        }
+
+    def test_compute_mcp_needed_normalizes_hub_asset_uuids(
+        self, extension_workspace
+    ) -> None:
+        from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+            HubInstallRecord,
+            HubInstallStateStore,
+        )
+
+        iface = _iface()
+        asset_id = "expert-asset-uuid"
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "alpha",
+            installed=True,
+            connectors=["feishu"],
+        )
+        HubInstallStateStore(
+            extension_workspace / "plugins" / AGENT_TEMPLATES
+        ).upsert(
+            HubInstallRecord(
+                asset_id=asset_id,
+                package_id="alpha",
+                kind="agent_template",
+                version="1.0.0",
+                checksum_sha256="a" * 64,
+                installed_at="2026-09-02T00:00:00Z",
+            )
+        )
+
+        assert iface.compute_chat_send_mcp_needed(
+            {"agent_template_name": asset_id}
+        ) == ["feishu"]
+
+    @pytest.mark.parametrize(
+        "equipment_params",
+        [
+            {"agent_template_name": "../invalid"},
+            {"plugin_names": ["../invalid"]},
+        ],
+    )
+    def test_compute_mcp_needed_tolerates_malformed_equipment_identifiers(
+        self, equipment_params
+    ) -> None:
+        iface = _iface()
+
+        assert iface.compute_chat_send_mcp_needed(
+            {"mcp": ["custom"], **equipment_params}
+        ) == ["custom"]
+
 
 class TestChatSendMountAndGates:
     """Differential load/unload, skip modes, marketplace and connector gates."""
@@ -181,6 +265,125 @@ class TestChatSendMountAndGates:
         adapter._instance.unload_extension.assert_awaited()
         assert adapter._loaded_agent_template is None
 
+    async def test_omitted_equipment_preserves_current_mounts(self, deep_adapter):
+        adapter = deep_adapter
+        assert await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha", "plugin_names": ["beta"]})
+        ) is None
+
+        adapter._instance.unload_extension.reset_mock()
+        assert await adapter._ensure_chat_extensions(_req({"query": "next turn"})) is None
+
+        adapter._instance.unload_extension.assert_not_awaited()
+        assert adapter._loaded_agent_template is not None
+        assert adapter._loaded_agent_template[0] == "alpha"
+        assert set(adapter._loaded_plugins) == {"beta"}
+
+    async def test_explicit_empty_equipment_unloads_current_mounts(self, deep_adapter):
+        adapter = deep_adapter
+        assert await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha", "plugin_names": ["beta"]})
+        ) is None
+
+        adapter._instance.unload_extension.reset_mock()
+        assert await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "", "plugin_names": []})
+        ) is None
+
+        assert adapter._instance.unload_extension.await_count == 2
+        assert adapter._loaded_agent_template is None
+        assert adapter._loaded_plugins == {}
+
+    async def test_successful_mount_persists_session_equipment(
+        self, deep_adapter, extension_workspace
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import session_metadata
+
+        assert await deep_adapter._ensure_chat_extensions(
+            _req(
+                {
+                    "agent_template_name": "alpha",
+                    "plugin_names": ["beta"],
+                    "mcp": ["filesystem"],
+                },
+                session_id="persisted-equipment",
+            )
+        ) is None
+
+        assert session_metadata.get_session_equipment("persisted-equipment") == {
+            "agent_template_name": "alpha",
+            "plugin_names": ["beta"],
+            "mcp": ["filesystem"],
+        }
+
+    async def test_hub_asset_uuids_are_copied_as_runtime_package_ids_before_gates(
+        self, deep_adapter, extension_workspace
+    ) -> None:
+        from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+            HubInstallRecord,
+            HubInstallStateStore,
+        )
+
+        adapter = deep_adapter
+        expert_uuid = "expert-asset-uuid"
+        plugin_uuid = "plugin-asset-uuid"
+        HubInstallStateStore(
+            extension_workspace / "plugins" / AGENT_TEMPLATES
+        ).upsert(
+            HubInstallRecord(
+                asset_id=expert_uuid,
+                package_id="alpha",
+                kind="agent_template",
+                version="1.0.0",
+                checksum_sha256="a" * 64,
+                installed_at="2026-09-02T00:00:00Z",
+            )
+        )
+        HubInstallStateStore(
+            extension_workspace / "plugins" / PLUGIN_PACKAGES
+        ).upsert(
+            HubInstallRecord(
+                asset_id=plugin_uuid,
+                package_id="beta",
+                kind="plugin",
+                version="1.0.0",
+                checksum_sha256="b" * 64,
+                installed_at="2026-09-02T00:00:00Z",
+            )
+        )
+        request = _req(
+            {"agent_template_name": expert_uuid, "plugin_names": [plugin_uuid]}
+        )
+
+        response = await adapter._ensure_chat_extensions(request)
+
+        assert response is None
+        assert adapter._loaded_agent_template[0] == "alpha"
+        assert set(adapter._loaded_plugins) == {"beta"}
+        assert request.params == {
+            "agent_template_name": expert_uuid,
+            "plugin_names": [plugin_uuid],
+        }
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"agent_template_name": "../invalid"},
+            {"plugin_names": ["../invalid"]},
+        ],
+    )
+    async def test_malformed_equipment_identifier_returns_chat_error(
+        self, deep_adapter, params
+    ) -> None:
+        response = await deep_adapter._ensure_chat_extensions(_req(params))
+
+        assert response is not None
+        assert response.ok is False
+        assert response.payload["event_type"] == "chat.error"
+        assert response.payload["error"]
+        deep_adapter._instance.load_agent_template.assert_not_called()
+        deep_adapter._instance.load_plugin.assert_not_called()
+
     @pytest.mark.parametrize(
         "setup,params,needle",
         [
@@ -218,7 +421,7 @@ class TestChatSendMountAndGates:
 
     async def test_fresh_turn_rejects_equipment_change(self, monkeypatch, deep_adapter):
         adapter = deep_adapter
-        monkeypatch.setattr(adapter, "_is_session_live", lambda _sid: True)
+        monkeypatch.setattr(adapter, "_has_conflicting_inflight_turn", lambda _sid: True)
         resp = await adapter._ensure_chat_extensions(
             _req({"agent_template_name": "alpha"})
         )
@@ -226,15 +429,56 @@ class TestChatSendMountAndGates:
         assert "fresh" in resp.payload["error"]
         adapter._instance.load_agent_template.assert_not_called()
 
-        monkeypatch.setattr(adapter, "_is_session_live", lambda _sid: False)
+        monkeypatch.setattr(adapter, "_has_conflicting_inflight_turn", lambda _sid: False)
         assert await adapter._ensure_chat_extensions(
             _req({"agent_template_name": "alpha"})
         ) is None
-        monkeypatch.setattr(adapter, "_is_session_live", lambda _sid: True)
+        monkeypatch.setattr(adapter, "_has_conflicting_inflight_turn", lambda _sid: True)
         adapter._instance.load_agent_template.reset_mock()
         assert await adapter._ensure_chat_extensions(
             _req({"agent_template_name": "alpha"})
         ) is None
+        adapter._instance.load_agent_template.assert_not_called()
+
+    async def test_reserved_current_task_allows_equipment_change(self, deep_adapter):
+        adapter = deep_adapter
+        adapter._register_session_agent_task("s1")
+        assert adapter._has_conflicting_inflight_turn("s1") is False
+        assert await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha"})
+        ) is None
+        adapter._instance.load_agent_template.assert_awaited()
+
+    async def test_conflicting_inflight_turn_blocks_equipment_change(
+        self, monkeypatch, deep_adapter
+    ):
+        adapter = deep_adapter
+        adapter._active_session_ids["s1"] = 1
+        resp = await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha"})
+        )
+        assert resp is not None and resp.ok is False
+        assert "fresh" in resp.payload["error"]
+        adapter._instance.load_agent_template.assert_not_called()
+
+        adapter._active_session_ids.clear()
+        other = MagicMock()
+        other.done.return_value = False
+        adapter._session_agent_tasks["s1"] = {other}
+        adapter._instance.load_agent_template.reset_mock()
+        resp = await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha"})
+        )
+        assert resp is not None and resp.ok is False
+        adapter._instance.load_agent_template.assert_not_called()
+
+        adapter._session_agent_tasks.clear()
+        monkeypatch.setattr(adapter, "_is_deep_agent_executing_for_session", lambda _sid: True)
+        adapter._instance.load_agent_template.reset_mock()
+        resp = await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha"})
+        )
+        assert resp is not None and resp.ok is False
         adapter._instance.load_agent_template.assert_not_called()
 
     @pytest.mark.parametrize("mode", ["team", "team.plan", "code.team", "auto_harness"])
@@ -249,21 +493,284 @@ class TestChatSendMountAndGates:
 
 
 class TestPackageCatalogReqMethodRouting:
-    """12 catalog RPCs are stateless; install pending payload; uninstall unloads first."""
+    """Catalog RPCs are stateless; install pending payload; uninstall unloads first."""
 
     def test_catalog_methods_are_stateless_and_forwarded(self) -> None:
         assert not hasattr(ReqMethod, "PLUGIN_PACKAGES_TOGGLE")
         for method in _CATALOG_METHODS:
             req = AgentRequest(request_id="r", channel_id="c", req_method=method)
             assert AgentWebSocketServer._is_stateless_method_request(req) is True
-        assert AgentWebSocketServer._is_stateless_method_request(
-            AgentRequest(request_id="r", channel_id="c", req_method=ReqMethod.CHAT_SEND)
-        ) is False
+            assert AgentRuntime._is_stateless_method_request(req) is True
+        chat_request = AgentRequest(
+            request_id="r",
+            channel_id="c",
+            req_method=ReqMethod.CHAT_SEND,
+        )
+        assert AgentWebSocketServer._is_stateless_method_request(chat_request) is False
+        assert AgentRuntime._is_stateless_method_request(chat_request) is False
         for _, value in _LIFECYCLE_METHODS:
             assert value in app_web_handlers._FORWARD_REQ_METHODS
             assert value in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
             assert value in CLI_FORWARD_REQ_METHODS
             assert value in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
+        for forwarded in (
+            "agent_groups.list",
+            "agent_groups.show",
+            "agent_groups.file.list",
+            "agent_groups.file.read",
+        ):
+            assert forwarded in app_web_handlers._FORWARD_REQ_METHODS
+            assert forwarded in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+            assert forwarded in CLI_FORWARD_REQ_METHODS
+            assert forwarded in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
+
+    async def test_agent_group_list_payload(self, monkeypatch) -> None:
+        iface = _iface()
+        expected = [{"name": "technical-proposal-review", "memberCount": 3}]
+        wrapper = AsyncMock(return_value=expected)
+        monkeypatch.setattr(iface.package_manager, "list_agent_groups_with_hub", wrapper)
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req(
+                {"filter": "builtin"},
+                method=ReqMethod.AGENT_GROUPS_LIST,
+            ),
+        )
+
+        assert response.ok is True
+        assert response.payload == {"agentGroups": expected}
+        wrapper.assert_awaited_once_with({"filter": "builtin"})
+
+    async def test_agent_group_show_payload(self, monkeypatch) -> None:
+        iface = _iface()
+        expected = {
+            "name": "technical-proposal-review",
+            "memberCount": 3,
+            "details": "# 技术方案评审专家团",
+        }
+        monkeypatch.setattr(
+            iface.package_manager,
+            "show_agent_group",
+            lambda name: expected if name == "technical-proposal-review" else None,
+        )
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req(
+                {"name": "technical-proposal-review"},
+                method=ReqMethod.AGENT_GROUPS_SHOW,
+            ),
+        )
+
+        assert response.ok is True
+        assert response.payload == {"group": expected}
+
+    @pytest.mark.parametrize(
+        "method,function_name,envelope",
+        [
+            (
+                ReqMethod.AGENT_TEMPLATES_LIST,
+                "list_agent_templates_with_hub",
+                "templates",
+            ),
+            (
+                ReqMethod.PLUGIN_PACKAGES_LIST,
+                "list_plugin_packages_with_hub",
+                "packages",
+            ),
+        ],
+    )
+    async def test_equipment_list_awaits_hub_aware_wrapper(
+        self, monkeypatch, method, function_name, envelope
+    ) -> None:
+        iface = _iface()
+        expected = [{"id": "remote", "source": "hub", "installed": False}]
+        wrapper = AsyncMock(return_value=expected)
+        monkeypatch.setattr(iface.package_manager, function_name, wrapper)
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"filter": "builtin+hub"}, method=method),
+        )
+
+        assert response.ok is True
+        assert response.payload == {envelope: expected}
+        wrapper.assert_awaited_once_with({"filter": "builtin+hub"})
+
+    @pytest.mark.parametrize(
+        "method,function_name,envelope",
+        [
+            (
+                ReqMethod.AGENT_TEMPLATES_SHOW,
+                "show_agent_template_with_hub",
+                "template",
+            ),
+            (
+                ReqMethod.PLUGIN_PACKAGES_SHOW,
+                "show_plugin_package_with_hub",
+                "package",
+            ),
+        ],
+    )
+    async def test_equipment_show_awaits_hub_aware_wrapper(
+        self, monkeypatch, method, function_name, envelope
+    ) -> None:
+        iface = _iface()
+        expected = {"id": "remote", "source": "hub", "installed": False}
+        wrapper = AsyncMock(return_value=expected)
+        monkeypatch.setattr(iface.package_manager, function_name, wrapper)
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"id": "remote"}, method=method),
+        )
+
+        assert response.ok is True
+        assert response.payload == {envelope: expected}
+        wrapper.assert_awaited_once_with("remote")
+
+    @pytest.mark.parametrize(
+        "method,function_name,expected",
+        [
+            (ReqMethod.AGENT_GROUPS_FILE_LIST, "list_agent_group_files", {"tree": []}),
+            (
+                ReqMethod.AGENT_GROUPS_FILE_READ,
+                "read_agent_group_file",
+                {"path": "README.md", "content": "# Group"},
+            ),
+            (ReqMethod.AGENT_GROUPS_CREATE, "create_agent_group", {"id": "group-a"}),
+            (
+                ReqMethod.AGENT_GROUPS_IMPORT_LOCAL,
+                "import_agent_group",
+                {"id": "group-a"},
+            ),
+        ],
+    )
+    async def test_agent_group_definition_payloads(
+        self, monkeypatch, method, function_name, expected
+    ) -> None:
+        iface = _iface()
+        if method == ReqMethod.AGENT_GROUPS_FILE_LIST:
+            wrapper = AsyncMock(return_value=[])
+            monkeypatch.setattr(
+                iface.package_manager, "list_agent_group_files_with_hub", wrapper
+            )
+            params = {"id": "group-a"}
+        elif method == ReqMethod.AGENT_GROUPS_FILE_READ:
+            wrapper = AsyncMock(return_value={"path": "README.md", "content": "# Group"})
+            monkeypatch.setattr(
+                iface.package_manager, "read_agent_group_file_with_hub", wrapper
+            )
+            params = {"id": "group-a", "path": "README.md"}
+        else:
+            monkeypatch.setattr(
+                iface.package_manager, function_name, lambda _params: expected
+            )
+            params = {"id": "group-a"}
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req(params, method=method),
+        )
+        assert response.ok is True
+        assert response.payload == expected
+        if method == ReqMethod.AGENT_GROUPS_FILE_LIST:
+            wrapper.assert_awaited_once_with("group-a")
+        elif method == ReqMethod.AGENT_GROUPS_FILE_READ:
+            wrapper.assert_awaited_once_with("group-a", "README.md")
+
+    async def test_agent_group_failures_expose_stable_codes(self, monkeypatch) -> None:
+        iface = _iface()
+
+        def fail(_params):
+            raise iface.package_manager.AgentGroupPackageError(
+                "duplicate agent group", "AGENT_GROUP_DUPLICATE"
+            )
+
+        monkeypatch.setattr(iface.package_manager, "create_agent_group", fail)
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"id": "group-a"}, method=ReqMethod.AGENT_GROUPS_CREATE),
+        )
+
+        assert response.ok is False
+        assert response.payload == {
+            "error": "duplicate agent group",
+            "code": "AGENT_GROUP_DUPLICATE",
+        }
+
+    @pytest.mark.parametrize(
+        "method,function_name",
+        [
+            (ReqMethod.AGENT_GROUPS_INSTALL, "install_agent_group"),
+            (ReqMethod.AGENT_GROUPS_UNINSTALL, "uninstall_agent_group"),
+        ],
+    )
+    async def test_agent_group_install_uninstall_payload(
+        self, monkeypatch, method, function_name
+    ) -> None:
+        iface = _iface()
+        calls: list[dict] = []
+        if method == ReqMethod.AGENT_GROUPS_INSTALL:
+            wrapper = AsyncMock(side_effect=lambda params: calls.append(params))
+            monkeypatch.setattr(
+                iface.package_manager, "install_agent_group_with_hub", wrapper
+            )
+        else:
+            monkeypatch.setattr(
+                iface.package_manager, function_name, lambda params: calls.append(params)
+            )
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"id": "group-a"}, method=method),
+        )
+        assert response.ok is True
+        assert response.payload == {}
+        assert calls == [{"id": "group-a"}]
+        if method == ReqMethod.AGENT_GROUPS_INSTALL:
+            wrapper.assert_awaited_once_with({"id": "group-a"})
+
+    async def test_agent_template_update_payload(self, monkeypatch) -> None:
+        """agent_templates.update falls through to update_agent_template(params)."""
+        iface = _iface()
+        calls: list[dict] = []
+        monkeypatch.setattr(
+            iface.package_manager,
+            "update_agent_template",
+            lambda params: calls.append(params),
+        )
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"id": "expert-a", "name": "N"}, method=ReqMethod.AGENT_TEMPLATES_UPDATE),
+        )
+        assert response.ok is True
+        assert response.payload == {}
+        assert calls == [{"id": "expert-a", "name": "N"}]
+
+    async def test_agent_template_delete_payload_unloads_first(self, monkeypatch) -> None:
+        """agent_templates.delete unloads live equipment, then deletes the package."""
+        iface = _iface()
+        calls: list[tuple[str, str]] = []
+        deleted: list[dict] = []
+
+        async def _unload(self, kind, package_id):
+            calls.append((kind, package_id))
+
+        monkeypatch.setattr(iface.JiuWenSwarm, "_unload_live_equipment", _unload)
+        monkeypatch.setattr(
+            iface.package_manager,
+            "delete_agent_template",
+            lambda params: deleted.append(params),
+        )
+        owner = iface.JiuWenSwarm.__new__(iface.JiuWenSwarm)
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            owner,
+            _req({"id": "expert-a"}, method=ReqMethod.AGENT_TEMPLATES_DELETE),
+        )
+        assert response.ok is True
+        assert response.payload == {}
+        assert calls == [(AGENT_TEMPLATES, "expert-a")]
+        assert deleted == [{"id": "expert-a"}]
 
     def test_legacy_plugins_routes_stay_separate(self) -> None:
         iface = _iface()
@@ -337,3 +844,66 @@ class TestPackageCatalogReqMethodRouting:
         assert fail_resp.ok is False
         assert "unload boom" in str(fail_resp.payload.get("error", ""))
         assert deleted == []
+
+    async def test_hub_uninstall_unloads_runtime_package_name_before_uuid_delete(
+        self, monkeypatch
+    ) -> None:
+        iface = _iface()
+        asset_id = "482becff9f044ba9bad9caef2e43b539"
+        calls: list[tuple[str, str]] = []
+
+        async def _unload(self, kind, package_id):
+            calls.append((kind, package_id))
+
+        monkeypatch.setattr(iface.JiuWenSwarm, "_unload_live_equipment", _unload)
+        monkeypatch.setattr(
+            iface.package_manager,
+            "resolve_equipment_runtime_id",
+            lambda kind, identifier: "sales-expert",
+        )
+        monkeypatch.setattr(
+            iface.package_manager,
+            "uninstall_equipment_with_notice",
+            lambda kind, params: {},
+        )
+        owner = iface.JiuWenSwarm.__new__(iface.JiuWenSwarm)
+
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            owner,
+            _req(
+                {"id": asset_id},
+                method=ReqMethod.AGENT_TEMPLATES_UNINSTALL,
+            ),
+        )
+
+        assert response.ok is True
+        assert calls == [(AGENT_TEMPLATES, "sales-expert")]
+
+@pytest.mark.asyncio
+async def test_missing_hub_expert_invalidates_catalog_and_returns_code(monkeypatch):
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
+    from jiuwenswarm.server.runtime.marketplace import hub_catalog_cache
+    iface = _iface()
+    monkeypatch.setattr(iface.package_manager, 'show_agent_template_with_hub', AsyncMock(side_effect=HubNotFoundError('missing')))
+    invalidate = MagicMock()
+    monkeypatch.setattr(hub_catalog_cache, 'invalidate_hub_catalog', invalidate)
+    response = await iface.JiuWenSwarm._handle_package_catalog_request(None, _req({'id': 'old-id'}, method=ReqMethod.AGENT_TEMPLATES_SHOW))
+    assert response.ok is False
+    assert response.payload['code'] == 'HUB_ASSET_NOT_FOUND'
+    invalidate.assert_called_once_with('agent_template')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [ReqMethod.PLUGIN_PACKAGES_INSTALL, ReqMethod.AGENT_TEMPLATES_INSTALL])
+async def test_equipment_install_has_total_timeout(monkeypatch, method):
+    iface = _iface()
+    async def expired(operation, *, timeout):
+        assert timeout == 120
+        operation.close()
+        raise TimeoutError()
+    monkeypatch.setattr(iface.asyncio, "wait_for", expired)
+    response = await iface.JiuWenSwarm._handle_package_catalog_request(
+        None, _req({"id": "slow-hub-asset"}, method=method)
+    )
+    assert response.ok is False
+    assert response.payload["error"] == "安装超时，请稍后重试"

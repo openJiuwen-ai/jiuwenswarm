@@ -18,7 +18,7 @@ A **Scheduled Task (Cron Job)** is a mechanism that automatically executes tasks
 | **Natural Language Description** | Describe tasks in natural language, Agent understands and executes |
 | **Channel Delivery** | Results can be pushed to a designated channel (Web, Feishu, WeChat, etc.) |
 | **Auto Wake-up** | Wake up Agent in advance to ensure timely execution |
-| **Team/SwarmFlow** | Support multi-agent collaboration for complex tasks (see [§6](#6-team-mode-and-swarmflow-multi-agent-scheduled-jobs)) |
+| **Team/SwarmFlow** | Support multi-agent collaboration for complex tasks (see [Team mode and SwarmFlow](#team-mode-and-swarmflow-multi-agent-scheduled-jobs)) |
 
 **Typical Use Cases:**
 
@@ -294,13 +294,13 @@ When `targets=tui`, scheduled task results are pushed to all connected TUI windo
 
 - When using `targets=tui`, please keep the TUI online, otherwise you may not receive the execution results
 - It is recommended to set additional push channels (like `web` or IM) as a backup
-- You can view task configuration via `/cron show`, or check historical results through the Web interface
+- You can view task configuration via `/cron show <job_id>`, or check historical results through the Web interface
 
 ---
 
 ## Team mode and SwarmFlow (multi-agent scheduled jobs)
 
-Besides the default single-agent path, cron jobs now support **Team mode**: at wake time the gateway starts multi-agent collaboration and may run a **SwarmFlow** workflow (see [Agent Team](AgentTeam.md) and [TUI SwarmFlow Guide](TUISwarmFlowGuide.md)).
+Besides the default single-agent path, cron jobs now support **Team mode**: at wake time the gateway starts multi-agent collaboration and may run a **SwarmFlow** workflow (see [TUI SwarmFlow Guide](TUISwarmFlowGuide.md); for Team mode basics, see [Agent Team Guide](AgentTeam.md)).
 
 #### Supported execution modes (`mode`)
 

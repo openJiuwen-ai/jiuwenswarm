@@ -44,6 +44,7 @@ from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.swarm.browser_runtime import apply_swarm_browser_settings
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm.providers.code_rails import (
     code_runtime_language,
@@ -232,6 +233,13 @@ def build_swarm_browser_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildCon
     # per-key BrowserInstanceConfig) into spec.factory_kwargs; preserve it and
     # only add the workspace flag.
     spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}
+    # Explicit Chrome settings opt Swarm into managed browsers; single-agent
+    # adapters retain their independent Electron page bindings.
+    if (spec.factory_kwargs or {}).get("settings") is not None:
+        spec.factory_kwargs["settings"] = apply_swarm_browser_settings(
+            spec.factory_kwargs["settings"], ctx.config, inp.session_id,
+            member_id=inp.member_name or inp.role,
+        )
     logger.info(
         "[swarm.browser_agent] member_name=%r role=%r browser_key=%r",
         inp.member_name, inp.role, browser_key,

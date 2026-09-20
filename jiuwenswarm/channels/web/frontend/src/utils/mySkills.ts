@@ -9,19 +9,19 @@
  * activeTab === 'my' 分支的两步过滤，合并成一步（两步顺序可交换：第二步的排除条件不依赖搜索
  * 关键字，跟搜索过滤谁先谁后结果一样）：
  * 1. 候选集：已通过某个插件安装（installedSkillNames 命中）∪ source==='local' ∪
- *    is_builtin===true ∪ is_builtin_source===true。
- * 2. 从候选集里排除：is_builtin_source===true，但既没有通过插件安装、source 也不是 'local'
+ *    is_builtin===true ∪ is_builtin_source===true ∪ installed===true（后端 with_installed 返回）。
+ * 2. 从候选集里排除：is_builtin_source===true，但既没有通过插件安装、后端 installed 也不是 true、source 也不是 'local'
  *    的——这类是"内置技能的源码存在，但用户没真的装它"，不算"我的"。
  */
 export function computeMySkills<
-  T extends { name: string; source?: string; is_builtin?: boolean; is_builtin_source?: boolean },
+  T extends { name: string; source?: string; is_builtin?: boolean; is_builtin_source?: boolean; installed?: boolean },
 >(skills: T[], installedSkillNames: Set<string>): T[] {
   return skills.filter((skill) => {
     const installed = installedSkillNames.has(skill.name);
     const isCandidate =
-      installed || skill.source === 'local' || skill.is_builtin === true || skill.is_builtin_source === true;
+      installed || skill.installed === true || skill.source === 'local' || skill.is_builtin === true || skill.is_builtin_source === true;
     if (!isCandidate) return false;
-    if (skill.is_builtin_source && !installed && skill.source !== 'local') return false;
+    if (skill.is_builtin_source && !installed && skill.installed !== true && skill.source !== 'local') return false;
     return true;
   });
 }
@@ -46,17 +46,17 @@ export function buildInstalledSkillNames(plugins: { skills: (string | { name: st
 
 /** 判定一个技能是否"已安装"——装了某个插件、或本地/项目技能，都算。跟 SkillPanel/index.tsx
  * 原来内联的 isSkillInstalled 同一份规则。 */
-export function isSkillInstalled<T extends { name: string; source?: string }>(
+export function isSkillInstalled<T extends { name: string; source?: string; installed?: boolean }>(
   skill: T,
   installedSkillNames: Set<string>,
 ): boolean {
-  return installedSkillNames.has(skill.name) || skill.source === 'local' || skill.source === 'project';
+  return installedSkillNames.has(skill.name) || skill.installed === true || skill.source === 'local' || skill.source === 'project';
 }
 
 /** computeMySkills 之后，默认只保留"已启用"的技能——跟 SkillPanel/index.tsx "我的技能" tab
  * 默认 mySkillsSubTab==='enabled' 同一口径。手动创建插件的"添加技能"弹窗（CreatePluginPage.tsx）
  * 之前没有这层过滤，会把用户已停用的技能也列出来，2026-08-25 改成共用这份规则。 */
-export function filterEnabledMySkills<T extends { name: string; source?: string; enabled?: boolean }>(
+export function filterEnabledMySkills<T extends { name: string; source?: string; enabled?: boolean; installed?: boolean }>(
   skills: T[],
   installedSkillNames: Set<string>,
 ): T[] {

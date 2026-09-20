@@ -66,7 +66,7 @@ class _FailedCancelAgentClient:
         return SimpleNamespace(
             request_id="interrupt-failed",
             channel_id="tui",
-            ok=False,
+            ok=True,
             payload={
                 "event_type": "chat.interrupt_result",
                 "success": False,
@@ -308,6 +308,24 @@ async def test_web_channel_only_cancels_matching_session() -> None:
     assert not other_session_task.cancelled()
     await asyncio.sleep(0)
     assert len(_FakeAgentClient.sent_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_ordinary_replacement_keeps_develop_cleanup_failure_behavior() -> None:
+    handler = _TestMessageHandler.create_with_client(_FailedCancelAgentClient())
+    old_task = _seed_stream_task(
+        handler,
+        rid="rid-old",
+        channel_id="web",
+        session_id="sess-replace",
+    )
+
+    cancelled = await handler.cancel_stream_tasks_for_channel(
+        _chat_send_message(channel_id="web", session_id="sess-replace")
+    )
+
+    assert cancelled == 1
+    assert old_task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -700,14 +718,14 @@ async def test_disconnect_cancel_marks_request_as_client_disconnect() -> None:
 
 
 @pytest.mark.asyncio
-async def test_disconnect_cancel_reports_agent_cleanup_failure() -> None:
+async def test_disconnect_cancel_preserves_develop_acknowledgement_semantics() -> None:
     handler = _TestMessageHandler.create_with_client(_FailedCancelAgentClient())
 
     cleaned = await handler.cancel_agent_sessions_on_disconnect(
         [("tui", "sess_cleanup_failed")],
     )
 
-    assert cleaned is False
+    assert cleaned is True
 
 
 @pytest.mark.asyncio
@@ -735,6 +753,38 @@ async def test_manual_cancel_does_not_forward_client_disconnect_source() -> None
     assert len(_FakeAgentClient.sent_requests) == 1
     assert "cancel_source" not in _FakeAgentClient.sent_requests[0].params
     assert "_jiuwenswarm_cancel_source" not in _FakeAgentClient.sent_requests[0].channel_context
+
+
+@pytest.mark.asyncio
+async def test_cancel_preserves_runtime_work_mode_and_project_identity() -> None:
+    handler = _TestMessageHandler.create()
+    msg = Message(
+        id="project-cancel",
+        type="req",
+        channel_id="tui",
+        session_id="sess_project",
+        params={
+            "intent": "cancel",
+            "mode": "agent",
+            "work_mode": "code",
+            "project_dir": "D:/workspace/project-a",
+        },
+        timestamp=0.0,
+        ok=True,
+        req_method=ReqMethod.CHAT_CANCEL,
+        is_stream=False,
+    )
+
+    await handler.cancel_agent_work_for_session(msg, "sess_project")
+
+    assert len(_FakeAgentClient.sent_requests) == 1
+    assert _FakeAgentClient.sent_requests[0].params == {
+        "intent": "cancel",
+        "session_id": "sess_project",
+        "mode": "agent",
+        "work_mode": "code",
+        "project_dir": "D:/workspace/project-a",
+    }
 
 
 @pytest.mark.asyncio

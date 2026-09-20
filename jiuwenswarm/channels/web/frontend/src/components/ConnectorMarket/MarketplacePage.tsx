@@ -1,26 +1,33 @@
+import SimpleSelect from '../CronPanel/SimpleSelect';
+import { InstallationFilterSelect, matchesInstallation, type InstallationFilter } from '../marketplace/InstallationFilterSelect';
+import { catalogCacheOf } from '../../features/catalogCache';
+import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Search, Plus, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { localizedText } from '../../types/pluginPackage';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { MarketCard } from './MarketCard';
 import { MyMarketCard } from './MyMarketCard';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import type { ConnectorConnectResponse } from '../../types/connector';
-import { deriveCardState, derivePluginCardState, deriveMcpAvailability, cardStateToStatusFilter } from './mcpState';
+import {
+  deriveCardState,
+  derivePluginCardState,
+  deriveMcpAvailability,
+  nextMcpQuickAction,
+} from './mcpState';
 import { useClickOutside } from './useClickOutside';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
-import SimpleSelect from '../CronPanel/SimpleSelect';
+import { PageToolbarSearch, PageHeader, CategoryTabs, Tabs } from '../ui';
 
 export type MarketKind = 'plugin' | 'mcp';
 export type TopTab = MarketKind | 'my';
 // 状态筛选：'pending' 对应不可用态（插件未安装或MCP未连接/绑定MCP未连接），'available' 对应
 // 可用态。2026-08-15 去除全局启用/禁用后不再有第三个"disabled"筛选项，见
 // state-model-rectification-v2-remove-global-toggle.md。
-type StatusFilter = 'all' | 'pending' | 'available';
 
 interface MarketplacePageProps {
   topTab: TopTab;
@@ -37,6 +44,7 @@ interface MarketplacePageProps {
   onCreateWithSkill: () => void;
   onCreateWithUpload: () => void;
   onRegisterCustomMcp: () => void;
+  onOpenApplicationPlugins: () => void;
 }
 
 // 2026-08-07：backend-requests.md 需求8 已解决——plugin_packages.list/show 现在真的下发单值
@@ -52,13 +60,6 @@ interface MarketplacePageProps {
 // CATEGORIES` 这个写死的枚举已从 types/connector.ts 删除。
 const CATEGORY_TOP_N = 6;
 
-// 分页：插件/MCP 数量多了之后单页平铺会很长，这里借鉴 CronPanel/index.tsx 定时任务列表的
-// 纯前端本地分页方案——connector.list / plugin_packages.list 目前也是一次性返回全部数据、
-// 不支持 offset/limit，跟 cron.job.list 是同样的限制，所以分页逻辑（每页条数可选、页码越界
-// 钳制、筛选变化重置到第1页）照抄那一份，不是重新设计。
-// PAGE_SIZE_ALL 是"全部"选项的哨兵值——不用 Infinity，是因为 (currentPage-1)*pageSize 在
-// currentPage=1 时会算出 0*Infinity=NaN（IEEE754），slice(NaN, NaN) 直接坏掉；用 -1
-// 单独判断分支，不参与那套乘法，规避这个坑。
 const PAGE_SIZE_ALL = -1;
 const PAGE_SIZE_OPTIONS = [30, 50, PAGE_SIZE_ALL];
 const DEFAULT_PAGE_SIZE = 30;
@@ -86,10 +87,21 @@ interface PaginationBarProps {
   onPageSizeChange: (size: number) => void;
 }
 
-function PaginationBar({ currentPage, totalPages, pageSize, totalCount, onPageChange, onPageSizeChange }: PaginationBarProps) {
+function PaginationBar({
+  currentPage,
+  totalPages,
+  pageSize,
+  totalCount,
+  onPageChange,
+  onPageSizeChange,
+}: PaginationBarProps) {
   const { t } = useTranslation();
   const pageSizeOptions = useMemo(
-    () => PAGE_SIZE_OPTIONS.map((n) => ({ value: String(n), label: n === PAGE_SIZE_ALL ? t('connectorMarket.pagination.all') : String(n) })),
+    () =>
+      PAGE_SIZE_OPTIONS.map((n) => ({
+        value: String(n),
+        label: n === PAGE_SIZE_ALL ? t('connectorMarket.pagination.all') : String(n),
+      })),
     [t],
   );
   const pages = useMemo(() => buildPageList(currentPage, totalPages), [currentPage, totalPages]);
@@ -98,7 +110,10 @@ function PaginationBar({ currentPage, totalPages, pageSize, totalCount, onPageCh
   const rangeEnd = showAll ? totalCount : Math.min(currentPage * pageSize, totalCount);
 
   return (
-    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-[13px] text-text-muted">
+    <div
+      className="mt-4 flex flex-wrap items-center justify-between gap-3 text-[13px] text-text-muted"
+      data-testid="connector-market-pagination"
+    >
       <div className="flex items-center gap-2">
         <span>{t('connectorMarket.pagination.pageSize')}</span>
         <SimpleSelect
@@ -108,7 +123,9 @@ function PaginationBar({ currentPage, totalPages, pageSize, totalCount, onPageCh
           className="w-20"
           menuPlacement="up"
         />
-        <span>{t('connectorMarket.pagination.rangeInfo', { start: rangeStart, end: rangeEnd, total: totalCount })}</span>
+        <span data-testid="connector-market-pagination-range-info">
+          {t('connectorMarket.pagination.rangeInfo', { start: rangeStart, end: rangeEnd, total: totalCount })}
+        </span>
       </div>
       {totalPages > 1 && (
         <div className="flex items-center gap-1">
@@ -118,6 +135,7 @@ function PaginationBar({ currentPage, totalPages, pageSize, totalCount, onPageCh
             onClick={() => onPageChange(currentPage - 1)}
             aria-label={t('connectorMarket.pagination.prev') ?? undefined}
             className="flex h-7 w-7 items-center justify-center rounded-md border border-border text-text hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+            data-testid="connector-market-pagination-prev"
           >
             <ChevronLeft size={14} />
           </button>
@@ -131,6 +149,8 @@ function PaginationBar({ currentPage, totalPages, pageSize, totalCount, onPageCh
                 key={p}
                 type="button"
                 onClick={() => onPageChange(p)}
+                data-testid="connector-market-pagination-page"
+                data-variant={p}
                 className={`flex h-7 min-w-7 items-center justify-center rounded-md px-1.5 text-[13px] ${
                   p === currentPage ? 'bg-text font-bold text-text-inverse' : 'text-text hover:bg-bg-hover'
                 }`}
@@ -145,6 +165,7 @@ function PaginationBar({ currentPage, totalPages, pageSize, totalCount, onPageCh
             onClick={() => onPageChange(currentPage + 1)}
             aria-label={t('connectorMarket.pagination.next') ?? undefined}
             className="flex h-7 w-7 items-center justify-center rounded-md border border-border text-text hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+            data-testid="connector-market-pagination-next"
           >
             <ChevronRight size={14} />
           </button>
@@ -166,23 +187,25 @@ export function MarketplacePage({
   onCreateWithSkill,
   onCreateWithUpload,
   onRegisterCustomMcp,
+  onOpenApplicationPlugins,
 }: MarketplacePageProps) {
   const { t, i18n } = useTranslation();
   const [category, setCategory] = useState<string>('all');
   const [pluginCategory, setPluginCategory] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [query, setQuery] = useState('');
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
   useClickOutside(createMenuRef, () => setCreateMenuOpen(false));
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  // 分页状态：只有一个网格在展示（四个渲染分支互斥），所以只需要一份 currentPage/pageSize，
-  // 不用按 topTab/myKind 分别维护。
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [currentPage, setCurrentPage] = useState(1);
 
-  const [tokenTarget, setTokenTarget] = useState<{ name: string; displayName: string; icon?: string; response: ConnectorConnectResponse } | null>(null);
+  const [tokenTarget, setTokenTarget] = useState<{
+    name: string;
+    displayName: string;
+    icon?: string;
+    response: ConnectorConnectResponse;
+  } | null>(null);
   const [authTarget, setAuthTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
 
   // connectors：合并视图，按 name 查找/枚举全部已知 MCP 用（mcpCardStates、handleConnectorQuickAdd
@@ -193,6 +216,7 @@ export function MarketplacePage({
   const builtinConnectors = useConnectorStore((s) => s.builtinConnectors);
   const myConnectors = useConnectorStore((s) => s.myConnectors);
   const connectAction = useConnectorStore((s) => s.connect);
+  const installConnector = useConnectorStore((s) => s.installPackage);
   const busyMap = useConnectorStore((s) => s.busyMap);
   const connectorIsLoading = useConnectorStore((s) => s.isLoading);
 
@@ -202,6 +226,8 @@ export function MarketplacePage({
   // 传 undefined 拿混合列表、靠前端 pkg.source 二次过滤是遗留写法，2026-08-19 对齐 MCP 侧改掉。
   const packages = usePluginPackageStore((s) => s.packages);
   const localPackages = usePluginPackageStore((s) => s.localPackages);
+  const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
+  const pluginInstallingIds = usePluginPackageStore(s => s.installingIds);
   const installed = usePluginPackageStore((s) => s.installed);
   const pluginConnectionStateMap = usePluginPackageStore((s) => s.connectionStateMap);
   const installPlugin = usePluginPackageStore((s) => s.install);
@@ -214,17 +240,38 @@ export function MarketplacePage({
   const mcpCardStates = useMemo(() => {
     const map: Record<string, ReturnType<typeof deriveCardState>> = {};
     for (const c of connectors) {
-      map[c.name] = deriveCardState({ connectionState: c.connectionState, busy: busyMap[c.name] });
+      map[c.runtimePackageName] = deriveCardState({
+        connectionState: c.connectionState,
+        busy: busyMap[c.id] ?? busyMap[c.runtimePackageName],
+      });
     }
     return map;
   }, [connectors, busyMap]);
 
-  async function handleConnectorQuickAdd(name: string) {
-    const connector = connectors.find((c) => c.name === name);
+  async function handleConnectorQuickAdd(identifier: string) {
+    const connector = connectors.find((c) => c.id === identifier || c.runtimePackageName === identifier);
     // 已连接不重复 connect；connecting 态也跳过（正在连）。
     if (!connector) return;
-    const cs = mcpCardStates[name];
-    if (cs === 'connected' || cs === 'connecting') return;
+    const cs = mcpCardStates[connector.runtimePackageName];
+    const action = nextMcpQuickAction(connector.installed, cs);
+    if (action === 'install') {
+      const response = await installConnector(connector.id);
+      const connectResult = response?.connect;
+      const connectName = connectResult?.name ?? connector.runtimePackageName;
+      if (connectResult?.credentialsRequired) {
+        setTokenTarget({
+          name: connectName,
+          displayName: connector.displayName,
+          icon: connector.icon ?? undefined,
+          response: connectResult,
+        });
+      } else if (connectResult?.type === 'auth_required') {
+        setAuthTarget({ name: connectName, response: connectResult });
+      }
+      return;
+    }
+    if (action !== 'connect') return;
+    const name = connector.runtimePackageName;
     const response = await connectAction(name);
     if (!response) return;
     if (response.credentialsRequired) {
@@ -248,13 +295,23 @@ export function MarketplacePage({
   // id 起的——原因同 PluginDetailPage.tsx 的 pendingUseAfterConnectRef：onAllConnected 里要读到
   // 的是"发起连接续跑那一刻"的 id，用 state 会有同一渲染周期内 setState 未生效的陈旧闭包问题。
   const pendingInstallIdRef = useRef<string | null>(null);
-  const pluginInstallFlow = usePendingConnectorFlow(() => {
-    const id = pendingInstallIdRef.current;
-    if (!id) return;
-    pendingInstallIdRef.current = null;
-    clearPluginInstallPending(id);
-    void installPlugin(id);
-  });
+  const pluginInstallFlow = usePendingConnectorFlow(
+    () => {
+      const id = pendingInstallIdRef.current;
+      if (!id) return;
+      pendingInstallIdRef.current = null;
+      clearPluginInstallPending(id);
+      void installPlugin(id);
+    },
+    () => {
+      // 依赖 connector 自动连接失败/被取消：清掉这条 pending 记录。不清的话下面这个 effect 会
+      // 立刻再匹配到它、又 start() 一遍——尤其是以前 deps 里带着 pluginInstallFlow.active 时，
+      // flow 一结束 active 变 false 就重新触发，直接死循环狂打 mcp.connect（2026-08-31 修）。
+      const id = pendingInstallIdRef.current;
+      pendingInstallIdRef.current = null;
+      if (id) clearPluginInstallPending(id);
+    },
+  );
 
   useEffect(() => {
     if (pluginInstallFlow.active) return;
@@ -263,8 +320,11 @@ export function MarketplacePage({
     const [id, names] = entry;
     pendingInstallIdRef.current = id;
     pluginInstallFlow.start(names!);
+    // deps 不放 pluginInstallFlow.active：flow 成功/失败收尾都会改写 pluginInstallPendingMap
+    // （onAllConnected→clearPluginInstallPending、onAborted→clearPluginInstallPending），靠 map
+    // 变化重新驱动就够了；放 active 反而会在 flow 中止时立刻重启，造成死循环。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pluginInstallPendingMap, pluginInstallFlow.active]);
+  }, [pluginInstallPendingMap]);
 
   // 分类 tab 只在"MCP广场"用，统计源直接是 builtinConnectors（filter=builtin 的结果，恒为
   // built_in），不再需要按 source 过滤——后端已经按 filter 分好了。
@@ -275,7 +335,10 @@ export function MarketplacePage({
       if (!cat) continue;
       counts.set(cat, (counts.get(cat) ?? 0) + 1);
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([key]) => key).slice(0, CATEGORY_TOP_N);
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([key]) => key)
+      .slice(0, CATEGORY_TOP_N);
   }, [builtinConnectors]);
 
   const mcpTopCategorySet = useMemo(() => new Set(mcpTopCategories), [mcpTopCategories]);
@@ -283,10 +346,10 @@ export function MarketplacePage({
   const categoryTabs = useMemo(() => {
     const hasOther = builtinConnectors.some((connector) => !mcpTopCategorySet.has(connector.category.trim()));
     const tabs = [
-      { key: 'all', label: t('connectorMarket.categories.all') },
-      ...mcpTopCategories.map((key) => ({ key, label: key })),
+      { value: 'all', label: t('connectorMarket.categories.all') },
+      ...mcpTopCategories.map((key) => ({ value: key, label: t(`connectorMarket.categories.${key}`, key) })),
     ];
-    if (hasOther) tabs.push({ key: 'other', label: t('connectorMarket.categories.other') });
+    if (hasOther) tabs.push({ value: 'other', label: t('connectorMarket.categories.other') });
     return tabs;
   }, [builtinConnectors, mcpTopCategories, mcpTopCategorySet, t]);
 
@@ -297,7 +360,10 @@ export function MarketplacePage({
       if (!cat) continue;
       counts.set(cat, (counts.get(cat) ?? 0) + 1);
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([key]) => key).slice(0, CATEGORY_TOP_N);
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([key]) => key)
+      .slice(0, CATEGORY_TOP_N);
   }, [packages]);
 
   const pluginTopCategorySet = useMemo(() => new Set(pluginTopCategories), [pluginTopCategories]);
@@ -305,10 +371,10 @@ export function MarketplacePage({
   const pluginCategoryTabs = useMemo(() => {
     const hasOther = packages.some((pkg) => !pluginTopCategorySet.has(pkg.category.trim()));
     const tabs = [
-      { key: 'all', label: t('connectorMarket.categories.all') },
-      ...pluginTopCategories.map((key) => ({ key, label: key })),
+      { value: 'all', label: t('connectorMarket.categories.all') },
+      ...pluginTopCategories.map((key) => ({ value: key, label: t(`connectorMarket.categories.${key}`, key) })),
     ];
-    if (hasOther) tabs.push({ key: 'other', label: t('connectorMarket.categories.other') });
+    if (hasOther) tabs.push({ value: 'other', label: t('connectorMarket.categories.other') });
     return tabs;
   }, [packages, pluginTopCategories, pluginTopCategorySet, t]);
 
@@ -321,20 +387,26 @@ export function MarketplacePage({
     // 现在会同时出现在两个 tab 里。分类筛选（category）只在"广场"视角适用，"我的"没有分类 tab。
     const base = topTab === 'my' ? myConnectors : builtinConnectors;
     return base.filter((connector) => {
+      if (!matchesInstallation(connector.installed, installationFilter)) return false;
       if (topTab !== 'my' && category !== 'all') {
         const cat = connector.category.trim();
         if (category === 'other' ? mcpTopCategorySet.has(cat) : cat !== category) return false;
       }
-      if (statusFilter !== 'all') {
-        // 卡片态 → 筛选态：connected→available、idle/connecting/error→pending（连接中/连失败
-        // 都尚未可用）。见 mcpState.ts cardStateToStatusFilter。
-        const cs = mcpCardStates[connector.name];
-        if (cardStateToStatusFilter(cs) !== statusFilter) return false;
-      }
+
       if (q && !connector.displayName.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [builtinConnectors, myConnectors, topTab, myKind, category, mcpTopCategorySet, statusFilter, query, mcpCardStates]);
+  }, [
+    builtinConnectors,
+    myConnectors,
+    topTab,
+    myKind,
+    category,
+    mcpTopCategorySet,
+    query,
+    mcpCardStates,
+    installationFilter,
+  ]);
 
   const filteredPlugins = useMemo(() => {
     if (topTab === 'my' ? myKind !== 'plugin' : topTab !== 'plugin') return [];
@@ -344,25 +416,40 @@ export function MarketplacePage({
     // 筛选（category）只在"广场"视角适用，"我的"没有分类 tab。
     const base = topTab === 'my' ? localPackages : packages;
     return base.filter((pkg) => {
+      if (!matchesInstallation(!!installed[pkg.id], installationFilter)) return false;
       if (topTab !== 'my' && pluginCategory !== 'all') {
         const cat = pkg.category.trim();
         if (pluginCategory === 'other' ? pluginTopCategorySet.has(cat) : cat !== pluginCategory) return false;
       }
-      if (statusFilter !== 'all') {
-        // 插件侧用 derivePluginCardState 派生（installed&&connected→connected，否则→idle），
-        // 再用 cardStateToStatusFilter 归到筛选态，和 MCP 侧统一。插件恒不会进 connecting/error。
-        const cs = derivePluginCardState(!!installed[pkg.id], (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected');
-        if (cardStateToStatusFilter(cs) !== statusFilter) return false;
-      }
+
       const title = localizedText(pkg.displayName, i18n.language);
       if (q && !title.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [packages, localPackages, topTab, myKind, pluginCategory, pluginTopCategorySet, statusFilter, installed, pluginConnectionStateMap, query, i18n.language]);
+  }, [
+    installationFilter,
+    packages,
+    localPackages,
+    topTab,
+    myKind,
+    pluginCategory,
+    pluginTopCategorySet,
+    installed,
+    pluginConnectionStateMap,
+    query,
+    i18n.language,
+  ]);
 
   // 当前实际展示的那份列表（四个渲染分支互斥，取其一即可），分页条/总数/isEmpty 都基于它算。
   const activeKindForEmpty: MarketKind = topTab === 'my' ? myKind : topTab === 'mcp' ? 'mcp' : 'plugin';
-  const activeList = topTab === 'my' ? (myKind === 'mcp' ? filteredConnectors : filteredPlugins) : topTab === 'mcp' ? filteredConnectors : filteredPlugins;
+  const activeList =
+    topTab === 'my'
+      ? myKind === 'mcp'
+        ? filteredConnectors
+        : filteredPlugins
+      : topTab === 'mcp'
+        ? filteredConnectors
+        : filteredPlugins;
   const isEmpty = activeList.length === 0;
   // 列表为空时要分清"数据还没回来"和"回来了但真的没有"——首次/切 tab 的非静默 loadList() 会把
   // 对应 store 的 isLoading 短暂置 true，10s 静默轮询不影响它（见两个 store 的 loadList 实现），
@@ -374,7 +461,7 @@ export function MarketplacePage({
   // "搜索内容变化时重置回第 1 页"）。
   useEffect(() => {
     setCurrentPage(1);
-  }, [topTab, myKind, category, pluginCategory, statusFilter, query]);
+  }, [topTab, myKind, category, pluginCategory, query, installationFilter]);
 
   const totalPages = pageSize === PAGE_SIZE_ALL ? 1 : Math.max(1, Math.ceil(activeList.length / pageSize));
 
@@ -399,229 +486,248 @@ export function MarketplacePage({
   }
 
   return (
-    <div ref={scrollRef} className="relative h-full overflow-y-auto bg-card px-8 py-6">
-      <div className="mb-5">
-        <h1 className="text-[18px] font-semibold leading-7 text-text">{t('connectorMarket.title')}</h1>
-        <p className="mt-0.5 text-[12px] leading-[18px] text-text-muted">{t('connectorMarket.subtitle')}</p>
-      </div>
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="connector-market-marketplace">
+      {/* 固定区（header/toolbar/分类 tab）：page-shell 限宽 1400px 居中，与下方滚动列共用内容线 */}
+      <div className="page-shell flex-none">
+        <PageHeader
+          title={t('connectorMarket.title')}
+          subtitle={t('connectorMarket.subtitle')}
+          titleTestId="connector-market-marketplace-title"
+          subtitleTestId="connector-market-marketplace-subtitle"
+        />
 
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-6">
-          {(['plugin', 'mcp', 'my'] as const).map((tab) => {
-            const active = topTab === tab;
-            return (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => onTopTabChange(tab)}
-                className={`relative pb-2 text-[14px] leading-[22px] ${active ? 'font-semibold text-text' : 'font-normal text-text'}`}
-              >
-                {t(`connectorMarket.tabs.${tab}`)}
-                {active && <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-full bg-text" />}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          <div className="flex items-center gap-1">
-            {(['all', 'available', 'pending'] as const).map((key) => {
-              const active = statusFilter === key;
-              return (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setStatusFilter(key)}
-                  className={`h-8 shrink-0 whitespace-nowrap px-3 text-[13px] font-medium ${
-                    active ? 'rounded-[8px] bg-secondary text-text' : 'text-text-muted hover:text-text'
-                  }`}
-                >
-                  {t(`connectorMarket.statusFilter.${key}`)}
-                </button>
-              );
-            })}
-          </div>
-          <div className="relative w-80">
-            <Search size={14} strokeWidth={2} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--color-text-placeholder)]" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={t(`connectorMarket.search.${topTab}`)}
-              className="h-8 w-full rounded-lg border border-border bg-card pl-8 pr-3 text-[12px] leading-[18px] text-text placeholder:text-[color:var(--color-text-placeholder)] outline-none focus:border-border-hover"
+        <div className="page-toolbar" data-testid="page-toolbar">
+          <div className="flex min-h-[34px] items-stretch">
+            {/* "应用插件"不是可选中页签：作为 Tabs 动作项混排（onClick 直连，不经过 onChange、
+              永远无选中态），交互与原独立按钮一致 */}
+            <Tabs
+              role="tablist"
+              wrapperTestId="connector-market-tabs"
+              itemTestId="connector-market-tab"
+              className="text-base"
+              value={topTab}
+              onChange={onTopTabChange}
+              items={[
+                ...(['plugin', 'mcp', 'my'] as const).map((tab) => ({
+                  value: tab,
+                  label: t(tab === 'my' ? 'connectorMarket.tabs.my' : `connectorMarket.tabs.${tab}Market`),
+                })),
+                {
+                  value: 'application-plugins',
+                  label: t('connectorMarket.tabs.applicationPlugins'),
+                  onClick: onOpenApplicationPlugins,
+                },
+              ]}
             />
           </div>
 
-          {topTab === 'my' && (
-            <div className="relative" ref={createMenuRef}>
-              <button
-                type="button"
-                onClick={() => setCreateMenuOpen((v) => !v)}
-                className="flex h-8 shrink-0 items-center gap-1 rounded-lg bg-text px-3 text-[12px] text-text-inverse"
-              >
-                <Plus size={13} />
-                {t('connectorMarket.create.menuLabel')}
-                <ChevronDown size={13} />
-              </button>
-              {createMenuOpen && (
-                <div className="absolute right-0 top-9 z-20 w-40 rounded-lg border border-border bg-card py-1 shadow-lg">
-                  {myKind === 'plugin' ? (
-                    <>
-                      <MenuItem label={t('connectorMarket.create.manual')} onClick={() => { setCreateMenuOpen(false); onCreateManual(); }} />
-                      <MenuItem label={t('connectorMarket.create.withSkill')} onClick={() => { setCreateMenuOpen(false); onCreateWithSkill(); }} />
-                      <MenuItem label={t('connectorMarket.create.withUpload')} onClick={() => { setCreateMenuOpen(false); onCreateWithUpload(); }} />
-                    </>
-                  ) : (
-                    <MenuItem label={t('connectorMarket.create.registerMcp')} onClick={() => { setCreateMenuOpen(false); onRegisterCustomMcp(); }} />
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            <InstallationFilterSelect value={installationFilter} onChange={value => { setInstallationFilter(value); setCurrentPage(1); }} />
+            <PageToolbarSearch
+              wrapperTestId="connector-market-search"
+              inputTestId="connector-market-search-input"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onClear={() => setQuery('')}
+              placeholder={topTab === 'my' ? (i18n.language.startsWith('zh') ? (myKind === 'plugin' ? '搜索我的插件' : '搜索我的连接器') : (myKind === 'plugin' ? 'Search my plugins' : 'Search my connectors')) : t(`connectorMarket.search.${topTab}`)}
+            />
+
+            {topTab === 'my' && (
+              <div className="relative" ref={createMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setCreateMenuOpen((v) => !v)}
+                  data-testid="connector-market-create-menu"
+                  className="flex h-8 shrink-0 items-center gap-1 rounded-lg bg-text px-3 text-[12px] text-text-inverse"
+                >
+                  <Plus size={13} />
+                  {t('connectorMarket.create.menuLabel')}
+                  <ChevronDown size={13} />
+                </button>
+                {createMenuOpen && (
+                  <div className="dropdown-menu" role="menu" data-testid="connector-market-create-menu-popover">
+                    {myKind === 'plugin' ? (
+                      <>
+                        <MenuItem
+                          label={t('connectorMarket.create.manual')}
+                          onClick={() => {
+                            setCreateMenuOpen(false);
+                            onCreateManual();
+                          }}
+                        />
+                        <MenuItem
+                          label={t('connectorMarket.create.withSkill')}
+                          onClick={() => {
+                            setCreateMenuOpen(false);
+                            onCreateWithSkill();
+                          }}
+                        />
+                        <MenuItem
+                          label={t('connectorMarket.create.withUpload')}
+                          onClick={() => {
+                            setCreateMenuOpen(false);
+                            onCreateWithUpload();
+                          }}
+                        />
+                      </>
+                    ) : (
+                      <MenuItem
+                        label={t('connectorMarket.create.registerMcp')}
+                        onClick={() => {
+                          setCreateMenuOpen(false);
+                          onRegisterCustomMcp();
+                        }}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {topTab === 'mcp' && categoryTabs.length > 1 && (
-        <div className="mb-5 flex flex-wrap items-center">
-          {categoryTabs.map((tab, index) => (
-            <span key={tab.key} className="flex items-center">
-              {index > 0 && <span className="mx-3 text-[14px] leading-[22px] text-border-strong">|</span>}
-              <button
-                type="button"
-                onClick={() => setCategory(tab.key)}
-                className={`text-[14px] leading-[22px] ${category === tab.key ? 'font-semibold text-text' : 'font-normal text-text-muted'}`}
-              >
-                {tab.label}
-              </button>
-            </span>
-          ))}
+      {/* 2026-08-29 MCP 广场目前都不带 tag（category 多为空），分类 tab 行先隐藏——去掉 false 即恢复 */}
+      {false && topTab === 'mcp' && categoryTabs.length > 1 && (
+        <div className="page-shell">
+          <CategoryTabs
+            items={categoryTabs}
+            value={category}
+            onChange={setCategory}
+            wrapperTestId="connector-market-category-tabs"
+            itemTestId="connector-market-category-tab"
+          />
         </div>
       )}
 
       {topTab === 'plugin' && pluginCategoryTabs.length > 1 && (
-        <div className="mb-5 flex flex-wrap items-center">
-          {pluginCategoryTabs.map((tab, index) => (
-            <span key={tab.key} className="flex items-center">
-              {index > 0 && <span className="mx-3 text-[14px] leading-[22px] text-border-strong">|</span>}
-              <button
-                type="button"
-                onClick={() => setPluginCategory(tab.key)}
-                className={`text-[14px] leading-[22px] ${pluginCategory === tab.key ? 'font-semibold text-text' : 'font-normal text-text-muted'}`}
-              >
-                {tab.label}
-              </button>
-            </span>
-          ))}
+        <div className="page-shell">
+          <CategoryTabs
+            items={pluginCategoryTabs}
+            value={pluginCategory}
+            onChange={setPluginCategory}
+            wrapperTestId="connector-market-plugin-category-tabs"
+            itemTestId="connector-market-plugin-category-tab"
+          />
         </div>
       )}
 
       {topTab === 'my' && (
-        <div className="mb-5 flex flex-wrap items-center">
-          {(['plugin', 'mcp'] as const).map((kind, index) => (
-            <span key={kind} className="flex items-center">
-              {index > 0 && <span className="mx-3 text-[14px] leading-[22px] text-border-strong">|</span>}
-              <button
-                type="button"
-                onClick={() => onMyKindChange(kind)}
-                className={`text-[14px] leading-[22px] ${myKind === kind ? 'font-semibold text-text' : 'font-normal text-text-muted'}`}
-              >
-                {t(`connectorMarket.tabs.${kind}`)}
-              </button>
-            </span>
-          ))}
+        <div className="page-shell">
+          <CategoryTabs<MarketKind>
+            items={[
+              { value: 'plugin', label: t('connectorMarket.tabs.plugin') },
+              { value: 'mcp', label: t('connectorMarket.tabs.mcp') },
+            ]}
+            value={myKind}
+            onChange={onMyKindChange}
+            wrapperTestId="connector-market-my-kind-tabs"
+            itemTestId="connector-market-my-kind-tab"
+          />
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {topTab === 'my' ? (
-          myKind === 'mcp' ? (
-            paginatedConnectors.map((connector) => {
-              const cs = mcpCardStates[connector.name];
-              // "我的MCP"卡片列表可达性：customize（我的MCP）恒可达，built_in 一旦不是从未
-              // 连接过的 idle 态也可达——见 mcpState.ts deriveMcpAvailability。
-              const { installed: mcpInstalled } = deriveMcpAvailability(connector.source, cs);
-              return (
-                <MyMarketCard
-                  key={connector.name}
-                  title={connector.displayName}
-                  description={connector.description ?? ''}
-                  avatar={getSkillAvatar(connector.displayName)}
-                  iconUrl={connector.icon ?? undefined}
-                  state={cs}
-                  busyKind={busyMap[connector.name]}
-                  onOpenDetail={() => onOpenConnectorDetail(connector.name)}
-                  canOpenDetail={mcpInstalled}
-                  onUse={() => onUse({ kind: 'mcp', id: connector.name })}
-                  onQuickInstall={cs === 'connected' ? undefined : () => handleConnectorQuickAdd(connector.name)}
-                />
-              );
-            })
-          ) : (
-            paginatedPlugins.map((pkg) => {
-              const pluginInstalled = !!installed[pkg.id];
-              const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
-              // plugin_packages.list 不下发 avatar（只有 show 详情才有），卡片层级没有真实图标
-              // 可用，不传 iconUrl，EntityAvatar 会直接走生成的首字符色块。
-              return (
-                <MyMarketCard
-                  key={pkg.id}
-                  title={localizedText(pkg.displayName, i18n.language)}
-                  description={localizedText(pkg.displayDescription, i18n.language)}
-                  avatar={getSkillAvatar(localizedText(pkg.displayName, i18n.language))}
-                  state={derivePluginCardState(pluginInstalled, pluginConnected)}
-                  onOpenDetail={() => onOpenPluginDetail(pkg.id)}
-                  onUse={() => onUse({ kind: 'plugin', id: pkg.id })}
-                  // 触发条件要跟着卡片态走，不能只看 installed——"已安装但 MCP 未连接"这个
-                  // 组合下 derivePluginCardState 也会算出 'idle'（见该函数注释），"+"按钮同样
-                  // 要能点（点击后重新触发安装，对应按钮矩阵"已安装+未连接：+号"这一格）。
-                  onQuickInstall={derivePluginCardState(pluginInstalled, pluginConnected) === 'connected' ? undefined : () => installPlugin(pkg.id)}
-                />
-              );
-            })
-          )
-        ) : topTab === 'mcp' ? (
-          paginatedConnectors.map((connector) => {
-            const cs = mcpCardStates[connector.name];
-            const { installed: mcpInstalled } = deriveMcpAvailability(connector.source, cs);
-            return (
-              <MarketCard
-                key={connector.name}
-                title={connector.displayName}
-                description={connector.description ?? ''}
-                avatar={getSkillAvatar(connector.displayName)}
-                iconUrl={connector.icon ?? undefined}
-                state={cs}
-                busyKind={busyMap[connector.name]}
-                canOpenDetail={mcpInstalled}
-                onOpenDetail={() => onOpenConnectorDetail(connector.name)}
-                onQuickAdd={() => handleConnectorQuickAdd(connector.name)}
-                onUse={() => onUse({ kind: 'mcp', id: connector.name })}
-              />
-            );
-          })
-        ) : (
-          paginatedPlugins.map((pkg) => {
-            const pluginInstalled = !!installed[pkg.id];
-            const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
-            return (
-              <MarketCard
-                key={pkg.id}
-                title={localizedText(pkg.displayName, i18n.language)}
-                description={localizedText(pkg.displayDescription, i18n.language)}
-                avatar={getSkillAvatar(localizedText(pkg.displayName, i18n.language))}
-                state={derivePluginCardState(pluginInstalled, pluginConnected)}
-                canOpenDetail
-                onOpenDetail={() => onOpenPluginDetail(pkg.id)}
-                onUse={() => onUse({ kind: 'plugin', id: pkg.id })}
-                // 同款修正：不能只看 installed，见上面"我的插件"卡片同名 prop 的注释。
-                onQuickAdd={() => {
-                  if (derivePluginCardState(pluginInstalled, pluginConnected) !== 'connected') installPlugin(pkg.id);
-                }}
-              />
-            );
-          })
-        )}
+<CatalogCacheNotice cache={catalogCacheOf(topTab === 'my' ? (myKind === 'mcp' ? myConnectors : localPackages) : topTab === 'mcp' ? builtinConnectors : packages)} />
+<div ref={scrollRef} className="page-scroll min-h-0 flex-1 overflow-y-auto">
+<div className="card-grid-auto" data-testid="connector-market-card-list">
+        {topTab === 'my'
+          ? myKind === 'mcp'
+            ? paginatedConnectors.map((connector) => {
+                const cs = mcpCardStates[connector.runtimePackageName];
+                // "我的MCP"卡片列表可达性：customize（我的MCP）恒可达，built_in 一旦不是从未
+                // 连接过的 idle 态也可达——见 mcpState.ts deriveMcpAvailability。
+                const { installed: mcpInstalled } = deriveMcpAvailability(connector.installed, cs);
+                return (
+                  <MyMarketCard
+                    key={connector.id}
+                    title={connector.displayName}
+                    description={connector.description ?? ''}
+                    iconUrl={connector.icon ?? undefined}
+                    state={cs}
+                    busyKind={busyMap[connector.id] ?? busyMap[connector.runtimePackageName]}
+                    onOpenDetail={() => onOpenConnectorDetail(connector.id)}
+                    canOpenDetail={mcpInstalled}
+                    onUse={() => onUse({ kind: 'mcp', id: connector.runtimePackageName })}
+                    onQuickInstall={cs === 'connected' ? undefined : () => handleConnectorQuickAdd(connector.id)}
+                    quickAction={mcpInstalled ? 'connect' : 'install'}
+                  />
+                );
+              })
+            : paginatedPlugins.map((pkg) => {
+                const pluginInstalled = !!installed[pkg.id];
+                const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
+                return (
+                  <MyMarketCard
+                    key={pkg.id}
+                    title={localizedText(pkg.displayName, i18n.language)}
+                    tags={(pkg.tags ?? []).map(tag => localizedText(tag, i18n.language))}
+                    description={localizedText(pkg.displayDescription, i18n.language)}
+                    iconUrl={pkg.avatar || undefined}
+                    state={pluginInstallingIds[pkg.id] ? 'connecting' : pluginInstalled ? 'connected' : 'idle'}
+                    busyKind="install"
+                    actionDisabled={!!pluginInstallingIds[pkg.id]}
+                    onOpenDetail={() => onOpenPluginDetail(pkg.id)}
+                    onUse={() => pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
+                    // 触发条件要跟着卡片态走，不能只看 installed——"已安装但 MCP 未连接"这个
+                    // 组合下 derivePluginCardState 也会算出 'idle'（见该函数注释），"+"按钮同样
+                    // 要能点（点击后重新触发安装，对应按钮矩阵"已安装+未连接：+号"这一格）。
+                    onQuickInstall={
+                      derivePluginCardState(pluginInstalled, pluginConnected) === 'connected'
+                        ? undefined
+                        : () => installPlugin(pkg.id)
+                    }
+                  />
+                );
+              })
+          : topTab === 'mcp'
+            ? paginatedConnectors.map((connector) => {
+                const cs = mcpCardStates[connector.runtimePackageName];
+                const { installed: mcpInstalled } = deriveMcpAvailability(connector.installed, cs);
+                return (
+                  <MarketCard
+                    key={connector.id}
+                    title={connector.displayName}
+                    description={connector.description ?? ''}
+                    iconUrl={connector.icon ?? undefined}
+                    state={cs}
+                    busyKind={busyMap[connector.id] ?? busyMap[connector.runtimePackageName]}
+                    canOpenDetail
+                    onOpenDetail={() => onOpenConnectorDetail(connector.id)}
+                    onQuickAdd={() => handleConnectorQuickAdd(connector.id)}
+                    quickAction={mcpInstalled ? 'connect' : 'install'}
+                    onUse={() => onUse({ kind: 'mcp', id: connector.runtimePackageName })}
+                  />
+                );
+              })
+            : paginatedPlugins.map((pkg) => {
+                const pluginInstalled = !!installed[pkg.id];
+                const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
+                return (
+                  <MarketCard
+                    key={pkg.id}
+                    title={localizedText(pkg.displayName, i18n.language)}
+                    tags={(pkg.tags ?? []).map(tag => localizedText(tag, i18n.language))}
+                    description={localizedText(pkg.displayDescription, i18n.language)}
+                    iconUrl={pkg.avatar || undefined}
+                    state={pluginInstallingIds[pkg.id] ? 'connecting' : pluginInstalled ? 'connected' : 'idle'}
+                    busyKind="install"
+                    actionDisabled={!!pluginInstallingIds[pkg.id]}
+                    canOpenDetail
+                    onOpenDetail={() => onOpenPluginDetail(pkg.id)}
+                    onUse={() => pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
+                    // 同款修正：不能只看 installed，见上面"我的插件"卡片同名 prop 的注释。
+                    onQuickAdd={() => {
+                      if (derivePluginCardState(pluginInstalled, pluginConnected) !== 'connected')
+                        installPlugin(pkg.id);
+                    }}
+                  />
+                );
+              })}
         {isEmpty && (
-          <div className="col-span-full flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border py-16 text-[13px] text-text-muted">
+          <div
+            className="col-span-full flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border py-16 text-[13px] text-text-muted"
+            data-testid="connector-market-empty"
+          >
             {activeIsLoading
               ? t(
                   topTab === 'my'
@@ -637,17 +743,20 @@ export function MarketplacePage({
                 : t('connectorMarket.empty.searchNoResult')}
           </div>
         )}
+        </div>
       </div>
 
       {!isEmpty && (
-        <PaginationBar
-          currentPage={currentPage}
-          totalPages={totalPages}
-          pageSize={pageSize}
-          totalCount={activeList.length}
-          onPageChange={goToPage}
-          onPageSizeChange={changePageSize}
-        />
+        <div className="page-shell">
+          <PaginationBar
+            currentPage={currentPage}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            totalCount={activeList.length}
+            onPageChange={goToPage}
+            onPageSizeChange={changePageSize}
+          />
+        </div>
       )}
 
       {tokenTarget && (
@@ -677,7 +786,7 @@ export function MarketplacePage({
 
 function MenuItem({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} className="block w-full px-3 py-1.5 text-left text-[13px] text-text hover:bg-bg-muted">
+    <button type="button" role="menuitem" onClick={onClick} className="dropdown-menu-item">
       {label}
     </button>
   );

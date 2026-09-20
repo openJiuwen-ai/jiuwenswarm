@@ -587,6 +587,13 @@ def create_sandbox_sysop_card(
 
     normalized_type = str(sandbox_type or "").strip().lower()
     try:
+        if normalized_type == "jiuwenbox":
+            from jiuwenswarm.server.runtime.no_host_fallback_jiuwenbox import (
+                install_no_host_fallback_jiuwenbox_providers,
+            )
+
+            install_no_host_fallback_jiuwenbox_providers()
+
         if normalized_type == "yuanrong":
             extra_params = _build_yuanrong_extra_params()
             isolation_custom_id = _sandbox_isolation_custom_id(project_dir)
