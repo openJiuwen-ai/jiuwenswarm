@@ -187,3 +187,63 @@ async def test_invalidate_during_fetch_does_not_write_stale(
         assert len(fetch_calls) == fetch_before + 1
     finally:
         mod.db_queries.fetch_templates_by_slot = original  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_fetch_slot_entities_uses_cache_on_enterprise(
+    template_cache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod, fetch_calls = template_cache
+    monkeypatch.setattr(mod, "is_enterprise", lambda: True)
+    await mod._fetch_slot_entities("default_model", ["m1"])
+    await mod._fetch_slot_entities("default_model", ["m1"])
+    assert len(fetch_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_slot_entities_skips_cache_when_not_enterprise(
+    template_cache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod, fetch_calls = template_cache
+    monkeypatch.setattr(mod, "is_enterprise", lambda: False)
+    await mod._fetch_slot_entities("default_model", ["m1"])
+    await mod._fetch_slot_entities("default_model", ["m1"])
+    assert len(fetch_calls) == 2
+    assert mod._template_entity_cache._entries == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_resource_row_skips_cache_when_not_enterprise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def _fake_list_records(table: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        calls.append(str(filters.get("resource_id") or ""))
+        return [{"resource_id": filters.get("resource_id"), "enabled": True}]
+
+    monkeypatch.setattr(loader_mod, "is_enterprise", lambda: False)
+    monkeypatch.setattr(loader_mod.db_queries, "list_records", _fake_list_records)
+    loader_mod.invalidate_enterprise_config_caches()
+    first = await loader_mod._fetch_instance_agent_resource("rid-1")
+    second = await loader_mod._fetch_instance_agent_resource("rid-1")
+    assert first == second
+    assert calls == ["rid-1", "rid-1"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_resource_row_uses_cache_on_enterprise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def _fake_list_records(table: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        calls.append(str(filters.get("resource_id") or ""))
+        return [{"resource_id": filters.get("resource_id"), "enabled": True}]
+
+    monkeypatch.setattr(loader_mod, "is_enterprise", lambda: True)
+    monkeypatch.setattr(loader_mod.db_queries, "list_records", _fake_list_records)
+    loader_mod.invalidate_enterprise_config_caches()
+    await loader_mod._fetch_instance_agent_resource("rid-1")
+    await loader_mod._fetch_instance_agent_resource("rid-1")
+    assert calls == ["rid-1"]

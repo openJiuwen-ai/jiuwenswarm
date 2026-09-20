@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+from pathlib import Path
 from typing import Optional
 
 import pytest
@@ -199,3 +200,26 @@ async def test_existing_db_is_not_replaced(memory_patch, tmp_path, monkeypatch):
         assert row == (7,)
     finally:
         await manager.close()
+
+
+def test_adapter_init_defers_memory_only_on_enterprise() -> None:
+    """个人版不装推迟建库补丁，保持上游原路径。"""
+    src = (
+        Path(__file__).resolve().parents[3]
+        / "jiuwenswarm"
+        / "server"
+        / "runtime"
+        / "agent_adapter"
+        / "interface_deep.py"
+    ).read_text(encoding="utf-8")
+    start = src.find("apply_deepagent_task_plan_binding_patch()")
+    body = src[start : start + 1200]
+    enterprise_at = body.find("enterprise = is_enterprise()")
+    if_at = body.find("if enterprise:")
+    mem_at = body.find("apply_memory_init_patch()")
+    ctx_at = body.find("apply_context_read_patch()")
+    assert enterprise_at != -1
+    assert if_at != -1
+    assert mem_at != -1
+    assert ctx_at != -1
+    assert enterprise_at < if_at < mem_at < ctx_at

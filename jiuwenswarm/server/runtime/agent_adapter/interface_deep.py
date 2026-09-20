@@ -2255,14 +2255,15 @@ class JiuWenSwarmDeepAdapter:
         apply_mcp_call_timeout_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
-        # 空记忆库拷模板、建库放线程、第一句回复不等建库。幂等。
-        apply_memory_init_patch()
-        # 读人设文件时跳过跨进程读写锁。幂等。
-        apply_context_read_patch()
-        self._instance: DeepAgent | None = None
-        self._project_dir: str | None = None
         # 企业多租户：企业版下可用外部传入的隔离 workspace / 租户 ID
         enterprise = is_enterprise()
+        if enterprise:
+            # 空记忆库拷模板、建库放线程、第一句回复不等建库。仅企业版。
+            apply_memory_init_patch()
+            # 读人设文件时跳过跨进程读写锁。仅企业版。
+            apply_context_read_patch()
+        self._instance: DeepAgent | None = None
+        self._project_dir: str | None = None
         if workspace_dir and enterprise:
             self._workspace_dir: str = str(
                 collapse_nested_agent_workspace_dir(workspace_dir)

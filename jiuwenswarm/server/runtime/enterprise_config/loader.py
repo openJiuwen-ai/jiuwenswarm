@@ -306,7 +306,11 @@ async def _fetch_slot_entities(
     slot: str,
     template_ids: list[str],
 ) -> list[dict[str, Any]]:
-    entities = await _template_entity_cache.get_by_ids(slot, template_ids)
+    # 进程级 TTL/单飞缓存只给企业版；个人版每次直查，保持原路径。
+    if is_enterprise():
+        entities = await _template_entity_cache.get_by_ids(slot, template_ids)
+    else:
+        entities = await db_queries.fetch_templates_by_slot(slot, template_ids)
     requested = {str(tid or "").strip() for tid in template_ids} - {""}
     id_field = (
         "policy_id"
@@ -336,6 +340,8 @@ async def _fetch_instance_agent_resource(resource_id: str) -> dict[str, Any] | N
         )
         return rows[0] if rows else None
 
+    if not is_enterprise():
+        return await _load()
     return await _resource_row_cache.get_or_fetch(f"iar:{rid}", _load)
 
 
@@ -351,6 +357,8 @@ async def _fetch_agent_template_row(template_id: str) -> dict[str, Any] | None:
         )
         return rows[0] if rows else None
 
+    if not is_enterprise():
+        return await _load()
     return await _agent_template_cache.get_or_fetch(f"at:{tid}", _load)
 
 
