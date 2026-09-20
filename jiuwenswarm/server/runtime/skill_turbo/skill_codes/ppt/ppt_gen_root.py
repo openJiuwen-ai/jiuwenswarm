@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError, PlanNode
@@ -169,6 +170,23 @@ class PPTGenRootNode(PlanNode):
         if _document_parse_failed(inputs):
             return
         await self._run_subplan(self._p2, inputs, results)
+
+    def validate_fallback_success(
+        self,
+        inputs: dict[str, Any],
+        contract_result: dict[str, Any],
+    ) -> str | None:
+        """根级 fallback 须已产出 PPTX 并完成交付，防止仅修复部分阶段即宣称成功。"""
+        merged = {**inputs, **(contract_result or {})}
+        pptx_path = str(merged.get("pptx_path") or "").strip()
+        if not pptx_path or not Path(pptx_path).is_file():
+            return (
+                "root fallback 未产出可交付的 PPTX（pptx_path 缺失或文件不存在），"
+                "仅完成部分阶段不能视为全流程成功"
+            )
+        if str(merged.get("delivery_status") or "").strip() not in ("ok", "partial"):
+            return "root fallback 未完成 P10 交付（delivery_status 缺失或为 failed）"
+        return None
 
     async def _execute(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """非流式执行 PPT 生成全流程，并把共享上下文透传给所有子节点。"""

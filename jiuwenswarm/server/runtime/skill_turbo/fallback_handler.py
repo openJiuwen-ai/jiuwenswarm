@@ -13,12 +13,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from openjiuwen.core.session.agent import Session
 
 logger = logging.getLogger(__name__)
+
+# 节点级 fallback 交付物校验器：契约通过后调用，返回拒绝原因（str）表示
+# 未达成节点目标，返回 None 放行。入参为 (inputs, contract_result)。
+ResultValidator = Callable[[dict[str, Any], dict[str, Any]], "str | None"]
 
 
 class FallbackContractError(Exception):
@@ -55,6 +59,7 @@ class SkillTurboFallbackHandler(ABC):
         inputs: dict[str, Any],
         error: Exception,
         parent_session: Session | None = None,
+        result_validator: ResultValidator | None = None,
     ) -> dict[str, Any]:
         """非流式 fallback：使用外部 agent 兜底失败节点。"""
 
@@ -66,6 +71,7 @@ class SkillTurboFallbackHandler(ABC):
         inputs: dict[str, Any],
         error: Exception,
         parent_session: Session | None = None,
+        result_validator: ResultValidator | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式 fallback：使用外部 agent 兜底失败节点。"""
 
@@ -123,6 +129,9 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
             f"- success: 是否真正达成了节点任务说明中的全部目标（文件已生成/校验已通过/字段已写入）。\n"
             f"  - 只有在产出可被下游节点直接消费时才填 true。\n"
             f"  - 若未能完成、部分完成、或无法确认，必须填 false，并在 result 中说明原因。\n"
+            f"  - 编排类节点（任务说明要求串联多个阶段/子流程，如 PPT 根节点）：success=true\n"
+            f"    必须以全部阶段完成、终端产物已生成并交付为准（如最终文件已落盘、已发送）；\n"
+            f"    仅修复失败的子阶段不算完成，必须填 false。\n"
             f"- result: 节点产出。成功时填需要回写到 inputs 的字段（如 outline_path、p4_validate_status 等）；"
             f'失败时填 {{"reason": "..."}}。\n'
             f"JSON 必须压成单行，切勿多行展开。切勿伪造 success=true，否则会导致下游节点崩溃。"
@@ -281,6 +290,39 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
             f"{type(error).__name__}: {error}",
         )
 
+    @staticmethod
+    def _apply_result_validator(
+        result_validator: ResultValidator | None,
+        node_name: str,
+        inputs: dict[str, Any],
+        contract_result: dict[str, Any],
+    ) -> tuple[bool, dict[str, Any]]:
+        """契约自证通过后，运行节点级交付物校验器。
+
+        校验器拒绝或自身异常均视为契约未达成（fail-closed），返回
+        ``(False, {{"reason": ...}})``；放行返回 ``(True, contract_result)``。
+        """
+        if result_validator is None:
+            return True, contract_result
+        try:
+            reason = result_validator(inputs, contract_result)
+        except Exception as exc:
+            logger.error(
+                "[DeepAgentFallbackHandler] result validator crashed node=%s error=%s",
+                node_name,
+                exc,
+            )
+            return False, {"reason": f"result validator 异常: {exc}"}
+        if reason:
+            logger.error(
+                "[DeepAgentFallbackHandler] node fallback result rejected by validator "
+                "node=%s reason=%s",
+                node_name,
+                reason,
+            )
+            return False, {"reason": reason}
+        return True, contract_result
+
     async def _execute_spawn_fallback(
         self,
         node_name: str,
@@ -300,6 +342,7 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         inputs: dict[str, Any],
         error: Exception,
         parent_session: Session | None = None,
+        result_validator: ResultValidator | None = None,
     ) -> dict[str, Any]:
         """非流式 fallback 实现。"""
         try:
@@ -331,6 +374,10 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         # 契约校验：subagent 必须自证达成节点目标，否则视为 fallback 失败，
         # 抛出异常让 SkillTurbo 降级到 DeepAgent。
         success, contract_result = self._parse_fallback_output(fallback_output)
+        if success:
+            success, contract_result = self._apply_result_validator(
+                result_validator, node_name, inputs, contract_result
+            )
         if not success:
             reason = contract_result.get("reason", "fallback subagent 未达成节点契约")
             logger.error(
@@ -367,9 +414,12 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         inputs: dict[str, Any],
         error: Exception,
         parent_session: Session | None = None,
+        result_validator: ResultValidator | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式 fallback 实现。"""
-        return self._fallback_stream_impl(node_name, instruction, inputs, error, parent_session)
+        return self._fallback_stream_impl(
+            node_name, instruction, inputs, error, parent_session, result_validator
+        )
 
     async def _fallback_stream_impl(
         self,
@@ -378,6 +428,7 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         inputs: dict[str, Any],
         error: Exception,
         parent_session: Session | None,
+        result_validator: ResultValidator | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """流式 fallback 的实际实现。
 
@@ -433,6 +484,10 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         # 契约校验：subagent 必须自证达成节点目标，否则视为 fallback 失败，
         # 抛出异常让 SkillTurbo 降级到 DeepAgent。
         contract_success, contract_result = self._parse_fallback_output(fallback_output)
+        if contract_success:
+            contract_success, contract_result = self._apply_result_validator(
+                result_validator, node_name, inputs, contract_result
+            )
         if not contract_success:
             reason = contract_result.get("reason", "fallback subagent 未达成节点契约")
             logger.error(

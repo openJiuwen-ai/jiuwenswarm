@@ -396,6 +396,19 @@ class PlanNode(ABC):
             async for chunk in self._fallback_stream_callback(self, inputs, e):
                 yield chunk
 
+    def validate_fallback_success(
+        self,
+        inputs: dict[str, Any],
+        contract_result: dict[str, Any],
+    ) -> str | None:
+        """节点级 fallback 交付物校验（默认放行）。
+
+        契约自证通过后、结果写回 inputs 前调用；返回拒绝原因表示契约
+        未达成（触发终止性降级），返回 None 放行。编排类节点应覆盖本
+        方法校验终端交付物真实存在。
+        """
+        return None
+
     @staticmethod
     def _resume_skip_result(subplan: "PlanNode") -> dict[str, Any]:
         return {
