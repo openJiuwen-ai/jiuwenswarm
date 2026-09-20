@@ -32,10 +32,6 @@ from jiuwenswarm.symphony.adapter import (
     orchestration_config_from_swarm,
 )
 from jiuwenswarm.symphony.llm import LLMConfig, probe_model_connection
-from jiuwenswarm.symphony.experience import (
-    JiuwenSwarmSkillAdapter,
-    SkillPackNotInstallableError,
-)
 from jiuwenswarm.symphony.config import SymphonyConfig, load_symphony_config
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
@@ -51,6 +47,7 @@ CapabilityPackager = core_symphony.flow.CapabilityPackager
 LLMPackageReviewAgent = core_symphony.LLMPackageReviewAgent
 PackageReviewGate = core_symphony.flow.PackageReviewGate
 SymphonyFlowEngine = core_symphony.flow.SymphonyFlowEngine
+SkillPackAdapter = core_symphony.flow.SkillPackAdapter
 VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
 
 
@@ -422,8 +419,7 @@ class SwarmSymphonyService:
                             "retryable": False,
                             "build_status": "running",
                             "operation": "plan",
-                            "detail": graph_build.get("detail")
-                            or failure["detail"],
+                            "detail": graph_build.get("detail") or failure["detail"],
                         }
                     )
                 return failure
@@ -670,7 +666,7 @@ class SwarmSymphonyService:
                 flow_dir,
                 llm_client=model,
                 gate=PackageReviewGate(LLMPackageReviewAgent(model)),
-                skill_adapter=JiuwenSwarmSkillAdapter(),
+                skill_adapter=SkillPackAdapter(),
             )
         return SymphonyRuntime(
             graph_artifact_root=config.paths.graph_dir,
@@ -908,14 +904,15 @@ class SwarmSymphonyService:
             return {"installed": False, "reason": "flow_disabled"}
         async with self._install_lock:
             previous = self._install_receipts.get(request_id)
-            if previous is not None:
+            if previous is not None and previous.get("installed") is True:
                 return {**previous, "newly_installed": False, "replayed": True}
+            self._install_receipts.pop(request_id, None)
             runtime = self.runtime()
             flow = runtime.flow_engine
             if flow is None:
                 return {"installed": False, "reason": "flow_disabled"}
             persisted = _read_install_receipt(flow.store.root.resolve(), request_id)
-            if persisted is not None:
+            if persisted is not None and persisted.get("installed") is True:
                 self._install_receipts[request_id] = dict(persisted)
                 return {**persisted, "newly_installed": False, "replayed": True}
             preparation = await flow.review_and_prepare_install(
@@ -936,8 +933,6 @@ class SwarmSymphonyService:
                     "recipe_version": recipe_version,
                     "request_id": request_id,
                 }
-                _save_install_receipt(flow.store.root.resolve(), result)
-                self._install_receipts[request_id] = dict(result)
                 return result
             if package_id and package_id != actual_package_id:
                 return {"installed": False, "reason": "package_id_mismatch"}
@@ -946,52 +941,53 @@ class SwarmSymphonyService:
             if not CapabilityPackager.verify_package_integrity(package):
                 return {"installed": False, "reason": "invalid_integrity"}
             flow_root = flow.store.root.resolve()
-            with tempfile.TemporaryDirectory(
-                prefix=".symphony-install-", dir=flow_root
-            ) as staging_value:
-                artifact_dir = Path(staging_value).resolve()
+            artifact_value = preparation.artifact_dir
+            if not artifact_value:
+                return {"installed": False, "reason": "missing_artifact"}
+            artifact_path = Path(artifact_value)
+            artifact_dir = artifact_path.resolve()
+            expected_artifact_dir = (
+                flow_root / "packages" / actual_package_id / "skill"
+            ).resolve()
+            if (
+                artifact_dir != expected_artifact_dir
+                or not artifact_dir.is_dir()
+                or artifact_path.is_symlink()
+            ):
+                return {"installed": False, "reason": "invalid_artifact"}
+            recover = getattr(skill_manager, "recover_symphony_skill_install", None)
+            installed = (
+                recover(
+                    artifact_dir,
+                    package_id=actual_package_id,
+                    integrity=actual_integrity,
+                )
+                if callable(recover)
+                else None
+            )
+            if installed is None:
                 try:
-                    JiuwenSwarmSkillAdapter.render(package, artifact_dir)
-                except SkillPackNotInstallableError as exc:
-                    logger.warning("Symphony SkillPack is not installable: %s", exc)
-                    return {
-                        "installed": False,
-                        "reason": "not_installable",
-                        "details": [str(exc)],
-                    }
-                recover = getattr(skill_manager, "recover_symphony_skill_install", None)
-                installed = (
-                    recover(
+                    installed = skill_manager.install_symphony_skill_artifact(
                         artifact_dir,
+                        expected_root=flow_root,
                         package_id=actual_package_id,
                         integrity=actual_integrity,
                     )
-                    if callable(recover)
-                    else None
-                )
-                if installed is None:
-                    try:
-                        installed = skill_manager.install_symphony_skill_artifact(
-                            artifact_dir,
-                            expected_root=flow_root,
-                            package_id=actual_package_id,
-                            integrity=actual_integrity,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "Symphony Skill install failed (%s)",
-                            type(exc).__name__,
-                        )
-                        if getattr(exc, "code", "") in {
-                            "SKILL_INVALID_METADATA",
-                            "SKILL_INVALID_PACKAGE",
-                        }:
-                            return {
-                                "installed": False,
-                                "reason": "not_installable",
-                                "details": [str(exc)],
-                            }
-                        return {"installed": False, "reason": "install_failed"}
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Symphony Skill install failed (%s)",
+                        type(exc).__name__,
+                    )
+                    if getattr(exc, "code", "") in {
+                        "SKILL_INVALID_METADATA",
+                        "SKILL_INVALID_PACKAGE",
+                    }:
+                        return {
+                            "installed": False,
+                            "reason": "not_installable",
+                            "details": [str(exc)],
+                        }
+                    return {"installed": False, "reason": "install_failed"}
             receipt = {
                 "installed": bool(installed.get("success")),
                 "newly_installed": bool(installed.get("success")),

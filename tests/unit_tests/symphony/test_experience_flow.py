@@ -25,6 +25,7 @@ from openjiuwen.harness.rails.evolution import (
     build_symphony_execution_graph,
     project_symphony_execution_fragments,
 )
+from openjiuwen.symphony.flow import SkillPackAdapter, SkillPackNotInstallableError
 
 from jiuwenswarm.runtime.host_services import (
     install_runtime_push_handler,
@@ -52,9 +53,7 @@ from jiuwenswarm.symphony.experience import (
     _SwarmTeamSymphonyGraphEvolutionRail,
     _build_graph_evolution_rail,
     _core_compatible_truncation_trajectory,
-    JiuwenSwarmSkillAdapter,
     PublishedCapabilitySnapshotProvider,
-    SkillPackNotInstallableError,
 )
 from jiuwenswarm.symphony.llm import LLMConfig
 from jiuwenswarm.symphony.service import (
@@ -127,6 +126,9 @@ def _install_service(monkeypatch, flow):
 
 
 def _review_flow(tmp_path, *, package=None, verdict="approved", artifact=None):
+    if verdict == "approved" and package is not None and artifact is None:
+        artifact = tmp_path / "packages" / package["package_id"] / "skill"
+        SkillPackAdapter.render(package, artifact)
     return SimpleNamespace(
         store=SimpleNamespace(
             root=tmp_path,
@@ -311,7 +313,7 @@ def test_target_adapter_adds_installable_frontmatter(tmp_path: Path) -> None:
         },
     }
 
-    JiuwenSwarmSkillAdapter.render(package, tmp_path)
+    SkillPackAdapter.render(package, tmp_path)
 
     text = (tmp_path / "SKILL.md").read_text(encoding="utf-8")
     definition = load_skillpack(tmp_path, expected_name="research-writer")
@@ -338,7 +340,7 @@ def test_target_adapter_rejects_non_skill_nodes(monkeypatch, tmp_path: Path) -> 
     ]["capability_type"] = "tool"
 
     with pytest.raises(SkillPackNotInstallableError):
-        JiuwenSwarmSkillAdapter.render(package, tmp_path)
+        SkillPackAdapter.render(package, tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -366,7 +368,7 @@ def test_target_adapter_rejects_branch_and_loop_structures(
     package["materials"]["recipe"]["combination_structure"]["edges"] = edges
 
     with pytest.raises(SkillPackNotInstallableError):
-        JiuwenSwarmSkillAdapter.render(package, tmp_path)
+        SkillPackAdapter.render(package, tmp_path)
 
 
 def _otlp_span(
@@ -704,14 +706,32 @@ def test_published_capability_snapshot_builds_nonempty_execution_edge(
             "capability_type": "skill",
             "name": "search",
             "version": "1.0.0",
-            "outputs": [{"name": "result"}],
+            "description": "Search trusted sources.",
+            "outputs": [
+                {
+                    "name": "result",
+                    "type": "text",
+                    "required": False,
+                    "description": "Search result",
+                    "default": "must-not-flow",
+                }
+            ],
         },
         {
             "capability_id": "writer",
             "capability_type": "skill",
             "name": "writer",
             "version": "2.0.0",
-            "inputs": [{"name": "result"}],
+            "description": "Write the final report.",
+            "inputs": [
+                {
+                    "name": "result",
+                    "type": "text",
+                    "required": True,
+                    "description": "Source material",
+                    "metadata": {"secret": "must-not-flow"},
+                }
+            ],
         },
     ]
     (graph_dir / "graph.json").write_text(
@@ -777,7 +797,85 @@ def test_published_capability_snapshot_builds_nonempty_execution_edge(
     )
 
     assert {item.capability_id for item in identities} == {"search", "writer"}
+    search = next(item for item in identities if item.capability_id == "search")
+    writer = next(item for item in identities if item.capability_id == "writer")
+    assert search.version == "1.0.0"
+    assert search.content_hash == "hash-search"
+    assert search.description == "Search trusted sources."
+    assert search.outputs == (
+        {
+            "name": "result",
+            "type": "text",
+            "required": False,
+            "description": "Search result",
+        },
+    )
+    assert writer.version == "2.0.0"
+    assert writer.content_hash == "hash-writer"
+    assert writer.inputs == (
+        {
+            "name": "result",
+            "type": "text",
+            "required": True,
+            "description": "Source material",
+        },
+    )
+    assert execution_graph["graph"]["nodes"]["search"]["metadata"] == {
+        "capability_type": "skill",
+        "version": "1.0.0",
+        "content_hash": "hash-search",
+        "description": "Search trusted sources.",
+        "outputs": [
+            {
+                "name": "result",
+                "type": "text",
+                "required": False,
+                "description": "Search result",
+            }
+        ],
+    }
     assert execution_graph["graph"]["edges"]
+
+
+def test_published_capability_snapshot_rejects_invalid_contracts(
+    tmp_path: Path,
+) -> None:
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir()
+    (graph_dir / "graph.json").write_text(
+        json.dumps(
+            {
+                "capabilities": [
+                    {
+                        "capability_id": "missing-version",
+                        "capability_type": "skill",
+                        "name": "missing-version",
+                    },
+                    {
+                        "capability_id": "invalid-port",
+                        "capability_type": "skill",
+                        "name": "invalid-port",
+                        "version": "1.0.0",
+                        "inputs": [
+                            {"name": "query", "type": "text", "required": "yes"}
+                        ],
+                    },
+                    {
+                        "capability_id": "valid",
+                        "capability_type": "skill",
+                        "name": "valid",
+                        "version": "1.0.0",
+                        "inputs": [{"name": "query", "type": "text", "required": True}],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    identities = PublishedCapabilitySnapshotProvider(graph_dir).snapshot_capabilities()
+
+    assert [item.capability_id for item in identities] == ["valid"]
 
 
 def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) -> None:
@@ -821,7 +919,7 @@ def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) ->
     assert created["review_agent"] is not None
     assert created["flow_root"] == tmp_path / "flow"
     assert created["llm_client"] is model
-    assert isinstance(created["skill_adapter"], JiuwenSwarmSkillAdapter)
+    assert isinstance(created["skill_adapter"], SkillPackAdapter)
     assert isinstance(created["runtime"]["flow_engine"], Flow)
 
 
@@ -1038,8 +1136,9 @@ async def test_install_requires_approved_server_artifact(
     _enable_evolution_config(monkeypatch, tmp_path)
     package = _server_package(monkeypatch, "cap-123")
     artifact = tmp_path / "packages" / "cap-123" / "skill"
-    artifact.mkdir(parents=True)
-    (artifact / "SKILL.md").write_text("MALICIOUS CACHE", encoding="utf-8")
+    SkillPackAdapter.render(package, artifact)
+    skill_md = artifact / "SKILL.md"
+    reviewed_text = skill_md.read_text(encoding="utf-8")
 
     flow = _review_flow(tmp_path, package=package, artifact=artifact)
     service = _install_service(monkeypatch, flow)
@@ -1047,9 +1146,9 @@ async def test_install_requires_approved_server_artifact(
 
     class Manager:
         def install_symphony_skill_artifact(self, artifact_dir, **kwargs):
-            assert "MALICIOUS CACHE" not in (Path(artifact_dir) / "SKILL.md").read_text(
+            assert (Path(artifact_dir) / "SKILL.md").read_text(
                 encoding="utf-8"
-            )
+            ) == reviewed_text
             calls.append(Path(artifact_dir))
             return {"success": True, "skill": {"name": "combo"}}
 
@@ -1074,9 +1173,8 @@ async def test_install_requires_approved_server_artifact(
     assert receipt["installed"] is True
     assert duplicate == {**receipt, "newly_installed": False, "replayed": True}
     assert len(calls) == 1
-    assert calls[0].parent == tmp_path
-    assert calls[0].name.startswith(".symphony-install-")
-    assert not calls[0].exists()
+    assert calls[0] == artifact
+    assert calls[0].exists()
 
     restarted = _install_service(
         monkeypatch, _review_flow(tmp_path, package=package, artifact=artifact)
@@ -1150,7 +1248,7 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
 @pytest.mark.parametrize(
     "verdict", ["rejected", "needs_human_review", "not_installable"]
 )
-async def test_non_approved_review_is_persistently_idempotent(
+async def test_non_approved_review_can_be_retried(
     monkeypatch, tmp_path: Path, verdict: str
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
@@ -1188,10 +1286,50 @@ async def test_non_approved_review_is_persistently_idempotent(
 
     assert result["installed"] is False
     assert result["reason"] == verdict
-    assert duplicate == {**result, "replayed": True}
-    assert persisted == {**result, "replayed": True}
+    assert duplicate == result
+    assert persisted == result
+    assert flow.review_and_prepare_install.await_count == 2
+    assert restarted_flow.review_and_prepare_install.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_failed_receipt_is_ignored_and_overwritten(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _enable_evolution_config(monkeypatch, tmp_path)
+    package = _server_package(monkeypatch, "cap-retry")
+    flow = _review_flow(tmp_path, package=package)
+    service = _install_service(monkeypatch, flow)
+    request_id = experience_request_id("recipe-1", 2)
+    receipt_dir = tmp_path / "install_receipts"
+    receipt_dir.mkdir()
+    (receipt_dir / f"{request_id}.json").write_text(
+        json.dumps(
+            {"request_id": request_id, "installed": False, "reason": "rejected"}
+        ),
+        encoding="utf-8",
+    )
+
+    manager = SimpleNamespace(
+        install_symphony_skill_artifact=Mock(
+            return_value={"success": True, "skill": {"name": "search-writer-pack"}}
+        )
+    )
+    result = await service.install_candidate(
+        request_id=request_id,
+        recipe_id="recipe-1",
+        recipe_version=2,
+        package_id=None,
+        integrity=None,
+        skill_manager=manager,
+    )
+
+    assert result["installed"] is True
     assert flow.review_and_prepare_install.await_count == 1
-    restarted_flow.review_and_prepare_install.assert_not_awaited()
+    persisted = json.loads(
+        (receipt_dir / f"{request_id}.json").read_text(encoding="utf-8")
+    )
+    assert persisted["installed"] is True
 
 
 @pytest.mark.asyncio
