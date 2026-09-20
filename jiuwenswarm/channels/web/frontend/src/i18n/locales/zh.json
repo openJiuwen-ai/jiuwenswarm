@@ -4162,7 +4162,7 @@
     "controlAlreadyPaused": "工作流已暂停",
     "controlUnavailable": "工作流正在运行，控制暂不可用",
     "controlNotFound": "未找到工作流运行",
-    "controlsDisabledHint": "团队未在运行，工作流暂不可直接操作；请在主会话发送消息以恢复或停止",
+    "controlsDisabledHint": "团队已暂停，发送一条消息唤醒团队后即可恢复或停止工作流",
     "sessionBudget": "会话预算（团队共享，不随运行重置）",
     "runBudget": "本次运行预算（META.workflow_token_limit）",
     "sessionBudgetShort": "会话累计",

@@ -4178,7 +4178,7 @@
     "controlAlreadyPaused": "Workflow already paused",
     "controlUnavailable": "Workflow is running; control unavailable",
     "controlNotFound": "Workflow run not found",
-    "controlsDisabledHint": "Team is not running, so this workflow can't be controlled here. Send a message in the main session to resume or stop it.",
+    "controlsDisabledHint": "The team is paused. Send a message to wake it up, then resume or stop the workflow here.",
     "sessionBudget": "Session budget (team-wide, never resets)",
     "runBudget": "Run budget (META.workflow_token_limit)",
     "sessionBudgetShort": "Session",
