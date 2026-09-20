@@ -4,6 +4,7 @@
  * 读取当前会话 pendingQuestion，按 source 分流：
  *  - authorization → AuthorizationPrompt（授权条）
  *  - interaction   → InteractionPrompt（交互卡）
+ *  - experience    → ExperiencePackagePrompt（技能包推荐卡）
  *  - legacy/none   → 不渲染（演进/计划审批仍由消息流内的 InlineQuestionCard 处理）
  *
  * 不参与消息滚动，紧贴输入框顶部。
@@ -12,6 +13,7 @@
 import { useChatStore } from '../../stores';
 import type { UserAnswer } from '../../types';
 import { AuthorizationPrompt } from './AuthorizationPrompt';
+import { ExperiencePackagePrompt } from './ExperiencePackagePrompt';
 import { InteractionPrompt } from './InteractionPrompt';
 import { classifyPrompt } from './promptRouting';
 import './InteractionSlot.css';
@@ -33,14 +35,17 @@ export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
 
   // 授权条：页签式吸附输入框顶部；交互卡：独立浮卡。
   const isAuth = kind === 'authorization';
+  const variant = isAuth ? 'auth' : kind;
   return (
     <div
       className={`interaction-slot${isAuth ? ' interaction-slot--attached' : ''}`}
       data-testid="interaction-slot-root"
-      data-variant={isAuth ? 'auth' : 'interaction'}
+      data-variant={variant}
     >
       {isAuth ? (
         <AuthorizationPrompt pending={pending} onSubmit={onSubmit} />
+      ) : kind === 'experience' ? (
+        <ExperiencePackagePrompt pending={pending} onSubmit={onSubmit} />
       ) : (
         <InteractionPrompt pending={pending} onSubmit={onSubmit} />
       )}

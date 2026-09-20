@@ -84,22 +84,30 @@ def _candidate_question(
     request_id: str,
 ) -> dict[str, Any]:
     structure = (
-        "；".join(
-            f"{source} → {target} ({relation})"
-            for source, target, relation in candidate.structure
+        "\n".join(
+            f"`{source}` → `{target}`"
+            for source, target, _relation in candidate.structure
         )
-        or "线性组合能力"
+        or "根据任务需要组合使用"
     )
-    statistics = (
-        f"成功 {candidate.success_count}/{candidate.execution_count} 次"
-        f"（{candidate.success_rate:.0%}）"
-    )
+    package_name = candidate.name or "组合技能包"
+    applicability = candidate.applicability or "适合需要多个技能配合完成的类似任务。"
     question = "\n".join(
         (
-            candidate.applicability or "发现一条可复用的成功能力组合。",
-            f"能力结构：{structure}",
-            f"历史统计：{statistics}",
-            "是否安装为组合 Skill？",
+            "系统发现这套能力组合在类似任务中表现稳定，可以保存为技能包，"
+            "以后遇到类似任务时直接使用。",
+            "",
+            "**技能包名称**",
+            package_name,
+            "",
+            "**适用场景**",
+            applicability,
+            "",
+            "**包含的技能及执行顺序**",
+            structure,
+            "",
+            "**使用记录**",
+            f"执行 {candidate.execution_count} 次，成功 {candidate.success_count} 次",
         )
     )
     return {
@@ -107,11 +115,19 @@ def _candidate_question(
         "request_id": request_id,
         "questions": [
             {
-                "header": (candidate.name or "组合 Skill")[:12],
+                "header": "发现可复用的技能包",
                 "question": question,
                 "options": [
-                    {"label": "安装", "description": "评审通过后安装组合 Skill。"},
-                    {"label": "稍后", "description": "保留经验，暂不安装。"},
+                    {
+                        "label": "创建技能包",
+                        "value": "install",
+                        "description": "保存这套能力组合，供以后直接使用。",
+                    },
+                    {
+                        "label": "暂不创建",
+                        "value": "defer",
+                        "description": "保留这条推荐，本次不创建技能包。",
+                    },
                 ],
                 "multi_select": False,
             }

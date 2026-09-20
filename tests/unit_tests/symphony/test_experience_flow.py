@@ -59,6 +59,7 @@ from jiuwenswarm.symphony.experience import (
 from jiuwenswarm.symphony.llm import LLMConfig
 from jiuwenswarm.symphony.service import (
     SwarmSymphonyService,
+    _candidate_question,
     experience_request_id,
 )
 from jiuwenswarm.agents.swarm import config_specs
@@ -76,6 +77,32 @@ def _candidate() -> core_symphony.CombinationCandidate:
         success_count=2,
         success_rate=1.0,
     )
+
+
+def test_candidate_question_uses_beginner_friendly_skill_package_copy() -> None:
+    payload = _candidate_question(_candidate(), request_id="candidate-request")
+
+    question = payload["questions"][0]
+    assert question["header"] == "发现可复用的技能包"
+    assert "系统发现这套能力组合在类似任务中表现稳定" in question["question"]
+    assert "**技能包名称**\n研究组合" in question["question"]
+    assert "**适用场景**\n适合检索后生成报告" in question["question"]
+    assert "**包含的技能及执行顺序**\n`search` → `writer`" in question["question"]
+    assert "**使用记录**\n执行 2 次，成功 2 次" in question["question"]
+    assert "沉淀" not in question["header"]
+    assert "沉淀" not in question["question"]
+    assert question["options"] == [
+        {
+            "label": "创建技能包",
+            "value": "install",
+            "description": "保存这套能力组合，供以后直接使用。",
+        },
+        {
+            "label": "暂不创建",
+            "value": "defer",
+            "description": "保留这条推荐，本次不创建技能包。",
+        },
+    ]
 
 
 def _enable_evolution_config(monkeypatch, tmp_path: Path):
@@ -849,8 +876,12 @@ async def test_candidate_push_is_concurrency_idempotent(monkeypatch) -> None:
     payload = pushes[0]["payload"]
     assert payload["event_type"] == "chat.ask_user_question"
     assert [item["label"] for item in payload["questions"][0]["options"]] == [
-        "安装",
-        "稍后",
+        "创建技能包",
+        "暂不创建",
+    ]
+    assert [item["value"] for item in payload["questions"][0]["options"]] == [
+        "install",
+        "defer",
     ]
 
 
