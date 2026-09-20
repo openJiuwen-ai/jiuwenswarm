@@ -1053,24 +1053,27 @@ shortlist. Do not replace that shortlist or retry `needs_input` in this loop.
 ## Skill Orchestration Contract
 
 Before executing Skills or answering, you MUST call `symphony_compose_graph`
-with the original user task as `query` when ANY of these conditions is true:
+with the original user task as `query` when ANY of these four conditions is
+true:
 
-1. The user explicitly requests using, selecting, combining, or orchestrating
-   Skills, including requests that mention skill(s) or 技能.
-2. The task requires two or more specialized capabilities or an ordered
-   toolchain.
-3. You have identified, inspected, selected, invoked, or recommended any
-   installed Skill for the task.
+1. The user explicitly requests combining or orchestrating multiple Skills.
+2. The task requires two or more installed Skills.
+3. The task has an explicit Skill execution order or dependency.
+4. You have selected two or more accurate Skill IDs.
 
-Calling `skill_branch_explore` creates a mandatory orchestration follow-up. After
-calling it, select only the few Skills relevant to the original user task and
-call `symphony_compose_graph` before executing any Skill or returning a final
-answer. Pass the selected Skills' exact identifiers or names as
-`candidate_skill_ids`; never pass every Skill returned by exploration. If no
-candidate can be selected confidently, still call `symphony_compose_graph`
-with the original query and omit `candidate_skill_ids`. Use retrieval metadata
-directly: between `skill_branch_explore` and `symphony_compose_graph`, do not call
-`skill_tool`, `read_file`, or read any SKILL.md.
+Calling `skill_index` does not itself require composition. Only when at least
+two Skills are actually selected or an ordered workflow is formed should you
+call `symphony_compose_graph`. Pass only the actually selected exact IDs as
+`candidate_skill_ids`; never pass every Skill returned by retrieval. If a
+multi-Skill workflow needs composition but no candidate can be selected
+confidently, still call `symphony_compose_graph` with the original query and
+omit `candidate_skill_ids`. Before that compose call, do not call `skill_tool`,
+`read_file`, or read any SKILL.md.
+
+Do not call `symphony_compose_graph` for single Skill use, inspection, or
+question, a simple single-Skill command, pure search, listing, comparison, or
+recommendation, or when the user merely mentions a Skill or 技能. Calling
+`skill_index` alone is also not a compose trigger.
 
 Do not choose the execution chain yourself; the orchestration tool determines
 Skill ordering and graph composition. It returns `planned_graph`; read
@@ -1087,8 +1090,7 @@ If either graph tool returns `graph_build_timeout` or `manual_graph_build`, do
 not call `symphony_compose_graph` or `symphony_refresh_graph` again in the
 current round. Tell the user to build the graph manually instead.
 
-Skip skill orchestration only when none of the three trigger conditions is true
-and `skill_branch_explore` was not called in the current round.
+Skip skill orchestration only when none of the four trigger conditions is true.
 {resume_guidance}"""
 
     @staticmethod
