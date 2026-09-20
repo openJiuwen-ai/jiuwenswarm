@@ -333,6 +333,11 @@ class TeamManager:
         # have not reached a released round yet.  Covers the preparation window
         # (spec assembly, runtime activation) that precedes the round marker.
         self._inflight_requests: dict[str, set[str]] = {}
+        # session_id → request_ids whose Team round was already released while
+        # their chat response handler may still be parked on the persistent
+        # leader stream.  Cleared when that stream ends; distinguishes a
+        # parked handler from one that still owns live team work.
+        self._round_ended_requests: dict[str, set[str]] = {}
         self._held_idle: dict[str, dict[str, Any]] = {}
         self._background_task_controllers: dict[str, BackgroundTaskController] = {}
         self._bootstrap_lock = asyncio.Lock()
@@ -401,6 +406,9 @@ class TeamManager:
         return session_id in self._stream_tasks
 
     def pop_stream_task(self, session_id: str) -> asyncio.Task | None:
+        # Stream end releases every handler parked on it; their ended-round
+        # markers die with the stream instead of accumulating per round.
+        self._round_ended_requests.pop(session_id, None)
         return self._stream_tasks.pop(session_id, None)
 
     def begin_request(self, session_id: str, request_id: str) -> None:
@@ -724,6 +732,14 @@ class TeamManager:
         # The round terminal ends the turn's in-flight window as well, so the
         # archive guard stops treating a finished Team Session as running.
         self.end_request(session_id, request_id)
+        # This marker only describes a handler parked on an existing persistent
+        # stream.  Failed startup and stop paths can release a round after the
+        # stream has already gone away; retaining their request ids would leak
+        # per-session state and could be mistaken for a future parked handler.
+        if self.has_stream_task(session_id):
+            self._round_ended_requests.setdefault(session_id, set()).add(
+                str(request_id or "")
+            )
         completion_task = current.completion_task
         if (
             completion_task is not None
@@ -749,6 +765,17 @@ class TeamManager:
     def is_round_owner(self, session_id: str, request_id: str) -> bool:
         current = self._active_rounds.get(session_id)
         return current is not None and current.request_id == request_id
+
+    def is_round_ended_request(self, session_id: str, request_id: str) -> bool:
+        """Whether this request's Team round was already released.
+
+        Its chat response handler can stay parked on the persistent leader
+        stream long after the round ended; the archive busy guard treats
+        such a handler as parked rather than running.  A request still
+        preparing or mid-round has no marker here and keeps the Session
+        running.
+        """
+        return str(request_id or "") in self._round_ended_requests.get(session_id, ())
 
     async def abort_round(self, session_id: str, request_id: str) -> bool:
         """Stop a cancelled automated round before releasing its ownership.
@@ -2343,6 +2370,9 @@ class TeamManager:
         await self._cancel_team_evolution_watcher(session_id)
 
         stream_task = self._stream_tasks.pop(session_id, None)
+        # Direct pop (stop_session_runtime path): mirror pop_stream_task's
+        # marker cleanup so parked handlers draining now read as busy again.
+        self._round_ended_requests.pop(session_id, None)
         self._held_idle.pop(session_id, None)
         # finalize_workflows=False is the pause path: the team comes back in
         # this process and resumes against the same tickets, so the controller
@@ -3082,6 +3112,10 @@ class TeamManager:
                     )
             if self._stream_tasks.get(session_id) is task:
                 self._stream_tasks.pop(session_id, None)
+                # Same invariant as pop_stream_task: the parked handlers this
+                # stream released are gone, so their markers must not survive
+                # into the next stream generation for the same session.
+                self._round_ended_requests.pop(session_id, None)
 
     async def cancel_all_stream_tasks(
         self,
@@ -3127,6 +3161,33 @@ def is_team_session_running(session_id: str) -> bool:
     return bool(
         manager.has_inflight_request(session_id)
         or manager.is_round_active(session_id)
+    )
+
+
+def team_session_has_parked_request(session_id: str, request_ids) -> bool:
+    """Whether every listed chat request is parked on a released Team round.
+
+    Companion of :func:`is_team_session_running` for the archive guard: a
+    request whose round was released no longer owns team work even though its
+    response handler stays alive on the persistent leader stream.  Once that
+    stream ends the markers are cleared, so a handler still draining the
+    stream's tail counts as busy again rather than parked.
+    """
+    manager = _team_manager
+    if manager is None:
+        return False
+    if (
+        not manager.has_stream_task(session_id)
+        # ``request_ids`` only covers WebSocket chat handlers.  Automation
+        # (and other non-Web ingress) can own a Team round without appearing
+        # there, so no active Team state may coexist with a parked exemption.
+        or manager.has_inflight_request(session_id)
+        or manager.is_round_active(session_id)
+    ):
+        return False
+    return all(
+        manager.is_round_ended_request(session_id, request_id)
+        for request_id in request_ids
     )
 
 

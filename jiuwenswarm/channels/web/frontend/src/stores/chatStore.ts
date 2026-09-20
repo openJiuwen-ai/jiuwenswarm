@@ -122,6 +122,8 @@ export interface ChatRuntime {
   isProcessing: boolean;
   activeExecutionId: string | null;
   executionError: string | null;
+  /** The Team session's bound AgentGroup was deleted or uninstalled. */
+  agentGroupUnavailable: boolean;
   isThinking: boolean;
   isLoadingHistory: boolean;
   historyPagerMeta: HistoryPagerMeta | null;
@@ -176,6 +178,7 @@ function createEmptyRuntime(): ChatRuntime {
     isProcessing: false,
     activeExecutionId: null,
     executionError: null,
+    agentGroupUnavailable: false,
     isThinking: false,
     isLoadingHistory: false,
     historyPagerMeta: null,
@@ -259,6 +262,7 @@ interface ChatState {
   restoreReasoningSegments: (
     sessionId: string,
     items: {
+      id?: string;
       at: string;
       text: string;
       agentTemplateName?: string;
@@ -283,6 +287,7 @@ interface ChatState {
   ) => void;
   bumpThinkingAnchor: (sessionId: string) => void;
   setExecutionError: (sessionId: string, error: string | null) => void;
+  setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
   setProcessing: (sessionId: string, status: boolean) => void;
   setActiveExecutionId: (sessionId: string, executionId: string) => void;
   setThinking: (sessionId: string, status: boolean) => void;
@@ -609,7 +614,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ? replayUpdatedAt
             : startedAt;
         segments.push({
-          id: `hist-rsn-${sessionId}-${index}-${createReasoningSegmentId()}`,
+          id: item.id ?? `hist-rsn-${sessionId}-${index}-${createReasoningSegmentId()}`,
           text,
           startedAt,
           closed: true,
@@ -830,6 +835,19 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime || runtime.activeExecutionId === executionId) return state;
       return {
         runtimes: { ...state.runtimes, [sessionId]: { ...runtime, activeExecutionId: executionId } },
+      };
+    });
+  },
+
+  setAgentGroupUnavailable: (sessionId, unavailable) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.agentGroupUnavailable === unavailable) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, agentGroupUnavailable: unavailable },
+        },
       };
     });
   },

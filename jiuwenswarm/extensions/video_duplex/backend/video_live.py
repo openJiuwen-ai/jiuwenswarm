@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 import uuid
 
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
+
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_provider,
     video_search,
@@ -548,12 +550,12 @@ def register_video_live_handler(
         previous_title: str | None = None
         if role == "user" and content.strip():
             # Refresh before history writes so a rename by AgentServer is respected.
-            metadata = get_session_metadata(visible_session_id, cache_bust=True)
+            metadata = await run_history_io(get_session_metadata, visible_session_id, cache_bust=True)
             previous_title = str(metadata.get("title") or "")
             if previous_title == "Full-duplex conversation":
                 # Older plugin versions persisted this placeholder as a real title.
                 # Reuse Jiuwen's auto-title policy when that conversation resumes.
-                update_session_metadata(
+                await run_history_io(update_session_metadata,
                     session_id=visible_session_id,
                     clear_title=True,
                     user_content=content,
@@ -561,7 +563,7 @@ def register_video_live_handler(
                     sync_write=True,
                 )
 
-        append_history_record(
+        await run_history_io(append_history_record,
             session_id=visible_session_id,
             request_id=f"video-duplex-{event_id}",
             channel_id="video_duplex",
@@ -573,7 +575,8 @@ def register_video_live_handler(
             mode="agent",
         )
         if previous_title is not None:
-            title = str(get_session_metadata(visible_session_id).get("title") or "")
+            metadata = await run_history_io(get_session_metadata, visible_session_id)
+            title = str(metadata.get("title") or "")
             if title and title != previous_title:
                 # The native listener updates both the header and workspace sidebar.
                 await channel.send_event(ws, "session.updated", {

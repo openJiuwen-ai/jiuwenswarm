@@ -948,3 +948,147 @@ async def test_batch_default_empty_and_deleting_project(archive):
     assert error.value.code == "BAD_REQUEST"
     await service.project_batch(project.project_id, "archive", "web")
     assert not lc.state("project", project.project_id).get("operation")
+
+
+@pytest.mark.asyncio
+async def test_parked_team_stream_archive_proceeds_without_touching_stream(
+    archive, monkeypatch
+):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    service, create, root, runtime = archive
+    create()
+    stop_session_runtime = AsyncMock()
+    manager = SimpleNamespace(
+        has_stream_task=lambda sid: True,
+        is_round_ended_request=lambda sid, rid: True,
+        stop_session_runtime=stop_session_runtime,
+    )
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    # The runtime would report the session busy (parked handler pending);
+    # only the parked exemption lets the archive through.
+    runtime.is_session_running = Mock(return_value=True)
+    runtime.has_parked_team_streams = Mock(return_value=True)
+
+    original_begin = lc.begin
+    begin_calls = []
+
+    def begin(*args, **kwargs):
+        begin_calls.append(kwargs.get("block_execution", True))
+        return original_begin(*args, **kwargs)
+
+    monkeypatch.setattr(lc, "begin", begin)
+    payload = await service.session("sess_a", "archive", "web")
+
+    assert payload["ok"] is True
+    # Only the busy check changes: archive keeps its unfenced lifecycle
+    # generation, so a failed move cannot leave the session blocked.
+    assert begin_calls == [False]
+    assert (root / "sessions_archived/sess_a/history.json").exists()
+    assert not (root / "sessions/sess_a").exists()
+    # The parked leader stream is released by its own lifecycle (disconnect,
+    # runtime teardown), never as a side effect of archiving.
+    stop_session_runtime.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_parked_team_stream_still_blocks_delete(archive, monkeypatch):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    service, create, _, runtime = archive
+    create()
+    stop_session_runtime = AsyncMock()
+    monkeypatch.setattr(
+        team_manager,
+        "_team_manager",
+        SimpleNamespace(
+            has_stream_task=lambda sid: True,
+            is_round_ended_request=lambda sid, rid: True,
+            stop_session_runtime=stop_session_runtime,
+        ),
+    )
+    runtime.is_session_running = Mock(return_value=True)
+    runtime.has_parked_team_streams = Mock(return_value=True)
+    with pytest.raises(lc.LifecycleError) as error:
+        await service.session("sess_a", "delete", "web")
+    assert error.value.code == "SESSION_BUSY"
+    stop_session_runtime.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_release_round_marks_request_ended_until_stream_pops():
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    manager._stream_tasks["sess_a"] = asyncio.get_running_loop().create_future()
+    manager.begin_round("sess_a", "req_1")
+    assert not manager.is_round_ended_request("sess_a", "req_1")
+    assert await manager.release_round("sess_a", "req_1")
+    assert manager.is_round_ended_request("sess_a", "req_1")
+    # Stream end releases every handler parked on it; the marker dies with
+    # the stream instead of surviving into the next stream generation.
+    assert manager.pop_stream_task("sess_a") is not None
+    assert not manager.is_round_ended_request("sess_a", "req_1")
+
+
+@pytest.mark.asyncio
+async def test_stream_cancel_clears_ended_round_markers():
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    stream_task = asyncio.get_running_loop().create_future()
+    manager._stream_tasks["sess_a"] = stream_task
+    manager.begin_round("sess_a", "req_1")
+    assert await manager.release_round("sess_a", "req_1")
+    assert manager.is_round_ended_request("sess_a", "req_1")
+    # Disconnect/shutdown cancellation is a third stream-pop site: markers
+    # must not outlive their stream into the next generation, or a reused
+    # request id would read as parked while it is still live.
+    await manager._cancel_stream_task("sess_a", "disconnect")
+    assert "sess_a" not in manager._stream_tasks
+    assert not manager.is_round_ended_request("sess_a", "req_1")
+
+
+@pytest.mark.asyncio
+async def test_release_round_without_stream_does_not_leave_parked_marker():
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    manager = TeamManager()
+    manager.begin_round("sess_a", "req_1")
+    assert await manager.release_round("sess_a", "req_1")
+    assert not manager.is_round_ended_request("sess_a", "req_1")
+
+
+def test_has_parked_team_streams_requires_all_requests_round_ended(monkeypatch):
+    from jiuwenswarm.runtime.service import AgentRuntime
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    assert not AgentRuntime.has_parked_team_streams(
+        SimpleNamespace(_pending_chat_requests={}), "sess_a"
+    )
+    runtime = SimpleNamespace(_pending_chat_requests={"sess_a": {"req_1", "req_2"}})
+    ended = {"req_1"}
+    manager = SimpleNamespace(
+        has_stream_task=lambda sid: True,
+        has_inflight_request=lambda sid: False,
+        is_round_active=lambda sid: False,
+        is_round_ended_request=lambda sid, rid: rid in ended,
+    )
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    # A request without a released round (preparing or mid-round) is live.
+    assert not AgentRuntime.has_parked_team_streams(runtime, "sess_a")
+    ended.add("req_2")
+    assert AgentRuntime.has_parked_team_streams(runtime, "sess_a")
+    # Non-Web requests such as heartbeat/cron do not appear in the Runtime's
+    # pending WebSocket request set, but they must still keep archive busy.
+    manager.has_inflight_request = lambda sid: True
+    assert not AgentRuntime.has_parked_team_streams(runtime, "sess_a")
+    manager.has_inflight_request = lambda sid: False
+    manager.is_round_active = lambda sid: True
+    assert not AgentRuntime.has_parked_team_streams(runtime, "sess_a")
+    manager.is_round_active = lambda sid: False
+    # Stream already gone: the handlers are exiting, not parked.
+    manager.has_stream_task = lambda sid: False
+    assert not AgentRuntime.has_parked_team_streams(runtime, "sess_a")
+    monkeypatch.setattr(team_manager, "_team_manager", None)
+    assert not AgentRuntime.has_parked_team_streams(runtime, "sess_a")

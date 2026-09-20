@@ -483,7 +483,10 @@ FIRST_BATCH_REGISTRY: tuple[SlashCommandEntry, ...] = (
 BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     {
         "name": "new",
-        "description": "新建一个空白会话",
+        "description_i18n": {
+            "zh": "新建一个空白会话",
+            "en": "Start a new blank conversation",
+        },
         "usage": "/new",
         "example": None,
         "kind": "built-in",
@@ -496,7 +499,10 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "fork",
-        "description": "分叉当前会话并切换到副本",
+        "description_i18n": {
+            "zh": "分叉当前会话并切换到副本",
+            "en": "Fork the current conversation and switch to the copy",
+        },
         "usage": "/fork",
         "example": None,
         "kind": "built-in",
@@ -509,7 +515,10 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "side",
-        "description": "基于当前上下文创建一个临时侧会话",
+        "description_i18n": {
+            "zh": "基于当前上下文创建一个临时侧会话",
+            "en": "Create a temporary side conversation using the current context",
+        },
         "usage": "/side [问题]",
         "example": "/side 帮我快速核对这个实现",
         "kind": "built-in",
@@ -522,7 +531,10 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "compact",
-        "description": "压缩对话历史，保留摘要以节省上下文",
+        "description_i18n": {
+            "zh": "压缩对话历史，保留摘要以节省上下文",
+            "en": "Compress conversation history into a summary to save context space",
+        },
         "usage": "/compact",
         "example": None,
         "kind": "built-in",
@@ -537,7 +549,10 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     {
         # Web 侧复用现有 Plan 开关：面板选中后立即翻转，不向输入框插入命令。
         "name": "plan",
-        "description": "切换计划模式（只读规划 → 审批 → 执行）",
+        "description_i18n": {
+            "zh": "切换计划模式（只读规划 → 审批 → 执行）",
+            "en": "Toggle plan mode (read-only planning → approval → execution)",
+        },
         "usage": "/plan",
         "example": None,
         "kind": "built-in",
@@ -552,7 +567,10 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "goal",
-        "description": "设置、查看、暂停、恢复或清除持续目标",
+        "description_i18n": {
+            "zh": "设置、查看、暂停、恢复或清除持续目标",
+            "en": "Set, view, pause, resume, or clear a persistent goal",
+        },
         "usage": "/goal [set <目标>|pause|resume|clear]",
         "example": "/goal 持续修复测试直到全部通过",
         "kind": "built-in",
@@ -566,7 +584,13 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "persist",
-        "description": "开启永续会话并开始任务（仅限新会话，创建后不可更改）",
+        "description_i18n": {
+            "zh": "开启永续会话并开始任务（仅限新会话，创建后不可更改）",
+            "en": (
+                "Start a persistent conversation and begin a task "
+                "(new conversations only; cannot be changed after creation)"
+            ),
+        },
         "usage": "/persist <任务>",
         "example": "/persist 帮我持续跟进这次产品发布",
         "kind": "built-in",
@@ -586,6 +610,7 @@ def list_builtin_commands(params: dict | None = None) -> dict:
         work_mode: str — 当前工作模式，用于按 available_modes 过滤可用命令
     返回:
         {"commands": [command_meta, ...]}
+        description 保留原中文供旧客户端使用；description_i18n 供客户端按界面语言选择。
     """
     params = params or {}
     work_mode = params.get("work_mode")
@@ -594,7 +619,8 @@ def list_builtin_commands(params: dict | None = None) -> dict:
         am = cmd.get("available_modes")
         if am is not None and work_mode and work_mode not in am:
             continue
-        out.append(dict(cmd))
+        descriptions = dict(cmd["description_i18n"])
+        out.append({**cmd, "description": descriptions["zh"], "description_i18n": descriptions})
     return {"commands": out}
 
 

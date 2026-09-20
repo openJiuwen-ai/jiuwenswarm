@@ -189,6 +189,7 @@ function SidebarDropdownItems({
             key={item.action}
             icon={<MenuIcon aria-hidden />}
             danger={item.danger}
+            disabled={item.disabled}
             onSelect={() => onAction(item.action)}
             data-testid="multi-session-conversation-menu-item"
             data-variant={item.action}
@@ -371,6 +372,7 @@ function ProjectEntityRow({
   isPinned,
   hasUnreadCronResult = false,
   defaultProject = false,
+  archiveSessionsDisabled,
   onToggle,
   onNew,
   onPin,
@@ -386,6 +388,7 @@ function ProjectEntityRow({
   isPinned?: boolean;
   hasUnreadCronResult?: boolean;
   defaultProject?: boolean;
+  archiveSessionsDisabled: boolean;
   onToggle: () => void;
   onNew: () => void;
   onPin: () => void;
@@ -499,7 +502,10 @@ function ProjectEntityRow({
         </DropdownMenuTrigger>
         <DropdownMenuContent side="bottom" align="end" data-testid="multi-session-conversation-menu">
           <SidebarDropdownItems
-            items={getProjectMenuItems(Boolean(isPinned), t, defaultProject)}
+            items={getProjectMenuItems(Boolean(isPinned), t, {
+              isDefault: defaultProject,
+              archiveSessionsDisabled,
+            })}
             onAction={(action) => {
               switch (action) {
                 case 'pin':
@@ -1194,7 +1200,7 @@ export function ConversationSidebar({
               try {
                 await options.onUndo();
               } catch (error) {
-                toast.open({ content: t(archiveErrorKey(error)), variant: 'error' });
+                toast.open({ content: t(archiveErrorKey(error)), variant: 'error', wide: true });
               }
             })();
           },
@@ -1226,7 +1232,7 @@ export function ConversationSidebar({
         });
       });
     } catch (error) {
-      toast.open({ content: t(archiveErrorKey(error)), variant: 'error' });
+      toast.open({ content: t(archiveErrorKey(error)), variant: 'error', wide: true });
       await useWorkspaceStore.getState().refreshWorkspaceData();
     } finally {
       archiveInFlightRef.current.delete(opKey);
@@ -1473,6 +1479,27 @@ export function ConversationSidebar({
     const hasUnreadCronResult = (jobsByProject.get(project.project_id) || []).some(
       (job) => Boolean(unreadCronJobs[job.id]),
     );
+    // 折叠项目可能尚未加载会话列表，不能只看 sessionsForProject.length；
+    // 用后端统计的会话总数兜底判断项目是否还有普通会话
+    const nonPinnedSessionCount =
+      projectSessionTotals[project.project_id] ?? project.session_count;
+
+    const hasPinnedOrdinarySession = pinnedSessions.some((session) => {
+      const belongsToProject =
+        session.project_id === project.project_id ||
+        getSessionProject(session)?.project_id === project.project_id;
+
+      const isCronSession =
+        Boolean(session.cron_id) ||
+        session.session_id.startsWith('cron_') ||
+        session.session_id.startsWith('heartbeat_');
+
+      return belongsToProject && !isCronSession;
+    });
+
+    const archiveSessionsDisabled =
+      nonPinnedSessionCount === 0 && !hasPinnedOrdinarySession;
+
     return (
       <div key={project.project_id} className="conversation-sidebar__group" data-testid="multi-session-project-group" data-variant={project.project_id}>
         <ProjectEntityRow
@@ -1482,6 +1509,7 @@ export function ConversationSidebar({
           isPinned={project.pinned}
           hasUnreadCronResult={hasUnreadCronResult}
           defaultProject={isDefaultProject(project)}
+          archiveSessionsDisabled={archiveSessionsDisabled}
           newLabel={getProjectNewLabel(project.name, t)}
           projectId={project.project_id}
           onToggle={() => toggleProjectExpanded(project.project_id)}

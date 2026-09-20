@@ -470,8 +470,9 @@ class TestAgentGroupLifecycle:
         self, extension_workspace: Path
     ) -> None:
         self._create_group()
-        with pytest.raises(ValueError, match="not installed"):
+        with pytest.raises(catalog.AgentGroupPackageError, match="not installed") as exc_info:
             catalog.resolve_agent_group_dir("delivery-review-team")
+        assert exc_info.value.code == "AGENT_GROUP_NOT_INSTALLED"
 
         catalog.install_agent_group({"id": "delivery-review-team"})
         resolved = catalog.resolve_agent_group_dir("delivery-review-team")

@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
+
 from jiuwenswarm.runtime.host_services import send_runtime_push
 
 if TYPE_CHECKING:
@@ -599,7 +601,7 @@ class SendFileToolkit:
                         )
             _mark_files_sent(envelope.session_id, valid_files)
             try:
-                append_history_record(
+                await run_history_io(append_history_record,
                     session_id=envelope.session_id,
                     request_id=envelope.routing_request_id,
                     channel_id=envelope.channel_id,

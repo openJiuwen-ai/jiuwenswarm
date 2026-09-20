@@ -21,6 +21,8 @@ from weakref import WeakValueDictionary
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
+
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
@@ -193,6 +195,10 @@ from jiuwenswarm.server.runtime.gateway_adapter import (
 )
 
 logger = logging.getLogger(__name__)
+_MANUAL_COMPACT_PROCESSOR_TYPES = [
+    "MessageSummaryOffloader",
+    "RoundLevelCompressor",
+]
 
 
 async def _reuse_server_runtime_dependencies() -> None:
@@ -5575,7 +5581,7 @@ class AgentWebSocketServer:
                     else f"Summarized {summarized_count} messages up to this point."
                 )
 
-                append_history_record(
+                await run_history_io(append_history_record,
                     session_id=target_sid,
                     request_id=request_id,
                     channel_id=request.channel_id or "tui",
@@ -5593,7 +5599,7 @@ class AgentWebSocketServer:
                     },
                 )
 
-                append_history_record(
+                await run_history_io(append_history_record,
                     session_id=target_sid,
                     request_id=request_id,
                     channel_id=request.channel_id or "tui",
@@ -5613,7 +5619,7 @@ class AgentWebSocketServer:
                 )
 
                 if isinstance(compact_summary, str) and compact_summary.strip():
-                    append_history_record(
+                    await run_history_io(append_history_record,
                         session_id=target_sid,
                         request_id=request_id,
                         channel_id=request.channel_id or "tui",
@@ -5841,7 +5847,7 @@ class AgentWebSocketServer:
             timestamp = _dt.datetime.now().timestamp()
 
         try:
-            append_history_record(
+            await run_history_io(append_history_record,
                 session_id=session_id,
                 request_id=request_id,
                 channel_id=channel_id,
@@ -5851,6 +5857,33 @@ class AgentWebSocketServer:
                 event_type=event_type,
                 mode=mode,
             )
+            # Cron 失败补写可能落到尚未有标题的会话（会话分配失败的 run 写
+            # 占位会话）。assistant 记录不触发 auto_title，这里按调用方传入
+            # 的 title 回填空标题；已有标题（正常 run 的 auto_title）不覆盖。
+            title = str(params.get("title") or "").strip()
+            if title:
+                try:
+                    # get_session_metadata 已在模块顶部导入，不再局部重复导入
+                    # （redefined-outer-name）；update_session_metadata 沿用本文件
+                    # 使用点局部导入的既有风格。
+                    from jiuwenswarm.server.runtime.session.session_metadata import (
+                        update_session_metadata,
+                    )
+
+                    current = get_session_metadata(session_id) or {}
+                    if not str(current.get("title") or "").strip():
+                        update_session_metadata(
+                            session_id=session_id,
+                            title=title,
+                            touch_last_message_at=False,
+                        )
+                except Exception as title_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[AgentWebSocketServer] history.append_record title "
+                        "backfill failed: session_id=%s error=%s",
+                        session_id,
+                        title_exc,
+                    )
             # The history writer is asynchronous.  Wait for a FIFO completion
             # marker so a frontend history reload immediately after this RPC
             # observes the newly appended terminal record.
@@ -6947,7 +6980,11 @@ class AgentWebSocketServer:
                 execution_subject=execution_subject,
             )
             try:
-                result_data = await agent.compress_context(session_id=session_id, return_state=True)
+                result_data = await agent.compress_context(
+                    session_id=session_id,
+                    return_state=True,
+                    processor_types=_MANUAL_COMPACT_PROCESSOR_TYPES,
+                )
 
                 result = result_data.get("result")
                 stats = result_data.get("stats")

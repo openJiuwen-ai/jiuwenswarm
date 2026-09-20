@@ -91,6 +91,40 @@ test('restored reasoning keeps the persisted Agent identity', () => {
   }
 });
 
+test('progressive history restore preserves existing reasoning segment ids', () => {
+  const sessionId = 'restored-reasoning-stable-id';
+  useChatStore.getState().ensureRuntime(sessionId);
+
+  try {
+    useChatStore.getState().restoreReasoningSegments(sessionId, [{
+      at: '2026-08-31T10:00:02.000Z',
+      text: 'visible reasoning',
+      historyBatchSeq: 1,
+    }]);
+    const visible = useChatStore.getState().getRuntime(sessionId)?.reasoningSegments[0];
+    assert.ok(visible?.id);
+
+    useChatStore.getState().restoreReasoningSegments(sessionId, [
+      {
+        at: '2026-08-31T10:00:01.000Z',
+        text: 'prefetched older reasoning',
+        historyBatchSeq: 2,
+      },
+      {
+        id: visible.id,
+        at: '2026-08-31T10:00:02.000Z',
+        text: visible.text,
+        historyBatchSeq: visible.historyBatchSeq,
+      },
+    ]);
+
+    const restored = useChatStore.getState().getRuntime(sessionId)?.reasoningSegments;
+    assert.equal(restored?.find((segment) => segment.text === visible.text)?.id, visible.id);
+  } finally {
+    useChatStore.getState().removeRuntime(sessionId);
+  }
+});
+
 test('reviewer-only progress preserves the running tool lifecycle', () => {
   const sessionId = 'streaming-reviewer-progress';
   const toolCallId = 'call-reviewer-progress';

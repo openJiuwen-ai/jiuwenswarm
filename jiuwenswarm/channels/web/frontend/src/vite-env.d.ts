@@ -28,6 +28,7 @@ interface Window {
   __JIUWEN_DESKTOP__?: boolean;
   /** Set by desktop_app.py when OS file-drag accept handlers are injected. */
   __JIUWEN_DESKTOP_DND__?: boolean;
+  jiuwenDesktop?: import('./types/electron').JiuwenElectronDesktopApi;
   pywebview?: {
     api?: {
       download_file?: (url: string, filename: string) => Promise<DesktopSaveResult> | DesktopSaveResult;

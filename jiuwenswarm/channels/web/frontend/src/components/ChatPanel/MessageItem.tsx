@@ -48,6 +48,7 @@ import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
+import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
 import { webRequest } from '../../services/webClient';
@@ -201,7 +202,10 @@ function TeamLeaderPlainTextMessage({
         <FileDownloadList
           files={fileItems}
           className="chat-message-file-list"
-          onPreview={(index) => openArtifactPanelForActiveMode(fileArtifactId(fileItems[index]))}
+          onPreview={(index) => {
+            if (openFileInDesktopBrowser(fileItems[index])) return;
+            openArtifactPanelForActiveMode(fileArtifactId(fileItems[index]));
+          }}
         />
       )}
       <div className="team-member-message__plain" data-testid="chat-panel-team-leader-message-plain">
@@ -849,7 +853,10 @@ export const MessageItem = memo(function MessageItem({
                   <FileDownloadList
                     files={visibleFileItems}
                     className="chat-message-file-list"
-                    onPreview={(index) => openArtifactPanelForActiveMode(fileArtifactId(visibleFileItems[index]))}
+                    onPreview={(index) => {
+                      if (openFileInDesktopBrowser(visibleFileItems[index])) return;
+                      openArtifactPanelForActiveMode(fileArtifactId(visibleFileItems[index]));
+                    }}
                   />
                 )}
               </>

@@ -437,12 +437,14 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
         req_method=ReqMethod.COMMAND_COMPACT,
         params={"instructions": "focus on architecture"},
     )
+    captured = {}
 
     class MockAgent:
         async def ensure_instance(self):
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
-        async def compress_context(self, session_id, *, return_state=False):
+        async def compress_context(self, session_id, *, return_state=False, processor_types=None):
+            captured["processor_types"] = processor_types
             return {
                 "result": "compressed",
                 "stats": {
@@ -485,6 +487,10 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
             "ok": True,
         }
     ]
+    assert captured["processor_types"] == [
+        "MessageSummaryOffloader",
+        "RoundLevelCompressor",
+    ]
 
 
 @pytest.mark.asyncio
@@ -501,7 +507,7 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
         async def ensure_instance(self):
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
-        async def compress_context(self, session_id, *, return_state=False):
+        async def compress_context(self, session_id, *, return_state=False, processor_types=None):
             return {
                 "result": "compressed",
                 "stats": {
@@ -560,7 +566,7 @@ async def test_handle_command_compact_attributes_team_work_to_live_leader(server
         async def ensure_instance(self):
             return None
 
-        async def compress_context(self, session_id, *, return_state=False):
+        async def compress_context(self, session_id, *, return_state=False, processor_types=None):
             return {"result": "noop", "stats": None}
     subject = SimpleNamespace(
         subject_id="team-member:session-team:demo:leader",
