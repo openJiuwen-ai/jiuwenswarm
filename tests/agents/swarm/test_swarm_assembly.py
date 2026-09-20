@@ -1525,8 +1525,13 @@ def test_team_send_file_does_not_enable_auto_authorization(
 def test_cron_tools_built(monkeypatch: pytest.MonkeyPatch) -> None:
     """The cron provider builds the member-scoped toolkit via CronRuntimeBridge."""
 
+    captured: dict[str, Any] = {}
+
     class _FakeCronBridge:
-        def build_tools(self, *, context, agent_id, language="cn"):
+        def build_tools(
+            self, *, context, agent_id, language="cn", allow_create=True
+        ):
+            captured["allow_create"] = allow_create
             return [
                 types.SimpleNamespace(
                     card=types.SimpleNamespace(
@@ -1541,6 +1546,41 @@ def test_cron_tools_built(monkeypatch: pytest.MonkeyPatch) -> None:
     built = runtime_tools.build_cron_tools({}, ctx)
 
     assert [tool.card.name for tool in built] == ["cron_list_jobs"]
+    # 普通会话：创建能力保持不变。
+    assert captured["allow_create"] is True
+
+
+@pytest.mark.parametrize(
+    "ctx_kwargs",
+    [
+        # 调度器给 cron 请求打的 request_metadata["cron"] 标记（team 流式链路）。
+        {"request_metadata": {"mode": "team", "cron": {"job_id": "j1", "run_id": "r1"}}},
+        # 单 Agent 链路的内部执行渠道（SDK 未透传 metadata 时的兜底信号）。
+        {"channel_id": "__cron__"},
+        # team cron 的隔离执行会话（_resolve_cron_execution_context 生成 cron_*）。
+        {"session_id": "cron_1930_job1"},
+    ],
+)
+def test_cron_tools_built_without_create_for_cron_session(
+    monkeypatch: pytest.MonkeyPatch, ctx_kwargs: dict
+) -> None:
+    """cron 执行会话的成员工具集必须下掉创建能力（防止 cron 派生 cron）。"""
+
+    captured: dict[str, Any] = {}
+
+    class _FakeCronBridge:
+        def build_tools(
+            self, *, context, agent_id, language="cn", allow_create=True
+        ):
+            captured["allow_create"] = allow_create
+            return []
+
+    monkeypatch.setattr(runtime_tools, "CronRuntimeBridge", _FakeCronBridge)
+    ctx = SwarmBuildContext(member_card_id="m1", **ctx_kwargs)
+
+    runtime_tools.build_cron_tools({}, ctx)
+
+    assert captured["allow_create"] is False
 
 
 def test_context_processor_returns_none_when_engine_disabled() -> None:

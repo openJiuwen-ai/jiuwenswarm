@@ -1241,14 +1241,19 @@ class _FakeDispatchBackend:
 class TestBuildToolsAllowCreate:
     """cron 执行会话的受限工具集：创建能力必须下掉，管理能力保留。"""
 
-    def _build(self, allow_create: bool) -> list:
+    def _build(self, allow_create: bool, language: str = "cn") -> list:
         bridge = CronRuntimeBridge()
         bridge.set_backend(_FakeDispatchBackend())
         return bridge.build_tools(
             context=CronToolContext(channel_id="web", session_id="sess-1"),
             agent_id="agent-1",
+            language=language,
             allow_create=allow_create,
         )
+
+    @staticmethod
+    def _unified(tools: list):
+        return next(tool for tool in tools if tool.card.name == "cron")
 
     def test_allow_create_false_drops_cron_create_job(self) -> None:
         tools = self._build(allow_create=False)
@@ -1284,3 +1289,40 @@ class TestBuildToolsAllowCreate:
         result = await unified._func(action="list")
 
         assert result == {"jobs": [{"id": "job-1"}]}
+
+    def test_allow_create_false_strips_add_from_unified_schema(self) -> None:
+        """统一 cron 工具的 schema 不再宣传 add：枚举摘除 + 描述声明禁止创建。"""
+        tools = self._build(allow_create=False)
+        unified = self._unified(tools)
+        action = unified.card.input_params["properties"]["action"]
+
+        assert "add" not in action["enum"]
+        assert {"status", "list", "update", "remove", "run", "runs", "wake"} <= set(
+            action["enum"]
+        )
+        assert "禁止创建新的定时任务" in unified.card.description
+        # 描述里的 action 列表不再宣传 add，job 字段也不再以 add 为卖点。
+        assert "status、list、add、update" not in unified.card.description
+        assert "用于 add 的任务对象" not in unified.card.input_params["properties"]["job"]["description"]
+        assert "本会话不支持 add" in action["description"]
+
+    def test_allow_create_false_strips_add_from_unified_schema_en(self) -> None:
+        tools = self._build(allow_create=False, language="en")
+        unified = self._unified(tools)
+        action = unified.card.input_params["properties"]["action"]
+
+        assert "add" not in action["enum"]
+        assert "creating new cron jobs is forbidden" in unified.card.description
+        assert "status, list, add, update" not in unified.card.description
+        assert "Job object for add" not in unified.card.input_params["properties"]["job"]["description"]
+        assert "add is unavailable in this session" in action["description"]
+
+    def test_allow_create_true_keeps_add_in_unified_schema(self) -> None:
+        """普通会话的统一 cron 工具保持完整：add 仍在枚举与描述中。"""
+        tools = self._build(allow_create=True)
+        unified = self._unified(tools)
+        action = unified.card.input_params["properties"]["action"]
+
+        assert "add" in action["enum"]
+        assert "禁止创建新的定时任务" not in unified.card.description
+        assert "status、list、add、update" in unified.card.description

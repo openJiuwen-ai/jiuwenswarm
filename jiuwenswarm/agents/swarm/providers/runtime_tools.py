@@ -36,6 +36,7 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntim
 from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
 from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.common.cron_session import is_cron_execution_session
 
 logger = logging.getLogger(__name__)
 
@@ -130,16 +131,30 @@ def build_cron_tools(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any
         # the same runtime mode as the originating team conversation.
         mode=str(getattr(ctx, "mode", "") or "team"),
     )
+    # cron 执行会话禁止再派生新 cron（防止 cron 派生 cron），与单 Agent 链路
+    # （interface_deep 的 allow_create=False）同一防线。判定信号与 code_rails
+    # 的 permission rail 对齐：调度器给每个 cron 请求打 request_metadata["cron"]
+    # （见 CronScheduler._run_team_stream_job），channel_id == "__cron__" 兜底
+    # 覆盖 SDK 未透传 metadata 的场景，会话 ID 前缀（cron_*）覆盖 team 流式
+    # 执行会话（_resolve_cron_execution_context）。普通会话三个信号都不命中，
+    # 创建能力保持不变。
+    allow_create = not (
+        (inp.request_metadata or {}).get("cron")
+        or str(inp.channel_id or "").strip() == "__cron__"
+        or is_cron_execution_session(inp.session_id)
+    )
     try:
         cron_tools = CronRuntimeBridge().build_tools(
             context=cron_context,
             agent_id=agent_id,
             language=inp.language,
+            allow_create=allow_create,
         )
         logger.info(
-            "[swarm.cron_tools] built %d cron tools for agent_id=%s",
+            "[swarm.cron_tools] built %d cron tools for agent_id=%s (create_enabled=%s)",
             len(cron_tools),
             agent_id,
+            allow_create,
         )
         return list(cron_tools)
     except Exception as exc:

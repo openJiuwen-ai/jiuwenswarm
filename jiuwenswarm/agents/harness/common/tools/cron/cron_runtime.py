@@ -709,6 +709,85 @@ def _patch_cron_tool_cards(tools: list[Any]) -> list[Any]:
     return tools
 
 
+# --- cron 执行会话：统一 cron 工具 schema 摘除 add ---
+# 仅靠 _NoCreateCronBackend 运行时报错不够：统一 cron 工具的 schema 仍把 add
+# 列为合法 action，描述里也照常宣传"创建"，模型按 schema 行事会先试一次 add
+# 再吃到报错，甚至反复重试。在工具注册前直接改写 ToolCard，把禁止信号前移到
+# 模型调用前可见的 schema 层（与下掉 cron_create_job 是同一道防线）。
+_CRON_NO_CREATE_NOTICE = {
+    "cn": (
+        "【重要】当前会话是定时任务的执行会话，禁止创建新的定时任务："
+        "add 动作不可用；只能查看/更新/删除/立即执行已有任务。"
+        "如需新建定时任务，请在普通对话会话中操作。\n\n"
+    ),
+    "en": (
+        "[IMPORTANT] This session is a scheduled-job execution session; creating "
+        "new cron jobs is forbidden: the add action is unavailable. Only manage "
+        "existing jobs (list/get/update/remove/run). Create new jobs from a "
+        "normal chat session instead.\n\n"
+    ),
+}
+
+# 描述中明文宣传 add 的句段；openjiuwen 改版导致失配时仅剩 notice 兜底，
+# 不影响 action 枚举层的硬摘除。
+_CRON_ADD_ADVERTISE_FIXES: tuple[tuple[str, str], ...] = (
+    (
+        "status、list、add、update、remove、run、runs、wake",
+        "status、list、update、remove、run、runs、wake",
+    ),
+    (
+        "status, list, add, update, remove, run, runs, and wake",
+        "status, list, update, remove, run, runs, and wake",
+    ),
+    ("用于 add 的任务对象", "保留的兼容字段；当前会话不支持 add 创建新任务"),
+    ("Job object for add", "Reserved compatibility field; add is unavailable in this session"),
+)
+
+
+def _apply_add_advertise_fixes(value: Any) -> Any:
+    """递归摘除描述文本中对 add 的宣传（str 替换，dict/list 递归重建）。"""
+    if isinstance(value, str):
+        for old, new in _CRON_ADD_ADVERTISE_FIXES:
+            if old in value:
+                value = value.replace(old, new)
+        return value
+    if isinstance(value, dict):
+        return {key: _apply_add_advertise_fixes(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_apply_add_advertise_fixes(item) for item in value]
+    return value
+
+
+def _patch_unified_cron_tool_no_create(tools: list[Any], *, language: str) -> list[Any]:
+    """改写统一 ``cron`` 工具 card：摘除 add action 并声明禁止创建（幂等）。"""
+    notice = _CRON_NO_CREATE_NOTICE.get(language) or _CRON_NO_CREATE_NOTICE["cn"]
+    action_desc = (
+        "Cron action to execute; add is unavailable in this session "
+        "(creating new cron jobs is forbidden)"
+        if language == "en"
+        else "要执行的 cron 操作；本会话不支持 add（禁止创建新的定时任务）"
+    )
+    for tool in tools:
+        card = getattr(tool, "card", None)
+        if str(getattr(card, "name", "") or "") != "cron":
+            continue
+        description = str(getattr(card, "description", None) or "")
+        if notice not in description:
+            description = _apply_add_advertise_fixes(description)
+            card.description = notice + description
+        if getattr(card, "input_params", None) is not None:
+            card.input_params = _apply_add_advertise_fixes(card.input_params)
+        input_params = getattr(card, "input_params", None)
+        if not isinstance(input_params, dict):
+            continue
+        action = (input_params.get("properties") or {}).get("action")
+        if not isinstance(action, dict) or not isinstance(action.get("enum"), list):
+            continue
+        action["enum"] = [item for item in action["enum"] if str(item) != "add"]
+        action["description"] = action_desc
+    return tools
+
+
 class _NoCreateCronBackend:
     """Backend view that forbids creating new cron jobs.
 
@@ -787,8 +866,9 @@ class CronRuntimeBridge:
         """Build cron tools.
 
         Args:
-            allow_create: False 时下掉创建类工具（``cron_create_job``），并让
-                统一 ``cron`` 工具的 ``add`` 动作直接报错。用于 cron 执行会话，
+            allow_create: False 时下掉创建类工具（``cron_create_job``），改写
+                统一 ``cron`` 工具 schema（action 枚举摘除 ``add`` 并声明禁止
+                创建），并让 ``add`` 动作在运行时直接报错。用于 cron 执行会话，
                 禁止 cron 再派生新 cron；list/get/update/delete 等管理能力保留。
         """
         backend = self.get_backend()
@@ -823,6 +903,10 @@ class CronRuntimeBridge:
                 for tool in tools
                 if getattr(getattr(tool, "card", None), "name", "") != "cron_create_job"
             ]
+            # 统一 cron 工具保留（list/get/update 等管理能力仍可用），但 schema
+            # 层摘除 add 并声明禁止创建：运行时报错之外，让模型在调用前就看到
+            # "本会话不能建任务"，不再按 schema 宣传的 add 反复尝试。
+            tools = _patch_unified_cron_tool_no_create(tools, language=language)
         # 修正 openjiuwen 工具描述中的 dow 编号语义（1=SUN→0=SUN，与 croniter 一致），
         # 见模块顶部 _CRON_DOW_SEMANTIC_FIXES 说明。
         tools = _patch_cron_tool_cards(tools)
