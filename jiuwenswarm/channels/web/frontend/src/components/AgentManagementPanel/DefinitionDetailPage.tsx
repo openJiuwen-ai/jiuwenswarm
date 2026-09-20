@@ -4,6 +4,7 @@ import { openAssetPublish } from '../../features/assetPublishEvents';
 import { useTranslation } from 'react-i18next';
 import {
   getAgentAvatarUrl,
+  type AgentFileContent,
   type AgentDetail,
   type DefinitionFileEntry,
   type RequestStatus,
@@ -23,7 +24,7 @@ type DefinitionDetailPageProps = {
   filesStatus: RequestStatus;
   filesError: string | null;
   selectedFilePath: string | null;
-  fileContent: { relativePath: string; content: string } | null;
+  fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
   actionError: string | null;

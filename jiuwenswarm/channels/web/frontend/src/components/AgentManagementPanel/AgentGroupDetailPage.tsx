@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AgentGroupDetail, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
+import type { AgentFileContent, AgentGroupDetail, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 import { getAvatarTone, GroupAvatar } from './GroupCard';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
@@ -17,7 +17,7 @@ type AgentGroupDetailPageProps = {
   filesStatus: RequestStatus;
   filesError: string | null;
   selectedFilePath: string | null;
-  fileContent: { relativePath: string; content: string } | null;
+  fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
   actionError: string | null;

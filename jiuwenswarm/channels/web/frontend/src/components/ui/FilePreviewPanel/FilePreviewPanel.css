@@ -65,7 +65,10 @@
   color: var(--color-text-strong);
 }
 
-.file-preview-tree__entry.is-unsupported,
+.file-preview-tree__entry.is-unsupported {
+  color: var(--color-text-tertiary);
+}
+
 .file-preview-tree__entry:disabled {
   color: var(--color-text-tertiary);
   cursor: not-allowed;
@@ -363,6 +366,14 @@
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+}
+
+.file-preview-pdf {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 480px;
+  border: 0;
 }
 
 /* ── State message (loading / error / empty) ──────────────── */
