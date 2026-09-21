@@ -175,8 +175,13 @@ def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     assert spec.spawn_mode == "inprocess"
     assert spec.transport is not None
     assert spec.transport.type == "inprocess"
-    assert spec.agents["leader"].enable_sys_operation is False
-    assert spec.agents["source-integrator"].enable_sys_operation is False
+    assert spec.agents["leader"].enable_sys_operation is True
+    assert spec.agents["leader"].workspace is not None
+    assert spec.workspace is not None
+    assert spec.workspace.enabled is True
+    assert spec.workspace.artifact_dirs == ["sources", "outlines", "drafts", "reviews"]
+    assert spec.agents["source-integrator"].enable_sys_operation is True
+    assert spec.agents["delivery-drafter"].enable_sys_operation is True
     assert {member.member_name for member in spec.predefined_members} == {
         "source-integrator",
         "delivery-drafter",
@@ -187,6 +192,10 @@ def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     assert "user-facing draft" in spec.agents["delivery-drafter"].system_prompt
     assert "verify the returned draft" in spec.agents["leader"].system_prompt
     assert "internal Team message" in spec.agents["leader"].system_prompt
-    assert "Do not exchange files" in spec.agents["leader"].system_prompt
-    assert "send the complete outline back" in spec.agents["source-integrator"].system_prompt
+    assert "Summary Team workspace" in spec.agents["leader"].system_prompt
+    assert "Organization workspace summary/" in spec.agents["leader"].system_prompt
+    assert (
+        "send the complete outline back"
+        in spec.agents["source-integrator"].system_prompt
+    )
     assert "Return the complete draft" in spec.agents["delivery-drafter"].system_prompt

@@ -9,7 +9,7 @@ from typing import Any
 
 def _summary_agent_spec(source: Any, *, system_prompt: str) -> Any:
     """Keep only the configured model and language while dropping user-team capabilities."""
-    from openjiuwen.harness.schema.deep_agent_spec import DeepAgentSpec
+    from openjiuwen.harness.schema.deep_agent_spec import DeepAgentSpec, WorkspaceSpec
 
     return DeepAgentSpec(
         model=getattr(source, "model", None),
@@ -25,14 +25,14 @@ def _summary_agent_spec(source: Any, *, system_prompt: str) -> Any:
         enable_security_rail=True,
         enable_tool_resilience_rail=True,
         max_iterations=12,
-        workspace=None,
+        workspace=WorkspaceSpec(stable_base=True),
         cwd=None,
         project_root=None,
         skills=[],
         enable_skill_discovery=False,
         sys_operation=None,
-        enable_sys_operation=False,
-        auto_create_workspace=False,
+        enable_sys_operation=True,
+        auto_create_workspace=True,
         language=getattr(source, "language", None),
     )
 
@@ -52,6 +52,7 @@ def build_summary_team_spec(
         TransportSpec,
     )
     from openjiuwen.agent_teams.schema.team import TeamMemberSpec, TeamRole
+    from openjiuwen.agent_teams.team_workspace.models import TeamWorkspaceConfig
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 
     configured = TeamManager._load_team_spec(session_id)
@@ -63,7 +64,8 @@ def build_summary_team_spec(
         "You are the Summary Team leader. First call org_summary_get_inputs and read only its bound source "
         "snapshot. Send that snapshot to source-integrator with an internal Team message. When it returns a "
         "structured, source-attributed outline, send the outline to delivery-drafter with an internal Team "
-        "message. Do not exchange files or create internal task cycles. Before calling org_summary_complete, "
+        "message or through the Summary Team workspace. Use the Team workspace for intermediate drafts and "
+        "the Organization workspace summary/ directory for final deliverables. Before calling org_summary_complete, "
         "verify the returned draft covers the requested deliverable, is grounded only in the bound sources, "
         "and has a non-empty concise abstract. If it does not, ask delivery-drafter for one focused revision. "
         "After the verification passes, call org_summary_complete exactly once. Do not poll, wait, create, "
@@ -72,12 +74,14 @@ def build_summary_team_spec(
     integrator_prompt = (
         "You are the source integrator. Turn the supplied source snapshot into a structured factual "
         "outline with source attribution, then send the complete outline back to summary-leader by internal "
-        "Team message. Do not use files, access organization tools, or create tasks."
+        "Team message or write it to the Summary Team workspace. Do not modify Organization source artifacts "
+        "or create tasks."
     )
     drafter_prompt = (
         "You are the delivery drafter. Create a user-facing draft only from the supplied source snapshot. "
-        "Return the complete draft and a concise abstract to summary-leader by internal Team message. Do not "
-        "use files, access organization tools, or create tasks."
+        "Return the complete draft and a concise abstract to summary-leader by internal Team message or the "
+        "Summary Team workspace. Final deliverables belong in the Organization workspace summary/ directory. "
+        "Do not modify source-Team artifacts or create tasks."
     )
     metadata = {
         "summary_team": True,
@@ -131,6 +135,11 @@ def build_summary_team_spec(
         # transport so internal task and message events reach their inboxes.
         spawn_mode="inprocess",
         transport=TransportSpec(type="inprocess"),
+        workspace=TeamWorkspaceConfig(
+            enabled=True,
+            artifact_dirs=["sources", "outlines", "drafts", "reviews"],
+            version_control=True,
+        ),
         metadata=metadata,
     )
 
