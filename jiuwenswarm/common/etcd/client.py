@@ -1,4 +1,7 @@
-"""Minimal etcd v3 gRPC-gateway JSON client (httpx, no grpc extra)."""
+"""Minimal etcd v3 gRPC-gateway JSON client (httpx, no grpc extra).
+
+Shared infrastructure, used by the cron store and AgentOS config updater.
+"""
 
 from __future__ import annotations
 
@@ -220,7 +223,12 @@ class EtcdJsonClient:
             raise EtcdCasError(f"cas failed key={key!r} mod_revision={mod_revision}")
         return self._header_revision(payload)
 
-    async def watch_prefix(self, prefix: bytes) -> AsyncIterator[list[EtcdKv]]:
+    async def watch_prefix(
+        self,
+        prefix: bytes,
+        *,
+        start_revision: int | None = None,
+    ) -> AsyncIterator[list[EtcdKv]]:
         """Yield batches of changed kvs until the stream dies."""
         if not self._endpoints:
             raise EtcdError("etcd endpoints are empty")
@@ -231,6 +239,8 @@ class EtcdJsonClient:
                 "range_end": _b64(prefix_range_end(prefix)),
             }
         }
+        if start_revision is not None and int(start_revision) > 0:
+            body["create_request"]["start_revision"] = str(int(start_revision))
         last_error: Exception | None = None
         for _ in range(max(1, len(self._endpoints))):
             base = self._next_base()
