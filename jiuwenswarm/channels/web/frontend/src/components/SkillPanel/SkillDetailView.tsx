@@ -220,12 +220,12 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     <>
       {props.detailState === 'loading' ? (
         /* 详情加载中：整区域状态视图（参考 agent-management），flex:1 填满详情区避免布局塌陷/抖动 */
-        <div data-testid={`${tid}-state`} data-variant="loading" className="skill-detail-state">
+        <div data-testid={`${tid}-state`} data-variant="loading" className="skill-detail-state detail-loading-shell">
           <button type="button" className="detail-back" onClick={onBack}>
             <BackIcon aria-hidden="true" />
             {t('agentManagement.actions.back')}
           </button>
-          <p>{t('common.loading')}</p>
+          <p className="detail-loading-center" data-testid={`${tid}-loading-text`}>{t('common.loading')}</p>
         </div>
       ) : (
         <div className="flex-1 flex flex-col min-h-0" data-testid={tid}>

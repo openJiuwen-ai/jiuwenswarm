@@ -77,15 +77,19 @@ export function DefinitionDetailPage({
   if (!detail) {
     const loading = detailStatus === 'loading';
     return (
-      <div className="agent-management-detail" data-testid="agent-detail" aria-busy={loading}>
+      <div className={`agent-management-detail${loading ? ' detail-loading-shell' : ''}`} data-testid="agent-detail" aria-busy={loading}>
         <button type="button" className="detail-back" data-testid="agent-management-detail-back" onClick={onBack}>
           <BackIcon aria-hidden="true" />
           {t('agentManagement.actions.back')}
         </button>
-        <div className="detail-body flex-1 min-h-0 overflow-y-auto pb-[72px]">
+        <div
+          className={loading ? 'detail-loading-center' : 'detail-body flex-1 min-h-0 overflow-y-auto pb-[72px]'}
+          data-testid="agent-management-detail-state-body"
+        >
           <div
             className={`agent-management-detail--state${loading ? '' : ' agent-management-state--error'}`}
             data-testid="agent-management-detail-state"
+            data-variant={loading ? 'loading' : undefined}
             role={loading ? 'status' : 'alert'}
           >
             <p>{loading ? t('common.loading') : detailError || t('agentManagement.states.detailError')}</p>

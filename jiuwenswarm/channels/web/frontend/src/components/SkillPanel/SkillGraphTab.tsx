@@ -44,7 +44,7 @@ export function SkillGraphTab({
 }: SkillGraphTabProps) {
   const { t } = useTranslation();
   return (
-    <div data-testid="skill-panel-graph-view" className="page-shell mt-4 flex flex-1 min-h-0 flex-col gap-3">
+    <div data-testid="skill-panel-graph-view" className="page-shell mt-4 flex flex-1 min-h-0 flex-col gap-3 pb-4">
       {indexRecommendationVisible ? (
         <div
           className="flex flex-none flex-col gap-3 rounded-lg border border-warn bg-warn-subtle px-4 py-3"
