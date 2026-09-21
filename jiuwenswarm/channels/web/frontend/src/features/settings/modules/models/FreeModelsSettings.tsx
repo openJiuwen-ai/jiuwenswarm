@@ -26,6 +26,7 @@ interface QuotaView {
   islogin: boolean;
   quota: ModelQuota | null;
   loading: boolean;
+  failed: boolean;
   locale: string;
 }
 
@@ -70,8 +71,9 @@ function PointsHeadline({ islogin, quota, loading, locale }: QuotaView) {
  * 积分行的说明，回答"积分会不会回来、什么时候回来"：用完了说何时恢复；平时有周期就说周期
  * （每周一 08:00 刷新），没有周期就说清楚按用量扣减、用完即止。
  */
-function PointsHint({ islogin, quota, locale }: QuotaView) {
+function PointsHint({ islogin, quota, failed, locale }: QuotaView) {
   const { t } = useTranslation();
+  if (failed) return <>{t('auth.huawei.quota.fetchFailedHint')}</>;
   if (!islogin || quota === null) return <>{t('auth.huawei.quota.meteringHint')}</>;
   const reset = quota.exhausted
     ? describeQuotaExhausted(quota.reset_at, locale)
@@ -147,6 +149,7 @@ export function FreeModelsSettings() {
   const userId = useAuthStore((state) => state.userId);
   const quota = useAuthStore((state) => state.quota);
   const quotaAvailable = useAuthStore((state) => state.quotaAvailable);
+  const quotaError = useAuthStore((state) => state.quotaError);
   const quotaLoading = useAuthStore((state) => state.quotaLoading);
   const refreshQuota = useAuthStore((state) => state.refreshQuota);
 
@@ -172,8 +175,15 @@ export function FreeModelsSettings() {
 
   const accountName = userName || userId || '';
   // 这套部署没接额度服务时整行不出现：显示"用量未知"只会让人以为出了问题。
-  const showQuotaRow = !islogin || quotaAvailable;
-  const view: QuotaView = { islogin, quota, loading: quotaLoading, locale: i18n.language || 'zh-CN' };
+  // 但"这次没查到"要显示成额度未知——整行凭空消失，用户只会以为功能坏了
+  const showQuotaRow = !islogin || quotaAvailable || quotaError;
+  const view: QuotaView = {
+    islogin,
+    quota,
+    loading: quotaLoading,
+    failed: quotaError,
+    locale: i18n.language || 'zh-CN',
+  };
   const lowBalance = islogin && quota !== null && quota.low_balance && !quota.exhausted;
 
   return (

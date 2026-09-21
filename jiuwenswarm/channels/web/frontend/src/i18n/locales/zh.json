@@ -3835,6 +3835,7 @@
         "unit": "积分",
         "used": "已用",
         "total": "总量",
+        "fetchFailedHint": "暂时查询不到额度",
         "meteringHint": "按模型实际用量扣减积分",
         "exhaustedHint": "免费积分已用完，请改用已配置的模型。",
         "exhaustedUntil": "免费积分已用完，将于 {{date}} 刷新",
