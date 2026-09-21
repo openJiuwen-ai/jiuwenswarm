@@ -19,10 +19,12 @@ import { seedAgentCatalog } from '../../stores/agentCatalogStore';
 import {
   AgentInstallPendingError,
   AgentManagementError,
+  advancePendingInstallQueue,
   createAgentGroupManagementClient,
-
+  createPendingInstallQueue,
   createAgentManagementClient,
   type AgentFileContent,
+  enqueuePendingInstall,
   type AgentCatalogItem,
   type AgentDetail,
   type AgentDraft,
@@ -33,6 +35,8 @@ import {
   type AgentManagementClient,
   type DefinitionFileEntry,
   type McpOption,
+  type PendingInstallJob,
+  type PendingInstallQueue,
   type SkillOption,
   type SkillListOptions,
   type RequestStatus,
@@ -264,6 +268,9 @@ export function AgentManagementPanel({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [connectorFlowId, setConnectorFlowId] = useState<string | null>(null);
+  const [pendingInstallQueue, setPendingInstallQueue] = useState<PendingInstallQueue>(() =>
+    createPendingInstallQueue(),
+  );
   const [mcpConnectId, setMcpConnectId] = useState<string | null>(null);
   const [mcpTokenTarget, setMcpTokenTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
   const [mcpAuthTarget, setMcpAuthTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
@@ -315,8 +322,7 @@ export function AgentManagementPanel({
   const groupFileRevisionRef = useRef(0);
   const lastNavigationRequestIdRef = useRef<number | null>(null);
   const actionNoticeTimerRef = useRef<number | null>(null);
-  const installFlowTargetRef = useRef<string | null>(null);
-  const installFlowModeRef = useRef<'catalog' | 'group-picker'>('catalog');
+  const pendingInstallQueueRef = useRef(pendingInstallQueue);
   const reconnectFlowTargetRef = useRef<string | null>(null);
   const connectorError = useConnectorStore((state) => state.error);
   const clearConnectorError = useConnectorStore((state) => state.clearError);
@@ -368,6 +374,16 @@ export function AgentManagementPanel({
       return next;
     });
   }, []);
+  const updatePendingInstallQueue = useCallback(
+    (update: (queue: PendingInstallQueue) => PendingInstallQueue) => {
+      const next = update(pendingInstallQueueRef.current);
+      if (next === pendingInstallQueueRef.current) return next;
+      pendingInstallQueueRef.current = next;
+      setPendingInstallQueue(next);
+      return next;
+    },
+    [],
+  );
 
   const [installationFilter, setInstallationFilter] = useState<InstallationFilter>('all');
   const [groupInstallationFilter, setGroupInstallationFilter] = useState<InstallationFilter>('all');
@@ -818,20 +834,19 @@ export function AgentManagementPanel({
   );
 
   const retryInstallAfterConnect = useCallback(
-    async (id: string) => {
+    async (job: PendingInstallJob) => {
       setActionError(null);
       try {
-        await client.installDefinition(id);
-        if (installFlowModeRef.current === 'group-picker') {
+        await client.installDefinition(job.id);
+        if (job.mode === 'group-picker') {
           await loadCatalog({ includeTeamCompatibility: true });
         } else {
-          await refreshAfterAction(id);
+          await refreshAfterAction(job.id);
         }
       } catch (error) {
         setActionError(formatActionError(error, t('agentManagement.states.actionError')));
       } finally {
-        clearBusy(id);
-        installFlowModeRef.current = 'catalog';
+        clearBusy(job.id);
       }
     },
     [clearBusy, client, formatActionError, loadCatalog, refreshAfterAction, t],
@@ -851,12 +866,40 @@ export function AgentManagementPanel({
     [clearBusy, refreshAfterAction, t],
   );
 
-  const installFlow = usePendingConnectorFlow(() => {
-    const id = installFlowTargetRef.current;
-    installFlowTargetRef.current = null;
-    setConnectorFlowId(null);
-    if (id) void retryInstallAfterConnect(id);
-  });
+  const settlePendingInstall = useCallback(
+    async (connected: boolean, reason?: 'failed' | 'cancelled') => {
+      const job = pendingInstallQueueRef.current.active;
+      if (!job) return;
+      if (connected) {
+        await retryInstallAfterConnect(job);
+      } else {
+        clearBusy(job.id);
+        if (reason === 'failed') {
+          const error = useConnectorStore.getState().error;
+          setActionError(formatActionError(error, t('agentManagement.states.actionError')));
+        }
+      }
+      updatePendingInstallQueue((queue) => advancePendingInstallQueue(queue).queue);
+    },
+    [clearBusy, formatActionError, retryInstallAfterConnect, t, updatePendingInstallQueue],
+  );
+
+  const installFlow = usePendingConnectorFlow(
+    () => { void settlePendingInstall(true); },
+    (reason) => { void settlePendingInstall(false, reason); },
+  );
+  const installFlowStartRef = useRef(installFlow.start);
+  installFlowStartRef.current = installFlow.start;
+
+  useEffect(() => {
+    const job = pendingInstallQueue.active;
+    if (!job) {
+      if (!reconnectFlowTargetRef.current) setConnectorFlowId(null);
+      return;
+    }
+    setConnectorFlowId(job.id);
+    installFlowStartRef.current(job.pendingConnectors);
+  }, [pendingInstallQueue.active]);
 
   const reconnectFlow = usePendingConnectorFlow(() => {
     const id = reconnectFlowTargetRef.current;
@@ -867,17 +910,13 @@ export function AgentManagementPanel({
 
   useEffect(() => {
     if (!connectorFlowId) return;
+    if (pendingInstallQueueRef.current.active) return;
     const flowActive =
-      installFlow.active ||
-      reconnectFlow.active ||
-      Boolean(
-        installFlow.tokenTarget || installFlow.authTarget || reconnectFlow.tokenTarget || reconnectFlow.authTarget,
-      );
+      reconnectFlow.active || Boolean(reconnectFlow.tokenTarget || reconnectFlow.authTarget);
     if (flowActive) return;
 
-    const id = installFlowTargetRef.current || reconnectFlowTargetRef.current;
+    const id = reconnectFlowTargetRef.current;
     if (connectorError) setActionError(formatActionError(connectorError, t('agentManagement.states.actionError')));
-    installFlowTargetRef.current = null;
     reconnectFlowTargetRef.current = null;
     setConnectorFlowId(null);
     if (id) clearBusy(id);
@@ -886,9 +925,6 @@ export function AgentManagementPanel({
     connectorFlowId,
     clearBusy,
     formatActionError,
-    installFlow.active,
-    installFlow.authTarget,
-    installFlow.tokenTarget,
     reconnectFlow.active,
     reconnectFlow.authTarget,
     reconnectFlow.tokenTarget,
@@ -900,7 +936,7 @@ export function AgentManagementPanel({
     setActionError(null);
     setActionNotice(null);
     clearConnectorError();
-    installFlowModeRef.current = options.includeTeamCompatibility ? 'group-picker' : 'catalog';
+    let queuedForConnect = false;
     try {
       const result = await client.installDefinition(id);
       if (result.kind === 'auth_required') {
@@ -913,17 +949,19 @@ export function AgentManagementPanel({
       }
     } catch (error) {
       if (error instanceof AgentInstallPendingError) {
-        installFlowTargetRef.current = id;
-        setConnectorFlowId(id);
-        installFlow.start(error.pendingConnectors);
+        queuedForConnect = true;
+        updatePendingInstallQueue((queue) =>
+          enqueuePendingInstall(queue, {
+            id,
+            mode: options.includeTeamCompatibility ? 'group-picker' : 'catalog',
+            pendingConnectors: error.pendingConnectors,
+          }),
+        );
         return;
       }
       setActionError(formatActionError(error, t('agentManagement.states.actionError')));
     } finally {
-      if (installFlowTargetRef.current !== id) {
-        clearBusy(id);
-        installFlowModeRef.current = 'catalog';
-      }
+      if (!queuedForConnect) clearBusy(id);
     }
   };
 

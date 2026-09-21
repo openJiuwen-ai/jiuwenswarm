@@ -650,6 +650,13 @@ test('concurrent Expert installs keep every affected card busy', async () => {
   assert.deepEqual(installButtons.map((button) => button.textContent), ['安装中…', '安装中…']);
 });
 
+test('pending connector installs use a queue instead of one mutable target slot', () => {
+  assert.doesNotMatch(panelSource, /installFlowTargetRef/);
+  assert.doesNotMatch(panelSource, /installFlowModeRef/);
+  assert.match(panelSource, /enqueuePendingInstall/);
+  assert.match(panelSource, /advancePendingInstallQueue/);
+});
+
 test('manual Expert Team creation requires at least one member', async () => {
   const { JSDOM } = await import('jsdom');
   const { createRoot } = await import('react-dom/client');
