@@ -185,6 +185,21 @@ def test_code_agent_rail_set_workspace_dir_is_noop_for_same_path():
     agent.ability_manager.add_ability.assert_not_called()
 
 
+def test_code_agent_rail_set_workspace_dir_rolls_back_on_workspace_error():
+    rail = CodeAgentRail(workspace_dir="/old-workspace")
+    old_workspace = object()
+    agent = MagicMock()
+    agent.deep_config.workspace = old_workspace
+    with patch.object(rail, "_load_custom_agents", return_value=[]), patch(
+        "jiuwenswarm.server.runtime.agent_adapter.code_agent_rail.Workspace",
+        side_effect=ValueError("bad root"),
+    ):
+        rail.init(agent)
+        rail.set_workspace_dir("/new-workspace")
+    assert rail._workspace_dir == "/old-workspace"
+    assert agent.deep_config.workspace is old_workspace
+
+
 def _write_project_agent(workspace: Path, name: str) -> Path:
     agents_dir = workspace / ".jiuwenswarm" / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)

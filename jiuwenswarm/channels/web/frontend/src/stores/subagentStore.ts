@@ -16,6 +16,9 @@ export interface SubagentRuntime {
 
 const PERSISTED_RUNTIME_PREFIX = 'jiuwen.subagent.runtime.v1:';
 const MAX_PERSISTED_ACTIVITIES = 500;
+const PERSIST_DEBOUNCE_MS = 300;
+const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingPersist = new Map<string, SubagentRuntime>();
 
 interface PersistedSubagentRuntime {
   subagents: Subagent[];
@@ -73,6 +76,7 @@ function storageKey(sessionId: string): string {
 }
 
 function readPersistedRuntime(sessionId: string): PersistedSubagentRuntime | null {
+  flushPersistRuntime(sessionId);
   const storage = getStorage();
   if (!storage) return null;
   try {
@@ -109,6 +113,43 @@ function persistRuntime(runtime: SubagentRuntime): void {
   } catch {
     // Browser storage is best-effort; live state remains authoritative.
   }
+}
+
+function cancelPersistRuntime(sessionId: string): void {
+  const timer = persistTimers.get(sessionId);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    persistTimers.delete(sessionId);
+  }
+  pendingPersist.delete(sessionId);
+}
+
+function flushPersistRuntime(sessionId: string): void {
+  const timer = persistTimers.get(sessionId);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    persistTimers.delete(sessionId);
+  }
+  const runtime = pendingPersist.get(sessionId);
+  if (!runtime) return;
+  pendingPersist.delete(sessionId);
+  persistRuntime(runtime);
+}
+
+function schedulePersistRuntime(runtime: SubagentRuntime, mode: 'debounce' | 'immediate'): void {
+  pendingPersist.set(runtime.sessionId, runtime);
+  if (mode === 'immediate') {
+    flushPersistRuntime(runtime.sessionId);
+    return;
+  }
+  const existing = persistTimers.get(runtime.sessionId);
+  if (existing !== undefined) clearTimeout(existing);
+  persistTimers.set(
+    runtime.sessionId,
+    setTimeout(() => {
+      flushPersistRuntime(runtime.sessionId);
+    }, PERSIST_DEBOUNCE_MS),
+  );
 }
 
 function mergePersistedRuntime(runtime: SubagentRuntime, persisted: PersistedSubagentRuntime | null): SubagentRuntime {
@@ -191,8 +232,8 @@ function upsertSubagentTurn(
   const nextTaskDescription = useIncomingDescription
     ? normalizedTaskDescription
     : current?.task_description || '';
-  const nextDescriptionSource = useIncomingDescription && descriptionSource === 'fallback'
-    ? 'fallback' as const
+  const nextDescriptionSource = useIncomingDescription
+    ? (descriptionSource === 'fallback' ? 'fallback' as const : undefined)
     : current?.description_source;
   const next: SubagentTurn = {
     task_id: normalizedTaskId,
@@ -702,6 +743,7 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
     set(state => {
       const runtimes = { ...state.runtimes };
       delete runtimes[sessionId];
+      cancelPersistRuntime(sessionId);
       getStorage()?.removeItem(storageKey(sessionId));
       return { runtimes };
     });
@@ -722,7 +764,7 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
       if (!runtime) return state;
       const next = dropCachedSubagent(runtime, subagentId, revision, updatedAt);
       if (next === runtime) return state;
-      persistRuntime(next);
+      schedulePersistRuntime(next, 'immediate');
       return { runtimes: { ...state.runtimes, [sessionId]: next } };
     });
   },
@@ -734,7 +776,10 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
         ? applySubagentUpdated(runtime, event)
         : applySubagentActivity(runtime, event);
       if (next === runtime) return state;
-      persistRuntime(next);
+      schedulePersistRuntime(
+        next,
+        event.event_type === 'chat.subagent_activity' ? 'debounce' : 'immediate',
+      );
       return { runtimes: { ...state.runtimes, [sessionId]: next } };
     });
   },
@@ -746,7 +791,10 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
         ? applySubagentHistoryUpdated(runtime, event)
         : applySubagentActivity(runtime, event);
       if (next === runtime) return state;
-      persistRuntime(next);
+      schedulePersistRuntime(
+        next,
+        event.event_type === 'chat.subagent_activity' ? 'debounce' : 'immediate',
+      );
       return { runtimes: { ...state.runtimes, [sessionId]: next } };
     });
   },
@@ -757,7 +805,7 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
       if (!runtime) return state;
       const next = applySubagentToolStatus(runtime, subagentId, status, updatedAt, taskDescription, taskId);
       if (next === runtime) return state;
-      persistRuntime(next);
+      schedulePersistRuntime(next, 'immediate');
       return { runtimes: { ...state.runtimes, [sessionId]: next } };
     });
   },
@@ -802,7 +850,7 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
       if (!runtime) return state;
       const next = applySubagentTurn(runtime, subagentId, taskId, taskDescription, startedAt);
       if (next === runtime) return state;
-      persistRuntime(next);
+      schedulePersistRuntime(next, 'immediate');
       return { runtimes: { ...state.runtimes, [sessionId]: next } };
     });
   },
@@ -813,7 +861,7 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
       if (!runtime) return state;
       const next = markRunningSubagentsCancelled(runtime);
       if (next === runtime) return state;
-      persistRuntime(next);
+      schedulePersistRuntime(next, 'immediate');
       return { runtimes: { ...state.runtimes, [sessionId]: next } };
     });
   },
@@ -823,7 +871,7 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
       const runtime = state.runtimes[sessionId] ?? createEmptySubagentRuntime(sessionId);
       const next = applySubagentResult(runtime, result);
       if (next === runtime) return state;
-      persistRuntime(next);
+      schedulePersistRuntime(next, 'immediate');
       return { runtimes: { ...state.runtimes, [sessionId]: next } };
     });
   },
@@ -833,7 +881,7 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
       const runtime = state.runtimes[sessionId] ?? createEmptySubagentRuntime(sessionId);
       const next = applySubagentTranscript(runtime, result);
       if (next === runtime) return state;
-      persistRuntime(next);
+      schedulePersistRuntime(next, 'immediate');
       return { runtimes: { ...state.runtimes, [sessionId]: next } };
     });
   },
@@ -843,7 +891,7 @@ export const useSubagentStore = create<SubagentState>((set, get) => ({
       const runtime = state.runtimes[sessionId];
       if (!runtime || (subagentId !== null && !runtime.subagentsById[subagentId])) return state;
       const next = { ...runtime, selectedSubagentId: subagentId };
-      persistRuntime(next);
+      schedulePersistRuntime(next, 'immediate');
       return { runtimes: { ...state.runtimes, [sessionId]: next } };
     });
   },

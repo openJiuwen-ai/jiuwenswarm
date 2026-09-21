@@ -3022,13 +3022,28 @@ class JiuWenSwarmDeepAdapter:
     ) -> bool:
         """Return True when a session still has live subagent slots in use.
 
-        A missing control is idle. If ``capacity()`` raises, treat the session
-        as occupied so TTL cannot evict an Adapter that may still hold children.
+        A missing control is idle. If the controls mapping is missing or
+        ``capacity()`` raises, treat the session as occupied so TTL cannot
+        evict an Adapter that may still hold children.
         """
         deep_agent = getattr(adapter, "_instance", None)
         if deep_agent is None:
             return False
-        controls = getattr(deep_agent, "_subagent_controls", None) or {}
+        if not hasattr(deep_agent, "_subagent_controls"):
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent occupancy probe failed; "
+                "treating session as occupied: session_id=%s",
+                session_id,
+            )
+            return True
+        controls = deep_agent._subagent_controls
+        if not isinstance(controls, dict):
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent occupancy probe failed; "
+                "treating session as occupied: session_id=%s",
+                session_id,
+            )
+            return True
         control = controls.get(session_id)
         if control is None:
             return False
@@ -9154,6 +9169,48 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] LLMRetryRail create failed: %s", exc)
             return None
 
+    @staticmethod
+    def _coerce_circuit_breaker_threshold(value: object, default: int) -> int:
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+        if parsed <= 0:
+            return default
+        return parsed
+
+    @staticmethod
+    def _circuit_breaker_config_from_mapping(
+        cb_cfg: dict,
+        defaults: CircuitBreakerConfig,
+    ) -> CircuitBreakerConfig | None:
+        warning = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("warning_threshold", defaults.warning_threshold),
+            defaults.warning_threshold,
+        )
+        critical = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("critical_threshold", defaults.critical_threshold),
+            defaults.critical_threshold,
+        )
+        global_breaker = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("global_breaker_threshold", defaults.global_breaker_threshold),
+            defaults.global_breaker_threshold,
+        )
+        unknown = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("unknown_tool_threshold", defaults.unknown_tool_threshold),
+            defaults.unknown_tool_threshold,
+        )
+        if warning > critical:
+            return None
+        if critical > global_breaker:
+            return None
+        return CircuitBreakerConfig(
+            warning_threshold=warning,
+            critical_threshold=critical,
+            global_breaker_threshold=global_breaker,
+            unknown_tool_threshold=unknown,
+        )
+
     def _build_circuit_breaker_rail(self) -> CircuitBreakerRail | None:
         """Build develop's loop-detection rail. Default off; dest-stable RAS stays on."""
         try:
@@ -9165,20 +9222,12 @@ class JiuWenSwarmDeepAdapter:
                 logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail disabled by config")
                 return None
             defaults = CircuitBreakerConfig()
-            config = CircuitBreakerConfig(
-                warning_threshold=cb_cfg.get(
-                    "warning_threshold", defaults.warning_threshold
-                ),
-                critical_threshold=cb_cfg.get(
-                    "critical_threshold", defaults.critical_threshold
-                ),
-                global_breaker_threshold=cb_cfg.get(
-                    "global_breaker_threshold", defaults.global_breaker_threshold
-                ),
-                unknown_tool_threshold=cb_cfg.get(
-                    "unknown_tool_threshold", defaults.unknown_tool_threshold
-                ),
-            )
+            config = self._circuit_breaker_config_from_mapping(cb_cfg, defaults)
+            if config is None:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] CircuitBreakerRail invalid thresholds"
+                )
+                return None
             rail = CircuitBreakerRail(config, language=self._resolve_runtime_language())
             logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create success")
             return rail

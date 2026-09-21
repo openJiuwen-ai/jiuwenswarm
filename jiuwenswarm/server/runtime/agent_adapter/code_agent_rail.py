@@ -400,7 +400,6 @@ class CodeAgentRail(DeepAgentRail):
         normalized = str(workspace_dir or "").strip()
         if not normalized or normalized == self._workspace_dir:
             return
-        self._workspace_dir = normalized
         parent_config = getattr(self._agent, "deep_config", None) if self._agent is not None else None
         if parent_config is not None:
             old_workspace = getattr(parent_config, "workspace", None)
@@ -415,10 +414,12 @@ class CodeAgentRail(DeepAgentRail):
                     language=language,
                 )
             except Exception as exc:
-                logger.warning(
-                    "[CodeAgentRail] Failed to rebind parent workspace after hot-switch: %s",
+                logger.error(
+                    "[CodeAgentRail] rebind workspace failed, keeping previous dir: %s",
                     exc,
                 )
+                return
+        self._workspace_dir = normalized
         if self._agent is not None:
             self._unregister_agent_tool(self._agent)
             self._register_agent_tool()

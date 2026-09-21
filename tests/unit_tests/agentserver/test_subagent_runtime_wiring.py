@@ -102,6 +102,17 @@ def test_session_has_live_subagent_runtime_fail_closed_when_capacity_raises() ->
     ) is True
 
 
+def test_session_has_live_subagent_runtime_fail_closed_when_controls_missing() -> None:
+    missing = SimpleNamespace(_instance=SimpleNamespace())
+    invalid = SimpleNamespace(_instance=SimpleNamespace(_subagent_controls="bad"))
+    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+        missing, "sess-1"
+    ) is True
+    assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
+        invalid, "sess-1"
+    ) is True
+
+
 def test_release_subagent_runtime_clears_progress_batch() -> None:
     from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
         clear_all_subagent_progress_batches,

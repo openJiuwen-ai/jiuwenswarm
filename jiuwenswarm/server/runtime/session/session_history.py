@@ -22,6 +22,11 @@ _FILE_LOCK = threading.Lock()
 _WRITE_QUEUE: queue.Queue[tuple[str, dict[str, Any], str | None]] = queue.Queue(maxsize=20000)
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
+_SUBAGENT_WRITE_QUEUE: queue.Queue[
+    tuple[str, str, list[dict[str, Any]], str | None]
+] = queue.Queue(maxsize=20000)
+_SUBAGENT_WORKER_STARTED = False
+_SUBAGENT_WORKER_LOCK = threading.Lock()
 _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
@@ -617,6 +622,7 @@ def load_history_records(
     *,
     subagent_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    _flush_subagent_history_writes()
     return _read_history(
         get_read_history_path(
             session_id,
@@ -863,9 +869,24 @@ def _batch_write_subagent_items(
     items: list[dict],
     sessions_root: str | None,
 ) -> None:
-    """Append JSONL rows to the child subagent file; dest parent buffer is untouched."""
+    """Queue JSONL rows for the child subagent file; dest parent buffer is untouched."""
     if not items:
         return
+    _ensure_subagent_history_worker_started()
+    try:
+        _SUBAGENT_WRITE_QUEUE.put_nowait(
+            (session_id, subagent_id, list(items), sessions_root)
+        )
+    except queue.Full:
+        _write_subagent_items_sync(session_id, subagent_id, items, sessions_root)
+
+
+def _write_subagent_items_sync(
+    session_id: str,
+    subagent_id: str,
+    items: list[dict],
+    sessions_root: str | None,
+) -> None:
     path, error = resolve_subagent_history_path(
         session_id,
         subagent_id,
@@ -886,6 +907,37 @@ def _batch_write_subagent_items(
             for item in items:
                 fh.write(json.dumps(item, ensure_ascii=False))
                 fh.write("\n")
+
+
+def _ensure_subagent_history_worker_started() -> None:
+    global _SUBAGENT_WORKER_STARTED
+    if _SUBAGENT_WORKER_STARTED:
+        return
+    with _SUBAGENT_WORKER_LOCK:
+        if _SUBAGENT_WORKER_STARTED:
+            return
+
+        def _worker() -> None:
+            while True:
+                sid, child_id, items, sessions_root = _SUBAGENT_WRITE_QUEUE.get()
+                try:
+                    _write_subagent_items_sync(sid, child_id, items, sessions_root)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("subagent history 异步写入失败: %s", exc)
+                finally:
+                    _SUBAGENT_WRITE_QUEUE.task_done()
+
+        t = threading.Thread(
+            target=_worker, name="subagent-history-writer", daemon=True
+        )
+        t.start()
+        _SUBAGENT_WORKER_STARTED = True
+
+
+def _flush_subagent_history_writes() -> None:
+    if not _SUBAGENT_WORKER_STARTED:
+        return
+    _SUBAGENT_WRITE_QUEUE.join()
 
 
 def _ensure_worker_started() -> None:
@@ -1142,6 +1194,7 @@ def shutdown() -> None:
         logger.warning("history shutdown flush 失败: %s", exc)
     try:
         _force_flush_all_pending()
+        _flush_subagent_history_writes()
     except Exception as exc:  # noqa: BLE001
         logger.warning("history shutdown 强制暂留落盘失败: %s", exc)
     deadline = time.monotonic() + 5.0

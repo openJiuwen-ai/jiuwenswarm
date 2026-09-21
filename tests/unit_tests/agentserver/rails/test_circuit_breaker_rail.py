@@ -141,6 +141,51 @@ def test_circuit_breaker_builder_stays_disabled_by_default(monkeypatch) -> None:
     assert adapter._build_circuit_breaker_rail() is None
 
 
+def test_circuit_breaker_builder_rejects_invalid_thresholds(monkeypatch) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep_mod
+
+    monkeypatch.setattr(
+        deep_mod,
+        "get_config",
+        lambda: {
+            "execution_guard": {
+                "circuit_breaker": {
+                    "enabled": True,
+                    "warning_threshold": "10",
+                    "critical_threshold": 5,
+                }
+            }
+        },
+    )
+    adapter = JiuWenSwarmDeepAdapter()
+    assert adapter._build_circuit_breaker_rail() is None
+
+
+def test_circuit_breaker_builder_coerces_string_thresholds(monkeypatch) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as deep_mod
+
+    monkeypatch.setattr(
+        deep_mod,
+        "get_config",
+        lambda: {
+            "execution_guard": {
+                "circuit_breaker": {
+                    "enabled": True,
+                    "warning_threshold": "10",
+                    "critical_threshold": "20",
+                    "global_breaker_threshold": "30",
+                    "unknown_tool_threshold": "10",
+                }
+            }
+        },
+    )
+    adapter = JiuWenSwarmDeepAdapter()
+    rail = adapter._build_circuit_breaker_rail()
+    assert rail is not None
+    assert rail._config.warning_threshold == 10
+    assert rail._config.critical_threshold == 20
+
+
 def test_dest_agent_ras_passthrough_is_not_disabled() -> None:
     """dest-stable RAS remains the default loop detector; do not overwrite it."""
     kwargs = _agent_ras_kwargs_from_config(

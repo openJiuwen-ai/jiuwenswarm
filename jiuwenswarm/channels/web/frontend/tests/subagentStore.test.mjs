@@ -904,6 +904,30 @@ test('explicit turn assignment repairs a fallback created by early activity', ()
   ]);
 });
 
+test('later fallback activity does not overwrite an explicit turn description', () => {
+  let runtime = createEmptySubagentRuntime(sessionId);
+  runtime = applySubagentUpdated(runtime, event(1, subagent({
+    task_description: 'Roster fallback',
+    updated_at: 1000,
+    revision: 1,
+  })));
+  runtime = applySubagentActivity(runtime, {
+    event_type: 'chat.subagent_activity',
+    session_id: sessionId,
+    activity: activity('turn-1-activity', 1, { task_id: 'turn-1', at_ms: 1100 }),
+  });
+  runtime = applySubagentTurn(runtime, 'agent-a', 'turn-1', 'Explicit title', 1000);
+  runtime = applySubagentActivity(runtime, {
+    event_type: 'chat.subagent_activity',
+    session_id: sessionId,
+    activity: activity('turn-1-activity-2', 2, { task_id: 'turn-1', at_ms: 1200 }),
+  });
+  const turns = selectSubagentTurns(runtime, 'agent-a');
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].task_description, 'Explicit title');
+  assert.equal(turns[0].description_source, undefined);
+});
+
 test('a wait result received before turn metadata is attached after turns are restored', () => {
   let runtime = createEmptySubagentRuntime(sessionId);
   runtime = applySubagentResult(runtime, {
