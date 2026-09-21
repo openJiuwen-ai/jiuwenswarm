@@ -2386,6 +2386,19 @@ function AppContent({
           summaries: info.summaries,
         });
       },
+      onPendingQuestionReplay: (items) => {
+        // 防御性兜底：当前 materializeHistoryTimeline 把未答问题也渲染成只读
+        // qa.summary 卡片（不弹实时交互框——web 重连后后端不重发挂起中断，弹框 +
+        // resume 会报 "session has no active execution"），所以 pendingQuestionReplay
+        // 恒为空、本回调不会被触发。保留此钩子是为了将来后端支持重发挂起中断时
+        // 可直接重新启用，无需改接口。
+        const chatStore = useChatStore.getState();
+        chatStore.ensureRuntime(sessionId);
+        const sorted = [...items].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+        for (const item of sorted) {
+          chatStore.enqueuePendingQuestion(sessionId, item.payload);
+        }
+      },
       onError: (message) => {
         console.warn('[history.restore]', message);
       },
