@@ -36,7 +36,7 @@ export function SkillGraphTab({
 }: SkillGraphTabProps) {
   const { t } = useTranslation();
   return (
-    <div data-testid="skill-panel-graph-view" className="page-shell mt-4 flex flex-1 min-h-0 flex-col gap-3">
+    <div data-testid="skill-panel-graph-view" className="page-shell mt-4 flex flex-1 min-h-0 flex-col gap-3 pb-4">
       <div
         data-testid="skill-panel-graph-orchestration-card"
         className="flex flex-none flex-wrap items-center justify-between gap-4 rounded-lg border border-border bg-panel p-4"

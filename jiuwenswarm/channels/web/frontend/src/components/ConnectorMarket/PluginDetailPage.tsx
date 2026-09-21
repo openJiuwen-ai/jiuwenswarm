@@ -121,12 +121,15 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
 
   if (!detail) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-plugin-detail-state">
+      <div className={`flex min-h-0 flex-1 flex-col${detailLoading ? ' detail-loading-shell' : ''}`} data-testid="connector-market-plugin-detail-state">
         <button type="button" onClick={onBack} className="detail-back">
           <BackIcon aria-hidden="true" />
           {t('connectorMarket.common.back')}
         </button>
-        <div className="flex min-h-40 flex-col items-center justify-center gap-3 text-text-muted">
+        <div
+          className={detailLoading ? 'detail-loading-center text-text-muted' : 'flex min-h-40 flex-col items-center justify-center gap-3 text-text-muted'}
+          data-testid="connector-market-plugin-detail-state-body"
+        >
           <p role={detailLoadFailed ? 'alert' : undefined}>
             {detailLoading ? t('common.loading') : t('connectorMarket.common.loadFailed')}
           </p>
