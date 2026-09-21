@@ -67,6 +67,8 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.subagent_activity",
         "chat.usage_summary",
         "chat.file",
+        "chat.ask_user_question",
+        "chat.ask_user_answer",
         "team.message",
         "context.usage",
         "context.compact_boundary",
