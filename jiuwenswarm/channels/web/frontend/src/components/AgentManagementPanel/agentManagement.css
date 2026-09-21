@@ -14,7 +14,7 @@
   color: var(--color-text-primary);
 }
 
-.page-content[data-testid="agent-management-panel"][data-variant="mine"] .page-toolbar {
+.page-content[data-testid='agent-management-panel'][data-variant='mine'] .page-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   row-gap: var(--space-agent-group-grid);
@@ -23,13 +23,13 @@
 
 /* 二级类型切换（我的专家内 专家/专家团）：已改用 ui/CategoryTabs，
    这里只保留 page-toolbar 网格里的定位，视觉交给 categoryTabs 自身样式 */
-.page-content[data-variant="mine"] .agent-management-secondary-tabs {
+.page-content[data-variant='mine'] .agent-management-secondary-tabs {
   grid-row: 2;
   grid-column: 1 / -1;
   justify-self: start;
 }
 
-.page-content[data-variant="mine"] .agent-management-primary-actions {
+.page-content[data-variant='mine'] .agent-management-primary-actions {
   grid-row: 1;
   grid-column: 2;
 }
@@ -39,24 +39,26 @@
   flex-shrink: 0;
 }
 
-.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail,
-.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="create"] .agent-group-editor {
+.page-content[data-testid='agent-management-panel'][data-definition-kind='group'][data-variant='detail']
+  .agent-group-detail,
+.page-content[data-testid='agent-management-panel'][data-definition-kind='group'][data-variant='create']
+  .agent-group-editor {
   transform: none;
 }
 
-[data-testid="agent-management-panel"][data-variant="catalog"],
-[data-testid="agent-management-panel"][data-variant="mine"],
-.page-content[data-testid="agent-management-panel"][data-variant="teams"],
-[data-testid="agent-management-panel"][data-variant="detail"],
-[data-testid="agent-management-panel"][data-variant="create"] {
+[data-testid='agent-management-panel'][data-variant='catalog'],
+[data-testid='agent-management-panel'][data-variant='mine'],
+.page-content[data-testid='agent-management-panel'][data-variant='teams'],
+[data-testid='agent-management-panel'][data-variant='detail'],
+[data-testid='agent-management-panel'][data-variant='create'] {
   overflow-y: hidden;
   scrollbar-gutter: auto;
 }
 
-[data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor,
-[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail,
-[data-testid="agent-management-panel"][data-variant="create"] .agent-group-editor,
-[data-testid="agent-management-panel"][data-variant="detail"] .agent-group-detail {
+[data-testid='agent-management-panel'][data-variant='create'] .agent-management-editor,
+[data-testid='agent-management-panel'][data-variant='detail'] .agent-management-detail,
+[data-testid='agent-management-panel'][data-variant='create'] .agent-group-editor,
+[data-testid='agent-management-panel'][data-variant='detail'] .agent-group-detail {
   transform: translateX(4px);
 }
 
@@ -80,8 +82,15 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   padding-bottom: 0;
+}
+
+/* 空间不足时不换行：搜索框作为可收缩项压缩宽度（≤800px 走整行堆叠布局） */
+.agent-management-primary-actions [data-testid='agent-management-search'] {
+  flex: 0 1 auto;
+  min-width: 160px;
 }
 
 .agent-management-create-menu {
@@ -146,7 +155,7 @@
   min-height: 24px;
 }
 
-[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-card {
+[data-testid='agent-management-panel'][data-variant='mine'] .agent-management-card {
   height: 160px;
 }
 
@@ -350,7 +359,7 @@
   overflow: hidden;
 }
 
-.agent-management-card__meta>.agent-management-tag {
+.agent-management-card__meta > .agent-management-tag {
   display: block;
   min-width: 0;
   max-width: 100%;
@@ -731,7 +740,7 @@
   line-height: 22px;
 }
 
-.agent-management-detail-capability-group+.agent-management-detail-capability-group {
+.agent-management-detail-capability-group + .agent-management-detail-capability-group {
   margin-top: 32px;
 }
 
@@ -911,6 +920,15 @@
 
 .agent-management-editor__tabs span.is-disabled {
   color: var(--color-text-tertiary);
+}
+
+[data-testid='agent-management-editor-tabs'] {
+  height: 34px;
+  font-size: var(--font-size-base);
+}
+
+[data-testid='agent-management-editor-tabs'] > button {
+  font-weight: 400;
 }
 
 .agent-management-form-section {
@@ -1323,15 +1341,6 @@
   gap: 8px;
 }
 
-.agent-management-field-counter {
-  color: var(--color-text-muted);
-  font-size: 12px;
-}
-
-.agent-management-field-counter.is-limit {
-  color: var(--color-feedback-warning);
-}
-
 .agent-management-form-section__header {
   display: flex;
   align-items: flex-start;
@@ -1503,7 +1512,9 @@
   cursor: pointer;
   opacity: var(--opacity-agent-hidden);
   pointer-events: none;
-  transition: opacity var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
 .agent-management-capability-card:hover .agent-management-capability-card__remove,
@@ -2307,50 +2318,6 @@
   white-space: nowrap;
 }
 
-@media (max-width: 800px) {
-  .page-content[data-testid='agent-management-panel'] {
-    --agent-page-gutter: 20px;
-  }
-
-  .agent-management-primary-actions {
-    width: 100%;
-    padding-bottom: 16px;
-  }
-
-  .agent-group-detail__members {
-    grid-template-columns: 1fr;
-  }
-
-  .agent-management-detail-capabilities,
-  .agent-management-prompt-list,
-  .agent-management-selected-capabilities,
-  .agent-management-selection-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .agent-management-selection-dialog {
-    width: 100%;
-  }
-
-  .agent-management-card {
-    height: auto;
-    min-height: 160px;
-  }
-
-  [data-testid='agent-management-panel'][data-variant='mine'] .agent-management-card {
-    height: auto;
-  }
-
-  .agent-management-page-card .agent-management-card__actions {
-    right: 16px;
-    top: auto;
-    bottom: 16px;
-    opacity: var(--opacity-agent-visible);
-    pointer-events: auto;
-    transform: none;
-  }
-}
-
 @media (max-width: 560px) {
   .agent-management-card {
     height: auto;
@@ -2358,12 +2325,12 @@
 }
 /* 0807 high-fidelity alignment: keep the existing live seams and tune only
    the Agent/AgentGroup surfaces covered by the design exports. */
-.page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+.page-content[data-testid='agent-management-panel'] [data-testid='agent-management-search'] {
   width: 360px !important;
 }
 
-.page-content[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail,
-.page-content[data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor {
+.page-content[data-testid='agent-management-panel'][data-variant='detail'] .agent-management-detail,
+.page-content[data-testid='agent-management-panel'][data-variant='create'] .agent-management-editor {
   padding-top: 0;
 }
 
@@ -2618,7 +2585,7 @@
 }
 
 @media (max-width: 900px) {
-  .page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+  .page-content[data-testid='agent-management-panel'] [data-testid='agent-management-search'] {
     width: min(320px, 100%) !important;
   }
 
@@ -2627,27 +2594,8 @@
   }
 }
 
-@media (max-width: 1000px) {
-  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .page-toolbar {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-primary-actions {
-    grid-column: 1;
-    grid-row: 2;
-    justify-content: flex-end;
-    min-width: 0;
-    width: 100%;
-  }
-
-  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-secondary-tabs {
-    grid-column: 1;
-    grid-row: 3;
-  }
-}
-
 @media (max-width: 720px) {
-  .page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+  .page-content[data-testid='agent-management-panel'] [data-testid='agent-management-search'] {
     width: min(228px, 100%) !important;
   }
 
@@ -2755,13 +2703,48 @@
   padding: 0;
 }
 
+/* footer 按钮样式对齐 chat-panel-work-dialog-actions（ChatPanel.css .chat-work-dialog__actions）：
+   84x28 胶囊按钮、取消=白底描边、确认=黑底蓝边、确认禁用=置灰不透明 */
 .agent-group-upload-dialog > footer .agent-management-button {
   width: var(--size-agent-group-upload-button-width);
   min-width: var(--size-agent-group-upload-button-width);
   height: var(--size-agent-group-drawer-control);
   min-height: var(--size-agent-group-drawer-control);
-  padding: 0 16px;
+  padding: 0;
+  border: 1px solid var(--color-control-emphasis);
   border-radius: var(--radius-full);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.agent-group-upload-dialog > footer .agent-management-button:hover:not(:disabled) {
+  border-color: var(--color-control-emphasis);
+  background: var(--color-surface-card);
+}
+
+.agent-group-upload-dialog > footer .agent-management-button--primary {
+  border-color: var(--color-action-primary);
+  background: var(--color-control-emphasis);
+  color: var(--color-action-primary-text);
+}
+
+.agent-group-upload-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
+  border-color: var(--color-action-primary);
+  background: var(--color-control-emphasis);
+}
+
+.agent-group-upload-dialog > footer .agent-management-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.agent-group-upload-dialog > footer .agent-management-button--primary:disabled {
+  border-color: var(--color-text-divider);
+  background: var(--color-surface-muted);
+  color: var(--color-text-disabled);
+  opacity: 1;
 }
 
 .agent-management-upload-dialog__hint-copy {
@@ -2772,11 +2755,12 @@
   margin-bottom: 0;
 }
 
-[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail {
+[data-testid='agent-management-panel'][data-definition-kind='group'][data-variant='detail'] .agent-group-detail {
   transform: none;
 }
 
-.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="create"] .agent-group-editor {
+.page-content[data-testid='agent-management-panel'][data-definition-kind='group'][data-variant='create']
+  .agent-group-editor {
   transform: translateX(4px);
 }
 
@@ -2799,7 +2783,8 @@
 
 /* Keep the Expert Team detail page on the same centered detail container and
    metadata rhythm as the ordinary Expert detail page. */
-.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail {
+.page-content[data-testid='agent-management-panel'][data-definition-kind='group'][data-variant='detail']
+  .agent-group-detail {
   transform: translateX(4px);
 }
 
@@ -3044,19 +3029,20 @@
 
 .agent-group-member-card {
   display: flex;
-  width: 174px;
-  height: 104px;
-  min-width: 0;
-  min-height: 104px;
+  min-width: 174px;
+  height: 132px;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   box-sizing: border-box;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-card);
+  border: 1px solid var(--color-agent-group-member-card-border, #f0f0f0);
+  border-radius: 8px;
+  background: var(--color-agent-group-member-card-surface, #fafafa);
   padding: 12px 16px;
   text-align: center;
-  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
 }
 
 .agent-group-member-card:hover {
@@ -3074,6 +3060,11 @@
   width: 40px;
   height: 40px;
   flex-basis: 40px;
+  border-radius: 8px;
+}
+
+.agent-group-member-avatar .entity-header__avatar-letter {
+  border-radius: 8px;
 }
 
 .agent-group-member-card__identity {
@@ -3152,6 +3143,7 @@
 .agent-management-catalog-card:focus-within .agent-management-card__actions {
   opacity: 1;
 }
+
 /* Measure available space rather than the width of already-truncated tags. */
 .agent-management-catalog-card .page-card__tags {
   width: 100%;

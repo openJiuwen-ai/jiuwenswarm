@@ -28,10 +28,6 @@ from jiuwenswarm.symphony.adapter import (
     orchestration_config_from_swarm,
 )
 from jiuwenswarm.symphony.llm import LLMConfig, probe_model_connection
-from jiuwenswarm.symphony.experience import (
-    JiuwenSwarmSkillAdapter,
-    SkillPackNotInstallableError,
-)
 from jiuwenswarm.symphony.config import SymphonyConfig, load_symphony_config
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
@@ -47,6 +43,7 @@ CapabilityPackager = core_symphony.flow.CapabilityPackager
 LLMPackageReviewAgent = core_symphony.LLMPackageReviewAgent
 PackageReviewGate = core_symphony.flow.PackageReviewGate
 SymphonyFlowEngine = core_symphony.flow.SymphonyFlowEngine
+SkillPackAdapter = core_symphony.flow.SkillPackAdapter
 VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
 
 
@@ -84,22 +81,30 @@ def _candidate_question(
     request_id: str,
 ) -> dict[str, Any]:
     structure = (
-        "；".join(
-            f"{source} → {target} ({relation})"
-            for source, target, relation in candidate.structure
+        "\n".join(
+            f"`{source}` → `{target}`"
+            for source, target, _relation in candidate.structure
         )
-        or "线性组合能力"
+        or "根据任务需要组合使用"
     )
-    statistics = (
-        f"成功 {candidate.success_count}/{candidate.execution_count} 次"
-        f"（{candidate.success_rate:.0%}）"
-    )
+    package_name = candidate.name or "组合技能包"
+    applicability = candidate.applicability or "适合需要多个技能配合完成的类似任务。"
     question = "\n".join(
         (
-            candidate.applicability or "发现一条可复用的成功能力组合。",
-            f"能力结构：{structure}",
-            f"历史统计：{statistics}",
-            "是否安装为组合 Skill？",
+            "系统发现这套能力组合在类似任务中表现稳定，可以保存为技能包，"
+            "以后遇到类似任务时直接使用。",
+            "",
+            "**技能包名称**",
+            package_name,
+            "",
+            "**适用场景**",
+            applicability,
+            "",
+            "**包含的技能及执行顺序**",
+            structure,
+            "",
+            "**使用记录**",
+            f"执行 {candidate.execution_count} 次，成功 {candidate.success_count} 次",
         )
     )
     return {
@@ -107,11 +112,19 @@ def _candidate_question(
         "request_id": request_id,
         "questions": [
             {
-                "header": (candidate.name or "组合 Skill")[:12],
+                "header": "发现可复用的技能包",
                 "question": question,
                 "options": [
-                    {"label": "安装", "description": "评审通过后安装组合 Skill。"},
-                    {"label": "稍后", "description": "保留经验，暂不安装。"},
+                    {
+                        "label": "创建技能包",
+                        "value": "install",
+                        "description": "保存这套能力组合，供以后直接使用。",
+                    },
+                    {
+                        "label": "暂不创建",
+                        "value": "defer",
+                        "description": "保留这条推荐，本次不创建技能包。",
+                    },
                 ],
                 "multi_select": False,
             }
@@ -401,8 +414,7 @@ class SwarmSymphonyService:
                             "retryable": False,
                             "build_status": "running",
                             "operation": "plan",
-                            "detail": graph_build.get("detail")
-                            or failure["detail"],
+                            "detail": graph_build.get("detail") or failure["detail"],
                         }
                     )
                 return failure
@@ -649,7 +661,7 @@ class SwarmSymphonyService:
                 flow_dir,
                 llm_client=model,
                 gate=PackageReviewGate(LLMPackageReviewAgent(model)),
-                skill_adapter=JiuwenSwarmSkillAdapter(),
+                skill_adapter=SkillPackAdapter(),
             )
         return SymphonyRuntime(
             graph_artifact_root=config.paths.graph_dir,
@@ -730,7 +742,15 @@ class SwarmSymphonyService:
         recovered = self._recovered_candidates
         try:
             recovered = (*recovered, *await self._start_flow(runtime))
-            self._recovered_candidates = ()
+            if execution_graph.get("outcome") == "success":
+                self._recovered_candidates = ()
+            else:
+                # Startup recovery has no originating session. Keep those
+                # candidates queued until a successful task provides an
+                # appropriate conversation context; a cancelled/partial run
+                # must not surface an unrelated historical recommendation.
+                self._recovered_candidates = _unique_candidates(recovered)
+                recovered = ()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Symphony Flow startup recovery failed (%s)",
@@ -806,19 +826,39 @@ class SwarmSymphonyService:
                 build_server_push_message,
             )
             # Delivery succeeded. Keep the process-local guard even if the
-            # persistent Flow acknowledgement is stale or temporarily fails;
-            # otherwise concurrent submissions can show the same prompt again.
+            # user has not answered yet; otherwise concurrent submissions can
+            # show the same prompt again.
             self._notified_candidates.add(key)
-            runtime = self._runtime
-            if runtime is None or runtime.flow_engine is None:
-                return
-            try:
-                runtime.flow_engine.acknowledge_candidate(*key)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Symphony candidate acknowledgement failed (%s)",
-                    type(exc).__name__,
-                )
+
+    def defer_candidate(self, recipe_id: str, version: int) -> None:
+        """Allow a deferred candidate to be offered by a later successful run."""
+
+        key = (recipe_id, version)
+        self._notified_candidates.discard(key)
+        runtime = self._runtime
+        if runtime is None or runtime.flow_engine is None:
+            return
+        try:
+            runtime.flow_engine.release_candidate(*key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Symphony deferred candidate release failed (%s)",
+                type(exc).__name__,
+            )
+
+    @staticmethod
+    def _acknowledge_installed_candidate(
+        flow: Any,
+        recipe_id: str,
+        recipe_version: int,
+    ) -> None:
+        try:
+            flow.acknowledge_candidate(recipe_id, recipe_version)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Symphony installed candidate acknowledgement failed (%s)",
+                type(exc).__name__,
+            )
 
     def list_experience_candidates(self) -> dict[str, Any]:
         """Return installable Recipe versions retained by the Core Flow store."""
@@ -887,15 +927,22 @@ class SwarmSymphonyService:
             return {"installed": False, "reason": "flow_disabled"}
         async with self._install_lock:
             previous = self._install_receipts.get(request_id)
-            if previous is not None:
+            if previous is not None and previous.get("installed") is True:
+                flow = self.runtime().flow_engine
+                if flow is not None:
+                    self._acknowledge_installed_candidate(
+                        flow, recipe_id, recipe_version
+                    )
                 return {**previous, "newly_installed": False, "replayed": True}
+            self._install_receipts.pop(request_id, None)
             runtime = self.runtime()
             flow = runtime.flow_engine
             if flow is None:
                 return {"installed": False, "reason": "flow_disabled"}
             persisted = _read_install_receipt(flow.store.root.resolve(), request_id)
-            if persisted is not None:
+            if persisted is not None and persisted.get("installed") is True:
                 self._install_receipts[request_id] = dict(persisted)
+                self._acknowledge_installed_candidate(flow, recipe_id, recipe_version)
                 return {**persisted, "newly_installed": False, "replayed": True}
             preparation = await flow.review_and_prepare_install(
                 recipe_id,
@@ -915,8 +962,6 @@ class SwarmSymphonyService:
                     "recipe_version": recipe_version,
                     "request_id": request_id,
                 }
-                _save_install_receipt(flow.store.root.resolve(), result)
-                self._install_receipts[request_id] = dict(result)
                 return result
             if package_id and package_id != actual_package_id:
                 return {"installed": False, "reason": "package_id_mismatch"}
@@ -925,52 +970,53 @@ class SwarmSymphonyService:
             if not CapabilityPackager.verify_package_integrity(package):
                 return {"installed": False, "reason": "invalid_integrity"}
             flow_root = flow.store.root.resolve()
-            with tempfile.TemporaryDirectory(
-                prefix=".symphony-install-", dir=flow_root
-            ) as staging_value:
-                artifact_dir = Path(staging_value).resolve()
+            artifact_value = preparation.artifact_dir
+            if not artifact_value:
+                return {"installed": False, "reason": "missing_artifact"}
+            artifact_path = Path(artifact_value)
+            artifact_dir = artifact_path.resolve()
+            expected_artifact_dir = (
+                flow_root / "packages" / actual_package_id / "skill"
+            ).resolve()
+            if (
+                artifact_dir != expected_artifact_dir
+                or not artifact_dir.is_dir()
+                or artifact_path.is_symlink()
+            ):
+                return {"installed": False, "reason": "invalid_artifact"}
+            recover = getattr(skill_manager, "recover_symphony_skill_install", None)
+            installed = (
+                recover(
+                    artifact_dir,
+                    package_id=actual_package_id,
+                    integrity=actual_integrity,
+                )
+                if callable(recover)
+                else None
+            )
+            if installed is None:
                 try:
-                    JiuwenSwarmSkillAdapter.render(package, artifact_dir)
-                except SkillPackNotInstallableError as exc:
-                    logger.warning("Symphony SkillPack is not installable: %s", exc)
-                    return {
-                        "installed": False,
-                        "reason": "not_installable",
-                        "details": [str(exc)],
-                    }
-                recover = getattr(skill_manager, "recover_symphony_skill_install", None)
-                installed = (
-                    recover(
+                    installed = skill_manager.install_symphony_skill_artifact(
                         artifact_dir,
+                        expected_root=flow_root,
                         package_id=actual_package_id,
                         integrity=actual_integrity,
                     )
-                    if callable(recover)
-                    else None
-                )
-                if installed is None:
-                    try:
-                        installed = skill_manager.install_symphony_skill_artifact(
-                            artifact_dir,
-                            expected_root=flow_root,
-                            package_id=actual_package_id,
-                            integrity=actual_integrity,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "Symphony Skill install failed (%s)",
-                            type(exc).__name__,
-                        )
-                        if getattr(exc, "code", "") in {
-                            "SKILL_INVALID_METADATA",
-                            "SKILL_INVALID_PACKAGE",
-                        }:
-                            return {
-                                "installed": False,
-                                "reason": "not_installable",
-                                "details": [str(exc)],
-                            }
-                        return {"installed": False, "reason": "install_failed"}
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Symphony Skill install failed (%s)",
+                        type(exc).__name__,
+                    )
+                    if getattr(exc, "code", "") in {
+                        "SKILL_INVALID_METADATA",
+                        "SKILL_INVALID_PACKAGE",
+                    }:
+                        return {
+                            "installed": False,
+                            "reason": "not_installable",
+                            "details": [str(exc)],
+                        }
+                    return {"installed": False, "reason": "install_failed"}
             receipt = {
                 "installed": bool(installed.get("success")),
                 "newly_installed": bool(installed.get("success")),
@@ -985,6 +1031,7 @@ class SwarmSymphonyService:
             if receipt["installed"]:
                 _save_install_receipt(flow_root, receipt)
                 self._install_receipts[request_id] = dict(receipt)
+                self._acknowledge_installed_candidate(flow, recipe_id, recipe_version)
             return receipt
 
     async def close(self) -> None:
@@ -1215,13 +1262,15 @@ def _web_graph_payload(
                     queries.append(q)
                 detail = str(event.get("detail") or "").strip()
                 if detail:
-                    trace_details.append({
-                        "event_id": trace_id,
-                        "query": q,
-                        "detail": detail,
-                        "outcome": event.get("outcome", ""),
-                        "ts": event.get("ts", ""),
-                    })
+                    trace_details.append(
+                        {
+                            "event_id": trace_id,
+                            "query": q,
+                            "detail": detail,
+                            "outcome": event.get("outcome", ""),
+                            "ts": event.get("ts", ""),
+                        }
+                    )
 
             # Use task_description as label (truncated for graph display)
             task_desc = pack.get("task_description", "")
@@ -1259,12 +1308,14 @@ def _web_graph_payload(
                 if not member_ref:
                     # Member skill not in main graph, create a node for it
                     member_ref = f"skill:{member_id}"
-                    pack_member_nodes.append({
-                        "id": member_ref,
-                        "type": "skill",
-                        "label": member_id,
-                        "properties": {"id": member_id, "name": member_id},
-                    })
+                    pack_member_nodes.append(
+                        {
+                            "id": member_ref,
+                            "type": "skill",
+                            "label": member_id,
+                            "properties": {"id": member_id, "name": member_id},
+                        }
+                    )
                 pack_edge = {
                     "source": pack_node_id,
                     "target": member_ref,

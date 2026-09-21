@@ -163,6 +163,9 @@ function getFriendlyErrorMessage(
   if (/^agent_group package (?:missing\/corrupt manifest\.json|wrong package_type|conflict):/i.test(normalizedMessage)) {
     return translate('agentManagement.group.states.definitionUnavailable');
   }
+  if (/^(?:agent_group manifest|AgentGroup|AgentTemplate|agent directory not found:|shared skill |failed to extract archive|archive )/i.test(normalizedMessage)) {
+    return translate('agentManagement.group.states.packageValidationError', { reason: normalizedMessage });
+  }
   if (/^(?:missing or invalid leaderId|missing or invalid memberIds|invalid memberId|leaderId must not appear|duplicate memberId|memberId 'leader')/i.test(normalizedMessage)) {
     return translate('agentManagement.group.states.membersInvalid');
   }

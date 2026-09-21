@@ -1,17 +1,18 @@
 /**
  * 对话内交互弹窗的分流逻辑。
  *
- * 后端通过 `chat.ask_user_question` 下发的 pendingQuestion，按 source 分为三类：
+ * 后端通过 `chat.ask_user_question` 下发的 pendingQuestion，按来源分流：
  *  - authorization: 工具权限 / 操作确认 / 扩展激活 / 技能演进审批(evolution_interrupt)
  *                   —— 输入框上方吸附「授权条」
  *  - interaction:   Agent 主动提问（ask_user）—— 输入框上方吸附「交互卡」，支持单/多选/输入/多轮
+ *  - experience:    Symphony 推荐的可复用技能包——复用 InteractionPrompt 交互窗口
  *  - legacy:        计划审批(plan approval) / 演进审批的旧 source 别名(skill_evolution_approval)
  *                   —— 仍走原 InlineQuestionCard
  */
 
 import type { AskUserQuestionPayload } from '../../types';
 
-export type PromptKind = 'authorization' | 'interaction' | 'legacy' | 'none';
+export type PromptKind = 'authorization' | 'interaction' | 'experience' | 'legacy' | 'none';
 
 const AUTHORIZATION_SOURCES = new Set([
   'permission_interrupt',
@@ -34,8 +35,16 @@ export function isPlanApprovalPrompt(pq: AskUserQuestionPayload | null | undefin
   return !!pq && pq.planApprovalKind === 'plan_approval';
 }
 
+/** Symphony 运行成功后推荐创建的可复用技能包。 */
+export function isSkillPackagePrompt(pq: AskUserQuestionPayload | null | undefined): boolean {
+  if (!pq) return false;
+  if (pq.evolutionMeta?.rail_kind === 'symphony_experience') return true;
+  return (pq.request_id ?? '').startsWith('symphony_experience_');
+}
+
 export function classifyPrompt(pq: AskUserQuestionPayload | null | undefined): PromptKind {
   if (!pq) return 'none';
+  if (isSkillPackagePrompt(pq)) return 'experience';
   if (pq.source === 'swarmflow_human') return 'interaction';
   // 技能演进审批（evolution_interrupt）协议已冻结为与 permission_interrupt 一致的
   // allow_once/allow_always/reject 三选一，改走 AuthorizationPrompt；legacy source
