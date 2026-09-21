@@ -956,8 +956,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     isTeamMode && activeSessionId !== NEW_CONVERSATION_ID && !agentGroupBinding && !agentGroupBindingPending,
   );
   const agentGroupPickerLocked = agentGroupLocked || existingTeamGroupSelectionDisabled;
+  const teamSkillSelectionActive = isTeamMode && selectedSkills.length > 0;
   const agentSelectionDisabled = isTeamMode;
-  const agentGroupSelectionDisabled = isAgentMode || agentGroupPickerLocked;
+  const agentGroupSelectionDisabled = isAgentMode || agentGroupPickerLocked || teamSkillSelectionActive;
 
   useEffect(() => {
     if (!isTeamMode && !isAgentMode) return;
@@ -3482,7 +3483,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                           <button type="button" role="tab" aria-selected={pickerTab === 'agent'} aria-disabled={agentSelectionDisabled} className={pickerTab === 'agent' ? 'is-active' : ''} disabled={agentSelectionDisabled} data-testid="chat-panel-agent-picker-agent-tab" title={agentSelectionDisabled ? t('chat.agentOnlyInSingleAgentMode') : undefined} onClick={() => { setPickerTab('agent'); setAgentPickerQuery(''); }}>{t('chat.agent')}</button>
                                         ) : null}
                                         {!isAgentMode ? (
-                                          <button type="button" role="tab" aria-selected={pickerTab === 'group'} aria-disabled={agentGroupSelectionDisabled} className={pickerTab === 'group' ? 'is-active' : ''} disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-picker-agent-group-tab" title={isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : agentGroupLocked ? t('chat.agentGroupBinding') : undefined} onClick={() => { setPickerTab('group'); setAgentPickerQuery(''); }}>{t('chat.agentGroup')}</button>
+                                          <button type="button" role="tab" aria-selected={pickerTab === 'group'} aria-disabled={agentGroupSelectionDisabled} className={pickerTab === 'group' ? 'is-active' : ''} disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-picker-agent-group-tab" title={isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : teamSkillSelectionActive ? t('chat.teamSkillsGroupLocked') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : agentGroupLocked ? t('chat.agentGroupBinding') : undefined} onClick={() => { setPickerTab('group'); setAgentPickerQuery(''); }}>{t('chat.agentGroup')}</button>
                                         ) : null}
                                       </div>
                                     ) : null
@@ -3635,7 +3636,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                       data-tooltip={
                                         isAgentMode
                                           ? t('chat.agentGroupOnlyInTeamMode')
-                                          : existingTeamGroupSelectionDisabled
+                                          : teamSkillSelectionActive
+                                            ? t('chat.teamSkillsGroupLocked')
+                                            : existingTeamGroupSelectionDisabled
                                             ? t('chat.agentGroupFirstBuildOnly')
                                             : item.description || t('chat.agentGroupBinding')
                                       }

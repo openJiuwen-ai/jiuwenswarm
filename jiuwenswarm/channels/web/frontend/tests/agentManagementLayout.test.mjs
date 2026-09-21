@@ -367,7 +367,10 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
     /const existingTeamGroupSelectionDisabled = Boolean\([\s\S]*activeSessionId !== NEW_CONVERSATION_ID/,
   );
   assert.match(inputAreaSource, /const agentSelectionDisabled = isTeamMode;/);
-  assert.match(inputAreaSource, /const agentGroupSelectionDisabled = isAgentMode \|\| agentGroupPickerLocked;/);
+  assert.match(
+    inputAreaSource,
+    /const teamSkillSelectionActive = isTeamMode && selectedSkills\.length > 0;[\s\S]*const agentGroupSelectionDisabled = isAgentMode \|\| agentGroupPickerLocked \|\| teamSkillSelectionActive;/,
+  );
   assert.match(inputAreaSource, /aria-disabled=\{agentSelectionDisabled\}[\s\S]*disabled=\{agentSelectionDisabled\}/);
   assert.match(
     inputAreaSource,
@@ -375,6 +378,7 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
   );
   assert.match(inputAreaSource, /chat\.agentOnlyInSingleAgentMode/);
   assert.match(inputAreaSource, /chat\.agentGroupOnlyInTeamMode/);
+  assert.match(inputAreaSource, /chat\.teamSkillsGroupLocked/);
   assert.match(inputAreaSource, /if \(!activeSessionId \|\| agentSelectionDisabled\) return;/);
   assert.match(inputAreaSource, /if \(agentGroupSelectionDisabled \|\| !activeSessionId\) return;/);
   assert.match(inputAreaSource, /agentSelectionDisabled && 'is-locked'/);
