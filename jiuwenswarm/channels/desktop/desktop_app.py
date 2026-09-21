@@ -2333,6 +2333,22 @@ class DesktopRuntime:
       return false;
     }
   }
+  // Archive managers expose dragged folders as virtual FileSystemEntry
+  // directories. Letting pywebview serialize that DataTransfer can recurse
+  // through a large virtual tree and freeze/crash WebView2, so reject it before
+  // the document-level Python bridge sees the event.
+  function hasDirectory(dt) {
+    if (!dt || !dt.items) return false;
+    try {
+      return Array.from(dt.items).some(function (item) {
+        if (!item || item.kind !== 'file' || typeof item.webkitGetAsEntry !== 'function') return false;
+        var entry = item.webkitGetAsEntry();
+        return Boolean(entry && entry.isDirectory);
+      });
+    } catch (err) {
+      return false;
+    }
+  }
   // Distinguish an app-internal HTML5 drag (queue reorder, etc.) from an OS file
   // drag. 'Files' alone is NOT reliable: dragging an <img> element makes Chromium
   // inject a spurious 'Files'/'text/uri-list' entry. Chromium tags every drag
@@ -2357,6 +2373,11 @@ class DesktopRuntime:
     function accept(e) {
       if (!hasFiles(e.dataTransfer)) return;
       e.preventDefault();
+      if (hasDirectory(e.dataTransfer)) {
+        try { e.dataTransfer.dropEffect = 'none'; } catch (err) {}
+        e.stopImmediatePropagation();
+        return;
+      }
       try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
       window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:true}}));
     }
@@ -2371,6 +2392,10 @@ class DesktopRuntime:
     window.addEventListener('drop', function (e) {
       if (!hasFiles(e.dataTransfer)) return;
       e.preventDefault();
+      if (hasDirectory(e.dataTransfer)) {
+        e.stopImmediatePropagation();
+        window.dispatchEvent(new CustomEvent('jiuwen-desktop-directory-drop-rejected'));
+      }
       endDrag();
     }, true);
   }
@@ -2472,6 +2497,16 @@ class DesktopRuntime:
                 paths.append(path.strip())
         if not paths:
             logger.warning("[desktop] drop files missing pywebviewFullPath: %s", raw_files)
+            return
+        # Never pass directories (including archive-manager temporary/virtual
+        # extraction directories) into the local-file upload pipeline. The page
+        # normally rejects FileSystemEntry directories before this callback; this
+        # is the native-path fallback for shells that expose only full paths.
+        if any(Path(path).is_dir() for path in paths):
+            logger.info("[desktop] rejected directory drop")
+            self._run_js(
+                "window.dispatchEvent(new CustomEvent('jiuwen-desktop-directory-drop-rejected'));"
+            )
             return
         described = self.describe_local_files(paths)
         if described:
