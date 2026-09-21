@@ -162,7 +162,7 @@ async def test_code_reload_resolves_and_applies_spec_without_replacing_agent(
 
 
 @pytest.mark.asyncio
-async def test_code_multimodal_reload_preserves_snapshot_without_registering_tools(
+async def test_code_multimodal_reload_syncs_only_configured_tools(
     monkeypatch: pytest.MonkeyPatch,
 ):
     adapter = JiuwenSwarmCodeAdapter()
@@ -171,11 +171,23 @@ async def test_code_multimodal_reload_preserves_snapshot_without_registering_too
     adapter._audio_model_config = object()
     adapter._video_model_config = True
     adapter._image_gen_model_config = True
-    config_base = {"react": {"agent_name": "code"}}
+    config_base = {
+        "react": {"agent_name": "code"},
+        "modes": {"code": {"tools": ["visual_question_answering"]}},
+    }
     env_overrides = {}
-    refresh = AsyncMock(return_value=config_base)
+    async def refresh_snapshot(config, overrides):
+        adapter._config_base_cache = config
+        return config
+
+    refresh = AsyncMock(side_effect=refresh_snapshot)
     fan_out = AsyncMock()
-    sync_group = MagicMock()
+    synced = []
+
+    def sync_group(**kwargs):
+        synced.append((kwargs["warn_label"], kwargs["enabled"]))
+        return [], False
+
     monkeypatch.setattr(adapter, "_apply_multimodal_reload_snapshot", refresh)
     monkeypatch.setattr(adapter, "_fan_out_reload_to_session_adapters", fan_out)
     monkeypatch.setattr(adapter, "_sync_tool_group", sync_group)
@@ -192,7 +204,11 @@ async def test_code_multimodal_reload_preserves_snapshot_without_registering_too
         {"multimodal"},
         permission_notification=False,
     )
-    sync_group.assert_not_called()
+    assert synced == [
+        ("Code vision tools", True),
+        ("Code audio transcription tool", False),
+        ("Code video understanding tool", False),
+    ]
     assert not adapter._vision_tools
     assert not adapter._audio_tools
 

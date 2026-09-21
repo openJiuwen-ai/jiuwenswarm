@@ -81,10 +81,14 @@ def _translate_argparse_error(message: str) -> str:
         message,
     )
     if invalid_choice:
+        # argparse 在 3.13 起不再给 choices 加引号；统一重新加引号，
+        # 保证各受支持 Python 版本输出一致。
+        choices = invalid_choice.group("choices").split(",")
+        rendered = ", ".join(repr(choice.strip().strip("'")) for choice in choices)
         return (
             f"参数 {invalid_choice.group('argument')} 的值无效："
             f"{invalid_choice.group('value')}"
-            f"（可选值：{invalid_choice.group('choices')}）"
+            f"（可选值：{rendered}）"
         )
 
     required = re.fullmatch(r"the following arguments are required: (.+)", message)

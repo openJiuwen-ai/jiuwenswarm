@@ -18,6 +18,21 @@ from jiuwenswarm.runtime.session.model import SessionExecutionState
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def isolated_agent_dirs(tmp_path, monkeypatch):
+    """会话/lifecycle 持久状态落在 tmp，而不是真实用户主目录。
+
+    create_or_resume_session 会通过 describe_session 校验持久化通道，
+    claim_runtime 会写 runtime owner 文件；不隔离时真实主目录里其他
+    测试/应用留下的同名会话会导致 NOT_FOUND，并行 worker 也会互抢。
+    """
+    sessions = tmp_path / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions
+    )
+
+
 class _Manager:
     def __init__(self) -> None:
         self.cleanup_sessions: list[tuple[str, str]] = []

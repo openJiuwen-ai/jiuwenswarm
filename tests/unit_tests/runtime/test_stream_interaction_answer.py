@@ -32,6 +32,21 @@ from jiuwenswarm.runtime.session_catalog import SessionCatalogError
 SESSION_ID = "sdk_session"
 
 
+@pytest.fixture(autouse=True)
+def isolated_agent_dirs(tmp_path, monkeypatch):
+    """会话/lifecycle 持久状态落在 tmp，而不是真实用户主目录。
+
+    claim_runtime 按 get_agent_sessions_dir 的父目录写 runtime owner 文件；
+    不隔离时并行 worker 会通过共享文件争抢 SESSION_ID 的 owner
+    （assert_runtime_owner 报 another live AgentServer owns）。
+    """
+    sessions = tmp_path / "agent" / "sessions"
+    sessions.mkdir(parents=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions
+    )
+
+
 def _chunk(request: AgentRequest, event_type: str, **payload: object):
     return AgentResponseChunk(
         request_id=request.request_id,
