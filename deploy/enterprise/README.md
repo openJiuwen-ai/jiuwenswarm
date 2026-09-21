@@ -10,7 +10,7 @@ JiuwenSwarm 企业级部署工具是适配 Kubernetes 集群的一站式自动�
 
 **安装JiuwenSwarm前，请确保满足以下要求：**
 
-- 操作系统：Linux（推荐 Unbuntu 20.04）
+- 操作系统：Linux（推荐 Ubuntu 20.04）
 - CPU 架构：**集群内所有节点架构必须一致，统一为 AMD64 或统一为 ARM64，禁止混合架构部署**
 - 硬件资源：至少2个计算节点，每个节点最低配置为16核CPU、32GB物理内存
 - 运行环境：已预先搭建好 Kubernetes 集群，搭建流程可参考官方指导：https://kubernetes.io/zh-cn/docs/setup/
@@ -59,7 +59,7 @@ unzip ***.zip
 后续所有部署、运维命令，均需进入解压后的工具目录执行。
 
 ### 1.4 部署工具目录结构说明
-部署工具解压后完整目录结构及各文件/目录用途说明如下，业务配置统一在配置文件`.env.custom` 中调整，其他文件非必要不修改，：
+部署工具解压后完整目录结构及各文件/目录用途说明如下，业务配置统一在配置文件`.env.custom` 中调整，其他文件非必要不修改：
 
 ```
 JiuwenClaw_deployTool_<VERSION>_<ARCH>_product/
@@ -83,36 +83,39 @@ JiuwenClaw_deployTool_<VERSION>_<ARCH>_product/
 ├── postgresql_handler.sh                 # PostgreSQL 数据库模块部署运维脚本
 ├── redis_handler.sh                      # Redis 缓存模块部署运维脚本
 ├── nfs_handler.sh                        # NFS 模块部署运维脚本
+├── observability_handler.sh              # 观测模块部署运维脚本
+├── patch_handler.sh                      # 模拟管理面下发的脚本
 ├── template_handler.sh                   # Kubernetes 模板文件渲染、配置生成脚本
 ├── update_conf.sh                        # 配置更新、重载处理脚本
 ├── web_handler.sh                        # Web 前端模块部署、运维脚本
 ├── log_handler.sh                        # 日志管理模块部署、运维脚本
 ├── configmap_secret_handler.sh           # 处理存放密码的ConfigMap的脚本
 └── templates/                            # 所有 Kubernetes 资源模板配置目录
-    ├── gateway-config-jiuwen.template.yaml # 网关业务配置模板
-    ├── gateway.template.env                # 网关环境变量配置模板
-    ├── gateway.template.yaml               # 网关 Kubernetes 部署资源模板
-    ├── agentserver.template.json           # AgentServer 服务模板
-    ├── agentserver.template.env            # AgentServer 环境变量配置模板
-    ├── runtime.template.yaml               # AgentRuntime 运行时 Kubernetes 资源模板
-    ├── link-mtls.template.yaml             # 可选证书挂载辅助容器及 headless Service 片段
-    ├── minio.template.yaml                 # MinIO 存储 Kubernetes 资源模板
-    ├── mysql.template.yaml                 # MySQL 数据库 Kubernetes 资源模板
-    ├── nfs.template.yaml                   # NFS 存储 Kubernetes 资源模板
-    ├── nfs-sc.template.yaml                # NFS 存储供给 Kubernetes 资源模板
-    ├── claw-pvc.template.yaml              # 业务内置持久卷PVC资源清单模板
-    ├── postgresql.template.yaml            # PostgreSQL 数据库 Kubernetes 资源模板
-    ├── redis.template.yaml                 # Redis 缓存 Kubernetes 资源模板
-    ├── log.template.yaml                   # 日志模块 Kubernetes 资源模板
-    ├── configmap-secret.template.yaml      # 专门存放密码的ConfigMap 资源模板
-    └── web.template.yaml                   # Web 前端 Kubernetes 部署资源模板
+    ├── gateway-config.template.yaml      # 网关业务配置模板
+    ├── gateway.template.env              # 网关环境变量配置模板
+    ├── gateway.template.yaml             # 网关 Kubernetes 部署资源模板
+    ├── agentserver.template.json         # AgentServer 服务模板
+    ├── agentserver.template.env          # AgentServer 环境变量配置模板
+    ├── runtime.template.yaml             # AgentRuntime 运行时 Kubernetes 资源模板
+    ├── link-mtls.template.yaml           # 可选证书挂载辅助容器及 headless Service 片段
+    ├── minio.template.yaml               # MinIO 存储 Kubernetes 资源模板
+    ├── mysql.template.yaml               # MySQL 数据库 Kubernetes 资源模板
+    ├── nfs.template.yaml                 # NFS 存储 Kubernetes 资源模板
+    ├── nfs-sc.template.yaml              # NFS 存储供给 Kubernetes 资源模板
+    ├── claw-pvc.template.yaml            # 业务内置持久卷PVC资源清单模板
+    ├── postgresql.template.yaml          # PostgreSQL 数据库 Kubernetes 资源模板
+    ├── redis.template.yaml               # Redis 缓存 Kubernetes 资源模板
+    ├── log.template.yaml                 # 日志模块 Kubernetes 资源模板
+    ├── otel.template.yaml                # OTEL 模块 Kubernetes 资源模板
+    ├── loki.template.yaml                # Loki 日志存储 Kubernetes 资源模板
+    ├── observability.template.yaml       # Observability 观测界面 Kubernetes 资源模板
+    ├── configmap-secret.template.yaml    # 专门存放密码的 ConfigMap 资源模板
+    └── web.template.yaml                 # Web 前端 Kubernetes 部署资源模板
 ```
 
 ### 1.5 修改配置文件`.env.custom`
 
 修改配置前，请先查阅配置文件参数说明书 `.env.example`，明确各配置项含义与使用规则；再结合自身实际环境，按需调整配置文件`.env.custom`的参数，完成部署环境与业务场景适配。
-
-内部链路双向证书认证默认关闭，只有显式配置 `JIUWENSWARM_LINK_MTLS_MODE=enforce` 才启用。安装步骤、数据持久化、安全边界和维护限制统一见[内部链路 mTLS 使用与设计说明](../../docs/zh/HTTP-SSE链路mTLS部署配置.md)。
 
 以下为系统运行必需参数，需依据实际大模型服务凭证完整填写：
 ```
@@ -161,6 +164,7 @@ API_KEY=""
 - **postgresql**：PostgreSQL 存储服务模块
 - **minio**：Minio 存储服务模块
 - **log**：日志管理模块
+- **monitor**：观测模块
 - **gateway**：Gateway 模块
 - **web**：Web 前端页面服务模块
 - **runtime**：AgentRuntime 运行时模块，负责按需创建与管理 AgentServer Pod
@@ -173,6 +177,7 @@ API_KEY=""
 ./deploy.sh [操作命令] postgresql   # 仅操作 PostgreSQL 模块
 ./deploy.sh [操作命令] minio        # 仅操作 MinIO 模块
 ./deploy.sh [操作命令] log          # 仅操作日志管理模块
+./deploy.sh [操作命令] monitor      # 仅操作观测模块
 ./deploy.sh [操作命令] gateway      # 仅操作 Gateway 模块
 ./deploy.sh [操作命令] web          # 仅操作 Web 模块
 ./deploy.sh [操作命令] runtime      # 仅操作 AgentRuntime 模块
@@ -182,7 +187,7 @@ API_KEY=""
 
 - **NFS / MySQL / PostgreSQL / MinIO / Log：** 以上基础依赖模块全局仅支持单次部署，固定运行于 default 命名空间，部署命令自动忽略自定义命名空间参数。
 - **Redis：** 不作为独立模块部署，仅作为 Gateway、Runtime 的附属依赖。每个命名空间拥有独立的 Redis 实例（Deployment 名为 `jiuwenclaw-redis`），实现多业务实例间数据隔离。启动 Gateway 或 Runtime 等依赖 Redis 的业务模块时，部署工具会自动执行就绪检查：已配置外挂 Redis 则复用外部服务；否则复用同命名空间已有的内置 Redis；若同命名空间既无外挂 Redis 也无内置 Redis，则自动拉起一个内置 Redis 实例。
-- **Web / Gateway / Runtime：** 业务服务模块需保持命名空间一致（为了环境隔离与日志运维，禁止使用default命令空间），否则服务间网络互通异常、功能不可用。
+- **Web / Gateway / Runtime：** 业务服务模块需保持命名空间一致（为了环境隔离与日志运维，禁止使用default命名空间），否则服务间网络互通异常、功能不可用。
 
 **使用示例：**
 
@@ -202,7 +207,7 @@ API_KEY=""
 ./deploy.sh down gateway    # 卸载 Gateway 服务模块（按需卸载）
 ./deploy.sh down runtime    # 卸载 AgentRuntime 运行时模块（按需卸载）
 ./deploy.sh down log        # 卸载日志管理服务模块（非必要不卸载）
-./deploy.sh down minio      # 卸载 MinIO 存储模块（非必要不卸载
+./deploy.sh down minio      # 卸载 MinIO 存储模块（非必要不卸载）
 ./deploy.sh down postgresql # 卸载 PostgreSQL 存储模块（非必要不卸载）
 ./deploy.sh down mysql      # 卸载 MySQL 存储模块（非必要不卸载）
 ./deploy.sh down nfs-sc     # 卸载 NFS 存储供给模块（非必要不卸载）
@@ -220,7 +225,7 @@ API_KEY=""
 ```
 
 **重要说明：**
-每当升级新版本服务时，对于**NFS、NFS-SC、MySQL、PostgreSQL、MinIO、Log** 等全局基础依赖组件应尽量保持不变，无需重复部署。**Redis** 已改为按命名空间独立部署、随业务实例隔离（不支持单独部署），升级业务模块时各命名空间下的 Redis 实例保持不变即可。仅需对业务服务**Gateway、Web、AgentRuntime**进行版本替换：在旧版本部署目录中，依次卸载 业务模块；随后切换至新版本部署工具目录，启动对应新版业务模块。
+每当升级新版本服务时，对于**NFS、NFS-SC、MySQL、PostgreSQL、MinIO、Log** 等全局基础依赖组件应尽量保持不变，无需重复部署。**Redis** 已改为按命名空间独立部署、随业务实例隔离（不支持单独部署），升级业务模块时各命名空间下的 Redis 实例保持不变即可。仅需对业务服务**Gateway、Web、AgentRuntime**进行版本替换：在旧版本部署目录中，依次卸载业务模块；随后切换至新版本部署工具目录，启动对应新版业务模块。
 
 ### 2.3 配置参数（选填）
 
@@ -272,7 +277,7 @@ sunrpc                585728  10 nfsd,auth_rpcgss,lockd,nfsv3,nfs_acl,nfs
 
 本部署工具提供一键部署 NFS 存储供给组件，组件底层基于 nfs-subdir-external-provisioner 实现，提供标准 K8s StorageClass，业务 Pod 可通过 PVC 动态申领独立 NFS 存储子目录，实现数据持久化挂载。
 ```
-./deploy.sh up nfs-sc          # 部署 NF S存储供给组件（基础依赖，只需也只能一次）
+./deploy.sh up nfs-sc          # 部署 NFS 存储供给组件（基础依赖，只需也只能一次）
 ```
 部署完成后自动生成对应 StorageClass，搭配 CLAW_MOUNT_TYPE=pvc 模式使用，可自动创建隔离式 NFS 持久卷。
 
@@ -291,7 +296,7 @@ NFS_SERVER_ADDR=""
 NFS_SHARE_PATH=""
 ```
 
-#### 3.1.3 复用预创建 PVC 持久卷（生产环境推荐）
+#### 3.1.4 复用预创建 PVC 持久卷（生产环境推荐）
 
 若客户有其他高可用企业级存储组件，并基于其组件的 StorageClass 预创建好了持久化 PVC 资源，业务组件可直接复用现有 PVC 完成存储挂载，配置如下：
 ```
@@ -347,10 +352,10 @@ NFS_SHARE_PATH=""
 # 外部数据库服务的连接地址
 DB_HOST=""
 
-# 外部数据库服务服务的连接端口
+# 外部数据库服务的连接端口
 DB_PORT=
 
-# 外部数据库服务服务的用户名跟密码，账号权限区分规则：
+# 外部数据库服务的用户名与密码，账号权限区分规则：
 # 1. 分库独立账号配置：定义 GATEWAY_DB_USER / GATEWAY_DB_PASSWORD，实现业务库账号、密码独立
 # 2. 全局统一账号配置：仅配置 DB_USER、DB_PASSWORD，Gateway 使用同一套数据库访问凭证
 # 优先级规则：分库专属账号变量优先级 > 全局通用账号变量；若两类变量同时配置，以分库专属账号为准，全局账号配置自动失效
@@ -361,7 +366,6 @@ GATEWAY_DB_PASSWORD=""
 
 # (仅 PostgreSQL 有效) 各模块的专属 Schema 名称, 默认为 public
 GATEWAY_PG_SCHEMA=""
-IDENTITY_PG_SCHEMA=""
 WEB_PG_SCHEMA=""
 RUNTIME_PG_SCHEMA=""
 ```
@@ -375,17 +379,17 @@ RUNTIME_PG_SCHEMA=""
 - **MySQL**：每个实例的每个模块使用形如 `<模块库名>_<命名空间>` 的独立数据库（如实例 `test` 的 Gateway 库为 `gateway_test`）。
 - **PostgreSQL**：在同一共享数据库内，为每个实例使用以命名空间命名的独立 schema 实现隔离（如实例 `test` 使用 schema `test`）。
 
-各模块默认库名为：Gateway→`gateway`、Identity→`identity`、Runtime→`runtime`、Web→`web`。
+各模块默认库名为：Gateway→`gateway`、Runtime→`runtime`、Web→`web`。
 
 **自定义数据库名**：如需指定，可在 `.env.custom` 中为各模块设置对应变量（MySQL 为 `*_DB_NAME`，PostgreSQL 为 `*_PG_SCHEMA`）。一旦显式设置，部署工具将直接采用该值并不再自动分配——**请务必保证同一套部署中每个实例的各模块数据库名（或 PostgreSQL schema 名）互不相同**，否则不同实例会读写同一数据库，导致数据串台。
 
 > 提示：如无特殊需求，建议保持默认，由部署工具自动分配，既省心又能可靠保证隔离性。
 
-### 3.3 部署redis服务
+### 3.3 部署 Redis 服务
 
 Redis 不支持单独部署，仅作为 Gateway、Runtime 的附属依赖，随业务模块启动时按命名空间自动就绪。每个命名空间拥有独立的 Redis 实例（Deployment 名为 `jiuwenclaw-redis`），实现多业务实例间的数据隔离。
 
-部署 Gateway 或 Runtime 等依赖 Redis 的业务模块时，部署工具会自动执行 Redis 就绪检查（`ensure_redis_up`），其行为如下：
+部署 Gateway 或 Runtime 等依赖 Redis 的业务模块时，部署工具会自动执行 Redis 就绪检查，其行为如下：
 
 1. 若已在 `.env.custom` 中配置外挂 Redis（`REDIS_HOST`），则直接复用外部 Redis 服务，跳过内置部署；
 2. 否则检测同命名空间下是否已存在内置 Redis 实例（Deployment `jiuwenclaw-redis`），存在则直接复用；
@@ -523,6 +527,45 @@ LOG_TO_FILE_ENABLED=false
     └── jiuwenclaw-web-545f77c477-drfcf
         └── web-2026-07-14.log
 ```
+
+### 3.6 部署观测服务（可选部署）
+
+观测模块（monitor）提供开箱即用的可观测能力，一键部署三个组件：
+
+- **OpenTelemetry Collector**：接收业务应用的 OTLP 上报数据，实现全链路追踪
+- **Loki**：日志存储与查询后端
+- **Observability**：统一观测界面，支持链路查询与日志检索
+
+#### 3.6.1 配置说明
+
+在 `.env.custom` 中按需配置以下参数：
+
+| 配置项 | 说明 |
+| --- | --- |
+| OTEL_ENABLED | 链路追踪总开关：`true` 启用业务侧 OTLP 上报并部署内置 Collector；`false` 关闭链路追踪 |
+| OTEL_EXPORTER_OTLP_ENDPOINT | 业务应用 OTLP 上报地址。留空自动指向内置 Collector（`http://jiuwenclaw-otel-collector:4318`）；填写则视为外部 OTEL，OTEL模块整体跳过部署 |
+| LOKI_URL | Observability 界面查询日志的 Loki 地址。留空自动指向内置 Loki（`http://jiuwenclaw-loki:3100`）；填写则日志写入外部 Loki，界面查询指向该地址 |
+
+**部署形态组合：**
+
+- **全内置（默认推荐）**：保持 `OTEL_ENABLED="true"`，其余两项留空，自动指向内置服务；
+- **外部 OTEL**：`OTEL_EXPORTER_OTLP_ENDPOINT` 填写外部 Collector 地址，链路数据的接收与存储全部交由外部承担，观测界面与内置 Loki 一并不再部署；
+- **外部 Loki**：`LOKI_URL` 填写外部 Loki 地址，内置 Collector 与观测界面保留，业务日志落外部 Loki。
+
+#### 3.6.2 服务部署命令
+
+内置 Loki 依赖 NFS 存储，请先完成 [3.1 部署 NFS 服务](#31-部署-nfs-服务)，再执行以下命令：
+
+```
+./deploy.sh up monitor -n <你的命名空间>     # 部署观测模块（可选部署）
+```
+
+部署完成后，可通过以下命令确认各组件运行状态：
+
+```
+kubectl get pods -n <你的命名空间> | grep -E "otel|loki|observability"
+```
+
 ## 4 部署JiuwenSwarm企业级服务
 
 JiuwenSwarm 企业级服务完整支持基于 Kubernetes 命名空间的多实例隔离部署，可在同一集群内通过不同命名空间部署多套独立运行的业务实例，实现环境隔离、多实例并行使用。
@@ -545,8 +588,6 @@ Gateway 是 JiuwenSwarm 的多渠道接入网关与消息调度核心，负责�
 ```
 ./deploy.sh up gateway -n <你的命名空间>             # 部署 Gateway 核心网关模块
 ```
-
-部署时会检查 `.env.custom` 中的 `JIUWENCLAW_ID`：未配置则自动生成并写回；已配置则沿用原值。
 
 注意：Gateway 支持分布式多副本部署模式：多副本同时在线、连接 Redis 共享会话。所需 Redis 由部署工具按命名空间自动拉起（详见 3.3 节）。启动前可在配置文件 `.env.custom` 中确认如下参数：
 
@@ -713,8 +754,12 @@ NO_CHECK_PORTS=true
 # 当启用日志模块、NFS模块，或运行模式MODE=dev时必填；值为CCE集群内某个目标节点名称，用于将模块调度到该节点运行
 CURRENT_NODE_NAME=
 
+
+# 当启用日志模块、NFS模块，或运行模式MODE=dev时必填；值为CCE集群内某个目标节点名称，用于将模块调度到该节点运行
+CURRENT_NODE_NAME=
+
 # 选取CCE节点的空闲端口（端口区间30000-32767）
-GATEWAY_NODE_PORT=
+GATEWAY_CONFIG_HTTP_NODE_PORT=
 WEB_NODE_PORT=
 ```
 
@@ -738,7 +783,7 @@ WEB_NODE_PORT=
 - agentserver-env.configmap.yaml
 
 
-# FAQ 
+# FAQ
 
 ## 如何在线调试业务代码
 
@@ -776,9 +821,10 @@ RUNTIME_CODE_PATH=""
 CORE_CODE_PATH=""
 
 # 是否要给 Web 模块mount代码
-# 注意：Web源代码代码需要npm install之后，才能mount进容器。
+# 注意：Web源代码需要 npm install + npm run build 之后，才能mount进容器。
 # cd jiuwenswarm/channels/web/frontend
-# npm install
+# npm install     # 下载依赖，只需要一次
+# npm run build   # 每改一次代码，就需要运行一次；修改代码之后，不需要重启pod，除非你修改的是docker/web.nginx.conf.template
 
 IS_MOUNT_WEB_CODE="false"
 ```

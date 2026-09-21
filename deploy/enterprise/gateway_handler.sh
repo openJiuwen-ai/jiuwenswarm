@@ -82,12 +82,13 @@ deploy_gateway() {
 }
 
 uninstall_gateway() {
+    local namespace="${DEPLOY_VARS["NAMESPACE"]}"
     local gateway_file="${CONFIG["GATEWAY_FILE"]}"
     local env_yaml_file="${CONFIG["GATEWAY_ENV_YAML_FILE"]}"
 
     exec_cmd kubectl delete -f "${gateway_file}" --ignore-not-found=true
     exec_cmd kubectl delete -f "${env_yaml_file}" --ignore-not-found=true
-
+    wait_pod_terminated "${DEPLOY_VARS["GATEWAY_NAME"]}" "${namespace}"
     uninstall_secret_configmap
     ensure_redis_down
 }

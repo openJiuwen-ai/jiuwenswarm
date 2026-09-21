@@ -25,11 +25,10 @@ spec:
               containerPort: 5274
               protocol: TCP
           env:
-            # nginx 模板 envsubst 变量（docker/observability.nginx.conf.template）
             - name: OBSERVABILITY_PORT
               value: "5274"
             - name: OBSERVABILITY_LOKI_URL
-              value: "http://<<LOKI_NAME>>:3100"
+              value: "<<LOKI_URL>>"
           readinessProbe:
             httpGet:
               path: /

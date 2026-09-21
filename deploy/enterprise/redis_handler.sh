@@ -34,11 +34,6 @@ ensure_redis_down() {
     local namespace="${DEPLOY_VARS["NAMESPACE"]}"
     local name="${DEPLOY_VARS["REDIS_NAME"]}"
 
-    # 渲染模式不动集群
-    if [ "${DEPLOY_VARS["RENDER_ONLY"]}" == "true" ]; then
-        return
-    fi
-
     # 外挂 Redis 由用户自行管理，本工具不负责卸载
     if [ "${DEPLOY_VARS["ENABLE_EXTERNAL_REDIS"]}" == "true" ]; then
         info "External Redis in use, skip shutting down built-in Redis."

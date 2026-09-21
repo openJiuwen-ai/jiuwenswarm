@@ -145,6 +145,35 @@ drop_hostpath_volumes() {
     fi
 }
 
+# 为 agentserver 单容器注入单个资源配置项(空值直接跳过,零改动):
+#   inject_container_res <container_id> <requests|limits> <cpu|memory> <value>
+# jq 路径赋值可自动创建缺失的 resources/requests/limits 层级
+inject_container_res() {
+    local cid="$1" section="$2" key="$3" value="${4:-}"
+    if [ -z "${value}" ]; then
+        return
+    fi
+    local json_file="${CONFIG["AS_JSON_FILE"]}"
+    jq --arg cid "${cid}" --arg section "${section}" --arg key "${key}" --arg v "${value}" \
+        '(.rawdata.containers[] | select(.container_id == $cid) | .resources[$section][$key]) = $v' \
+        "${json_file}" > "${json_file}.tmp" && mv -f "${json_file}.tmp" "${json_file}"
+}
+
+# 配置为 agentserver 双容器注入 K8s resources
+inject_container_resources() {
+    # agentserver 主容器(container_id=c-agentserver)
+    inject_container_res "c-agentserver" requests cpu    "${DEPLOY_VARS["AGENT_SERVER_CPU_REQUEST"]:-}"
+    inject_container_res "c-agentserver" requests memory "${DEPLOY_VARS["AGENT_SERVER_MEMORY_REQUEST"]:-}"
+    inject_container_res "c-agentserver" limits  cpu     "${DEPLOY_VARS["AGENT_SERVER_CPU_LIMIT"]:-}"
+    inject_container_res "c-agentserver" limits  memory  "${DEPLOY_VARS["AGENT_SERVER_MEMORY_LIMIT"]:-}"
+
+    # jiuwenbox 容器(container_id=c-jiuwenbox)
+    inject_container_res "c-jiuwenbox" requests cpu    "${DEPLOY_VARS["JIUWENBOX_CPU_REQUEST"]:-}"
+    inject_container_res "c-jiuwenbox" requests memory "${DEPLOY_VARS["JIUWENBOX_MEMORY_REQUEST"]:-}"
+    inject_container_res "c-jiuwenbox" limits  cpu     "${DEPLOY_VARS["JIUWENBOX_CPU_LIMIT"]:-}"
+    inject_container_res "c-jiuwenbox" limits  memory  "${DEPLOY_VARS["JIUWENBOX_MEMORY_LIMIT"]:-}"
+}
+
 render_patch_file() {
     local json_template="${CONFIG["AS_JSON_TEMPLATE_FILE"]}"
     local json_file="${CONFIG["AS_JSON_FILE"]}"
@@ -159,6 +188,7 @@ render_patch_file() {
     inject_data_volume
     drop_hostpath_volumes
     drop_nodename_field
+    inject_container_resources
 
     success "AgentServer configuration rendered"
 }

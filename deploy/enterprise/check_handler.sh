@@ -78,6 +78,12 @@ check_dependency(){
 }
 
 check_if_nfs_up() {
+    # 已经执行过检查，直接返回，避免重复校验（prepare_nfs_path 多处调用）
+    if [[ "${DEPLOY_VARS["NFS_CHECKED"]:-}" == "true" ]]; then
+        return
+    fi
+    DEPLOY_VARS["NFS_CHECKED"]="true"
+
     # Check if external NFS server
     if [ -n "${DEPLOY_VARS["NFS_SERVER_ADDR"]:-}" ]; then
         info "Use external NFS server"
@@ -169,10 +175,11 @@ check_if_db_up() {
     if [[ "${DEPLOY_VARS["DB_CHECKED"]:-}" == "true" ]]; then
         return
     fi
+    DEPLOY_VARS["DB_CHECKED"]="true"
 
     local db_type="${DEPLOY_VARS["DB_TYPE"]}"
     info "DB_TYPE: ${db_type}"
-    DEPLOY_VARS["DB_CHECKED"]="true"
+
     if [ "${db_type}" != "mysql" ] && [ "${db_type}" != "postgresql" ]; then
         error "DB_TYPE='${db_type}' is not supported in enterprise deploy; use 'mysql' or 'postgresql'"
     fi
@@ -233,6 +240,12 @@ check_if_db_up() {
 }
 
 check_if_obs_up() {
+    # 已经执行过检查，直接返回，避免重复校验（gateway/web 依赖都会调用）
+    if [[ "${DEPLOY_VARS["OBS_CHECKED"]:-}" == "true" ]]; then
+        return
+    fi
+    DEPLOY_VARS["OBS_CHECKED"]="true"
+
     local name="${DEPLOY_VARS["MINIO_NAME"]}"
 
     # Check if external OBS server
@@ -330,6 +343,12 @@ check_if_rabbitmq_up() {
 }
 
 check_if_otel_up() {
+    # 已经执行过检查，直接返回，避免重复校验（monitor/gateway/runtime 依赖都会调用）
+    if [[ "${DEPLOY_VARS["OTEL_CHECKED"]:-}" == "true" ]]; then
+        return
+    fi
+    DEPLOY_VARS["OTEL_CHECKED"]="true"
+
     local name="${DEPLOY_VARS["OTEL_NAME"]}"
     if [ -n "${DEPLOY_VARS["OTEL_EXPORTER_OTLP_ENDPOINT"]:-}" ]; then
         info "Use external Opentelemetry Collector"
@@ -338,6 +357,10 @@ check_if_otel_up() {
     fi
     info "Use built-in Opentelemetry Collector"
     DEPLOY_VARS["OTEL_EXPORTER_OTLP_ENDPOINT"]="http://${name}:4318"
+
+    # loki 是 otel collector 的日志后端：仅内置 otel 需要检查 loki 归属；
+    # 外部 OTEL 时 collector/存储均由外部承担，上方 early return 已跳过
+    check_if_loki_up
 }
 
 check_if_loki_up() {
@@ -349,9 +372,17 @@ check_if_loki_up() {
     fi
     info "Use built-in Loki server"
     DEPLOY_VARS["LOKI_URL"]="http://${name}:3100"
+
+    prepare_nfs_path "${DEPLOY_VARS["LOKI_NAME"]}"
 }
 
 check_if_gateway_up() {
+    # 已经执行过检查，直接返回，避免重复校验（web/runtime 依赖都会调用）
+    if [[ "${DEPLOY_VARS["GATEWAY_CHECKED"]:-}" == "true" ]]; then
+        return
+    fi
+    DEPLOY_VARS["GATEWAY_CHECKED"]="true"
+
     if ! check_k8s_resource_exists "deployment" "${DEPLOY_VARS["GATEWAY_NAME"]}" "${DEPLOY_VARS["NAMESPACE"]}"; then
         error "GATEWAY is not deployed. Please deploy it first with: ./$(basename "$0") up gateway"
     fi
@@ -461,11 +492,6 @@ check_monitor_up_dependency() {
     fi
 
     check_if_otel_up
-    check_if_loki_up
-    prepare_nfs_path "${DEPLOY_VARS["LOKI_NAME"]}"
-
-    # 归一化尾斜杠，避免 NFS path 渲染成 "//loki"
-    DEPLOY_VARS["NFS_SHARE_PATH"]="${DEPLOY_VARS["NFS_SHARE_PATH"]%/}"
 }
 
 check_gateway_up_dependency(){
@@ -473,6 +499,7 @@ check_gateway_up_dependency(){
     check_if_jina_up
     ensure_redis_up
     check_if_obs_up
+    check_if_otel_up
 }
 
 check_web_up_dependency(){
@@ -502,19 +529,24 @@ check_runtime_up_dependency(){
 
     check_if_db_up
     ensure_redis_up
+    check_if_otel_up
 
-    if [[ "${DEPLOY_VARS["RENDER_ONLY"]}" != "true" && "${DEPLOY_VARS["APPLY_PATCH"]}" == "true" ]]; then
-        check_if_gateway_up
-        if [ -n "${DEPLOY_VARS["GATEWAY_CONFIG_HTTP_NODE_PORT"]:-}" ]; then
-            info "chenhui: No need to fetch GATEWAY_CONFIG_HTTP_NODE_PORT"
-            return
-        fi
-        local namespace="${DEPLOY_VARS["NAMESPACE"]}"
-        local gw_svc="${DEPLOY_VARS["GATEWAY_NAME"]}-nodeport"
-        local gw_port=$(kubectl get service "${gw_svc}" -n "${namespace}" -o jsonpath='{.spec.ports[?(@.name=="config-http")].nodePort}')
-        if [ -z "${gw_port}" ]; then
-            error "Failed to read nodePort (config-http) from service ${gw_svc} in namespace ${namespace}"
-        fi
-        DEPLOY_VARS["GATEWAY_CONFIG_HTTP_NODE_PORT"]="${gw_port}"
+    if [ "${DEPLOY_VARS["RENDER_ONLY"]}" == "true" ]; then
+        return
     fi
+    if [ "${DEPLOY_VARS["APPLY_PATCH"]}" == "false" ]; then
+        return
+    fi
+
+    check_if_gateway_up
+    if [ -n "${DEPLOY_VARS["GATEWAY_CONFIG_HTTP_NODE_PORT"]:-}" ]; then
+        return
+    fi
+    local namespace="${DEPLOY_VARS["NAMESPACE"]}"
+    local gw_svc="${DEPLOY_VARS["GATEWAY_NAME"]}-nodeport"
+    local gw_port=$(kubectl get service "${gw_svc}" -n "${namespace}" -o jsonpath='{.spec.ports[?(@.name=="config-http")].nodePort}')
+    if [ -z "${gw_port}" ]; then
+        error "Failed to read nodePort (config-http) from service ${gw_svc} in namespace ${namespace}"
+    fi
+    DEPLOY_VARS["GATEWAY_CONFIG_HTTP_NODE_PORT"]="${gw_port}"
 }
