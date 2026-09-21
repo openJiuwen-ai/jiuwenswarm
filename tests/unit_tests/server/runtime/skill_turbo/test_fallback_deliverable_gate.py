@@ -234,6 +234,30 @@ class TestNonStreamFallbackHonorsValidator:
 
         assert "validator" in str(excinfo.value)
 
+    async def test_validator_abort_error_propagates(self):
+        """校验器抛出 AbortError（HITL 中断）必须原样上抛，不得吞成契约失败。"""
+        from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
+
+        handler = _make_handler(_INCIDENT_OUTPUT)
+        inputs = {"topic": "x"}
+
+        def _aborting_validator(
+            inputs: dict[str, Any], contract_result: dict[str, Any]
+        ) -> str | None:
+            raise AbortError("user interrupted")
+
+        with pytest.raises(AbortError):
+            await handler.fallback(
+                FallbackCall(
+                    node_name="ppt_gen_root",
+                    instruction="PPT生成任务流根节点，串联P0-P10全流程",
+                    inputs=inputs,
+                    error=RuntimeError(_FAILURE),
+                    parent_session=None,
+                    result_validator=_aborting_validator,
+                )
+            )
+
 
 class TestFallbackQueryGuards:
     def test_query_states_orchestrator_success_criteria(self):

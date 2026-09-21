@@ -298,12 +298,20 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
 
         校验器拒绝或自身异常均视为契约未达成（fail-closed），返回
         ``(False, {{"reason": ...}})``；放行返回 ``(True, contract_result)``。
+        AbortError（HITL 中断信号）不在此列：必须原样上抛给 executor 转
+        HITL 三件套，吞掉会把用户中断降级成契约失败继续执行。
         """
         if result_validator is None:
             return True, contract_result
+        # AbortError 触点在 plan_node，模块级反向 import 会形成循环
+        # （plan_node 顶部导入本模块的 FallbackContractError），故惰性导入。
+        from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
+
         try:
             reason = result_validator(inputs, contract_result)
         except Exception as exc:
+            if isinstance(exc, AbortError):
+                raise
             logger.error(
                 "[DeepAgentFallbackHandler] result validator crashed node=%s error=%s",
                 node_name,
