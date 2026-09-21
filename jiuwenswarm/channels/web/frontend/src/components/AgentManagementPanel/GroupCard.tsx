@@ -56,7 +56,7 @@ export function GroupCard({ item, busy, onOpen, onUse, onInstall }: GroupCardPro
       {canUse ? (
         <button
           type="button"
-          className="agent-management-button agent-management-button--secondary agent-management-card-action--use"
+          className="agent-management-button agent-management-button--primary agent-management-card-action--use"
           data-testid="agent-group-card-action"
           data-variant="use"
           disabled={busy}

@@ -218,6 +218,10 @@ test('empty manual definitions do not synthesize an Other domain tag', () => {
 test('group card actions keep uninstall in the detail page and install created groups before listing', () => {
   assert.doesNotMatch(groupCardSource, /onUninstall|data-variant=\{item\.installed \? 'uninstall'/);
   assert.doesNotMatch(groupCatalogSource, /onUninstall/);
+  assert.match(
+    groupCardSource,
+    /agent-management-button--primary agent-management-card-action--use/,
+  );
   assert.match(groupDetailSource, /data-variant="uninstall"/);
   assert.match(panelSource, /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/);
   assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
