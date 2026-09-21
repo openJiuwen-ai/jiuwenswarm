@@ -77,6 +77,26 @@ async def _wait_for_status(
     await asyncio.wait_for(_check(), timeout=timeout)
 
 
+async def _wait_for_admission_release(
+    admission: "_RecordingAdmission",
+    session_id: str,
+    *,
+    timeout: float = 5.0,
+) -> None:
+    """轮询等待 admission 释放目标会话（时间封顶）。
+
+    worker 在 DB 状态流转（写 unknown）之后，于 finally 中才调用
+    end_session_message 释放 admission；仅等待 DB 状态会在慢机器上与
+    worker 的收尾逻辑竞态，故对 admission 释放单独轮询。
+    """
+
+    async def _check() -> None:
+        while session_id in admission.active:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_check(), timeout=timeout)
+
+
 def _enqueue(store: SessionMessageStore, *, key: str, content: str = "check"):
     return store.enqueue(
         owner_scope_id="user-1",
@@ -2227,6 +2247,7 @@ async def test_execution_watchdog_moves_wedged_execution_to_unknown(
         assert record.status == "unknown"
         assert record.last_error_code == "EXECUTION_WATCHDOG_TIMEOUT"
         admission = service._admission
+        await _wait_for_admission_release(admission, "target-1")
         assert "target-1" not in admission.active
     finally:
         release.set()
