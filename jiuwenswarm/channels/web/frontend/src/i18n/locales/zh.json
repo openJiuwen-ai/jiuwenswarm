@@ -149,6 +149,13 @@
       "languageDescription": "设置应用程序界面的界面显示语言。",
       "chinese": "中文（简体）",
       "english": "English",
+      "closeBehavior": "关闭主窗口时",
+      "closeBehaviorDescription": "选择点击窗口关闭按钮后的行为，可随时修改。",
+      "closeBehaviorOptions": {
+        "ask": "每次询问",
+        "hide": "最小化到托盘",
+        "quit": "退出应用"
+      },
       "connection": "服务连接状态",
       "connectionDescription": "表示当前页面与 WorkSwarm 服务的连接状态。",
       "connectionStatus": {
@@ -530,7 +537,7 @@
     "selectMember": "请选择 Team 成员",
     "detailTabs": {
       "members": "成员",
-      "group": "群聊"
+      "group": "子话题"
     },
     "leader": "Team leader",
     "memberSeparator": "、",
@@ -2165,7 +2172,7 @@
       "linkPlaceholder": "请输入",
       "descLabel": "技能描述（可选）",
       "descPlaceholder": "请输入",
-      "confirm": "确认",
+      "confirm": "确定",
       "cancel": "取消"
     },
     "builtIn": "内置",
@@ -2886,6 +2893,7 @@
         "definitionUnavailable": "该专家团定义不完整，暂时无法使用。",
         "membersInvalid": "专家团成员信息无效，请选择唯一的负责人和成员。",
         "memberUnavailable": "所选专家不可用或不兼容团队。",
+        "packageValidationError": "专家团包校验失败：{{reason}}",
         "createSuccess": "专家团包 {{id}} 已创建。",
         "uploadSuccess": "专家团包 {{id}} 已导入，请在我的专家团中查看。",
         "uploadError": "专家团包导入失败，请检查文件后重试。",
@@ -3835,6 +3843,7 @@
         "unit": "积分",
         "used": "已用",
         "total": "总量",
+        "fetchFailedHint": "暂时查询不到额度",
         "meteringHint": "按模型实际用量扣减积分",
         "exhaustedHint": "免费积分已用完，请改用已配置的模型。",
         "exhaustedUntil": "免费积分已用完，将于 {{date}} 刷新",

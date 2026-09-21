@@ -4,7 +4,7 @@ import { catalogCacheOf } from '../../features/catalogCache';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { localizedText } from '../../types/pluginPackage';
@@ -538,11 +538,18 @@ export function MarketplacePage({
                   type="button"
                   onClick={() => setCreateMenuOpen((v) => !v)}
                   data-testid="connector-market-create-menu"
-                  className="flex h-8 shrink-0 items-center gap-1 rounded-lg bg-text px-3 text-[12px] text-text-inverse"
+                  className="flex items-center justify-center gap-1 h-8 w-[96px] rounded-[16px] text-sm text-text-inverse bg-control-emphasis hover:opacity-80"
                 >
-                  <Plus size={13} />
                   {t('connectorMarket.create.menuLabel')}
-                  <ChevronDown size={13} />
+                  <svg
+                    className={`w-3.5 h-3.5 transition-transform ${createMenuOpen ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
                 </button>
                 {createMenuOpen && (
                   <div className="dropdown-menu" role="menu" data-testid="connector-market-create-menu-popover">

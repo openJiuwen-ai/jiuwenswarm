@@ -1,14 +1,18 @@
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { openAssetPublish } from '../../features/assetPublishEvents';
-import type { AgentFileContent, AgentGroupDetail, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
+import type {
+  AgentFileContent,
+  AgentGroupDetail,
+  DefinitionFileEntry,
+  RequestStatus,
+} from '../../features/agentManagement';
 import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
-import { getAvatarTone, GroupAvatar } from './GroupCard';
+import { GroupAvatar } from './GroupCard';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
-import { DetailPromptChip, DetailSection, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
+import { DetailPromptChip, DetailSection, EntityAvatar, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
 
 type AgentGroupDetailPageProps = {
   detail: AgentGroupDetail | null;
@@ -62,10 +66,13 @@ export function AgentGroupDetailPage({
   onUninstall,
 }: AgentGroupDetailPageProps) {
   const { t } = useTranslation();
-  const [imageFailed, setImageFailed] = useState<Record<string, boolean>>({});
   if (detailStatus === 'loading')
     return (
-      <div className="agent-management-detail agent-management-detail--state" data-testid="agent-group-detail">
+      <div
+        className="agent-management-detail agent-management-detail--state"
+        data-testid="agent-group-detail-state"
+        data-variant="loading"
+      >
         <button type="button" className="detail-back" data-testid="agent-group-detail-back" onClick={onBack}>
           <BackIcon aria-hidden="true" />
           {t('agentManagement.actions.back')}
@@ -98,7 +105,8 @@ export function AgentGroupDetailPage({
 
   const canUse = detail.installed && detail.capabilities.canUse;
   const canDelete = detail.source === 'local' && !detail.installed;
-  const canPreviewFiles = detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.source === 'hub' || detail.installed);
+  const canPreviewFiles =
+    detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.source === 'hub' || detail.installed);
   const category = detail.category?.trim() || '';
   const categoryLabel = category ? t(`agentManagement.categories.${category}`, { defaultValue: category }) : null;
   const detailTags = detail.tags;
@@ -129,7 +137,13 @@ export function AgentGroupDetailPage({
                   type="button"
                   className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text"
                   data-testid="agent-management-agent-group-publish"
-                  onClick={() => openAssetPublish({ kind: 'agent_group', local_id: detail.id, avatar_url: detail.avatarUrl || undefined })}
+                  onClick={() =>
+                    openAssetPublish({
+                      kind: 'agent_group',
+                      local_id: detail.id,
+                      avatar_url: detail.avatarUrl || undefined,
+                    })
+                  }
                 >
                   {t('skills.actions.publish')}
                 </button>
@@ -224,18 +238,8 @@ export function AgentGroupDetailPage({
                 key={member.id}
               >
                 <div className="agent-group-member-card__avatar-wrap">
-                  <span
-                    className={`agent-group-member-avatar agent-group-member-avatar--${getAvatarTone(member.displayName)}${imageFailed[member.id] ? ' is-fallback' : ''}`}
-                  >
-                    {member.avatarUrl && !imageFailed[member.id] ? (
-                      <img
-                        src={member.avatarUrl}
-                        alt=""
-                        onError={() => setImageFailed((current) => ({ ...current, [member.id]: true }))}
-                      />
-                    ) : (
-                      member.displayName.slice(0, 1).toUpperCase()
-                    )}
+                  <span className="agent-group-member-avatar" aria-hidden="true">
+                    <EntityAvatar name={member.displayName} iconUrl={member.avatarUrl || null} />
                   </span>
                 </div>
                 <div className="agent-group-member-card__identity">

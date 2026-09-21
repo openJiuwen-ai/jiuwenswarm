@@ -1717,6 +1717,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       // 下面任何 ref 的子树内——靠 data-connector-auth-modal 识别“点的是弹窗内部”，跳过关闭（与
       // ExtensionPickerPanel.tsx 的同款监听一致；bug 2026091001-001 portal 化后的回归修复）。
       if ((event.target as HTMLElement | null)?.closest?.('[data-connector-auth-modal]')) return;
+      // Select 下拉面板同样门户挂到 body（data-select-panel），点选单位等选项时不视为外部点击，
+      // 否则配置面板先于选项 click 卸载，选择丢失
+      if ((event.target as HTMLElement | null)?.closest?.('[data-select-panel]')) return;
       if (
         !attachMenuRef.current?.contains(event.target as Node) &&
         !attachMenuPortalRef.current?.contains(event.target as Node) &&
@@ -4083,13 +4086,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     <button
                       type="button"
                       className="chat-agent-tag__close"
-                      title={t('chat.agentRemove')}
                       aria-label={t('chat.agentRemove')}
                       onClick={() => {
                         if (activeSessionId) setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
                       }}
                     >
-                      <X size={16} strokeWidth={2.5} aria-hidden="true" />
+                      <WorkIcon name="close" />
                     </button>
                   </div>
                 )}
@@ -4133,15 +4135,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       <button
                         type="button"
                         className="chat-agent-tag__close"
-                        title={t('chat.agentGroupRemove')}
                         aria-label={t('chat.agentGroupRemove')}
                         data-testid="chat-panel-agent-group-tag-close"
-                        onClick={() => {
-                          if (activeSessionId) clearAgentGroupSelectionIntent(activeSessionId);
-                        }}
-                      >
-                        <X size={16} strokeWidth={2.5} aria-hidden="true" />
-                      </button>
+                          onClick={() => {
+                            if (activeSessionId) clearAgentGroupSelectionIntent(activeSessionId);
+                          }}
+                        >
+                          <WorkIcon name="close" />
+                        </button>
                     )}
                   </div>
                 )}
@@ -4157,7 +4158,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       type="button"
                       className="chat-agent-tag__close"
                       data-testid="chat-panel-goal-tag-close"
-                      title={t('goal.closeTag')}
                       aria-label={t('goal.closeTag')}
                       onClick={() => {
                         if (!activeSessionId) return;
@@ -4167,7 +4167,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                         useGoalStore.getState().setArmed(activeSessionId, false);
                       }}
                     >
-                      <X size={16} strokeWidth={2.5} aria-hidden="true" />
+                      <WorkIcon name="close" />
                     </button>
                   </div>
                 )}
@@ -4190,13 +4190,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           className="chat-agent-tag__close"
                           data-testid="chat-panel-plan-tag-close"
                           disabled={closeBlocked}
-                          title={closeBlocked ? t('plan.closeTagDisabled') : t('plan.closeTag')}
                           aria-label={closeBlocked ? t('plan.closeTagDisabled') : t('plan.closeTag')}
                           onClick={() => {
                             applyPlanToggle(activeSessionId, false);
                           }}
                         >
-                          <X size={16} strokeWidth={2.5} aria-hidden="true" />
+                          <WorkIcon name="close" />
                         </button>
                       );
                     })()}

@@ -149,6 +149,13 @@
       "languageDescription": "Set the display language for the application interface.",
       "chinese": "中文（简体）",
       "english": "English",
+      "closeBehavior": "When closing the main window",
+      "closeBehaviorDescription": "Choose what the window close button does. You can change this at any time.",
+      "closeBehaviorOptions": {
+        "ask": "Ask every time",
+        "hide": "Minimize to tray",
+        "quit": "Quit application"
+      },
       "connection": "Service connection",
       "connectionDescription": "Shows the connection status between this page and the WorkSwarm service.",
       "connectionStatus": {
@@ -539,7 +546,7 @@
     "selectMember": "Select a team member",
     "detailTabs": {
       "members": "Members",
-      "group": "Group Chat"
+      "group": "Sub-topics"
     },
     "leader": "Team leader",
     "memberSeparator": ", ",
@@ -2900,6 +2907,7 @@
         "definitionUnavailable": "This Expert Team definition is incomplete and cannot be used.",
         "membersInvalid": "The Expert Team members are invalid. Choose a leader and distinct members.",
         "memberUnavailable": "A selected Expert is unavailable or not Team-compatible.",
+        "packageValidationError": "Expert Team package validation failed: {{reason}}",
         "createSuccess": "Expert Team package {{id}} was created.",
         "uploadSuccess": "Expert Team package {{id}} was imported. Review it in My Expert Teams.",
         "uploadError": "Unable to import the Expert Team package. Check the file and try again.",
@@ -3849,6 +3857,7 @@
         "unit": "credits",
         "used": "Used",
         "total": "Total",
+        "fetchFailedHint": "Credits are temporarily unavailable. Please try again later.",
         "meteringHint": "Credits are deducted by actual model usage.",
         "exhaustedHint": "Your free credits are used up. Switch to a configured model.",
         "exhaustedUntil": "Your free credits are used up. They refresh {{date}}.",

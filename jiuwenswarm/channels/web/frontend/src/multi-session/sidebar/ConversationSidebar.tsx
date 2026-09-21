@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
-import { Archive, Check, ChevronDown, CircleAlert, Code2, LoaderCircle, Workflow } from 'lucide-react';
+import { Archive, Check, ChevronDown, CircleAlert, Code2, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
@@ -49,6 +49,7 @@ import DeleteIcon from '../../assets/work-mode/delete.svg?react';
 import EditIcon from '../../assets/work-mode/edit.svg?react';
 import FolderFoldIcon from '../../assets/work-mode/folder-fold.svg?react';
 import FolderIcon from '../../assets/work-mode/folder.svg?react';
+import LoadingIcon from '../../assets/subagent/loading.svg?react';
 import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
 import NewTaskIcon from '../../assets/work-mode/new-task.svg?react';
 import PinIcon from '../../assets/work-mode/pin.svg?react';
@@ -269,7 +270,7 @@ function ConversationListItem({
   } else if (indicator === 'processing') {
     status = (
       <span title={getTaskStatusLabel(indicator, t)} data-testid="multi-session-conversation-list-item-status-processing">
-        <LoaderCircle className="conversation-list-item__loader" aria-hidden="true" />
+        <LoadingIcon className="conversation-list-item__loader" aria-hidden="true" />
       </span>
     );
   } else if (indicator === 'unread') {

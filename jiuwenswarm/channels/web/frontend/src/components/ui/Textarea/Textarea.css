@@ -1,3 +1,12 @@
+.ui-textarea-root {
+  position: relative;
+  display: block;
+}
+
+.ui-textarea-root > .ui-textarea {
+  display: block;
+}
+
 .ui-textarea {
   box-sizing: border-box;
   width: 100%;
@@ -5,23 +14,111 @@
   padding: 8px 10px;
   font: inherit;
   font-size: var(--font-size-sm);
-  line-height: 1.5;
+  line-height: 18px;
   color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-input-strong);
+  border-radius: var(--radius-sm);
   outline: none;
   background: var(--color-surface-card);
   resize: vertical;
 }
-.ui-textarea:focus {
-  border-color: var(--color-action-primary);
-  box-shadow: var(--effect-focus-ring);
+
+.ui-textarea:hover:not(:disabled):not(.ui-textarea--invalid) {
+  border-color: var(--color-control-emphasis);
 }
+
+.ui-textarea:focus {
+  border-color: var(--color-control-emphasis);
+}
+
 .ui-textarea:disabled {
   color: var(--color-text-tertiary);
   background: var(--color-surface-muted);
   cursor: not-allowed;
 }
+
 .ui-textarea--invalid {
   border-color: var(--color-border-danger);
+}
+
+.ui-textarea-wrapper {
+  display: block;
+  box-sizing: border-box;
+  min-height: 84px;
+  border: 1px solid var(--color-border-input-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-card);
+  overflow: hidden;
+  resize: vertical;
+}
+
+.ui-textarea-wrapper:focus-within {
+  border-color: var(--color-control-emphasis);
+}
+
+.ui-textarea-wrapper--invalid {
+  border-color: var(--color-border-danger);
+}
+
+.ui-textarea-scroll-container {
+  height: calc(100% - 24px);
+  margin: 12px 6px 12px 12px;
+  overflow-y: auto;
+}
+
+.ui-textarea-scroll-container::-webkit-scrollbar {
+  width: 4px;
+}
+
+.ui-textarea-scroll-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ui-textarea-scroll-container::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.ui-textarea-scroll-container:hover::-webkit-scrollbar-thumb,
+.ui-textarea-wrapper:focus-within .ui-textarea-scroll-container::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar-thumb);
+}
+
+.ui-textarea-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
+
+.ui-textarea-scrollable {
+  display: block;
+  width: 100%;
+  min-height: 100%;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  outline: none;
+  background: transparent;
+  resize: none;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  line-height: 18px;
+  color: var(--color-text-primary);
+}
+
+.ui-textarea-counter {
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.ui-textarea-counter-separator {
+  color: var(--color-text-meta);
+}
+
+.ui-textarea-counter.is-at-limit {
+  color: var(--color-feedback-warning);
 }
