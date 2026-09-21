@@ -1346,6 +1346,36 @@
   font-size: 12px;
 }
 
+.agent-management-field-counter-separator {
+  color: var(--color-text-meta);
+}
+
+.agent-management-name-field {
+  position: relative;
+  display: block;
+}
+
+.agent-management-name-field .agent-management-field-counter {
+  position: absolute;
+  bottom: 0;
+  right: 12px;
+  line-height: 18px;
+  pointer-events: none;
+}
+
+.agent-management-description-field {
+  position: relative;
+  display: block;
+}
+
+.agent-management-description-field .agent-management-field-counter {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  line-height: 1;
+  pointer-events: none;
+}
+
 .agent-management-field-counter.is-limit {
   color: var(--color-feedback-warning);
 }
@@ -3152,6 +3182,7 @@
 .agent-management-catalog-card:focus-within .agent-management-card__actions {
   opacity: 1;
 }
+
 /* Measure available space rather than the width of already-truncated tags. */
 .agent-management-catalog-card .page-card__tags {
   width: 100%;

@@ -83,6 +83,7 @@ export function AgentEditor({
   const [skillDraft, setSkillDraft] = useState<string[]>(draft.skillRefs);
   const [mcpDraft, setMcpDraft] = useState<string[]>(draft.mcpRefs);
   const personaSurfaceRef = useRef<HTMLDivElement>(null);
+  const personaTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const errors = useMemo(
     () => ({
@@ -128,6 +129,13 @@ export function AgentEditor({
     document.addEventListener('pointerdown', handlePointerDown, true);
     return () => document.removeEventListener('pointerdown', handlePointerDown, true);
   }, [personaEditing]);
+
+  useEffect(() => {
+    const el = personaTextareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }, [draft.persona, personaEditing]);
 
   const update = (patch: Partial<AgentDraft>) => onChange({ ...draft, ...patch });
 
@@ -212,24 +220,28 @@ export function AgentEditor({
         <form onSubmit={handleSubmit} data-testid="agent-editor-form">
           <Section title={t('agentManagement.form.basic')}>
             <div className="mb-4">
-              <label className="mb-1.5 flex items-center justify-between text-[13px] font-medium text-text">
-                <span>{t('agentManagement.form.nameLabel')}</span>
+              <label className="mb-1.5 block text-[13px] font-medium text-text">
+                {t('agentManagement.form.nameLabel')}
+              </label>
+              <span className="agent-management-name-field">
+                <Input
+                  value={draft.name}
+                  onChange={(value) => update({ name: value })}
+                  placeholder={t('agentManagement.form.namePlaceholder')}
+                  invalid={Boolean(touched && errors.name)}
+                  data-testid="agent-editor-name"
+                  maxLength={AGENT_NAME_MAX_LENGTH}
+                  style={{ paddingRight: 40 }}
+                />
                 <span
                   aria-hidden="true"
                   className={`agent-management-field-counter${draft.name.length >= AGENT_NAME_MAX_LENGTH ? ' is-limit' : ''}`}
                   data-testid="agent-editor-name-counter"
                 >
-                  {t('agentManagement.form.charCount', { count: draft.name.length, max: AGENT_NAME_MAX_LENGTH })}
+                  {draft.name.length}
+                  <span className="agent-management-field-counter-separator">/{AGENT_NAME_MAX_LENGTH}</span>
                 </span>
-              </label>
-              <Input
-                value={draft.name}
-                onChange={(value) => update({ name: value })}
-                placeholder={t('agentManagement.form.namePlaceholder')}
-                invalid={Boolean(touched && errors.name)}
-                data-testid="agent-editor-name"
-                maxLength={AGENT_NAME_MAX_LENGTH}
-              />
+              </span>
               {touched && errors.name ? (
                 <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-editor-name-error">
                   {errors.name}
@@ -238,28 +250,21 @@ export function AgentEditor({
             </div>
 
             <div className="mb-4">
-              <label className="mb-1.5 flex items-center justify-between text-[13px] font-medium text-text">
-                <span>{t('agentManagement.form.descriptionLabel')}</span>
-                <span
-                  aria-hidden="true"
-                  className={`agent-management-field-counter${draft.description.length >= AGENT_DESCRIPTION_MAX_LENGTH ? ' is-limit' : ''}`}
-                  data-testid="agent-editor-description-counter"
-                >
-                  {t('agentManagement.form.charCount', {
-                    count: draft.description.length,
-                    max: AGENT_DESCRIPTION_MAX_LENGTH,
-                  })}
-                </span>
+              <label className="mb-1.5 block text-[13px] font-medium text-text">
+                {t('agentManagement.form.descriptionLabel')}
               </label>
-              <Textarea
-                value={draft.description}
-                onChange={(value) => update({ description: value })}
-                placeholder={t('agentManagement.form.descriptionPlaceholder')}
-                rows={2}
-                invalid={Boolean(touched && errors.description)}
-                data-testid="agent-editor-description"
-                maxLength={AGENT_DESCRIPTION_MAX_LENGTH}
-              />
+                <Textarea
+                  value={draft.description}
+                  onChange={(value) => update({ description: value })}
+                  placeholder={t('agentManagement.form.descriptionPlaceholder')}
+                  rows={2}
+                  invalid={Boolean(touched && errors.description)}
+                  data-testid="agent-editor-description"
+                  maxLength={AGENT_DESCRIPTION_MAX_LENGTH}
+                  showCounter
+                  counterTestId="agent-editor-description-counter"
+                  scrollable
+                />
               {touched && errors.description ? (
                 <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-editor-description-error">
                   {errors.description}
@@ -284,46 +289,52 @@ export function AgentEditor({
               <label className="mb-1.5 block text-[13px] font-medium text-text">
                 {t('agentManagement.form.personaLabel')}
               </label>
-              <div ref={personaSurfaceRef} className="flex">
-                {personaEditing ? (
-                  <Textarea
-                    className="min-h-[280px] whitespace-pre-wrap"
-                    value={draft.persona}
-                    onChange={(value) => update({ persona: value })}
-                    placeholder={t('agentManagement.form.personaPlaceholder')}
-                    rows={12}
-                    invalid={Boolean(touched && errors.persona)}
-                    aria-label={t('agentManagement.form.personaLabel')}
-                    onBlur={() => setPersonaEditing(false)}
-                    autoFocus
-                    data-testid="agent-editor-persona-input"
-                  />
-                ) : (
-                  <div
-                    className="ui-textarea min-h-[280px] cursor-text whitespace-pre-wrap break-words"
-                    role="button"
-                    tabIndex={0}
-                    aria-label={t('agentManagement.form.personaPreview')}
-                    onClick={() => setPersonaEditing(true)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        setPersonaEditing(true);
-                      }
-                    }}
-                    data-testid="agent-editor-persona-preview"
-                  >
-                    {draft.persona.trim() ? (
-                      <div className="agent-management-markdown">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft.persona}</ReactMarkdown>
-                      </div>
+              <div className="ui-textarea-root">
+                <div
+                  ref={personaSurfaceRef}
+                  className={`ui-textarea-wrapper h-[280px] min-h-[100px] resize-vertical${touched && errors.persona ? ' ui-textarea-wrapper--invalid' : ''}`}
+                >
+                  <div className="ui-textarea-scroll-container">
+                    {personaEditing ? (
+                      <textarea
+                        ref={personaTextareaRef}
+                        className="ui-textarea-scrollable whitespace-pre-wrap text-[14px] tracking-[0]"
+                        value={draft.persona}
+                        onChange={(e) => update({ persona: e.target.value })}
+                        placeholder={t('agentManagement.form.personaPlaceholder')}
+                        aria-label={t('agentManagement.form.personaLabel')}
+                        onBlur={() => setPersonaEditing(false)}
+                        autoFocus
+                        data-testid="agent-editor-persona-input"
+                      />
                     ) : (
-                      <span className="text-[color:var(--color-text-placeholder)]">
-                        {t('agentManagement.form.personaPlaceholder')}
-                      </span>
+                      <div
+                        className="ui-textarea-scrollable whitespace-pre-wrap break-words cursor-text text-[14px] tracking-[0]"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={t('agentManagement.form.personaPreview')}
+                        onClick={() => setPersonaEditing(true)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            setPersonaEditing(true);
+                          }
+                        }}
+                        data-testid="agent-editor-persona-preview"
+                      >
+                        {draft.persona.trim() ? (
+                          <div className="agent-management-markdown">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft.persona}</ReactMarkdown>
+                          </div>
+                        ) : (
+                          <span className="text-[color:var(--color-text-placeholder)]">
+                            {t('agentManagement.form.personaPlaceholder')}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
+                </div>
               </div>
               {touched && errors.persona ? (
                 <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-editor-persona-error">

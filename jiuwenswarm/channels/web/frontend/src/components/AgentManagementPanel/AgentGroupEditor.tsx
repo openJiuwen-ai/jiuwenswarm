@@ -217,18 +217,8 @@ export function AgentGroupEditor({
             </div>
 
             <div className="mb-4">
-              <label className="mb-1.5 flex items-center justify-between text-[13px] font-medium text-text">
-                <span>{t('agentManagement.group.form.descriptionLabel')}</span>
-                <span
-                  aria-hidden="true"
-                  className={`agent-management-field-counter${draft.description.length >= AGENT_DESCRIPTION_MAX_LENGTH ? ' is-limit' : ''}`}
-                  data-testid="agent-group-editor-description-counter"
-                >
-                  {t('agentManagement.form.charCount', {
-                    count: draft.description.length,
-                    max: AGENT_DESCRIPTION_MAX_LENGTH,
-                  })}
-                </span>
+              <label className="mb-1.5 block text-[13px] font-medium text-text">
+                {t('agentManagement.group.form.descriptionLabel')}
               </label>
               <Textarea
                 value={draft.description}
@@ -238,6 +228,9 @@ export function AgentGroupEditor({
                 invalid={Boolean(touched && errors.description)}
                 data-testid="agent-group-editor-description"
                 maxLength={AGENT_DESCRIPTION_MAX_LENGTH}
+                showCounter
+                counterTestId="agent-group-editor-description-counter"
+                scrollable
               />
               {touched && errors.description ? (
                 <p
