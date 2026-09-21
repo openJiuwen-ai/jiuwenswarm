@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
+import { useTimelineRowState } from './timelineRowState';
 import clsx from 'clsx';
 import { ChevronDown, GitMerge } from 'lucide-react';
 import type { BeamSearchNode, BeamSearchProgress } from '../../types/beamSearch';
@@ -115,7 +116,7 @@ function BeamTreeBranch({ entry, copy }: {
   entry: BeamTreeNodeEntry;
   copy: BeamTreeCopy;
 }) {
-  const [showAllRejected, setShowAllRejected] = useState(false);
+  const [showAllRejected, setShowAllRejected] = useTimelineRowState(`beam-rejected-${entry.node.id}`, false);
   let rejectedSeen = 0;
   const hiddenRejectedCount = entry.children.reduce((count, child) => (
     child.node.status === 'rejected' ? count + 1 : count
@@ -180,7 +181,7 @@ export function BeamSearchTree({
   progress,
   autoCollapse = false,
 }: BeamSearchTreeProps) {
-  const [collapsed, setCollapsed] = useProcessTreeCollapse(autoCollapse);
+  const [collapsed, setCollapsed] = useProcessTreeCollapse(autoCollapse, '', 'beam-tree-collapsed');
   const model = useMemo(() => buildBeamTree(progress), [progress]);
   const copy = COPY[progress.language];
   const selected = progress.graph.nodes.filter(

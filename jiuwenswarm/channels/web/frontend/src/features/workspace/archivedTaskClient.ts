@@ -162,6 +162,8 @@ export function findBatchSessionResult(
 
 export function createArchivedTaskClient(request: ArchiveRequest) {
   return {
+    // 归档列表是服务端全量扫描后的分页,慢环境(杀软扫描/冷缓存/大量归档)
+    // 可能超过 webRequest 15s 默认超时;给足预算避免"偶现加载失败"。
     listArchivedSessions: (params: ArchivedListParams) =>
       request<ArchivedSessionListResponse>('session.archived.list', {
         ...(params.work_mode ? { work_mode: params.work_mode } : {}),
@@ -169,7 +171,7 @@ export function createArchivedTaskClient(request: ArchiveRequest) {
         ...(params.keyword ? { keyword: params.keyword } : {}),
         ...(params.limit !== undefined ? { limit: params.limit } : {}),
         ...(params.offset !== undefined ? { offset: params.offset } : {}),
-      }),
+      }, { timeoutMs: 30000 }),
     archiveSession: (sessionId: string) =>
       request<BatchSessionArchiveResponse>('session.archive', { session_ids: [sessionId] }),
     unarchiveSession: (sessionId: string) =>

@@ -70,7 +70,11 @@ class RsiWorker:
         self._last_enqueued: str | None = None
         self._resume_task_ids: set[str] = set()
         self._control_tasks: dict[str, asyncio.Task[Any]] = {}
+        # ``_execution_tasks`` owns the slot supervisor; the actual provider
+        # coroutine is tracked separately so Harness cancellation reaches it.
         self._execution_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._execution_runners: dict[str, asyncio.Task[Any]] = {}
+        self._termination_requested: set[str] = set()
         self._execution_generations: dict[str, int] = {}
         # 请求 pause/terminate 时用来提前让出执行位；见 ``_run_until_slot_free``。
         self._slot_released: dict[str, asyncio.Future[None]] = {}
@@ -160,9 +164,11 @@ class RsiWorker:
                     return task.status
                 # Providers without a terminate hook (the production Harness
                 # engine) are stopped by cancelling the running coroutine.
-                exec_task = self._execution_tasks.get(task_id)
-                if exec_task is not None and not exec_task.done():
-                    exec_task.cancel()
+                if task.status == TaskStatus.RUNNING.value:
+                    self._termination_requested.add(task_id)
+                runner = self._execution_runners.get(task_id)
+                if runner is not None and not runner.done():
+                    runner.cancel()
                 self._mark_terminated(task_id)
                 return self.store.get(task_id).status
             result = self.store.update_status(
@@ -172,22 +178,37 @@ class RsiWorker:
         self._conflict(task_id, f"未知 mode: {mode}")
 
     def resume(self, task_id: str, fingerprint_check: bool = True) -> str:
-        """``resume``：校验 + 入队，材料与引擎 fingerprint 由执行路径确认。"""
+        """``resume``：校验 + 入队，材料与引擎 fingerprint 由执行路径确认。
+
+        暂停来源决定恢复后的执行方式（``run`` vs Provider ``resume``）：
+        - 运行中被 pause（Provider 已暂停真实执行）→ 恢复走 ``adapter.resume()``
+          续跑；产物 Provider 不支持 resume 时直接报错，避免静默回到 PAUSED。
+        - 排队中被 pause（从未真实执行，含服务重启丢队列）→ 恢复只是重新入队，
+          执行走 ``adapter.run()`` 全新开始，不需要 Provider 的断点恢复。
+        """
         task = self.store.get(task_id)
         if task.status != TaskStatus.PAUSED.value:
             self._conflict(task_id, "仅 PAUSED 可 resume")
+
         adapter = self._adapter_for(task.scenario, task.artifact_type)
-        if task.scenario == "ARTIFACT" and (
-            adapter is None or not bool(getattr(adapter, "supports_resume", False))
-        ):
-            raise RsiScenarioNotSupported("当前产物场景不支持 resume")
+        resume_supported = task.scenario != "ARTIFACT" or bool(
+            getattr(adapter, "supports_resume", False)
+        )
+        resumed_from_run = _paused_from_run(task)
+        if resumed_from_run and not resume_supported:
+            raise RsiScenarioNotSupported("当前产物场景不支持运行中暂停后的 resume")
+
         if fingerprint_check:
             # HarnessProvider.resume 在真正调用引擎前校验任务材料；
             # openjiuwen 再按其持久化状态校验 engine fingerprint。
             # worker 只负责入队，避免在此处重复读取或伪造校验结果。
             logger.debug("[RSI] resume fingerprint 将由 Provider/引擎执行路径校验: task=%s", task_id)
         self.store.update_status(task_id, [TaskStatus.PAUSED.value], TaskStatus.QUEUED.value, cause="resume")
-        self._resume_task_ids.add(task_id)
+        if resumed_from_run or resume_supported:
+            # 运行中暂停（或 Provider 支持 resume）→ 执行时走 adapter.resume() 续跑。
+            self._resume_task_ids.add(task_id)
+        # 排队暂停且 Provider 不支持 resume（如 paper 桩实现）→ 不标记 resume，
+        # 执行路径按全新 run() 处理，避免卡在 Provider.resume() 上。
         self._last_enqueued = task_id
         self._queue.put_nowait(task_id)
         self._ensure_runner()
@@ -232,15 +253,12 @@ class RsiWorker:
                     )
                 )
                 self._execution_tasks[task_id] = exec_task
-                if self.store.get(task_id).status != TaskStatus.RUNNING.value:
-                    # A terminate request won the race between RUNNING and
-                    # task registration; cancel the fresh execution immediately.
-                    exec_task.cancel()
                 await exec_task
             except Exception:  # noqa: BLE001 - 单任务状态冲突/异常不拖垮 worker
                 logger.exception("[RSI] 任务执行异常 task=%s，跳过继续取下一个", task_id)
             finally:
                 self._execution_tasks.pop(task_id, None)
+                self._termination_requested.discard(task_id)
                 self._running_task_id = None
                 self._queue.task_done()
 
@@ -257,22 +275,45 @@ class RsiWorker:
         模型调用加一次评测。实测一次真实运行里这段是 2 分 34 秒，而这段时间执行位
         一直被占着，排在后面的任务只能等一件谁都不再要其结果的工作做完。
 
-        控制指令一发出就把执行位让出来，正在收尾的运行转到后台继续，队列接着走。
-        代价是这段时间里两个运行短暂重叠，收尾的那个仍在占 CPU——所以以墙钟为
-        指标的任务，那一次评测会偏慢一点。
+        Provider-control 指令一发出就把执行位让出来，正在收尾的运行转到后台继续，
+        队列接着走；这是 supports_terminate=True / supports_pause=True 的既有语义。
+        Harness 没有 terminate hook 时则取消实际 runner，并等待其清理完成后再继续，
+        避免旧执行与后续任务重叠。
         """
         runner = asyncio.create_task(
             self._execute_task(task_id, resume=resume, generation=generation)
         )
+        self._execution_runners[task_id] = runner
+        if (
+            task_id in self._termination_requested
+            or self.store.get(task_id).status != TaskStatus.RUNNING.value
+        ):
+            # A terminate request may arrive after worker.start but before the
+            # inner runner is registered.  Consume that intent at the actual
+            # execution boundary instead of cancelling the slot supervisor.
+            runner.cancel()
         released: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._slot_released[task_id] = released
         try:
             await asyncio.wait({runner, released}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             self._slot_released.pop(task_id, None)
+            if self._execution_runners.get(task_id) is runner:
+                self._execution_runners.pop(task_id, None)
             released.cancel()
         if runner.done():
-            await runner          # 异常照旧抛给 _run_loop 的处理分支
+            try:
+                await runner      # 异常照旧抛给 _run_loop 的处理分支
+            except asyncio.CancelledError:
+                # If termination won before the coroutine got its first
+                # scheduling turn, the Task is cancelled without entering
+                # ``_execute_task``.  Consume only that expected cancellation;
+                # external supervisor cancellation must still propagate.
+                if (
+                    task_id not in self._termination_requested
+                    and self.store.get(task_id).status != TaskStatus.TERMINATED.value
+                ):
+                    raise
             return
         # 后台收尾：留住引用，否则事件循环可能把这个 Task 回收掉。
         self._winding_down.add(runner)
@@ -313,6 +354,7 @@ class RsiWorker:
         )
         consume_task = asyncio.create_task(consume_queue(queue, consumer))
         result: Any = None
+        provider_result_ready = False
         cancelled = False
         try:
             if hasattr(adapter, "validate_input"):
@@ -347,8 +389,7 @@ class RsiWorker:
                     result,
                     timeout=self._provider_poll_timeout_for(task_view),
                 )
-            if self._is_current_execution(task_id, generation):
-                self._apply_result_status(task_id, result)
+            provider_result_ready = True
         except asyncio.CancelledError:
             cancelled = True
             logger.info("[RSI] 任务执行被终止 task=%s", task_id)
@@ -383,6 +424,8 @@ class RsiWorker:
                         await consume_task
                     except Exception:  # noqa: BLE001
                         logger.exception("[RSI] 事件消费协程退出异常 task=%s", task_id)
+                    if provider_result_ready and self._is_current_execution(task_id, generation):
+                        self._apply_result_status(task_id, result)
                 if self._is_current_execution(task_id, generation):
                     self._persist_results(task_id, result)
             except asyncio.CancelledError:
@@ -814,6 +857,18 @@ def _sink(queue: asyncio.Queue[EngineEvent | None]):
         queue.put_nowait(event)
 
     return _put
+
+
+def _paused_from_run(task: Any) -> bool:
+    """最近一次进入 PAUSED 的来源是否为 RUNNING（真实暂停）。
+
+    排队中 pause（QUEUED→PAUSED）或服务重启丢队列（QUEUED→PAUSED）的任务
+    从未真正执行，恢复时应全新 run 而不是走 Provider.resume()。
+    """
+    for item in reversed(task.status_history or []):
+        if item.get("to") == TaskStatus.PAUSED.value:
+            return item.get("from") == TaskStatus.RUNNING.value
+    return False
 
 
 def _provider_status(value: Any, *, default: str = "") -> str:

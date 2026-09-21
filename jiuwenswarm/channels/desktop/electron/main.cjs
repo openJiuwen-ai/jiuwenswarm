@@ -2093,6 +2093,27 @@ function registerIpcHandlers() {
     mainWindow.close();
     return true;
   });
+  registerHandler('desktop:open-external-url', async url => {
+    const hubBase = (
+      process.env.SKILLHUB_OAUTH_BASE_URL
+      || process.env.TEAM_SKILLS_HUB_BASE_URL
+      || 'https://swarmskills.openjiuwen.com'
+    ).replace(/\/$/, '');
+    try {
+      const target = new URL(String(url));
+      const expected = new URL(hubBase);
+      const allowedPath = /^\/api\/v1\/auth\/oauth\/(gitcode|github)\/start$/;
+      if (target.origin !== expected.origin
+          || target.username || target.password
+          || !allowedPath.test(target.pathname)) {
+        return false;
+      }
+      await shell.openExternal(target.href);
+      return true;
+    } catch {
+      return false;
+    }
+  });
   registerHandler('desktop:select-project-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],

@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, X } from 'lucide-react';
 import { Switch } from '../Switch';
+import { SettingRow } from '../../features/settings/components/SettingRow';
 import ModelPicker from '../ModelPicker';
 import { usePersonalContextStore } from '../../stores';
 import { useSessionStore } from '../../stores';
@@ -45,6 +46,11 @@ export function PersonalContextSettingsPanel({
     authByProvider,
   } = usePersonalContextStore();
   const availableModels = useSessionStore((s) => s.availableModels);
+  // 上下文整理模型只允许选择已配置模型，登录/免费模型由网关按会话注入凭据，
+  // 无法被 personal_context 持久化保存，选中会触发后端下标越界，这里直接过滤掉。
+  const visibleModels = availableModels.filter((m) => m.is_free !== true);
+  const currentModelName =
+    config.model_index != null ? availableModels[config.model_index]?.model_name ?? null : null;
 
   // 总开关为派生状态：任一子开关开启即视为开启。
   const masterEnabled = config.collection_enabled || config.agent_use_enabled;
@@ -164,43 +170,40 @@ export function PersonalContextSettingsPanel({
       )}
 
       {/* 配置卡片：总开关关闭时只显示总开关；开启后显示采集开关与完整配置 */}
-      <div className="pc-settings__card">
+      <div className="pc-settings__card" data-testid="personal-context-settings-card">
         {/* 总开关 */}
-        <div className="pc-settings__card-row">
-          <div className="pc-settings__row-text">
-            <div className="pc-settings__row-label">{t('personalContext.settings.masterEnable')}</div>
-            <div className="pc-settings__row-hint">{t('personalContext.settings.masterEnableHint')}</div>
-          </div>
+        <SettingRow
+          title={t('personalContext.settings.masterEnable')}
+          description={t('personalContext.settings.masterEnableHint')}
+        >
           <Switch
             checked={masterEnabled}
             onChange={handleMasterEnabled}
             disabled={!isConnected || !!pendingWrites.collection_enabled || !!pendingWrites.agent_use_enabled}
           />
-        </div>
+        </SettingRow>
 
         {masterEnabled && (
           <>
             {/* 采集个人上下文内容 */}
-            <div className="pc-settings__card-row">
-              <div className="pc-settings__row-text">
-                <div className="pc-settings__row-label">{t('personalContext.settings.enable')}</div>
-                <div className="pc-settings__row-hint">{t('personalContext.settings.enableHint')}</div>
-              </div>
+            <SettingRow
+              title={t('personalContext.settings.enable')}
+              description={t('personalContext.settings.enableHint')}
+            >
               <Switch
                 checked={config.collection_enabled}
                 onChange={handleEnabled}
                 disabled={!isConnected || !!pendingWrites.collection_enabled}
               />
-            </div>
+            </SettingRow>
 
             {config.collection_enabled && (
               <>
             {/* 上下文采集模式 */}
-            <div className="pc-settings__card-row pc-settings__card-row--inline">
-              <div className="pc-settings__row-text">
-                <div className="pc-settings__row-label">{t('personalContext.settings.strategyProfile')}</div>
-                <div className="pc-settings__row-hint">{t('personalContext.settings.subtitle')}</div>
-              </div>
+            <SettingRow
+              title={t('personalContext.settings.strategyProfile')}
+              description={t('personalContext.settings.subtitle')}
+            >
               <select
                 className="pc-settings__select"
                 value={config.strategy_profile}
@@ -211,24 +214,24 @@ export function PersonalContextSettingsPanel({
                   <option key={s} value={s}>{t('personalContext.settings.strategy_' + s)}</option>
                 ))}
               </select>
-            </div>
+            </SettingRow>
 
             {/* 上下文整理模型 */}
-            <div className="pc-settings__card-row pc-settings__card-row--inline">
-              <div className="pc-settings__row-text">
-                <div className="pc-settings__row-label">{t('personalContext.settings.model')}</div>
-                <div className="pc-settings__row-hint">{t('personalContext.settings.modelHint')}</div>
-              </div>
+            <SettingRow
+              title={t('personalContext.settings.model')}
+              description={t('personalContext.settings.modelHint')}
+            >
               <ModelPicker
                 testIdPrefix="personal-context-model"
-                value={config.model_index != null ? availableModels[config.model_index]?.model_name ?? null : null}
+                excludeFreeModels
+                value={currentModelName}
                 onChange={(modelName) => {
                   const idx = availableModels.findIndex((m) => m.model_name === modelName);
                   if (idx >= 0) handleModel(idx);
                 }}
-                disabled={!isConnected || !!pendingWrites.model_index || availableModels.length === 0}
+                disabled={!isConnected || !!pendingWrites.model_index || visibleModels.length === 0}
               />
-            </div>
+            </SettingRow>
 
             {/* 内容采集授权 */}
             <div className="pc-settings__card-row pc-settings__card-row--auth">

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { AgentGroupDetail, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
+import { openAssetPublish } from '../../features/assetPublishEvents';
+import type { AgentFileContent, AgentGroupDetail, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
+import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 import { getAvatarTone, GroupAvatar } from './GroupCard';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
@@ -17,7 +19,7 @@ type AgentGroupDetailPageProps = {
   filesStatus: RequestStatus;
   filesError: string | null;
   selectedFilePath: string | null;
-  fileContent: { relativePath: string; content: string } | null;
+  fileContent: AgentFileContent | null;
   fileStatus: RequestStatus;
   fileError: string | null;
   actionError: string | null;
@@ -96,7 +98,7 @@ export function AgentGroupDetailPage({
 
   const canUse = detail.installed && detail.capabilities.canUse;
   const canDelete = detail.source === 'local' && !detail.installed;
-  const canPreviewFiles = detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.installed);
+  const canPreviewFiles = detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.source === 'hub' || detail.installed);
   const category = detail.category?.trim() || '';
   const categoryLabel = category ? t(`agentManagement.categories.${category}`, { defaultValue: category }) : null;
   const detailTags = detail.tags;
@@ -107,6 +109,7 @@ export function AgentGroupDetailPage({
         {t('agentManagement.actions.back')}
       </button>
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
+        <PublicationDetailStatus kind="agent_group" localId={detail.id} />
         <EntityHeader
           testId="agent-management-detail-header"
           avatar={<GroupAvatar item={detail} size="detail" />}
@@ -121,6 +124,16 @@ export function AgentGroupDetailPage({
           ]}
           actions={
             <div className="agent-management-detail__actions">
+              {detail.capabilities.canPublish ? (
+                <button
+                  type="button"
+                  className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text"
+                  data-testid="agent-management-agent-group-publish"
+                  onClick={() => openAssetPublish({ kind: 'agent_group', local_id: detail.id, avatar_url: detail.avatarUrl || undefined })}
+                >
+                  {t('skills.actions.publish')}
+                </button>
+              ) : null}
               {detail.installed && detail.capabilities.canUninstall ? (
                 <button
                   type="button"

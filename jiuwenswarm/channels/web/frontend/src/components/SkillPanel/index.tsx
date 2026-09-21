@@ -6,7 +6,7 @@ import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
  *
  * Skills 管理面板（编排层）：
  * - 类型见 ./types.ts；纯函数工具见 ./skillPanelUtils.ts；小组件见 ./SkillPanelWidgets.tsx
- * - 数据域 hooks：useHubMarketplace / useSkillFilesTab / useSymphonyGraph / useIndexRecommendation /
+ * - 数据域 hooks：useHubMarketplace / useSkillFilesTab / useSymphonyGraph / useRetrievalIndexBuild /
  *   useEvolution / useSkillToasts；发布与登录由公共 AssetPublishHost 承载
  * - 视图：SkillGraphTab / MarketplaceView / SkillDetailView；弹窗：UploadSkillModal / DocToSkillModal /
  */
@@ -41,7 +41,7 @@ import { DocToSkillModal } from './DocToSkillModal';
 import { useSkillToasts } from './useSkillToasts';
 import { useHubMarketplace, type MarketplaceSubView } from './useHubMarketplace';
 import { useSymphonyGraph } from './useSymphonyGraph';
-import { useIndexRecommendation } from './useIndexRecommendation';
+import { useRetrievalIndexBuild } from './useRetrievalIndexBuild';
 import { useEvolution } from './useEvolution';
 import { useSkillFilesTab } from './useSkillFilesTab';
 import type {
@@ -278,13 +278,7 @@ export function SkillPanel({
     updateGraphReading,
   } = useSymphonyGraph({ isConnected, symphonyEnabled, onSymphonyEnabledChange });
 
-  const {
-    indexRecommendationVisible,
-    indexRecommendationBuilding,
-    setIndexRecommendationVisible,
-    startRetrievalIndexBuild,
-    buildRecommendedIndex,
-  } = useIndexRecommendation({ isActive, activeTab, isConnected, withSession, showMessage });
+  const { startRetrievalIndexBuild } = useRetrievalIndexBuild({ isConnected, withSession, showMessage });
 
   const {
     filesLoadState,
@@ -1414,10 +1408,6 @@ export function SkillPanel({
   const renderGraphTab = () => (
     <SkillGraphTab
       isConnected={isConnected}
-      indexRecommendationVisible={indexRecommendationVisible}
-      indexRecommendationBuilding={indexRecommendationBuilding}
-      onDismissRecommendation={() => setIndexRecommendationVisible(false)}
-      onBuildRecommendedIndex={() => void buildRecommendedIndex()}
       symphonySaveError={symphonySaveError}
       symphonySaving={symphonySaving}
       symphonyEnabledDraft={symphonyEnabledDraft}

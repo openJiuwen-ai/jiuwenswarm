@@ -19,9 +19,12 @@ from typing import Any
 
 from jiuwenswarm.common.auth.account_kit import (
     CLAIM_POLL_INTERVAL_S,
+    CLAIM_POLL_SLOW_AFTER_S,
+    CLAIM_POLL_SLOW_INTERVAL_S,
     STATE_TTL_S,
     AccountKitFlow,
     OAuthError,
+    campaign_state,
     login_enabled,
     mask,
 )
@@ -66,7 +69,7 @@ class AuthService:
     def create_authorization_request(self) -> dict[str, Any]:
         """返回 ``{authorizeUrl, state, claimToken, expiresIn}``，调用方负责打开浏览器。
 
-        回调落 ECS 时（配置里给了 ``callback_url``），顺带起一个后台线程去 ECS 轮询认领：
+        回调落ECS鉴权服务时（配置里给了 ``callback_url``），顺带起一个后台线程去ECS轮询认领：
         浏览器的回调不会再回到本进程，授权码只能主动去取。前端那边完全不用变——它照旧向
         本地 ``/auth/claim`` 认领，在这个线程把会话建好之前一直拿到 202。
         """
@@ -77,27 +80,36 @@ class AuthService:
 
     def _poll_server_callback_in_background(self, state: str, claim_token: str) -> None:
         def _run() -> None:
-            deadline = time.time() + STATE_TTL_S
-            while time.time() < deadline:
-                time.sleep(CLAIM_POLL_INTERVAL_S)
+            started = time.time()
+            while True:
+                slow = time.time() - started > CLAIM_POLL_SLOW_AFTER_S
+                time.sleep(CLAIM_POLL_SLOW_INTERVAL_S if slow else CLAIM_POLL_INTERVAL_S)
+                if time.time() >= started + STATE_TTL_S:
+                    break
                 if self._flow.pending.get(state) is None:
                     return  # 已经完成、被取消或已过期，没人在等这个结果了
-                try:
-                    claimed = self._flow.claim_from_exchange(state, claim_token)
-                except Exception:  # noqa: BLE001 — 轮询线程不能把异常抛到无人接管的地方
-                    logger.warning("[Auth] 认领授权码异常，稍后重试", exc_info=True)
-                    continue
-                if claimed is None:
-                    continue
-                code, error = claimed
-                try:
-                    self.complete_callback(state, code=code, error_obj=error)
-                except OAuthError:
-                    pass  # 失败已经登记给发起方了（complete_callback 内部做的）
-                return
+                if self._claim_from_exchange_once(state, claim_token):
+                    return
             logger.info("[Auth] 等待授权超时 state=%s", mask(state))
 
         threading.Thread(target=_run, name="auth-claim-poll", daemon=True).start()
+
+    def _claim_from_exchange_once(self, state: str, claim_token: str) -> bool:
+        try:
+            claimed = self._flow.claim_from_exchange(state, claim_token)
+        except Exception:  # noqa: BLE001 — 轮询线程不能把异常抛到无人接管的地方
+            logger.warning("[Auth] 认领授权码异常，稍后重试", exc_info=True)
+            return False
+        if claimed is None:
+            return False
+        code, error = claimed
+        try:
+            self.complete_callback(state, code=code, error_obj=error)
+        except OAuthError as err:
+            # 其余失败 complete_callback 已经登记给发起方了
+            if err.code == "oauth_callback_replayed" and code:
+                logger.warning("[Auth] 该登录已有结果，丢弃另一路取到的授权码 state=%s", mask(state))
+        return True
 
     def complete_callback(
         self,
@@ -147,8 +159,18 @@ class AuthService:
         return session
 
     def claim(self, state: str, claim_token: str) -> AuthSession | None:
-        """发起方取回登录结果。回调还没到返回 ``None``；登录失败抛 :class:`OAuthError`。"""
+        """发起方取回登录结果。回调还没到返回 ``None``；登录失败抛 :class:`OAuthError`。
+
+        回调落鉴权服务时，没结果就当场去鉴权服务取一次：前端只在授权可能已完成时来认领（回到应用、
+        点「我已完成登录」），不必等后台轮询的下一轮。
+        """
         session_id = self._flow.pending.claim(state, claim_token)
+        if (
+            session_id is None
+            and self._flow.config.callback_url
+            and self._claim_from_exchange_once(state, claim_token)
+        ):
+            session_id = self._flow.pending.claim(state, claim_token)
         if session_id is None:
             return None
         session = self._store.get(session_id)
@@ -156,6 +178,9 @@ class AuthService:
             # 回调和认领之间被登出了（或同账号在别处又登了一次，把它顶掉了）
             raise OAuthError("登录会话已失效，请重新登录", "session_expired")
         return session
+
+    def cancel(self, state: str, claim_token: str) -> None:
+        self._flow.pending.discard(state, claim_token)
 
     def logout(self, session_id: str | None) -> None:
         """登出**这个**会话。没有会话 id 就什么都不做。
@@ -192,7 +217,12 @@ class AuthService:
         return self._store.get(session_id)
 
     def status(self, session_id: str | None = None) -> dict[str, Any]:
-        base: dict[str, Any] = {"enabled": self.enabled, "provider": "huawei-account"}
+        base: dict[str, Any] = {
+            "enabled": self.enabled,
+            "provider": "huawei-account",
+            "state": campaign_state(),
+            "accountCenterUrl": self._flow.config.account_center_url,
+        }
         session = self.resolve_session(session_id)
         if session is None:
             return {**base, "islogin": False, "userId": None}

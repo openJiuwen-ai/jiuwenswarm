@@ -47,6 +47,7 @@ class SessionArchiveService:
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._stopping: dict[str, asyncio.Task] = {}
         self._recovery_task: asyncio.Task | None = None
+        self._backfill_task: asyncio.Task | None = None
         self._owner_id = uuid.uuid4().hex
 
     @asynccontextmanager
@@ -109,12 +110,24 @@ class SessionArchiveService:
             self._recovery_task = asyncio.create_task(
                 self._recover(), name="session-lifecycle-recovery"
             )
+        if self._backfill_task is None:
+            self._backfill_task = asyncio.create_task(
+                asyncio.to_thread(self._backfill_archive_times),
+                name="session-archive-time-backfill",
+            )
 
     async def close(self):
-        if self._recovery_task is not None:
-            self._recovery_task.cancel()
-            await asyncio.gather(self._recovery_task, return_exceptions=True)
-            self._recovery_task = None
+        tasks = [
+            task
+            for task in (self._recovery_task, self._backfill_task)
+            if task is not None
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._recovery_task = None
+        self._backfill_task = None
         tasks = list(self._stopping.values())
         for task in tasks:
             task.cancel()
@@ -605,6 +618,86 @@ class SessionArchiveService:
             lc.atomic_json(directory / "metadata.json", meta)
             return float(stamp)
 
+    @staticmethod
+    def _archived_entries() -> list[Path]:
+        """Snapshot of the archived root; one retry absorbs transient failures.
+
+        Lazy enumeration on Windows can fail mid-scan when a concurrent
+        delete removes entries.  A persistent failure is a real problem.
+        """
+        root = get_agent_sessions_dir().parent / "sessions_archived"
+        for _ in range(2):
+            try:
+                return list(root.iterdir()) if root.exists() else []
+            except OSError:
+                logger.warning(
+                    "archived session enumeration failed; retrying", exc_info=True
+                )
+        raise lc.LifecycleError(
+            "ARCHIVE_SCAN_FAILED", "archived session directory is unreadable"
+        )
+
+    @staticmethod
+    def _listable_archived_directory(directory: Path, root_resolved: Path) -> bool:
+        """Whether an archived-root entry is a plain directory inside the root.
+
+        Symlinks are rejected directly; junctions (reparse points that
+        ``is_symlink`` misses on Windows) are rejected by comparing the
+        resolved parent against the resolved root, mirroring the
+        ``session_paths`` escape guard.  Permission errors propagate —
+        callers must keep this inside their per-item isolation.
+        """
+        if not directory.is_dir() or directory.is_symlink():
+            return False
+        return directory.resolve().parent == root_resolved
+
+    def _backfill_archive_times(self) -> None:
+        """One-shot startup migration: persist ``archived_at`` for legacy sessions.
+
+        Listings resolve ``archived_at`` read-only, so sessions archived before
+        the field existed must be repaired once here (locked writes belong to
+        this migration and to the move transaction, never to a listing).
+        """
+        try:
+            entries = self._archived_entries()
+        except lc.LifecycleError:
+            logger.warning("archived_at backfill scan failed", exc_info=True)
+            return
+        root_resolved = (
+            get_agent_sessions_dir().parent / "sessions_archived"
+        ).resolve()
+        for directory in entries:
+            sid = directory.name
+            try:
+                if not self._listable_archived_directory(directory, root_resolved):
+                    continue
+                meta = lc.read_json(directory / "metadata.json")
+                if meta and not meta.get("archived_at"):
+                    self.archive_time(sid, directory, meta)
+            except Exception:
+                logger.debug(
+                    "archived_at backfill deferred: %s", sid, exc_info=True
+                )
+
+    @staticmethod
+    def _listing_archived_at(directory: Path, meta: dict, value: dict) -> float:
+        """Read-only ``archived_at`` for listings: no lock, no repair writes.
+
+        The move transaction and the startup backfill persist the stamp in
+        metadata.  A session that still lacks it falls back to the operation
+        state, a previous repair marker, or the directory mtime — the request
+        path never blocks on the session resource lock or fsyncs.
+        """
+        if meta.get("archived_at"):
+            return float(meta["archived_at"])
+        operation = value.get("operation") or {}
+        stamp = (
+            operation.get("archived_at")
+            or value.get("archive_time_repair")
+            or directory.stat().st_mtime
+        )
+        return float(stamp)
+
     def list_sessions(self, params: dict) -> dict:
         root = get_agent_sessions_dir().parent / "sessions_archived"
         # One projects.json read for the whole listing; the former per-session
@@ -612,32 +705,73 @@ class SessionArchiveService:
         all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
         projects = {project.project_id: project for project in all_projects}
         project_lookup = None
+        # One lifecycle state read per project, shared by all its sessions.
+        project_states: dict[str, dict] = {}
         items = []
-        for directory in root.iterdir() if root.exists() else ():
-            if not directory.is_dir():
-                continue
+        # Snapshot before any per-item work; transient enumeration races on
+        # Windows are retried inside the helper.
+        entries = self._archived_entries()
+        root_resolved = root.resolve()
+        for directory in entries:
             sid = directory.name
-            meta = lc.raw_metadata(sid)
-            if not meta.get("project_id") and meta.get("project_dir"):
-                if project_lookup is None:
-                    project_lookup = lc.build_project_lookup()
-                pid = lc.project_id_for(meta, project_lookup=project_lookup)
-            else:
-                pid = lc.project_id_for(meta)
-            project = projects.get(pid)
-            items.append(
-                {
-                    **to_session_info(meta),
-                    "session_id": sid,
-                    "project_id": pid,
-                    "archived": True,
-                    "archived_at": self.archive_time(sid, directory, meta),
-                    "pinned": False,
-                    "pin_order": 0,
-                    "project_name": project.name if project else None,
-                    **lc.projection("session", sid, project_id=pid),
-                }
-            )
+            try:
+                if not self._listable_archived_directory(directory, root_resolved):
+                    # Symlinked or junctioned entries must never surface
+                    # storage outside the managed root; destructive paths
+                    # keep the session_paths guard.  The check itself may
+                    # raise (e.g. permission errors) — hence inside the try.
+                    continue
+                # Read the enumerated directory directly instead of
+                # re-resolving the session's current location: the resolve
+                # re-stats both storage areas per item and turns a mid-scan
+                # move into a hard failure for the whole listing.
+                meta = lc.read_json(directory / "metadata.json")
+                if not meta:
+                    # Vanished mid-scan (unarchive/delete) or foreign junk.
+                    continue
+                if not meta.get("project_id") and meta.get("project_dir"):
+                    if project_lookup is None:
+                        project_lookup = lc.build_project_lookup()
+                    pid = lc.project_id_for(meta, project_lookup=project_lookup)
+                else:
+                    pid = lc.project_id_for(meta)
+                project = projects.get(pid)
+                # One state read per session feeds both the archived_at
+                # fallback and the lifecycle projection.
+                value = lc.state("session", sid)
+                if pid not in project_states:
+                    project_states[pid] = lc.state("project", pid)
+                items.append(
+                    {
+                        **to_session_info(meta),
+                        "session_id": sid,
+                        "project_id": pid,
+                        "archived": True,
+                        "archived_at": self._listing_archived_at(
+                            directory, meta, value
+                        ),
+                        "pinned": False,
+                        "pin_order": 0,
+                        "project_name": project.name if project else None,
+                        **lc.projection(
+                            "session",
+                            sid,
+                            project_id=pid,
+                            value=value,
+                            archived=True,
+                            project_value=project_states[pid],
+                        ),
+                    }
+                )
+            except Exception:
+                # One moving or unusable entry must never fail the whole
+                # listing: a mid-scan unarchive/delete raises NOT_FOUND /
+                # OPERATION_IN_PROGRESS, stray directory names fail
+                # validate_id, corrupt metadata fails to parse.
+                logger.debug(
+                    "archived listing skipped session %s", sid, exc_info=True
+                )
+                continue
         return lc.page(items, params, "sessions", 200)
 
     @staticmethod

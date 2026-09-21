@@ -19,6 +19,10 @@ import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+from jiuwenswarm.server.runtime.skill.skillpack import (
+    read_skillpack_section,
+    scan_skillpacks,
+)
 from jiuwenswarm.symphony.adapter import (
     candidate_ids_from_skill_ids,
     graph_config_from_swarm,
@@ -344,6 +348,7 @@ class SwarmSymphonyService:
                 min_edge_confidence=config.orchestration.min_edge_confidence,
                 disabled_skill_names=load_execution_disabled_skills(),
                 dynamic_overlay=None,
+                skills_root=config.paths.skills_root,
             )
         payload.update(_build_log_payload(graph_dir))
         _prefer_build_failure_detail(payload)
@@ -1098,6 +1103,7 @@ def _web_graph_payload(
     min_edge_confidence: float,
     disabled_skill_names: set[str] | list[str] | tuple[str, ...],
     dynamic_overlay: dict[str, Any] | None,
+    skills_root: Path | None = None,
 ) -> dict[str, Any]:
     """Adapt the public capability graph for the existing Skill Graph panel."""
 
@@ -1174,85 +1180,34 @@ def _web_graph_payload(
 
     graph = {"nodes": nodes, "edges": edges}
 
-    # Load skill packs if evolution is enabled
+    # Scan installed SkillPacks from the workspace skills directory; the graph,
+    # the skills page, and the execution-disabled check all read one source.
     pack_nodes = []
     pack_edges = []
     pack_member_nodes = []  # Track member skill nodes that need to be added
     try:
-        from jiuwenswarm.symphony.evolution.pack_store import read_packs
-        from jiuwenswarm.symphony.evolution.store import read_events
-
-        # Build event index for pack trace lookup
-        events_index: dict[str, dict[str, Any]] = {}
-        try:
-            for event in read_events(graph_dir):
-                eid = event.get("event_id", "")
-                if eid:
-                    events_index[eid] = event
-        except Exception:  # noqa: BLE001
-            pass
-
-        packs_data = read_packs(graph_dir)
-        for pack in packs_data.get("packs", []):
-            pack_id = pack.get("pack_id", "")
-            if not pack_id:
-                continue
-
-            # Create pack node
+        skills_dir = Path(skills_root) if skills_root is not None else graph_dir.parent.parent / "skills"
+        for definition in scan_skillpacks(skills_dir):
+            pack_id = definition.name
+            member_ids = list(definition.members)
             pack_node_id = f"pack:{pack_id}"
-            member_ids = pack.get("member_ids", [])
-
-            # Extract query and trace details from associated events
-            group_traces = pack.get("group_traces", [])
-            queries: list[str] = []
-            trace_details: list[dict[str, Any]] = []
-            for trace_id in group_traces:
-                event = events_index.get(trace_id)
-                if not event:
-                    continue
-                q = str(event.get("query") or "").strip()
-                if q and q not in queries:
-                    queries.append(q)
-                detail = str(event.get("detail") or "").strip()
-                if detail:
-                    trace_details.append({
-                        "event_id": trace_id,
-                        "query": q,
-                        "detail": detail,
-                        "outcome": event.get("outcome", ""),
-                        "ts": event.get("ts", ""),
-                    })
-
-            # Use task_description as label (truncated for graph display)
-            task_desc = pack.get("task_description", "")
-            if task_desc:
-                label = task_desc[:50] + "..." if len(task_desc) > 50 else task_desc
-            elif queries:
-                full_label = queries[0]
-                label = full_label[:50] + "..." if len(full_label) > 50 else full_label
-            elif member_ids:
-                label = f"Pack ({len(member_ids)} skills)"
-            else:
-                label = "Skill Pack"
-
-            pack_node = {
+            description = definition.description or pack_id
+            label = description[:50] + "..." if len(description) > 50 else description
+            pack_dir = skills_dir / pack_id
+            pack_nodes.append({
                 "id": pack_node_id,
                 "type": "skill_pack",
                 "label": label,
                 "properties": {
                     "pack_id": pack_id,
                     "member_ids": member_ids,
-                    "quality": pack.get("quality", {}),
-                    "status": pack.get("status", ""),
-                    "grade": pack.get("grade", ""),
-                    "query": queries[0] if queries else "",
-                    "trace_details": trace_details,
-                    "task_description": pack.get("task_description", ""),
-                    "execution_narrative": pack.get("execution_narrative", ""),
+                    "description": description,
+                    "task_description": description,
+                    "execution_narrative": read_skillpack_section(
+                        pack_dir, "Execution Process"
+                    ),
                 },
-            }
-            pack_nodes.append(pack_node)
-
+            })
             # Create contains edges from pack to each member
             for member_id in member_ids:
                 member_ref = web_node_refs.get(member_id)
@@ -1265,15 +1220,14 @@ def _web_graph_payload(
                         "label": member_id,
                         "properties": {"id": member_id, "name": member_id},
                     })
-                pack_edge = {
+                pack_edges.append({
                     "source": pack_node_id,
                     "target": member_ref,
                     "type": "contains",
                     "confidence": 1.0,
-                }
-                pack_edges.append(pack_edge)
-    except Exception:
-        # If pack loading fails, continue without packs
+                })
+    except Exception:  # noqa: BLE001
+        # If pack scanning fails, continue without packs
         pass
 
     result_graph = _graph_with_runtime_weights(graph, dynamic_overlay)

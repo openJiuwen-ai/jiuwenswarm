@@ -24,22 +24,6 @@ body:
         dev-stable分支请选择【dev-stable专属】模块
         develop、agent-os、xiaoyi分支请选择【通用】模块
       options:
-        - 【dev-stable专属】 服务接入和处理
-        - 【dev-stable专属】 Agent执行控制
-        - 【dev-stable专属】 工具与外部能力
-        - 【dev-stable专属】 上下文
-        - 【dev-stable专属】 技能管理
-        - 【dev-stable专属】 平台底座
-        - 【dev-stable专属】 主动推荐（数字分身）
-        - 【dev-stable专属】 性能
-        - 【dev-stable专属】 成本（非skill加速）
-        - 【dev-stable专属】 企业级
-        - 【dev-stable专属】 自演进
-        - 【dev-stable专属】 安全
-        - 【dev-stable专属】 Agent Team
-        - 【dev-stable专属】 Code Agent
-        - 【dev-stable专属】 记忆引擎
-        - 【dev-stable专属】 DeepSearch
         - 【通用】 Agent Core harness
         - 【通用】 AutoHarness
         - 【通用】 集群模式
@@ -68,6 +52,22 @@ body:
         - 【通用】 channel-WharsApp
         - 【通用】 自演进
         - 【通用】 未知
+        - 【dev-stable专属】 服务接入和处理
+        - 【dev-stable专属】 Agent执行控制
+        - 【dev-stable专属】 工具与外部能力
+        - 【dev-stable专属】 上下文
+        - 【dev-stable专属】 技能管理
+        - 【dev-stable专属】 平台底座
+        - 【dev-stable专属】 主动推荐（数字分身）
+        - 【dev-stable专属】 性能
+        - 【dev-stable专属】 成本（非skill加速）
+        - 【dev-stable专属】 企业级
+        - 【dev-stable专属】 自演进
+        - 【dev-stable专属】 安全
+        - 【dev-stable专属】 Agent Team
+        - 【dev-stable专属】 Code Agent
+        - 【dev-stable专属】 记忆引擎
+        - 【dev-stable专属】 DeepSearch
     validations:
       required: true
   - type: checkboxes

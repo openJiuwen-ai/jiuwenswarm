@@ -262,24 +262,44 @@ async def trigger_main_agent(
                     evt = chunk_payload.get("event_type") or chunk_payload.get("event") or ""
                     is_chat_error = isinstance(evt, str) and evt.endswith(".error")
                     if is_chat_error:
-                        had_chat_error = True
                         logger.warning(
                             "[ProactiveEngine] main agent emitted chat.error during push "
                             "(rec_id=%s, target=%s): %s",
                             rec_id, decision.target, chunk_payload.get("error", ""),
                         )
+                        # 仅卡片送达前的错误才算"未送达"；卡片已送达后延续轮的
+                        # 错误不翻转 delivered（卡片本身已成功推送）。
+                        if not proactive_marking_closed:
+                            had_chat_error = True
+                    if proactive_marking_closed:
+                        # 卡片已送达（首个非空 final 已推送）。其后的 chunk 是主 agent
+                        # 的自我延续（补充文本轮、工具轮、processing_status 收尾），
+                        # 不属于推荐交付物，一律不再透传前端：
+                        # - 无标记文本 final/delta 会在卡片下渲染成独立普通气泡
+                        #   （"卡片后多一句话"）；
+                        # - 无标记 reasoning 会并进会话 reasoningSegments 污染上一轮
+                        #   思考状态；无标记 processing_status 会误关用户当前轮的
+                        #   processing 状态；
+                        # - 无标记 chunk 的 send_push 失败也不再置 push_failed——
+                        #   卡片已成功送达，延续轮推送失败不应否定 delivered。
+                        # 流仍继续消费（history/context 照常落盘），仅推送被抑制。
+                        # 延续轮的 chat.error 同样不透传——卡片已成功送达，后台延续
+                        # 失败不应向用户报错，记 warning 即可。
+                        continue
                     is_nonempty_assistant_final = (
                         isinstance(evt, str) and evt.endswith(".final")
                         and isinstance(chunk_payload.get("content"), str)
                         and bool(chunk_payload.get("content"))
                     )
-                    if not proactive_marking_closed and not is_chat_error:
+                    if not is_chat_error:
                         # 注入 source/proactive_type：主 agent 的 chunk 是普通对话格式，
                         # 不带主动推荐标记。前端靠 payload.source==='proactive_recommendation'
                         # 识别卡片、payload.proactive_type 选颜色，缺这俩会退化成普通白色气泡。
                         # decision.type 在手上，给话术这一轮的 chunk 补上。
                         # chat.error 不打标：错误 chunk 带 source 会被前端当推荐卡片渲染，
                         # 应让用户看到错误提示而非异常卡片。错误 chunk 仍透传前端（无 source）。
+                        # （上方 proactive_marking_closed 分支已 continue，能走到这里的
+                        # 必然在打标窗口内。）
                         chunk_payload.setdefault("source", "proactive_recommendation")
                         chunk_payload.setdefault("proactive_type", decision.type)
                         chunk_payload.setdefault("proactive_target", decision.target)

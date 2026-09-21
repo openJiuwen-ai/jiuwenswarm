@@ -198,9 +198,9 @@ def test_render_uses_cron_job_timezone_for_envelope_clock():
 
     envelope = _envelope(turn.render())
 
-    assert envelope["timezone"] == "Asia/Tokyo"
+    assert envelope["timestamp"].endswith("(UTC+09:00, Asia/Tokyo)")
     shanghai = _envelope(_turn().render())
-    assert shanghai["timezone"] == "Asia/Shanghai"
+    assert shanghai["timestamp"].endswith("(UTC+08:00, Asia/Shanghai)")
     # Tokyo is UTC+9: same instant renders one wall-clock hour ahead of Shanghai.
     tokyo_hh = int(envelope["timestamp"][11:13])
     shanghai_hh = int(shanghai["timestamp"][11:13])
@@ -212,4 +212,4 @@ def test_render_falls_back_to_shanghai_for_invalid_timezone():
 
     envelope = _envelope(turn.render())
 
-    assert envelope["timezone"] == "Asia/Shanghai"
+    assert envelope["timestamp"].endswith("(UTC+08:00, Asia/Shanghai)")

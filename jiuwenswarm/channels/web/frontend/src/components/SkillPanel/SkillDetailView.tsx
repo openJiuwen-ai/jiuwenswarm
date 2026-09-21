@@ -429,7 +429,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           ? [t('skills.skillTypes.team')]
           : selectedSkill.skill_type === 'multimodal_skill'
             ? [t('skills.skillTypes.multimodal')]
-            : undefined,
+            : selectedSkill.skill_type === 'skillpack'
+              ? [t('skills.skillTypes.skillpack')]
+              : undefined,
     },
     /* 右侧操作按钮 */
     <div className="flex items-center gap-6 flex-shrink-0">

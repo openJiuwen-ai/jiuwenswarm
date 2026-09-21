@@ -3,7 +3,11 @@ import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { ArrowLeftRight, Check, ChevronDown, ChevronUp, Minus, Plus, Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
+  dedupeAgentGroupOptions,
+  isSkillVisibleInSourceTab,
+  isTeamSkillOption,
   resolveAgentGroupSelectionId,
+  sortInstalledFirst,
   type AgentCatalogItem,
   type AgentGroupDraft,
   type RequestStatus,
@@ -12,7 +16,9 @@ import {
 import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../features/agentManagement/limits';
 import { AgentGroupMemberPicker, AgentOptionAvatar } from './AgentGroupMemberPicker';
 import { AgentTagPicker } from './AgentTagPicker';
+import { SelectionPagination, useSelectionPagination } from './SelectionPagination';
 import { useDialogFocusTrap } from './useDialogFocusTrap';
+import { PageCard, Tabs } from '../ui';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 
@@ -20,13 +26,19 @@ type AgentGroupEditorProps = {
   draft: AgentGroupDraft;
   agentOptions: AgentCatalogItem[];
   agentsStatus: RequestStatus;
+  agentsError: string | null;
   skillOptions: SkillOption[];
   skillsStatus: RequestStatus;
   saving: boolean;
   error: string | null;
+  selectionError?: string | null;
   onChange: (draft: AgentGroupDraft) => void;
   onReloadAgents: () => void;
   onReloadSkills: () => void;
+  onInstallAgent?: (id: string) => void | Promise<void>;
+  installingAgentId?: string | null;
+  onInstallSkill?: (skill: SkillOption) => void | Promise<void>;
+  installingSkillId?: string | null;
   onCreateAgent?: () => void;
   onCancel: () => void;
   onSave: () => void;
@@ -36,13 +48,19 @@ export function AgentGroupEditor({
   draft,
   agentOptions,
   agentsStatus,
+  agentsError,
   skillOptions,
   skillsStatus,
   saving,
   error,
+  selectionError,
   onChange,
   onReloadAgents,
   onReloadSkills,
+  onInstallAgent,
+  installingAgentId,
+  onInstallSkill,
+  installingSkillId,
   onCreateAgent,
   onCancel,
   onSave,
@@ -52,6 +70,7 @@ export function AgentGroupEditor({
   const [pickerMode, setPickerMode] = useState<'leader' | 'member' | null>(null);
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState('');
+  const [skillSourceTab, setSkillSourceTab] = useState<'local' | 'market'>('market');
   const [skillDraft, setSkillDraft] = useState<string[]>(draft.skillRefs);
   const [teamConfigOpen, setTeamConfigOpen] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(true);
@@ -73,17 +92,27 @@ export function AgentGroupEditor({
     [draft.description, draft.leaderId, draft.name, draft.persona, t],
   );
   const hasErrors = Object.values(errors).some(Boolean);
-  const selectedLeader = agentOptions.find(
+  const uniqueAgentOptions = useMemo(() => dedupeAgentGroupOptions(agentOptions), [agentOptions]);
+  const selectedLeader = uniqueAgentOptions.find(
     (agent) => resolveAgentGroupSelectionId(agent) === draft.leaderId || agent.id === draft.leaderId,
   );
-  const selectedMembers = agentOptions.filter(
+  const selectedMembers = uniqueAgentOptions.filter(
     (agent) => draft.memberIds.includes(resolveAgentGroupSelectionId(agent)) || draft.memberIds.includes(agent.id),
   );
-  const filteredSkills = skillOptions.filter((skill) =>
-    `${skill.id} ${skill.name} ${skill.description}`
-      .toLocaleLowerCase()
-      .includes(skillQuery.trim().toLocaleLowerCase()),
+  const filteredSkills = sortInstalledFirst(
+    skillOptions.filter((skill) => {
+      if (!isTeamSkillOption(skill, skillSourceTab) || !isSkillVisibleInSourceTab(skill, skillSourceTab)) return false;
+      return `${skill.id} ${skill.name} ${skill.description}`
+        .toLocaleLowerCase()
+        .includes(skillQuery.trim().toLocaleLowerCase());
+    }),
   );
+  const {
+    pageItems: pageSkills,
+    page: skillPage,
+    totalPages: skillTotalPages,
+    setPage: setSkillPage,
+  } = useSelectionPagination(filteredSkills, `${skillSourceTab}\0${skillQuery}`);
   const update = (patch: Partial<AgentGroupDraft>) => onChange({ ...draft, ...patch });
   useDialogFocusTrap({
     dialogRef: skillDialogRef,
@@ -104,6 +133,7 @@ export function AgentGroupEditor({
     skillPickerTriggerRef.current = trigger;
     setSkillDraft(draft.skillRefs);
     setSkillQuery('');
+    setSkillSourceTab('market');
     setSkillPickerOpen(true);
   };
   const toggleSkill = (id: string) =>
@@ -122,7 +152,7 @@ export function AgentGroupEditor({
     update({ suggestedPrompts: draft.suggestedPrompts.filter((_, promptIndex) => promptIndex !== index) });
   };
   const openMemberPicker = (mode: 'leader' | 'member', trigger: HTMLElement) => {
-    if (agentsStatus !== 'loading' && agentOptions.length === 0) onReloadAgents();
+    if (agentsStatus !== 'loading' && uniqueAgentOptions.length === 0) onReloadAgents();
     (mode === 'leader' ? leaderPickerTriggerRef : memberPickerTriggerRef).current = trigger;
     setPickerMode(mode);
   };
@@ -502,10 +532,16 @@ export function AgentGroupEditor({
       {pickerMode ? (
         <AgentGroupMemberPicker
           mode={pickerMode}
-          agents={agentOptions}
+          agents={uniqueAgentOptions}
+          agentsStatus={agentsStatus}
+          agentsError={agentsError}
           selectedLeaderId={draft.leaderId}
           selectedMemberIds={draft.memberIds}
           restoreFocusRef={pickerMode === 'leader' ? leaderPickerTriggerRef : memberPickerTriggerRef}
+          selectionError={selectionError}
+          onInstallAgent={onInstallAgent}
+          installingAgentId={installingAgentId}
+          onReloadAgents={onReloadAgents}
           onCancel={() => setPickerMode(null)}
           onConfirm={(ids) => {
             if (pickerMode === 'leader')
@@ -556,6 +592,35 @@ export function AgentGroupEditor({
                     autoFocus
                   />
                 </label>
+                <Tabs
+                  className="agent-management-selection-source-tabs"
+                  items={[
+                    {
+                      value: 'market',
+                      label: t('agentManagement.form.skillMarket'),
+                      testId: 'agent-group-editor-skill-picker-tab-market',
+                    },
+                    {
+                      value: 'local',
+                      label: t('agentManagement.form.mySkills'),
+                      testId: 'agent-group-editor-skill-picker-tab-local',
+                    },
+                  ]}
+                  value={skillSourceTab}
+                  onChange={setSkillSourceTab}
+                  wrapperTestId="agent-group-editor-skill-picker-tabs"
+                  role="tablist"
+                  ariaLabel={t('agentManagement.group.picker.skillSourceTabsLabel')}
+                />
+                {selectionError ? (
+                  <div
+                    className="agent-management-form-error"
+                    role="alert"
+                    data-testid="agent-group-editor-selection-error"
+                  >
+                    {selectionError}
+                  </div>
+                ) : null}
                 <div
                   className={`agent-management-selection-dialog__body${skillsStatus === 'success' && filteredSkills.length === 0 ? ' is-empty' : ''}`}
                 >
@@ -581,33 +646,60 @@ export function AgentGroupEditor({
                   ) : null}
                   {skillsStatus === 'success' && filteredSkills.length > 0 ? (
                     <div className="agent-management-selection-grid">
-                      {filteredSkills.map((skill) => {
+                      {pageSkills.map((skill) => {
                         const selected = skillDraft.includes(skill.id);
+                        const installed = skill.installed === true;
+                        const installing = installingSkillId === skill.id;
                         return (
-                          <button
+                          <PageCard
                             key={skill.id}
-                            type="button"
-                            className={`agent-management-selection-card${selected ? ' is-selected' : ''}`}
-                            data-testid="agent-group-editor-skill-picker-item"
-                            data-variant={skill.id}
-                            onClick={() => toggleSkill(skill.id)}
-                            aria-pressed={selected}
-                          >
-                            <span className="agent-management-capability-card__icon">
-                              {skill.name.slice(0, 1).toUpperCase()}
-                            </span>
-                            <span>
-                              <strong title={skill.name}>{skill.name}</strong>
-                              <small>{skill.description || t('agentManagement.unknownDescription')}</small>
-                            </span>
-                            <span className="agent-management-selection-card__action" aria-hidden="true">
-                              {selected ? <Check size={12} strokeWidth={2.5} /> : null}
-                            </span>
-                          </button>
+                            className={`agent-management-selection-card${selected ? ' is-selected' : ''}${!installed ? ' is-disabled' : ''}`}
+                            testId="agent-group-editor-skill-picker-item"
+                            variant={skill.id}
+                            interactive={installed}
+                            selected={selected}
+                            disabled={!installed && !onInstallSkill}
+                            ariaLabel={skill.name}
+                            onClick={installed ? () => toggleSkill(skill.id) : undefined}
+                            avatar={{ name: skill.name }}
+                            title={skill.name}
+                            description={skill.description || t('agentManagement.unknownDescription')}
+                            actionSlot={
+                              !installed && onInstallSkill ? (
+                                <button
+                                  type="button"
+                                  className="agent-management-inline-action agent-management-selection-card__install"
+                                  data-testid="agent-group-editor-skill-picker-install"
+                                  data-variant={skill.id}
+                                  disabled={installing}
+                                  aria-busy={installing}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void onInstallSkill(skill);
+                                  }}
+                                >
+                                  {installing
+                                    ? t('agentManagement.form.installingSkill')
+                                    : t('agentManagement.form.installSkill')}
+                                </button>
+                              ) : (
+                                <span className="agent-management-selection-card__action" aria-hidden="true">
+                                  {selected ? <Check size={12} strokeWidth={2.5} /> : null}
+                                </span>
+                              )
+                            }
+                          />
                         );
                       })}
                     </div>
                   ) : null}
+                  <SelectionPagination
+                    page={skillPage}
+                    totalPages={skillTotalPages}
+                    totalItems={filteredSkills.length}
+                    onPageChange={setSkillPage}
+                    testId="agent-group-editor-skill-picker-pagination"
+                  />
                 </div>
                 <footer>
                   <span>{t('agentManagement.group.picker.selectedCount', { count: skillDraft.length })}</span>

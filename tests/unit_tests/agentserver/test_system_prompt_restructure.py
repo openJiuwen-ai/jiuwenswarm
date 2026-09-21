@@ -1361,6 +1361,87 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("language", "core_heading", "extensions_heading", "rules_heading"),
+    [
+        ("cn", "### 核心内部数据", "### 已安装扩展资产", "### 目录使用规则"),
+        (
+            "en",
+            "### Core Internal Data",
+            "### Installed Extension Assets",
+            "### Directory Usage Rules",
+        ),
+    ],
+)
+async def test_runtime_prompt_lists_installed_extensions_from_global_workspace(
+    tmp_path,
+    monkeypatch,
+    language,
+    core_heading,
+    extensions_heading,
+    rules_heading,
+):
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    installed_workspace = tmp_path / "installed-agent-workspace"
+    member_workspace = tmp_path / "member-workspace"
+    project_dir = tmp_path / "project"
+    for directory in (installed_workspace, member_workspace, project_dir):
+        directory.mkdir()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_workspace_dir",
+        lambda: installed_workspace,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        lambda: tmp_path / "jiuwenswarm-data",
+    )
+
+    runtime_rail = RuntimePromptRail(language=language, channel="web")
+    runtime_rail.init(agent)
+    runtime_rail.set_runtime_paths(
+        cwd=str(project_dir),
+        project_dir=str(project_dir),
+        workspace_dir=str(member_workspace),
+    )
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=None,
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await runtime_rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert core_heading in prompt
+    assert extensions_heading in prompt
+    assert rules_heading in prompt
+    assert str(member_workspace) in prompt
+    assert str(installed_workspace / "skills" / "{skill_name}") in prompt
+    assert (
+        str(installed_workspace / "plugins" / "agent_templates" / "local")
+        in prompt
+    )
+    assert (
+        str(
+            tmp_path
+            / "jiuwenswarm-data"
+            / ".agent_teams"
+            / "agent_groups"
+            / "local"
+        )
+        in prompt
+    )
+    assert (
+        str(installed_workspace / "plugins" / "plugin_packages" / "local")
+        in prompt
+    )
+    assert str(installed_workspace / "mcp" / "mcp_hub") in prompt
+    assert str(member_workspace / "plugins" / "agent_templates" / "local") not in prompt
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("channel", ["web", "process_cli"])
 async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match(
     tmp_path, monkeypatch, channel
@@ -1664,8 +1745,9 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     rendered = agent.prompt_attachment_manager.render(
         await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     )
-    assert "## 已安装 Skill" in rendered
-    assert "当前没有可用 Skill" in rendered
+    assert "## 已安装 Skill" not in rendered
+    assert "## 已安装 Skill" in builder.build()
+    assert "当前没有可用 Skill" in builder.build()
     assert "## Skill 发现" not in rendered
 
     class _AttachmentContext:
@@ -1681,7 +1763,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
 
     history = _AttachmentContext()
     manager = agent.prompt_attachment_manager
-    assert await manager.sync_to_context(history, "sess1") is not None
+    assert await manager.sync_to_context(history, "sess1") is None
 
     # before_invoke runs before the model tool list exists. It must not clear
     # and then re-add the same large snapshot on every user turn.
@@ -1695,7 +1777,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     )
     await rail.before_model_call(ctx)
     assert await manager.sync_to_context(history, "sess1") is None
-    assert len(history.messages) == 1
+    assert len(history.messages) == 0
 
     missing_index_ctx = AgentCallbackContext(
         agent=agent,

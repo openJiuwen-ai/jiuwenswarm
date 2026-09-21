@@ -8,9 +8,21 @@ import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { AgentDraft, McpOption, RequestStatus, SkillOption } from '../../features/agentManagement';
+import {
+  isTeamSkillOption,
+  isSkillVisibleInSourceTab,
+  isMcpSelectable,
+  sortInstalledFirst,
+  sortMcpOptions,
+  type AgentDraft,
+  type McpOption,
+  type RequestStatus,
+  type SkillOption,
+} from '../../features/agentManagement';
 import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '../../features/agentManagement/limits';
 import { AgentTagPicker } from './AgentTagPicker';
+import { PageCard, Tabs } from '../ui';
+import { SelectionPagination, useSelectionPagination } from './SelectionPagination';
 
 type AgentEditorProps = {
   draft: AgentDraft;
@@ -21,20 +33,20 @@ type AgentEditorProps = {
   mcpStatus: RequestStatus;
   saving: boolean;
   error: string | null;
+  selectionError?: string | null;
   onChange: (draft: AgentDraft) => void;
   onReloadSkills: () => void;
   onReloadMcps: () => void;
+  onInstallSkill?: (skill: SkillOption) => void | Promise<void>;
+  installingSkillId?: string | null;
+  onConnectMcp?: (mcp: McpOption) => void;
+  connectingMcpId?: string | null;
+  onInstallMcp?: (mcp: McpOption) => void | Promise<void>;
+  installingMcpId?: string | null;
   onCreateGroup?: () => void;
   onCancel: () => void;
   onSave: () => void;
 };
-
-const MCP_TYPE_OPTIONS = [
-  ['stdio-mcp', 'connectorMarket.detail.integrationType.stdioMcp'],
-  ['remote-mcp', 'connectorMarket.detail.integrationType.remoteMcp'],
-  ['cli', 'connectorMarket.detail.integrationType.cli'],
-  ['skill-only', 'connectorMarket.detail.integrationType.skillOnly'],
-] as const;
 
 export function AgentEditor({
   draft,
@@ -45,9 +57,16 @@ export function AgentEditor({
   mcpStatus,
   saving,
   error,
+  selectionError,
   onChange,
   onReloadSkills,
   onReloadMcps,
+  onInstallSkill,
+  installingSkillId,
+  onConnectMcp,
+  connectingMcpId,
+  onInstallMcp,
+  installingMcpId,
   onCreateGroup,
   onCancel,
   onSave,
@@ -62,12 +81,11 @@ export function AgentEditor({
   const [mcpDialogOpen, setMcpDialogOpen] = useState(false);
   const [skillQuery, setSkillQuery] = useState('');
   const [mcpQuery, setMcpQuery] = useState('');
-  const [mcpType, setMcpType] = useState('');
-  const [mcpTypeOpen, setMcpTypeOpen] = useState(false);
+  const [skillSourceTab, setSkillSourceTab] = useState<'local' | 'market'>('market');
+  const [mcpSourceTab, setMcpSourceTab] = useState<'market' | 'installed'>('market');
   const [skillDraft, setSkillDraft] = useState<string[]>(draft.skillRefs);
   const [mcpDraft, setMcpDraft] = useState<string[]>(draft.mcpRefs);
   const personaSurfaceRef = useRef<HTMLDivElement>(null);
-  const mcpTypeRef = useRef<HTMLDivElement>(null);
   const skillDialogRef = useRef<HTMLElement>(null);
   const mcpDialogRef = useRef<HTMLElement>(null);
   const skillDialogTriggerRef = useRef<HTMLButtonElement>(null);
@@ -84,17 +102,36 @@ export function AgentEditor({
   const hasErrors = Object.values(errors).some(Boolean);
   const selectedSkills = skillOptions.filter((skill) => draft.skillRefs.includes(skill.id));
   const selectedMcps = mcpOptions.filter((mcp) => draft.mcpRefs.includes(mcp.id));
-  const filteredSkills = skillOptions.filter((skill) =>
-    `${skill.name} ${skill.description}`.toLocaleLowerCase().includes(skillQuery.trim().toLocaleLowerCase()),
+  const filteredSkills = sortInstalledFirst(
+    skillOptions.filter((skill) => {
+      if (isTeamSkillOption(skill, skillSourceTab) || !isSkillVisibleInSourceTab(skill, skillSourceTab)) return false;
+      return `${skill.id} ${skill.name} ${skill.description}`
+        .toLocaleLowerCase()
+        .includes(skillQuery.trim().toLocaleLowerCase());
+    }),
   );
-  const filteredMcps = mcpOptions.filter((mcp) => {
-    const matchesQuery = `${mcp.name} ${mcp.description}`
-      .toLocaleLowerCase()
-      .includes(mcpQuery.trim().toLocaleLowerCase());
-    const matchesType = !mcpType || mcp.integrationType === mcpType;
-    return matchesQuery && matchesType;
-  });
-  const selectedMcpType = MCP_TYPE_OPTIONS.find(([value]) => value === mcpType);
+  const filteredMcps = sortMcpOptions(
+    mcpOptions.filter((mcp) => {
+      const isMarketplace = mcp.source === 'built_in' || mcp.source === 'hub';
+      const isMine = mcp.installed === true || mcp.source === 'customize';
+      if (mcpSourceTab === 'market' ? !isMarketplace : !isMine) return false;
+      return `${mcp.id} ${mcp.name} ${mcp.description}`
+        .toLocaleLowerCase()
+        .includes(mcpQuery.trim().toLocaleLowerCase());
+    }),
+  );
+  const {
+    pageItems: pageSkills,
+    page: skillPage,
+    totalPages: skillTotalPages,
+    setPage: setSkillPage,
+  } = useSelectionPagination(filteredSkills, `${skillSourceTab}\0${skillQuery}`);
+  const {
+    pageItems: pageMcps,
+    page: mcpPage,
+    totalPages: mcpTotalPages,
+    setPage: setMcpPage,
+  } = useSelectionPagination(filteredMcps, `${mcpSourceTab}\0${mcpQuery}`);
 
   useEffect(() => {
     if (!personaEditing) return;
@@ -104,15 +141,6 @@ export function AgentEditor({
     document.addEventListener('pointerdown', handlePointerDown, true);
     return () => document.removeEventListener('pointerdown', handlePointerDown, true);
   }, [personaEditing]);
-
-  useEffect(() => {
-    if (!mcpTypeOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (!mcpTypeRef.current?.contains(event.target as Node)) setMcpTypeOpen(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [mcpTypeOpen]);
 
   useEffect(() => {
     if (!skillDialogOpen && !mcpDialogOpen) return;
@@ -155,14 +183,14 @@ export function AgentEditor({
   const openSkillDialog = () => {
     setSkillDraft(draft.skillRefs);
     setSkillQuery('');
+    setSkillSourceTab('market');
     setSkillDialogOpen(true);
   };
 
   const openMcpDialog = () => {
     setMcpDraft(draft.mcpRefs);
     setMcpQuery('');
-    setMcpType('');
-    setMcpTypeOpen(false);
+    setMcpSourceTab('market');
     setMcpDialogOpen(true);
   };
 
@@ -206,7 +234,13 @@ export function AgentEditor({
               <span className="is-active" role="tab" aria-selected="true">
                 {t('agentManagement.form.createAgentTab')}
               </span>
-              <button type="button" role="tab" aria-selected="false" data-testid="agent-editor-group-tab" onClick={onCreateGroup}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-testid="agent-editor-group-tab"
+                onClick={onCreateGroup}
+              >
                 {t('agentManagement.group.form.createGroupTab')}
               </button>
             </div>
@@ -511,7 +545,11 @@ export function AgentEditor({
               className="agent-management-button agent-management-button--primary"
               disabled={saving}
             >
-              {saving ? (mode === 'edit' ? t('agentManagement.actions.updating') : t('common.saving')) : t('common.confirm')}
+              {saving
+                ? mode === 'edit'
+                  ? t('agentManagement.actions.updating')
+                  : t('common.saving')
+                : t('common.confirm')}
             </button>
           </footer>
 
@@ -546,6 +584,35 @@ export function AgentEditor({
                         placeholder={t('agentManagement.form.selectionSearchPlaceholder')}
                       />
                     </label>
+                    <Tabs
+                      className="agent-management-selection-source-tabs"
+                      items={[
+                        {
+                          value: 'market',
+                          label: t('agentManagement.form.skillMarket'),
+                          testId: 'agent-editor-skill-picker-tab-market',
+                        },
+                        {
+                          value: 'local',
+                          label: t('agentManagement.form.mySkills'),
+                          testId: 'agent-editor-skill-picker-tab-local',
+                        },
+                      ]}
+                      value={skillSourceTab}
+                      onChange={setSkillSourceTab}
+                      wrapperTestId="agent-editor-skill-picker-tabs"
+                      role="tablist"
+                      ariaLabel={t('agentManagement.form.skillSourceTabsLabel')}
+                    />
+                    {selectionError ? (
+                      <div
+                        className="agent-management-form-error"
+                        role="alert"
+                        data-testid="agent-editor-selection-error"
+                      >
+                        {selectionError}
+                      </div>
+                    ) : null}
                     <div
                       className={`agent-management-selection-dialog__body${skillsStatus === 'success' && filteredSkills.length === 0 ? ' is-empty' : ''}`}
                     >
@@ -567,34 +634,68 @@ export function AgentEditor({
                       ) : null}
                       {skillsStatus === 'success' && filteredSkills.length > 0 ? (
                         <div className="agent-management-selection-grid">
-                          {filteredSkills.map((skill) => {
+                          {pageSkills.map((skill) => {
                             const selected = skillDraft.includes(skill.id);
+                            const installed = skill.installed === true;
+                            const installing = installingSkillId === skill.id;
                             return (
-                              <button
+                              <PageCard
                                 key={skill.id}
-                                type="button"
-                                className={`agent-management-selection-card${selected ? ' is-selected' : ''}`}
-                                onClick={() =>
-                                  setSkillDraft((current) =>
-                                    selected ? current.filter((id) => id !== skill.id) : [...current, skill.id],
+                                className={`agent-management-selection-card${selected ? ' is-selected' : ''}${!installed ? ' is-disabled' : ''}`}
+                                testId="agent-editor-skill-picker-item"
+                                variant={skill.id}
+                                interactive={installed}
+                                selected={selected}
+                                disabled={!installed && !onInstallSkill}
+                                ariaLabel={skill.name}
+                                onClick={
+                                  installed
+                                    ? () =>
+                                        setSkillDraft((current) =>
+                                          selected ? current.filter((id) => id !== skill.id) : [...current, skill.id],
+                                        )
+                                    : undefined
+                                }
+                                avatar={{ name: skill.name }}
+                                title={skill.name}
+                                description={skill.description || t('agentManagement.unknownDescription')}
+                                actionSlot={
+                                  !installed && onInstallSkill ? (
+                                    <button
+                                      type="button"
+                                      className="agent-management-inline-action agent-management-selection-card__install"
+                                      data-testid="agent-editor-skill-picker-install"
+                                      data-variant={skill.id}
+                                      disabled={installing}
+                                      aria-busy={installing}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void onInstallSkill(skill);
+                                      }}
+                                    >
+                                      {installing
+                                        ? t('agentManagement.form.installingSkill')
+                                        : t('agentManagement.form.installSkill')}
+                                    </button>
+                                  ) : (
+                                    <span className="agent-management-selection-card__action" aria-hidden="true">
+                                      {selected ? <Check size={12} strokeWidth={2.5} /> : null}
+                                    </span>
                                   )
                                 }
-                                aria-pressed={selected}
-                              >
-                                <span className="agent-management-capability-card__icon">
-                                  {skill.name.slice(0, 1).toUpperCase()}
-                                </span>
-                                <span>
-                                  <strong>{skill.name}</strong>
-                                  <small>{skill.description}</small>
-                                </span>
-                                <span className="agent-management-selection-card__action" aria-hidden="true">
-                                  {selected ? <Check size={12} strokeWidth={2.5} /> : null}
-                                </span>
-                              </button>
+                              />
                             );
                           })}
                         </div>
+                      ) : null}
+                      {skillsStatus === 'success' ? (
+                        <SelectionPagination
+                          page={skillPage}
+                          totalPages={skillTotalPages}
+                          totalItems={filteredSkills.length}
+                          onPageChange={setSkillPage}
+                          testId="agent-editor-skill-picker-pagination"
+                        />
                       ) : null}
                     </div>
                     <footer>
@@ -647,54 +748,36 @@ export function AgentEditor({
                         <X size={16} aria-hidden="true" />
                       </button>
                     </header>
-                    <div className="agent-management-selection-controls">
-                      <div className="agent-management-selection-filter" ref={mcpTypeRef}>
-                        <button
-                          type="button"
-                          className="agent-management-selection-filter__trigger"
-                          aria-haspopup="listbox"
-                          aria-expanded={mcpTypeOpen}
-                          onClick={() => setMcpTypeOpen((open) => !open)}
-                        >
-                          <span>{selectedMcpType ? t(selectedMcpType[1]) : t('agentManagement.form.mcpTypeAll')}</span>
-                          <ChevronDown size={14} aria-hidden="true" />
-                        </button>
-                        {mcpTypeOpen ? (
-                          <div
-                            className="agent-management-selection-filter__menu"
-                            role="listbox"
-                            aria-label={t('agentManagement.form.mcpTypeFilter')}
-                          >
-                            <button
-                              type="button"
-                              role="option"
-                              aria-selected={!mcpType}
-                              onClick={() => {
-                                setMcpType('');
-                                setMcpTypeOpen(false);
-                              }}
-                            >
-                              {t('agentManagement.form.mcpTypeAll')}
-                              {!mcpType ? <Check size={14} aria-hidden="true" /> : null}
-                            </button>
-                            {MCP_TYPE_OPTIONS.map(([value, labelKey]) => (
-                              <button
-                                type="button"
-                                role="option"
-                                aria-selected={mcpType === value}
-                                key={value}
-                                onClick={() => {
-                                  setMcpType(value);
-                                  setMcpTypeOpen(false);
-                                }}
-                              >
-                                {t(labelKey)}
-                                {mcpType === value ? <Check size={14} aria-hidden="true" /> : null}
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
+                    <Tabs
+                      className="agent-management-selection-source-tabs"
+                      items={[
+                        {
+                          value: 'market',
+                          label: t('agentManagement.form.mcpMarket'),
+                          testId: 'agent-editor-mcp-picker-tab-market',
+                        },
+                        {
+                          value: 'installed',
+                          label: t('agentManagement.form.myMcp'),
+                          testId: 'agent-editor-mcp-picker-tab-installed',
+                        },
+                      ]}
+                      value={mcpSourceTab}
+                      onChange={setMcpSourceTab}
+                      wrapperTestId="agent-editor-mcp-picker-tabs"
+                      role="tablist"
+                      ariaLabel={t('agentManagement.form.mcpSourceTabsLabel')}
+                    />
+                    {selectionError ? (
+                      <div
+                        className="agent-management-form-error"
+                        role="alert"
+                        data-testid="agent-editor-selection-error"
+                      >
+                        {selectionError}
                       </div>
+                    ) : null}
+                    <div className="agent-management-selection-controls">
                       <label className="agent-management-selection-search">
                         <SearchIcon aria-hidden="true" />
                         <input
@@ -726,34 +809,88 @@ export function AgentEditor({
                       ) : null}
                       {mcpStatus === 'success' && filteredMcps.length > 0 ? (
                         <div className="agent-management-selection-grid">
-                          {filteredMcps.map((mcp) => {
+                          {pageMcps.map((mcp) => {
                             const selected = mcpDraft.includes(mcp.id);
+                            const installed = mcp.installed === true;
+                            const selectable = isMcpSelectable(mcp);
+                            const unconnected = installed && !selectable;
+                            const connecting = connectingMcpId === mcp.id || mcp.connectionState === 'connecting';
+                            const installing = installingMcpId === mcp.id;
                             return (
-                              <button
+                              <PageCard
                                 key={mcp.id}
-                                type="button"
-                                className={`agent-management-selection-card${selected ? ' is-selected' : ''}`}
-                                onClick={() =>
-                                  setMcpDraft((current) =>
-                                    selected ? current.filter((id) => id !== mcp.id) : [...current, mcp.id],
+                                className={`agent-management-selection-card${selected ? ' is-selected' : ''}${!selectable ? ' is-disabled' : ''}`}
+                                testId="agent-editor-mcp-picker-item"
+                                variant={mcp.id}
+                                interactive={selectable}
+                                selected={selected}
+                                disabled={!selectable && !onInstallMcp && !onConnectMcp}
+                                ariaLabel={mcp.name}
+                                onClick={
+                                  selectable
+                                    ? () =>
+                                        setMcpDraft((current) =>
+                                          selected ? current.filter((id) => id !== mcp.id) : [...current, mcp.id],
+                                        )
+                                    : undefined
+                                }
+                                avatar={{ name: mcp.name, iconUrl: mcp.icon || undefined }}
+                                title={mcp.name}
+                                description={mcp.description || t('agentManagement.unknownDescription')}
+                                actionSlot={
+                                  !installed && onInstallMcp ? (
+                                    <button
+                                      type="button"
+                                      className="agent-management-inline-action agent-management-selection-card__install"
+                                      data-testid="agent-editor-mcp-picker-install"
+                                      data-variant={mcp.id}
+                                      disabled={installing}
+                                      aria-busy={installing}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void onInstallMcp(mcp);
+                                      }}
+                                    >
+                                      {installing
+                                        ? t('agentManagement.form.installingConnector')
+                                        : t('agentManagement.form.installConnector')}
+                                    </button>
+                                  ) : unconnected && onConnectMcp ? (
+                                    <button
+                                      type="button"
+                                      className="agent-management-inline-action agent-management-selection-card__install"
+                                      data-testid="agent-editor-mcp-picker-connect"
+                                      data-variant={mcp.id}
+                                      disabled={connecting}
+                                      aria-busy={connecting}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        onConnectMcp(mcp);
+                                      }}
+                                    >
+                                      {connecting
+                                        ? t('agentManagement.form.connectingConnector')
+                                        : t('agentManagement.form.connectConnector')}
+                                    </button>
+                                  ) : (
+                                    <span className="agent-management-selection-card__action" aria-hidden="true">
+                                      {selected ? <Check size={12} strokeWidth={2.5} /> : null}
+                                    </span>
                                   )
                                 }
-                                aria-pressed={selected}
-                              >
-                                <span className="agent-management-capability-card__icon">
-                                  {mcp.name.slice(0, 1).toUpperCase()}
-                                </span>
-                                <span>
-                                  <strong>{mcp.name}</strong>
-                                  <small>{mcp.description}</small>
-                                </span>
-                                <span className="agent-management-selection-card__action" aria-hidden="true">
-                                  {selected ? <Check size={12} strokeWidth={2.5} /> : null}
-                                </span>
-                              </button>
+                              />
                             );
                           })}
                         </div>
+                      ) : null}
+                      {mcpStatus === 'success' ? (
+                        <SelectionPagination
+                          page={mcpPage}
+                          totalPages={mcpTotalPages}
+                          totalItems={filteredMcps.length}
+                          onPageChange={setMcpPage}
+                          testId="agent-editor-mcp-picker-pagination"
+                        />
                       ) : null}
                     </div>
                     <footer>

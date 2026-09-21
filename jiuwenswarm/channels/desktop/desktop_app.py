@@ -19,10 +19,12 @@ import tempfile
 import threading
 import time
 import uuid
+import webbrowser
+from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO, Callable, Iterator
 from urllib.parse import quote
 
 from logging.handlers import RotatingFileHandler
@@ -447,6 +449,53 @@ def _build_child_env(
     return env
 
 
+@contextmanager
+def _child_log_file(
+    name: str,
+    startup_diagnostics_dir: Path | None = None,
+) -> Iterator[BinaryIO]:
+    """Open the persistent stdout/stderr sink for a managed child process."""
+    log_dirs: list[Path] = []
+    last_error: OSError | None = None
+    try:
+        log_dirs.append(get_logs_dir())
+    except OSError as exc:
+        last_error = exc
+
+    if startup_diagnostics_dir is not None and startup_diagnostics_dir not in log_dirs:
+        log_dirs.append(startup_diagnostics_dir)
+
+    for log_dir in log_dirs:
+        log_path = log_dir / f"child-{name}.log"
+        stream: BinaryIO | None = None
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stream = open(log_path, "ab", buffering=0)
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            marker = f"\n===== [desktop] starting {name} at {timestamp} =====\n"
+            stream.write(marker.encode("utf-8"))
+            logger.info("[desktop] %s child stdout/stderr -> %s", name, log_path)
+        except OSError as exc:
+            if stream is not None:
+                stream.close()
+            last_error = exc
+            logger.warning(
+                "[desktop] failed to open child log for %s at %s: %s",
+                name,
+                log_path,
+                exc,
+            )
+            continue
+
+        try:
+            yield stream
+        finally:
+            stream.close()
+        return
+
+    raise RuntimeError(f"Unable to create child log for {name}") from last_error
+
+
 def _start_process(
     name: str,
     command: list[str],
@@ -455,18 +504,19 @@ def _start_process(
     desktop_token: str = "",
 ) -> subprocess.Popen[bytes]:
     logger.info("[desktop] starting %s: %s", name, command)
-    kwargs: dict[str, object] = {
-        "env": _build_child_env(name, ports, startup_diagnostics_dir, desktop_token),
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    # macOS/Linux: 用 start_new_session=True 创建新进程组，
-    # 以便后续用 os.killpg 杀掉整个进程树（含孙子进程）。
-    if os.name != "nt":
-        kwargs["start_new_session"] = True
-    else:
-        kwargs["creationflags"] = _creationflags()
-    return subprocess.Popen(command, **kwargs)
+    with _child_log_file(name, startup_diagnostics_dir) as child_log:
+        kwargs: dict[str, object] = {
+            "env": _build_child_env(name, ports, startup_diagnostics_dir, desktop_token),
+            "stdout": child_log,
+            "stderr": child_log,
+        }
+        # macOS/Linux: 用 start_new_session=True 创建新进程组，
+        # 以便后续用 os.killpg 杀掉整个进程树（含孙子进程）。
+        if os.name != "nt":
+            kwargs["start_new_session"] = True
+        else:
+            kwargs["creationflags"] = _creationflags()
+        return subprocess.Popen(command, **kwargs)
 
 
 # frozen exe 冷启动时, C 扩展 (.pyd) 与大量 .py 首次从 _MEIPASS 读盘很慢.
@@ -630,6 +680,26 @@ class _WindowApi:
     def get_startup_status(self) -> dict[str, str]:
         """Return a snapshot consumed by the local Loading page."""
         return self._runtime.get_startup_status()
+
+    @staticmethod
+    def open_external_url(url: str) -> bool:
+        """Open SkillHub OAuth in the system browser, outside the desktop WebView."""
+        from urllib.parse import urlsplit
+
+        base = (
+            os.getenv("SKILLHUB_OAUTH_BASE_URL")
+            or os.getenv("TEAM_SKILLS_HUB_BASE_URL")
+            or "https://swarmskills.openjiuwen.com"
+        ).rstrip("/")
+        parsed, expected = urlsplit(url), urlsplit(base)
+        if (parsed.scheme, parsed.netloc) != (expected.scheme, expected.netloc):
+            return False
+        if parsed.path not in {
+            "/api/v1/auth/oauth/gitcode/start",
+            "/api/v1/auth/oauth/github/start",
+        }:
+            return False
+        return bool(webbrowser.open(url))
 
     def install_update(self, installer_path: str) -> bool:
         return self._runtime.install_update(installer_path)
@@ -2604,13 +2674,48 @@ nohup {q_executable} >/dev/null 2>&1 &
             shutil.rmtree(cache_dir)
             logger.info("[desktop] cleared WKWebView HTTP cache: %s", cache_dir)
 
+    # WebView2 user-data-folder HTTP-cache subdirectories (relative to storage_path).
+    # Only these are cleared on launch; profile data (Local Storage, IndexedDB,
+    # Cookies) is preserved so per-origin UI state survives restarts.
+    _WEBVIEW_CACHE_SUBDIRS = (
+        "EBWebView/Default/Cache",
+        "EBWebView/Default/Code Cache",
+        "EBWebView/Default/GPUCache",
+        "EBWebView/Default/DawnGraphiteCache",
+        "EBWebView/Default/DawnWebGPUCache",
+        "EBWebView/Default/Media Cache",
+        "EBWebView/Default/Service Worker/CacheStorage",
+        "EBWebView/Default/Service Worker/ScriptCache",
+        "EBWebView/GrShaderCache",
+        "EBWebView/ShaderCache",
+        "EBWebView/GraphiteDawnCache",
+        "EBWebView/Crashpad/reports",
+        "EBWebView/Crashpad/completed",
+    )
+
+    @classmethod
+    def _clear_webview_http_cache(cls, storage_path: Path) -> None:
+        """Clear WebView2 HTTP/JS/GPU caches, keeping localStorage/IndexedDB.
+
+        The whole storage_path used to be wiped on every launch to avoid stale
+        cached JS/CSS, but that also erased localStorage, losing per-origin UI
+        state (e.g. proactive-recommendation feedback buttons) across restarts.
+        Clear only the cache subdirectories instead. ignore_errors=True so a
+        leftover WebView2 process from a crashed previous run cannot abort
+        startup; partial cache cleanup is harmless.
+        """
+        for rel in cls._WEBVIEW_CACHE_SUBDIRS:
+            cache_dir = storage_path / rel
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir, ignore_errors=True)
+                logger.info("[desktop] cleared webview cache: %s", cache_dir)
+
     def run(self, window_title: str, width: int, height: int, debug: bool) -> None:
         self._clear_wkwebview_system_cache()
 
         storage_path = get_user_workspace_dir() / "tmp" / "webview"
-        if storage_path.exists():
-            shutil.rmtree(storage_path)
         storage_path.mkdir(parents=True, exist_ok=True)
+        self._clear_webview_http_cache(storage_path)
 
         self.window = webview.create_window(
             window_title,

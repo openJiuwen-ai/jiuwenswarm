@@ -35,6 +35,10 @@ export function isJsonFilePath(path: string): boolean {
   return /\.json$/i.test(path);
 }
 
+export function isPdfFilePath(path: string): boolean {
+  return /\.pdf$/i.test(path);
+}
+
 /** 拆分 Markdown front matter（--- 包裹的头部），返回原文片段与正文 */
 export function splitMarkdownFrontMatter(content: string): { frontMatter: string | null; body: string } {
   const match = /^(?:\uFEFF)?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);

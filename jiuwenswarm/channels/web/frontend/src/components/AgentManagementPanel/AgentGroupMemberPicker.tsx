@@ -1,14 +1,18 @@
 import { createPortal } from 'react-dom';
 import { useMemo, useRef, useState, type RefObject } from 'react';
-import { Check, Search, X } from 'lucide-react';
+import { Check, LoaderCircle, Search, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   getAgentAvatarUrl,
+  isAgentGroupAgentCompatibilityLoading,
   isAgentGroupAgentSelectable,
   resolveAgentGroupSelectionId,
+  sortAgentGroupOptions,
   type AgentCatalogItem,
+  type RequestStatus,
 } from '../../features/agentManagement';
-import { PageCard } from '../ui';
+import { PageCard, Tabs } from '../ui';
+import { SelectionPagination, useSelectionPagination } from './SelectionPagination';
 import { useDialogFocusTrap } from './useDialogFocusTrap';
 
 export function AgentOptionAvatar({ agent }: { agent: AgentCatalogItem }) {
@@ -28,47 +32,59 @@ export function AgentOptionAvatar({ agent }: { agent: AgentCatalogItem }) {
 type AgentGroupMemberPickerProps = {
   mode: 'leader' | 'member';
   agents: AgentCatalogItem[];
+  agentsStatus: RequestStatus;
+  agentsError: string | null;
   selectedLeaderId: string;
   selectedMemberIds: string[];
   onCancel: () => void;
   onConfirm: (ids: string[]) => void;
+  onReloadAgents: () => void;
+  selectionError?: string | null;
+  onInstallAgent?: (id: string) => void | Promise<void>;
+  installingAgentId?: string | null;
   restoreFocusRef?: RefObject<HTMLElement | null>;
 };
 
 export function AgentGroupMemberPicker({
   mode,
   agents,
+  agentsStatus,
+  agentsError,
   selectedLeaderId,
   selectedMemberIds,
   onCancel,
   onConfirm,
+  onReloadAgents,
+  selectionError,
+  onInstallAgent,
+  installingAgentId,
   restoreFocusRef,
 }: AgentGroupMemberPickerProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
+  const [sourceTab, setSourceTab] = useState<'local' | 'market'>('market');
   const [selection, setSelection] = useState<string[]>(
     mode === 'leader' ? (selectedLeaderId ? [selectedLeaderId] : []) : selectedMemberIds,
   );
   const dialogRef = useRef<HTMLElement>(null);
   const filteredAgents = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    return agents.filter((agent) => {
-      const selectionId = resolveAgentGroupSelectionId(agent);
-      const selectable = isAgentGroupAgentSelectable(agent, mode);
-      const selected =
-        mode === 'leader'
-          ? selection.includes(selectionId) || selection.includes(agent.id)
-          : selection.includes(selectionId) ||
-            selection.includes(agent.id) ||
-            selectionId === selectedLeaderId ||
-            agent.id === selectedLeaderId;
-      if (!selectable && !selected) return false;
+    const sourceAgents = agents.filter((agent) =>
+      sourceTab === 'market' ? agent.source !== 'local' : agent.source === 'local' || agent.installed === true,
+    );
+    return sortAgentGroupOptions(sourceAgents, agentsStatus).filter((agent) => {
       if (!normalized) return true;
       return `${agent.id} ${agent.runtimePackageName} ${agent.displayName} ${agent.description} ${agent.category} ${agent.tags.map((tag) => tag.label).join(' ')}`
         .toLocaleLowerCase()
         .includes(normalized);
     });
-  }, [agents, mode, query, selectedLeaderId, selection]);
+  }, [agents, agentsStatus, query, sourceTab]);
+  const {
+    pageItems: pageAgents,
+    page,
+    totalPages,
+    setPage,
+  } = useSelectionPagination(filteredAgents, `${sourceTab}\0${query}`);
 
   useDialogFocusTrap({ dialogRef, restoreFocusRef, onEscape: onCancel });
 
@@ -130,39 +146,86 @@ export function AgentGroupMemberPicker({
             autoFocus
           />
         </label>
+        <Tabs
+          className="agent-management-selection-source-tabs"
+          items={[
+            {
+              value: 'market',
+              label: t('agentManagement.tabs.catalog'),
+              testId: 'agent-group-member-picker-tab-market',
+            },
+            {
+              value: 'local',
+              label: t('agentManagement.tabs.mine'),
+              testId: 'agent-group-member-picker-tab-local',
+            },
+          ]}
+          value={sourceTab}
+          onChange={(value) => {
+            setSourceTab(value);
+            setPage(1);
+          }}
+          wrapperTestId="agent-group-member-picker-tabs"
+          role="tablist"
+          ariaLabel={t('agentManagement.group.picker.sourceTabsLabel')}
+        />
+        {selectionError ? (
+          <div
+            className="agent-management-form-error"
+            role="alert"
+            data-testid="agent-group-member-picker-selection-error"
+          >
+            {selectionError}
+          </div>
+        ) : null}
         <div
           className={`agent-management-selection-dialog__body${filteredAgents.length === 0 ? ' is-empty' : ''}`}
           role="group"
           aria-label={title}
         >
-          {filteredAgents.length === 0 ? (
+          {agentsStatus === 'error' ? (
+            <div className="agent-management-form-error" role="alert" data-testid="agent-group-member-picker-error">
+              <span>{agentsError || t('agentManagement.states.loadError')}</span>
+              <button type="button" onClick={onReloadAgents}>
+                {t('common.retry')}
+              </button>
+            </div>
+          ) : agentsStatus === 'loading' && agents.length === 0 ? (
+            <div className="agent-management-selection-empty-state is-loading" role="status" aria-live="polite">
+              <LoaderCircle className="agent-management-selection-card__loading-icon" size={20} aria-hidden="true" />
+              <p>{t('agentManagement.group.picker.loading')}</p>
+            </div>
+          ) : filteredAgents.length === 0 ? (
             <div className="agent-management-selection-empty-state">
               <p>{t('agentManagement.group.picker.empty')}</p>
             </div>
           ) : (
             <div className="agent-management-selection-grid">
-              {filteredAgents.map((agent) => {
+              {pageAgents.map((agent) => {
                 const selectionId = resolveAgentGroupSelectionId(agent);
                 const selected = selection.includes(selectionId) || selection.includes(agent.id);
-                const selectable = isAgentGroupAgentSelectable(agent, mode);
+                const compatibilityLoading = isAgentGroupAgentCompatibilityLoading(agent, agentsStatus);
+                const selectable = !compatibilityLoading && isAgentGroupAgentSelectable(agent, mode);
                 const disabled =
                   !selectable ||
                   (mode === 'member'
                     ? selectionId === selectedLeaderId || agent.id === selectedLeaderId
                     : selectedMemberIds.includes(selectionId) || selectedMemberIds.includes(agent.id));
+                const installed = agent.installed === true;
                 const categoryTags = agent.tags.length > 0 ? agent.tags.map((tag) => tag.label) : undefined;
                 const description = agent.description || t('agentManagement.unknownDescription');
+                const cardDisabled = !compatibilityLoading && disabled;
                 return (
                   <PageCard
                     key={agent.id}
-                    className={`agent-management-selection-card agent-management-selection-card--expert${selected ? ' is-selected' : ''}${disabled ? ' is-disabled' : ''}`}
+                    className={`agent-management-selection-card agent-management-selection-card--expert${selected ? ' is-selected' : ''}${compatibilityLoading ? ' is-loading' : cardDisabled ? ' is-disabled' : ''}`}
                     testId="agent-group-member-picker-item"
                     variant={selectionId}
-                    interactive
+                    interactive={installed && !compatibilityLoading}
                     selected={selected}
-                    disabled={disabled}
+                    disabled={cardDisabled && installed}
                     ariaLabel={agent.displayName}
-                    onClick={() => toggle(selectionId, agent.id)}
+                    onClick={installed && !compatibilityLoading && !disabled ? () => toggle(selectionId, agent.id) : undefined}
                     avatar={{
                       name: agent.displayName,
                       iconUrl: getAgentAvatarUrl(agent),
@@ -171,16 +234,56 @@ export function AgentGroupMemberPicker({
                     title={agent.displayName}
                     label={categoryTags}
                     description={description}
-                    actionSlot={(
-                      <span className="agent-management-selection-card__action" aria-hidden="true">
-                        {selected ? <Check size={12} strokeWidth={2.5} /> : null}
-                      </span>
-                    )}
+                    actionSlot={
+                      compatibilityLoading ? (
+                        <span
+                          className="agent-management-selection-card__loading"
+                          role="status"
+                          aria-label={t('agentManagement.group.picker.loading')}
+                        >
+                          <LoaderCircle
+                            className="agent-management-selection-card__loading-icon"
+                            size={16}
+                            aria-hidden="true"
+                          />
+                        </span>
+                      ) : !agent.installed && onInstallAgent ? (
+                        <button
+                          type="button"
+                          className="agent-management-inline-action agent-management-selection-card__install"
+                          data-testid="agent-group-member-picker-install"
+                          data-variant={agent.id}
+                          disabled={installingAgentId === agent.id}
+                          aria-busy={installingAgentId === agent.id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void onInstallAgent(agent.id);
+                          }}
+                        >
+                          {installingAgentId === agent.id
+                            ? t('agentManagement.group.picker.installing')
+                            : t('agentManagement.group.picker.install')}
+                        </button>
+                      ) : (
+                        <span className="agent-management-selection-card__action" aria-hidden="true">
+                          {selected ? <Check size={12} strokeWidth={2.5} /> : null}
+                        </span>
+                      )
+                    }
                   />
                 );
               })}
             </div>
           )}
+          <SelectionPagination
+            page={page}
+            totalPages={totalPages}
+            totalItems={filteredAgents.length}
+            onPageChange={setPage}
+            testId="agent-group-member-picker-pagination"
+            previousTestId="agent-group-member-picker-page-previous"
+            nextTestId="agent-group-member-picker-page-next"
+          />
         </div>
         <footer>
           <span>{t('agentManagement.group.picker.selectedCount', { count: selectedCount })}</span>

@@ -946,3 +946,25 @@
 .pc-graph__search-result-snippet {
   display: none;
 }
+
+/* 目录展开/收起全局切换 */
+.pc-graph__tree-toggle-all {
+  flex-shrink: 0;
+  text-align: center;
+  padding: 4px 0 2px;
+}
+.pc-graph__tree-toggle-all-btn {
+  border: none;
+  background: transparent;
+  color: #808080;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.pc-graph__tree-toggle-all-btn:hover {
+  color: #1476ff;
+  background: #f5f8ff;
+}

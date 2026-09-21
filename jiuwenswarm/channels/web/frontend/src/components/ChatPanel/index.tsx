@@ -70,7 +70,6 @@ import { turnDiffKey } from '../../features/code-mode/turnChangeState';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
 import {
   canLoadOlderHistory,
-  resolveHistoryPrependScrollTop,
   shouldShowHistoryRetry,
 } from '../../features/historyPagination';
 import {
@@ -1030,11 +1029,9 @@ export const ChatPanel = React.memo(function ChatPanel({
   const lastConsumedDesktopDropIdRef = useRef<string | null>(null);
   const historyLayoutSnapshotRef = useRef<{
     sessionId: string;
-    publishedBatchSeq: number;
     scrollHeight: number;
     scrollTop: number;
   } | null>(null);
-  const suppressNextScrollToEndRef = useRef(false);
   const stickToBottomUntilStableRef = useRef(false);
   const [isSending, setIsSending] = React.useState(false);
   const isDesktopAttachmentDropEnabled = useDesktopLocalFilePickerReady();
@@ -1048,7 +1045,6 @@ export const ChatPanel = React.memo(function ChatPanel({
   const historyPrepending = historyPager?.prepending ?? false;
   const historyRetryAvailable = historyPager?.retryAvailable ?? false;
   const historyOnLoadMore = historyPager?.onLoadMore;
-  const hasHistoryPager = Boolean(historyPager);
   const historyLoadMoreState = {
     loadedBatchSeq: historyLoadedBatchSeq,
     publishedBatchSeq: historyPublishedBatchSeq,
@@ -1332,12 +1328,11 @@ export const ChatPanel = React.memo(function ChatPanel({
     (sessionId: string, el: HTMLDivElement) => {
       historyLayoutSnapshotRef.current = {
         sessionId,
-        publishedBatchSeq: historyPublishedBatchSeq,
         scrollHeight: el.scrollHeight,
         scrollTop: el.scrollTop,
       };
     },
-    [historyPublishedBatchSeq],
+    [],
   );
 
   const restoreSessionScrollTop = useCallback(
@@ -1373,12 +1368,8 @@ export const ChatPanel = React.memo(function ChatPanel({
     updateHistoryLayoutSnapshot(currentSessionId, el);
 
     // 当滚动到顶部且有更多历史消息时，加载更多
-    const hasTimelineAdmissionBoundary = Boolean(
-      el.querySelector('[data-testid="chat-panel-timeline-history-sentinel"]')
-    );
     if (
       el.scrollTop <= LOAD_OLDER_THRESHOLD_PX
-      && !hasTimelineAdmissionBoundary
       && canRequestOlderHistory
       && historyOnLoadMore
     ) {
@@ -1430,12 +1421,7 @@ export const ChatPanel = React.memo(function ChatPanel({
         // 检查是否已经在顶部（没有滚动条时 scrollTop 始终为 0）
         const el = scrollContainerRef.current;
         if (el && el.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
-          const hasTimelineAdmissionBoundary = Boolean(
-            el.querySelector('[data-testid="chat-panel-timeline-history-sentinel"]'),
-          );
-          if (!hasTimelineAdmissionBoundary) {
-            void historyOnLoadMore();
-          }
+          void historyOnLoadMore();
         }
       }
     },
@@ -1484,28 +1470,9 @@ export const ChatPanel = React.memo(function ChatPanel({
       }
     }
 
-    if (
-      lastSessionIdRef.current === currentSessionId &&
-      hasHistoryPager &&
-      snapshot?.sessionId === currentSessionId
-    ) {
-      const nextScrollTop = resolveHistoryPrependScrollTop({
-        previousPublishedBatchSeq: snapshot.publishedBatchSeq,
-        publishedBatchSeq: historyPublishedBatchSeq,
-        previousScrollHeight: snapshot.scrollHeight,
-        scrollHeight: el.scrollHeight,
-        previousScrollTop: snapshot.scrollTop,
-      });
-      if (nextScrollTop !== null) {
-        el.scrollTop = nextScrollTop;
-        suppressNextScrollToEndRef.current = true;
-      }
-    }
-
     updateHistoryLayoutSnapshot(currentSessionId, el);
   }, [
     activeSessionId,
-    hasHistoryPager,
     historyPublishedBatchSeq,
     messages.length,
     toolExecutionOrder.length,
@@ -1534,11 +1501,6 @@ export const ChatPanel = React.memo(function ChatPanel({
     }
 
     if (historyLoadingMore || historyPrepending) {
-      return;
-    }
-
-    if (suppressNextScrollToEndRef.current) {
-      suppressNextScrollToEndRef.current = false;
       return;
     }
 
@@ -1841,6 +1803,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       <div
         ref={scrollContainerRef}
         className="chat-scroll flex-1 overflow-y-auto"
+        data-timeline-scroll-root
         data-testid="chat-panel-scroll"
         onScroll={handleScroll}
         onWheel={handleWheel}

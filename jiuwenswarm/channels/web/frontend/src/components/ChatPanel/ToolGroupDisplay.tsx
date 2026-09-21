@@ -1,4 +1,5 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
+import { useTimelineRowState } from './timelineRowState';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import { ToolExecution } from '../../types';
@@ -322,14 +323,14 @@ interface GroupHeaderLine {
   key: string;
   category: ToolCategory;
   text: string;
+  goal?: string;
   running: boolean;
   failed: boolean;
   executions: ToolExecution[];
 }
 
 /**
- * 每条工具单独一行展示可读动作名（优先后端 display_name），
- * 如「抓取 workbuddy.ai」「写入 DESIGN.md」；不再按分类收成「已完成 N 次…」。
+ * 每条工具单独一行展示前端 i18n 标题，call_goal 作可选副标题。
  */
 function buildGroupLines(
   executions: ToolExecution[],
@@ -341,12 +342,14 @@ function buildGroupLines(
     const running = isDisplayRunning(execution);
     const failed = !running && isToolExecutionFailed(execution);
     const label = getExecutionLabel(execution, sessionCompletedLabel, t);
+    const goal = execution.toolCall.call_goal?.trim() || undefined;
     return {
       key: execution.toolCallId,
       category,
       running,
       failed,
       executions: [execution],
+      goal,
       text: running
         ? t('chatUi.toolGroup.running', { label })
         : failed
@@ -403,10 +406,10 @@ export function ToolGroupDisplay({
   viewedSkillIds: turnViewedSkillIds = [],
 }: ToolGroupDisplayProps) {
   const { t, i18n } = useTranslation();
-  const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
+  const [openKeys, setOpenKeys] = useTimelineRowState<Record<string, boolean>>('tool-open-keys', {});
   const toggleLine = useCallback((key: string) => {
     setOpenKeys((current) => ({ ...current, [key]: !current[key] }));
-  }, []);
+  }, [setOpenKeys]);
   const visibleExecutions = teamLayout
     ? executions.filter((execution) => !execution.toolCall.memberName)
     : executions;
@@ -485,16 +488,26 @@ export function ToolGroupDisplay({
                 >
                   <span className="tool-tree__header-line" data-testid="chat-panel-tool-tree-header-line">
                     <CategoryIcon category={line.category} />
-                    <span
-                      className={clsx(
-                        'tool-tree__header-line-text',
-                        line.running && 'is-running',
-                        line.failed && 'is-failed'
-                      )}
-                      data-testid="chat-panel-tool-tree-header-line-text"
-                      data-variant={line.running ? 'running' : line.failed ? 'failed' : 'completed'}
-                    >
-                      {line.text}
+                    <span className="tool-tree__header-text">
+                      <span
+                        className={clsx(
+                          'tool-tree__header-line-text',
+                          line.running && 'is-running',
+                          line.failed && 'is-failed'
+                        )}
+                        data-testid="chat-panel-tool-tree-header-line-text"
+                        data-variant={line.running ? 'running' : line.failed ? 'failed' : 'completed'}
+                      >
+                        {line.text}
+                      </span>
+                      {line.goal ? (
+                        <span
+                          className="tool-tree__header-goal"
+                          data-testid="chat-panel-tool-tree-header-goal"
+                        >
+                          {line.goal}
+                        </span>
+                      ) : null}
                     </span>
                     <AutoReviewerStatusBadge
                       reviewer={

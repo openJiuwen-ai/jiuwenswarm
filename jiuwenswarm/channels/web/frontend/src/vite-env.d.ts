@@ -5,9 +5,6 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE?: string;
   readonly VITE_WS_BASE?: string;
   readonly VITE_PLATFORM?: string;
-  readonly VITE_GITCODE_OAUTH_CLIENT_ID?: string;
-  readonly VITE_GITCODE_OAUTH_CLIENT_SECRET?: string;
-  readonly VITE_GITHUB_OAUTH_CLIENT_ID?: string;
 }
 
 interface ImportMeta {
@@ -31,6 +28,7 @@ interface Window {
   jiuwenDesktop?: import('./types/electron').JiuwenElectronDesktopApi;
   pywebview?: {
     api?: {
+      open_external_url?: (url: string) => Promise<boolean> | boolean;
       download_file?: (url: string, filename: string) => Promise<DesktopSaveResult> | DesktopSaveResult;
       begin_blob_save?: (filename: string, mimeType: string, totalSize: number) => Promise<DesktopBlobSaveStartResult> | DesktopBlobSaveStartResult;
       append_blob_save?: (transferId: string, encodedChunk: string) => Promise<boolean> | boolean;

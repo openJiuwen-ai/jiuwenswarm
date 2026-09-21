@@ -25,6 +25,7 @@ type GroupCatalogPageProps = {
   totalPages: number;
   query: string;
   category: string;
+  installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
   error: string | null;
   busyId: string | null;
@@ -45,6 +46,7 @@ export function GroupCatalogPage({
   totalPages,
   query,
   category,
+  installation = 'all',
   status,
   error,
   busyId,
@@ -59,7 +61,7 @@ export function GroupCatalogPage({
   const { t } = useTranslation();
   const isMine = scope === 'mine';
   const isEmpty = status === 'success' && totalItems === 0;
-  const hasQuery = query.trim().length > 0 || Boolean(category);
+  const hasQuery = query.trim().length > 0 || Boolean(category) || installation !== 'all';
 
   return (
     <>

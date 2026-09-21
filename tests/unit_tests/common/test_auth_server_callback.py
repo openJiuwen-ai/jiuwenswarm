@@ -64,6 +64,7 @@ def exchange(monkeypatch) -> FakeExchange:
 def service(monkeypatch, tmp_path, exchange) -> AuthService:
     monkeypatch.setattr(store_mod, "auth_dir", lambda: tmp_path)
     monkeypatch.setattr(service_mod, "CLAIM_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(service_mod, "CLAIM_POLL_SLOW_AFTER_S", 60.0)
     monkeypatch.setattr(service_mod, "STATE_TTL_S", 1.0)
     flow = AccountKitFlow(
         OAuthConfig(
@@ -75,10 +76,25 @@ def service(monkeypatch, tmp_path, exchange) -> AuthService:
         )
     )
     service = AuthService(flow=flow, store=store_mod.AuthSessionStore(persist=False))
+    monkeypatch.setattr(service, "refresh_model_catalog", lambda session_id=None: 0)
     yield service
     with flow.pending._lock:
         flow.pending._items.clear()
     time.sleep(0.05)
+
+
+class _LogRecorder:
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def _record(self, msg, *args, **kwargs) -> None:
+        self.messages.append(msg % args if args else msg)
+
+    debug = info = warning = error = _record
+
+    def text(self) -> str:
+        return "\n".join(self.messages)
 
 
 def _wait_for(predicate, timeout_s: float = 3.0) -> None:
@@ -152,11 +168,88 @@ def test_network_hiccups_do_not_kill_the_login(service, exchange):
     assert len(exchange.claims) >= 3, "抖了两次之后还在继续轮询"
 
 
-def test_polling_stops_once_the_login_is_gone(service, exchange):
+def test_rate_limits_and_gateway_errors_do_not_kill_the_login(service, exchange):
+    exchange.claim_responses = [
+        (429, {"error": "rate_limited"}),
+        (502, {"error_code": "APIG.0203", "error_msg": "Backend unavailable"}),
+        (200, {"code": "auth-code-3"}),
+    ]
+    service.create_authorization_request()
+
+    _wait_for(lambda: service.store.any_session() is not None)
+    assert len(exchange.claims) == 3
+
+
+def test_claim_checks_the_exchange_right_away(service, exchange, monkeypatch):
+    monkeypatch.setattr(service_mod, "CLAIM_POLL_INTERVAL_S", 0.5)
+    exchange.claim_responses = [(200, {"code": "auth-code-4"})]
+    request = service.create_authorization_request()
+
+    session = service.claim(request["state"], request["claimToken"])
+    assert session is not None and session.user_id == "openid-1"
+    assert len(exchange.claims) == 1
+
+
+def test_claim_during_an_exchange_outage_is_still_pending(service, exchange, monkeypatch):
+    monkeypatch.setattr(service_mod, "CLAIM_POLL_INTERVAL_S", 0.5)
+    exchange.claim_responses = [(429, {"error": "rate_limited"}), (503, {})]
+    request = service.create_authorization_request()
+    assert service.claim(request["state"], request["claimToken"]) is None
+    assert service.claim(request["state"], request["claimToken"]) is None
+    assert service.flow.pending.get(request["state"]) is not None, "暂时不可用不算登录失败"
+
+
+def test_claim_reports_an_error_brought_back_from_the_exchange(service, exchange, monkeypatch):
+    monkeypatch.setattr(service_mod, "CLAIM_POLL_INTERVAL_S", 0.5)
+    exchange.claim_responses = [(200, {"error": "access_denied"})]
+    request = service.create_authorization_request()
+    with pytest.raises(account_kit.OAuthError) as caught:
+        service.claim(request["state"], request["claimToken"])
+    assert caught.value.code == "oauth_access_denied"
+
+
+def test_code_arriving_after_a_recorded_result_is_dropped_loudly(service, exchange, monkeypatch):
+    monkeypatch.setattr(service_mod, "CLAIM_POLL_INTERVAL_S", 0.5)
+    request = service.create_authorization_request()
+    service.flow.pending.begin_callback(request["state"])
+    exchange.claim_responses = [(200, {"code": "late-code"})]
+    log = _LogRecorder()
+    monkeypatch.setattr(service_mod, "logger", log)
+    assert service._claim_from_exchange_once(request["state"], request["claimToken"]) is True
+    assert exchange.token_forms == []
+    assert "丢弃另一路取到的授权码" in log.text()
+
+
+def test_non_ascii_claim_token_is_just_a_mismatch(service, monkeypatch):
+    monkeypatch.setattr(service_mod, "CLAIM_POLL_INTERVAL_S", 0.5)
+    request = service.create_authorization_request()
+    service.cancel(request["state"], "令牌")
+    assert service.flow.pending.get(request["state"]) is not None
+    with pytest.raises(account_kit.OAuthError) as caught:
+        service.claim(request["state"], "令牌")
+    assert caught.value.code == "oauth_state_invalid"
+
+
+def test_wrong_claim_token_does_not_reach_the_exchange(service, exchange, monkeypatch):
+    monkeypatch.setattr(service_mod, "CLAIM_POLL_INTERVAL_S", 0.5)
+    request = service.create_authorization_request()
+    with pytest.raises(account_kit.OAuthError):
+        service.claim(request["state"], "not-the-one")
+    assert exchange.claims == []
+
+
+def test_cancel_with_the_wrong_claim_token_changes_nothing(service, monkeypatch):
+    monkeypatch.setattr(service_mod, "CLAIM_POLL_INTERVAL_S", 0.5)
+    request = service.create_authorization_request()
+    service.cancel(request["state"], "not-the-one")
+    assert service.flow.pending.get(request["state"]) is not None
+
+
+def test_polling_stops_once_the_login_is_cancelled(service, exchange):
     request = service.create_authorization_request()
     _wait_for(lambda: exchange.claims)
-    with service.flow.pending._lock:
-        service.flow.pending._items.pop(request["state"], None)  # 取消 = 丢掉待完成记录
+    service.cancel(request["state"], request["claimToken"])
+    assert service.flow.pending.get(request["state"]) is None
     _wait_for(lambda: not any(t.name == "auth-claim-poll" and t.is_alive() for t in threading.enumerate()))
     before = len(exchange.claims)
     time.sleep(0.05)

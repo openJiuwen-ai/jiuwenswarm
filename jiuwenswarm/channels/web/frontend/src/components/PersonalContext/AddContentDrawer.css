@@ -1118,3 +1118,30 @@
 .pc-cal__field-input:focus {
   border-color: #1476ff;
 }
+.pc-drawer__path-input {
+  position: relative;
+}
+.pc-drawer__path-input .pc-drawer__input {
+  padding-right: 36px;
+}
+.pc-drawer__path-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+  transition: color 0.12s ease;
+}
+.pc-drawer__path-btn:hover {
+  color: #1476ff;
+}

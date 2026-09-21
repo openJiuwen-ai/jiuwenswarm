@@ -1016,7 +1016,8 @@ def get_permissions_owner_scopes() -> dict[str, Any]:
     cfg = get_config() or {}
     perm = cfg.get("permissions", {})
     return {
-        "owner_scopes": perm.get("owner_scopes", {}),
+        # 模板把该键留空以躲开 _deep_merge 的裁剪，读到的可能是 None。
+        "owner_scopes": perm.get("owner_scopes") or {},
         "deny_guidance_message": perm.get("deny_guidance_message", ""),
     }
 
@@ -2496,41 +2497,90 @@ def update_a2ui_in_config(updates: dict[str, Any]) -> None:
     _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
 
 
+# Recursion bound for :func:`_deep_merge`. This exists only to stop runaway
+# recursion on pathological input; it is deliberately far deeper than any real
+# config tree. The previous bound of 4 silently truncated *both* halves of the
+# merge: template keys nested deeper than four levels were never added, and
+# user keys nested deeper than four levels were never pruned, so whether a key
+# was touched at all depended on how deeply it happened to sit.
+_MERGE_MAX_DEPTH = 32
+
+
 def _deep_merge(
     template: dict[str, Any],
     user: dict[str, Any],
     depth: int = 0,
-) -> dict[str, Any]:
-    """Recursively merge template with user config, cleaning deprecated fields.
+    *,
+    prune: bool = False,
+    _path: tuple[str, ...] = (),
+    _dropped: list[str] | None = None,
+) -> int:
+    """Merge template defaults into ``user`` **in place**.
 
     Rules:
-    - Add: fields only in template (new config options)
-    - Keep: user values for fields that exist in template (preserve user settings)
-    - Remove: fields only in user (deprecated config, cleanup)
-    - Max recursion depth: 4 (covers deep nested config like context_engine_config)
+    - Add: keys present only in the template (new config options).
+    - Keep: user values for keys present in both (user settings win).
+    - Keep: keys present only in the user config. A template is a sample
+      document, not a schema -- it ships open-ended maps that exist precisely
+      to be filled in by the operator -- so absence from the template does not
+      make a key deprecated. Such keys are removed only when ``prune=True``,
+      and every removal is then logged at WARNING with its full dotted path.
+
+    The user mapping is updated in place rather than rebuilt into a fresh
+    ``dict`` so that ruamel round-trip data (comments, quoting, anchors)
+    survives the merge; rebuilding discarded every comment in the file on
+    each write.
 
     Args:
-        template: Template config dict with default values
-        user: User config dict
-        depth: Current recursion depth
+        template: Template config mapping with default values.
+        user: User config mapping, mutated in place.
+        depth: Current recursion depth.
+        prune: Remove keys present only in the user config.
+        _path: Internal -- dotted path of ``user`` within the document.
+        _dropped: Internal -- accumulator of pruned dotted paths.
 
     Returns:
-        Merged dict synced with template structure, preserving user values.
+        The number of changes applied (additions plus prunes).
     """
-    if depth >= 4:
-        return user
+    outermost = _dropped is None
+    if outermost:
+        _dropped = []
 
-    result: dict[str, Any] = {}
+    changes = 0
 
-    for key, template_value in template.items():
-        if key not in user:
-            result[key] = template_value
-        elif isinstance(template_value, dict) and isinstance(user.get(key), dict):
-            result[key] = _deep_merge(template_value, user[key], depth + 1)
-        else:
-            result[key] = user[key]
+    if depth < _MERGE_MAX_DEPTH:
+        for key, template_value in template.items():
+            if key not in user:
+                user[key] = template_value
+                changes += 1
+            elif isinstance(template_value, dict) and isinstance(user.get(key), dict):
+                changes += _deep_merge(
+                    template_value,
+                    user[key],
+                    depth + 1,
+                    prune=prune,
+                    _path=_path + (str(key),),
+                    _dropped=_dropped,
+                )
 
-    return result
+        if prune:
+            for key in [k for k in user if k not in template]:
+                _dropped.append(".".join(_path + (str(key),)))
+                del user[key]
+                changes += 1
+
+    if outermost and _dropped:
+        for dotted_path in _dropped:
+            logger.warning(
+                "config merge: removing user config key absent from template: %s",
+                dotted_path,
+            )
+        logger.warning(
+            "config merge: removed %d user config key(s) absent from template",
+            len(_dropped),
+        )
+
+    return changes
 
 
 
@@ -2588,13 +2638,21 @@ def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
+    *,
+    prune: bool = False,
 ) -> bool:
     """Sync user config with template structure, preserving user values.
 
-    Three-way merge:
+    Merge:
     - Add: new fields from template (new config options)
     - Keep: user values for fields that exist in template
-    - Remove: deprecated fields not in template (cleanup)
+    - Keep: fields present only in the user config, unless ``prune=True``
+
+    Keys the operator added are preserved by default. The template is a sample
+    document rather than a schema, so it cannot distinguish a field the project
+    has retired from one the operator legitimately added -- the template itself
+    ships open-ended maps that exist to be filled in. Removing user keys is
+    therefore opt-in via ``prune``, and each removal is logged at WARNING.
 
     This preserves user settings like:
     - models.*.model_config_obj.temperature
@@ -2604,6 +2662,7 @@ def migrate_config_from_template(
     Args:
         template_path: Path to template config.yaml
         user_config_path: Path to user config.yaml
+        prune: Remove user config keys that are absent from the template.
 
     Returns:
         True if migration was performed, False otherwise.
@@ -2628,22 +2687,26 @@ def migrate_config_from_template(
     _migrate_legacy_agent_submode_memory(user_data)
     _migrate_legacy_kv_cache_affinity_config(user_data)
 
-    # Deep merge: template provides defaults, user values preserved
-    merged_data = _deep_merge(template_data, user_data)
+    # Deep merge: template provides defaults, user values preserved.
+    # user_data is updated in place, which keeps comments and formatting.
+    changes = _deep_merge(template_data, user_data, prune=prune)
 
-    # Guard against empty merged_data overwriting valid user config
-    if merged_data is None or not merged_data:
+    # Guard against an empty result overwriting a valid user config
+    if not user_data:
         return False
 
-    # 写回程序版本号，与合并内容原子落盘；放在 diff 判断之前，
+    # 写回程序版本号，与合并内容原子落盘；版本号变化计入变更数，
     # 使旧 config（无版本号或版本号旧）必走写盘分支把版本号写回，
     # 已写回的最新 config 下次启动被 ensure_config_migrated_from_template 短路。
     from jiuwenswarm.common._build_config import VERSION
-    merged_data["config_version"] = VERSION
+
+    if user_data.get("config_version") != VERSION:
+        user_data["config_version"] = VERSION
+        changes += 1
 
     # Only write if there are actual changes
-    if merged_data != user_data:
-        dump_yaml_round_trip(user_config_path, merged_data)
+    if changes:
+        dump_yaml_round_trip(user_config_path, user_data)
         return True
 
     return False

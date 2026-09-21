@@ -56,18 +56,22 @@ def resolve_local_asset(kind: str, local_id: str):
         ):
             raise PublishAPIError("RESOURCE_NOT_FOUND")
         return candidate
-    if kind in {"agent_template", "plugin"}:
+    if kind in {"agent_template", "agent_group", "plugin"}:
         from jiuwenswarm.server.runtime import extension_package_manager as packages
 
-        runtime_id = packages.resolve_equipment_runtime_id(
-            "agent_templates" if kind == "agent_template" else "plugin_packages",
-            local_id,
-        )
-        resolver = (
-            packages.resolve_agent_template_dir
-            if kind == "agent_template"
-            else packages.resolve_plugin_dir
-        )
+        if kind == "agent_group":
+            runtime_id = packages.resolve_equipment_runtime_id("agent_groups", local_id)
+            resolver = packages.resolve_agent_group_publish_dir
+        else:
+            runtime_id = packages.resolve_equipment_runtime_id(
+                "agent_templates" if kind == "agent_template" else "plugin_packages",
+                local_id,
+            )
+            resolver = (
+                packages.resolve_agent_template_dir
+                if kind == "agent_template"
+                else packages.resolve_plugin_dir
+            )
         try:
             return resolver(runtime_id)
         except (ValueError, OSError):
@@ -181,8 +185,10 @@ class AssetPublishAPI:
             publisher or HubClient(base_url=self.hub_url),
             lambda scope, kind, local_id: resolver(kind, local_id),
             self.root / "packages",
-            on_published=lambda request, result: invalidate_hub_catalog(
-                request.identity.kind
+            on_published=lambda request, result: (
+                invalidate_hub_catalog(request.identity.kind),
+                invalidate_hub_catalog("agent_template")
+                if request.identity.kind == "agent_group" else None,
             ),
         )
 
@@ -232,7 +238,7 @@ class AssetPublishAPI:
             raise PublishAPIError("INVALID_PARAMETERS")
         if method == "local_status":
             kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
-            if kind not in {"skill", "agent_template", "plugin", "mcp"}:
+            if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp"}:
                 raise PublishAPIError("INVALID_KIND")
             # Workspace access remains enforced by the Web/Gateway route and local
             # resolver. This read-only summary never grants Hub account access.
@@ -243,7 +249,7 @@ class AssetPublishAPI:
         try:
             if method in {"describe", "prepare", "records"}:
                 kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
-                if kind not in {"skill", "agent_template", "plugin", "mcp"}:
+                if kind not in {"skill", "agent_template", "agent_group", "plugin", "mcp"}:
                     raise PublishAPIError("INVALID_KIND")
                 if method == "records":
                     return {

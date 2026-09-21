@@ -17,25 +17,54 @@ const A = 1_700_000_035_000; // reasoning 末帧（updatedAt）
 test('supplements stay below the original user message without splitting assistant output', () => {
   const messages = [
     { id: 'user', role: 'user', content: 'write a story', timestamp: new Date(U).toISOString() },
-    { id: 'answer', role: 'assistant', content: 'before-middle-after', timestamp: new Date(S).toISOString(), completedAt: new Date(A).toISOString() },
-    { id: 'extra-1', role: 'user', content: 'space theme', timestamp: new Date(S + 1000).toISOString(), supplementalInput: { executionId: 'execution', streamMessageId: 'answer', streamOffset: 7 } },
-    { id: 'extra-2', role: 'user', content: 'happy ending', timestamp: new Date(S + 2000).toISOString(), supplementalInput: { executionId: 'execution', streamMessageId: 'answer', streamOffset: 14 } },
+    {
+      id: 'answer',
+      role: 'assistant',
+      content: 'before-middle-after',
+      timestamp: new Date(S).toISOString(),
+      completedAt: new Date(A).toISOString(),
+    },
+    {
+      id: 'extra-1',
+      role: 'user',
+      content: 'space theme',
+      timestamp: new Date(S + 1000).toISOString(),
+      supplementalInput: { executionId: 'execution', streamMessageId: 'answer', streamOffset: 7 },
+    },
+    {
+      id: 'extra-2',
+      role: 'user',
+      content: 'happy ending',
+      timestamp: new Date(S + 2000).toISOString(),
+      supplementalInput: { executionId: 'execution', streamMessageId: 'answer', streamOffset: 14 },
+    },
   ];
   const original = structuredClone(messages);
   for (const running of [true, false]) {
     const items = buildRenderItems(buildTimelineItems(messages, [], []), false, running);
-    assert.deepEqual(items.filter(item => item.type === 'message').map(item => item.message.content),
-      ['write a story', 'space theme', 'happy ending', 'before-middle-after']);
+    assert.deepEqual(
+      items.filter((item) => item.type === 'message').map((item) => item.message.content),
+      ['write a story', 'space theme', 'happy ending', 'before-middle-after'],
+    );
     assert.equal(
-      items.filter(item => item.type === 'message' && item.message.role === 'assistant').length,
+      items.filter((item) => item.type === 'message' && item.message.role === 'assistant').length,
       1,
       'assistant 回复必须保持为一个连续气泡',
     );
-    const summaries = items.filter(item => item.type === 'turnSummary');
+    const summaries = items.filter((item) => item.type === 'turnSummary');
     assert.equal(summaries.length, 1);
     assert.equal(summaries[0].startMs, U);
     assert.equal(summaries[0].endMs, A);
-    assert.deepEqual([...new Set(items.filter(item => item.type === 'message' && item.message.role === 'assistant').map(item => item.turnId))], [1]);
+    assert.deepEqual(
+      [
+        ...new Set(
+          items
+            .filter((item) => item.type === 'message' && item.message.role === 'assistant')
+            .map((item) => item.turnId),
+        ),
+      ],
+      [1],
+    );
   }
   assert.deepEqual(messages, original);
 });
@@ -43,30 +72,46 @@ test('supplements stay below the original user message without splitting assista
 test('a supplement before the first assistant output stays above the timer and assistant block', () => {
   const messages = [
     { id: 'user', role: 'user', content: 'write a story', timestamp: new Date(U).toISOString() },
-    { id: 'answer', role: 'assistant', content: 'complete answer', timestamp: new Date(S + 2_000).toISOString(), completedAt: new Date(A).toISOString() },
-    { id: 'early-extra', role: 'user', content: 'space theme', timestamp: new Date(S).toISOString(), supplementalInput: { executionId: 'execution', streamMessageId: 'answer', streamOffset: 0 } },
+    {
+      id: 'answer',
+      role: 'assistant',
+      content: 'complete answer',
+      timestamp: new Date(S + 2_000).toISOString(),
+      completedAt: new Date(A).toISOString(),
+    },
+    {
+      id: 'early-extra',
+      role: 'user',
+      content: 'space theme',
+      timestamp: new Date(S).toISOString(),
+      supplementalInput: { executionId: 'execution', streamMessageId: 'answer', streamOffset: 0 },
+    },
   ];
 
   for (const running of [true, false]) {
-    const items = buildRenderItems(buildTimelineItems(messages, [], [{
-      id: 'reasoning-after-supplement',
-      text: 'thinking',
-      startedAt: S + 1_000,
-      updatedAt: S + 1_500,
-      closedAt: S + 1_500,
-      closed: true,
-    }]), false, running);
-    const originalUserIndex = items.findIndex(
-      item => item.type === 'message' && item.message.id === 'user',
+    const items = buildRenderItems(
+      buildTimelineItems(
+        messages,
+        [],
+        [
+          {
+            id: 'reasoning-after-supplement',
+            text: 'thinking',
+            startedAt: S + 1_000,
+            updatedAt: S + 1_500,
+            closedAt: S + 1_500,
+            closed: true,
+          },
+        ],
+      ),
+      false,
+      running,
     );
-    const supplementIndex = items.findIndex(
-      item => item.type === 'message' && item.message.id === 'early-extra',
-    );
-    const summaryIndex = items.findIndex(item => item.type === 'turnSummary');
-    const reasoningIndex = items.findIndex(item => item.type === 'reasoning');
-    const assistantIndex = items.findIndex(
-      item => item.type === 'message' && item.message.role === 'assistant',
-    );
+    const originalUserIndex = items.findIndex((item) => item.type === 'message' && item.message.id === 'user');
+    const supplementIndex = items.findIndex((item) => item.type === 'message' && item.message.id === 'early-extra');
+    const summaryIndex = items.findIndex((item) => item.type === 'turnSummary');
+    const reasoningIndex = items.findIndex((item) => item.type === 'reasoning');
+    const assistantIndex = items.findIndex((item) => item.type === 'message' && item.message.role === 'assistant');
 
     assert.ok(originalUserIndex < supplementIndex, '补充 USER 消息应位于原 USER 消息之后');
     assert.ok(supplementIndex < summaryIndex, '首包前的补充 USER 消息应位于计时行之前');
@@ -80,29 +125,47 @@ test('a supplement before the first assistant output stays above the timer and a
 test('a supplement without a stream id keeps revised reasoning above the intact assistant answer', () => {
   const messages = [
     { id: 'user', role: 'user', content: 'write 500 words', timestamp: new Date(U).toISOString() },
-    { id: 'answer', role: 'assistant', content: 'complete answer', timestamp: new Date(S).toISOString(), completedAt: new Date(A).toISOString() },
-    { id: 'mid-extra', role: 'user', content: 'change to 200 words', timestamp: new Date(S + 1_000).toISOString(), supplementalInput: { executionId: 'execution', streamOffset: 0 } },
+    {
+      id: 'answer',
+      role: 'assistant',
+      content: 'complete answer',
+      timestamp: new Date(S).toISOString(),
+      completedAt: new Date(A).toISOString(),
+    },
+    {
+      id: 'mid-extra',
+      role: 'user',
+      content: 'change to 200 words',
+      timestamp: new Date(S + 1_000).toISOString(),
+      supplementalInput: { executionId: 'execution', streamOffset: 0 },
+    },
   ];
-  const items = buildRenderItems(buildTimelineItems(messages, [], [{
-    id: 'reasoning-after-steer',
-    text: 'revise to 200 words',
-    startedAt: S + 2_000,
-    updatedAt: S + 3_000,
-    closedAt: S + 3_000,
-    closed: true,
-  }]), false, false);
-  const supplementIndex = items.findIndex(
-    item => item.type === 'message' && item.message.id === 'mid-extra',
+  const items = buildRenderItems(
+    buildTimelineItems(
+      messages,
+      [],
+      [
+        {
+          id: 'reasoning-after-steer',
+          text: 'revise to 200 words',
+          startedAt: S + 2_000,
+          updatedAt: S + 3_000,
+          closedAt: S + 3_000,
+          closed: true,
+        },
+      ],
+    ),
+    false,
+    false,
   );
-  const reasoningIndex = items.findIndex(item => item.type === 'reasoning');
-  const assistantIndex = items.findIndex(
-    item => item.type === 'message' && item.message.id === 'answer',
-  );
+  const supplementIndex = items.findIndex((item) => item.type === 'message' && item.message.id === 'mid-extra');
+  const reasoningIndex = items.findIndex((item) => item.type === 'reasoning');
+  const assistantIndex = items.findIndex((item) => item.type === 'message' && item.message.id === 'answer');
 
   assert.ok(supplementIndex < reasoningIndex);
   assert.ok(reasoningIndex < assistantIndex, '补充后的思考必须位于完整最终回答之前');
   assert.equal(
-    items.filter(item => item.type === 'message' && item.message.id === 'answer').length,
+    items.filter((item) => item.type === 'message' && item.message.id === 'answer').length,
     1,
     'assistant 最终回答仍应保持为一个完整气泡',
   );
@@ -111,18 +174,42 @@ test('a supplement without a stream id keeps revised reasoning above the intact 
 test('late acceptance stays in its original turn and an empty continuation retains final metadata', () => {
   const messages = [
     { id: 'user', role: 'user', content: 'first', timestamp: new Date(U).toISOString() },
-    { id: 'answer', role: 'assistant', content: 'answer', timestamp: new Date(S).toISOString(), completedAt: new Date(A).toISOString(), fileItems: [{ name: 'result.txt' }] },
+    {
+      id: 'answer',
+      role: 'assistant',
+      content: 'answer',
+      timestamp: new Date(S).toISOString(),
+      completedAt: new Date(A).toISOString(),
+      fileItems: [{ name: 'result.txt' }],
+    },
     { id: 'next-user', role: 'user', content: 'second', timestamp: new Date(A + 1000).toISOString() },
-    { id: 'next-answer', role: 'assistant', content: 'second answer', timestamp: new Date(A + 2000).toISOString(), isStreaming: true },
-    { id: 'late', role: 'user', content: 'extra', timestamp: new Date(A + 3000).toISOString(), supplementalInput: { executionId: 'old-execution', streamMessageId: 'answer', streamOffset: 6 } },
+    {
+      id: 'next-answer',
+      role: 'assistant',
+      content: 'second answer',
+      timestamp: new Date(A + 2000).toISOString(),
+      isStreaming: true,
+    },
+    {
+      id: 'late',
+      role: 'user',
+      content: 'extra',
+      timestamp: new Date(A + 3000).toISOString(),
+      supplementalInput: { executionId: 'old-execution', streamMessageId: 'answer', streamOffset: 6 },
+    },
   ];
   const items = buildRenderItems(buildTimelineItems(messages, [], []), false, true);
-  assert.deepEqual(items.filter(item => item.type === 'message').map(item => item.message.content), ['first', 'extra', 'answer', 'second', 'second answer']);
-  const summaries = items.filter(item => item.type === 'turnSummary');
+  assert.deepEqual(
+    items.filter((item) => item.type === 'message').map((item) => item.message.content),
+    ['first', 'extra', 'answer', 'second', 'second answer'],
+  );
+  const summaries = items.filter((item) => item.type === 'turnSummary');
   assert.equal(summaries.length, 2);
   assert.equal(summaries[0].endMs, A);
   assert.equal(summaries[1].startMs, A + 1000);
-  assert.deepEqual(items.find(item => item.type === 'message' && item.message.id === 'answer').message.fileItems, [{ name: 'result.txt' }]);
+  assert.deepEqual(items.find((item) => item.type === 'message' && item.message.id === 'answer').message.fileItems, [
+    { name: 'result.txt' },
+  ]);
 });
 
 test('全双工简短确认和后续发言在运行中及完成后均保持展开', () => {
@@ -150,13 +237,17 @@ test('完整工具结果在后续简报到来后仍独立显示，普通中间�
       first.message.presentation = 'tool_result';
       const second = assistantMessage(U + 3_000, U + 3_000, 'result-2');
       second.message.presentation = 'tool_result';
-      const out = buildRenderItems([
-        userMessage(U),
-        assistantMessage(U + 1_000, U + 1_000, 'ack'),
-        first,
-        second,
-        assistantMessage(U + 4_000, U + 4_000, 'brief'),
-      ], isTeam, isProcessing);
+      const out = buildRenderItems(
+        [
+          userMessage(U),
+          assistantMessage(U + 1_000, U + 1_000, 'ack'),
+          first,
+          second,
+          assistantMessage(U + 4_000, U + 4_000, 'brief'),
+        ],
+        isTeam,
+        isProcessing,
+      );
       const messages = out.filter((item) => item.type === 'message');
       assert.equal(messages.find((item) => item.message.id === 'result-1').hideMeta, false);
       assert.equal(messages.find((item) => item.message.id === 'result-2').hideMeta, false);
@@ -169,11 +260,11 @@ test('完整工具结果在后续简报到来后仍独立显示，普通中间�
 test('异步工具结果不把它前面的普通最终回答变成中间过程', () => {
   const result = assistantMessage(U + 3_000, U + 3_000, 'result');
   result.message.presentation = 'tool_result';
-  const out = buildRenderItems([
-    userMessage(U),
-    assistantMessage(U + 2_000, U + 2_000, 'answer'),
-    result,
-  ], false, false);
+  const out = buildRenderItems(
+    [userMessage(U), assistantMessage(U + 2_000, U + 2_000, 'answer'), result],
+    false,
+    false,
+  );
   for (const item of out.filter((item) => item.type === 'message' && item.message.role === 'assistant')) {
     assert.equal(item.hideMeta, false);
   }
@@ -281,13 +372,16 @@ test('adjacent reasoning keeps a later Agent identity when the first segment lac
   const items = [
     userMessage(U),
     reasoningItem({ id: 'rsn-first', text: 'first', startedAt: S, closed: true }),
-    reasoningItem({
-      id: 'rsn-second',
-      text: 'second',
-      startedAt: S + 1,
-      closed: true,
-      agentTemplateName: 'expert-a',
-    }, 1),
+    reasoningItem(
+      {
+        id: 'rsn-second',
+        text: 'second',
+        startedAt: S + 1,
+        closed: true,
+        agentTemplateName: 'expert-a',
+      },
+      1,
+    ),
   ];
 
   const reasoning = buildRenderItems(items, false, false).find((item) => item.type === 'reasoning');
@@ -365,15 +459,10 @@ test('回归：pending/timeout 工具的 updatedAt 不计入耗时终点（防�
 });
 
 test('任务用时行移动到本轮内容顶部：头像下第一行，并接管顶部头像', () => {
-  const items = [
-    userMessage(U),
-    assistantMessage(U + 2_000, U + 8_000),
-  ];
+  const items = [userMessage(U), assistantMessage(U + 2_000, U + 8_000)];
   const out = buildRenderItems(items, false, false);
   const summaryIndex = out.findIndex((item) => item.type === 'turnSummary');
-  const assistantIndex = out.findIndex(
-    (item) => item.type === 'message' && item.message.role === 'assistant',
-  );
+  const assistantIndex = out.findIndex((item) => item.type === 'message' && item.message.role === 'assistant');
 
   assert.ok(summaryIndex >= 0, '仍应生成任务用时行');
   assert.ok(summaryIndex < assistantIndex, '时间行应排在本轮 assistant 内容之前（头像下第一行）');
@@ -384,22 +473,24 @@ test('任务用时行移动到本轮内容顶部：头像下第一行，并接�
 });
 
 test('assistant 早于折叠工作时，任务用时条仍由顶部 summary 锚点渲染', () => {
-  const out = buildRenderItems([
-    userMessage(U),
-    assistantMessage(U + 2_000, U + 3_000),
-    reasoningItem({
-      id: 'reasoning-after-answer',
-      text: 'follow-up work',
-      startedAt: S,
-      updatedAt: A,
-      closedAt: A,
-      closed: true,
-    }),
-  ], false, false);
-  const summaryIndex = out.findIndex((item) => item.type === 'turnSummary');
-  const assistantIndex = out.findIndex(
-    (item) => item.type === 'message' && item.message.role === 'assistant',
+  const out = buildRenderItems(
+    [
+      userMessage(U),
+      assistantMessage(U + 2_000, U + 3_000),
+      reasoningItem({
+        id: 'reasoning-after-answer',
+        text: 'follow-up work',
+        startedAt: S,
+        updatedAt: A,
+        closedAt: A,
+        closed: true,
+      }),
+    ],
+    false,
+    false,
   );
+  const summaryIndex = out.findIndex((item) => item.type === 'turnSummary');
+  const assistantIndex = out.findIndex((item) => item.type === 'message' && item.message.role === 'assistant');
   const meta = buildTurnWorkMeta(out, false).get(1);
 
   assert.ok(meta?.completed && meta.hasWork, '该轮应渲染可折叠任务用时条');
@@ -411,34 +502,23 @@ test('assistant 早于折叠工作时，任务用时条仍由顶部 summary 锚�
     .at(-1)
     .split("if (item.type === 'turnSummary') {")[0];
   const summaryRenderBranch = source.split("if (item.type === 'turnSummary') {").at(-1);
-  assert.match(summaryRenderBranch, /chipAnchoredTurns\.current\.add\(turnKey\)/);
   assert.match(summaryRenderBranch, /return renderTurnChip\(turnKey, meta\)/);
-  assert.match(workRenderBranch, /!chipAnchoredTurns\.current\.has\(turnKey\)/);
+  assert.doesNotMatch(workRenderBranch, /renderTurnChip/);
 });
 
 test('slash 命令结果自成时间线块，不把上一轮任务用时排到卡片下方', () => {
   const assistantAt = U + 2_000;
   const completedAt = U + 8_000;
-  const items = [
-    userMessage(U),
-    assistantMessage(assistantAt, completedAt),
-    commandOutputMessage(U + 12_000),
-  ];
+  const items = [userMessage(U), assistantMessage(assistantAt, completedAt), commandOutputMessage(U + 12_000)];
 
   const out = buildRenderItems(items, false, false);
   const summaryIndex = out.findIndex((item) => item.type === 'turnSummary');
-  const commandIndex = out.findIndex(
-    (item) => item.type === 'message' && item.message.isCommandOutput,
-  );
+  const commandIndex = out.findIndex((item) => item.type === 'message' && item.message.isCommandOutput);
 
   assert.ok(summaryIndex >= 0, '上一轮仍应显示任务用时');
   assert.ok(commandIndex >= 0, '命令卡片仍应渲染');
   assert.ok(summaryIndex < commandIndex, '上一轮任务用时必须出现在命令卡片上方');
-  assert.equal(
-    out.filter((item) => item.type === 'turnSummary').length,
-    1,
-    '命令卡片自身不应新增任务用时',
-  );
+  assert.equal(out.filter((item) => item.type === 'turnSummary').length, 1, '命令卡片自身不应新增任务用时');
 });
 
 test('历史前插完整回合时，既有任务用时行保持原有 key', () => {
@@ -450,11 +530,7 @@ test('历史前插完整回合时，既有任务用时行保持原有 key', () =
   ];
   const before = buildRenderItems(current, false, false);
   const after = buildRenderItems(
-    [
-      userMessage(U - 10_000, 'u9'),
-      assistantMessage(U - 9_000, U - 8_000, 'a9'),
-      ...current,
-    ],
+    [userMessage(U - 10_000, 'u9'), assistantMessage(U - 9_000, U - 8_000, 'a9'), ...current],
     false,
     false,
   );
@@ -494,7 +570,7 @@ test('只有用户消息的进行中回合仍显示任务用时，并锚定该�
 
 test('历史前插扩展同一 streak 时，展开态 key 锚定末项并保持不变', () => {
   const now = 1_800_000_000_000;
-  const workItem = key => ({
+  const workItem = (key) => ({
     type: 'reasoning',
     key,
     showAvatar: false,
@@ -509,9 +585,7 @@ test('历史前插扩展同一 streak 时，展开态 key 锚定末项并保持�
     },
   });
   const before = [...buildLiveCompletedStreaks([workItem('r2'), workItem('r3')], now).values()];
-  const after = [
-    ...buildLiveCompletedStreaks([workItem('r1'), workItem('r2'), workItem('r3')], now).values(),
-  ];
+  const after = [...buildLiveCompletedStreaks([workItem('r1'), workItem('r2'), workItem('r3')], now).values()];
 
   assert.equal(before[0].firstKey, 'r2');
   assert.equal(after[0].firstKey, 'r1');
@@ -519,17 +593,21 @@ test('历史前插扩展同一 streak 时，展开态 key 锚定末项并保持�
   assert.equal(after[0].id, 'streak-r3');
 });
 
-
 test('正文不参与工作折叠，后续总结不会把澄清问题收起', () => {
   for (const isTeam of [false, true]) {
     for (const isProcessing of [false, true]) {
       const question = assistantMessage(U + 1_000, U + 1_000, 'questions');
       question.message.content = '请补充岗位方向、背景和面试时间。';
-      const items = buildRenderItems([
-        userMessage(U), question,
-        reasoningItem({ id: 'reasoning', text: '等待用户回复', startedAt: S, closed: true }),
-        assistantMessage(A, A, 'summary'),
-      ], isTeam, isProcessing);
+      const items = buildRenderItems(
+        [
+          userMessage(U),
+          question,
+          reasoningItem({ id: 'reasoning', text: '等待用户回复', startedAt: S, closed: true }),
+          assistantMessage(A, A, 'summary'),
+        ],
+        isTeam,
+        isProcessing,
+      );
       const anchors = buildTurnFoldAnchorKeys(items, buildTurnWorkMeta(items, isProcessing));
       assert.equal(anchors.get(1), isProcessing ? undefined : 'reasoning');
       assert.equal(items.find((item) => item.key === 'questions').message.content, question.message.content);
@@ -537,7 +615,10 @@ test('正文不参与工作折叠，后续总结不会把澄清问题收起', ()
   }
   // 渲染层不得再用 hideMeta 将正文放进折叠容器。
   const source = readFileSync(new URL('../src/components/ChatPanel/MessageList.tsx', import.meta.url), 'utf8');
-  const messageBranch = source.split("if (item.type === 'message') {").at(-1).split("if (item.type === 'reasoning' || item.type === 'toolGroup') {")[0];
+  const messageBranch = source
+    .split("if (item.type === 'message') {")
+    .at(-1)
+    .split("if (item.type === 'reasoning' || item.type === 'toolGroup') {")[0];
   assert.ok(messageBranch.includes('<MessageItem'));
   assert.ok(messageBranch.includes('renderAfterMessage?.(item.message)'));
   assert.doesNotMatch(messageBranch, /timeline-collapse|turnFoldable/);

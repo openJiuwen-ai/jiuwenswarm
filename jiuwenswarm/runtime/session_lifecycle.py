@@ -39,7 +39,9 @@ class SessionLifecycleTarget:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionPrepareEvent:
+class SessionInputIntentEvent:
+    """A user intends to continue the Session, independent of any consumer."""
+
     target: SessionLifecycleTarget
     has_history: bool = False
     view_id: str = ""
@@ -73,16 +75,16 @@ class SessionInactiveEvent:
     target: SessionLifecycleTarget
 
 
-class SessionPrepareDisposition(str, Enum):
+class SessionInputIntentDisposition(str, Enum):
     SCHEDULED = "scheduled"
     NOT_NEEDED = "not_needed"
 
 
 class SessionActivityParticipant(Protocol):
-    async def session_preparing(
+    async def session_input_intent(
         self,
-        event: SessionPrepareEvent,
-    ) -> SessionPrepareDisposition:
+        event: SessionInputIntentEvent,
+    ) -> SessionInputIntentDisposition:
         ...
 
     async def foreground_changed(self, event: SessionForegroundEvent) -> None:
@@ -172,8 +174,8 @@ __all__ = [
     "SessionExecutionFinishedEvent",
     "SessionForegroundEvent",
     "SessionInactiveEvent",
+    "SessionInputIntentDisposition",
+    "SessionInputIntentEvent",
     "SessionKind",
     "SessionLifecycleTarget",
-    "SessionPrepareDisposition",
-    "SessionPrepareEvent",
 ]

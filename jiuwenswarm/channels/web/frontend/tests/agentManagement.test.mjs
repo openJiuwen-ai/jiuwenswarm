@@ -6,8 +6,21 @@ import {
   normalizeAgentSource,
   normalizeAgentTemplateDetail,
   normalizeAgentTemplateListItem,
+  normalizeAgentFileContent,
   normalizeAgentFileTree,
+  normalizeAgentGroupListItem,
 } from '../node_modules/.cache/agent-management/adapter.js';
+
+test('keeps Hub Expert Teams distinct from local groups', () => {
+  const item = normalizeAgentGroupListItem({
+    id: 'group-asset-id', name: 'runtime-group', source: 'hub', installed: false,
+    capabilities: { canInstall: true, canPublish: false },
+  }, 'en');
+  assert.equal(item.source, 'hub');
+  assert.equal(item.name, 'runtime-group');
+  assert.equal(item.capabilities.canInstall, true);
+  assert.equal(item.capabilities.canPublish, false);
+});
 import {
   buildDefinitionSelectionPayload,
   buildDefinitionSelectionPayloadForMode,
@@ -20,10 +33,164 @@ import {
 } from '../node_modules/.cache/agent-management/state.js';
 import { resolveAgentTagPayload } from '../node_modules/.cache/agent-management/tagOptions.js';
 import {
+  isAgentGroupAgentCompatibilityLoading,
+  isMcpSelectable,
+  isTeamSkillOption,
+  isSkillVisibleInSourceTab,
+  sortInstalledFirst,
+  sortAgentGroupOptions,
+  sortMcpOptions,
+} from '../node_modules/.cache/agent-management/selection.js';
+import {
   buildCatalogViewModel,
+  buildGroupCatalogViewModel,
   findFirstPreviewableFile,
   mergeAgentDetailWithCatalog,
 } from '../node_modules/.cache/agent-management/viewModel.js';
+
+test('selection pickers share installed-first and label sorting', () => {
+  const items = [
+    { id: 'expert-z', displayName: 'Zulu', installed: true },
+    { id: 'expert-a', displayName: 'alpha', installed: true },
+    { id: 'skill-z', name: 'Zulu', installed: false },
+    { id: 'skill-a', name: 'Alpha', installed: false },
+  ];
+
+  assert.deepEqual(sortInstalledFirst(items).map((item) => item.id), [
+    'expert-a',
+    'expert-z',
+    'skill-a',
+    'skill-z',
+  ]);
+});
+
+test('connector selection only allows connected items and orders by availability', () => {
+  const items = [
+    { id: 'not-installed', name: 'Alpha', installed: false, connectionState: 'disconnected' },
+    { id: 'pending-connection', name: 'Bravo', installed: true, connectionState: 'disconnected' },
+    { id: 'connecting', name: 'Charlie', installed: true, connectionState: 'connecting' },
+    { id: 'available-z', name: 'Zulu', installed: true, connectionState: 'connected' },
+    { id: 'available-a', name: 'Alpha', installed: true, connectionState: 'connected' },
+  ];
+
+  assert.deepEqual(sortMcpOptions(items).map((item) => item.id), [
+    'available-a',
+    'available-z',
+    'pending-connection',
+    'connecting',
+    'not-installed',
+  ]);
+  assert.equal(isMcpSelectable(items[3]), true);
+  assert.equal(isMcpSelectable(items[0]), false);
+  assert.equal(isMcpSelectable(items[1]), false);
+  assert.equal(isMcpSelectable(items[2]), false);
+});
+
+test('market Expert options still loading team compatibility sort after ready options', () => {
+  const items = [
+    {
+      id: 'uninstalled',
+      displayName: 'Uninstalled',
+      source: 'hub',
+      installed: false,
+      teamCompatible: undefined,
+    },
+    {
+      id: 'loading',
+      displayName: 'Loading',
+      source: 'hub',
+      installed: true,
+      teamCompatible: undefined,
+    },
+    {
+      id: 'ready',
+      displayName: 'Ready',
+      source: 'hub',
+      installed: true,
+      teamCompatible: { leader: true, member: true },
+    },
+  ];
+
+  assert.deepEqual(sortAgentGroupOptions(items, 'loading').map((item) => item.id), [
+    'ready',
+    'loading',
+    'uninstalled',
+  ]);
+  assert.equal(isAgentGroupAgentCompatibilityLoading(items[1], 'loading'), true);
+  assert.equal(isAgentGroupAgentCompatibilityLoading(items[1], 'success'), false);
+  assert.equal(isAgentGroupAgentCompatibilityLoading(items[0], 'loading'), false);
+  assert.equal(
+    isAgentGroupAgentCompatibilityLoading(
+      { id: 'builtin', displayName: 'Built-in', source: 'builtin', installed: true, teamCompatible: undefined },
+      'loading',
+    ),
+    false,
+  );
+});
+
+test('skill source tabs keep marketplace and local visibility semantics', () => {
+  const marketplace = { source: 'hub', installed: false };
+  const installedMarketplace = { source: 'hub', installed: true };
+  const local = { source: 'local', installed: false };
+
+  assert.equal(isSkillVisibleInSourceTab(marketplace, 'market'), true);
+  assert.equal(isSkillVisibleInSourceTab(marketplace, 'local'), false);
+  assert.equal(isSkillVisibleInSourceTab(installedMarketplace, 'market'), true);
+  assert.equal(isSkillVisibleInSourceTab(installedMarketplace, 'local'), true);
+  assert.equal(isSkillVisibleInSourceTab(local, 'market'), false);
+  assert.equal(isSkillVisibleInSourceTab(local, 'local'), true);
+});
+
+test('team skill filtering accepts marketplace plugin type and installed kind contracts', () => {
+  assert.equal(isTeamSkillOption({ pluginType: 'swarmskill' }, 'market'), true);
+  assert.equal(isTeamSkillOption({ pluginType: 'swarmskill' }, 'local'), false);
+  assert.equal(isTeamSkillOption({ kind: 'team-skill' }, 'market'), true);
+  assert.equal(isTeamSkillOption({ skillType: 'swarm_skill' }, 'market'), true);
+  assert.equal(isTeamSkillOption({ kind: 'swarm-skill' }, 'local'), true);
+  assert.equal(isTeamSkillOption({ kind: 'team-skill' }, 'local'), true);
+  assert.equal(isTeamSkillOption({ skillType: 'swarm_skill' }, 'local'), true);
+  assert.equal(isTeamSkillOption({ pluginType: 'skill', kind: 'skill', skillType: 'skill' }, 'market'), false);
+});
+
+test('Expert Team plaza includes Hub groups alongside built-in groups', () => {
+  const items = [
+    { id: 'built-in', source: 'builtin', category: '', tags: [], name: 'built-in', displayName: 'Built-in', description: '' },
+    { id: 'remote', source: 'hub', category: '', tags: [], name: 'remote', displayName: 'Remote', description: '' },
+    { id: 'mine', source: 'local', category: '', tags: [], name: 'mine', displayName: 'Mine', description: '' },
+  ];
+  const view = buildGroupCatalogViewModel(items, { scope: 'catalog', category: '', query: '', page: 1, pageSize: 10 });
+  assert.deepEqual(view.items.map(item => item.id), ['built-in', 'remote']);
+});
+
+test('Expert Team plaza filters installed state before pagination', () => {
+  const items = [
+    { id: 'installed', source: 'hub', installed: true, category: '', tags: [], name: 'installed', displayName: 'Installed', description: '' },
+    { id: 'pending', source: 'hub', installed: false, category: '', tags: [], name: 'pending', displayName: 'Pending', description: '' },
+  ];
+  const options = { scope: 'catalog', category: '', query: '', page: 2, pageSize: 1 };
+  const installed = buildGroupCatalogViewModel(items, { ...options, installation: 'installed' });
+  const uninstalled = buildGroupCatalogViewModel(items, { ...options, installation: 'uninstalled' });
+  assert.deepEqual(installed.items.map(item => item.id), ['installed']);
+  assert.deepEqual(uninstalled.items.map(item => item.id), ['pending']);
+  assert.equal(installed.totalItems, 1);
+  assert.equal(installed.page, 1);
+});
+
+test('My Expert Teams filters install state before pagination', () => {
+  const items = [
+    { id: 'local-installed', source: 'local', installed: true, category: '', tags: [], name: 'local-installed', displayName: 'Local installed', description: '' },
+    { id: 'local-pending', source: 'local', installed: false, category: '', tags: [], name: 'local-pending', displayName: 'Local pending', description: '' },
+    { id: 'hub-installed', source: 'hub', installed: true, category: '', tags: [], name: 'hub-installed', displayName: 'Hub installed', description: '' },
+  ];
+  const options = { scope: 'mine', category: '', query: '', page: 2, pageSize: 1 };
+  const installed = buildGroupCatalogViewModel(items, { ...options, installation: 'installed' });
+  const uninstalled = buildGroupCatalogViewModel(items, { ...options, installation: 'uninstalled' });
+  assert.deepEqual(installed.items.map(item => item.id), ['hub-installed']);
+  assert.equal(installed.totalItems, 2);
+  assert.deepEqual(uninstalled.items.map(item => item.id), ['local-pending']);
+  assert.equal(uninstalled.totalItems, 1);
+  assert.equal(uninstalled.page, 1);
+});
 
 test('normalizes interface source variants and bilingual display fields', () => {
   assert.equal(normalizeAgentSource('built-in'), 'builtin');
@@ -145,6 +312,7 @@ test('normalizes package file tree and keeps preview policy extension-based', ()
   assert.equal(isPreviewableFile('README.md'), true);
   assert.equal(isPreviewableFile('manifest.JSON'), true);
   assert.equal(isPreviewableFile('tools/runtime.py'), true);
+  assert.equal(isPreviewableFile('docs/guide.pdf'), true);
   assert.equal(isPreviewableFile('runtime.bin'), false);
 
   const tree = normalizeAgentFileTree([
@@ -157,12 +325,25 @@ test('normalizes package file tree and keeps preview policy extension-based', ()
       ],
     },
     { path: 'manifest.json', type: 'file', size: 42 },
+    { path: 'runtime.bin', type: 'file', size: 1024, previewable: false },
   ]);
 
   assert.equal(tree[0].kind, 'directory');
   assert.equal(tree[0].children[0].visible, false);
   assert.equal(tree[0].children[1].previewable, true);
   assert.equal(tree[1].previewable, true);
+  assert.equal(tree[2].relativePath, 'runtime.bin');
+  assert.equal(tree[2].previewable, false);
+});
+
+test('normalizes binary preview URLs without inventing text content', () => {
+  const file = normalizeAgentFileContent({
+    path: 'docs/guide.pdf',
+    content: null,
+    download_url: '/file-api/download?token=pdf',
+  });
+  assert.equal(file.content, null);
+  assert.equal(file.downloadUrl, '/file-api/download?token=pdf');
 });
 
 test('initial file selection skips hidden previewable files', () => {
@@ -342,6 +523,40 @@ test('agent catalog starts empty and reports the current request failure', () =>
   assert.equal(failed.catalogStatus, 'error');
   assert.deepEqual(failed.catalog, []);
   assert.equal(failed.catalogError, 'Hub timeout');
+});
+
+test('catalog compatibility state keeps failures separate from cached catalog status', () => {
+  const cachedAgent = {
+    id: 'cached-agent',
+    runtimePackageName: 'cached-agent',
+    displayName: '缓存专家',
+    description: '',
+    category: 'Efficiency',
+    source: 'hub',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+  };
+  const cached = {
+    ...initialAgentManagementState,
+    catalog: [cachedAgent],
+    catalogStatus: 'success',
+  };
+
+  const loading = agentManagementReducer(cached, { type: 'catalog.compatibility.loading' });
+  const failed = agentManagementReducer(loading, {
+    type: 'catalog.compatibility.error',
+    message: 'Compatibility timeout',
+  });
+  assert.equal(failed.catalogStatus, 'success');
+  assert.equal(failed.catalogCompatibilityStatus, 'error');
+  assert.equal(failed.catalogCompatibilityError, 'Compatibility timeout');
+  assert.deepEqual(failed.catalog, [cachedAgent]);
+
+  const ready = agentManagementReducer(loading, { type: 'catalog.compatibility.loaded' });
+  assert.equal(ready.catalogCompatibilityStatus, 'success');
+  assert.equal(ready.catalogCompatibilityError, null);
 });
 
 test('agent detail does not display summary data when the full detail request fails', () => {
