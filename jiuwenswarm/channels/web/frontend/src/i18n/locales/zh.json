@@ -2973,6 +2973,7 @@
   "chatUi": {
     "copyMessage": "复制消息",
     "copied": "已复制",
+    "copyFailed": "复制失败，请手动复制",
     "stopReading": "停止朗读",
     "readMessage": "朗读消息",
     "forkFromMessage": "从此消息新建会话分支",
@@ -3192,6 +3193,7 @@
     "instructionHint": "成员将会通过配置有WorkSwarm的平台，以被分配的身份参与团队任务。",
     "copy": "复制",
     "copied": "已复制",
+    "copyFailed": "复制失败，请手动复制",
     "joinedNote": "该成员已加入，无需再次发送加入指令",
     "commandPending": "正在等待成员信息同步，加入指令生成后会显示",
     "exitTitle": "退出指令",

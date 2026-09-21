@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { copyToClipboard } from '../../utils/copyToClipboard';
 import {
   Message,
   FileDownloadItem,
@@ -380,7 +381,7 @@ export const MessageItem = memo(function MessageItem({
   const [hasAutoSpoken, setHasAutoSpoken] = useState(false);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const [isForking, setIsForking] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
@@ -468,20 +469,8 @@ export const MessageItem = memo(function MessageItem({
     const raw = role === 'user' ? stripUploadDocumentBlocks(stripSwarmflowAdvisory(content)) : content;
     if (!raw) return;
     const copyContent = a2uiContentToText(raw) || raw;
-    try {
-      await navigator.clipboard.writeText(copyContent);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = copyContent;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 2000);
+    setCopyState((await copyToClipboard(copyContent)) ? 'copied' : 'failed');
+    window.setTimeout(() => setCopyState('idle'), 2000);
   }, [content, role]);
 
   const handleForkFromMessage = useCallback(async () => {
@@ -897,15 +886,25 @@ export const MessageItem = memo(function MessageItem({
               <div className="relative" data-testid="chat-panel-message-copy">
                 <button
                   data-testid="chat-panel-message-copy-btn"
-                  data-tooltip={copied ? t('chatUi.copied') : t('chatUi.copyMessage')}
+                  data-tooltip={
+                    copyState === 'copied'
+                      ? t('chatUi.copied')
+                      : copyState === 'failed'
+                        ? t('chatUi.copyFailed')
+                        : t('chatUi.copyMessage')
+                  }
                   {...tooltipHandlers}
                   onClick={handleCopy}
                   className={clsx(
                     'p-1.5 rounded-md',
-                    copied ? 'text-accent' : 'hover:text-accent hover:bg-secondary'
+                    copyState === 'copied'
+                      ? 'text-accent'
+                      : copyState === 'failed'
+                        ? 'text-danger'
+                        : 'hover:text-accent hover:bg-secondary'
                   )}
                 >
-                  {copied ? (
+                  {copyState === 'copied' ? (
                     <Check className="w-4 h-4" strokeWidth={1.5} />
                   ) : (
                     <Copy className="w-4 h-4" strokeWidth={1.5} />

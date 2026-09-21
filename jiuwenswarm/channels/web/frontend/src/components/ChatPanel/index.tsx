@@ -37,6 +37,7 @@ import {
   type ProjectInfo,
 } from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
+import { copyToClipboard } from '../../utils/copyToClipboard';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
@@ -646,6 +647,7 @@ function getHumanShareStatusClass(command: HumanShareCommand): string {
 function HumanSharePanel({ commands, onClose }: { commands: HumanShareCommand[]; onClose: () => void }) {
   const { t } = useTranslation();
   const [copiedKey, setCopiedKey] = React.useState<string | null>(null);
+  const [copyFailedKey, setCopyFailedKey] = React.useState<string | null>(null);
   const sortedCommands = useMemo(
     () => [...commands].sort((a, b) => a.memberName.localeCompare(b.memberName)),
     [commands],
@@ -672,10 +674,12 @@ function HumanSharePanel({ commands, onClose }: { commands: HumanShareCommand[];
 
   const copyText = useCallback(async (key: string, text: string) => {
     if (!text) return;
-    await navigator.clipboard.writeText(text);
-    setCopiedKey(key);
+    const copied = await copyToClipboard(text);
+    setCopiedKey(copied ? key : null);
+    setCopyFailedKey(copied ? null : key);
     window.setTimeout(() => {
       setCopiedKey((current) => (current === key ? null : current));
+      setCopyFailedKey((current) => (current === key ? null : current));
     }, 1200);
   }, []);
 
@@ -725,6 +729,7 @@ function HumanSharePanel({ commands, onClose }: { commands: HumanShareCommand[];
           {sortedCommands.map((command) => {
             const displayName = command.displayName || command.memberName;
             const copied = copiedKey === `join:${command.memberName}`;
+            const copyFailed = copyFailedKey === `join:${command.memberName}`;
             const shouldShowJoinCommand = command.status !== 'joined' && Boolean(command.joinCommand);
             return (
               <section
@@ -772,7 +777,7 @@ function HumanSharePanel({ commands, onClose }: { commands: HumanShareCommand[];
                       onClick={() => void copyText(`join:${command.memberName}`, command.joinCommand)}
                     >
                       {copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}
-                      <span>{copied ? t('humanShare.copied') : t('humanShare.copy')}</span>
+                      <span>{copied ? t('humanShare.copied') : copyFailed ? t('humanShare.copyFailed') : t('humanShare.copy')}</span>
                     </button>
                   </div>
                 ) : (
@@ -811,7 +816,7 @@ function HumanSharePanel({ commands, onClose }: { commands: HumanShareCommand[];
                   onClick={() => void copyText('exit', exitCommand)}
                 >
                   {copiedKey === 'exit' ? <CheckCircle2 size={15} /> : <Copy size={15} />}
-                  <span>{copiedKey === 'exit' ? t('humanShare.copied') : t('humanShare.copy')}</span>
+                  <span>{copiedKey === 'exit' ? t('humanShare.copied') : copyFailedKey === 'exit' ? t('humanShare.copyFailed') : t('humanShare.copy')}</span>
                 </button>
               </div>
             </section>
