@@ -7040,6 +7040,48 @@ class AgentWebSocketServer:
                             "payload": compression_state_payload,
                         })
 
+                # /compact runs outside the normal model-call stream, so the
+                # Core usage rail has no provider response from which to emit
+                # an authoritative input-token total. Ask the adapter for a
+                # canonical post_compact local-measurement snapshot and route
+                # it through both history and the live push path so the UI
+                # reflects the newly compacted context now.
+                if result in {"compressed", "noop"}:
+                    build_usage_event = getattr(agent, "get_context_usage_event", None)
+                    if callable(build_usage_event):
+                        try:
+                            usage_payload = await build_usage_event(
+                                session_id=session_id,
+                                request_id=request.request_id,
+                            )
+                        except Exception:  # usage telemetry must not fail /compact
+                            logger.warning(
+                                "[AgentWebSocketServer] manual context usage event failed",
+                                exc_info=True,
+                            )
+                        else:
+                            if isinstance(usage_payload, dict):
+                                append_history_record(
+                                    session_id=session_id,
+                                    request_id=request.request_id,
+                                    channel_id=channel_id,
+                                    role="assistant",
+                                    event_type="context.usage",
+                                    content="",
+                                    timestamp=_dt.datetime.now().timestamp(),
+                                    extra={
+                                        key: value
+                                        for key, value in usage_payload.items()
+                                        if key != "event_type"
+                                    },
+                                    mode=params.get("mode", "unknown"),
+                                )
+                                await self.send_push({
+                                    "channel_id": channel_id,
+                                    "session_id": session_id,
+                                    "payload": usage_payload,
+                                })
+
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
