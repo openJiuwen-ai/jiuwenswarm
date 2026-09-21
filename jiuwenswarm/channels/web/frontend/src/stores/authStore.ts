@@ -48,7 +48,8 @@ interface AuthState {
   accountCenterUrl: string;
   /**
    * 换账号走到哪一步：`signout` = 已把用户送去华为账号中心，等他退出后回来点继续。
-   * 华为不认 prompt、也没有登出端点，浏览器里的华为登录态只能由用户自己清掉。
+   * 华为不认 prompt、也没有登出端点，所以浏览器里的华为登录态只能由用户自己清掉——
+   * 桌面端例外，授权页开在应用内的浏览器里，主进程能直接清，见 `switchAccount`。
    */
   switchStep: 'idle' | 'signout';
   /** 换账号后又登进了同一个账号：说明浏览器里的华为登录态还在。 */
@@ -305,11 +306,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   async switchAccount() {
     accountBeforeSwitch = get().userId;
-    // 华为的登录态在它自己的域名下，我们删不掉，也没有登出端点：只能把用户送过去自己退。
+    set({ sameAccountAfterSwitch: false });
+
+    const clearHuaweiSignIn = window.jiuwenDesktop?.clearHuaweiSignIn;
+    let cleared = false;
+    if (clearHuaweiSignIn) {
+      try {
+        await clearHuaweiSignIn();
+        cleared = true;
+      } catch (error) {
+        console.warn('[auth] 清理华为登录态失败，改为引导用户手动退出', error);
+      }
+    }
+    if (cleared) {
+      accountBeforeSwitch = null;
+      await get().logout();
+      await get().startLogin();
+      return;
+    }
+
+    // 其他形态：华为的登录态在它自己的域名下，我们删不掉，也没有登出端点，只能把用户送过去自己退。
     // **先开页面再登出**：await 之后的 window.open 丢了用户手势，会被弹窗拦截器挡下。
     // 拦截了也不算失败，弹窗里同时给了地址让用户自己点
     openExternal(get().accountCenterUrl);
-    set({ switchStep: 'signout', sameAccountAfterSwitch: false });
+    set({ switchStep: 'signout' });
     await get().logout();
   },
 
