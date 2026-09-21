@@ -1023,6 +1023,8 @@ def _broadcast_event(
 ) -> None:
     """Broadcast an event to all request queues waiting on the same session."""
     tm = get_team_manager(channel_id)
+    if event and event.get("event_type") == 'team.error':
+        event.update({"event_type": "chat.error"})
     tm.broadcast_event(session_id, event)
     # Track team-building events so chat.final can be gated correctly.
     if (not tm.has_seen_team_events(session_id)) and event.get("event_type") in _TEAM_BUILDING_EVENT_TYPES:
@@ -2842,7 +2844,7 @@ async def _consume_stream_with_query(
                 channel_id,
                 session_id,
                 {
-                    "event_type": "team.error",
+                    "event_type": "chat.error",
                     "error": "Team stream ended with no output (possible pool/DB inconsistency or internal error)",
                     "session_id": session_id,
                 },
@@ -2875,7 +2877,7 @@ async def _consume_stream_with_query(
             channel_id,
             session_id,
             {
-                "event_type": "team.error",
+                "event_type": "chat.error",
                 "error": str(exc),
                 "session_id": session_id,
             },
