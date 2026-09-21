@@ -539,6 +539,7 @@ trajectory_ui:
 
 experimental:
   task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
+  task_asr_enabled: false            # 默认关闭普通任务对话中的语音转写入口
 
 # ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置

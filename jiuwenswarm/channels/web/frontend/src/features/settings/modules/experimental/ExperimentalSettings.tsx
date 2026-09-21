@@ -8,6 +8,8 @@ import { setA2UIFeatureEnabled } from '../../../../features/a2ui/featureConfig';
 import { normalizeRSIEnabled, setRSIFeatureEnabled } from '../../../../features/rsi/featureConfig';
 import { setTrajectoryUiEnabled } from '../../../../features/trajectory/featureConfig';
 import { setTaskFullDuplexEnabled } from '../../../../features/taskFullDuplex/featureFlag';
+import { setTaskAsrEnabled } from '../../../../features/taskAsr/featureFlag';
+import { VideoDuplexModelSettings } from './VideoDuplexModelSettings';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
   ExternalCliAgentsSection,
@@ -589,15 +591,45 @@ export function TaskFullDuplexSetting({ disabled }: SettingsCustomItemProps) {
   }
 
   return (
+    <>
+      <SettingRow
+        title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+        description={t('settingsPanel.fields.task_full_duplex_enabled.description')}
+        subSettings={<VideoDuplexModelSettings />}
+      >
+        <Switch
+          aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+          checked={enabled}
+          disabled={disabled || !isConnected || source.savingKeys.has('task_full_duplex_enabled')}
+          onChange={(next) => void updateTaskFullDuplex(next).catch(() => undefined)}
+        />
+      </SettingRow>
+    </>
+  );
+}
+
+export function TaskAsrSetting({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const source = useSettingsSource();
+  const enabled = parseConfigBoolean(source.values.task_asr_enabled ?? 'false');
+
+  async function updateTaskAsr(next: boolean): Promise<void> {
+    await source.save({ task_asr_enabled: next }, 'task-asr-enabled');
+    setTaskAsrEnabled(next);
+  }
+
+  return (
     <SettingRow
-      title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
-      description={t('settingsPanel.fields.task_full_duplex_enabled.description')}
+      title={t('settingsPanel.fields.task_asr_enabled.title')}
+      description={t('settingsPanel.fields.task_asr_enabled.description')}
     >
       <Switch
-        aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+        aria-label={t('settingsPanel.fields.task_asr_enabled.title')}
         checked={enabled}
-        disabled={disabled || !isConnected || source.savingKeys.has('task_full_duplex_enabled')}
-        onChange={(next) => void updateTaskFullDuplex(next).catch(() => undefined)}
+        disabled={disabled || !isConnected || source.savingKeys.has('task_asr_enabled')}
+        onChange={(next) => void updateTaskAsr(next).catch(() => undefined)}
+        data-testid="settings-task-asr-switch"
       />
     </SettingRow>
   );
