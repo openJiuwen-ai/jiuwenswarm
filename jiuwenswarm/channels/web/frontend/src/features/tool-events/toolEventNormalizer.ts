@@ -1,3 +1,5 @@
+import { readOutputOrder } from '../sessionOutput';
+import type { OutputOrder } from '../../types/message';
 import { parseSkillTreePath, type SkillTreePath } from '../../types/skillTree';
 import { parseBeamSearchProgress, type BeamSearchProgress } from '../../types/beamSearch';
 import type { AutoReviewerMetadata } from '../../types';
@@ -218,6 +220,7 @@ export function plannedGraphToMermaid(rawOutput: unknown): string | undefined {
 }
 
 export interface NormalizedToolCall {
+  outputOrder?: OutputOrder;
   id: string;
   name: string;
   arguments: Record<string, unknown>;
@@ -276,6 +279,7 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
   const memberName = resolveMemberName(toolCallPayload, payload);
 
   return {
+    outputOrder: readOutputOrder(payload),
     id,
     name,
     arguments: parseArguments(toolCallPayload.arguments),

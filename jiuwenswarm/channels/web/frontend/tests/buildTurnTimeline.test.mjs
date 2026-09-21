@@ -14,7 +14,7 @@ const U = 1_700_000_000_000; // 用户消息时刻
 const S = 1_700_000_005_000; // reasoning 首帧
 const A = 1_700_000_035_000; // reasoning 末帧（updatedAt）
 
-test('supplements stay below the original user message without splitting assistant output', () => {
+test('supplements stay after already visible assistant output', () => {
   const messages = [
     { id: 'user', role: 'user', content: 'write a story', timestamp: new Date(U).toISOString() },
     {
@@ -44,7 +44,7 @@ test('supplements stay below the original user message without splitting assista
     const items = buildRenderItems(buildTimelineItems(messages, [], []), false, running);
     assert.deepEqual(
       items.filter((item) => item.type === 'message').map((item) => item.message.content),
-      ['write a story', 'space theme', 'happy ending', 'before-middle-after'],
+      ['write a story', 'before-middle-after', 'space theme', 'happy ending'],
     );
     assert.equal(
       items.filter((item) => item.type === 'message' && item.message.role === 'assistant').length,
@@ -52,7 +52,7 @@ test('supplements stay below the original user message without splitting assista
       'assistant 回复必须保持为一个连续气泡',
     );
     const summaries = items.filter((item) => item.type === 'turnSummary');
-    assert.equal(summaries.length, 1);
+    assert.equal(summaries.length, running ? 2 : 1);
     assert.equal(summaries[0].startMs, U);
     assert.equal(summaries[0].endMs, A);
     assert.deepEqual(
@@ -122,7 +122,7 @@ test('a supplement before the first assistant output stays above the timer and a
   }
 });
 
-test('a supplement without a stream id keeps revised reasoning above the intact assistant answer', () => {
+test('a supplement without a stream id preserves the earlier answer before revised reasoning', () => {
   const messages = [
     { id: 'user', role: 'user', content: 'write 500 words', timestamp: new Date(U).toISOString() },
     {
@@ -163,7 +163,7 @@ test('a supplement without a stream id keeps revised reasoning above the intact 
   const assistantIndex = items.findIndex((item) => item.type === 'message' && item.message.id === 'answer');
 
   assert.ok(supplementIndex < reasoningIndex);
-  assert.ok(reasoningIndex < assistantIndex, '补充后的思考必须位于完整最终回答之前');
+  assert.ok(assistantIndex < supplementIndex, '已展示的正文必须保留在补充消息之前');
   assert.equal(
     items.filter((item) => item.type === 'message' && item.message.id === 'answer').length,
     1,
@@ -201,10 +201,10 @@ test('late acceptance stays in its original turn and an empty continuation retai
   const items = buildRenderItems(buildTimelineItems(messages, [], []), false, true);
   assert.deepEqual(
     items.filter((item) => item.type === 'message').map((item) => item.message.content),
-    ['first', 'extra', 'answer', 'second', 'second answer'],
+    ['first', 'answer', 'second', 'second answer', 'extra'],
   );
   const summaries = items.filter((item) => item.type === 'turnSummary');
-  assert.equal(summaries.length, 2);
+  assert.equal(summaries.length, 3);
   assert.equal(summaries[0].endMs, A);
   assert.equal(summaries[1].startMs, A + 1000);
   assert.deepEqual(items.find((item) => item.type === 'message' && item.message.id === 'answer').message.fileItems, [

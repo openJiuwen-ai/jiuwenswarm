@@ -9,6 +9,11 @@ import type { CrossSessionMessageMetadata } from '../utils/crossSessionMessage';
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
+export interface OutputOrder {
+  requestId: string;
+  sequence: number;
+}
+
 export interface MediaItem {
   type: 'image' | 'audio' | 'video' | 'document';
   mimeType: string;
@@ -91,9 +96,12 @@ export interface Message {
   /** A displayed supplement belongs to the existing execution, not a new user turn. */
   supplementalInput?: {
     executionId: string;
+    requestId?: string;
     streamMessageId?: string;
     streamOffset: number;
   };
+  outputPhaseId?: string;
+  outputOrder?: OutputOrder;
   /** Full answer delivered by a delegated agent, distinct from spoken replies. */
   presentation?: 'tool_result';
   /** User-facing conversation output that must remain outside collapsed work. */
@@ -174,6 +182,7 @@ export interface MessageForkPoint {
 }
 
 export interface ToolCall {
+  outputOrder?: OutputOrder;
   id: string;
   name: string;
   arguments: Record<string, unknown>;
@@ -208,6 +217,7 @@ export interface ToolResult {
 export type ToolExecutionStatus = 'pending' | 'timeout' | 'completed' | 'error';
 
 export interface ToolExecution {
+  outputOrder?: OutputOrder;
   toolCallId: string;
   toolCall: ToolCall;
   result?: ToolResult;

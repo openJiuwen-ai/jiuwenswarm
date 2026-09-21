@@ -754,3 +754,33 @@ test('history recovery ignores unknown states and failed close calls', () => {
   assert.equal(missingSuccessClose[0].subagent.status, 'idle');
   assert.equal(missingSuccessClose[0].subagent.closed_reason, null);
 });
+
+
+for (const [format, supplementalFields] of [
+  ['legacy', { supplemental_input: { request_id: 'input-1', output_phase_id: 'p1', stream_offset: 0 } }],
+  ['compact', { request_id: 'input-1', is_supplemental_input: true }],
+]) {
+  test(`${format} phase history preserves visible bubbles and reasoning while excluding old tails`, () => {
+    const order = (sequence) => ({ request_id: 'original', sequence });
+    const records = [
+      { id: 'u1', role: 'user', content: 'original question', timestamp: 1800000000000 },
+      { id: 'a1', role: 'assistant', event_type: 'chat.final', content: 'visible prefix', timestamp: 1800000001000,
+        output_phase_id: 'p1', output_order: order(2), reasoning_content: 'same thought', reasoning_output_order: order(1) },
+      { id: 'u2', role: 'user', content: 'new instruction', timestamp: 1800000001000,
+        output_order: order(3), ...supplementalFields },
+      { id: 'old', role: 'assistant', event_type: 'chat.final', content: 'HIDDEN TAIL', timestamp: 1800000001001,
+        output_order: order(4), output_suppressed: true, reasoning_content: 'HIDDEN THOUGHT' },
+      { id: 'a2', role: 'assistant', event_type: 'chat.final', content: 'new result', timestamp: 1800000002000,
+        output_phase_id: 'p2', output_order: order(7), reasoning_content: 'same thought', reasoning_output_order: order(6) },
+    ];
+    const restored = parseHistoryJsonFileToTimelinePreview(records, sessionId);
+    assert.deepEqual(restored.messages.map((m) => m.content), [
+      'original question', 'visible prefix', 'new instruction', 'new result',
+    ]);
+    assert.equal(restored.messages[2].supplementalInput.requestId, 'input-1');
+    assert.deepEqual(restored.messages.slice(1).map((m) => m.outputOrder.sequence), [2, 3, 7]);
+    assert.deepEqual(restored.reasoningSegments.map((s) => [s.text, s.outputOrder.sequence]), [
+      ['same thought', 1], ['same thought', 6],
+    ]);
+  });
+}

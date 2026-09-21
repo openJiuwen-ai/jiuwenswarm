@@ -9,6 +9,7 @@ import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import {
   Message,
+  OutputOrder,
   ToolCall,
   ToolResult,
   ToolExecution,
@@ -103,6 +104,7 @@ export interface HistoryPagerMeta {
  * 原全局字段全部迁移到这里，按 session 隔离。
  */
 export interface ReasoningSegment {
+  outputOrder?: OutputOrder;
   id: string;
   text: string;
   startedAt: number;
@@ -135,6 +137,7 @@ export interface ChatRuntime {
   isNewSession: boolean;
   currentStreamContent: string;
   currentStreamId: string | null;
+  outputPhaseId?: string;
   /** 本轮是否已按工具边界分段（chat.final 去重）。 */
   assistantStreamSplit: boolean;
   reasoningSegments: ReasoningSegment[];
@@ -259,13 +262,14 @@ interface ChatState {
   appendReasoning: (
     sessionId: string,
     content: string,
-    options?: { atMs?: number; agentTemplateName?: string },
+    options?: { atMs?: number; agentTemplateName?: string; outputOrder?: OutputOrder },
   ) => void;
   closeReasoning: (sessionId: string, options?: { atMs?: number }) => void;
   restoreReasoningSegments: (
     sessionId: string,
     items: {
       id?: string;
+      outputOrder?: OutputOrder;
       at: string;
       text: string;
       agentTemplateName?: string;
@@ -332,8 +336,9 @@ interface ChatState {
     status: 'accepted' | 'failed' | 'unknown',
     error?: string,
     errorCode?: string,
-    delivery?: 'chat',
+    delivery?: 'chat' | 'stream',
   ) => void;
+  setOutputPhase: (sessionId: string, phaseId: string) => void;
   clearTaskQueue: (sessionId: string) => void;
   removeFromTaskQueue: (sessionId: string, id: string) => void;
   reorderTaskQueue: (sessionId: string, fromIndex: number, toIndex: number) => void;
@@ -377,6 +382,14 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
   getRuntime: (sessionId) => {
     if (!sessionId) return undefined;
     return get().runtimes[sessionId];
+  },
+
+  setOutputPhase: (sessionId, phaseId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...runtime, outputPhaseId: phaseId } } };
+    });
   },
 
   setActiveSessionId: (sessionId) => {
@@ -554,6 +567,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               })
             : segments;
         next = settledSegments.concat({
+          outputOrder: options?.outputOrder,
           id: createReasoningSegmentId(),
           text: content,
           startedAt: atMs,
@@ -620,8 +634,9 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const seen = new Set<string>();
       items.forEach((item, index) => {
         const text = item.text?.trim();
-        if (!text || seen.has(text)) return;
-        seen.add(text);
+        const identity = item.outputOrder ? `${item.outputOrder.requestId}:${item.outputOrder.sequence}` : text;
+        if (!text || seen.has(identity)) return;
+        seen.add(identity);
         const parsed = parseTimestampToMs(item.at);
         // 历史里思考与同一步 final/tool_call 共用落盘时间；减 1ms 仅补齐缺失的独立时间戳，
         // 使时间线能分出「先思考、后动作」，不做跨步骤重排。
@@ -640,6 +655,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         segments.push({
           id: item.id ?? `hist-rsn-${sessionId}-${index}-${createReasoningSegmentId()}`,
           text,
+          outputOrder: item.outputOrder,
           startedAt,
           closed: true,
           ...(item.agentTemplateName ? { agentTemplateName: item.agentTemplateName } : {}),
@@ -1163,6 +1179,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const timeoutAt = computeTimeoutAt(startedAt);
       const resultStatus = orphanResult ? resolveExecutionStatus(orphanResult) : 'pending';
       nextExecutions.set(toolCall.id, {
+        outputOrder: toolCall.outputOrder,
         toolCallId: toolCall.id,
         toolCall,
         result: orphanResult,
@@ -1714,7 +1731,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           id: `user-steer-${taskId}`, role: 'user', content: receipt.content, timestamp: receipt.timestamp,
         };
       }
-      const acceptedMessages = status === 'accepted' && !chatMessage
+      const acceptedMessages = status === 'accepted' && !chatMessage && delivery !== 'stream'
         ? assignMessageRenderKeys(runtime, [{
             id: `user-steer-${taskId}`,
             role: 'user',

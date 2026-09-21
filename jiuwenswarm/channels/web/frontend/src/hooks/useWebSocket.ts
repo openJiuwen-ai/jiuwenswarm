@@ -4,7 +4,8 @@
  * 管理 WebSocket 连接和消息处理
  */
 
-import { handleTaskInputReceipt, sendQueuedTaskInput } from '../features/sessionInput';
+import { readOutputOrder } from '../features/sessionOutput';
+import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -2652,7 +2653,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (runtime?.mode !== 'team') return;
         useSessionStore.getState().setTeamLeaderIdentity(sessionId, identity);
       }),
+      ...['chat.input_received', 'chat.output_phase'].map((event) => webClient.on(event, ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+        flushPendingStreamDelta(sessionId);
+        handleSessionOutputBoundary(event, { ...payload, session_id: sessionId });
+      })),
       webClient.on('chat.delta', ({ payload }) => {
+        if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.delta', payload)) return;
           const sessionId = resolveEventSessionId(payload);
           if (!sessionId) return;
@@ -2799,7 +2807,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             id: assistantMsgId,
             role: 'assistant',
             content: '',
-            timestamp: new Date().toISOString(),
+            timestamp: normalizeEventTimestampIso(payload.timestamp),
+            ...(typeof payload.output_phase_id === 'string' ? { outputPhaseId: payload.output_phase_id } : {}),
+            outputOrder: readOutputOrder(payload),
             isStreaming: true,
             ...(agentTemplateName ? { agentTemplateName } : {}),
             ...(isProactiveRecommendationPayload(payload) ? { isProactiveRecommendation: true } : {}),
@@ -2826,6 +2836,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
       }),
       webClient.on('chat.reasoning', ({ payload }) => {
+        if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.reasoning', payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
@@ -2848,12 +2859,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           typeof payload.content === 'string' ? payload.content : '';
         if (reasoningContent) {
           useChatStore.getState().appendReasoning(sessionId, reasoningContent, {
+            outputOrder: readOutputOrder(payload),
             atMs: eventTimestampMs(payload),
             ...(agentTemplateName ? { agentTemplateName } : {}),
           });
         }
       }),
       webClient.on('chat.final', ({ payload }) => {
+        if (shouldIgnoreSessionOutput(payload)) return;
         // Supplemental requests never own a separate answer or task lifecycle.
         if (handleTaskInputReceipt('chat.final', payload)) return;
         if (shouldDropDuplicatedEvent('chat.final', payload)) return;
@@ -3217,6 +3230,40 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           finalAction.type === 'patch_segment' ? finalAction.segmentId : undefined;
         // 收尾时刻单独记：勿覆盖 message.timestamp（排序/goal 卡），但任务用时必须吃到 final。
         const completedAtIso = normalizeEventTimestampIso(payload.timestamp);
+
+        const finalOutputOrder = readOutputOrder(payload);
+        const hasSupplementalBoundary = finalOutputOrder && messages.some(
+          (message) => message.supplementalInput &&
+            message.outputOrder?.requestId === finalOutputOrder.requestId
+        );
+        if (typeof payload.output_phase_id === 'string' && hasSupplementalBoundary) {
+          const finalId = streamId || prefixedMessageId('msg-final-');
+          if (streamId) {
+            useChatStore.getState().updateMessage(sessionId, streamId, {
+              ...(content ? { content } : {}),
+              isStreaming: false,
+              completedAt: completedAtIso,
+              ...agentIdentityPatch,
+            });
+            useChatStore.getState().stopStreaming(sessionId);
+          } else if (content) {
+            useChatStore.getState().addMessage(sessionId, {
+              id: finalId,
+              role: 'assistant',
+              content,
+              timestamp: completedAtIso,
+              completedAt: completedAtIso,
+              outputPhaseId: payload.output_phase_id,
+              outputOrder: finalOutputOrder,
+              ...agentIdentityPatch,
+            });
+          }
+          if (content && !content.includes('MEDIA:')) {
+            handleTtsPlayback(sessionId, finalId, content);
+          }
+          if (!content) flushPendingGoalObjectiveBubble(sessionId);
+          return;
+        }
 
         if (assistantStreamSplit && content) {
           const cronMetaEarly = payload.cron as Record<string, unknown> | undefined;
@@ -3612,6 +3659,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
       }),
       webClient.on('chat.tool_call', ({ payload }) => {
+        if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.tool_call', payload)) return;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;

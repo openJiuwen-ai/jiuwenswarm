@@ -1,5 +1,6 @@
 import { useChatStore } from '../stores/chatStore';
 import { useSessionStore } from '../stores/sessionStore';
+import { readOutputOrder } from './sessionOutput';
 import type { WebError, WebRequestOptions } from '../types/websocket';
 
 type SendRequest = (method: string, params: Record<string, unknown>, options: WebRequestOptions) => Promise<unknown>;
@@ -90,10 +91,13 @@ export function handleTaskInputReceipt(event: string, payload: Record<string, un
   // Runtime admitted an unbound input as ordinary chat while idle. Its output owns a new turn.
   if (delivery === 'chat') return event === 'runtime.accepted';
   if (event === 'runtime.accepted') {
-    store.settleTaskInput(
-      sessionId, taskId, requestId, 'accepted', undefined, undefined,
-      payload.input_delivery === 'chat' ? 'chat' : undefined,
-    );
+    let acceptedDelivery: 'chat' | 'stream' | undefined;
+    if (payload.input_delivery === 'chat') {
+      acceptedDelivery = 'chat';
+    } else if (payload.input_boundary === 'stream') {
+      acceptedDelivery = 'stream';
+    }
+    store.settleTaskInput(sessionId, taskId, requestId, 'accepted', undefined, undefined, acceptedDelivery);
     const current = store.getRuntime(sessionId);
     const receipt = current?.taskInputReceipts[taskId];
     if (
@@ -111,4 +115,52 @@ export function handleTaskInputReceipt(event: string, payload: Record<string, un
     store.settleTaskInput(sessionId, taskId, requestId, deliveryFailedStatus(error, true), error.message, error.code);
   }
   return true;
+}
+
+/** Ordered SDK markers are independent of the supplemental request's ACK. */
+export function handleSessionOutputBoundary(event: string, payload: Record<string, unknown>): void {
+  const sessionId = payload.session_id;
+  if (typeof sessionId !== 'string') return;
+  const store = useChatStore.getState();
+  store.ensureRuntime(sessionId);
+  if (event === 'chat.output_phase') {
+    if (typeof payload.output_phase_id !== 'string') return;
+    store.setOutputPhase(sessionId, payload.output_phase_id);
+    return;
+  }
+  const requestId = payload.input_request_id;
+  if (typeof requestId !== 'string' || typeof payload.content !== 'string') return;
+  const runtime = store.getRuntime(sessionId)!;
+  if (runtime.messages.some((message) => message.supplementalInput?.requestId === requestId)) return;
+  const request = runtime.taskInputRequests[requestId];
+  if (request) store.settleTaskInput(sessionId, request.taskId, requestId, 'accepted', undefined, undefined, 'stream');
+  const boundaryTimestamp = new Date(Number(payload.timestamp)).toISOString();
+  if (runtime.currentStreamId) {
+    store.updateMessage(sessionId, runtime.currentStreamId, { completedAt: boundaryTimestamp });
+  }
+  store.stopStreaming(sessionId);
+  store.closeReasoning(sessionId, { atMs: Number(payload.timestamp) });
+  store.addMessage(sessionId, {
+    id: `user-input-${requestId}`,
+    role: 'user',
+    content: payload.content,
+    outputOrder: readOutputOrder(payload),
+    timestamp: boundaryTimestamp,
+    supplementalInput: {
+      executionId: typeof payload.execution_id === 'string' ? payload.execution_id : '',
+      requestId,
+      streamOffset: 0,
+    },
+  });
+  store.setThinking(sessionId, true);
+}
+
+/** An old phase may finish after the user boundary; it never owns the new bubble. */
+export function shouldIgnoreSessionOutput(payload: Record<string, unknown>): boolean {
+  if (payload.output_suppressed === true) return true;
+  const phase = payload.output_phase_id;
+  const sessionId = payload.session_id;
+  if (typeof phase !== 'string' || typeof sessionId !== 'string') return false;
+  const current = useChatStore.getState().getRuntime(sessionId)?.outputPhaseId;
+  return Boolean(current && current !== phase);
 }
