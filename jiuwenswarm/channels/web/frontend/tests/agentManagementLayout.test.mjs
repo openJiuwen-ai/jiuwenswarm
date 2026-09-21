@@ -269,6 +269,8 @@ test('group card actions keep uninstall in the detail page and install created g
   assert.match(groupDetailSource, /data-variant="uninstall"/);
   assert.match(panelSource, /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/);
   assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
+  assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id\)/);
 });
 
 test('primary management tabs retain tab semantics and chat picker enforces mode locks', () => {

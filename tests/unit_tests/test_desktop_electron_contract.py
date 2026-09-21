@@ -328,6 +328,32 @@ def test_frontend_used_api_available_on_both_desktops() -> None:
         assert usage in shared, f"前端直接调用 pywebview?.api?.{usage}, 但两侧桌面未同时提供"
 
 
+def test_windows_close_and_tray_behavior_matches() -> None:
+    python_source = _read(DESKTOP_APP_PY)
+    electron_source = _read(MAIN_CJS)
+
+    for source in (python_source, electron_source):
+        assert "desktop-window.json" in source
+        assert "CLOSE_ACTION_ASK" in source
+        assert "CLOSE_ACTION_HIDE" in source
+        assert "CLOSE_ACTION_QUIT" in source
+        assert "显示并最大化" in source
+        assert "记住我的选择" in source
+        assert "最小化到托盘" in source
+        assert "退出应用" in source
+        assert "确认" in source
+
+    assert "self.window.events.closing += self._on_closing" in python_source
+    assert "WinForms.NotifyIcon()" in python_source
+    assert "remember.Checked = False" in python_source
+    assert "mainWindow.on('close'" in electron_source
+    assert "new Tray(iconPath)" in electron_source
+    assert 'type="radio" name="action"' in electron_source
+    assert 'name="remember" value="1" checked' not in electron_source
+    assert 'name="remember" value="1">' in electron_source
+    assert "event.preventDefault();" in electron_source
+
+
 # ─── 启动/关闭常量对齐 ──────────────────────────────────────────────────────
 
 # Python instance_manager 键名 → Electron main.cjs 键名(值必须一致)。
@@ -693,7 +719,8 @@ def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
     source = _read(MAIN_CJS)
 
     close_handler = _balanced_braces_block(source, "mainWindow.on('close'")
-    assert "process.platform !== 'darwin' || shuttingDown" in close_handler
+    assert "process.platform === 'darwin'" in close_handler
+    assert "if (shuttingDown) return" in close_handler
     assert "event.preventDefault()" in close_handler
     assert "mainWindow.hide()" in close_handler
 
@@ -712,5 +739,4 @@ def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
     explicit_close_handler = _balanced_braces_block(
         source, "registerHandler('desktop:close-window'"
     )
-    assert "process.platform === 'darwin'" in explicit_close_handler
     assert "requestShutdown()" in explicit_close_handler
