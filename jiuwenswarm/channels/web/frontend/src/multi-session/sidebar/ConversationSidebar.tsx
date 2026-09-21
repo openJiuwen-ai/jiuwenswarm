@@ -786,7 +786,7 @@ function ProjectDeleteDialog({
       dialogTitle={t('multiSession.project.deleteProject')}
       confirmLabel={t('common.delete')}
       descriptionKey="multiSession.project.deleteProjectDescription"
-      descriptionValues={{ projectName: project.name, title: project.name }}
+      descriptionValues={{ projectName: project.name }}
       deleting={deleting}
       error={error ?? null}
       notice={notice ?? null}
