@@ -184,6 +184,13 @@ def _install_demo_pack(manager: SkillManager, *, graph: bool = True) -> None:
     )
 
 
+def _install_container_pack(manager: SkillManager) -> None:
+    """写入容器型技能包（zip 解压形态：根下无 SKILL.md，成员在 skills/ 下）。"""
+    container = manager._skills_dir / "container-pack"
+    _write_skill(container / "skills" / "first-skill", "first-skill")
+    _write_skill(container / "skills" / "second-skill", "second-skill")
+
+
 def test_skillpack_service_reads_current_enabled_state(manager: SkillManager) -> None:
     _install_demo_pack(manager)
     pack_dir = manager._skills_dir / "demo-pack"
@@ -492,3 +499,65 @@ async def test_skillpack_import_rebuild_and_evolution_are_unsupported(
     with pytest.raises(SkillRpcError) as evolved:
         await manager.handle_skills_evolution_status({"name": "demo-pack"})
     assert evolved.value.code == ERROR_SKILL_OPERATION_UNSUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_container_pack_disabled_member_blocks_pack(manager: SkillManager) -> None:
+    """容器型技能包：禁用任一成员 → 整包禁用，与标准包语义一致。"""
+    _install_container_pack(manager)
+
+    result = await manager.handle_skills_list({})
+    pack = next(
+        item for item in result["skills"] if item["name"] == "container-pack"
+    )
+    assert pack["skill_type"] == "skillpack"
+    assert pack["enabled"] is True
+    assert pack["blocked_members"] == []
+    assert "container-pack" not in manager.list_execution_disabled_skills()
+
+    await manager.handle_skills_toggle({"name": "first-skill", "enabled": False})
+
+    detail = await manager.handle_skills_get({"name": "container-pack"})
+    assert detail["requested_enabled"] is True
+    assert detail["enabled"] is False
+    assert detail["blocked_members"] == [
+        {"name": "first-skill", "reason": "disabled"}
+    ]
+    assert "container-pack" in manager.list_execution_disabled_skills()
+
+    await manager.handle_skills_toggle({"name": "first-skill", "enabled": True})
+    restored = await manager.handle_skills_get({"name": "container-pack"})
+    assert restored["enabled"] is True
+    assert restored["blocked_members"] == []
+
+
+@pytest.mark.asyncio
+async def test_toggle_dry_run_reports_parent_skillpacks_without_side_effects(
+    manager: SkillManager,
+) -> None:
+    """skills.toggle dry_run：实时报告关联技能包，且不落任何状态。"""
+    _install_demo_pack(manager)
+
+    # 成员技能：探测返回所属技能包
+    probe = await manager.handle_skills_toggle(
+        {"name": "first-skill", "enabled": False, "dry_run": True}
+    )
+    assert probe["success"] is True
+    assert probe["parent_skillpacks"] == ["demo-pack"]
+
+    # 无关联的独立技能：探测返回空列表
+    _write_skill(manager._skills_dir / "solo-skill", "solo-skill")
+    manager._state["local_skills"] = [{"name": "solo-skill"}]
+    manager._save_state()
+    solo = await manager.handle_skills_toggle(
+        {"name": "solo-skill", "enabled": False, "dry_run": True}
+    )
+    assert solo["success"] is True
+    assert solo["parent_skillpacks"] == []
+
+    # 探测不改变状态：成员与技能包均保持启用
+    detail = await manager.handle_skills_get({"name": "demo-pack"})
+    assert detail["enabled"] is True
+    assert detail["blocked_members"] == []
+    member = await manager.handle_skills_get({"name": "first-skill"})
+    assert member["enabled"] is True
