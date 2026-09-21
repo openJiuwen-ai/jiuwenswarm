@@ -68,7 +68,9 @@ async def test_reject_protocol_or_process_disagreement(mode):
     [
         (b"\xff\n", UnicodeDecodeError),
         (b"{\n", json.JSONDecodeError),
-        (b"[" * 2000 + b"\n", RecursionError),
+        # 20000 层在全部受支持版本（3.11–3.13）都会触发 RecursionError；
+        # 2000 层在 3.13 的 C 扫描器下只会得到 JSONDecodeError。
+        pytest.param(b"[" * 20000 + b"\n", RecursionError, id="deep-nesting"),
     ],
 )
 def test_invalid_json_retains_protocol_error_and_cause(line, cause):
