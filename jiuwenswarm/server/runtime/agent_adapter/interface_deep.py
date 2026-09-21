@@ -6978,6 +6978,9 @@ class JiuWenSwarmDeepAdapter:
                     rebound = rebind_context_model(
                         context_config,
                         session_id=session_id,
+                        model=model,
+                        model_config=model.model_config,
+                        model_client_config=model.model_client_config,
                     )
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] synchronized context model=%s provider=%s "
