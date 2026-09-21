@@ -744,6 +744,8 @@ react:
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
     dream_enabled: true     # 是否启用静默 Auto-dream
+    consult_top_k: 8        # ttse_consult 每轨（FACT/TIP）返回条数，改配置即可调
+    consult_retrieve_mode: hybrid  # hybrid | embed | bm25；池子不够仍 dump；embed/hybrid 向量不通时 BM25 兜底
     # 语义检索 / dedup；变量名与 embed.* 一致。三段解析非空时混合召回，否则 BM25 兜底
     embedding:
       api_key: ${EMBED_API_KEY}
