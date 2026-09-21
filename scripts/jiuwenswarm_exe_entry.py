@@ -19,6 +19,10 @@ _ENTRY_ARGV = tuple(sys.argv)
 # 在任何业务 import 之前，将 cwd 切换到用户数据目录 ~/.jiuwenswarm，
 # 让 openjiuwen 的相对日志路径落到 <data>/logs/，与项目其它运行时数据同根。
 if getattr(sys, "frozen", False):
+    # Skills may need to run bundled Python scripts on machines without an
+    # external Python installation.  The frozen executable already supports
+    # `jiuwenswarm.exe script.py ...` via the runpy branch below.
+    os.environ["JIUWENSWARM_EXECUTABLE"] = str(Path(sys.executable).resolve())
     _ORIGINAL_CWD = os.getcwd()
     _data_dir_env = os.environ.get("JIUWENSWARM_DATA_DIR")
     if _data_dir_env:
