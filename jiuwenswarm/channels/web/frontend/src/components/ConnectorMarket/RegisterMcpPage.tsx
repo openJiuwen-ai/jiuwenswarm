@@ -87,7 +87,9 @@ function parseJsonPasteConfig(raw: string): ParsedMcpConfig | null {
   }
   if (typeof cfg.url === 'string') result.url = cfg.url;
   if (typeof cfg.headers === 'object' && cfg.headers !== null) {
-    result.headers = Object.fromEntries(Object.entries(cfg.headers as Record<string, unknown>).map(([k, v]) => [k, String(v)]));
+    result.headers = Object.fromEntries(
+      Object.entries(cfg.headers as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
+    );
   }
   return result;
 }
@@ -250,18 +252,20 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
   }
 
   return (
-      <FormPageLayout
-        onBack={onBack}
-        title={t(editName ? 'connectorMarket.registerMcp.editTitle' : 'connectorMarket.registerMcp.title')}
-        testId="connector-market-register-mcp-page"
-        contentClassName="mx-auto w-full max-w-5xl"
-        onConfirm={handleSubmit}
-        cancelLabel={t('connectorMarket.common.cancel')}
-        confirmLabel={creating
+    <FormPageLayout
+      onBack={onBack}
+      title={t(editName ? 'connectorMarket.registerMcp.editTitle' : 'connectorMarket.registerMcp.title')}
+      testId="connector-market-register-mcp-page"
+      contentClassName="page-shell max-w-5xl"
+      onConfirm={handleSubmit}
+      cancelLabel={t('connectorMarket.common.cancel')}
+      confirmLabel={
+        creating
           ? t(editName ? 'connectorMarket.registerMcp.saving' : 'connectorMarket.registerMcp.creating')
-          : t('connectorMarket.common.confirm')}
-        confirmLoading={creating}
-      >
+          : t('connectorMarket.common.confirm')
+      }
+      confirmLoading={creating}
+    >
       <Field
         label={t('connectorMarket.registerMcp.name')}
         required
@@ -284,10 +288,12 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
 
       <Field label={t('connectorMarket.registerMcp.type')}>
         <div className="flex gap-2">
-          {([
-            { key: 'stdio', label: t('connectorMarket.registerMcp.typeStdio') },
-            { key: 'streamable-http', label: t('connectorMarket.registerMcp.typeHttp') },
-          ] as const).map((opt) => (
+          {(
+            [
+              { key: 'stdio', label: t('connectorMarket.registerMcp.typeStdio') },
+              { key: 'streamable-http', label: t('connectorMarket.registerMcp.typeHttp') },
+            ] as const
+          ).map((opt) => (
             <button
               key={opt.key}
               type="button"
@@ -323,8 +329,20 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
               data-testid="connector-market-register-mcp-command"
             />
           </Field>
-          <KeyValueField label={t('connectorMarket.registerMcp.args')} single rows={args} onChange={setArgs} placeholderKey={t('connectorMarket.registerMcp.pleaseInput')} />
-          <KeyValueField label={t('connectorMarket.registerMcp.env')} rows={env} onChange={setEnv} placeholderKey={t('connectorMarket.registerMcp.key')} placeholderValue={t('connectorMarket.registerMcp.value')} />
+          <KeyValueField
+            label={t('connectorMarket.registerMcp.args')}
+            single
+            rows={args}
+            onChange={setArgs}
+            placeholderKey={t('connectorMarket.registerMcp.pleaseInput')}
+          />
+          <KeyValueField
+            label={t('connectorMarket.registerMcp.env')}
+            rows={env}
+            onChange={setEnv}
+            placeholderKey={t('connectorMarket.registerMcp.key')}
+            placeholderValue={t('connectorMarket.registerMcp.value')}
+          />
           <KeyValueField
             label={t('connectorMarket.registerMcp.envPassthrough')}
             single
@@ -335,11 +353,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
         </>
       ) : (
         <>
-          <Field
-            label="URL"
-            required
-            error={fieldErrors.url ? t('connectorMarket.create.fieldRequired') : undefined}
-          >
+          <Field label="URL" required error={fieldErrors.url ? t('connectorMarket.create.fieldRequired') : undefined}>
             <input
               value={url}
               onChange={(event) => {
@@ -362,7 +376,13 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
               data-testid="connector-market-register-mcp-bearer-key"
             />
           </Field>
-          <KeyValueField label={t('connectorMarket.registerMcp.headers')} rows={httpHeaders} onChange={setHttpHeaders} placeholderKey={t('connectorMarket.registerMcp.key')} placeholderValue={t('connectorMarket.registerMcp.value')} />
+          <KeyValueField
+            label={t('connectorMarket.registerMcp.headers')}
+            rows={httpHeaders}
+            onChange={setHttpHeaders}
+            placeholderKey={t('connectorMarket.registerMcp.key')}
+            placeholderValue={t('connectorMarket.registerMcp.value')}
+          />
           <KeyValueField
             label={t('connectorMarket.registerMcp.headersFromEnv')}
             rows={httpHeadersFromEnv}
@@ -374,8 +394,12 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
       )}
 
       <div className="mb-6">
-        <label className="mb-1 block text-[13px] font-medium text-text">{t('connectorMarket.registerMcp.addJson')}</label>
-        <p className="mb-2 text-[12px] leading-[18px] text-text-muted">{t('connectorMarket.registerMcp.addJsonHint')}</p>
+        <label className="mb-1 block text-[13px] font-medium text-text">
+          {t('connectorMarket.registerMcp.addJson')}
+        </label>
+        <p className="mb-2 text-[12px] leading-[18px] text-text-muted">
+          {t('connectorMarket.registerMcp.addJsonHint')}
+        </p>
         <textarea
           value={jsonPaste}
           onChange={(event) => handleJsonPasteChange(event.target.value)}
@@ -442,15 +466,25 @@ function KeyValueField({
             {!single && (
               <input
                 value={row.value}
-                onChange={(event) => onChange(rows.map((r) => (r.id === row.id ? { ...r, value: event.target.value } : r)))}
+                onChange={(event) =>
+                  onChange(rows.map((r) => (r.id === row.id ? { ...r, value: event.target.value } : r)))
+                }
                 placeholder={placeholderValue}
                 className="h-9 flex-1 rounded-lg border border-border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
               />
             )}
-            <button type="button" onClick={() => onChange(rows.filter((r) => r.id !== row.id))} className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-border text-text-muted hover:border-border-hover">
+            <button
+              type="button"
+              onClick={() => onChange(rows.filter((r) => r.id !== row.id))}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-border text-text-muted hover:border-border-hover"
+            >
               <Minus size={13} />
             </button>
-            <button type="button" onClick={() => onChange([...rows, newRow()])} className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-border text-text-muted hover:border-border-hover">
+            <button
+              type="button"
+              onClick={() => onChange([...rows, newRow()])}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-border text-text-muted hover:border-border-hover"
+            >
               <Plus size={13} />
             </button>
           </div>
