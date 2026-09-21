@@ -299,22 +299,19 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
           <label className="mb-1.5 block text-[13px] font-medium text-text">
             {t('connectorMarket.create.description')}
           </label>
-          <div className="relative">
-            <Textarea
-              value={description}
-              maxLength={DESCRIPTION_MAX}
-              onChange={(nextDescription) => {
-                setDescription(nextDescription);
-                clearFieldError('description');
-              }}
-              rows={3}
-              invalid={fieldErrors.description}
-              data-testid="connector-market-create-plugin-description"
-            />
-            <span className="absolute bottom-2 right-3 text-[11px] text-text-muted">
-              {description.length}/{DESCRIPTION_MAX}
-            </span>
-          </div>
+          <Textarea
+            value={description}
+            maxLength={DESCRIPTION_MAX}
+            onChange={(nextDescription) => {
+              setDescription(nextDescription);
+              clearFieldError('description');
+            }}
+            rows={3}
+            invalid={fieldErrors.description}
+            data-testid="connector-market-create-plugin-description"
+            showCounter
+            counterTestId="connector-market-create-plugin-description-counter"
+          />
           {fieldErrors.description && (
             <p
               className="mt-1 text-[11px] leading-4 text-danger"
