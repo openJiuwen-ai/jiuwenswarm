@@ -3025,13 +3025,48 @@ nohup {q_executable} >/dev/null 2>&1 &
             shutil.rmtree(cache_dir)
             logger.info("[desktop] cleared WKWebView HTTP cache: %s", cache_dir)
 
+    # WebView2 user-data-folder HTTP-cache subdirectories (relative to storage_path).
+    # Only these are cleared on launch; profile data (Local Storage, IndexedDB,
+    # Cookies) is preserved so per-origin UI state survives restarts.
+    _WEBVIEW_CACHE_SUBDIRS = (
+        "EBWebView/Default/Cache",
+        "EBWebView/Default/Code Cache",
+        "EBWebView/Default/GPUCache",
+        "EBWebView/Default/DawnGraphiteCache",
+        "EBWebView/Default/DawnWebGPUCache",
+        "EBWebView/Default/Media Cache",
+        "EBWebView/Default/Service Worker/CacheStorage",
+        "EBWebView/Default/Service Worker/ScriptCache",
+        "EBWebView/GrShaderCache",
+        "EBWebView/ShaderCache",
+        "EBWebView/GraphiteDawnCache",
+        "EBWebView/Crashpad/reports",
+        "EBWebView/Crashpad/completed",
+    )
+
+    @classmethod
+    def _clear_webview_http_cache(cls, storage_path: Path) -> None:
+        """Clear WebView2 HTTP/JS/GPU caches, keeping localStorage/IndexedDB.
+
+        The whole storage_path used to be wiped on every launch to avoid stale
+        cached JS/CSS, but that also erased localStorage, losing per-origin UI
+        state (e.g. proactive-recommendation feedback buttons) across restarts.
+        Clear only the cache subdirectories instead. ignore_errors=True so a
+        leftover WebView2 process from a crashed previous run cannot abort
+        startup; partial cache cleanup is harmless.
+        """
+        for rel in cls._WEBVIEW_CACHE_SUBDIRS:
+            cache_dir = storage_path / rel
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir, ignore_errors=True)
+                logger.info("[desktop] cleared webview cache: %s", cache_dir)
+
     def run(self, window_title: str, width: int, height: int, debug: bool) -> None:
         self._clear_wkwebview_system_cache()
 
         storage_path = get_user_workspace_dir() / "tmp" / "webview"
-        if storage_path.exists():
-            shutil.rmtree(storage_path)
         storage_path.mkdir(parents=True, exist_ok=True)
+        self._clear_webview_http_cache(storage_path)
 
         self.window = webview.create_window(
             window_title,
