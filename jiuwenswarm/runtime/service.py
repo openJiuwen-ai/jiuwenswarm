@@ -1721,6 +1721,22 @@ class AgentRuntime:
                 return
             if work_kind is SessionWorkKind.SESSION_INPUT:
                 async def idle_input():
+                    from jiuwenswarm.runtime.events import RuntimeEvent
+
+                    # Web stream clients need the idle disposition before ordinary output.
+                    # Unary clients must retain their single final response.
+                    if request.is_stream:
+                        yield RuntimeEvent(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id or "default",
+                            session_id=request.session_id,
+                            payload={
+                                "event_type": "runtime.accepted",
+                                "request_id": request.request_id,
+                                "session_id": request.session_id,
+                                "input_delivery": "chat",
+                            },
+                        )
                     if not request.is_stream:
                         for event in await self._invoke_started(
                             request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -1742,6 +1758,7 @@ class AgentRuntime:
                     lambda owner_channel: self._stream_session_input_started(request, owner_channel),
                     idle_input,
                     suspension_key=self._waiting_control_id,
+                    expected_execution_id=request.params.get("expected_execution_id"),
                 )
             else:
                 stream = self._session_coordinator.run_stream(
@@ -1767,6 +1784,7 @@ class AgentRuntime:
                 on_agent_ready=on_agent_ready,
                 agent_execution=_agent_execution,
             )
+        execution_id = None
         try:
             while True:
                 # Never keep a ContextVar token across a yield boundary.  An
@@ -1781,6 +1799,20 @@ class AgentRuntime:
                     return
                 finally:
                     reset_runtime_context(token)
+                if execution_id is None and work_kind is not None:
+                    snapshot = self._session_coordinator.snapshot_session(request.session_id or "default")
+                    executions = snapshot.executions if snapshot else ()
+                    execution = next(
+                        (item for item in reversed(executions) if item.request_id == request.request_id), None,
+                    )
+                    if execution is not None:
+                        execution_id = (
+                            execution.parent_execution_id
+                            if execution.work_kind is SessionWorkKind.SESSION_INPUT
+                            else execution.execution_id
+                        )
+                if execution_id is not None and isinstance(event.payload, dict):
+                    event.payload["execution_id"] = execution_id
                 yield event
         finally:
             token = set_runtime_context(self, self._agent_manager)

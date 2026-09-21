@@ -76,6 +76,7 @@ import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import {
   AgentMode,
   MediaItem,
+  type ChatSendOptions,
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
@@ -1314,6 +1315,7 @@ function AppContent({
             id: n.id,
             name: n.name,
             arguments: n.arguments,
+            outputOrder: n.outputOrder,
             description: n.description,
             formatted_args: n.formatted_args,
             call_goal: n.call_goal,
@@ -2288,6 +2290,7 @@ function AppContent({
                 id: n.id,
                 name: n.name,
                 arguments: n.arguments,
+            outputOrder: n.outputOrder,
                 description: n.description,
                 formatted_args: n.formatted_args,
                 call_goal: n.call_goal,
@@ -2857,9 +2860,13 @@ function AppContent({
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: groupId });
   }, [enterNewConversation]);
 
-  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
+  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
+    if (options?.queuedTaskId) {
+      await sendMessage(content, currentSessionId, mediaItems, options);
+      return;
+    }
     if (currentSessionId === NEW_CONVERSATION_ID) {
       const persistCommand = parsePersistSessionCommand(content);
       if (persistCommand.persistSession && !persistCommand.content) {
