@@ -2904,10 +2904,14 @@ class JiuWenSwarmDeepAdapter:
                 if adapter.is_session_active(sid) or adapter.is_deep_agent_executing_for_session(sid):
                     return False
                 try:
-                    await adapter.release_subagent_runtime_for_session(
-                        sid,
-                        reason="session_adapter_cleanup",
+                    release_fn = getattr(
+                        adapter, "release_subagent_runtime_for_session", None
                     )
+                    if callable(release_fn):
+                        await release_fn(
+                            sid,
+                            reason="session_adapter_cleanup",
+                        )
                     await adapter.cleanup()
                 except Exception as exc:
                     logger.warning(

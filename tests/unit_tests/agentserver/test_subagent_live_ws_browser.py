@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -16,9 +17,12 @@ _HARNESS_DIR = _FRONTEND / "tests" / "live_ws"
 
 
 def _bundle_browser_store() -> None:
+    npx = shutil.which("npx")
+    if npx is None:
+        pytest.skip("npx is required to bundle the live WS browser harness")
     commands = [
         [
-            "npx",
+            npx,
             "--yes",
             "esbuild",
             "src/stores/subagentStore.ts",
@@ -28,7 +32,7 @@ def _bundle_browser_store() -> None:
             f"--outfile={_HARNESS_DIR / 'subagentStore.browser.mjs'}",
         ],
         [
-            "npx",
+            npx,
             "--yes",
             "esbuild",
             "src/features/subagent/subagentNormalizer.ts",
@@ -39,7 +43,10 @@ def _bundle_browser_store() -> None:
         ],
     ]
     for command in commands:
-        subprocess.run(command, cwd=_FRONTEND, check=True)
+        try:
+            subprocess.run(command, cwd=_FRONTEND, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            pytest.skip(f"live WS browser harness bundle unavailable: {exc}")
 
 
 def _assert_three_child_snapshot(snapshot: dict) -> None:

@@ -172,6 +172,19 @@ def test_has_persistable_assistant_payload_tool_update_is_merged():
     ) is True
 
 
+def test_has_persistable_assistant_payload_keeps_subtask_update():
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.subtask_update",
+        extra={"task_id": "t1", "description": "wait"},
+    ) is True
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.subtask_update",
+        extra={},
+    ) is False
+
+
 def test_append_history_persists_tool_result(tmp_path, monkeypatch):
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
 

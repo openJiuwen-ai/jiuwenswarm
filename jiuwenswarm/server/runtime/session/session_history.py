@@ -135,6 +135,15 @@ def _is_ephemeral_heartbeat_session(session_id: str) -> bool:
     return (session_id or "").startswith("heartbeat")
 
 
+def _has_subtask_update_payload(payload: dict[str, Any]) -> bool:
+    """True when a blank chat.subtask_update still has persistable extras."""
+    return bool(
+        payload.get("task_id")
+        or payload.get("subagent_id")
+        or payload.get("description")
+    )
+
+
 def _has_persistable_assistant_payload(
     *,
     content_text: str,
@@ -179,9 +188,7 @@ def _has_persistable_assistant_payload(
     # HITL cards have empty content; questions / expiry live in extras.
     if et == "chat.subagent_activity" and isinstance(payload.get("subagent_activity"), dict):
         return True
-    if et == "chat.subtask_update" and (
-        payload.get("task_id") or payload.get("subagent_id") or payload.get("description")
-    ):
+    if et == "chat.subtask_update" and _has_subtask_update_payload(payload):
         return True
     if et == "chat.ask_user_question":
         questions = payload.get("questions")

@@ -853,6 +853,7 @@ async def test_agent_handler_initializes_without_plaintext_websocket(monkeypatch
         _trigger_before_ws_server_start_hook=AsyncMock(),
         _bootstrap_internal_jiuwenbox=AsyncMock(),
         _start_loop_lag_monitor=AsyncMock(),
+        _install_runtime_push_host=lambda: None,
     )
     await module.AgentWebSocketServer.start(server, listen=False)
     serve_spy.assert_not_awaited()
