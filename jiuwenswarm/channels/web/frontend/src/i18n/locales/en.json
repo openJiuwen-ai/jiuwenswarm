@@ -3859,6 +3859,7 @@
         "unit": "credits",
         "used": "Used",
         "total": "Total",
+        "fetchFailedHint": "Credits are temporarily unavailable. Please try again later.",
         "meteringHint": "Credits are deducted by actual model usage.",
         "exhaustedHint": "Your free credits are used up. Switch to a configured model.",
         "exhaustedUntil": "Your free credits are used up. They refresh {{date}}.",
