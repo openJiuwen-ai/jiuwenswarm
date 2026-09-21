@@ -15,6 +15,7 @@ from jiuwenswarm.common.e2a.constants import (
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.common.platform import is_ohos_runtime
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext
@@ -428,6 +429,15 @@ async def handle_chat_cancel_dispatch(ctx: RequestContext) -> None:
 # chat.send的自动team绑定
 async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any | None:
     """Create and bind a team before the first team chat without consuming its query."""
+    # OHOS 块（新增，收束鸿蒙端）：relay 专家团链路走 ohos_team_sync 的
+    # 完整实现（tenant env ns 绑定窗口 + 显式 team_name 绑定 + 生成兜底）；
+    # Windows 端继续走下方基线实现，行为不变。
+    if is_ohos_runtime():
+        from jiuwenswarm.server.runtime.ohos_team_sync import (
+            ensure_auto_team_binding_ns_bound,
+        )
+
+        return await ensure_auto_team_binding_ns_bound(ctx, request)
     if request.req_method != ReqMethod.CHAT_SEND:
         return None
 

@@ -25,6 +25,26 @@ import sys
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 parse_dotenv_early("jiuwenswarm-agentserver")
 
+# --- HarmonyOS (OHOS) runtime adaptations ---------------------------------
+# Applied only when running on an OHOS runtime (JIUWENSWARM_RUNTIME_PLATFORM /
+# legacy JIUWENCLAW_RUNTIME_PLATFORM / sys.platform == 'ohos' / HNP marker).
+# On other platforms this block is a no-op, keeping behaviour unchanged.
+# Runs before any code spawns a subprocess so children inherit the exported
+# environment.
+from jiuwenswarm.common.platform import is_ohos_runtime
+
+if is_ohos_runtime():
+    # Route agent shell commands (python/pip) to the isolated runtime venv
+    # under the user workspace: export the isolation environment (venv bin
+    # first on PATH) into this process — every agent-spawned subprocess
+    # inherits it (openjiuwen builds subprocess envs from os.environ).
+    from jiuwenswarm.server.runtime.ohos_runtime_env import (
+        apply_isolation_env_to_process,
+    )
+
+    apply_isolation_env_to_process()
+# --- End HarmonyOS (OHOS) runtime adaptations -----------------------------
+
 
 from jiuwenswarm.common.utils import (
     get_env_file,
