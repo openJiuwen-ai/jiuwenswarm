@@ -20,7 +20,7 @@ import { SourceManagerModal } from '../../features/SourceManagerModal';
 import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
 import { ClawHubSearchModal } from '../../features/ClawHubSearchModal';
 import { TeamSkillsHubModal } from '../../features/TeamSkillsHubModal';
-import { normalizeSkillNetUrl } from '../../utils/skillNetUrl';
+import { normalizeSkillNetUrl, resolveMarketplaceInstalledLocalName } from '../../utils/skillNetUrl';
 import { computeMySkills, filterEnabledMySkills } from '../../utils/mySkills';
 import { Switch } from '../Switch';
 import {
@@ -565,10 +565,11 @@ export function SkillPanel({
 
   const renderHubSkillAction = useCallback(
     (skill: MarketplacePluginItem) => {
-      if (installedSkillMap.has(skill.name)) {
+      const localName = resolveMarketplaceInstalledLocalName(skill, skills, installedSkillNames);
+      if (localName) {
         return {
           icon: <NewConversationIcon aria-hidden />,
-          onClick: () => handleGoToChat(skill.name, skill.plugin_type === 'swarmskill' ? 'swarm_skill' : undefined),
+          onClick: () => handleGoToChat(localName, skill.plugin_type === 'swarmskill' ? 'swarm_skill' : undefined),
           tooltip: t('skills.actions.goTry'),
         };
       }
@@ -583,7 +584,7 @@ export function SkillPanel({
         tooltip: t('skills.actions.install'),
       };
     },
-    [installedSkillMap, handleGoToChat, handleInstallHubSkill, actionTarget, t],
+    [skills, installedSkillNames, handleGoToChat, handleInstallHubSkill, actionTarget, t],
   );
 
   // 新建会话：skill-creator（所有 Skill Creator 统一入口）chip + "帮我修改这个技能" + 该技能 chip
@@ -1437,6 +1438,8 @@ export function SkillPanel({
         mode="hub"
         detailState={hubDetailState}
         installedSkillMap={installedSkillMap}
+        localSkills={skills}
+        installedSkillNames={installedSkillNames}
         hubSkill={selectedHubSkill}
         hubDetail={hubDetail}
         hubDetailTab={hubDetailTab}
