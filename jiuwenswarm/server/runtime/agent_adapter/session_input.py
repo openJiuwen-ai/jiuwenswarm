@@ -158,9 +158,14 @@ class SessionInputGuard(AgentRail):
                 payload={"output_phase_id": phase_id,
                          "applied_input_ids": [entry.request_id for entry in entries]},
             ))
-        limit = getattr(ctx.agent.config, "max_iterations", 0)
+        limit = getattr(ctx.agent.config, "max_iterations", None)
         iteration = getattr(ctx.inputs, "react_iteration", 0)
-        self._model_allows_steer = bool(limit and 0 < iteration < limit)
+        # Unconfigured (None) means the inner loop is unbounded, so steer
+        # stays open. A configured cap keeps the original in-window check.
+        if limit is None:
+            self._model_allows_steer = True
+        else:
+            self._model_allows_steer = bool(limit and 0 < iteration < limit)
         self.accepting = self._model_allows_steer
         self._active_tools = 0
 

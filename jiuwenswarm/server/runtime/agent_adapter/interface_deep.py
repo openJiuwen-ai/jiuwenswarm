@@ -1196,6 +1196,52 @@ def parse_int(value: Any, default: int) -> int:
         return default
 
 
+def parse_optional_int(value: Any) -> int | None:
+    """Parse integer-like values; missing/invalid becomes None (unbounded)."""
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_general_purpose_max_iterations(config: dict[str, Any] | None) -> int:
+    """Resolve the general-purpose inner cap; unconfigured inherits the former 100."""
+    react_cfg = config if isinstance(config, dict) else {}
+    subagents_cfg = react_cfg.get("subagents")
+    general_cfg = (
+        subagents_cfg.get("general_agent") if isinstance(subagents_cfg, dict) else None
+    )
+    return parse_int(
+        general_cfg.get("max_iterations") if isinstance(general_cfg, dict) else None,
+        parse_int(react_cfg.get("max_iterations"), 100),
+    )
+
+
+def _with_general_purpose_max_iterations(
+    subagents: list[Any] | None,
+    config: dict[str, Any] | None,
+) -> list[Any] | None:
+    """Fill an omitted general-purpose cap so it does not inherit unbounded."""
+    if not subagents:
+        return subagents
+    max_iterations = _resolve_general_purpose_max_iterations(config)
+    patched: list[Any] = []
+    changed = False
+    for spec in subagents:
+        if (
+            isinstance(spec, SubAgentConfig)
+            and getattr(spec.agent_card, "name", None) == "general-purpose"
+            and spec.max_iterations is None
+        ):
+            patched.append(replace(spec, max_iterations=max_iterations))
+            changed = True
+        else:
+            patched.append(spec)
+    return patched if changed else subagents
+
+
 def _parse_bool(value: Any, default: bool = False) -> bool:
     """Parse persisted YAML/API boolean values without truthiness surprises."""
     if isinstance(value, bool):
@@ -4549,21 +4595,25 @@ class JiuWenSwarmDeepAdapter:
                 for rail in self._general_purpose_rail_snapshot
             ]
         self._general_purpose_rail_snapshot = tuple(self._general_purpose_rails(candidates, smart=smart))
-        return _inject_general_purpose_subagent(
-            subagents,
-            add_general_purpose_agent=allow_general and add_general,
-            resolved_language=workspace.language,
-            rails=list(self._general_purpose_rail_snapshot),
-            system_prompt=build_agent_identity_prompt(
-                language=self._resolve_prompt_language(),
-            ),
-            tools=list(tools),
-            mcps=None,
-            model=model,
-            skills=None,
-            workspace=workspace,
-            sys_operation=sys_operation,
-        ) or None
+        return _with_general_purpose_max_iterations(
+            _inject_general_purpose_subagent(
+                subagents,
+                add_general_purpose_agent=allow_general and add_general,
+                resolved_language=workspace.language,
+                rails=list(self._general_purpose_rail_snapshot),
+                system_prompt=build_agent_identity_prompt(
+                    language=self._resolve_prompt_language(),
+                ),
+                tools=list(tools),
+                mcps=None,
+                model=model,
+                skills=None,
+                workspace=workspace,
+                sys_operation=sys_operation,
+            )
+            or None,
+            config,
+        )
 
     def _general_purpose_rails(self, rails: list[Any], *, smart: bool) -> list[Any]:
         """Select child rails without copying root permission ownership."""
@@ -4669,7 +4719,7 @@ class JiuWenSwarmDeepAdapter:
                         language=resolved_language,
                         max_iterations=parse_int(
                             research_agent_cfg.get("max_iterations"),
-                            react_cfg.get("max_iterations", 15),
+                            parse_int(react_cfg.get("max_iterations"), 100),
                         ),
                     )
                 )
@@ -9382,7 +9432,7 @@ class JiuWenSwarmDeepAdapter:
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config_base, model),
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
-            max_iterations=config.get("max_iterations", 15),
+            max_iterations=parse_optional_int(config.get("max_iterations")),
             subagents=configured_subagents,
             add_general_purpose_agent=False,
             tools=normalized_tool_cards,
@@ -10496,7 +10546,7 @@ class JiuWenSwarmDeepAdapter:
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
             add_general_purpose_agent=False,
-            max_iterations=config.get("max_iterations", 15),
+            max_iterations=parse_optional_int(config.get("max_iterations")),
             workspace=workspace_obj,
             sys_operation=sys_operation,
             language=resolved_language,

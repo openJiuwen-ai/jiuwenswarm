@@ -318,3 +318,39 @@ async def test_cancelled_input_boundary_releases_model_waiter_without_accepting_
     with pytest.raises(RuntimeError, match="boundary was not published"):
         await guard.before_model_call(ctx)
     assert guard._session.write_stream.await_count == 1
+
+
+def _steer_ctx(max_iterations: int | None, iteration: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        agent=SimpleNamespace(config=SimpleNamespace(max_iterations=max_iterations)),
+        inputs=SimpleNamespace(react_iteration=iteration),
+        session=SimpleNamespace(write_stream=AsyncMock()),
+        extra={"session_output_phase": "phase"},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("iteration", [0, 1, 99])
+async def test_unconfigured_max_iterations_always_allows_steer(iteration: int) -> None:
+    guard = SessionInputGuard(object())
+
+    await guard.before_model_call(_steer_ctx(None, iteration))
+
+    assert guard._model_allows_steer is True
+    assert guard.accepting is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("iteration", "allowed"),
+    [(0, False), (1, True), (2, True), (3, False)],
+)
+async def test_configured_max_iterations_keeps_original_steer_window(
+    iteration: int, allowed: bool
+) -> None:
+    guard = SessionInputGuard(object())
+
+    await guard.before_model_call(_steer_ctx(3, iteration))
+
+    assert guard._model_allows_steer is allowed
+    assert guard.accepting is allowed
