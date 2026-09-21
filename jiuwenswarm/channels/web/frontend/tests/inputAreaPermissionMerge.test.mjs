@@ -22,20 +22,21 @@ class MockWebSocket {
 
   send(rawMessage) {
     const request = JSON.parse(rawMessage);
-    const payload = request.method === 'agent_groups.list'
-      ? {
-          agentGroups: [
-            {
-              id: 'group-1',
-              name: 'group-1',
-              displayName: '可选专家团',
-              installed: true,
-              source: 'local',
-              capabilities: { canUse: true },
-            },
-          ],
-        }
-      : {};
+    if (request.method !== 'agent_groups.list') {
+      throw new Error(`Unexpected WebSocket request: ${request.method}`);
+    }
+    const payload = {
+      agentGroups: [
+        {
+          id: 'group-1',
+          name: 'group-1',
+          displayName: '可选专家团',
+          installed: true,
+          source: 'local',
+          capabilities: { canUse: true },
+        },
+      ],
+    };
     queueMicrotask(() => {
       this.onmessage?.({
         data: JSON.stringify({ type: 'res', id: request.id, ok: true, payload }),
@@ -139,7 +140,15 @@ test('idle composer still submits normally', async () => {
   });
 });
 
-async function mount({ mode = 'agent', profile = 'default', language = 'en', sessionId = 'input-permission-merge' } = {}, run) {
+const flushMicrotasks = async () =>
+  act(async () => {
+    for (let index = 0; index < 4; index += 1) await Promise.resolve();
+  });
+
+async function mount(
+  { mode = 'agent', profile = 'default', language = 'en', sessionId = 'input-permission-merge' } = {},
+  run,
+) {
   useChatStore.getState().ensureRuntime(sessionId);
   useSessionStore.getState().ensureRuntime(sessionId);
   useSessionStore.getState().setMode(sessionId, mode);
@@ -275,7 +284,7 @@ test('team skills and Expert Teams are mutually exclusive', async () => {
     await act(async () => useSessionStore.getState().addSelectedSkill(sessionId, 'team-skill-1'));
     await click(byId('chat-panel-input-attach-trigger'));
     await click(byId('chat-panel-input-attach-menu-agent'));
-    await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    await flushMicrotasks();
 
     const groupItem = byId('chat-panel-agent-group-picker-item', 'group-1');
     assert.equal(groupItem.getAttribute('aria-disabled'), 'true');
@@ -287,6 +296,12 @@ test('team skills and Expert Teams are mutually exclusive', async () => {
 
     await act(async () => useSessionStore.getState().removeSelectedSkill(sessionId, 'team-skill-1'));
     assert.equal(groupItem.getAttribute('aria-disabled'), 'false');
+
+    await act(async () =>
+      useSessionStore.getState().setAgentGroupSelectionIntent(sessionId, { kind: 'select', id: 'group-1' }),
+    );
+    await act(async () => useSessionStore.getState().addSelectedSkill(sessionId, 'team-skill-2'));
+    assert.deepEqual(useSessionStore.getState().runtimes[sessionId].selectedSkills, []);
   });
 });
 
