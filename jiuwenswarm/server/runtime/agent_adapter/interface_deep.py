@@ -9707,7 +9707,9 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None = None,
     ) -> bool:
         """Return whether persistent subagent runtime tools should be enabled."""
-        return is_subagent_runtime_enabled(config_base or get_config())
+        return is_subagent_runtime_enabled(
+            config_base if config_base is not None else get_config()
+        )
 
     def _make_deep_agent_config(
         self,

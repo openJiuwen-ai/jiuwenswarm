@@ -1,12 +1,14 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Persistent subagent runtime wiring on dest-stable (default off)."""
+"""Persistent subagent runtime wiring (shipped template on; missing key off)."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
@@ -17,6 +19,18 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _agent_ras_kwargs_from_config,
     _optional_enable_subagent_runtime,
 )
+
+
+def test_shipped_template_subagent_runtime_enabled_by_default() -> None:
+    config_path = (
+        Path(__file__).resolve().parents[3]
+        / "jiuwenswarm"
+        / "resources"
+        / "config.yaml"
+    )
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["react"]["subagent_runtime"]["enabled"] is True
+    assert is_subagent_runtime_enabled(config) is True
 
 
 def test_is_subagent_runtime_enabled_defaults_off() -> None:
