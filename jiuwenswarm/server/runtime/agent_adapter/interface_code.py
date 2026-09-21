@@ -542,6 +542,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             auto_create_workspace=is_enterprise(),
             completion_timeout=config.get("completion_timeout", 3600.0),
         )
+        self._bind_subagent_timeout_wiring()
 
         # 改动3：让 agent 初始化（ensure_initialized）在独立线程 + 独立事件循环里跑，
         # 主事件循环在初始化的十几秒里保持响应，esc 的 cancel 不再堵队列、后端能尽快停。
