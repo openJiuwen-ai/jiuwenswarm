@@ -370,20 +370,55 @@ class A2AManager:
     async def _require_a2a_agent_authorized(
         self, resource_id: str | None, agent_id: str, source_user_id: str | None = None
     ) -> None:
+        from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
         allowed = await self._resolve_effective_a2a_agent_ids(resource_id, source_user_id)
         normalized_agent_id = str(agent_id or "").strip()
         if allowed is None or normalized_agent_id in allowed:
+            emit_audit_ua(
+                SUBMDL="gateway",
+                PROC="a2a_agent_authorize",
+                UA=normalized_agent_id,
+            )
             return
         authorized = await self._resolve_authorized_a2a_agent_ids(resource_id)
         if authorized is not None and normalized_agent_id not in authorized:
+            emit_audit_evt(
+                SUBMDL="gateway",
+                PROC="a2a_agent_authorize",
+                MSG=A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED.value,
+                EVT="agent_not_authorized",
+                agent_id=normalized_agent_id,
+            )
             raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
         projected = await self._require_outbound().get_agent(
             normalized_agent_id, source_user_id=source_user_id
         )
         if projected.get("manager_enabled") is False:
+            emit_audit_evt(
+                SUBMDL="gateway",
+                PROC="a2a_agent_authorize",
+                MSG=A2AOutboundErrorCode.AGENT_MANAGER_DISABLED.value,
+                EVT="agent_manager_disabled",
+                agent_id=normalized_agent_id,
+            )
             raise A2AOutboundError(A2AOutboundErrorCode.AGENT_MANAGER_DISABLED)
         if projected.get("user_enabled") is False:
+            emit_audit_evt(
+                SUBMDL="gateway",
+                PROC="a2a_agent_authorize",
+                MSG=A2AOutboundErrorCode.AGENT_USER_DISABLED.value,
+                EVT="agent_user_disabled",
+                agent_id=normalized_agent_id,
+            )
             raise A2AOutboundError(A2AOutboundErrorCode.AGENT_USER_DISABLED)
+        emit_audit_evt(
+            SUBMDL="gateway",
+            PROC="a2a_agent_authorize",
+            MSG=A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED.value,
+            EVT="agent_not_authorized",
+            agent_id=normalized_agent_id,
+        )
         raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
 
     def snapshot(self) -> A2AIngressSnapshot:

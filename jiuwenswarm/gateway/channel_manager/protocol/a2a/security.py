@@ -7,6 +7,8 @@ import hmac
 import re
 from typing import Any
 
+from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
 
 def hash_credential(value: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[!-~]{16,512}", value):
@@ -107,10 +109,25 @@ class A2AAuthenticationMiddleware:
         except ValueError:
             digest = ""
         if credential and hmac.compare_digest(digest, config.credential_hash):
+            emit_audit_ua(
+                SUBMDL="gateway",
+                PROC="a2a_authenticate",
+                UA="credential_match",
+                path=str(scope.get("path") or ""),
+            )
             await self.app(scope, receive, send)
             return
         from starlette.responses import JSONResponse
 
+        emit_audit_evt(
+            SUBMDL="gateway",
+            PROC="a2a_authenticate",
+            MSG="Unauthorized",
+            EVT="a2a_auth_failed",
+            RSPCD="401",
+            level="ERROR",
+            path=str(scope.get("path") or ""),
+        )
         response = JSONResponse(
             {"error": "Unauthorized"},
             status_code=401,

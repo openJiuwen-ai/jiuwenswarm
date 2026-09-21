@@ -129,11 +129,27 @@ def shutdown_jiuwenbox_sandboxes() -> int:
             try:
                 client.delete_sandbox(sandbox_id)
                 released += 1
+                from jiuwenswarm.common.audit_emit import emit_audit_ua
+
+                emit_audit_ua(
+                    SUBMDL="sandbox",
+                    PROC="delete_sandbox",
+                    sandbox_id=sandbox_id,
+                )
                 logger.info(
                     "[sandbox_lifecycle] DELETE jiuwenbox sandbox ok: %s",
                     sandbox_id,
                 )
             except Exception as exc:  # noqa: BLE001
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                emit_audit_evt(
+                    SUBMDL="sandbox",
+                    PROC="delete_sandbox",
+                    MSG=str(exc),
+                    EVT="delete_sandbox_failed",
+                    sandbox_id=sandbox_id,
+                )
                 # 404 已被 ``_JiuwenBoxClient.delete_sandbox`` 内部吞为幂等成功;
                 # 进到这里的多半是网络断 / 5xx / 超时。jiuwenbox 重启时这些 id
                 # 自然消失, 不会无限累积。

@@ -6,7 +6,11 @@ from collections.abc import Hashable, Iterable
 from typing import Any, ClassVar
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.utils import AsyncLRUCache, get_multi_tenant_user_workspace_dir
+from jiuwenswarm.common.utils import (
+    AsyncLRUCache,
+    get_multi_tenant_user_workspace_dir,
+    seed_tenant_agent_workspace,
+)
 from jiuwenswarm.common.mcp_config import invalidate_office_claw_mcp_schema_cache
 from jiuwenswarm.server.runtime.reload_result import (
     ReloadAggregateResult,
@@ -492,6 +496,10 @@ class TenantAgentPool:
                     service_id=request_service_id,
                     agent_id=request_agent_id,
                 )
+
+                # 租户目录懒创建时补种 AGENT/SOUL/IDENTITY/HEARTBEAT/USER/MEMORY.md
+                # 等模板（prepare_workspace 只初始化默认租户；幂等，已存在跳过）。
+                seed_tenant_agent_workspace(agent_dir_path)
 
                 import os
                 # 企业版：stable string instance id (legacy "aid_sid" form).

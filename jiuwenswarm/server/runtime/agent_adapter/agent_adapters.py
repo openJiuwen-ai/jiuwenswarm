@@ -172,11 +172,16 @@ def create_adapter(
         RuntimeError: If SDK is unknown.
     """
     sdk_name = sdk or resolve_sdk_choice()
-    # 企业多租户：仅企业版下把 workspace / 租户 ID 传给 adapter
+    # 多租户 workspace：企业版经 enterprise_* 传；个人版由 TenantAgentPool
+    # 解析出 service_{sid}/agent_{aid} 目录后同样显式传入（上面 JiuWenSwarm
+    # 已解析好 tenant_root → _workspace_dir 透传到这里）。此前个人版在此
+    # 被置 None，adapter 回退到未绑定的全局 get_agent_workspace_dir()，
+    # 多租户请求（officeclaw 渠道的 office/assistant 等）的记忆/索引全部
+    # 落到 agent_default——必须原样透传，让 adapter 用请求对应的租户工作区。
     enterprise = is_enterprise()
-    enterprise_workspace = workspace_dir if enterprise else None
-    enterprise_agent_id = agent_id if enterprise else None
-    enterprise_service_id = service_id if enterprise else None
+    enterprise_workspace = workspace_dir
+    enterprise_agent_id = agent_id
+    enterprise_service_id = service_id
 
     if sdk_name == "harness":
         if mode == "code":

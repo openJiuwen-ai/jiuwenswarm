@@ -14,6 +14,7 @@ from typing import Any
 from datetime import datetime, timezone
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
+from jiuwenswarm.common.mode_matrix import NEW_AGENT_CODE_NORMAL, NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     SUPPORTED_WORK_MODES,
@@ -228,6 +229,20 @@ def _apply_metadata_defaults_with_inference(
         if resolved_wm is not None:
             metadata["work_mode"] = resolved_wm
             changed = True
+
+    # A subagent item mode can leak into its owning product session's metadata.
+    # Keep standalone subagent channels and named team sessions unchanged.
+    if (
+        str(metadata.get("mode") or "").strip().lower() == "subagent"
+        and str(metadata.get("channel_id") or "").strip().lower() != "subagent"
+        and not str(metadata.get("team_name") or "").strip()
+    ):
+        metadata["mode"] = (
+            NEW_AGENT_CODE_NORMAL
+            if metadata["work_mode"] == "code"
+            else NEW_AGENT_WORK_NORMAL
+        )
+        changed = True
 
     # project_id: 缺失时尝试按 work_mode 反查唯一真实 Project
     if not str(metadata.get("project_id") or "").strip():

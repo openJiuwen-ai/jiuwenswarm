@@ -795,6 +795,17 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             has_base_url = embed_config.get("base_url") if isinstance(embed_config, dict) else None
             has_model = embed_config.get("model") if isinstance(embed_config, dict) else None
             if not all([has_api_key, has_base_url, has_model]):
+                embed_cfg = config.get("embed") if isinstance(config, dict) else None
+                embed_cfg = embed_cfg if isinstance(embed_cfg, dict) else {}
+                embed_config = {
+                    "api_key": embed_cfg.get("embed_api_key"),
+                    "base_url": embed_cfg.get("embed_base_url") or embed_cfg.get("embed_api_base"),
+                    "model": embed_cfg.get("embed_model"),
+                }
+                has_api_key = embed_config.get("api_key")
+                has_base_url = embed_config.get("base_url")
+                has_model = embed_config.get("model")
+            if not all([has_api_key, has_base_url, has_model]):
                 logger.warning(
                     "[JiuwenSwarmFlashAdapter] FlashMemoryRail create failed: "
                     "No available embedding config"

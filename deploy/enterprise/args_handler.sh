@@ -12,7 +12,7 @@ parse_args() {
                 CMD="${args[$i]}"
                 i=$((i+1))
                 ;;
-            nfs|nfs-sc|rabbitmq|mysql|postgresql|minio|log|jina|proxy|gateway|web|manager|runtime)
+            nfs|nfs-sc|rabbitmq|mysql|postgresql|minio|log|jina|proxy|monitor|gateway|web|manager|runtime)
                 MODULES+=("${args[$i]^^}")
                 i=$((i+1))
                 ;;

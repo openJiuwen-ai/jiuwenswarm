@@ -62,13 +62,14 @@ from jiuwenswarm.common.config import (
     update_swarmflow_enabled_in_config,
     update_updater_in_config,
     update_proactive_recommendation_in_config,
+    update_trajectory_ui_in_config,
 )
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.request_identity import (
     apply_routing_metadata,
     normalize_routing_identity,
 )
-from jiuwenswarm.gateway.config.a2ui.access import update_a2ui_in_config
+from jiuwenswarm.gateway.long_horizon.job_tags import EXEC_SESSION_PREFIX
 from jiuwenswarm.gateway.config.browser.access import (
     get_browser_body_in_config,
     update_browser_in_config,
@@ -132,7 +133,6 @@ from jiuwenswarm.common.version import __version__
 from jiuwenswarm.common.local_env_config import (
     SPAWN_ENV_KEYS,
     decrypt,
-    encrypt,
     read_env,
     read_env_if_set,
     set_os_environ,
@@ -208,7 +208,7 @@ class _ConfigChangeSet:
                 scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
-            elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
+            elif key_text.startswith("a2ui_") or key_text in {"setup_guide_enabled", "trajectory_ui_enabled"}:
                 scopes.add("web_ui")
             else:
                 scopes.add("agent_runtime")
@@ -911,6 +911,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
+    "trajectory_ui_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -2251,6 +2252,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["setup_guide_enabled"] = (
                 "true" if setup_guide_cfg.get("enabled", True) else "false"
             )
+            trajectory_ui_cfg = raw.get("trajectory_ui") or {}
+            payload["trajectory_ui_enabled"] = (
+                "true" if trajectory_ui_cfg.get("enabled", False) else "false"
+            )
             for key, val in payload.items():
                 payload[key] = decrypt(key, val)
             react_cfg = raw.get("react") or {}
@@ -2303,6 +2308,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
             payload.setdefault("setup_guide_enabled", "true")
+            payload.setdefault("trajectory_ui_enabled", "false")
             payload.setdefault("evolution_enabled", "true")
             payload.setdefault("skill_create", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
@@ -2501,6 +2507,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     await update_permissions_enabled_in_config(parsed)
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
+                elif param_key == "trajectory_ui_enabled":
+                    update_trajectory_ui_in_config(parsed)
                 elif param_key == "memory_forbidden_enabled":
                     await update_memory_forbidden_enabled_in_config(parsed)
                 elif param_key == "memory_forbidden_description":
@@ -4005,6 +4013,46 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 logger.exception(
                     "[session.delete] PG 删除失败: session_id=%s", session_id_to_delete,
                 )
+                try:
+                    from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                    emit_audit_evt(
+                        SUBMDL="gateway",
+                        PROC="session_delete",
+                        UID=_del_uid if "_del_uid" in locals() else (user_id or "-"),
+                        session_id=session_id_to_delete,
+                        request_id=str(req_id or ""),
+                        MSG="pg_delete_failed",
+                        EVT="session_delete",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("[session.delete] audit evt skipped", exc_info=True)
+            else:
+                try:
+                    from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
+                    if history_store_deleted:
+                        emit_audit_ua(
+                            SUBMDL="gateway",
+                            PROC="session_delete",
+                            UID=_del_uid,
+                            session_id=session_id_to_delete,
+                            request_id=str(req_id or ""),
+                            UA="session_delete",
+                            MSG="deleted",
+                        )
+                    else:
+                        emit_audit_evt(
+                            SUBMDL="gateway",
+                            PROC="session_delete",
+                            UID=_del_uid,
+                            session_id=session_id_to_delete,
+                            request_id=str(req_id or ""),
+                            MSG="ownership_denied_or_missing",
+                            EVT="session_delete",
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.debug("[session.delete] audit emit skipped", exc_info=True)
             await channel.send_response(
                 ws, req_id, ok=True,
                 payload={
@@ -4162,8 +4210,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 置顶会话已从项目分组剥离,不计入任何项目统计
             if s.get("pinned"):
                 continue
-            # cron 会话不计入项目统计(由 project.get_cron_sessions 独立获取)
-            if s.get("cron_id"):
+            # cron 会话不计入项目统计；长程执行会话 longhorizon_* 仍算普通对话
+            if s.get("cron_id") and not str(s.get("session_id") or "").startswith(
+                EXEC_SESSION_PREFIX
+            ):
                 continue
             # 归属: 仅按 project_id 匹配,不命中归默认项目(按 session work_mode 分桶)
             key = _attribute_session_project(s, visible_by_id_full)
@@ -4345,12 +4395,26 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
 
             sessions = collect_all_sessions_metadata()
-        # 仅非置顶普通会话(cron_id 为空) + 归属匹配 + web 渠道
-        # cron 会话由 get_cron_sessions 返回
-        matched = [
-            s for s in sessions
-            if not s.get("pinned") and _belongs(s) and not s.get("cron_id") and s.get("channel_id") == "web"
-        ]
+        # 仅非置顶普通会话 + 归属匹配 + web 渠道。
+        # cron_id 非空的普通定时执行会话走 get_cron_sessions；
+        # 长程专用会话 longhorizon_* 即使曾被打上 cron_id 也留在对话列表。
+        matched = []
+        for s in sessions:
+            if s.get("pinned"):
+                continue
+            if not _belongs(s):
+                continue
+            if s.get("channel_id") != "web":
+                continue
+            sid = str(s.get("session_id") or "")
+            if s.get("cron_id") and not sid.startswith(EXEC_SESSION_PREFIX):
+                continue
+            # 闹钟/确认会预分配 longhorizon_* 目录；没有真实消息时不进对话列表。
+            if sid.startswith(EXEC_SESSION_PREFIX):
+                mc = s.get("message_count")
+                if isinstance(mc, (int, float)) and not isinstance(mc, bool) and int(mc) <= 0:
+                    continue
+            matched.append(s)
 
         def _lum(s: dict[str, Any]) -> float:
             v = s.get("last_user_message_at")
@@ -4476,6 +4540,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if not _belongs(s):
                 continue
             if not s.get("cron_id"):
+                continue
+            # 长程执行会话归对话列表，不进定时任务会话组
+            if str(s.get("session_id") or "").startswith(EXEC_SESSION_PREFIX):
                 continue
             if cron_id_filter and s.get("cron_id") != cron_id_filter:
                 continue
@@ -4925,7 +4992,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         for s in sessions:
             if s.get("channel_id") != "web":
                 continue
-            if s.get("pinned") or s.get("cron_id"):
+            if s.get("pinned"):
+                continue
+            if s.get("cron_id") and not str(s.get("session_id") or "").startswith(
+                EXEC_SESSION_PREFIX
+            ):
                 continue
             if _attribute_session_project(s, visible_by_id) == project_id:
                 session_count += 1
@@ -7392,6 +7463,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("cron.job.toggle", _cron_job_toggle)
     channel.register_method("cron.job.preview", _cron_job_preview)
     channel.register_method("cron.job.run_now", _cron_job_run_now)
+
+    from jiuwenswarm.gateway.channel_manager.web.long_horizon_web_rpc import (
+        register_long_horizon_web_methods,
+    )
+
+    channel.cron_controller = cron_controller
+    try:
+        channel.agent_client = _resolve(agent_client)
+    except Exception as exc:
+        logger.warning("[WebChannel] resolve agent_client failed: %s", exc)
+        channel.agent_client = agent_client
+    try:
+        channel.message_handler = _resolve(message_handler)
+    except Exception as exc:
+        logger.warning("[WebChannel] resolve message_handler failed: %s", exc)
+        channel.message_handler = message_handler
+    register_long_horizon_web_methods(channel)
 
     # 数字分身 — permissions.owner_scopes：仅 Web 网关直连 config（不经 E2A / config_rpc）。
     # 其余 permissions.*（tools / rules / approval_overrides）走 _forward_permissions_to_agent。

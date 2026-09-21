@@ -2941,6 +2941,42 @@ class MessageHandler(FileTransferMixin, ABC):
             chunk = parse_agent_server_wire_chunk(wire)
         except Exception as e:
             logger.exception("[MessageHandler] server_push 解析失败: %s", e)
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                emit_audit_evt(
+                    SUBMDL="gateway",
+                    PROC="agent_push_handle",
+                    MSG=str(e),
+                    EVT="agent_push_parse_failed",
+                    request_id=str(wire.get("request_id") or ""),
+                    session_id=str(wire.get("session_id") or ""),
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[MessageHandler] agent_push_handle audit skipped",
+                    exc_info=True,
+                )
+            return
+        payload = chunk.payload
+        if isinstance(payload, dict) and payload.get("event_type") == "trace.updated":
+            from jiuwenswarm.observability.models import CommittedTraceUpdate
+
+            try:
+                update = CommittedTraceUpdate(
+                    session_id=str(payload["session_id"]),
+                    trace_id=str(payload["trace_id"]),
+                    revision=int(payload["revision"]),
+                    store_epoch=payload.get("store_epoch"),
+                    lifecycle=str(payload.get("lifecycle") or "final"),
+                )
+            except (KeyError, TypeError, ValueError):
+                logger.warning("[MessageHandler] ignored invalid trace update push")
+                return
+            web_channel = self._resolve_web_channel()
+            schedule = getattr(web_channel, "schedule_trajectory_updates", None)
+            if callable(schedule):
+                schedule((update,))
             return
         rid = str(chunk.request_id or "")
         sid_raw = wire.get("session_id")
@@ -3001,6 +3037,26 @@ class MessageHandler(FileTransferMixin, ABC):
                 metadata=bus_metadata,
             )
             return
+        if isinstance(chunk.payload, dict):
+            et = str(chunk.payload.get("event_type") or chunk.payload.get("type") or "")
+            if et == "long_horizon.schedule_intent":
+                await self._handle_long_horizon_schedule_intent(
+                    payload=dict(chunk.payload),
+                    request_id=rid,
+                    metadata=bus_metadata,
+                )
+                return
+            if et == "long_horizon.stage_due":
+                from jiuwenswarm.gateway.long_horizon.agent_call import (
+                    broadcast_stage_due,
+                )
+
+                await broadcast_stage_due(
+                    self,
+                    dict(chunk.payload),
+                    channel_id=str(chunk.channel_id or "web"),
+                )
+                return
         if self._is_terminal_stream_chunk(chunk):
             logger.debug(
                 "[MessageHandler] 忽略 server_push 终止 chunk: request_id=%s",
@@ -3286,6 +3342,80 @@ class MessageHandler(FileTransferMixin, ABC):
 
     def set_cron_registry(self, registry: Any) -> None:
         self._cron_registry = registry
+
+    async def _handle_long_horizon_schedule_intent(
+        self,
+        *,
+        payload: dict[str, Any],
+        request_id: str,
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        """I2a: AgentServer schedule_intent → apply onto the live tenant CronController."""
+        try:
+            from jiuwenswarm.gateway.long_horizon.cron_backend import (
+                CronControllerBackend,
+                resolve_live_cron_controller,
+            )
+            from jiuwenswarm.gateway.long_horizon.schedule_intent import (
+                ScheduleIntent,
+                apply_schedule_intent,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[MessageHandler] long_horizon schedule_intent import failed "
+                "request_id=%s: %s",
+                request_id,
+                exc,
+            )
+            return
+        try:
+            intent = ScheduleIntent.from_dict(payload)
+            merged_meta = dict(metadata or {})
+            if intent.service_id:
+                merged_meta["service_id"] = intent.service_id
+            if intent.agent_id:
+                merged_meta["agent_id"] = intent.agent_id
+            controller = await resolve_live_cron_controller(self, merged_meta)
+            if controller is None:
+                logger.warning(
+                    "[MessageHandler] long_horizon schedule_intent skipped "
+                    "request_id=%s: cron controller unavailable",
+                    request_id,
+                )
+                return
+            await apply_schedule_intent(
+                intent,
+                CronControllerBackend(controller),
+                transactional=intent.transactional,
+            )
+            reload = getattr(controller, "reload_scheduler", None)
+            if callable(reload):
+                try:
+                    await reload()
+                except Exception as exc:
+                    logger.debug(
+                        "[MessageHandler] long_horizon scheduler reload skipped "
+                        "request_id=%s: %s",
+                        request_id,
+                        exc,
+                    )
+            logger.info(
+                "[MessageHandler] long_horizon schedule_intent applied "
+                "request_id=%s task_id=%s op=%s jobs=%s remove=%s",
+                request_id,
+                intent.task_id,
+                intent.op,
+                len(intent.jobs),
+                len(intent.remove_job_ids),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[MessageHandler] long_horizon schedule_intent failed "
+                "request_id=%s: %s",
+                request_id,
+                exc,
+                exc_info=True,
+            )
 
     async def _handle_cron_push_payload(
         self,
@@ -4503,11 +4633,57 @@ class MessageHandler(FileTransferMixin, ABC):
                         else:
                             # Other channels stay non-blocking so a slow interrupt
                             # cannot stall unrelated sessions in _forward_loop.
-                            await self._cancel_agent_work_for_session(
-                                msg,
-                                msg.session_id,
-                                agent_notify="fire_and_forget",
-                            )
+                            try:
+                                cancel_ok = await self._cancel_agent_work_for_session(
+                                    msg,
+                                    msg.session_id,
+                                    agent_notify="fire_and_forget",
+                                )
+                                from jiuwenswarm.common.audit_emit import (
+                                    emit_audit_evt,
+                                    emit_audit_ua,
+                                )
+
+                                _audit_uid = str(getattr(msg, "user_id", None) or "").strip()
+                                _audit_fields = {
+                                    "UID": _audit_uid or "-",
+                                    "session_id": str(msg.session_id or ""),
+                                    "request_id": str(msg.id or ""),
+                                    "MSG": "intent=cancel",
+                                }
+                                if cancel_ok:
+                                    emit_audit_ua(
+                                        SUBMDL="gateway",
+                                        PROC="chat_interrupt",
+                                        UA="chat_interrupt",
+                                        **_audit_fields,
+                                    )
+                                else:
+                                    emit_audit_evt(
+                                        SUBMDL="gateway",
+                                        PROC="chat_interrupt",
+                                        EVT="chat_interrupt",
+                                        **_audit_fields,
+                                    )
+                            except Exception as cancel_exc:  # noqa: BLE001
+                                try:
+                                    from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                                    emit_audit_evt(
+                                        SUBMDL="gateway",
+                                        PROC="chat_interrupt",
+                                        UID=str(getattr(msg, "user_id", None) or "").strip() or "-",
+                                        session_id=str(msg.session_id or ""),
+                                        request_id=str(msg.id or ""),
+                                        MSG=str(cancel_exc),
+                                        EVT="chat_interrupt",
+                                    )
+                                except Exception:  # noqa: BLE001
+                                    logger.debug(
+                                        "[MessageHandler] chat_interrupt audit skipped",
+                                        exc_info=True,
+                                    )
+                                raise
 
                     elif intent in ("pause", "resume"):
                         # 暂停/恢复：不取消流式任务，转发给 AgentServer 处理 ReAct 循环

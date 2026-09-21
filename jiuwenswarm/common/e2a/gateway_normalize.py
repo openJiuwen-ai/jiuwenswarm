@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from jiuwenswarm.common.e2a.constants import (
     E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST,
     E2A_RESPONSE_KIND_CRON,
+    E2A_RESPONSE_KIND_LONG_HORIZON,
     E2A_RESPONSE_KIND_PLAN_APPROVAL_REQUIRED,
     E2A_RESPONSE_KIND_E2A_CHUNK,
     E2A_RESPONSE_KIND_E2A_COMPLETE,
@@ -233,6 +234,16 @@ def e2a_from_agent_fields(
             d["method"] = str(req_method)
     if metadata:
         d["metadata"] = dict(metadata)
+    params_d = d.get("params")
+    if isinstance(params_d, dict):
+        svc = str(params_d.get("service_id") or "").strip()
+        if svc:
+            d["service_id"] = svc
+        if "agent_id" in params_d:
+            ag = params_d.get("agent_id")
+            d["agent_id"] = (
+                str(ag).strip() if ag is not None and str(ag).strip() else None
+            )
     return E2AEnvelope.from_dict(d)
 
 
@@ -640,6 +651,21 @@ def e2a_response_to_agent_chunk(e2a: E2AResponse) -> "AgentResponseChunk":
             "message": body.get("message"),
         }
         return AgentResponseChunk(agent_ref=_agent_ref, metadata=_meta, 
+            request_id=rid,
+            channel_id=ch,
+            payload=body_payload,
+            is_complete=True,
+        )
+
+    if kind == E2A_RESPONSE_KIND_LONG_HORIZON:
+        body_payload = dict(body) if isinstance(body, dict) else {}
+        if "event_type" not in body_payload:
+            body_payload["event_type"] = str(
+                body_payload.get("type") or "long_horizon.schedule_intent"
+            )
+        return AgentResponseChunk(
+            agent_ref=_agent_ref,
+            metadata=_meta,
             request_id=rid,
             channel_id=ch,
             payload=body_payload,

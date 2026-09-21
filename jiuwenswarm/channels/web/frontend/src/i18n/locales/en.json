@@ -1274,6 +1274,7 @@
       "kvCacheAffinity": { "label": "Compute Affinity", "hint": "Control Ascend KV Cache affinity" },
       "permissions": { "label": "Tool Safety Guardrail", "hint": "Enable or disable permission checks for tool calls" },
       "a2ui": { "label": "A2UI", "hint": "Enable or disable generated UI rendering and A2UI runtime prompts." },
+      "trajectoryUi": { "label": "Trajectory UI", "hint": "Show the chat/trajectory switch in single-agent and team modes and enable trajectory observation." },
       "swarmflow": { "label": "SwarmFlow", "hint": "Enable or disable the SwarmFlow process view and monitoring in Team mode." },
       "symphony": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
       "skillRetrieval": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
@@ -1353,6 +1354,7 @@
     "errors": {
       "requiredModelFields": "These model fields are required: {{fields}}. Complete them before saving and restarting.",
       "saveFailed": "Save failed, please try again later",
+      "trajectoryUiUnsupported": "The connected gateway did not save the trajectory setting. Update and restart the gateway, then try again.",
       "processingDisabled": "A task is running. Please wait for it to finish before saving config.",
       "taskRunning": "A task is currently running. Please wait for it to finish before saving config.",
       "configChangedTitle": "Config updated by another window",
@@ -2684,5 +2686,30 @@
   },
   "qaSummary": {
     "title": "Clarifications"
+  },
+  "trajectory": {
+    "loading": "Loading trajectory UI…",
+    "tabs": {
+      "aria": "Single-Agent content view",
+      "trajectory": "Trajectory"
+    },
+    "layout": {
+      "hideSessions": "Collapse sessions",
+      "showSessions": "Show sessions",
+      "hideTasks": "Collapse tasks",
+      "showTasks": "Show tasks"
+    }
+  },
+  "longHorizon": {
+    "toastTitle": "Long-horizon reminder",
+    "dueLabel": "Due",
+    "actions": {
+      "start": "Do now",
+      "snooze": "Later",
+      "skip": "Skip"
+    },
+    "errors": {
+      "actionFailed": "Action failed"
+    }
   }
 }

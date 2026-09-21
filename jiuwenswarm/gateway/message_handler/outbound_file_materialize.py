@@ -33,6 +33,31 @@ logger = logging.getLogger(__name__)
 _OBS_PROXY_TIMEOUT = 120
 
 
+def _emit_file_download(*, success: bool, filename: str = "", msg: str = "") -> None:
+    """企业 OBS 代理下载打点。仅用户点击下载（非 HEAD 探测、非 inline 预览）。"""
+    from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
+    if success:
+        emit_audit_ua(
+            SUBMDL="file",
+            PROC="file_download",
+            filename=filename,
+        )
+        return
+    emit_audit_evt(
+        SUBMDL="file",
+        PROC="file_download",
+        MSG=msg or "file_download_failed",
+        EVT="file_download_failed",
+        filename=filename,
+    )
+
+
+def _should_audit_file_download(*, head: bool, inline: bool) -> bool:
+    """卡片过期 HEAD、产物预览 inline 都不是「点击下载」，不打 file_download。"""
+    return not head and not inline
+
+
 def chat_file_needs_obs_materialize(payload: dict[str, Any] | None) -> bool:
     """True when enterprise chat.file carries a raw MinIO url (not yet proxied)."""
     if not is_enterprise() or not isinstance(payload, dict):
@@ -211,11 +236,16 @@ def proxy_obs_download_response(
 
     Prefer :func:`proxy_obs_download_response_async` from FastAPI handlers so the
     initial upstream connect does not block the event loop.
+
+    ``head``（卡片过期探测）和 ``inline``（产物预览）不打 ``file_download``。
     """
+    record_audit = _should_audit_file_download(head=head, inline=inline)
     try:
         assert_minio_url_allowed(obs_url)
     except ValueError:
         logger.warning("[OutboundFile] proxy rejected url host")
+        if record_audit:
+            _emit_file_download(success=False, filename=filename, msg="forbidden_path")
         return JSONResponse({"error": "forbidden_path"}, status_code=403)
 
     file_name = safe_filename(filename) if filename else "download.bin"
@@ -230,10 +260,12 @@ def proxy_obs_download_response(
         resp = _open_obs_upstream(obs_url=obs_url, upstream_headers=upstream_headers)
     except Exception:
         logger.exception("[OutboundFile] OBS proxy request failed")
+        if record_audit:
+            _emit_file_download(success=False, filename=filename, msg="obs_fetch_failed")
         return JSONResponse({"error": "obs_fetch_failed"}, status_code=502)
 
     return _build_obs_proxy_response(
-        resp, file_name=file_name, inline=inline, head=head
+        resp, file_name=file_name, inline=inline, head=head, record_audit=record_audit
     )
 
 
@@ -245,11 +277,17 @@ async def proxy_obs_download_response_async(
     head: bool,
     range_header: str | None,
 ) -> Response:
-    """Async wrapper: SSRF check + offload blocking connect to a worker thread."""
+    """Async wrapper: SSRF check + offload blocking connect to a worker thread.
+
+    ``head`` / ``inline`` 不打 ``file_download``，见 :func:`_should_audit_file_download`。
+    """
+    record_audit = _should_audit_file_download(head=head, inline=inline)
     try:
         assert_minio_url_allowed(obs_url)
     except ValueError:
         logger.warning("[OutboundFile] proxy rejected url host")
+        if record_audit:
+            _emit_file_download(success=False, filename=filename, msg="forbidden_path")
         return JSONResponse({"error": "forbidden_path"}, status_code=403)
 
     file_name = safe_filename(filename) if filename else "download.bin"
@@ -267,10 +305,16 @@ async def proxy_obs_download_response_async(
         )
     except Exception:
         logger.exception("[OutboundFile] OBS proxy request failed")
+        if record_audit:
+            _emit_file_download(success=False, filename=filename, msg="obs_fetch_failed")
         return JSONResponse({"error": "obs_fetch_failed"}, status_code=502)
 
     return _build_obs_proxy_response(
-        resp, file_name=file_name, inline=inline, head=head
+        resp,
+        file_name=file_name,
+        inline=inline,
+        head=head,
+        record_audit=record_audit,
     )
 
 
@@ -280,10 +324,13 @@ def _build_obs_proxy_response(
     file_name: str,
     inline: bool,
     head: bool,
+    record_audit: bool = True,
 ) -> Response:
     if resp.status_code not in (200, 206):
         status = resp.status_code if resp.status_code in (403, 404, 416) else 502
         resp.close()
+        if record_audit:
+            _emit_file_download(success=False, filename=file_name, msg=f"obs_status_{status}")
         return JSONResponse({"error": "obs_fetch_failed"}, status_code=status)
 
     mime_type = (
@@ -303,6 +350,8 @@ def _build_obs_proxy_response(
     if content_range:
         headers["Content-Range"] = content_range
 
+    if record_audit:
+        _emit_file_download(success=True, filename=file_name)
     if head:
         resp.close()
         return Response(status_code=resp.status_code, headers=headers)

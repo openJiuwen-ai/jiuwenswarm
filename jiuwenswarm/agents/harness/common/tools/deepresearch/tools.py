@@ -516,6 +516,13 @@ def _build_deepresearch_config(source: dict[str, str]) -> dict[str, str]:
             break
     config["LLM_SSL_VERIFY"] = str(source.get("LLM_SSL_VERIFY", "false"))
     config["TOOL_SSL_VERIFY"] = str(source.get("TOOL_SSL_VERIFY", "false"))
+    # SSRF 旁路开关：优先按 source（service/agent 粒度）读取，兜底进程环境，默认开启
+    config["SEARCH_SERVICE_ALLOW_UNSAFE_URL"] = str(
+        source.get(
+            "SEARCH_SERVICE_ALLOW_UNSAFE_URL",
+            os.environ.get("SEARCH_SERVICE_ALLOW_UNSAFE_URL", "true"),
+        )
+    )
     return config
 
 

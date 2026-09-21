@@ -514,6 +514,8 @@ class _FakeRoute:
     def __init__(self) -> None:
         self.routes: list[dict] = []
         self.touches: list[dict] = []
+        self.rebinds: list[dict] = []
+        self.rebind_fail: BaseException | None = None
         self.fail_times = 0
 
     async def route(self, **kwargs):
@@ -531,6 +533,12 @@ class _FakeRoute:
         self.touches.append(kwargs)
         return True
 
+    async def rebind(self, **kwargs):
+        self.rebinds.append(kwargs)
+        if self.rebind_fail is not None:
+            raise self.rebind_fail
+        return "rebound"
+
     async def aclose(self) -> None:
         return None
 
@@ -540,6 +548,8 @@ class _FakeHttp:
         self.calls: list[tuple] = []
         self.fail_first = False
         self.fail_exc: BaseException = httpx.ConnectError("http down")
+        self.response_ok = True
+        self.response_payload: dict = {"ok": True}
 
     async def send_request(self, envelope, *, base_url=None):
         self.calls.append(("unary", base_url, envelope.request_id))
@@ -549,8 +559,8 @@ class _FakeHttp:
         return AgentResponse(
             request_id=str(envelope.request_id),
             channel_id="web",
-            ok=True,
-            payload={"ok": True},
+            ok=self.response_ok,
+            payload=dict(self.response_payload),
         )
 
     async def send_request_stream(self, envelope, *, base_url=None):
@@ -964,4 +974,106 @@ async def test_database_enabled_values(agent_resources, stream, enabled):
         with pytest.raises(FatalRouteError):
             await chat()
         assert not route.routes and not http.calls
+    await client.disconnect()
+
+
+# ------------------------------------------------ session.create rebind 钩子（2026-09-session-create-rebind）
+
+
+def _create_env(temp_session_id: str = "webhttp_temp1"):
+    from jiuwenswarm.common.request_identity import apply_routing_metadata
+
+    return e2a_from_agent_fields(
+        request_id="req-create-1",
+        channel_id="web",
+        session_id=temp_session_id,
+        req_method=ReqMethod.SESSION_CREATE,
+        params={"create_token": "tok-1", "group_id": "grp-1", "bot_id": "bot-1"},
+        is_stream=False,
+        user_id="user-1",
+        metadata=apply_routing_metadata(
+            {},
+            {"user_id": "user-1", "group_id": "grp-1", "bot_id": "bot-1"},
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_response_rebinds_temp_key_before_return() -> None:
+    """create 响应 ok：send_request 返回前已完成 rebind(临时 key→真实 id)——
+    await 返回时 rebinds 已有记录即时序证明（客户端不可能先于改绑拿到真实 id）。"""
+    route = _FakeRoute()
+    http = _FakeHttp()
+    http.response_payload = {
+        "session_id": "web_real_1", "sessionId": "web_real_1",
+        "projectId": "default", "workMode": "work",
+    }
+    client = RuntimeRoutedAgentClient(
+        route_client=route, http_client=http, touch_interval_seconds=999
+    )
+    await client.connect("")
+    result = await client.send_request(_create_env())
+    assert result.ok is True
+    # rebind 在响应返回给上层之前已发生（时序保证）
+    assert len(route.rebinds) == 1
+    assert route.rebinds[0]["from_session_id"] == "webhttp_temp1"
+    assert route.rebinds[0]["to_session_id"] == "web_real_1"
+    assert route.rebinds[0]["request_id"]
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_create_failure_evicts_temp_key() -> None:
+    """create 响应失败（如 BAD_REQUEST）：rebind(to=None) 驱逐临时槽位，
+    不等 session_ttl 过期。"""
+    route = _FakeRoute()
+    http = _FakeHttp()
+    http.response_ok = False
+    http.response_payload = {"error": "invalid work_mode", "code": "BAD_REQUEST"}
+    client = RuntimeRoutedAgentClient(
+        route_client=route, http_client=http, touch_interval_seconds=999
+    )
+    await client.connect("")
+    result = await client.send_request(_create_env())
+    assert result.ok is False
+    assert len(route.rebinds) == 1
+    assert route.rebinds[0]["from_session_id"] == "webhttp_temp1"
+    assert route.rebinds[0]["to_session_id"] is None
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_create_rebind_failure_degrades_to_legacy_behavior() -> None:
+    """rebind 异常（含旧 runtime 无端点）：降级=现状——create 响应照常返回，
+    不上抛；告警节流（首条 WARNING）。"""
+    route = _FakeRoute()
+    route.rebind_fail = FatalRouteError(
+        "not found", code="VALIDATION", status_code=404
+    )
+    http = _FakeHttp()
+    http.response_payload = {"session_id": "web_real_1"}
+    client = RuntimeRoutedAgentClient(
+        route_client=route, http_client=http, touch_interval_seconds=999
+    )
+    await client.connect("")
+    result = await client.send_request(_create_env())
+    assert result.ok is True          # 降级：响应不受 rebind 失败影响
+    assert len(route.rebinds) == 1    # 确实尝试过
+    await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_chat_send_does_not_rebind() -> None:
+    """非 create 方法不触发 rebind（chat.send 的路由 key 即真实 id）。"""
+    route = _FakeRoute()
+    http = _FakeHttp()
+    http.response_payload = {"session_id": "other"}
+    client = RuntimeRoutedAgentClient(
+        route_client=route, http_client=http, touch_interval_seconds=999
+    )
+    await client.connect("")
+    env = _chat_env()
+    env.is_stream = False
+    await client.send_request(env)
+    assert route.rebinds == []
     await client.disconnect()

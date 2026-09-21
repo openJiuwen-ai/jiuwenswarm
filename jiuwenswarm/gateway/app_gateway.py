@@ -1701,6 +1701,17 @@ async def _run_with_telemetry(
                             "[App] logging repository reload failed: %s",
                             log_exc,
                         )
+                    try:
+                        from jiuwenswarm.gateway.config.audit.access import (
+                            reload_audit_log_config_from_db,
+                        )
+
+                        await reload_audit_log_config_from_db()
+                    except Exception as audit_exc:  # noqa: BLE001
+                        logger.warning(
+                            "[App] audit_log_config cold load failed: %s",
+                            audit_exc,
+                        )
     except Exception as exc:  # noqa: BLE001
         if is_enterprise():
             logger.error(

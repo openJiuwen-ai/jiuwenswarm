@@ -48,6 +48,7 @@ from jiuwenswarm.agents.swarm.providers import (
     code_rails as _code_rails,
     code_subagents as _code_subagents,
     evolution_rails as _evolution_rails,
+    long_horizon as _long_horizon,
     member_rails as _member_rails,
     runtime_tools as _runtime_tools,
     skills as _skills,
@@ -66,6 +67,7 @@ XIAOYI_PHONE = _tools.XIAOYI_PHONE
 SYMPHONY_TOOLKIT = _tools.SYMPHONY_TOOLKIT
 CRON_TOOLS = _runtime_tools.CRON_TOOLS
 SEND_FILE = _runtime_tools.SEND_FILE
+LONG_HORIZON = _long_horizon.LONG_HORIZON
 MEMBER_SKILL_TOOLKIT = _skills.MEMBER_SKILL_TOOLKIT
 # Team-owned wrappers around Jiuwen's unified web tools.
 WEB_SEARCH = _tools.WEB_SEARCH
@@ -182,6 +184,7 @@ __all__ = [
     "AUDIO",
     "CRON_TOOLS",
     "SEND_FILE",
+    "LONG_HORIZON",
     "MEMBER_SKILL_TOOLKIT",
     "RUNTIME_PROMPT",
     "TEAM_SKILL_STORAGE_POLICY",

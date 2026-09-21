@@ -108,6 +108,15 @@ mount_manager_web_nginx_template() {
         "File"
 }
 
+# observability：同上，覆盖 nginx 模板。
+mount_observability_nginx_template() {
+    [ -z "${DEPLOY_VARS["RUNTIME_CODE_PATH"]:-}" ] && return
+    add_code_mount "$1" "observability-nginx-template" \
+        "${DEPLOY_VARS["RUNTIME_CODE_PATH"]}/docker/observability.nginx.conf.template" \
+        "/etc/nginx/templates/default.conf.template" \
+        "File"
+}
+
 mount_runtime_pkg() {
     [ -z "${DEPLOY_VARS["RUNTIME_CODE_PATH"]:-}" ] && return
     local file="$1"
@@ -147,6 +156,11 @@ enable_dev_mode_if_needed() {
             [ "${DEPLOY_VARS["IS_MOUNT_MANAGER_WEB_CODE"]}" != "true" ] && return
             mount_runtime_code "${file}"
             mount_manager_web_nginx_template "${file}"
+            ;;
+        observability)
+            [ "${DEPLOY_VARS["IS_MOUNT_OBSERVABILITY_CODE"]}" != "true" ] && return
+            mount_runtime_code "${file}"
+            mount_observability_nginx_template "${file}"
             ;;
         *)
             warning "enable_dev_mode_if_needed: unknown component '${comp}', skipping"

@@ -286,6 +286,7 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
                       || option.label === t('chatUi.inlineQuestion.allowOnce')
                       || option.label === '本次允许';
                     const isSessionAllow = option.label === t('chatUi.inlineQuestion.sessionAllow')
+                      || option.label === '本会话内允许'
                       || option.label === '会话内记住';
                     const isAlwaysAllow = option.label === t('chatUi.inlineQuestion.alwaysAllow')
                       || option.label === '永久记住';

@@ -29,6 +29,9 @@ from openjiuwen.agent_teams.harness.manifest import (
     harness_element,
     param_field,
 )
+from openjiuwen.extensions.observability.demand import (
+    get_trajectory_span_processor,
+)
 from openjiuwen.harness.rails import (
     EvolutionInterruptRail,
     SkillEvolutionRail,
@@ -38,9 +41,6 @@ from openjiuwen.harness.rails import (
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-from jiuwenswarm.agents.harness.observability_runtime import (
-    get_trajectory_span_processor,
-)
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     merge_evolution_disabled_skills,
 )

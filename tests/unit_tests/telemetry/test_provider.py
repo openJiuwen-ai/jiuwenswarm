@@ -285,7 +285,9 @@ def test_disabled_default_bundle_does_not_create_or_own_providers() -> None:
         TelemetryConfig(enabled=False, traces_exporter="console", metrics_exporter="console")
     )
 
-    assert bundle == ProviderBundle(owns_tracer=False, owns_meter=False)
+    assert bundle == ProviderBundle(
+        owns_tracer=False, owns_meter=False, owns_logger=False
+    )
 
 
 def test_default_resource_uses_enterprise_service_and_real_swarm_version() -> None:

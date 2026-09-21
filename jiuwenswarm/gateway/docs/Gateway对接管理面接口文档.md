@@ -1,7 +1,7 @@
 # Gateway对接管理面接口文档
 
 > 范围：Manager（`applications/manager`）通过 HTTP 调用 Gateway **Config Receiver**（`jiuwenswarm/.../manager_config_receiver`）的全部接口。  
-> **本文不是**浏览器 / 前端使用的 Web HTTP（默认端口 **19002**，见 [Gateway Http接口文档.md](../../../docs/zh/Gateway%20Http接口文档.md)）。
+> **本文不是**浏览器 / 前端使用的 Web HTTP（默认端口 **19002**，见 [Gateway Web HTTP接口文档.md](./Gateway%20Web%20HTTP接口文档.md)）。
 
 
 ---

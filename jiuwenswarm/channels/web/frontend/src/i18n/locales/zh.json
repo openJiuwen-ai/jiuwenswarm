@@ -1263,6 +1263,7 @@
       "kvCacheAffinity": { "label": "算力亲和", "hint": "控制 Ascend KV Cache 亲和能力" },
       "permissions": { "label": "工具安全护栏", "hint": "控制工具调用时的权限检查" },
       "a2ui": { "label": "A2UI", "hint": "开启或关闭生成式界面渲染与 A2UI 运行时提示词" },
+      "trajectoryUi": { "label": "轨迹界面", "hint": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路" },
       "swarmflow": { "label": "SwarmFlow", "hint": "控制 Team 模式是否启用 SwarmFlow 流程视图与监控" },
       "symphony": { "label": "技能交响乐", "hint": "控制技能交响乐" },
       "skillRetrieval": { "label": "技能交响乐", "hint": "控制技能交响乐" },
@@ -1339,6 +1340,7 @@
     "errors": {
       "requiredModelFields": "模型配置为必填：{{fields}}。请完整填写后再保存并重启。",
       "saveFailed": "保存失败，请稍后重试",
+      "trajectoryUiUnsupported": "当前网关未保存轨迹界面设置，请更新并重启网关后重试。",
       "processingDisabled": "任务执行中，请等待任务完成后再保存配置。",
       "taskRunning": "有任务正在运行，请等待任务完成后再保存配置。",
       "configChangedTitle": "配置已被其他窗口更新",
@@ -2326,7 +2328,7 @@
       "accept": "接收",
       "reject": "拒绝",
       "allowOnce": "本次允许",
-      "sessionAllow": "会话内记住",
+      "sessionAllow": "本会话内允许",
       "alwaysAllow": "永久记住",
       "acceptAll": "全部接收",
       "submit": "确认提交",
@@ -2674,5 +2676,30 @@
   },
   "qaSummary": {
     "title": "问题澄清"
+  },
+  "trajectory": {
+    "loading": "正在加载轨迹界面…",
+    "tabs": {
+      "aria": "单 Agent 内容视图",
+      "trajectory": "轨迹"
+    },
+    "layout": {
+      "hideSessions": "收起会话栏",
+      "showSessions": "展开会话栏",
+      "hideTasks": "收起任务栏",
+      "showTasks": "展开任务栏"
+    }
+  },
+  "longHorizon": {
+    "toastTitle": "长程提醒",
+    "dueLabel": "计划时间",
+    "actions": {
+      "start": "现在做",
+      "snooze": "稍后",
+      "skip": "跳过"
+    },
+    "errors": {
+      "actionFailed": "操作失败"
+    }
   }
 }

@@ -23,6 +23,10 @@ class ProxyTracerProvider:
     pass
 
 
+class ProxyLoggerProvider:
+    pass
+
+
 class _ProxyMeterProvider:
     pass
 
@@ -54,8 +58,10 @@ class _Globals:
     def __init__(self) -> None:
         self.tracer: object = ProxyTracerProvider()
         self.meter: object = _ProxyMeterProvider()
+        self.logger: object = ProxyLoggerProvider()
         self.tracer_sets = 0
         self.meter_sets = 0
+        self.logger_sets = 0
 
     def set_tracer(self, provider: object) -> None:
         self.tracer_sets += 1
@@ -64,6 +70,10 @@ class _Globals:
     def set_meter(self, provider: object) -> None:
         self.meter_sets += 1
         self.meter = provider
+
+    def set_logger(self, provider: object) -> None:
+        self.logger_sets += 1
+        self.logger = provider
 
 
 class _Callbacks:
@@ -139,9 +149,11 @@ def _install_runtime_fakes(
     events: list[str] = []
     tracer = _Provider("tracer", events)
     meter = _Provider("meter", events)
+    logger = _Provider("logger", events)
     bundle = ProviderBundle(
         tracer_provider=tracer,  # type: ignore[arg-type]
         meter_provider=meter,  # type: ignore[arg-type]
+        logger_provider=logger,  # type: ignore[arg-type]
         owns_tracer=owns_tracer,
         owns_meter=owns_meter,
     )
@@ -199,6 +211,16 @@ def _install_runtime_fakes(
         "set_meter_provider",
         globals_state.set_meter,
     )
+    monkeypatch.setattr(
+        runtime_module._logs,
+        "get_logger_provider",
+        lambda: globals_state.logger,
+    )
+    monkeypatch.setattr(
+        runtime_module._logs,
+        "set_logger_provider",
+        globals_state.set_logger,
+    )
     return SimpleNamespace(
         bundle=bundle,
         callbacks=callbacks,
@@ -208,6 +230,7 @@ def _install_runtime_fakes(
         globals=globals_state,
         init_core=init_core,
         meter=meter,
+        logger=logger,
         metrics_builder=metrics_builder,
         provider_builder=provider_builder,
         registry=registry,
@@ -316,7 +339,7 @@ async def test_agentserver_injects_provider_and_registers_callbacks(
     env = _install_runtime_fakes(monkeypatch)
     trajectory_processor = Mock(name="trajectory_span_processor")
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         Mock(return_value=trajectory_processor),
     )
     runtime = TelemetryRuntime()
@@ -783,9 +806,11 @@ async def test_gateway_runtime_installs_registry_on_real_sdk_providers(
 
     tracer_provider = TracerProvider()
     meter_provider = MeterProvider()
+    logger_provider = _Provider("logger", [])
     bundle = ProviderBundle(
         tracer_provider=tracer_provider,
         meter_provider=meter_provider,
+        logger_provider=logger_provider,  # type: ignore[arg-type]
     )
     globals_state = _Globals()
     monkeypatch.setattr(
@@ -817,6 +842,16 @@ async def test_gateway_runtime_installs_registry_on_real_sdk_providers(
         runtime_module.metrics,
         "set_meter_provider",
         globals_state.set_meter,
+    )
+    monkeypatch.setattr(
+        runtime_module._logs,
+        "get_logger_provider",
+        lambda: globals_state.logger,
+    )
+    monkeypatch.setattr(
+        runtime_module._logs,
+        "set_logger_provider",
+        globals_state.set_logger,
     )
     runtime = TelemetryRuntime()
 

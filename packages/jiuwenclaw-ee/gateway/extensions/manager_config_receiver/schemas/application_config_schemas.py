@@ -84,3 +84,24 @@ class InstanceDataLifecycleRequest(BaseModel):
     """
 
     op: str = Field(default="purge", max_length=32)
+
+
+class AuditLogUpsertRequest(BaseModel):
+    """对齐 Manager push：扁平列 + 权威 ``body``（§5.2）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: str | None = Field(default=None, max_length=32)
+    otel_enabled: bool | None = None
+    otel_endpoint: str | None = Field(default=None, max_length=512)
+    otel_protocol: str | None = Field(default=None, max_length=16)
+    data_center: str | None = Field(default=None, max_length=32)
+    system_code: str | None = Field(default=None, max_length=64)
+    node: str | None = Field(default=None, max_length=128)
+    ntp_servers: list[Any] | None = None
+    ntp_sync_interval: str | None = Field(default=None, max_length=32)
+    ntp_max_offset_ms: int | None = None
+    ntp_failover: bool | None = None
+    body: dict[str, Any] = Field(..., description="完整可下发 audit-log payload")
+    source: str | None = Field(default="manager", max_length=16)
+    revision: int | None = Field(default=1)

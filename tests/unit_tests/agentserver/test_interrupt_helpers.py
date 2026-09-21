@@ -305,6 +305,9 @@ def test_parse_hosted_permission_answer_maps_options():
         [{"selected_options": ["本次允许"]}]
     )
     remember = parse_hosted_permission_answer(
+        {"selected_options": ["本会话内允许"]}
+    )
+    remember_legacy = parse_hosted_permission_answer(
         {"selected_options": ["会话内记住"]}
     )
     permanent = parse_hosted_permission_answer(
@@ -320,6 +323,7 @@ def test_parse_hosted_permission_answer_maps_options():
     assert remember == PermissionConfirmResponse(
         approved=True, auto_confirm=True, persist_allow=False, feedback=""
     )
+    assert remember_legacy == remember
     assert permanent == PermissionConfirmResponse(
         approved=True, auto_confirm=True, persist_allow=True, feedback=""
     )
@@ -652,7 +656,7 @@ async def test_hosted_permission_rail_hook_registry_emit_resolve_roundtrip(
                 for p in emitted
                 for q in (p.get("questions") or [])
                 for o in (q.get("options") or [])
-                if o.get("label") == "会话内记住"
+                if o.get("label") == "本会话内允许"
             ),
             None,
         )

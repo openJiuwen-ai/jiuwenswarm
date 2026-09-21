@@ -76,6 +76,8 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.processing_status",
         "chat.interrupt_result",
         "chat.evolution_status",
+        "chat.evolution_generated",
+        "chat.evolution_published",
         "chat.error",
         "heartbeat.relay",
         "context.usage",
@@ -547,11 +549,16 @@ class WebWsTransport(BaseWsChannel):
         """解析 ws 连接身份,供 /ws 和 /ws/git 共用(设计文档 §5.3.7)。
 
         Args:
-            route_type: ``"ws"`` 主路由或 ``"git"`` /ws/git 路由,仅用于日志区分。
+            route_type: ``"ws"`` 主路由或 ``"git"`` /ws/git 路由（保留形参，兼容调用方）。
+
+        Note:
+            企业版默认 ``WEB_TRANSPORT=http``，浏览器刷新不会走本路径；
+            ``ws_resolve_identity`` 审计打点已移除，身份解析逻辑保留。
 
         Returns:
             ``(connection_user_id, routing_key_user_id)``
         """
+        _ = route_type
         connection_user_id = cls._resolve_connection_user_id(flat_query, ws)
         routing_key_user_id = cls._routing_key_user_id(connection_user_id, remote)
         return connection_user_id, routing_key_user_id
@@ -564,12 +571,12 @@ class WebWsTransport(BaseWsChannel):
             seq: int | None = None,
             stream_id: str | None = None,
             exclude_ws: Any = None,
+            user_id: str | None = None,
     ) -> None:
-        """向所有已连接客户端广播 ``event`` 帧.
+        """向已连接客户端广播 ``event`` 帧.
 
-        exclude_ws: 排除单个发起方 ws（如 config.changed 的保存发起方），
-        避免发起方收到自身触发的广播而误弹「丢弃草稿」确认框。发起方靠
-        保存响应的本地乐观合并自行刷新，无需这条广播。
+        exclude_ws: 排除单个发起方 ws。
+        user_id: 长程 Toast 等按连接身份过滤；缺省时不发给已绑定其他用户的连接。
         """
         frame: dict[str, Any] = {"type": "event", "event": event, "payload": payload}
         if seq is not None:
@@ -579,6 +586,17 @@ class WebWsTransport(BaseWsChannel):
         clients = self.clients
         if exclude_ws is not None:
             clients = {c for c in clients if c is not exclude_ws}
+        wanted = str(user_id or payload.get("user_id") or "").strip()
+        if event == "long_horizon.stage_due" or wanted:
+            selected = set()
+            for client in clients:
+                cid = str(self.connection_user_id(client) or "").strip()
+                if wanted:
+                    if cid == wanted:
+                        selected.add(client)
+                elif not cid:
+                    selected.add(client)
+            clients = selected
         await self._broadcast_to(frame, clients)
 
     # ── WebSocket 生命周期 ──────────────────────────────────

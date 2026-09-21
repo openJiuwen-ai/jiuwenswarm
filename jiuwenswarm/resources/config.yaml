@@ -488,6 +488,25 @@ agent_observability:
   file_retention_days: 7            # file exporter 文件保留天数
 
 # ============================================================
+# 单 Agent 轨迹观测 Web 数据面
+# ============================================================
+# enabled=true 会作为 Agent / Team OTel provider 的额外 demand，但仍完整复用
+# agent_observability / team_observability 的 exporter、采样、脱敏、字段长度
+# 与 Langfuse 配置。Processor 后的数据由 AgentServer 有界队列写入 SQLite；
+# Gateway 只读查询。Agent 与 Team 会话均向 Web 暴露轨迹。
+# auto_harness 不向 Web 暴露轨迹。
+# ============================================================
+trajectory_ui:
+  enabled: false                     # 启用“对话 / 轨迹”数据链路
+  db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
+  retention_days: 7                 # SQLite 轨迹保留天数
+  queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
+  batch_size: 64                    # writer 单事务最大记录数
+  flush_interval_ms: 200            # writer 最大合批等待时间
+  poll_interval_ms: 2000            # Web 端兜底轮询间隔
+  detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
+
+# ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置
 # ============================================================
 # 控制非 team 模式（agent.* / code.*）的人类可读本地 dump。
@@ -571,6 +590,11 @@ react:
       - todo_list
       - todo_modify
       - task_tool                   # 常驻可见，否则 ProgressiveToolRail 会滤掉，主 agent 无法委派 subagent
+      - memory_search               # 记忆五件套常驻：被动记忆提示词要求"涉及历史/偏好先 memory_search"，
+      - memory_get                  # 若被滤进 deferred 池，模型面对偏好类问题时不会想到经 tools_search
+      - read_memory                 # 间接调用（尤其中小模型），长期记忆功能形同虚设
+      - write_memory
+      - edit_memory
     enable_for_models:             # 模型白名单（空=全部启用）
       - glm
     subagents:                      # 子 agent 延迟加载配置

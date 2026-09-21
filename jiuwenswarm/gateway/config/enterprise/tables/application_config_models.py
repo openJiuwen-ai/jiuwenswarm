@@ -109,3 +109,39 @@ MEMORY_CONFIG_TABLE_DEF = TableDefinition(
     ],
     indexes=[],
 )
+
+AUDIT_LOG_CONFIG_TABLE_DEF = TableDefinition(
+    table_name="audit_log_config",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("schema_version", "string", length=32, nullable=False, default="1.0.0"),
+        ColumnDefinition("otel_enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("otel_endpoint", "string", length=512, nullable=True),
+        ColumnDefinition("otel_protocol", "string", length=16, nullable=False, default="grpc"),
+        ColumnDefinition("data_center", "string", length=32, nullable=False, default="N"),
+        ColumnDefinition("system_code", "string", length=64, nullable=False, default="-"),
+        ColumnDefinition("node", "string", length=128, nullable=True),
+        ColumnDefinition("ntp_servers", "json", nullable=False),
+        ColumnDefinition(
+            "ntp_sync_interval",
+            "string",
+            length=32,
+            nullable=False,
+            default="300s",
+        ),
+        ColumnDefinition("ntp_max_offset_ms", "integer", nullable=False, default=500),
+        ColumnDefinition("ntp_failover", "boolean", nullable=False, default=True),
+        ColumnDefinition("body", "json", nullable=False),
+        ColumnDefinition("source", "string", length=16, nullable=False, default="manager"),
+        ColumnDefinition("revision", "integer", nullable=False, default=1),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[],
+)

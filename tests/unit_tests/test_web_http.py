@@ -285,6 +285,82 @@ def test_http_dispatch_registers_outbound_not_ws(monkeypatch: pytest.MonkeyPatch
     asyncio.run(_run())
 
 
+def test_http_dispatch_session_create_emits_resolve_identity(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """企业 HTTP 对等 #1：session.create + X-User-Id → http_resolve_identity UA。"""
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from jiuwenswarm.gateway.channel_manager.web import web_http_dispatch as disp
+
+    channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
+    audit_calls: list[dict[str, Any]] = []
+
+    def _capture_ua(**kwargs: Any) -> None:
+        audit_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.audit_emit.emit_audit_ua",
+        _capture_ua,
+    )
+    monkeypatch.setattr(disp, "is_enterprise", lambda: True)
+
+    async def _handler(ws, req_id, params, session_id, **kwargs):
+        await channel.send_response(ws, req_id, ok=True, payload={"id": "s1"})
+
+    channel.register_method("session.create", _handler)
+    channel.register_method("chat.send", _handler)
+
+    async def _run():
+        out, _rid, _sid = await disp.dispatch_http_request(
+            channel,
+            method="session.create",
+            params={"title": "t"},
+            headers={
+                "X-Request-Id": "req-id-1",
+                "X-User-Id": "user-alice",
+            },
+            client_host="10.0.0.8",
+            use_sse=False,
+        )
+        await channel.unregister_request_outbound(out)
+
+        assert len(audit_calls) == 1
+        assert audit_calls[0]["PROC"] == "http_resolve_identity"
+        assert audit_calls[0]["SUBMDL"] == "gateway"
+        assert audit_calls[0]["UID"] == "user-alice"
+        assert audit_calls[0]["request_id"] == "req-id-1"
+
+        audit_calls.clear()
+        out2, _rid2, _sid2 = await disp.dispatch_http_request(
+            channel,
+            method="chat.send",
+            params={"content": "hi"},
+            headers={
+                "X-Request-Id": "req-id-2",
+                "X-User-Id": "user-alice",
+                "X-Session-Id": "sess-1",
+            },
+            client_host="10.0.0.8",
+            use_sse=False,
+        )
+        await channel.unregister_request_outbound(out2)
+        assert audit_calls == []
+
+        out3, _rid3, _sid3 = await disp.dispatch_http_request(
+            channel,
+            method="session.create",
+            params={},
+            headers={"X-Request-Id": "req-id-3"},
+            client_host="10.0.0.8",
+            use_sse=False,
+        )
+        await channel.unregister_request_outbound(out3)
+        assert audit_calls == []
+
+    asyncio.run(_run())
+
+
 def test_http_sse_unregister_on_cancel():
     """S4: client cancel / stop clears request outbound routing tables."""
     from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter

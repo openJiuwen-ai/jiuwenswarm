@@ -250,7 +250,11 @@ def patch_session_roots(monkeypatch, sessions_root):
         lambda: sessions_root,
     )
     # 进程合一：session.create / team.bind 等经 _sessions_dir_for_request 写租户 sessions。
-    patch_shared_name(monkeypatch, "_sessions_dir_for_request", lambda request: sessions_root)
+    patch_shared_name(
+        monkeypatch,
+        "_sessions_dir_for_request",
+        lambda request, *args, **kwargs: sessions_root,
+    )
     patch_shared_name(
         monkeypatch, "resolve_tenant_sessions_dir", lambda *args, **kwargs: sessions_root
     )

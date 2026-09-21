@@ -30,6 +30,8 @@ from a2a.types import (
     TaskState,
 )
 
+from jiuwenswarm.common.audit_emit import AuditTimer, emit_audit_evt, emit_audit_ua
+
 from .credentials import A2AOutboundCredentialStore
 from .discovery import A2AOutboundDiscoveryService, create_pinned_transport
 from .errors import A2AOutboundError, A2AOutboundErrorCode, safe_error_summary
@@ -288,6 +290,45 @@ class A2AOutboundDispatcher:
         source_user_id = str(source_user_id or "").strip() or None
         if getattr(self._repository, "manager_owned", False) and not source_user_id:
             raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
+        with AuditTimer() as timer:
+            try:
+                result = await self._dispatch_impl(
+                    agent_id=agent_id,
+                    task=task,
+                    mode=mode,
+                    source_session_id=source_session_id,
+                    source_resource_id=source_resource_id,
+                    source_user_id=source_user_id,
+                    reason=reason,
+                )
+            except A2AOutboundError as exc:
+                emit_audit_evt(
+                    SUBMDL="api_client",
+                    PROC="a2a_outbound_dispatch",
+                    MSG=str(exc.code.value),
+                    EVT="a2a_outbound_dispatch_failed",
+                    agent_id=str(agent_id or ""),
+                )
+                raise
+            emit_audit_ua(
+                SUBMDL="api_client",
+                PROC="a2a_outbound_dispatch",
+                COST=timer.cost_ms,
+                agent_id=str(agent_id or ""),
+            )
+            return result
+
+    async def _dispatch_impl(
+        self,
+        *,
+        agent_id: str,
+        task: str,
+        mode: A2AOutboundDispatchMode | str,
+        source_session_id: str,
+        source_resource_id: str | None = None,
+        source_user_id: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
         reason_present = bool(str(reason or "").strip())
         task_text = str(task or "")
         if not task_text.strip() or len(task_text) > MAX_TASK_TEXT_LENGTH:

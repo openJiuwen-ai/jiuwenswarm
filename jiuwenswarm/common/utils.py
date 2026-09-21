@@ -2051,6 +2051,60 @@ def get_tenant_agent_workspace_dir(workspace_key: str | None = None) -> Path:
     return get_multi_tenant_user_workspace_dir(wk) / get_agent_workspace_relative_dir()
 
 
+def seed_tenant_agent_workspace(tenant_root: Path) -> None:
+    """为租户工作区补种 DeepAgent 标准模板文件（幂等，已存在一律跳过）。
+ 
+    ``prepare_workspace`` 只初始化默认租户（个人版 ``service_default/agent_default``），
+    其余租户目录（个人版 ``service_{sid}/agent_{aid}``，如 officeclaw 渠道的
+    agent_office）由 TenantAgentPool 懒创建，此前从未播种 AGENT/SOUL/IDENTITY/
+    HEARTBEAT/USER/MEMORY.md 等模板。首次进入某租户请求时调用本函数补齐，
+    使 write_memory/read_memory 等记忆工具有完整的工作区骨架。
+    """
+    workspace = Path(tenant_root) / get_agent_workspace_relative_dir()
+    memory_dir = workspace / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+ 
+    package_root = _find_package_root()
+    if package_root is None:
+        logger.warning("seed_tenant_agent_workspace: package root not found, skip seeding")
+        return
+    template_workspace = package_root / "resources" / "agent" / "workspace"
+    if not template_workspace.is_dir():
+        logger.warning(
+            "seed_tenant_agent_workspace: template missing: %s, skip seeding", template_workspace,
+        )
+        return
+ 
+    resolved_lang = _resolve_preferred_language(get_config_file(), None)
+    suffix = "_ZH" if resolved_lang == "zh" else "_EN"
+    # (模板内相对路径, 落盘相对路径)，多语言文件去掉 _ZH/_EN 后缀
+    entries: list[tuple[str, str]] = [
+        (f"AGENT{suffix}.md", "AGENT.md"),
+        (f"HEARTBEAT{suffix}.md", "HEARTBEAT.md"),
+        (f"IDENTITY{suffix}.md", "IDENTITY.md"),
+        (f"SOUL{suffix}.md", "SOUL.md"),
+        ("USER.md", "USER.md"),
+        (f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"),
+    ]
+    added: list[str] = []
+    for src_rel, dst_rel in entries:
+        src = template_workspace / src_rel
+        if not src.is_file():
+            continue
+        dst = workspace / dst_rel
+        if dst.exists():
+            continue
+        try:
+            shutil.copy2(src, dst)
+            added.append(dst_rel)
+        except OSError as e:
+            logger.warning("seed_tenant_agent_workspace: copy %s failed: %s", dst_rel, e)
+    if added:
+        logger.info(
+            "seed_tenant_agent_workspace: %s -> %s", ", ".join(added), workspace,
+        )
+
+
 def get_tenant_agent_skills_dirs(workspace_key: str | None = None) -> list[Path]:
     """多租户 skills 目录（与 ``JiuWenSwarm`` / ``SkillManager`` 落盘路径一致）."""
     return [get_tenant_agent_workspace_dir(workspace_key) / "skills"]

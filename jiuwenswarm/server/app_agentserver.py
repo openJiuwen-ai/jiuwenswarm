@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import atexit
+import importlib
 import logging
 import logging.handlers
 import os
@@ -168,6 +169,13 @@ from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
 
 apply_task_tool_debug_patch()
 
+# Ensure every harness-created subagent receives the SDK observability rail.
+# Loading this module earlier changes startup ordering, so keep it deferred
+# until the compatibility patches above are installed.
+importlib.import_module(
+    "openjiuwen.harness.observability"
+).install_subagent_observability_hook()
+
 # Subagent thinking control (task_tool optional ``thinking`` param).
 # Requires openjiuwen core with llm_call_kwargs + thinking_hook; otherwise no-op.
 from jiuwenswarm.common.thinking.register_hook import register_thinking_hook
@@ -302,6 +310,23 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
             logger.info("[AgentServer] logging levels reloaded from config store (if any)")
         except Exception:  # noqa: BLE001
             logger.warning("[AgentServer] logging_config cold load skipped", exc_info=True)
+
+    if is_enterprise():
+        try:
+            from jiuwenswarm.gateway.config.audit.access import (
+                SERVICE_AGENTSERVER,
+                reload_audit_log_config_from_db,
+            )
+
+            await reload_audit_log_config_from_db(service=SERVICE_AGENTSERVER)
+            logger.info(
+                "[AgentServer] audit_log_config loaded from Gateway DB (if any)"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] audit_log_config cold load skipped",
+                exc_info=True,
+            )
 
     if is_enterprise():
         try:

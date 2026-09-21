@@ -415,16 +415,31 @@ def save_pushed_file(
         build_file_download_info,
     )
 
+    from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
     clean_name = safe_filename(filename)
     safe_name = f"{int(time.time())}_{clean_name}"
     local_path = resolve_path_under_directory(received_files_dir(), safe_name)
     if local_path is None:
+        emit_audit_evt(
+            SUBMDL="file",
+            PROC="file_upload",
+            MSG="invalid_filename",
+            EVT="invalid_filename",
+            session_id=session_id,
+        )
         raise ValueError("invalid_filename")
     local_path.write_bytes(file_bytes)
     download_info = build_file_download_info(
         file_path=str(local_path),
         file_name=clean_name,
         session_id=session_id,
+    )
+    emit_audit_ua(
+        SUBMDL="file",
+        PROC="file_upload",
+        session_id=session_id,
+        filename=clean_name,
     )
     return {
         "success": True,
@@ -436,18 +451,46 @@ def save_pushed_file(
 
 
 def process_obs_upload_body(raw: bytes) -> tuple[int, dict[str, Any]]:
+    from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
     try:
         payload = json.loads(raw.decode("utf-8") if raw else "{}")
     except json.JSONDecodeError:
+        emit_audit_evt(
+            SUBMDL="file",
+            PROC="file_upload",
+            MSG="invalid_json",
+            EVT="invalid_json",
+        )
         return 400, {"ok": False, "error": "invalid_json"}
     if not isinstance(payload, dict):
+        emit_audit_evt(
+            SUBMDL="file",
+            PROC="file_upload",
+            MSG="invalid_payload",
+            EVT="invalid_payload",
+        )
         return 400, {"ok": False, "error": "invalid_payload"}
+    filename = str(payload.get("filename") or "upload.bin")
     try:
         from jiuwenswarm.channels.web.minio_upload import upload_base64_payload
 
-        return 200, upload_base64_payload(payload)
+        result = upload_base64_payload(payload)
+        emit_audit_ua(
+            SUBMDL="file",
+            PROC="file_upload",
+            filename=str(result.get("name") or filename),
+        )
+        return 200, result
     except Exception as exc:
         logger.error("[file_http] MinIO upload failed: %s", exc, exc_info=True)
+        emit_audit_evt(
+            SUBMDL="file",
+            PROC="file_upload",
+            MSG=str(exc)[:512],
+            EVT="file_upload_failed",
+            filename=filename,
+        )
         return 500, {"ok": False, "error": str(exc)}
 
 

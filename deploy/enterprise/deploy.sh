@@ -26,6 +26,7 @@ source "web_handler.sh"
 source "runtime_handler.sh"
 source "patch_handler.sh"
 source "link_mtls_handler.sh"
+source "observability_handler.sh"
 
 process_up() {
     # MODULES是ALL_MODULES的子集，启动顺序正着来

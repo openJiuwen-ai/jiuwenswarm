@@ -1,6 +1,6 @@
 # A2A 接入说明
 
-本文说明 Gateway 侧 **A2A 入站服务**的管理入口、配置方式、与内部 `Message`/E2A 的对应关系及端到端验证方式；出站 A2A（Agent 调外部）见 §7，完整 HTTP 契约见 [Gateway A2A HTTP 接口文档](Gateway%20A2A接口文档.md)。
+本文说明 Gateway 侧 **A2A 入站服务**的管理入口、配置方式、与内部 `Message`/E2A 的对应关系及端到端验证方式；出站 A2A（Agent 调外部）见 §7，完整 HTTP 契约见 [Gateway A2A HTTP 接口文档](../../jiuwenswarm/gateway/docs/Gateway%20A2A接口文档.md)。
 
 > **运行时所有者**：`jiuwenswarm/gateway/a2a_manager/manager.py`（`A2AManager`）。**协议适配器**：`jiuwenswarm/gateway/channel_manager/protocol/a2a/a2a_connect.py`（`A2AChannel` + `a2a-sdk`）。**入口进程**：`python -m jiuwenswarm.gateway.app_gateway`。冲突时以源码为准，并回头修正本文。
 
@@ -17,7 +17,7 @@
 | `jiuwenswarm/gateway/message_handler/message_handler.py` | 与 AgentServer 的 E2A 收发、内部 `Message` 编排 |
 | `jiuwenswarm/gateway/channel_manager/channel_manager.py` | 频道注册与 `robot_messages` → `Channel.send` 派发 |
 | [E2A-protocol.md](E2A-protocol.md) | Gateway↔AgentServer 内层协议 |
-| [Gateway A2A接口文档.md](Gateway%20A2A接口文档.md) | 出站 Web HTTP、企业 Config Receiver、权限及 DTO |
+| [Gateway A2A接口文档.md](../../jiuwenswarm/gateway/docs/Gateway%20A2A接口文档.md) | 出站 Web HTTP、企业 Config Receiver、权限及 DTO |
 
 ---
 
@@ -164,7 +164,7 @@ flowchart LR
 
 - Gateway 的 `A2AManager` 负责外部 A2A Agent 的发现、注册、运行态目录、启停投影和派发记录。
 - AgentServer 侧工具通过 Gateway 反向 RPC 执行 Agent 查找、同步/异步派发以及派发结果查询；企业版使用 Gateway 注入的可信用户、会话和资源身份进行授权与历史隔离。
-- Web HTTP 和企业 Config Receiver 的已实现接口、请求响应及权限规则见 [Gateway A2A HTTP 接口文档](Gateway%20A2A接口文档.md)。
+- Web HTTP 和企业 Config Receiver 的已实现接口、请求响应及权限规则见 [Gateway A2A HTTP 接口文档](../../jiuwenswarm/gateway/docs/Gateway%20A2A接口文档.md)。
 
 ---
 

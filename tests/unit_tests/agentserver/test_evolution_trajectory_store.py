@@ -31,7 +31,7 @@ def test_build_skill_evolution_rail_passes_trajectory_span_processor(tmp_path, m
     adapter._skill_manager = SimpleNamespace(list_execution_disabled_skills=lambda: [])
     with (
         patch(
-            "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+            "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
             return_value=processor,
         ),
         patch.object(adapter, "_resolve_skill_dirs", return_value=[str(tmp_path / "skills")]),
@@ -69,7 +69,7 @@ async def test_ensure_active_evolution_rails_passes_trajectory_span_processor(tm
         patch.object(adapter, "_resolve_runtime_language", return_value="cn"),
         patch.object(adapter, "_resolve_skill_dirs", return_value=[str(tmp_path / "skills")]),
         patch(
-            "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+            "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
             return_value=processor,
         ),
         patch(
