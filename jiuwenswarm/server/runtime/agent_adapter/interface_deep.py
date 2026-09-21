@@ -8039,6 +8039,28 @@ class JiuWenSwarmDeepAdapter:
         """User yaml ``react.ttse`` plus adapter cache (runtime cache wins)."""
         return _merge_ttse_config(config if config is not None else self._config_cache)
 
+    @staticmethod
+    def _ttse_consult_knobs(ttse_cfg: dict[str, Any]) -> tuple[int, str]:
+        """Parse live ``consult_top_k`` / ``consult_retrieve_mode`` from yaml."""
+        try:
+            consult_top_k = int(ttse_cfg.get("consult_top_k", 8) or 8)
+        except (TypeError, ValueError):
+            consult_top_k = 8
+        if consult_top_k <= 0:
+            consult_top_k = 8
+        try:
+            from openjiuwen.agent_evolving.ttse.config import (
+                normalize_consult_retrieve_mode,
+            )
+        except ImportError:
+            def normalize_consult_retrieve_mode(value: Any) -> str:
+                raw = str(value or "").strip().lower()
+                return raw if raw in ("hybrid", "embed", "bm25") else "hybrid"
+
+        return consult_top_k, normalize_consult_retrieve_mode(
+            ttse_cfg.get("consult_retrieve_mode")
+        )
+
     def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
         """Build TTSERail for FACT/TIP dual-track self-evolution.
 
@@ -8060,10 +8082,7 @@ class JiuWenSwarmDeepAdapter:
             evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
             inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
             dream_enabled = coerce_config_bool(ttse_cfg.get("dream_enabled"), True)
-            try:
-                consult_top_k = int(ttse_cfg.get("consult_top_k", 8) or 8)
-            except (TypeError, ValueError):
-                consult_top_k = 8
+            consult_top_k, consult_retrieve_mode = self._ttse_consult_knobs(ttse_cfg)
             try:
                 consult_rrf_k = int(ttse_cfg.get("consult_rrf_k", 60) or 60)
             except (TypeError, ValueError):
@@ -8109,6 +8128,7 @@ class JiuWenSwarmDeepAdapter:
                 "dream_min_hours": _TTSE_DREAM_MIN_HOURS,
                 "dream_ttl_days": _TTSE_DREAM_TTL_DAYS,
                 "consult_top_k": consult_top_k,
+                "consult_retrieve_mode": consult_retrieve_mode,
                 "consult_rrf_k": consult_rrf_k,
             }
             try:
@@ -8170,14 +8190,43 @@ class JiuWenSwarmDeepAdapter:
             )
         cfg_obj = getattr(rail, "_ttse_config", None)
         if cfg_obj is not None:
+            consult_top_k, consult_retrieve_mode = self._ttse_consult_knobs(ttse_cfg)
             for attr, value in (
                 ("dream_enabled", bool(dream_enabled)),
                 ("dream_interval", _TTSE_DREAM_INTERVAL),
                 ("dream_min_hours", _TTSE_DREAM_MIN_HOURS),
                 ("dream_ttl_days", _TTSE_DREAM_TTL_DAYS),
+                ("consult_top_k", consult_top_k),
+                ("consult_retrieve_mode", consult_retrieve_mode),
             ):
                 if hasattr(cfg_obj, attr):
                     setattr(cfg_obj, attr, value)
+            store = getattr(rail, "_ttse_store", None)
+            store_cfg = getattr(store, "_config", None) if store is not None else None
+            if store_cfg is not None and store_cfg is not cfg_obj:
+                if hasattr(store_cfg, "consult_top_k"):
+                    store_cfg.consult_top_k = consult_top_k
+                if hasattr(store_cfg, "consult_retrieve_mode"):
+                    store_cfg.consult_retrieve_mode = consult_retrieve_mode
+            emb_cfg = get_ttse_embedding_config({"react": {"ttse": ttse_cfg}})
+            embedding = None
+            if emb_cfg:
+                from jiuwenswarm.agents.harness.common.memory.embeddings import (
+                    OpenAICompatibleEmbeddingProvider,
+                )
+
+                embedding = OpenAICompatibleEmbeddingProvider(
+                    api_key=emb_cfg["api_key"],
+                    base_url=emb_cfg["base_url"],
+                    model=emb_cfg["model"],
+                )
+            if embedding is not None:
+                if store is not None:
+                    attach = getattr(store, "attach_embedding", None)
+                    if callable(attach):
+                        attach(embedding)
+                if hasattr(cfg_obj, "embedding"):
+                    cfg_obj.embedding = embedding
         logger.info(
             "[JiuWenSwarmDeepAdapter] TTSERail config synced: "
             "store_path=%s evolve_enabled=%s inject_enabled=%s",
