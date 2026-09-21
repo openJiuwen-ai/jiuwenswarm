@@ -2160,6 +2160,24 @@ function registerIpcHandlers() {
         : [];
     return describeLocalPaths(list);
   });
+  // 切换账号需要清掉华为账号在应用内浏览器里的登录态
+  registerHandler('auth:clear-huawei-sign-in', async () => {
+    const all = await session.defaultSession.cookies.get({});
+    const cookies = all.filter(cookie => /(^|\.)huawei\.com$/i.test(cookie.domain.replace(/^\./, '')));
+    let removed = 0;
+    for (const cookie of cookies) {
+      const host = cookie.domain.replace(/^\./, '');
+      const url = `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path || '/'}`;
+      try {
+        await session.defaultSession.cookies.remove(url, cookie.name);
+        removed += 1;
+      } catch (error) {
+        console.warn('[electron] failed to remove cookie', cookie.name, error);
+      }
+    }
+    console.log('[electron] cleared huawei sign-in cookies', removed);
+    return removed;
+  });
   registerHandler('desktop:get-clipboard-files', async () => {
     const paths = await clipboardFilePaths();
     return describeLocalPaths(paths);

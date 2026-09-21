@@ -30,6 +30,7 @@ const desktopApi = Object.freeze({
   selectLocalFilePath: (initialPath, title) => invoke('desktop:select-local-file-path', initialPath, title),
   describeLocalFiles: paths => invoke('desktop:describe-local-files', paths),
   getClipboardFiles: () => invoke('desktop:get-clipboard-files'),
+  clearHuaweiSignIn: () => invoke('auth:clear-huawei-sign-in'),
   onLayoutInvalidated: callback => {
     const listener = () => callback();
     ipcRenderer.on('desktop:layout-invalidated', listener);
