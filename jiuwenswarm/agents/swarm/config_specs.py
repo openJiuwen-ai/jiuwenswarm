@@ -93,6 +93,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     # Reloads the member's Skill view after a write into the single library.
     # Replaces the former link-refresh rail: there is no per-team link view.
     registry.TEAM_SKILL_LIBRARY_RELOAD,
+    registry.MISSING_FILE_PATH,
     registry.RESPONSE_PROMPT,
     registry.SYS_OPERATION,
     registry.STREAM_EVENT,
@@ -168,6 +169,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
 
 # Rails shared with the team profile, appended to the code profile.
 _CODE_SHARED_RAIL_NAMES: tuple[str, ...] = (
+    registry.MISSING_FILE_PATH,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.PLUGIN_RAILS,
 )
@@ -437,6 +439,9 @@ def _member_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
 
 # Per-element attribute params, keyed by provider name; empty for parameterless.
 _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    registry.MISSING_FILE_PATH: lambda c: {
+        "enabled": _config_section(c, "file_path_recovery").get("enabled", False),
+    },
     registry.CONTEXT_PROCESSOR: _context_processor_params,
     registry.MODEL_ANOMALY_DETECTION: _model_anomaly_detection_params,
     registry.CODE_PROJECT_MEMORY: lambda c: {
