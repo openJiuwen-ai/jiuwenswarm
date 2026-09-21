@@ -47,14 +47,15 @@ def enqueue_bound_session_input(instance, target_round, request, sdk_request) ->
         raise SessionInputTargetError(
             "the targeted execution has ended or changed; supplemental input was not sent"
         )
-    if execution is not None and (
-        execution.session_id != request.session_id
-        or execution.state is not SessionExecutionState.RUNNING
-        or execution.cancellation_requested
-    ):
-        raise SessionInputTargetError(
-            "the targeted execution has ended or changed; supplemental input was not sent"
-        )
+    if execution is not None:
+        if (
+            execution.session_id != request.session_id
+            or execution.state is not SessionExecutionState.RUNNING
+            or execution.cancellation_requested
+        ):
+            raise SessionInputTargetError(
+                "the targeted execution has ended or changed; supplemental input was not sent"
+            )
     if (
         instance.active_round is not target_round
         or target_round is None
