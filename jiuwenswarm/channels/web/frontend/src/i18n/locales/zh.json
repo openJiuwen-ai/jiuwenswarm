@@ -2896,6 +2896,7 @@
         "definitionUnavailable": "该专家团定义不完整，暂时无法使用。",
         "membersInvalid": "专家团成员信息无效，请选择唯一的负责人和成员。",
         "memberUnavailable": "所选专家不可用或不兼容团队。",
+        "packageValidationError": "专家团包校验失败：{{reason}}",
         "createSuccess": "专家团包 {{id}} 已创建。",
         "uploadSuccess": "专家团包 {{id}} 已导入，请在我的专家团中查看。",
         "uploadError": "专家团包导入失败，请检查文件后重试。",
