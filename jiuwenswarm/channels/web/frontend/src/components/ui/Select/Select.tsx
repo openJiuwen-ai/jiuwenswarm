@@ -228,6 +228,9 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
               aria-labelledby={id}
               tabIndex={-1}
               data-side="bottom"
+              // 门户挂到 body 后不在宿主面板 DOM 子树内：宿主的"点击外部关闭"逻辑
+              // 靠该标记把面板内部识别为"内部点击"，避免点选项时误关宿主面板
+              data-select-panel=""
               className={`ui-dropdown-menu ui-select__panel${phase === 'closing' ? ' ui-dropdown-menu--closing' : ''}`}
               style={style}
               onKeyDown={handlePanelKeyDown}

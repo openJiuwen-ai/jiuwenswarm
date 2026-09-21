@@ -39,7 +39,7 @@
 }
 
 .page-card--selected {
-  background: var(--color-skill-card-accent-subtle);
+  background: var(--color-chat-accent-subtle);
   border-color: var(--color-chat-accent);
 }
 

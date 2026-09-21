@@ -123,6 +123,8 @@ export function TeamMembersPanel({
   const groupMemberNames = [t('team.leader'), ...getGroupMemberIds(members).map(getMemberDisplayName)].join(
     t('team.memberSeparator'),
   );
+  // 群聊头像：文字取本地化群聊名的首字符（getSkillAvatar 的配色也按同一名字哈希），随语言切换
+  const groupAvatar = getSkillAvatar(t('team.groupChat'));
   const visibleMembers = useMemo(
     () => members.filter((member) => !isLeaderMember(member, teamLeaderMemberIds)),
     [members, teamLeaderMemberIds],
@@ -205,9 +207,9 @@ export function TeamMembersPanel({
               <div className="relative shrink-0" data-testid="team-area-member-item-avatar">
                 <span
                   className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full text-sm font-semibold"
-                  style={getSkillAvatar(t('team.groupChat')).style}
+                  style={groupAvatar.style}
                 >
-                  群
+                  {groupAvatar.firstChar}
                 </span>
               </div>
               <div className="min-w-0 flex-1">
