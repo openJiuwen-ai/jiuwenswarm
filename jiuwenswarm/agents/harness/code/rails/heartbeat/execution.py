@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -527,6 +528,7 @@ class HeartbeatExecutionService:
                 user_id=str(request_message.user_id or ""),
                 agent_ref=request_message.agent_ref,
             )
+            request.metadata["execution_deadline_at"] = time.time() + self._execution_timeout_seconds
 
             async def execute() -> None:
                 await self._server.execute_internal_heartbeat(request)

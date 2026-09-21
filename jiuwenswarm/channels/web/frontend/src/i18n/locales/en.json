@@ -149,6 +149,13 @@
       "languageDescription": "Set the display language for the application interface.",
       "chinese": "中文（简体）",
       "english": "English",
+      "closeBehavior": "When closing the main window",
+      "closeBehaviorDescription": "Choose what the window close button does. You can change this at any time.",
+      "closeBehaviorOptions": {
+        "ask": "Ask every time",
+        "hide": "Minimize to tray",
+        "quit": "Quit application"
+      },
       "connection": "Service connection",
       "connectionDescription": "Shows the connection status between this page and the WorkSwarm service.",
       "connectionStatus": {

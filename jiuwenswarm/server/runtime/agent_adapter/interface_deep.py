@@ -6595,6 +6595,21 @@ class JiuWenSwarmDeepAdapter:
         return model
 
     @staticmethod
+    def _with_execution_deadline(inputs: dict[str, Any], request: AgentRequest) -> dict[str, Any]:
+        deadline = (request.metadata or {}).get("execution_deadline_at")
+        if not isinstance(deadline, (int, float)) or deadline <= 0:
+            return inputs
+        updated = dict(inputs)
+        run = dict(updated.get("run") or {})
+        context = dict(run.get("context") or {})
+        extra = dict(context.get("extra") or {})
+        extra["execution_deadline_at"] = deadline
+        context["extra"] = extra
+        run["context"] = context
+        updated["run"] = run
+        return updated
+
+    @staticmethod
     def _with_symphony_request_model(
         inputs: dict[str, Any],
         model: Model,
@@ -12644,6 +12659,7 @@ class JiuWenSwarmDeepAdapter:
         session_id: str,
         total_tokens: int,
         had_assistant_output: bool,
+        had_tool_output: bool,
         run_failure: tuple[str, str] | None,
         stream_consumer_cancelled: bool,
         emitted_ask_user_events: set[tuple[Any, ...]],
@@ -12655,9 +12671,10 @@ class JiuWenSwarmDeepAdapter:
         issue #1447). Detect that here — total 0 tokens, nothing streamed, no
         terminal failure already surfaced, and none of the legitimate 0-token
         exits (consumer cancel, HITL ask_user pending, an active goal round,
-        rail abort from user cancel/supplement).
+        rail abort from user cancel/supplement, forwarded tool events such as
+        a Web plan-execute resume that only finishes ``exit_plan_mode``).
         """
-        if total_tokens > 0 or had_assistant_output:
+        if total_tokens > 0 or had_assistant_output or had_tool_output:
             return False
         if run_failure is not None or stream_consumer_cancelled:
             return False
@@ -15069,6 +15086,7 @@ class JiuWenSwarmDeepAdapter:
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
+        inputs = self._with_execution_deadline(inputs, request)
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
@@ -15827,6 +15845,7 @@ class JiuWenSwarmDeepAdapter:
         accumulated_text = ""
         accumulated_reasoning = ""
         had_assistant_output = False
+        had_tool_output = False
         emitted_terminal_chat_final = False
         usage_accumulator = {
             "input_tokens": 0,
@@ -15861,11 +15880,13 @@ class JiuWenSwarmDeepAdapter:
             return False
 
         async def note_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
-            nonlocal had_assistant_output, emitted_terminal_chat_final
+            nonlocal had_assistant_output, had_tool_output, emitted_terminal_chat_final
             nonlocal run_answer_final
             event_type = payload.get("event_type")
             if event_type in ("chat.delta", "chat.reasoning", "chat.final"):
                 had_assistant_output = True
+            if event_type in ("chat.tool_call", "chat.tool_update", "chat.tool_result"):
+                had_tool_output = True
             if event_type == "chat.delta":
                 # Single choke point for forwarded text: memo it so a demoted
                 # goal attempt final can skip text the bubble already shows.
@@ -15960,6 +15981,7 @@ class JiuWenSwarmDeepAdapter:
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
+        inputs = self._with_execution_deadline(inputs, request)
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
@@ -16683,14 +16705,17 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             # Issue #1447 guard: a round that consumed 0 tokens and streamed no
-            # assistant output means the LLM was never called (upstream corrupted
-            # interruption state makes this a persistent, silently failing state).
-            # Must run BEFORE the stream-end chat.final synthesis below so the
-            # guard can suppress the synthetic success final.
+            # assistant output and no tool events means the LLM was never called
+            # (upstream corrupted interruption state makes this a persistent,
+            # silently failing state). Must run BEFORE the stream-end chat.final
+            # synthesis below so the guard can suppress the synthetic success
+            # final. Tool-only 0-token finishes (Web plan execute/skip resume)
+            # are legitimate and must not be flagged.
             empty_llm_run = self._detect_empty_llm_run(
                 session_id=session_id,
                 total_tokens=usage_accumulator["total_tokens"],
                 had_assistant_output=had_assistant_output,
+                had_tool_output=had_tool_output,
                 run_failure=run_failure,
                 stream_consumer_cancelled=stream_consumer_cancelled,
                 emitted_ask_user_events=emitted_ask_user_events,
