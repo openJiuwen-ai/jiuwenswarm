@@ -6,6 +6,7 @@ import {
   ProactiveLimitsSetting,
   RSISetting,
   TaskAsrSetting,
+  TaskAsrModelSettings,
   TaskFullDuplexSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
@@ -21,9 +22,7 @@ export const experimentalModule: SettingsModuleDefinition = {
       titleKey: 'settingsPanel.experimental.taskAsr',
       items: [
         { id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting },
-        { id: 'asr-api-base', component: 'input', key: 'asr_api_base' },
-        { id: 'asr-api-key', component: 'input', key: 'asr_api_key', inputType: 'password' },
-        { id: 'asr-model', component: 'input', key: 'asr_model' },
+        { id: 'task-asr-model-settings', component: 'custom', render: TaskAsrModelSettings },
       ],
     },
     {

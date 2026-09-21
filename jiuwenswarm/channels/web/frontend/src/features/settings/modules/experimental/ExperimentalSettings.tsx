@@ -22,6 +22,7 @@ import {
   type ExternalCliPendingChoice,
 } from '../../../../components/ExternalCliAgentsSection';
 import { SettingRow, SettingsConfirmDialog } from '../../components';
+import { SettingItemRenderer } from '../../components/SettingItemRenderer';
 import type { SettingsCustomItemProps } from '../../registry/types';
 import { parseConfigBoolean } from '../../services/settingsContract';
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
@@ -595,13 +596,14 @@ export function TaskFullDuplexSetting({ disabled }: SettingsCustomItemProps) {
       <SettingRow
         title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
         description={t('settingsPanel.fields.task_full_duplex_enabled.description')}
-        subSettings={<VideoDuplexModelSettings />}
+        subSettings={enabled ? <VideoDuplexModelSettings /> : undefined}
       >
         <Switch
           aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
           checked={enabled}
           disabled={disabled || !isConnected || source.savingKeys.has('task_full_duplex_enabled')}
           onChange={(next) => void updateTaskFullDuplex(next).catch(() => undefined)}
+          data-testid="settings-task-full-duplex-switch"
         />
       </SettingRow>
     </>
@@ -632,6 +634,19 @@ export function TaskAsrSetting({ disabled }: SettingsCustomItemProps) {
         data-testid="settings-task-asr-switch"
       />
     </SettingRow>
+  );
+}
+
+export function TaskAsrModelSettings({ disabled }: SettingsCustomItemProps) {
+  const source = useSettingsSource();
+  if (!parseConfigBoolean(source.values.task_asr_enabled ?? 'false')) return null;
+
+  return (
+    <>
+      <SettingItemRenderer item={{ id: 'asr-api-base', component: 'input', key: 'asr_api_base' }} disabled={disabled} />
+      <SettingItemRenderer item={{ id: 'asr-api-key', component: 'input', key: 'asr_api_key', inputType: 'password' }} disabled={disabled} />
+      <SettingItemRenderer item={{ id: 'asr-model', component: 'input', key: 'asr_model' }} disabled={disabled} />
+    </>
   );
 }
 
