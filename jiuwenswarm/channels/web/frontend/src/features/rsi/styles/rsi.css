@@ -2228,3 +2228,19 @@ dialog.rsi-config-dialog.rsi-create-drawer::backdrop {
   min-width: 84px;
   border-radius: 999px;
 }
+.rsi-task-failure {
+  padding: 12px 16px;
+  border-left: 3px solid var(--color-feedback-danger);
+  background: rgba(197, 48, 48, 0.06);
+  color: var(--color-text-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  flex-shrink: 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.rsi-task-failure strong {
+  display: block;
+  margin-bottom: 4px;
+}

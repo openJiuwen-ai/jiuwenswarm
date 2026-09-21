@@ -179,6 +179,25 @@ class TestTaskList:
 
 
 class TestTaskGet:
+    def test_failed_task_exposes_nested_judge_reason(self, ctx):
+        task_id = ctx.task_service.create(_harness_create_params())["task_id"]
+        task = ctx.store.get(task_id)
+        error = Path(task.run_dir) / "cases" / "one" / "judge" / "error.json"
+        error.parent.mkdir(parents=True, exist_ok=True)
+        error.write_text(json.dumps({"message": (
+            "RateLimitError: 429 max_parallel_requests. Current limit: 3, Remaining: 0."
+        )}), encoding="utf-8")
+        ctx.store.update_status(task_id, ["CREATED"], "QUEUED", cause="start")
+        ctx.store.update_status(task_id, ["QUEUED"], "RUNNING", cause="start")
+        ctx.store.update_status(task_id, ["RUNNING"], "FAILED", cause=f"LLM evaluator failed; inspect {error}")
+        data = ctx.task_service.get(
+            {"task_id": task_id}, projector=ctx.projector,
+            usage_recorder=ctx.usage_recorder, artifact_service=ctx.artifact_service,
+        )
+        assert data["status"] == "FAILED"
+        assert "429" in data["failure_reason"]
+        assert "LLM Judge" in data["failure_reason"]
+
     def test_not_found(self, ctx):
         with pytest.raises(RsiTaskNotFound):
             ctx.task_service.get({"task_id": "rsi-missing"}, projector=ctx.projector,

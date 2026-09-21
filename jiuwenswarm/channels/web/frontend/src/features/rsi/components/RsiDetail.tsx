@@ -69,6 +69,14 @@ export function RsiDetail() {
         }}
       />
       <div className="rsi-stage">
+        {detail.task.status === 'FAILED' && (
+          <div className="rsi-task-failure" role="alert" data-testid="rsi-task-failure">
+            <strong>{t('rsi.detail.failureReason', { defaultValue: '失败原因' })}</strong>
+            <div>{detail.task.failure_reason || t('rsi.detail.failureReasonMissing', {
+              defaultValue: '任务执行失败，未记录具体原因。',
+            })}</div>
+          </div>
+        )}
         <RsiResultSummary
           task={detail.task}
           report={detail.report}

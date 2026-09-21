@@ -4115,6 +4115,8 @@
       "statusRunning": "优化中",
       "statusCompleted": "已完成",
       "statusFailed": "任务失败",
+      "failureReason": "失败原因",
+      "failureReasonMissing": "任务执行失败，未记录具体原因。",
       "statusPaused": "已暂停",
       "statusTerminated": "已终止",
       "statusInstalled": "已安装",

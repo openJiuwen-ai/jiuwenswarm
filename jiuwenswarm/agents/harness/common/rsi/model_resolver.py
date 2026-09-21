@@ -21,6 +21,9 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiModelNotFound,
 )
 
+# One RSI output budget, shared by every materialized model role.
+RSI_MAX_OUTPUT_TOKENS = 100000
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedRsiModel:
@@ -196,6 +199,7 @@ class RsiModelConfigResolver:
         # latter in the task file to match openjiuwen's standalone examples.
         request_data.pop("model_name", None)
         request_data["model"] = model_name
+        request_data["max_tokens"] = RSI_MAX_OUTPUT_TOKENS
         payload = {
             "model_client_config": client_data,
             "model_request_config": request_data,

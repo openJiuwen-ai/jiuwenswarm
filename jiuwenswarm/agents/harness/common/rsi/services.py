@@ -25,6 +25,7 @@ from jiuwenswarm.agents.harness.common.rsi.artifact_adapter import (
     provider_usage_to_dict,
     validate_provider_artifact_path,
 )
+from jiuwenswarm.agents.harness.common.rsi.failure_reason import with_failure_reason
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiArtifactNotFound,
     RsiBadRequest,
@@ -421,11 +422,11 @@ class RsiTaskService:
                 best_artifact = provider_best_artifact(report) if report is not None else None
                 if best_artifact is None:
                     best_artifact = artifact_service.best_artifact(task_id)
-                return task.get_projection(
+                return with_failure_reason(task, task.get_projection(
                     progress=progress,
                     usage=usage,
                     best_artifact=best_artifact,
-                )
+                ))
             # A task can be CREATED before the Provider has made its first
             # snapshot; retain the normal service-side projection then.
         progress: dict[str, Any] | None = None
@@ -435,7 +436,9 @@ class RsiTaskService:
             progress = None
         usage = usage_recorder.usage_summary(task_id)
         best_artifact = artifact_service.best_artifact(task_id)
-        return task.get_projection(progress=progress, usage=usage, best_artifact=best_artifact)
+        return with_failure_reason(task, task.get_projection(
+            progress=progress, usage=usage, best_artifact=best_artifact,
+        ))
 
     # -- I5 delete --
 

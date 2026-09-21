@@ -5,6 +5,8 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from jiuwenswarm.agents.harness.common.rsi.artifact_files_service import (
     RsiArtifactFilesService,
 )
@@ -12,6 +14,26 @@ from jiuwenswarm.agents.harness.common.rsi.artifact_adapter import (
     provider_best_artifact,
     provider_report_to_web,
 )
+
+
+@pytest.mark.parametrize("mime", [None, "application/yaml"])
+def test_yaml_artifact_is_listed_and_read_as_previewable_text(tmp_path: Path, monkeypatch, mime):
+    from jiuwenswarm.agents.harness.common.rsi import artifact_files_service
+
+    task_root = tmp_path / "rsi-yaml"
+    artifact_root = task_root / "run" / "artifacts"
+    artifact_root.mkdir(parents=True)
+    (task_root / "task.json").write_text("{}", encoding="utf-8")
+    path = artifact_root / "harness_refs.yaml"
+    path.write_text("skills: []\n", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(artifact_files_service.mimetypes, "guess_type", lambda _: (mime, None))
+    service = RsiArtifactFilesService(SimpleNamespace(tasks_root=tmp_path))
+    params = {"task_id": "rsi-yaml", "path": str(path)}
+    assert service.list_files(params)["files"][0]["type"] == "text/plain"
+    result = service.read_file(params)
+    assert result["type"] == "text/plain"
+    assert result["encoding"] == "text"
+    assert result["content"] == "skills: []\n"
 
 
 def test_zip_artifact_is_browsable_and_jsonl_is_text(tmp_path: Path):

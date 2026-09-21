@@ -91,7 +91,8 @@ def test_repair_round_defaults_preserve_explicit_options(params: dict, expected:
     assert _profile_options({})["max_repair_rounds"] == 3
 
 
-def test_model_resolver_uses_models_list_global_origin_index(tmp_path: Path) -> None:
+@pytest.mark.parametrize("role", ["evaluation", "analysis", "member_optimization", "judge"])
+def test_model_resolver_uses_models_list_global_origin_index(tmp_path: Path, role: str) -> None:
     entries = [
         _entry("same", alias="first", is_default=True, api_base="https://one.test/v1"),
         _entry("same", alias="second", api_base="https://two.test/v1"),
@@ -110,8 +111,9 @@ def test_model_resolver_uses_models_list_global_origin_index(tmp_path: Path) -> 
         model_builder=build_model,
     )
 
-    manifest = resolver.resolve_to_file("same#1", "tester", tmp_path)
-    payload = yaml.safe_load((tmp_path / "tester.yaml").read_text(encoding="utf-8"))
+    manifest = resolver.resolve_to_file("same#1", role, tmp_path)
+    payload = yaml.safe_load((tmp_path / f"{role}.yaml").read_text(encoding="utf-8"))
+    assert payload["model_request_config"]["max_tokens"] == 100000
 
     assert manifest["origin_index"] == 1
     assert manifest["model_name"] == "same"
@@ -267,6 +269,7 @@ def test_materializer_copies_dataset_wraps_single_harness_and_writes_validation_
     assert refs["source_sha256"] == _tree_digest(materialized_package)
     assert profile_payload["max_epochs"] == 4
     assert profile_payload["data_loader"]["batch_size"] == 1
+    assert profile_payload["scheduling"]["full_evaluation_concurrency"] == 3
     assert profile_payload["member_optimizer"]["sibling_candidate_count"] == 1
     assert profile_payload["member_optimizer"]["max_issue_attempts_per_batch"] == 8
     assert profile_payload["member_optimizer"]["max_repair_rounds_per_batch"] == 3

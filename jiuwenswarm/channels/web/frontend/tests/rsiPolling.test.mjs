@@ -58,6 +58,37 @@ const deferred = () => {
 };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+test('failed task shows its reason visibly and clears it for other states', async () => {
+  const dom = new JSDOM('<div id="root"></div>');
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const task = { status: 'FAILED', failure_reason: 'LLM Judge: HTTP 429 <script>unsafe</script>' };
+  globalThis.rsiPollingState = {
+    selectedTaskId: 'one', detail: { one: { task } }, detailLoading: false,
+    list: [], refreshDetail: async () => {},
+  };
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(RsiDetail)));
+    assert.ok(document.querySelector('[role="alert"]').textContent.includes(task.failure_reason));
+    assert.equal(document.querySelector('script'), null);
+    task.failure_reason = null;
+    await act(async () => root.render(React.createElement(RsiDetail)));
+    assert.ok(document.querySelector('[role="alert"]').textContent.includes('failureReasonMissing'));
+    task.status = 'COMPLETED';
+    await act(async () => root.render(React.createElement(RsiDetail)));
+    assert.equal(document.querySelector('[role="alert"]'), null);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    delete globalThis.rsiPollingState;
+  }
+});
+
 test('overlapping poll and push refreshes send only one group and share completion', async () => {
   const held = deferred();
   const calls = [];

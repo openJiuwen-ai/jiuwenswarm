@@ -327,6 +327,7 @@ class RsiTaskMaterializer:
                 "coordination_strategy": "team_first_single_pass",
                 "promotion_policy": "epoch_full_evaluation",
                 "full_evaluation_enabled": True,
+                "full_evaluation_concurrency": 3,
             },
         }
         if profile_options["evaluation_method"] == "llm_as_judge":

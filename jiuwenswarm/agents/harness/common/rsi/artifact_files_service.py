@@ -269,10 +269,12 @@ class RsiArtifactFilesService:
         suffix = path.suffix.lower()
         if suffix == ".jsonl":
             return "application/x-ndjson"
-        if suffix in {".diff", ".log", ".patch", ".out"}:
+        if suffix in {".diff", ".log", ".patch", ".out", ".yaml", ".yml"}:
             return "text/plain"
         if suffix == ".csv":
             return "text/csv"
+        if suffix in _TEXT_SUFFIXES:
+            return mimetypes.guess_type(path.name)[0] or "text/plain"
         return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 

@@ -4131,6 +4131,8 @@
       "statusRunning": "Optimizing",
       "statusCompleted": "Completed",
       "statusFailed": "Task failed",
+      "failureReason": "Failure reason",
+      "failureReasonMissing": "The task failed without a recorded reason.",
       "statusPaused": "Paused",
       "statusTerminated": "Terminated",
       "statusInstalled": "Installed",
