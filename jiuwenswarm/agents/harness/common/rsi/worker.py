@@ -792,8 +792,8 @@ class RsiWorker:
             # The run path or another control already owns the final state.
             logger.debug("[RSI] task state changed while applying Provider.%s: %s", mode, task_id)
 
+    @staticmethod
     def _provider_failure_reason(
-        self,
         task_id: str,
         result: Any,
         *,
