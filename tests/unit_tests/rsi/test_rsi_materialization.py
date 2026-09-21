@@ -113,7 +113,7 @@ def test_model_resolver_uses_models_list_global_origin_index(tmp_path: Path, rol
 
     manifest = resolver.resolve_to_file("same#1", role, tmp_path)
     payload = yaml.safe_load((tmp_path / f"{role}.yaml").read_text(encoding="utf-8"))
-    assert payload["model_request_config"]["max_tokens"] == 100000
+    assert payload["model_request_config"].get("max_tokens") is None
 
     assert manifest["origin_index"] == 1
     assert manifest["model_name"] == "same"
@@ -191,7 +191,7 @@ def test_shared_rsi_model_template_matches_materialized_capacity(tmp_path):
     resolver.resolve_to_file("rsi-optimizer", "analysis", tmp_path)
     request = yaml.safe_load((tmp_path / "analysis.yaml").read_text(encoding="utf-8"))["model_request_config"]
     assert request["context_window"] == 1048576
-    assert request["max_tokens"] == 100000
+    assert request["max_tokens"] == 393216
 
 
 def test_model_resolver_rejects_unknown_reference_without_default_fallback(

@@ -23,7 +23,6 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
 )
 
 # One RSI output budget, shared by every materialized model role.
-RSI_MAX_OUTPUT_TOKENS = 100000
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +199,6 @@ class RsiModelConfigResolver:
         # latter in the task file to match openjiuwen's standalone examples.
         request_data.pop("model_name", None)
         request_data["model"] = model_name
-        request_data["max_tokens"] = RSI_MAX_OUTPUT_TOKENS
         if request_data.get("context_window") is None:
             from openjiuwen.core.context_engine.context.context_utils import ContextUtils
 
