@@ -53,6 +53,10 @@ class _FakeHost:
             "nodes": [],
             "edges": [],
         }
+        self.run_status: dict[str, object] = {
+            "service_id": "github-main",
+            "state": "RUNNING",
+        }
 
     def _record(self, name: str, value: object, result: object) -> object:
         if self.failure is not None:
@@ -159,7 +163,7 @@ class _FakeHost:
         return self._record(
             "get_fetch_run_status",
             (service_id, run_id) if run_id is not None else service_id,
-            {"service_id": service_id, "state": "RUNNING"},
+            self.run_status,
         )
 
     async def get_authorization_status(self, provider: str) -> dict[str, object]:
@@ -1049,3 +1053,39 @@ async def test_run_history_query_forwards_run_id(capture_wire):
     )
     assert host.calls == [("get_fetch_run_status", ("notes", "a" * 32))]
     assert ws.sent[0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_run_history_response_preserves_partial_failure_fields(capture_wire):
+    _server_instance, host = _server()
+    host.run_status = {
+        "service_id": "notes",
+        "runs": [
+            {
+                "run_id": "b" * 32,
+                "run_state": "partial_succeeded",
+                "failed_items": 3,
+                "quarantined_items": 3,
+                "item_errors": [
+                    {
+                        "item_ref": "notes/broken.pdf",
+                        "code": 154002,
+                        "message": "文件读取或解析失败",
+                        "failed_at": "2026-09-21T08:00:00+00:00",
+                    }
+                ],
+                "omitted_item_errors": 2,
+            }
+        ],
+    }
+    ws = _FakeWebSocket()
+
+    await handle_personal_context_request(
+        host,
+        ws,
+        _request(ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS, {"service_id": "notes"}),
+        asyncio.Lock(),
+    )
+
+    response = parse_agent_server_wire_unary(ws.sent[0])
+    assert response.payload == host.run_status

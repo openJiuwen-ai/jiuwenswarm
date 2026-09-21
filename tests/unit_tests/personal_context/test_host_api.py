@@ -3098,6 +3098,50 @@ async def test_get_fetch_run_status_returns_all_or_one_service(
 
 
 @pytest.mark.asyncio
+async def test_get_fetch_run_status_preserves_partial_failure_fields(
+    fake_host, tmp_path, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    host, core = fake_host
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    expected = {
+        "service_id": "local-notes",
+        "runs": [
+            {
+                "run_id": "b" * 32,
+                "run_state": "partial_succeeded",
+                "progress_percent": 100,
+                "total_items": 20,
+                "completed_items": 17,
+                "failed_items": 3,
+                "quarantined_items": 3,
+                "item_errors": [
+                    {
+                        "item_ref": "notes/broken.pdf",
+                        "code": 154002,
+                        "message": "文件读取或解析失败",
+                        "failed_at": "2026-09-21T08:00:00+00:00",
+                    }
+                ],
+                "omitted_item_errors": 2,
+                "last_error": None,
+                "started_at": "2026-09-21T07:59:00+00:00",
+                "finished_at": "2026-09-21T08:00:00+00:00",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        core,
+        "get_fetch_run_status",
+        AsyncMock(return_value=expected),
+        raising=False,
+    )
+
+    assert await host.get_fetch_run_status("local-notes") == expected
+
+
+@pytest.mark.asyncio
 async def test_get_fetch_run_status_does_not_wait_for_configuration_lock(
     fake_host, tmp_path, monkeypatch
 ):
