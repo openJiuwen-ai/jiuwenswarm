@@ -1562,6 +1562,8 @@ class DesktopRuntime:
             try:
                 self.window.destroy()
             except Exception as exc:  # noqa: BLE001
+                if sys.platform == "darwin":
+                    self._allow_window_close = False
                 logger.warning("[desktop] failed to close desktop window: %s", exc)
 
         threading.Thread(target=_delayed_destroy, daemon=True).start()
@@ -1596,6 +1598,37 @@ class DesktopRuntime:
                 close_button.setAction_("orderOut:")
 
                 _MACOS_RUNTIME_REF = weakref.ref(self)
+                window_delegate = BrowserView.WindowDelegate
+                bool_signature = getattr(objc, "_C_NSBOOL")
+                close_interceptor_attr = (
+                    "_jiuwenswarm_close_interceptor_installed"
+                )
+                if not getattr(window_delegate, close_interceptor_attr, False):
+                    original_should_close = window_delegate.windowShouldClose_
+
+                    def windowShouldClose_(  # pylint: disable=invalid-name
+                        _delegate, window
+                    ) -> bool:
+                        runtime_ref = _MACOS_RUNTIME_REF
+                        runtime = runtime_ref() if runtime_ref is not None else None
+                        runtime_window = (
+                            getattr(runtime.window, "native", None)
+                            if runtime is not None
+                            else None
+                        )
+                        if runtime is not None and window is runtime_window:
+                            if not runtime._allow_window_close:  # pylint: disable=protected-access
+                                window.orderOut_(None)
+                                return False
+                        return original_should_close(_delegate, window)
+
+                    close_handler = objc.selector(
+                        windowShouldClose_,
+                        signature=bool_signature + b"@:@",
+                    )
+                    setattr(window_delegate, "windowShouldClose_", close_handler)
+                    setattr(window_delegate, close_interceptor_attr, True)
+
                 reopen_selector = (
                     b"applicationShouldHandleReopen:hasVisibleWindows:"
                 )
@@ -1613,7 +1646,7 @@ class DesktopRuntime:
                         runtime.window.show()
                     return True
 
-                signature = objc._C_NSBOOL + b"@:@" + objc._C_NSBOOL
+                signature = bool_signature + b"@:@" + bool_signature
                 reopen_handler = objc.selector(
                     applicationShouldHandleReopen_hasVisibleWindows_,
                     signature=signature,

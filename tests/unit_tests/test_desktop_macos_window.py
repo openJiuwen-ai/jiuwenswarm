@@ -37,6 +37,9 @@ def test_macos_close_hides_window_and_dock_reopens_it(
     button = FakeButton()
 
     class FakeNativeWindow:
+        def orderOut_(self, sender) -> None:
+            actions.append(("order_out", sender))
+
         def standardWindowButton_(self, button_type):
             actions.append(("button", button_type))
             return button
@@ -50,7 +53,15 @@ def test_macos_close_hides_window_and_dock_reopens_it(
         def instancesRespondToSelector_(_selector) -> bool:
             return False
 
-    browser_view = types.SimpleNamespace(AppDelegate=FakeAppDelegate)
+    class FakeWindowDelegate:
+        def windowShouldClose_(self, window) -> bool:
+            actions.append(("original_should_close", window))
+            return True
+
+    browser_view = types.SimpleNamespace(
+        AppDelegate=FakeAppDelegate,
+        WindowDelegate=FakeWindowDelegate,
+    )
     objc = types.SimpleNamespace(
         _C_NSBOOL=b"Z",
         selector=lambda callback, signature: callback,
@@ -87,6 +98,14 @@ def test_macos_close_hides_window_and_dock_reopens_it(
         ("target", native_window),
         ("action", "orderOut:"),
     ]
+    delegate = FakeWindowDelegate()
+    assert delegate.windowShouldClose_(native_window) is False
+    assert actions[-1] == ("order_out", None)
+
+    runtime._allow_window_close = True
+    assert delegate.windowShouldClose_(native_window) is True
+    assert actions[-1] == ("original_should_close", native_window)
+
     reopen = FakeAppDelegate.applicationShouldHandleReopen_hasVisibleWindows_
     assert reopen(None, None, False) is True
     assert shown == [True]
@@ -110,3 +129,31 @@ def test_non_macos_close_button_is_unchanged(desktop_app, monkeypatch, tmp_path)
     runtime._configure_macos_window_lifecycle()
 
     assert native_calls == []
+
+
+def test_explicit_macos_exit_allows_window_destruction(
+    desktop_app, monkeypatch, tmp_path
+) -> None:
+    destroyed = []
+
+    class ImmediateThread:
+        def __init__(self, target, daemon) -> None:
+            self._target = target
+            assert daemon is True
+
+        def start(self) -> None:
+            self._target()
+
+    monkeypatch.setattr(desktop_app.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_app.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(desktop_app.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: tmp_path / "logs")
+    runtime = desktop_app.DesktopRuntime(
+        frontend_host="127.0.0.1",
+        ports=calculate_instance_ports(0),
+    )
+    runtime.window = types.SimpleNamespace(destroy=lambda: destroyed.append(True))
+
+    assert runtime.close_window() is True
+    assert runtime._allow_window_close is True
+    assert destroyed == [True]
