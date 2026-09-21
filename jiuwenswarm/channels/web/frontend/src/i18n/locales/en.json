@@ -2988,7 +2988,8 @@
           "nameRequired": "Enter an Expert Team name",
           "descriptionRequired": "Enter an Expert Team capability description",
           "personaRequired": "Enter an Expert Team introduction",
-          "leaderRequired": "Choose a leader Expert"
+          "leaderRequired": "Choose a leader Expert",
+          "membersRequired": "Choose at least one member Expert"
         }
       },
       "picker": {

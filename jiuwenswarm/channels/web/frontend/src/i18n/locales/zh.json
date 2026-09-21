@@ -2974,7 +2974,8 @@
           "nameRequired": "请输入专家团名称",
           "descriptionRequired": "请输入专家团能力介绍",
           "personaRequired": "请输入专家团介绍",
-          "leaderRequired": "请选择负责人"
+          "leaderRequired": "请选择负责人",
+          "membersRequired": "请至少选择一名成员"
         }
       },
       "picker": {
