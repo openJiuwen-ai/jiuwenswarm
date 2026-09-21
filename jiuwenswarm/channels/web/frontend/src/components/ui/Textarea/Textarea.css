@@ -1,5 +1,10 @@
 .ui-textarea-root {
   position: relative;
+  display: block;
+}
+
+.ui-textarea-root > .ui-textarea {
+  display: block;
 }
 
 .ui-textarea {
@@ -104,10 +109,14 @@
   position: absolute;
   right: 12px;
   bottom: 0;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 18px;
   color: var(--color-text-muted);
   pointer-events: none;
+}
+
+.ui-textarea-counter-separator {
+  color: var(--color-text-meta);
 }
 
 .ui-textarea-counter.is-at-limit {

@@ -268,7 +268,6 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
     >
       <Field
         label={t('connectorMarket.registerMcp.name')}
-        required
         error={fieldErrors.name ? t('connectorMarket.create.fieldRequired') : undefined}
       >
         <input
@@ -313,7 +312,6 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
         <>
           <Field
             label={t('connectorMarket.registerMcp.command')}
-            required
             error={fieldErrors.command ? t('connectorMarket.create.fieldRequired') : undefined}
           >
             <input
@@ -353,7 +351,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
         </>
       ) : (
         <>
-          <Field label="URL" required error={fieldErrors.url ? t('connectorMarket.create.fieldRequired') : undefined}>
+          <Field label="URL" error={fieldErrors.url ? t('connectorMarket.create.fieldRequired') : undefined}>
             <input
               value={url}
               onChange={(event) => {
@@ -413,23 +411,10 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
   );
 }
 
-function Field({
-  label,
-  required,
-  error,
-  children,
-}: {
-  label: string;
-  required?: boolean;
-  error?: string;
-  children: React.ReactNode;
-}) {
+function Field({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
   return (
     <div className="mb-4">
-      <label className="mb-1.5 block text-[13px] font-medium text-text">
-        {label}
-        {required && <span className="text-danger"> *</span>}
-      </label>
+      <label className="mb-1.5 block text-[13px] font-medium text-text">{label}</label>
       {children}
       {error && <p className="mt-1 text-[11px] leading-4 text-danger">{error}</p>}
     </div>
