@@ -8,7 +8,7 @@
 Symphony is JiuwenSwarm's mechanism for skill retrieval, orchestration, and dispatch across a large set of installed skills. It answers two questions: **how to find the right skills**, and **how to use them together**.
 
 - **Skill Retrieval** answers "how to find": it organizes a flat skill list into a browsable skill tree so the agent can explore likely branches and find candidate skills.
-- **Skill Orchestration** answers "how to use": it uses candidate skills, input/output structures, and skill dependencies to produce a confirmable, executable skill chain.
+- **Skill Orchestration** answers "how to use": it uses candidate skills, input/output structures, and skill dependencies to produce an explainable, executable skill chain.
 
 You can think of Symphony as a two-part design: **a tree for retrieval, a graph for orchestration**. If a task only needs one clearly named skill, use the normal skill workflow. Symphony is meant for tasks that need the agent to find skills, check whether they can connect, and then form an execution route. In Team / Cluster Mode, that route can also guide how the Leader dispatches follow-up work.
 
@@ -29,21 +29,21 @@ Skill Retrieval builds a local **installed-skill tree index** and exposes direct
 
 If Skill Retrieval answers "which skills should participate", Skill Orchestration answers "how should they work together". For example, a task such as "recognize text from an image, translate it, write copy, and send an email" usually cannot be completed by one skill alone. Candidate skills need to be arranged into a stable route based on input/output dependencies.
 
-Skill Orchestration builds an executable route from the task goal, current inputs, candidate skills, and connectable relationships in the skill graph. When an input is missing, the system can look backward through the graph for an upstream skill that may provide it. After the route is confirmed, JiuwenSwarm continues with the actual skill execution.
+Skill Orchestration builds an executable route from the task goal, current inputs, candidate skills, and connectable relationships in the skill graph. When an input is missing, the system can look backward through the graph for an upstream skill that may provide it. When the plan status is `ready`, the agent loads and executes one currently runnable Skill at a time without waiting for confirmation of the entire route.
 
-The important part is not listing skills in order. Skill Orchestration checks whether upstream results can actually feed downstream skills. Connectable relationships, input/output structures, and task semantics all affect the final route. The result is not just a set of "related" skills, but a skill chain whose dependencies can be explained, confirmed, and executed.
+The important part is not listing skills in order. Skill Orchestration checks whether upstream results can actually feed downstream skills. Connectable relationships, input/output structures, and task semantics all affect the final route. The result is not just a set of "related" skills, but a skill chain whose dependencies can be explained, checked, and executed.
 
 The skill graph is the relationship graph used by orchestration. Each node represents a skill. Each edge means one skill's output can be used as another skill's input, in other words, a connectable relationship. It helps users understand possible skill combinations and gives orchestration candidate relationships to work from.
 
 #### Improve orchestration from actual usage
 
-When **Dynamic Graph** is enabled, Symphony uses the outcomes of completed tasks to improve skill-combination suggestions for later related tasks. Turning it off returns orchestration to the static graph without deleting accumulated data.
+When `symphony.evolution.enabled` (labeled **Skill Pack Discovery** on the Settings page) is enabled, Symphony uses versioned execution evidence to improve skill-combination suggestions for later related tasks. Turning the setting off returns orchestration to the static graph without deleting accumulated data. A long-running process that already created the dynamic-graph Service may require an orderly restart before the changed setting fully applies.
 
 #### What problem does it solve?
 
 - **Too many skills to inspect directly**: Skill Retrieval avoids putting every skill description into context and lets the agent find candidates step by step.
 - **Knowing which skills are relevant is not enough**: orchestration checks whether upstream outputs can actually feed downstream inputs.
-- **Multi-skill workflows need stable chaining**: the skill graph's connectable relationships help form confirmable, executable skill chains instead of ad hoc runtime stitching.
+- **Multi-skill workflows need stable chaining**: the skill graph's connectable relationships help form explainable, executable skill chains instead of ad hoc runtime stitching.
 - **Complex tasks need explanation and dispatch**: users or Leaders can see why each skill was selected, how results flow, and how follow-up work can be dispatched.
 
 ### End-to-end workflow
@@ -57,17 +57,13 @@ Build or read the skill graph
   v
 User sends a task
   v
-The agent selects skill-tree branches for the task
-  v
-skill_branch_explore expands relevant branches
-  v
-skill_branch_peek checks branch summaries when needed
+The agent browses or searches through skill_index
   v
 Candidate skills are found
   v
 Skill Orchestration builds a skill chain from the task goal, candidate skills, and skill graph
   v
-User confirms
+Provide missing input or complete Tool permission approval when required
   v
 JiuwenSwarm continues with concrete skill execution
   v
@@ -84,11 +80,9 @@ When Skill Retrieval is enabled, the agent receives skill-directory browsing too
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `skill_branch_explore` | Expands a skill-tree branch and reveals child branches or candidate skills | Main retrieval tool, used to inspect relevant branches |
-| `skill_branch_peek` | Shows a lightweight branch summary without expanding the full tree | Use when it is unclear whether a branch is worth expanding |
-| `skill_index_build` | Builds or refreshes the local installed-skill tree index | Use only when retrieval tools explicitly report a missing or stale index |
+| `skill_index` | Runs `list` or `search` against the read-only Skill directory and returns categories, candidate Skills, and exact Skill IDs | Use when a large installed-skill set needs to be narrowed |
 
-After Skill Retrieval finds relevant skills, the agent narrows the candidate set by skill name and description. If orchestration is needed later, those candidates help guide skill-chain generation.
+`skill_index` categories are virtual directories, not filesystem paths. `list` browses direct child categories and Skills; `search` matches names, aliases, descriptions, and `SKILL.md` content. Search results are relevant candidates, not proof of executability. Pass only shortlisted exact IDs to `symphony_compose_graph.candidate_skill_ids`. Index build and cancellation are managed by the Skills page or product RPC, not by a model-facing build Tool.
 
 #### Skill Orchestration tools
 
@@ -96,9 +90,9 @@ After Skill Retrieval finds relevant skills, the agent narrows the candidate set
 |------|--------------|-------------|
 | `symphony_read_graph` | Checks whether the skill graph exists and whether it is stale | Before orchestration, when the current graph state needs to be known |
 | `symphony_refresh_graph` | Extracts installed-skill features and refreshes the skill graph | When the graph is missing, stale, or skills were newly installed or changed |
-| `symphony_compose_graph` | Main orchestration entry. Builds an execution graph from the task goal, candidate skills, and skill graph | When the user asks to use skills, or the task needs a skill chain, skill ordering, or a specialized tool chain |
+| `symphony_compose_graph` | Builds an execution graph from the task goal, candidate Skills, and skill graph | When a task needs multiple Skills or an ordered dependency chain |
 
-Skill Orchestration builds a skill chain from the original task, retrieved candidate skills, and their connectable relationships. If the result says no suitable skill is available, install the required skill from the **Skills** page, refresh the skill graph, and compose again.
+`symphony_compose_graph` requires the original user task as `query` and supports `fast` and `beam` modes. If retrieval has narrowed the set, batch only the exact shortlisted IDs in `candidate_skill_ids`. If the plan reports missing input, provide it; if no suitable Skill exists, install one, refresh the graph, and compose again.
 
 ---
 
@@ -196,16 +190,16 @@ Please prioritize currently installed skills for this task. If relevant skills a
 I have a PDF contract and an Excel spreadsheet. Extract key clauses, verify amount fields, and generate a Chinese review report.
 ```
 
-With Skill Retrieval enabled, the model can browse the skill tree, discover PDF, Excel, document review, or report-generation skills, and then decide which `SKILL.md` files to read.
+With Skill Retrieval enabled, a small candidate set can be selected from the session-frozen compact full snapshot. A larger set is usually browsed or searched through `skill_index`; if the index is temporarily unavailable, the runtime retains a flat-candidate fallback instead of asking the model to build the index. The model then reads only the selected `SKILL.md` files as needed.
 
 ### 6. Inspect the retrieval process
 
-In the chat message, expand the skill retrieval tree to see:
+Inspect the `skill_index` Tool call in the chat to see:
 
-- Which top-level categories the model inspected.
-- Which branches were peeked.
-- Which branches were explored.
-- Which candidate skills appeared.
+- Which categories the model listed.
+- Which query and category scope it used.
+- Whether it continued through a pagination cursor.
+- Which candidate Skills and exact IDs appeared.
 
 When a skill looks relevant, the agent may read its `SKILL.md` before executing the task.
 
@@ -243,19 +237,20 @@ Prompts that trigger Skill Orchestration more reliably:
 
 - Explicitly say "Use Skill" or "use skills".
 - Describe the complete goal instead of only one step.
-- If you want the system to continue after planning, reply with "execute according to the orchestration result" or "confirm and continue".
+- If you only want a plan, state "compose the plan only; do not execute" in the original request.
 
-#### Understand the orchestration result
+#### Understand orchestration and execution
 
-After Skill Symphony is enabled, the system first returns a skill orchestration graph and a short explanation. Each box is a skill, and each arrow shows execution order and result handoff. In the example below, the route is `image-translate -> yescan-ocr-universal -> general-writing -> imap-smtp-email`: translate the image, extract text, write copy, then send the email.
+The UI displays the skill orchestration graph and a short explanation. Each box is a Skill, and each arrow shows execution order and result handoff. When the plan status is `ready`, the agent does not wait for confirmation of the entire graph: it loads and executes one currently runnable Skill at a time. It pauses only when input is missing, Tool permission approval is required, or another runtime constraint intervenes.
 
 ![Skill Symphony chat example](../assets/images/symphony_example.png)
 
-After seeing the route, you can respond in one of these ways:
+Handle the runtime status as follows:
 
-- **Route looks right**: reply "execute according to the orchestration result".
-- **Missing information**: provide the missing file, link, email address, account, or parameter.
-- **Plan only**: stop after the orchestration result and use it as a skill-combination suggestion.
+- **`ready`**: no additional reply is normally required; the agent continues.
+- **`needs_input`**: provide the missing file, link, email address, account, or parameter.
+- **Tool permission approval**: allow or deny the specific side effect; this is not confirmation of the whole orchestration graph.
+- **Plan only**: constrain the original request to planning without execution.
 
 > **Tip:** Skill Orchestration only uses currently installed skills and available configuration. If the result says no suitable skill is available, install the required skill first, then refresh or rebuild the skill graph and try again.
 
@@ -277,7 +272,7 @@ Advanced build, retrieval, and orchestration settings are configured in the user
 
 Whether to enable Symphony orchestration. The default template value is `false`.
 
-When enabled, the agent can read or refresh the skill graph and build a skill chain from candidate skills. When disabled, the agent no longer uses the skill graph for orchestration.
+When enabled, the current agent runtime synchronizes `symphony_read_graph`, `symphony_refresh_graph`, and `symphony_compose_graph`. When disabled, it removes those tools and no longer uses the skill graph for orchestration.
 
 This switch controls Symphony orchestration tools. Skill Retrieval is still controlled separately by `symphony.skill_retrieval.enabled`: retrieval finds candidate skills, and orchestration builds an execution route from the task goal, candidate skills, and the skill graph.
 
@@ -295,9 +290,10 @@ Runtime parameters for Skill Orchestration. The current template is:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `mode` | `fast` | Orchestration mode. The current runtime tools use the fast orchestration path and prioritize an executable skill chain |
+| `mode` | `fast` | Default mode; use `fast` for a clear short chain and `beam` for multiple paths or backward prerequisite discovery |
+| `top_k` | `3` | Beam-search candidates retained after each round |
 | `max_depth` | `4` | Maximum skill-chain search depth, limiting how many skills can be chained in one task |
-| `min_edge_confidence` | `0.5` | Minimum link strength used by orchestration; relationships below it are not preferred |
+| `min_edge_confidence` | `0.5` | Minimum link strength; lower-confidence edges are excluded from the static orchestration candidate-edge set |
 
 These settings tune how candidate skills are connected into a route. If routes are too short or often miss intermediate steps, consider increasing `max_depth`. If routes often use low-link-strength connections, consider increasing `min_edge_confidence`.
 
@@ -305,9 +301,9 @@ These settings tune how candidate skills are connected into a route. If routes a
 
 Whether to enable Skill Retrieval. The default template value is `false`. This setting can be configured from the Web UI.
 
-When enabled, new sessions receive `skill_branch_explore`, `skill_branch_peek`, `skill_index_build`, and related retrieval guidance. When disabled, those tools and prompts are not registered, and the system returns to the original skill flow.
+When enabled, the system registers `skill_index`. A new session then chooses a frozen strategy based on candidate scale: a compact full snapshot for a small set, or progressive `skill_index` disclosure for a larger set. When disabled, the Tool and retrieval guidance are not registered.
 
-Use it when many installed skills need to be searched by task. If there are only a few skills, or if you want to use the original `list_skills` workflow, leave it disabled.
+Use it when many installed skills need to be searched by task. If there are only a few skills, or if you want to use the original `list_skill` workflow, leave it disabled.
 
 #### `symphony.skill_retrieval.build.root_categories`
 
@@ -394,7 +390,6 @@ Use it to tune skill-tree granularity. With hundreds or thousands of skills, low
 | `build.max_workers` | `2` | Build concurrency; higher values can be faster but put more pressure on the model provider |
 | `build.max_retries` | `2` | Retry count for failed LLM classification or grouping calls |
 | `build.request_timeout_seconds` | `420` | Timeout for one LLM build request |
-| `build.total_timeout_seconds` | `0` | Total build timeout; `0` means unlimited |
 | `build.classification_batch_limit` | `32` | Maximum number of skills per classification call |
 | `build.discovery_seed` | `42` | Random seed used during build sampling for better reproducibility |
 
@@ -408,14 +403,18 @@ symphony:
     graph_dir: ""
 
   build:
+    workers: 4
+    batch_size: 16
     max_candidates_per_skill_relation: 32
+    require_consensus: false
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: true
+    enabled: false
 
   orchestration:
     mode: fast
+    top_k: 3
     max_depth: 4
     min_edge_confidence: 0.5
 
@@ -439,17 +438,12 @@ symphony:
       max_workers: 2
       max_retries: 2
       request_timeout_seconds: 420
-      total_timeout_seconds: 0
       classification_batch_limit: 32
       discovery_seed: 42
       postprocess_enabled: true
       postprocess_max_passes: 1
       postprocess_min_skills: 6
       equivalence_enabled: false
-    retrieve:
-      compact_codes_enabled: false
-      flatten_tree: false
-      max_exposure_depth: 1
 ```
 
 ---
@@ -462,7 +456,7 @@ Possible reasons:
 
 - The task already named a specific skill.
 - The task does not need installed skills.
-- The index is missing and retrieval has not been triggered yet.
+- The candidate set is small and the compact full snapshot is already sufficient.
 - The Skill Retrieval switch is disabled.
 
 You can make the intent explicit: "Please prioritize currently installed skills for this task."
@@ -475,7 +469,7 @@ Open:
 Skills -> Skill Index -> Build Index
 ```
 
-Alternatively, let the model call `skill_index_build` after a retrieval tool explicitly asks for it. Then retry the task.
+Build the index from the Skills page or the corresponding product RPC. New sessions freeze the usable index version available at creation time; existing sessions do not switch unconditionally to a new taxonomy snapshot.
 
 ### Why does the skill index build take time?
 
