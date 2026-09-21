@@ -77,6 +77,12 @@ def _adapter(monkeypatch):
     adapter._vision_model_config = None
     adapter._config_cache = {}
     adapter._model = None
+    adapter._is_cron_execution = False
+    adapter._parent_session_id = None
+    adapter._workspace_dir = ""
+    adapter._sys_operation = None
+    adapter._permissions_changed_notifier = None
+    adapter._browser_runtime_security_profile = None
     monkeypatch.setattr(
         adapter, "_instantiate_rails", lambda rail_infos, config_base: rail_infos
     )

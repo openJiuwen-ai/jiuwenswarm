@@ -23,6 +23,8 @@ from jiuwenswarm.common.utils import logger, mask_sensitive
 
 _STATE_KEY = "jiuwenswarm.staged_task_lifecycle"
 _STAGED_TASK_KEY = "staged_task"
+
+
 class StageStatus(str, Enum):
     """Minimal status vocabulary for a staged task."""
 
@@ -112,6 +114,8 @@ def _extract_staged_task(ctx: AgentCallbackContext) -> dict[str, Any]:
 def _safe_metadata(value: Any) -> dict[str, Any]:
     safe = _json_safe(value) if isinstance(value, dict) else {}
     return safe if isinstance(safe, dict) else {}
+
+
 def _merge_metadata(existing: Any, incoming: Any) -> dict[str, Any]:
     existing_mapping = existing if isinstance(existing, dict) else {}
     incoming_mapping = incoming if isinstance(incoming, dict) else {}
