@@ -101,12 +101,10 @@ export interface ChatHistoryPagerProps {
 interface ChatPanelProps {
   onSendMessage: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
-  onNewSession: () => void;
   onForkSession: (
     sourceSessionId: string,
     forkPoint?: MessageForkPoint,
   ) => Promise<void>;
-  onStartSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
   continuedFromSessionId?: string | null;
   onOpenContinuedFromSession?: (sourceSessionId: string) => void;
   onInputIntent?: (sessionId: string) => void;
@@ -976,9 +974,7 @@ function BeeBanner({
 export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
   onEnsureSession,
-  onNewSession,
   onForkSession,
-  onStartSideConversation,
   continuedFromSessionId = null,
   onOpenContinuedFromSession,
   onInputIntent,
@@ -1961,9 +1957,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   ref={inputAreaRef}
                   onSubmit={handleSendMessage}
                   onEnsureSession={onEnsureSession}
-                  onNewSession={onNewSession}
                   onForkSession={onForkSession}
-                  onStartSideConversation={onStartSideConversation}
                   onInputIntent={onInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
@@ -2038,9 +2032,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             ref={inputAreaRef}
             onSubmit={handleSendMessage}
             onEnsureSession={onEnsureSession}
-            onNewSession={onNewSession}
             onForkSession={onForkSession}
-            onStartSideConversation={onStartSideConversation}
             onInputIntent={onInputIntent}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}

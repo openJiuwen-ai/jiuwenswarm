@@ -482,22 +482,6 @@ FIRST_BATCH_REGISTRY: tuple[SlashCommandEntry, ...] = (
 
 BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     {
-        "name": "new",
-        "description_i18n": {
-            "zh": "新建一个空白会话",
-            "en": "Start a new blank conversation",
-        },
-        "usage": "/new",
-        "example": None,
-        "kind": "built-in",
-        "takesArgs": False,
-        "scope": "client",
-        "execution": "client",
-        # 仅切换到新会话占位页，真实 session 随首条消息懒创建
-        "requires_session": False,
-        "available_modes": None,
-    },
-    {
         "name": "fork",
         "description_i18n": {
             "zh": "分叉当前会话并切换到副本",
@@ -507,22 +491,6 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
         "example": None,
         "kind": "built-in",
         "takesArgs": False,
-        "scope": "agent",
-        "execution": "rpc",
-        "req_method": "session.fork",
-        "requires_session": True,
-        "available_modes": None,
-    },
-    {
-        "name": "side",
-        "description_i18n": {
-            "zh": "基于当前上下文创建一个临时侧会话",
-            "en": "Create a temporary side conversation using the current context",
-        },
-        "usage": "/side [问题]",
-        "example": "/side 帮我快速核对这个实现",
-        "kind": "built-in",
-        "takesArgs": True,
         "scope": "agent",
         "execution": "rpc",
         "req_method": "session.fork",

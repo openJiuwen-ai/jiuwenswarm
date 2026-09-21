@@ -305,9 +305,7 @@ function isDefaultProject(project: ProjectInfo): boolean {
 interface InputAreaProps {
   onSubmit: (content: string, mediaItems?: MediaItem[]) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
-  onNewSession: () => void;
   onForkSession: (sourceSessionId: string) => Promise<void>;
-  onStartSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
   /** Signals that the user is editing an existing real Session. */
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
@@ -694,9 +692,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   {
     onSubmit,
     onEnsureSession,
-    onNewSession,
     onForkSession,
-    onStartSideConversation,
     onInputIntent,
     onPersistMedia,
     onPersistDocuments,
@@ -1068,10 +1064,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const items = getComposerSuggestionItems(
       composerSuggestion,
       mentionableMembers,
-      getWebSlashCommandsForMode(slashCommands, mode).map((command) => ({
-        ...command,
-        description: resolveSlashCommandDescription(command, commandDescriptionLanguage),
-      })),
+      getWebSlashCommandsForMode(slashCommands, mode)
+        .filter((command) => findSlashCommand(command.name))
+        .map((command) => ({
+          ...command,
+          description: resolveSlashCommandDescription(command, commandDescriptionLanguage),
+        })),
       slashSkills,
       isTeamMode,
     );
@@ -2134,7 +2132,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const trimmedBase = richContent.trim();
 
     // 拦截当前模式支持的斜杠命令：控制命令不走 chat.send / 队列 / 中断逻辑。
-    // Team 仅支持全局 /new，其余注册命令仍以普通文本发送。
+    // Team 模式下注册命令仍以普通文本发送。
     if (trimmedBase.startsWith('/')) {
       const { name, args } = parseSlashLine(trimmedBase);
       const cmd = findSlashCommand(name);
@@ -2161,9 +2159,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               inputLine: trimmedBase,
               addMessage: useChatStore.getState().addMessage,
               submitMessage: onSubmit,
-              startNewConversation: onNewSession,
               forkConversation: onForkSession,
-              startSideConversation: onStartSideConversation,
               runGoalAction: runGoalSlashAction,
               confirmGoalOverwrite,
             },
@@ -2259,9 +2255,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     composerDisabled,
     isInterruptible,
     onSubmit,
-    onNewSession,
     onForkSession,
-    onStartSideConversation,
     runGoalSlashAction,
     onInterrupt,
     mode,
@@ -2421,7 +2415,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           setComposerSuggestion(null);
           return;
         }
-        // 无参命令（/new、/fork、/plan、/compact）：选中即执行，不插入文本、不再等回车。
+        // 无参命令（/fork、/plan、/compact）：选中即执行，不插入文本、不再等回车。
         // `/fork title`、`/plan hi` 这类手工输入不走此选中路径，提交时会被当作普通消息。
         // `/goal` 后端元数据是 takesArgs:true（要支持 `/goal <objective>` 一次性单发），但
         // "不带正文、从建议菜单选中"这一种情况要跟 /plan 对齐——选中即武装、清空输入框，不再
@@ -2439,13 +2433,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             setRangeStartByTextOffset(range, el, Math.max(0, beforeTextLength - triggerLength));
             range.deleteContents();
           }
-          if (slashCmd.name === 'new') {
-            if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
-            releaseUnsentUploads(attachmentsRef.current);
-            setAttachments([]);
-            setAttachmentAlerts([]);
-            el.innerHTML = '';
-          } else if (slashSid) {
+          if (slashSid) {
             useChatStore.getState().setInputValue(slashSid, extractPlainText());
           }
           setComposerSuggestion(null);
@@ -2460,9 +2448,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 inputLine: `/${value}`,
                 addMessage: useChatStore.getState().addMessage,
                 submitMessage: onSubmit,
-                startNewConversation: onNewSession,
                 forkConversation: onForkSession,
-                startSideConversation: onStartSideConversation,
                 runGoalAction: runGoalSlashAction,
                 confirmGoalOverwrite,
               },
@@ -2606,9 +2592,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       getCurrentComposerTrigger,
       releaseUnsentUploads,
       mode,
-      onNewSession,
       onForkSession,
-      onStartSideConversation,
       onSubmit,
       runGoalSlashAction,
       setRangeStartByTextOffset,
@@ -3450,7 +3434,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 }}
                 onPick={insertComposerToken}
                 loading={slashCatalogLoading}
-                slashSkillsOnly={false}
+                slashSkillsOnly={isTeamMode}
               />
             )}
             <div
@@ -4581,7 +4565,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   }}
                   onPick={insertComposerToken}
                   loading={slashCatalogLoading}
-                  slashSkillsOnly={false}
+                  slashSkillsOnly={isTeamMode}
                   placement="below"
                 />
               )}

@@ -8,7 +8,7 @@ import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversatio
 import { resolvePlanGoalInterlock } from './semantics';
 
 /**
- * 斜杠命令注册表（/new、/fork、/side、/compact、/plan、/goal、/persist）。
+ * 斜杠命令注册表（/fork、/compact、/plan、/goal、/persist）。
  * 后端与 TUI 共用 agent_ws_server；命令结果以 system 消息留痕，
  * 第一行回显命令行，MessageItem 按 isCommandOutput 渲染。
  */
@@ -22,9 +22,7 @@ export type SlashCommandContext = {
   inputLine: string;
   addMessage: (sessionId: string, message: Message) => void;
   submitMessage?: (content: string) => void;
-  startNewConversation: () => void;
   forkConversation: (sourceSessionId: string) => Promise<void>;
-  startSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
   runGoalAction: (
     sessionId: string,
     action: GoalSlashAction,
@@ -190,15 +188,6 @@ function commandResultMessage(inputLine: string, output: string): Message {
   };
 }
 
-/** /new —— 复用 App 的新建会话入口；真实 session 在首条消息发送时再创建。 */
-const newCommand: SlashCommand = {
-  name: 'new',
-  requiresSession: false,
-  execute: async (ctx) => {
-    ctx.startNewConversation();
-  },
-};
-
 /** /fork —— 复制当前会话，并复用 App 的会话恢复流程切换到副本。 */
 const forkCommand: SlashCommand = {
   name: 'fork',
@@ -207,18 +196,6 @@ const forkCommand: SlashCommand = {
       await ctx.forkConversation(ctx.sessionId);
     } catch {
       ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, '分叉会话失败，请稍后再试。'));
-    }
-  },
-};
-
-/** /side —— 从当前上下文创建不进入普通历史列表的临时侧会话。 */
-const sideCommand: SlashCommand = {
-  name: 'side',
-  execute: async (ctx, args) => {
-    try {
-      await ctx.startSideConversation(ctx.sessionId, args.trim() || undefined);
-    } catch {
-      ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, '创建临时侧会话失败，请稍后再试。'));
     }
   },
 };
@@ -417,9 +394,7 @@ const persistCommand: SlashCommand = {
 };
 
 export const SLASH_COMMANDS: SlashCommand[] = [
-  newCommand,
   forkCommand,
-  sideCommand,
   compactCommand,
   planCommand,
   goalCommand,

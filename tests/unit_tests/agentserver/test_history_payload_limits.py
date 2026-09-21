@@ -205,43 +205,6 @@ def test_history_get_sanitizes_large_restorable_records(monkeypatch):
     )
 
 
-def test_side_history_hides_inherited_parent_records(monkeypatch):
-    inherited = {
-        "id": "parent-user",
-        "role": "user",
-        "content": "parent question",
-        "forked_from": {"session_id": "parent"},
-    }
-    side_message = {
-        "id": "side-user",
-        "role": "user",
-        "content": "side question",
-    }
-    monkeypatch.setattr(agent_ws_server_module, "history_exists", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "load_history_records",
-        lambda *_args, **_kwargs: [inherited, side_message],
-    )
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "get_session_metadata",
-        lambda *_args, **_kwargs: {
-            "ephemeral": True,
-            "side_parent_session_id": "parent",
-        },
-        raising=False,
-    )
-
-    result = agent_ws_server_module.AgentWebSocketServer.get_conversation_history(
-        "side",
-        1,
-    )
-
-    assert result is not None
-    assert result["messages"] == [side_message]
-
-
 @pytest.mark.asyncio
 async def test_team_history_get_preserves_too_large_first_record_as_placeholder(monkeypatch):
     server = agent_ws_server_module.AgentWebSocketServer.__new__(

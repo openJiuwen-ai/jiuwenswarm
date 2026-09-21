@@ -39,7 +39,6 @@ const EMPTY_REASONING: ReasoningSegment[] = [];
 
 interface MessageListProps {
   messages: Message[];
-  sessionId?: string;
   renderAfterMessage?: (message: Message) => ReactNode;
   canLoadOlderHistory?: boolean;
   onLoadOlderHistory?: () => void | Promise<void>;
@@ -534,18 +533,17 @@ export function ChatTimelineList({
   onForkFromMessage,
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
-  const globalActiveSessionId = useChatStore((s) => s.activeSessionId);
-  const resolvedSessionId = sessionId ?? globalActiveSessionId;
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
   const runtimeTeamLeaderIdentity = useSessionStore(
-    (s) => s.runtimes[resolvedSessionId ?? '']?.teamLeaderIdentity ?? null,
+    (s) => s.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null,
   );
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? runtimeTeamLeaderIdentity;
   const teamGroupIdentity = teamGroupIdentityOverride;
-  const storeIsProcessing = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.isProcessing ?? false);
-  const isLoadingHistory = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.isLoadingHistory ?? false);
-  const historyPagerMeta = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.historyPagerMeta ?? null);
+  const storeIsProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
+  const isLoadingHistory = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isLoadingHistory ?? false);
+  const historyPagerMeta = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.historyPagerMeta ?? null);
   const storeReasoningSegments = useChatStore(
-    (s) => s.runtimes[resolvedSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING,
+    (s) => s.runtimes[s.activeSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING,
   );
   const isProcessing = staticTimeline ? false : storeIsProcessing;
   const allReasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
@@ -662,7 +660,7 @@ export function ChatTimelineList({
     suppressStreakTransitionRef.current = true;
     displayedStreakFpRef.current = '';
     setDisplayedStreakState({ scope: timelineScope, streaks: new Map() });
-  }, [resolvedSessionId, timelineScope]);
+  }, [activeSessionId, timelineScope]);
 
   const wasLoadingHistoryRef = useRef(false);
   useEffect(() => {
@@ -913,7 +911,6 @@ export function ChatTimelineList({
 
 export function MessageList({
   messages,
-  sessionId,
   renderAfterMessage,
   canLoadOlderHistory,
   onLoadOlderHistory,
@@ -921,11 +918,10 @@ export function MessageList({
   teamGroupIdentityOverride,
   onForkFromMessage,
 }: MessageListProps) {
-  const globalActiveSessionId = useChatStore((s) => s.activeSessionId);
-  const resolvedSessionId = sessionId ?? globalActiveSessionId;
-  const toolExecutions = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.toolExecutions ?? new Map());
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.toolExecutionOrder ?? []);
-  const mode = useSessionStore((s) => s.runtimes[resolvedSessionId ?? '']?.mode ?? 'agent');
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const toolExecutions = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutions ?? new Map());
+  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
+  const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const executions = useMemo(
     () => getExecutionList(toolExecutions, toolExecutionOrder),
     [toolExecutions, toolExecutionOrder],
@@ -934,10 +930,10 @@ export function MessageList({
   return (
     <ChatTimelineList
       messages={messages}
-      sessionId={resolvedSessionId ?? undefined}
       executions={executions}
       mode={mode}
       renderAfterMessage={renderAfterMessage}
+      sessionId={activeSessionId}
       canLoadOlderHistory={canLoadOlderHistory}
       onLoadOlderHistory={onLoadOlderHistory}
       teamLeaderIdentityOverride={teamLeaderIdentityOverride}
