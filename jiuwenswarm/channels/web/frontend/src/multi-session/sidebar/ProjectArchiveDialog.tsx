@@ -2,7 +2,6 @@ import { useId } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Button, Dialog } from '../../components/ui';
-import { resolveProjectArchiveSessionCount } from './projectArchiveModel';
 import './ProjectArchiveDialog.css';
 
 export { resolveProjectArchiveSessionCount } from './projectArchiveModel';
