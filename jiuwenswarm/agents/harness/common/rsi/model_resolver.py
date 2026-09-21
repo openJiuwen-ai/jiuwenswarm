@@ -281,7 +281,7 @@ def _apply_rsi_optimizer_defaults(
         return
     from openjiuwen.rsi.harness_rsi.member_optimizer.model_config import with_rsi_output_budget
 
-    # Capacity lookup never selects a model or changes connection credentials.
+    # RSI leaves output length to the provider without changing model identity or credentials.
     adjusted = with_rsi_output_budget({"model_request_config": {**request_data, "model": model_name}})
     request_data.update(adjusted["model_request_config"])
     if client_data.get("timeout") is None:

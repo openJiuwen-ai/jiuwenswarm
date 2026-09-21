@@ -191,7 +191,7 @@ def test_shared_rsi_policy_has_no_model_selection_and_preserves_output(tmp_path,
     request = yaml.safe_load((tmp_path / "analysis.yaml").read_text(encoding="utf-8"))["model_request_config"]
     assert request["model"] == name
     assert request["context_window"] == 131072
-    assert request["max_tokens"] == 32768
+    assert request["max_tokens"] is None
     payload = yaml.safe_load((tmp_path / "analysis.yaml").read_text(encoding="utf-8"))
     assert payload["model_client_config"]["timeout"] == 900
 
