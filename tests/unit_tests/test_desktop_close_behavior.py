@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types
 from pathlib import Path
@@ -80,6 +81,10 @@ def test_window_api_reads_and_updates_close_action(
     runtime = _runtime(desktop_app, tmp_path, monkeypatch)
     api = desktop_app._WindowApi(runtime)
 
+    # pywebview removes the receiver from the JS-facing method parameters.
+    assert inspect.ismethod(api.get_close_action)
+    assert inspect.getfullargspec(api.get_close_action).args[1:] == []
+    assert inspect.getfullargspec(api.set_close_action).args[1:] == ["action"]
     assert api.get_close_action() == desktop_app.CLOSE_ACTION_ASK
     assert api.set_close_action(desktop_app.CLOSE_ACTION_QUIT) is True
     assert api.get_close_action() == desktop_app.CLOSE_ACTION_QUIT

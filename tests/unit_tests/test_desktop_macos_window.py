@@ -62,10 +62,13 @@ def test_macos_close_hides_window_and_dock_reopens_it(
         AppDelegate=FakeAppDelegate,
         WindowDelegate=FakeWindowDelegate,
     )
-    objc = types.SimpleNamespace(
-        _C_NSBOOL=b"Z",
-        selector=lambda callback, signature: callback,
-    )
+    selectors = []
+
+    def fake_selector(callback, selector, signature):
+        selectors.append((selector, signature))
+        return callback
+
+    objc = types.SimpleNamespace(_C_NSBOOL=b"Z", selector=fake_selector)
 
     monkeypatch.setitem(sys.modules, "AppKit", appkit)
     monkeypatch.setitem(
@@ -93,6 +96,10 @@ def test_macos_close_hides_window_and_dock_reopens_it(
 
     runtime._configure_macos_window_lifecycle()
 
+    assert selectors == [
+        (b"windowShouldClose:", b"Z@:@"),
+        (b"applicationShouldHandleReopen:hasVisibleWindows:", b"Z@:@Z"),
+    ]
     assert actions == [
         ("button", appkit.NSWindowCloseButton),
         ("target", native_window),

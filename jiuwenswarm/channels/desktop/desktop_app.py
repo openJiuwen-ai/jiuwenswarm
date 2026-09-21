@@ -723,12 +723,15 @@ class _WindowApi:
     def close_window(self) -> bool:
         return self._runtime.close_window()
 
-    def get_close_action(self) -> str | None:
+    # pywebview drops the first argument of exposed methods from the JS signature.
+    @classmethod
+    def get_close_action(cls) -> str | None:
         if not _is_windows_desktop():
             return None
         return _load_close_action() or CLOSE_ACTION_ASK
 
-    def set_close_action(self, action: str) -> bool:
+    @classmethod
+    def set_close_action(cls, action: str) -> bool:
         if not _is_windows_desktop():
             return False
         return _save_close_action(action)
@@ -1606,7 +1609,7 @@ class DesktopRuntime:
                 if not getattr(window_delegate, close_interceptor_attr, False):
                     original_should_close = window_delegate.windowShouldClose_
 
-                    def windowShouldClose_(  # pylint: disable=invalid-name
+                    def window_should_close(
                         _delegate, window
                     ) -> bool:
                         runtime_ref = _MACOS_RUNTIME_REF
@@ -1623,7 +1626,8 @@ class DesktopRuntime:
                         return original_should_close(_delegate, window)
 
                     close_handler = objc.selector(
-                        windowShouldClose_,
+                        window_should_close,
+                        selector=b"windowShouldClose:",
                         signature=bool_signature + b"@:@",
                     )
                     setattr(window_delegate, "windowShouldClose_", close_handler)
@@ -1637,7 +1641,7 @@ class DesktopRuntime:
                 ):
                     return
 
-                def applicationShouldHandleReopen_hasVisibleWindows_(
+                def application_should_handle_reopen(
                     _delegate, _application, _has_visible_windows
                 ) -> bool:
                     runtime_ref = _MACOS_RUNTIME_REF
@@ -1648,7 +1652,8 @@ class DesktopRuntime:
 
                 signature = bool_signature + b"@:@" + bool_signature
                 reopen_handler = objc.selector(
-                    applicationShouldHandleReopen_hasVisibleWindows_,
+                    application_should_handle_reopen,
+                    selector=reopen_selector,
                     signature=signature,
                 )
                 setattr(
