@@ -149,6 +149,13 @@
       "languageDescription": "设置应用程序界面的界面显示语言。",
       "chinese": "中文（简体）",
       "english": "English",
+      "closeBehavior": "关闭主窗口时",
+      "closeBehaviorDescription": "选择点击窗口关闭按钮后的行为，可随时修改。",
+      "closeBehaviorOptions": {
+        "ask": "每次询问",
+        "hide": "最小化到托盘",
+        "quit": "退出应用"
+      },
       "connection": "服务连接状态",
       "connectionDescription": "表示当前页面与 WorkSwarm 服务的连接状态。",
       "connectionStatus": {
