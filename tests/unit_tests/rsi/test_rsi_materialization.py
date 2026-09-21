@@ -125,7 +125,7 @@ def test_model_resolver_uses_models_list_global_origin_index(tmp_path: Path, rol
 
 @pytest.mark.parametrize("window, expected", [(None, 1048576), (262144, 262144), (131072, 131072)])
 @pytest.mark.parametrize("role", ["evaluation", "analysis", "member_optimization", "judge"])
-def test_rsi_model_capacity_preserves_explicit_gateway_limits(tmp_path, window, expected, role):
+def test_rsi_optimizer_capacity_overrides_generic_limits_only_for_optimizer_roles(tmp_path, window, expected, role):
     entry = _entry("deepseek-v4-pro")
     entry["model_config_obj"]["context_window"] = window
     resolver = RsiModelConfigResolver(
@@ -139,8 +139,37 @@ def test_rsi_model_capacity_preserves_explicit_gateway_limits(tmp_path, window, 
     )
     resolver.resolve_to_file("deepseek-v4-pro", role, tmp_path)
     payload = yaml.safe_load((tmp_path / f"{role}.yaml").read_text(encoding="utf-8"))
-    assert payload["model_request_config"]["context_window"] == expected
+    assert payload["model_request_config"]["context_window"] == (
+        expected if role == "evaluation" else 1048576
+    )
     assert entry["model_config_obj"]["context_window"] == window
+
+
+@pytest.mark.parametrize("name", ["deepseek-v4-pro", "other-model"])
+@pytest.mark.parametrize("role", ["analysis", "member_optimization", "judge", "evaluation", "chat"])
+def test_optimizer_defaults_are_scoped_and_preserve_connection(tmp_path, name, role):
+    entry = _entry(name)
+    entry["model_config_obj"]["context_window"] = 262144
+    entry["model_client_config"]["timeout"] = 360
+    resolver = RsiModelConfigResolver(
+        config_loader=lambda: {},
+        defaults_loader=lambda _: [entry],
+        zen_loader=lambda: [],
+        model_builder=lambda mcc, mco: SimpleNamespace(
+            model_client_config=_FakeModelConfig(mcc),
+            model_config=_FakeModelConfig({"model_name": mcc["model_name"], **mco}),
+        ),
+    )
+    resolver.resolve_to_file(name, role, tmp_path)
+    payload = yaml.safe_load((tmp_path / f"{role}.yaml").read_text(encoding="utf-8"))
+    overridden = name == "deepseek-v4-pro" and role in {"analysis", "member_optimization", "judge"}
+    assert payload["model_request_config"]["context_window"] == (1048576 if overridden else 262144)
+    assert payload["model_client_config"]["timeout"] == (900 if overridden else 360)
+    assert payload["model_client_config"]["api_key"] == entry["model_client_config"]["api_key"]
+    assert payload["model_client_config"]["api_base"] == entry["model_client_config"]["api_base"]
+    assert payload["model_request_config"]["model"] == name
+    assert entry["model_config_obj"]["context_window"] == 262144
+    assert entry["model_client_config"]["timeout"] == 360
 
 
 def test_shared_rsi_model_template_matches_materialized_capacity(tmp_path):

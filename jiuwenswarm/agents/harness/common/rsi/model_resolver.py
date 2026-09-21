@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 from copy import deepcopy
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Callable
 
@@ -206,6 +207,7 @@ class RsiModelConfigResolver:
             # Persist the resolved capacity, not an unrelated fixed UI default.
             # A gateway-specific limit explicitly set on the model remains authoritative.
             request_data["context_window"] = ContextUtils.resolve_context_max(model_name=model_name)
+        _apply_rsi_optimizer_defaults(model_name, role_name, client_data, request_data)
         payload = {
             "model_client_config": client_data,
             "model_request_config": request_data,
@@ -270,6 +272,30 @@ def _matches(entry: dict[str, Any], requested: str) -> bool:
 def _model_name(entry: dict[str, Any]) -> str:
     mcc = entry.get("model_client_config") if isinstance(entry, dict) else None
     return str((mcc or {}).get("model_name") or "").strip() if isinstance(mcc, dict) else ""
+
+
+def _apply_rsi_optimizer_defaults(
+    model_name: str, role: str, client_data: dict[str, Any], request_data: dict[str, Any],
+) -> None:
+    """Apply packaged RSI policy to copied configs, never to the shared model registry."""
+    resource = files("jiuwenswarm.resources").joinpath("rsi").joinpath("deepseek-v4-pro.yaml")
+    policy = yaml.safe_load(resource.read_text(encoding="utf-8"))
+    if role not in policy["rsi_optimizer_roles"]:
+        return
+    for entry in policy["models"]["defaults"]:
+        if _model_name(entry) != model_name:
+            continue
+        # Never import the template's endpoint/key or switch the user's selected model.
+        for target, source, keys in (
+            (request_data, entry["model_config_obj"], ("context_window", "max_tokens")),
+            (client_data, entry["model_client_config"], ("timeout",)),
+        ):
+            for key in keys:
+                value = source[key]
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    raise RsiModelConfigInvalid(f"RSI optimizer default {key} must be a positive integer")
+                target[key] = value
+        return
 
 
 def _dump_model_part(value: Any) -> Any:

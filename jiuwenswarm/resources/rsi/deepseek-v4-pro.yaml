@@ -1,7 +1,8 @@
-# Merge this entry into models.defaults in your JiuwenSwarm configuration.
-# Set the endpoint and key through environment variables; never commit credentials.
-# Select rsi-optimizer in the RSI optimizer model picker.
-# Use a smaller context_window if your gateway imposes a lower limit.
+# RSI loads these capacity/timeout defaults automatically for the roles below.
+# They override generic model settings only in private RSI task model files.
+# The selected model, endpoint, credentials and global configuration are unchanged.
+# Gateway-specific RSI limits can be set here without changing other modules.
+rsi_optimizer_roles: [analysis, member_optimization, judge]
 models:
   defaults:
     - alias: rsi-optimizer
