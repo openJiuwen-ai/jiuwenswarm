@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { AvatarStyle } from '../../utils/skillAvatar';
 
 interface EntityAvatarProps {
-  /** 后端下发的真实图标地址（connector.icon / plugin_packages.show 的 avatar）。传空/undefined
+  /** 后端下发的真实图标地址（connector.icon / plugin_packages.list|show 的 avatar）。传空/undefined
    * 或加载失败都会回退到 avatar 生成的首字符色块。 */
   iconUrl?: string;
   avatar: AvatarStyle;

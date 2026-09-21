@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -35,6 +36,14 @@ from openjiuwen.harness.security.models import PermissionLevel
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_permission_rail,
+)
+from jiuwenswarm.common.schema.agent import (
+    AgentRequest,
+    AgentResponse,
+    AgentResponseChunk,
+)
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
 )
 
 
@@ -135,6 +144,59 @@ async def test_openjiuwen_initialization_failure_blocks_public_invoke(
         await agent._agent_callback_manager.clear()
 
 
+@pytest.mark.asyncio
+async def test_adapter_candidate_build_failure_precedes_sdk_configure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A candidate-build exception leaves the live rail and SDK config untouched."""
+    from jiuwenswarm.server.runtime.agent_adapter import (
+        interface_deep as interface_module,
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    old_rail = object()
+    adapter._permission_rail = old_rail
+    adapter._instance = MagicMock()
+    adapter._instance.configure = MagicMock()
+
+    monkeypatch.setattr(interface_module, "clear_config_cache", MagicMock())
+    monkeypatch.setattr(
+        "openjiuwen.core.memory.lite.manager.aclose_memory_manager_cache",
+        AsyncMock(),
+    )
+    for method_name in (
+        "_refresh_multimodal_configs",
+        "_sync_multimodal_tools_for_runtime",
+        "_sync_paid_search_tool_for_runtime",
+        "_sync_symphony_tools_for_runtime",
+        "_sync_skill_retrieval_tools_for_runtime",
+    ):
+        monkeypatch.setattr(adapter, method_name, MagicMock())
+    monkeypatch.setattr(adapter, "_create_model", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        adapter,
+        "_sync_skill_retrieval_prompt_rail_for_runtime",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_filesystem_rail_enabled_for_profile",
+        MagicMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_get_current_agent_rails",
+        MagicMock(side_effect=RuntimeError("candidate build failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="candidate build failed"):
+        await adapter.reload_agent_config(
+            {"react": {"agent_name": "main_agent"}},
+            {},
+        )
+
+    assert adapter._permission_rail is old_rail
+    adapter._instance.configure.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -359,3 +421,335 @@ async def test_failed_file_guard_persistence_rolls_back_live_engine(
     assert persisted_candidates
     assert persisted_candidates[0]["file_guard"] != snapshot["file_guard"]
     assert after.permission == PermissionLevel.ASK
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_live_registers_permission_rail_on_hot_reload() -> None:
+    """Issue #4059: permission rail must reach the execution chain after
+    reload_agent_config re-issues configure()."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    rail = build_permission_rail({"permissions": {"enabled": True}})
+    assert rail is not None, "build_permission_rail returned None — preconditions broken"
+
+    agent = DeepAgent(AgentCard(name="permission-runtime-issue-4059"))
+
+    # Cold start is required so that _react_agent exists; that is the bridge
+    # destination for BEFORE_TOOL_CALL callbacks registered later.
+    agent.configure(DeepAgentConfig(rails=[], auto_create_workspace=False))
+    await agent.ensure_initialized()
+
+    # Hot reload re-runs configure() with the new permission rail, queueing
+    # it into _pending_rails. The persistent interaction loop never re-runs
+    # ensure_initialized(), so without the helper this rail is dead.
+    agent.configure(DeepAgentConfig(rails=[rail], auto_create_workspace=False))
+    assert rail in agent._pending_rails
+    assert rail not in agent._registered_rails
+
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = agent
+    adapter._permission_rail = rail
+    adapter._is_cron_execution = False
+
+    try:
+        await adapter._ensure_permission_rail_live_registered()
+
+        assert rail in agent._registered_rails
+
+        # BEFORE_TOOL_CALL is in _BRIDGE_EVENTS, so the callback goes through
+        # _react_agent's namespaced callback manager. Query via the bridge
+        # target so the namespace prefix matches what was registered.
+        bridge_event = (
+            agent._react_agent._agent_callback_manager._get_agent_event(
+                AgentCallbackEvent.BEFORE_TOOL_CALL
+            )
+        )
+        callbacks = Runner.callback_framework.list_callbacks(bridge_event)
+        assert len(callbacks) >= 1
+
+        registered_before = list(agent._registered_rails)
+        callbacks_before = list(callbacks)
+        await adapter._ensure_permission_rail_live_registered()
+        assert agent._registered_rails == registered_before
+        assert list(
+            Runner.callback_framework.list_callbacks(bridge_event)
+        ) == callbacks_before
+    finally:
+        await agent._agent_callback_manager.clear()
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_live_register_no_op_without_rail_or_instance() -> None:
+    """Issue #4059: the helper short-circuits on cold-start and cron paths."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+
+    # Case 1: cold start — permission disabled, no rail, no instance.
+    adapter._instance = None
+    adapter._permission_rail = None
+    adapter._is_cron_execution = False
+    await adapter._ensure_permission_rail_live_registered()
+
+    # Case 2: rail built but instance not yet created.
+    adapter._instance = None
+    adapter._permission_rail = build_permission_rail(
+        {"permissions": {"enabled": True}}
+    )
+    await adapter._ensure_permission_rail_live_registered()
+
+    # Case 3: cron session.
+    agent = DeepAgent(AgentCard(name="permission-runtime-issue-4059-cron"))
+    try:
+        adapter._instance = agent
+        adapter._is_cron_execution = True
+        await adapter._ensure_permission_rail_live_registered()
+        assert agent._registered_rails == []
+    finally:
+        await agent._agent_callback_manager.clear()
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_does_not_live_register_single_rail_for_smart_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Smart reloads replace the complete permission group under admission."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._config_base_cache = {"permissions": {"enabled": True, "mode": "auto"}}
+    adapter._permission_rail = object()
+    adapter._instance = AsyncMock()
+    monkeypatch.setattr(adapter, "_uses_smart_permission_lifecycle", lambda _config: True)
+
+    await adapter._ensure_permission_rail_live_registered()
+
+    adapter._instance.register_rail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_live_register_recovers_when_instance_uses_pending_path() -> None:
+    """Issue #4059: register_rail() promotes the rail into _registered_rails
+    and bridges BEFORE_TOOL_CALL into _react_agent for the persistent loop."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    rail = build_permission_rail({"permissions": {"enabled": True}})
+    assert rail is not None
+
+    old_rail = build_permission_rail({"permissions": {"enabled": True}})
+    assert old_rail is not None
+    agent = DeepAgent(AgentCard(name="permission-runtime-issue-4059-promote"))
+    # Cold start establishes _react_agent; that is what BEFORE_TOOL_CALL
+    # bridges into.
+    agent.configure(
+        DeepAgentConfig(rails=[old_rail], auto_create_workspace=False)
+    )
+    await agent.ensure_initialized()
+    # Hot reload swaps in the new rail via configure(); it lands in
+    # _pending_rails, _registered_rails is cleared.
+    agent.configure(
+        DeepAgentConfig(rails=[rail], auto_create_workspace=False)
+    )
+    assert rail in agent._pending_rails
+    assert agent._registered_rails == []
+
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = agent
+    adapter._permission_rail = rail
+    adapter._is_cron_execution = False
+
+    try:
+        await adapter._ensure_permission_rail_live_registered()
+
+        assert rail in agent._registered_rails
+
+        bridge_event = (
+            agent._react_agent._agent_callback_manager._get_agent_event(
+                AgentCallbackEvent.BEFORE_TOOL_CALL
+            )
+        )
+        callbacks = Runner.callback_framework.list_callbacks(bridge_event)
+        assert len(callbacks) >= 1
+    finally:
+        await agent._agent_callback_manager.clear()
+
+
+class _SessionChild:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, AgentRequest, object | None]] = []
+        self.active_count = 0
+        self.request_reserved = False
+
+    def _mark_session_active(self, _session_id: str) -> None:
+        self.active_count += 1
+
+    def _unmark_session_active(self, _session_id: str) -> None:
+        self.active_count -= 1
+
+    def _register_session_agent_task(self, _session_id: str) -> None:
+        self.request_reserved = True
+
+    def _unregister_session_agent_task(self, _session_id: str) -> None:
+        self.request_reserved = False
+
+    async def process_message_impl(
+        self,
+        request: AgentRequest,
+        inputs: dict[str, object],
+    ) -> AgentResponse:
+        self.calls.append(("message", request, inputs))
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={"owner": "session-child"},
+        )
+
+    async def process_message_stream_impl(
+        self,
+        request: AgentRequest,
+        inputs: dict[str, object],
+    ) -> AsyncIterator[AgentResponseChunk]:
+        self.calls.append(("stream", request, inputs))
+        yield AgentResponseChunk(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            payload={"owner": "session-child"},
+            is_complete=True,
+        )
+
+    async def handle_user_answer(self, request: AgentRequest) -> AgentResponse:
+        self.calls.append(("answer", request, None))
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+        )
+
+    async def handle_heartbeat(self, request: AgentRequest) -> AgentResponse:
+        self.calls.append(("heartbeat", request, None))
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+        )
+
+    async def process_interrupt(self, request: AgentRequest) -> AgentResponse:
+        self.calls.append(("interrupt", request, None))
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+        )
+
+
+def _request(
+    channel_id: str,
+    *,
+    session_id: str = "session-runtime-contract",
+    params: dict[str, object] | None = None,
+) -> AgentRequest:
+    return AgentRequest(
+        request_id=f"request-{channel_id}",
+        channel_id=channel_id,
+        session_id=session_id,
+        params=params or {},
+    )
+
+
+def _install_session_child(
+    monkeypatch: pytest.MonkeyPatch,
+    parent: JiuWenSwarmDeepAdapter,
+    child: _SessionChild,
+) -> list[str | None]:
+    lookups: list[str | None] = []
+
+    async def _get_or_create(
+        session_id: str | None,
+        *,
+        history_before_request_id: str | None = None,
+        reserve_activity: bool = False,
+        host_external_input: bool = False,
+    ) -> _SessionChild:
+        del history_before_request_id, host_external_input
+        lookups.append(session_id)
+        if reserve_activity:
+            child._register_session_agent_task(str(session_id or "default"))
+        return child
+
+    async def _evict_idle() -> None:
+        return None
+
+    monkeypatch.setattr(parent, "_get_or_create_session_adapter", _get_or_create)
+    monkeypatch.setattr(parent, "_evict_idle_session_adapters", _evict_idle)
+    return lookups
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_id", ["web", "ws", "tui"])
+async def test_non_stream_entrypoints_preserve_identity_and_use_session_child(
+    monkeypatch: pytest.MonkeyPatch,
+    channel_id: str,
+) -> None:
+    parent = JiuWenSwarmDeepAdapter()
+    child = _SessionChild()
+    lookups = _install_session_child(monkeypatch, parent, child)
+    request = _request(channel_id)
+
+    response = await parent.process_message_impl(request, {"query": "runtime-contract"})
+
+    assert response.payload == {"owner": "session-child"}
+    assert lookups == [request.session_id]
+    assert child.calls == [("message", request, {"query": "runtime-contract"})]
+    assert child.active_count == 0
+    assert child.request_reserved is False
+
+
+@pytest.mark.asyncio
+async def test_stream_entrypoint_preserves_identity_and_uses_session_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = JiuWenSwarmDeepAdapter()
+    child = _SessionChild()
+    lookups = _install_session_child(monkeypatch, parent, child)
+    request = _request("web")
+
+    chunks = [
+        chunk
+        async for chunk in parent.process_message_stream_impl(
+            request,
+            {"query": "runtime-contract"},
+        )
+    ]
+
+    assert [chunk.payload for chunk in chunks] == [{"owner": "session-child"}]
+    assert lookups == [request.session_id]
+    assert child.calls == [("stream", request, {"query": "runtime-contract"})]
+    assert child.active_count == 0
+    assert child.request_reserved is False
+
+
+@pytest.mark.asyncio
+async def test_control_entrypoints_keep_health_checks_on_the_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = JiuWenSwarmDeepAdapter()
+    child = _SessionChild()
+    lookups = _install_session_child(monkeypatch, parent, child)
+    answer = _request("web")
+    heartbeat = _request("web", session_id="heartbeat-runtime-contract")
+    pause = _request("tui", params={"intent": "pause"})
+
+    await parent.handle_user_answer(answer)
+    await parent.handle_heartbeat(heartbeat)
+    await parent.process_interrupt(pause)
+
+    assert lookups == [answer.session_id, pause.session_id]
+    assert child.calls == [
+        ("answer", answer, None),
+        ("interrupt", pause, None),
+    ]

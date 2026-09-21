@@ -17,8 +17,64 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+import contextvars
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Mapping, TypedDict
+
+TRACE_ID_HEADER = "X-Trace-Id"
+_TRACE_ID_MAX_LEN = 128
+_southbound_trace_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "yuanrong_southbound_trace_id", default=""
+)
+
+
+def normalize_trace_id(value: str | None = None) -> str:
+    """Use the caller value, or mint a UUID (frontend also caps at 128 chars)."""
+    text = str(value or "").strip()
+    if not text:
+        text = str(uuid.uuid4())
+    return text[:_TRACE_ID_MAX_LEN]
+
+
+def bind_southbound_trace_id(value: str | None = None) -> str:
+    """Normalize, remember on this task, and return the id sent southbound."""
+    resolved = normalize_trace_id(value)
+    _southbound_trace_id.set(resolved)
+    return resolved
+
+
+def current_southbound_trace_id() -> str:
+    """Last southbound mint in this task; empty if YuanRong was not called."""
+    return str(_southbound_trace_id.get() or "").strip()
+
+
+def clear_southbound_trace_id() -> None:
+    """Drop the task-local id so a later 401 cannot inherit a previous call."""
+    _southbound_trace_id.set("")
+
+
+def extract_trace_id(headers: Mapping[str, Any] | None) -> str:
+    """Read ``X-Trace-Id`` from headers (any case). Empty when absent."""
+    if not headers:
+        return ""
+    for key, raw in headers.items():
+        if str(key).lower() == "x-trace-id":
+            return str(raw or "").strip()
+    return ""
+
+
+def apply_trace_header(
+    headers: Mapping[str, str] | None,
+    trace_id: str | None = None,
+) -> dict[str, str]:
+    """Set canonical ``X-Trace-Id``; prefer explicit, then existing header, then mint."""
+    merged = {str(key): str(value) for key, value in dict(headers or {}).items()}
+    resolved = bind_southbound_trace_id(trace_id or extract_trace_id(merged))
+    return {
+        key: value
+        for key, value in merged.items()
+        if str(key).lower() != "x-trace-id"
+    } | {TRACE_ID_HEADER: resolved}
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.models import E2AEnvelope
@@ -34,6 +90,243 @@ logger = logging.getLogger(__name__)
 
 # YuanRong POST /files/mkdir ``mode``: 3-4 octal digits (e.g. 755 / 0700).
 _MKDIR_MODE_RE = re.compile(r"^[0-7]{3,4}$")
+
+# POST /api/agent is async: create returns instance_id before startup probes
+# succeed. GET /api/agent/:id reports status; ``running`` means the probed
+# port is accepting connections (then WS/SSH may connect).
+_AGENT_RUNNING_STATUS = "running"
+_AGENT_RUNNING_TIMEOUT_SECONDS = 90.0
+_AGENT_RUNNING_RETRY_INTERVAL_SECONDS = 1.0
+_AGENT_FAILED_STATUSES = frozenset(
+    {"failed", "error", "deleted", "stopped", "killed"}
+)
+
+
+@dataclass(frozen=True)
+class RuntimeProbeSettings:
+    """TCP probe timings and GET wait knobs (YuanRong camelCase).
+
+    Startup/liveness override via ``gateway.agentos.probes`` /
+    ``AGENTOS_PROBE_*``. GET wait override via
+    ``gateway.agentos.wait_running_{timeout,interval}_seconds`` /
+    ``AGENTOS_WAIT_RUNNING_*`` (see ``load_router_config``).
+    """
+
+    startup_initial_delay_seconds: int = 3
+    startup_period_seconds: int = 3
+    startup_timeout_seconds: int = 2
+    startup_failure_threshold: int = 6
+    liveness_timeout_seconds: int = 2
+    liveness_failure_threshold: int = 3
+    wait_running_timeout_seconds: float = 90.0
+    wait_running_interval_seconds: float = 1.0
+
+    def startup_budget_seconds(self) -> float:
+        """Worst-case startup TCP probe window before ``status=running``.
+
+        ``initialDelaySeconds + periodSeconds * failureThreshold``.
+        Liveness runs after the instance is already running and is not part
+        of the GET wait.
+        """
+        return float(
+            int(self.startup_initial_delay_seconds)
+            + int(self.startup_period_seconds)
+            * int(self.startup_failure_threshold)
+        )
+
+    def same_tcp_timings(self, other: RuntimeProbeSettings) -> bool:
+        """True when startup/liveness knobs match (GET wait knobs ignored)."""
+        return (
+            int(self.startup_initial_delay_seconds)
+            == int(other.startup_initial_delay_seconds)
+            and int(self.startup_period_seconds)
+            == int(other.startup_period_seconds)
+            and int(self.startup_timeout_seconds)
+            == int(other.startup_timeout_seconds)
+            and int(self.startup_failure_threshold)
+            == int(other.startup_failure_threshold)
+            and int(self.liveness_timeout_seconds)
+            == int(other.liveness_timeout_seconds)
+            and int(self.liveness_failure_threshold)
+            == int(other.liveness_failure_threshold)
+        )
+
+    def startup_tcp(self, port: int) -> dict[str, Any]:
+        return {
+            "tcpSocket": {"port": int(port)},
+            "initialDelaySeconds": int(self.startup_initial_delay_seconds),
+            "periodSeconds": int(self.startup_period_seconds),
+            "timeoutSeconds": int(self.startup_timeout_seconds),
+            "failureThreshold": int(self.startup_failure_threshold),
+        }
+
+    def liveness_tcp(self, port: int) -> dict[str, Any]:
+        return {
+            "tcpSocket": {"port": int(port)},
+            "timeoutSeconds": int(self.liveness_timeout_seconds),
+            "failureThreshold": int(self.liveness_failure_threshold),
+        }
+
+    def tcp_probes(self, port: int, *, with_liveness: bool = False) -> dict[str, Any]:
+        probes: dict[str, Any] = {"startup": self.startup_tcp(port)}
+        if with_liveness:
+            probes["liveness"] = self.liveness_tcp(port)
+        return probes
+
+
+DEFAULT_RUNTIME_PROBE_SETTINGS = RuntimeProbeSettings()
+DEFAULT_THIRD_AGENT_PROBE_SETTINGS = RuntimeProbeSettings(
+    startup_initial_delay_seconds=2,
+    startup_period_seconds=3,
+    startup_timeout_seconds=2,
+    startup_failure_threshold=8,
+    liveness_timeout_seconds=2,
+    liveness_failure_threshold=3,
+)
+
+
+def _normalize_port_probe(value: Any) -> dict[str, Any] | None:
+    """Normalize a TCP port label to ``{"port": int, "protocol": "tcp"}``."""
+    if value is None or value is False:
+        return None
+    if isinstance(value, Mapping):
+        raw_port = value.get("port")
+        if raw_port is None and isinstance(value.get("tcpSocket"), Mapping):
+            raw_port = value["tcpSocket"].get("port")
+        protocol = str(value.get("protocol") or "tcp").strip().lower() or "tcp"
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            return None
+        if port <= 0:
+            return None
+        return {"port": port, "protocol": protocol}
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        if value <= 0:
+            return None
+        return {"port": int(value), "protocol": "tcp"}
+    text = str(value).strip()
+    if not text:
+        return None
+    protocol = "tcp"
+    port_str = text
+    if ":" in text:
+        proto, port_str = text.split(":", 1)
+        protocol = proto.strip().lower() or "tcp"
+        port_str = port_str.strip()
+    try:
+        port = int(port_str)
+    except ValueError:
+        return None
+    if port <= 0:
+        return None
+    return {"port": port, "protocol": protocol}
+
+
+def _port_probe_from_ports(ports: Any) -> dict[str, Any] | None:
+    """Build a port label from ``rootfs.ports`` such as ``tcp:18092``."""
+    if not isinstance(ports, list) or not ports:
+        return None
+    return _normalize_port_probe(ports[0])
+
+
+def _startup_tcp_probe(
+    port: int, settings: RuntimeProbeSettings | None = None
+) -> dict[str, Any]:
+    return (settings or DEFAULT_RUNTIME_PROBE_SETTINGS).startup_tcp(port)
+
+
+def _liveness_tcp_probe(
+    port: int, settings: RuntimeProbeSettings | None = None
+) -> dict[str, Any]:
+    return (settings or DEFAULT_RUNTIME_PROBE_SETTINGS).liveness_tcp(port)
+
+
+def _normalize_probes(value: Any) -> dict[str, Any] | None:
+    """Keep ``startup`` / ``liveness`` / ``readiness`` objects if present."""
+    if not isinstance(value, Mapping) or not value:
+        return None
+    probes: dict[str, Any] = {}
+    for key in ("startup", "liveness", "readiness"):
+        item = value.get(key)
+        if isinstance(item, Mapping) and item:
+            probes[key] = dict(item)
+    return probes or None
+
+
+def _probes_from_port(
+    port: int,
+    *,
+    with_liveness: bool = False,
+    settings: RuntimeProbeSettings | None = None,
+) -> dict[str, Any]:
+    return (settings or DEFAULT_RUNTIME_PROBE_SETTINGS).tcp_probes(
+        port, with_liveness=with_liveness
+    )
+
+
+def _probes_from_ports(
+    ports: Any, settings: RuntimeProbeSettings | None = None
+) -> dict[str, Any] | None:
+    """Startup TCP probe from ``rootfs.ports`` (e.g. ``tcp:22``)."""
+    probe = _port_probe_from_ports(ports)
+    if probe is None:
+        return None
+    return _probes_from_port(int(probe["port"]), settings=settings)
+
+
+def _instance_status(instance: Mapping[str, Any] | None) -> str:
+    if not isinstance(instance, Mapping):
+        return ""
+    return str(instance.get("status") or instance.get("state") or "").strip().lower()
+
+
+def _is_agent_running(instance: Mapping[str, Any] | None) -> bool:
+    """True only when GET explicitly reports ``status=running``.
+
+    A non-empty instance without ``status`` (partial body with only
+    ``instance_id`` / ``node_ip``, or a Legacy GET that omitted the field)
+    is **not** ready. ``wait_until_running`` keeps polling until status is
+    ``running``, a failed status, or timeout — otherwise a mid-probe GET
+    would skip the startup probe wait and WS/SSH would connect too early.
+    """
+    if not isinstance(instance, Mapping) or not instance:
+        return False
+    return _instance_status(instance) == _AGENT_RUNNING_STATUS
+
+
+# Placement / status fields YuanRong may put on ``instance`` or at the top
+# level (legacy GET, jiuwenbox ``ip_address`` passthrough).
+_AGENT_INSTANCE_PROMOTE_KEYS = (
+    "status",
+    "state",
+    "node_ip",
+    "nodeIp",
+    "sandbox_ip",
+    "sandboxIp",
+    "ip_address",
+    "ipAddress",
+)
+
+
+def _merge_agent_instance_payload(parsed: Mapping[str, Any]) -> dict[str, Any]:
+    """Flatten GET /api/agent payload into the instance dict used by callers.
+
+    Nested ``instance`` values win; missing placement/status fields are
+    copied from the top-level body so registry PATCH can see sandbox IP
+    even when YuanRong/jiuwenbox emit them outside ``instance``.
+    """
+    raw = parsed.get("instance")
+    instance = dict(raw) if isinstance(raw, dict) else {}
+    for key in _AGENT_INSTANCE_PROMOTE_KEYS:
+        if str(instance.get(key) or "").strip():
+            continue
+        value = parsed.get(key)
+        if value is not None and str(value).strip():
+            instance[key] = value
+    return instance
 
 
 class AgentMount(TypedDict, total=False):
@@ -62,6 +355,7 @@ class AgentRuntimeSpec(TypedDict, total=False):
     memory: int
     code_path: str
     cmds: list[list[str]]
+    probes: dict[str, Any]
 
 
 @dataclass
@@ -77,6 +371,10 @@ class YuanrongAgentApiError(RuntimeError):
     """Raised when YuanRong /api/agent returns a non-success response."""
 
 
+class YuanrongAgentTimeoutError(YuanrongAgentApiError):
+    """请求已发出但等待响应超时（请求可能已在服务端生效，调用方需按幂等处理）。"""
+
+
 @dataclass(frozen=True)
 class AgentFileDownloadChunk:
     """One chunk from GET /api/agent/:instanceId/files/download."""
@@ -88,6 +386,28 @@ class AgentFileDownloadChunk:
     size: int
     content_type: str
     eof: bool
+
+
+@dataclass(frozen=True)
+class _AgentFileRequest:
+    """Shared identity/auth for agent file HTTP calls (G.FNM.03)."""
+
+    instance_id: str
+    path: str
+    auth_headers: dict[str, str]
+    trace_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _InvokeStreamCall:
+    """Inputs for one threaded stream invoke (G.FNM.03)."""
+
+    payload: dict[str, Any]
+    session_id: str
+    out_queue: asyncio.Queue[tuple[str, str | None]]
+    loop: asyncio.AbstractEventLoop
+    user_id: str | None = None
+    request_id: str | None = None
 
 
 class YuanrongAgentFileError(RuntimeError):
@@ -117,6 +437,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         agent_timeout_s: float = 300.0,
         agent_namespace: str = "default",
         session_ttl_s: int = 900,
+        probe_settings: RuntimeProbeSettings | None = None,
+        wait_running_timeout_s: float | None = None,
+        wait_running_interval_s: float | None = None,
     ) -> None:
         self._frontend_endpoint = (frontend_endpoint or "").rstrip("/")
         self._function_version_urn = (function_version_urn or "").strip()
@@ -124,6 +447,11 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         self._invoke_timeout_s = float(invoke_timeout_s)
         self._agent_timeout_s = float(agent_timeout_s)
         self._agent_namespace = str(agent_namespace or "default").strip() or "default"
+        self._probe_settings = probe_settings or DEFAULT_RUNTIME_PROBE_SETTINGS
+        # None keeps reading the module constants at call time (unit tests
+        # monkeypatch ``_AGENT_RUNNING_TIMEOUT_SECONDS``).
+        self._wait_running_timeout_s = wait_running_timeout_s
+        self._wait_running_interval_s = wait_running_interval_s
         # yuanrong X-Instance-Session.sessionTTL，单位：秒；0 = 立即解绑。
         # 默认 900s（15 分钟），保证会话对实例的亲和性，避免每次调用重建实例。
         self._session_ttl_s = max(int(session_ttl_s), 0)
@@ -174,8 +502,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         self._server_ready = False
         logger.info("[YuanrongFrontendAgentClient] disconnected")
 
-    @staticmethod
     def _normalize_runtime_spec(
+        self,
         runtime_spec: AgentRuntimeSpec | Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         """Normalize inline ``runtime_spec`` for POST /api/agent."""
@@ -214,6 +542,17 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         cmds = runtime_spec.get("cmds")
         if isinstance(cmds, list) and cmds:
             normalized["cmds"] = cmds
+        probes = _normalize_probes(runtime_spec.get("probes"))
+        if probes is None:
+            legacy = _normalize_port_probe(
+                runtime_spec.get("port_probe")
+            ) or _port_probe_from_ports(rootfs.get("ports"))
+            if legacy is not None:
+                probes = _probes_from_port(
+                    int(legacy["port"]), settings=self._probe_settings
+                )
+        if probes is not None:
+            normalized["probes"] = probes
         return normalized
 
     async def create_sandbox(
@@ -225,6 +564,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         runtime_spec: AgentRuntimeSpec | Mapping[str, Any],
         env_vars: dict[str, str] | None = None,
         mounts: list[AgentMount] | None = None,
+        trace_id: str | None = None,
     ) -> SandboxInfo:
         """Create a detached agent instance via POST /api/agent (inline mode).
 
@@ -233,6 +573,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         - ``namespace`` / ``name`` / ``workspace`` / ``runtime_spec``: required
         - ``runtime_spec.runtime`` + ``runtime_spec.rootfs.imageurl``: required
         - ``env_vars`` / ``mounts``: optional
+        - ``runtime_spec.probes``: optional startup / liveness probes
+          (Frontend marks ``running`` after startup succeeds)
         - does not send ``urn`` (inline takes priority over registered)
         """
         self._ensure_connected()
@@ -264,7 +606,10 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         if mounts:
             payload["mounts"] = list(mounts)
 
-        status, body = await asyncio.to_thread(self._do_agent_create, payload)
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
+        status, body = await asyncio.to_thread(
+            self._do_agent_create, payload, resolved_trace_id
+        )
         parsed = self._parse_agent_api_response(body, status)
         instance_id = str(parsed.get("instance_id") or "").strip()
         if not instance_id:
@@ -284,50 +629,153 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 "env_vars": dict(payload.get("env_vars") or {}),
                 "mounts": list(payload.get("mounts") or []),
                 "provisioning": "yuanrong_agent_api_inline",
+                "trace_id": resolved_trace_id,
             },
         )
         logger.info(
             "[YuanrongFrontendAgentClient] create_sandbox: "
-            "instance_id=%s name=%s namespace=%s runtime=%s imageurl=%s",
+            "instance_id=%s name=%s namespace=%s runtime=%s imageurl=%s "
+            "trace_id=%s",
             instance_id,
             normalized_name,
             normalized_namespace,
             normalized_runtime_spec.get("runtime"),
             (normalized_runtime_spec.get("rootfs") or {}).get("imageurl"),
+            resolved_trace_id,
         )
         return info
 
-    async def delete_sandbox(self, sandbox_id: str) -> None:
+    async def delete_sandbox(
+        self, sandbox_id: str, *, trace_id: str | None = None
+    ) -> None:
         """Destroy a detached agent instance via DELETE /api/agent/:instanceId."""
         self._ensure_connected()
         normalized_sandbox_id = str(sandbox_id or "").strip()
         if not normalized_sandbox_id:
             raise ValueError("sandbox_id is required to delete sandbox")
 
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
         status, body = await asyncio.to_thread(
             self._do_agent_delete,
             normalized_sandbox_id,
+            resolved_trace_id,
         )
+        if self._agent_api_not_found(status, body):
+            logger.info(
+                "[YuanrongFrontendAgentClient] delete_sandbox: already gone "
+                "instance_id=%s trace_id=%s",
+                normalized_sandbox_id,
+                resolved_trace_id,
+            )
+            return
         self._parse_agent_api_response(body, status)
         logger.info(
-            "[YuanrongFrontendAgentClient] delete_sandbox: instance_id=%s",
+            "[YuanrongFrontendAgentClient] delete_sandbox: instance_id=%s trace_id=%s",
             normalized_sandbox_id,
+            resolved_trace_id,
         )
 
-    async def get_agent_info(self, instance_id: str) -> dict[str, Any]:
+    async def get_agent_info(
+        self, instance_id: str, *, trace_id: str | None = None
+    ) -> dict[str, Any]:
         """Query agent instance info via GET /api/agent/:instanceId.
 
         Returns the ``instance`` dict (contains node_ip, sandbox_ip,
-        sandbox_type, rootfs, workspace, env_vars, etc.).
+        sandbox_type, rootfs, workspace, env_vars, status, etc.).
         """
         self._ensure_connected()
         normalized_id = str(instance_id or "").strip()
         if not normalized_id:
             raise ValueError("instance_id is required to get agent info")
-        status, body = await asyncio.to_thread(self._do_agent_get, normalized_id)
+        status, body = await asyncio.to_thread(
+            self._do_agent_get, normalized_id, trace_id
+        )
         parsed = self._parse_agent_api_response(body, status)
-        instance = parsed.get("instance")
-        return instance if isinstance(instance, dict) else {}
+        return _merge_agent_instance_payload(parsed)
+
+    async def wait_until_running(
+        self, instance_id: str, *, trace_id: str | None = None
+    ) -> dict[str, Any]:
+        """Poll GET /api/agent/:id until ``status`` is explicitly ``running``.
+
+        Create is asynchronous: the port probe completes after POST returns
+        ``instance_id``. Connect WS/SSH only after this method succeeds.
+
+        Missing ``status`` is not treated as ready: keep polling. Only an
+        explicit ``running`` (or a failed status / timeout) ends the loop.
+        """
+        normalized_id = str(instance_id or "").strip()
+        if not normalized_id:
+            raise ValueError("instance_id is required to wait for running")
+        timeout_s = (
+            _AGENT_RUNNING_TIMEOUT_SECONDS
+            if self._wait_running_timeout_s is None
+            else float(self._wait_running_timeout_s)
+        )
+        interval_s = (
+            _AGENT_RUNNING_RETRY_INTERVAL_SECONDS
+            if self._wait_running_interval_s is None
+            else float(self._wait_running_interval_s)
+        )
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        attempt = 0
+        last_error: BaseException | None = None
+        last_status = ""
+        # Only GET poll retries share one id; every other YuanRong call mints.
+        poll_trace_id = bind_southbound_trace_id(trace_id)
+        while True:
+            attempt += 1
+            instance: dict[str, Any] = {}
+            try:
+                instance = await self.get_agent_info(
+                    normalized_id, trace_id=poll_trace_id
+                )
+                last_error = None
+            except YuanrongAgentApiError as exc:
+                last_error = exc
+            status = _instance_status(instance)
+            last_status = status
+            if status in _AGENT_FAILED_STATUSES:
+                raise YuanrongAgentApiError(
+                    f"agent instance failed: instance_id={normalized_id}, "
+                    f"status={status}"
+                )
+            if _is_agent_running(instance):
+                logger.info(
+                    "[YuanrongFrontendAgentClient] instance running after GET poll: "
+                    "instance_id=%s attempt=%s status=%s trace_id=%s",
+                    normalized_id,
+                    attempt,
+                    status or _AGENT_RUNNING_STATUS,
+                    poll_trace_id,
+                )
+                return instance
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                detail = (
+                    str(last_error)
+                    if last_error is not None
+                    else f"status={last_status or 'empty'}"
+                )
+                raise YuanrongAgentApiError(
+                    f"agent instance not running after "
+                    f"{timeout_s:.0f}s: "
+                    f"instance_id={normalized_id}, last={detail}, "
+                    f"trace_id={poll_trace_id}"
+                )
+            sleep_for = min(interval_s, remaining)
+            logger.debug(
+                "[YuanrongFrontendAgentClient] GET not running yet: "
+                "instance_id=%s attempt=%s status=%s sleep=%.1fs last_error=%s "
+                "trace_id=%s",
+                normalized_id,
+                attempt,
+                status or "empty",
+                sleep_for,
+                type(last_error).__name__ if last_error is not None else "-",
+                poll_trace_id,
+            )
+            await asyncio.sleep(sleep_for)
 
     async def upload_agent_file(
         self,
@@ -336,6 +784,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         data: bytes,
         *,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """Upload a file into an agent container via POST /api/agent/:id/files/upload."""
         self._ensure_connected()
@@ -345,12 +794,20 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise ValueError("instance_id is required to upload agent file")
         if not normalized_path:
             raise ValueError("path is required to upload agent file")
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
+        logger.info(
+            "[YuanrongFrontendAgentClient] upload_agent_file: instance_id=%s path=%s trace_id=%s",
+            normalized_id,
+            normalized_path,
+            resolved_trace_id,
+        )
         status, body = await asyncio.to_thread(
             self._do_agent_file_upload,
             normalized_id,
             normalized_path,
             data,
             dict(auth_headers or {}),
+            resolved_trace_id,
         )
         return self._parse_agent_file_upload_response(body, status, normalized_path, len(data))
 
@@ -362,6 +819,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         offset: int = 0,
         limit: int = 65536,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> AgentFileDownloadChunk:
         """Download a file chunk from GET /api/agent/:id/files/download (Range)."""
         self._ensure_connected()
@@ -373,14 +831,40 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise ValueError("path is required to download agent file")
         resolved_offset = max(int(offset), 0)
         resolved_limit = max(int(limit), 1)
-        status, data, content_type, total_size = await asyncio.to_thread(
-            self._do_agent_file_download,
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
+        logger.info(
+            "[YuanrongFrontendAgentClient] download_agent_file: instance_id=%s path=%s "
+            "offset=%s limit=%s trace_id=%s",
             normalized_id,
             normalized_path,
             resolved_offset,
             resolved_limit,
-            dict(auth_headers or {}),
+            resolved_trace_id,
         )
+        status, data, content_type, total_size = await asyncio.to_thread(
+            self._do_agent_file_download,
+            _AgentFileRequest(
+                instance_id=normalized_id,
+                path=normalized_path,
+                auth_headers=dict(auth_headers or {}),
+                trace_id=resolved_trace_id,
+            ),
+            resolved_offset,
+            resolved_limit,
+        )
+        if status == 416:
+            # File exists but offset is at/past EOF. Gateway /file-api treats this
+            # as a successful empty read (HTTP 200 + eof), not HTTP Range failure.
+            resolved_size = total_size if total_size > 0 else resolved_offset
+            return AgentFileDownloadChunk(
+                data=b"",
+                path=normalized_path,
+                offset=resolved_offset,
+                chunk_size=0,
+                size=resolved_size,
+                content_type="application/octet-stream",
+                eof=True,
+            )
         if status in {404, 413} or status >= 500 or not (200 <= status < 300):
             self._raise_agent_file_http_error(status, data)
         chunk_size = len(data)
@@ -405,6 +889,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         recursive: bool = False,
         max_depth: int = 0,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """List files in an agent container via GET /api/agent/:id/files/list."""
         self._ensure_connected()
@@ -416,13 +901,23 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise ValueError("path is required to list agent files")
         if int(max_depth) < 0:
             raise ValueError("max_depth must be >= 0")
-        status, body = await asyncio.to_thread(
-            self._do_agent_file_list,
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
+        logger.info(
+            "[YuanrongFrontendAgentClient] list_agent_files: instance_id=%s path=%s trace_id=%s",
             normalized_id,
             normalized_path,
+            resolved_trace_id,
+        )
+        status, body = await asyncio.to_thread(
+            self._do_agent_file_list,
+            _AgentFileRequest(
+                instance_id=normalized_id,
+                path=normalized_path,
+                auth_headers=dict(auth_headers or {}),
+                trace_id=resolved_trace_id,
+            ),
             bool(recursive),
             int(max_depth),
-            dict(auth_headers or {}),
         )
         return self._parse_agent_file_list_response(body, status)
 
@@ -434,6 +929,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         mode: str | None = None,
         recursive: bool = False,
         auth_headers: Mapping[str, str] | None = None,
+        trace_id: str | None = None,
     ) -> dict[str, Any]:
         """Create a directory in an agent container via POST /api/agent/:id/files/mkdir."""
         self._ensure_connected()
@@ -450,13 +946,23 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 error_code="BAD_REQUEST",
             )
         normalized_mode = self._normalize_mkdir_mode(mode)
-        status, body = await asyncio.to_thread(
-            self._do_agent_file_mkdir,
+        resolved_trace_id = bind_southbound_trace_id(trace_id)
+        logger.info(
+            "[YuanrongFrontendAgentClient] mkdir_agent_dir: instance_id=%s path=%s trace_id=%s",
             normalized_id,
             normalized_path,
+            resolved_trace_id,
+        )
+        status, body = await asyncio.to_thread(
+            self._do_agent_file_mkdir,
+            _AgentFileRequest(
+                instance_id=normalized_id,
+                path=normalized_path,
+                auth_headers=dict(auth_headers or {}),
+                trace_id=resolved_trace_id,
+            ),
             normalized_mode,
             bool(recursive),
-            dict(auth_headers or {}),
         )
         return self._parse_agent_file_mkdir_response(body, status, normalized_path)
 
@@ -535,12 +1041,16 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         return text
 
     @staticmethod
-    def _merge_auth_headers(base_headers: dict[str, str], auth_headers: dict[str, str]) -> dict[str, str]:
+    def _merge_auth_headers(
+        base_headers: dict[str, str],
+        auth_headers: dict[str, str],
+        trace_id: str | None = None,
+    ) -> dict[str, str]:
         merged = dict(base_headers)
         for key, value in auth_headers.items():
             if value is not None and str(value).strip():
                 merged[str(key)] = str(value)
-        return merged
+        return apply_trace_header(merged, trace_id)
 
     @staticmethod
     def _encode_multipart_form(
@@ -570,7 +1080,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
     @staticmethod
     def _parse_content_range_total(content_range: str, *, fallback_size: int) -> int:
         text = str(content_range or "").strip()
-        match = re.match(r"bytes\s+\d+-\d+/(\d+|\*)", text, flags=re.IGNORECASE)
+        match = re.match(r"bytes\s+(?:\d+-\d+|\*)/(\d+|\*)", text, flags=re.IGNORECASE)
         if not match:
             return fallback_size
         total_text = match.group(1)
@@ -598,14 +1108,26 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             return str(parsed.get("error") or parsed.get("message") or text)
         return text
 
+    @staticmethod
+    def _agent_file_404_error_code(message: str) -> str:
+        """Classify YuanRong file-API 404. Default is path miss, not sandbox miss."""
+        lowered = str(message or "").lower()
+        instance_markers = (
+            "instance not found",
+            "instance_not_found",
+            "sandbox not found",
+            "agent not found",
+            "no such instance",
+            "instance does not exist",
+        )
+        if any(marker in lowered for marker in instance_markers):
+            return "instance_not_found"
+        return "file_not_found"
+
     def _agent_file_http_error(self, status: int, body: bytes | str) -> YuanrongAgentFileError:
         message = self._parse_agent_file_error_body(body)
         if status == 404:
-            lowered = message.lower()
-            if "file not found" in lowered:
-                code = "file_not_found"
-            else:
-                code = "instance_not_found"
+            code = self._agent_file_404_error_code(message)
         elif status == 413:
             code = "file_too_large"
         elif status == 400:
@@ -756,6 +1278,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         path: str,
         data: bytes,
         auth_headers: dict[str, str],
+        trace_id: str | None = None,
     ) -> tuple[int, str]:
         payload, content_type = self._encode_multipart_form(
             {"path": path},
@@ -763,7 +1286,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             file_bytes=data,
             filename=path.rsplit("/", 1)[-1] or "file",
         )
-        headers = self._merge_auth_headers({"Content-Type": content_type}, auth_headers)
+        headers = self._merge_auth_headers(
+            {"Content-Type": content_type}, auth_headers, trace_id
+        )
         req = urllib.request.Request(
             self._agent_files_upload_url(instance_id),
             data=payload,
@@ -778,17 +1303,17 @@ class YuanrongFrontendAgentClient(AgentServerClient):
 
     def _do_agent_file_download(
         self,
-        instance_id: str,
-        path: str,
+        request: _AgentFileRequest,
         offset: int,
         limit: int,
-        auth_headers: dict[str, str],
     ) -> tuple[int, bytes, str, int]:
-        headers = self._merge_auth_headers({"Accept": "*/*"}, auth_headers)
+        headers = self._merge_auth_headers(
+            {"Accept": "*/*"}, request.auth_headers, request.trace_id
+        )
         end = offset + limit - 1
         headers["Range"] = f"bytes={offset}-{end}"
         req = urllib.request.Request(
-            self._agent_files_download_url(instance_id, path),
+            self._agent_files_download_url(request.instance_id, request.path),
             headers=headers,
             method="GET",
         )
@@ -808,21 +1333,34 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         except urllib.error.HTTPError as err:
             body = err.read() if err.fp else b""
             status = int(getattr(err, "code", 500) or 500)
-            logger.error(
+            err_headers = getattr(err, "headers", None)
+            content_type = "application/octet-stream"
+            total_size = 0
+            if err_headers is not None:
+                content_type = str(err_headers.get("Content-Type") or content_type)
+                content_range = str(err_headers.get("Content-Range") or "")
+                total_size = self._parse_content_range_total(
+                    content_range,
+                    fallback_size=0,
+                )
+            log_fn = logger.info if status == 416 else logger.error
+            log_fn(
                 "[YuanrongFrontendAgentClient] file download HTTP error: "
-                "instance=%s path=%s code=%d",
-                instance_id,
-                path,
+                "instance=%s path=%s code=%d trace_id=%s",
+                request.instance_id,
+                request.path,
                 status,
+                request.trace_id or "",
             )
-            return status, body, "application/octet-stream", 0
+            return status, body, content_type, total_size
         except Exception as err:
             logger.error(
                 "[YuanrongFrontendAgentClient] file download failed: "
-                "instance=%s path=%s error=%s",
-                instance_id,
-                path,
+                "instance=%s path=%s error=%s trace_id=%s",
+                request.instance_id,
+                request.path,
                 err,
+                request.trace_id or "",
             )
             if self._is_timeout_error(err):
                 raise YuanrongAgentApiError(
@@ -832,17 +1370,17 @@ class YuanrongFrontendAgentClient(AgentServerClient):
 
     def _do_agent_file_list(
         self,
-        instance_id: str,
-        path: str,
+        request: _AgentFileRequest,
         recursive: bool,
         max_depth: int,
-        auth_headers: dict[str, str],
     ) -> tuple[int, str]:
-        headers = self._merge_auth_headers({"Accept": "application/json"}, auth_headers)
+        headers = self._merge_auth_headers(
+            {"Accept": "application/json"}, request.auth_headers, request.trace_id
+        )
         req = urllib.request.Request(
             self._agent_files_list_url(
-                instance_id,
-                path,
+                request.instance_id,
+                request.path,
                 recursive=recursive,
                 max_depth=max_depth,
             ),
@@ -857,17 +1395,17 @@ class YuanrongFrontendAgentClient(AgentServerClient):
 
     def _do_agent_file_mkdir(
         self,
-        instance_id: str,
-        path: str,
+        request: _AgentFileRequest,
         mode: str | None,
         recursive: bool,
-        auth_headers: dict[str, str],
     ) -> tuple[int, str]:
-        headers = self._merge_auth_headers({"Accept": "application/json"}, auth_headers)
+        headers = self._merge_auth_headers(
+            {"Accept": "application/json"}, request.auth_headers, request.trace_id
+        )
         req = urllib.request.Request(
             self._agent_files_mkdir_url(
-                instance_id,
-                path,
+                request.instance_id,
+                request.path,
                 mode=mode,
                 recursive=recursive,
             ),
@@ -901,6 +1439,18 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             )
         return parsed
 
+    @staticmethod
+    def _agent_api_not_found(status: int, body: str) -> bool:
+        if int(status) == 404:
+            return True
+        try:
+            parsed = json.loads(body) if body else {}
+        except Exception:
+            return False
+        if not isinstance(parsed, dict):
+            return False
+        return parsed.get("code") in (404, "404")
+
     def _urlopen_request(
         self,
         req: urllib.request.Request,
@@ -931,7 +1481,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 str(err),
             )
             if raise_on_timeout and self._is_timeout_error(err):
-                raise YuanrongAgentApiError(
+                raise YuanrongAgentTimeoutError(
                     f"request timeout after {resolved_timeout}s: "
                     f"url={req.full_url}, error={err}"
                 ) from err
@@ -947,12 +1497,16 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         text = str(err).lower()
         return "timed out" in text or "timeout" in type(err).__name__.lower()
 
-    def _do_agent_create(self, payload: dict[str, Any]) -> tuple[int, str]:
+    def _do_agent_create(
+        self, payload: dict[str, Any], trace_id: str | None = None
+    ) -> tuple[int, str]:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             self._agent_create_url(),
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=apply_trace_header(
+                {"Content-Type": "application/json"}, trace_id
+            ),
             method="POST",
         )
         return self._urlopen_request(
@@ -961,10 +1515,14 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise_on_timeout=True,
         )
 
-    def _do_agent_delete(self, instance_id: str) -> tuple[int, str]:
+    def _do_agent_delete(
+        self, instance_id: str, trace_id: str | None = None
+    ) -> tuple[int, str]:
         req = urllib.request.Request(
             self._agent_delete_url(instance_id),
-            headers={"Content-Type": "application/json"},
+            headers=apply_trace_header(
+                {"Content-Type": "application/json"}, trace_id
+            ),
             method="DELETE",
         )
         return self._urlopen_request(
@@ -973,10 +1531,14 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             raise_on_timeout=True,
         )
 
-    def _do_agent_get(self, instance_id: str) -> tuple[int, str]:
+    def _do_agent_get(
+        self, instance_id: str, trace_id: str | None = None
+    ) -> tuple[int, str]:
         req = urllib.request.Request(
             self._agent_delete_url(instance_id),  # same URL: /api/agent/{instanceId}
-            headers={"Content-Type": "application/json"},
+            headers=apply_trace_header(
+                {"Content-Type": "application/json"}, trace_id
+            ),
             method="GET",
         )
         return self._urlopen_request(
@@ -1174,6 +1736,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         user_id: str | None = None,
         req_method: str | None = None,
         stream: bool = False,
+        request_id: str | None = None,
     ) -> dict[str, str]:
         """构造 faas invocation 请求头.
 
@@ -1199,35 +1762,42 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         if uid:
             session_context = json.dumps({"sessionCtx": uid}, ensure_ascii=False)
             headers["X-Session-Context"] = session_context
+        bound = apply_trace_header(headers, request_id)
+        resolved_trace_id = extract_trace_id(bound)
+        if uid:
             logger.debug(
                 "[YuanrongFrontendAgentClient] invoke headers: method=%s session_id=%s user_id=%s "
-                "X-Session-Context=%s stream=%s",
+                "X-Session-Context=%s stream=%s trace_id=%s",
                 req_method,
                 session_id,
                 uid,
                 session_context,
                 stream,
+                resolved_trace_id,
             )
         else:
             logger.info(
                 "[YuanrongFrontendAgentClient] invoke headers: method=%s session_id=%s "
-                "uid_empty=yes X-Session-Context omitted stream=%s",
+                "uid_empty=yes X-Session-Context omitted stream=%s trace_id=%s",
                 req_method,
                 session_id,
                 stream,
+                resolved_trace_id,
             )
-        return headers
+        return bound
 
     def _do_invoke(
         self,
         payload: dict[str, Any],
         session_id: str,
         user_id: str | None = None,
+        request_id: str | None = None,
     ) -> tuple[int, str]:
         headers = self._invoke_headers(
             session_id,
             user_id=user_id,
             req_method=payload.get("method"),
+            request_id=request_id,
         )
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(self._invoke_url(), data=data, headers=headers, method="POST")
@@ -1260,7 +1830,11 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 envelope.user_id,
             )
         except YuanrongAgentApiError as e:
-            logger.warning("[YuanrongFrontendAgentClient] invoke failed: %s", e)
+            logger.warning(
+                "[YuanrongFrontendAgentClient] invoke failed: %s trace_id=%s",
+                e,
+                current_southbound_trace_id() or "-",
+            )
             return AgentResponse(
                 request_id=envelope.request_id,
                 channel_id=envelope.channel_id,
@@ -1291,11 +1865,13 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         reader_task = asyncio.create_task(
             asyncio.to_thread(
                 self._do_invoke_stream,
-                payload,
-                session_id,
-                queue,
-                loop,
-                envelope.user_id,
+                _InvokeStreamCall(
+                    payload=payload,
+                    session_id=session_id,
+                    out_queue=queue,
+                    loop=loop,
+                    user_id=envelope.user_id,
+                ),
             )
         )
         try:
@@ -1337,30 +1913,20 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             except asyncio.CancelledError:
                 pass
 
-    def _do_invoke_stream(
-        self,
-        payload: dict[str, Any],
-        session_id: str,
-        out_queue: asyncio.Queue[tuple[str, str | None]],
-        loop: asyncio.AbstractEventLoop,
-        user_id: str | None = None,
-    ) -> None:
+    def _do_invoke_stream(self, call: _InvokeStreamCall) -> None:
         """执行流式 HTTP 调用（在线程中运行）.
 
         Args:
-            payload: 请求负载
-            session_id: 会话ID
-            out_queue: 输出队列
-            loop: 事件循环
-            user_id: 用户ID（透传给 faas 的 X-Session-Context）
+            call: 流式调用的请求负载、会话上下文与输出通道
         """
         headers = self._invoke_headers(
-            session_id,
-            user_id=user_id,
-            req_method=payload.get("method"),
+            call.session_id,
+            user_id=call.user_id,
+            req_method=call.payload.get("method"),
             stream=True,
+            request_id=call.request_id,
         )
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        data = json.dumps(call.payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(self._invoke_url(), data=data, headers=headers, method="POST")
 
         try:
@@ -1370,8 +1936,8 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 if not (200 <= status < 300):
                     text = resp.read().decode("utf-8", errors="replace")
                     logger.error("[YuanrontFrontendAgentClient] HTTP错误状态码: %d, 响应: %s", status, text[:500])
-                    loop.call_soon_threadsafe(
-                        out_queue.put_nowait,
+                    call.loop.call_soon_threadsafe(
+                        call.out_queue.put_nowait,
                         ("error", json.dumps({"http_status": status, "body": text}, ensure_ascii=False)),
                     )
                     return
@@ -1385,7 +1951,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                     if not chunk:
                         # 处理缓冲区中剩余的数据
                         if sse_line_buffer.strip():
-                            self._process_sse_chunk(sse_line_buffer, out_queue, loop)
+                            self._process_sse_chunk(
+                                sse_line_buffer, call.out_queue, call.loop
+                            )
                         break
 
                     chunk_text = chunk.decode("utf-8", errors="replace")
@@ -1402,16 +1970,18 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                         line_stripped = line.strip()
                         if line_stripped.startswith('data: '):
                             data_content = line_stripped[6:]  # 去掉 "data: " 前缀
-                            self._process_sse_chunk(data_content, out_queue, loop)
+                            self._process_sse_chunk(
+                                data_content, call.out_queue, call.loop
+                            )
         except urllib.error.HTTPError as err:
             text = err.read().decode("utf-8", errors="replace") if err.fp else str(err)
             logger.error(
                 "[YuanrontFrontendAgentClient] stream HTTP error: session_id=%s, code=%d",
-                session_id,
+                call.session_id,
                 getattr(err, "code", 500),
             )
-            loop.call_soon_threadsafe(
-                out_queue.put_nowait,
+            call.loop.call_soon_threadsafe(
+                call.out_queue.put_nowait,
                 (
                     "error",
                     json.dumps({
@@ -1423,12 +1993,16 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         except Exception as err:
             logger.error(
                 "[YuanrontFrontendAgentClient] stream request failed: session_id=%s, error=%s",
-                session_id,
+                call.session_id,
                 str(err),
             )
-            loop.call_soon_threadsafe(out_queue.put_nowait, ("exception", str(err)))
+            call.loop.call_soon_threadsafe(
+                call.out_queue.put_nowait, ("exception", str(err))
+            )
         finally:
-            loop.call_soon_threadsafe(out_queue.put_nowait, ("done", None))
+            call.loop.call_soon_threadsafe(
+                call.out_queue.put_nowait, ("done", None)
+            )
 
     def _process_sse_chunk(
         self,

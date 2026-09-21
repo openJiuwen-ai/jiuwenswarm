@@ -63,7 +63,7 @@ class ReqMethod(Enum):
     SESSION_CREATE = "session.create"
     SESSION_SWITCH = "session.switch"
     SESSION_DELETE = "session.delete"
-    SESSION_KVC_PREPARE = "session.kvc.prepare"
+    SESSION_INPUT_INTENT = "session.input.intent"
     SESSION_RENAME = "session.rename"
     SESSION_FORK = "session.fork"
     SESSION_REBIND_PROJECT = "session.rebind_project"
@@ -91,6 +91,8 @@ class ReqMethod(Enum):
     CONFIG_CACHE_CLEAR = "config.cache_clear"
     AGENT_RELOAD_CONFIG = "agent.reload_config"
     AGENT_PREWARM_SYNC = "agent.prewarm.sync"
+    # Gateway → AgentServer：登录模型凭据续期后的新 token / 会话注销后的撤销
+    AUTH_CREDENTIALS_UPDATE = "auth.credentials.update"
 
     MEMORY_COMPUTE = "memory.compute"
     # TUI memory management (Phase 3: execute in the target AgentServer's
@@ -114,8 +116,14 @@ class ReqMethod(Enum):
     PROJECT_CREATE = "project.create"
     PROJECT_RENAME = "project.rename"
     PROJECT_PIN = "project.pin"
-    PROJECT_REMOVE = "project.remove"
-    PROJECT_RESTORE = "project.restore"
+    SESSION_ARCHIVE = "session.archive"
+    SESSION_UNARCHIVE = "session.unarchive"
+    SESSION_ARCHIVED_LIST = "session.archived.list"
+    CRON_SESSIONS_DELETE = "cron.sessions.delete"
+    PROJECT_DELETE = "project.delete"
+    PROJECT_LIFECYCLE = "project.lifecycle"
+    PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"
+    PROJECT_SESSIONS_DELETE_ARCHIVED = "project.sessions.delete_archived"
     PROJECT_GIT_STATUS = "project.git.status"
     PROJECT_GIT_PROBE = "project.git.probe"
     PROJECT_GIT_INIT = "project.git.init"
@@ -176,6 +184,14 @@ class ReqMethod(Enum):
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
 
+    # Unified asset publishing; dispatched by AgentServer independently of chats.
+    ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
+    ASSETS_PUBLISH_PREPARE = "assets.publish.prepare"
+    ASSETS_PUBLISH_COMMIT = "assets.publish.commit"
+    ASSETS_PUBLISH_STATUS = "assets.publish.status"
+    ASSETS_PUBLISH_RECORDS = "assets.publish.records"
+    ASSETS_PUBLISH_LOCAL_STATUS = "assets.publish.local_status"
+
     # mcp management.
     MCP_LIST = "mcp.list"
     MCP_SHOW = "mcp.show"
@@ -204,6 +220,7 @@ class ReqMethod(Enum):
     SKILLS_VISIBILITY_SET = "skills.visibility.set"
     SKILLS_VISIBILITY_UPDATE = "skills.visibility.update"
     SKILLS_INSTALL = "skills.install"
+    SKILLS_PACK_MEMBER_INSTALL = "skills.pack_member.install"
     SKILLS_IMPORT_LOCAL = "skills.import_local"
     SKILLS_IMPORT_UPLOAD = "skills.import_upload"
     SKILLS_CREATE_FROM_KNOWLEDGE = "skills.create_from_knowledge"
@@ -246,6 +263,8 @@ class ReqMethod(Enum):
     SKILLS_GRAPH_STATUS = "skills.graph.status"
     SKILLS_GRAPH_GET = "skills.graph.get"
     SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
+    SKILLS_EXPERIENCE_LIST = "skills.experience.list"
+    SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
 
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
     PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
@@ -310,6 +329,8 @@ class ReqMethod(Enum):
     AGENT_TEMPLATES_FILE_LIST = "agent_templates.file.list"
     AGENT_TEMPLATES_FILE_READ = "agent_templates.file.read"
     AGENT_TEMPLATES_CREATE = "agent_templates.create"
+    AGENT_TEMPLATES_UPDATE = "agent_templates.update"
+    AGENT_TEMPLATES_DELETE = "agent_templates.delete"
     AGENT_TEMPLATES_IMPORT_LOCAL = "agent_templates.import_local"
     AGENT_TEMPLATES_INSTALL = "agent_templates.install"
     AGENT_TEMPLATES_UNINSTALL = "agent_templates.uninstall"
@@ -389,6 +410,26 @@ class ReqMethod(Enum):
     HARNESS_PACKAGES_IMPORT = "harness.packages.import"
     HARNESS_PACKAGES_EXPORT = "harness.packages.export"
 
+    # RSI 优化平台（web → gateway → agentserver 全链路，web 契约 v0.3 §4）
+    RSI_DATASET_VALIDATE = "rsi.dataset.validate"
+    RSI_TASK_CREATE = "rsi.task.create"
+    RSI_TASK_LIST = "rsi.task.list"
+    RSI_TASK_GET = "rsi.task.get"
+    RSI_TASK_DELETE = "rsi.task.delete"
+    RSI_TRAINING_START = "rsi.training.start"
+    RSI_TRAINING_PAUSE = "rsi.training.pause"
+    RSI_TRAINING_RESUME = "rsi.training.resume"
+    RSI_TRAINING_TERMINATE = "rsi.training.terminate"
+    RSI_REPORT_GET = "rsi.report.get"
+    RSI_USAGE_GET = "rsi.usage.get"
+    RSI_ARTIFACT_DOWNLOAD = "rsi.artifact.download"
+    RSI_ARTIFACT_FILES_LIST = "rsi.artifact.files.list"
+    RSI_ARTIFACT_FILES_GET = "rsi.artifact.files.get"
+    RSI_TREE_GET = "rsi.tree.get"
+    RSI_HARNESS_INSTALL = "rsi.harness.install"
+    RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
+    RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
+
     # Schedule task management
     SCHEDULE_CHECK_CONFIG = "schedule.check_config"
     SCHEDULE_UPDATE_CONFIG = "schedule.update_config"
@@ -406,6 +447,12 @@ class ReqMethod(Enum):
 
 
 class EventType(Enum):
+    SESSION_ARCHIVED = "session.archived"
+    SESSION_UNARCHIVED = "session.unarchived"
+    SESSION_DELETED = "session.deleted"
+    PROJECT_DELETED = "project.deleted"
+    SESSION_LIFECYCLE_UPDATED = "session.lifecycle.updated"
+    PROJECT_LIFECYCLE_UPDATED = "project.lifecycle.updated"
     CONNECTION_ACK = "connection.ack"
     HELLO = "hello"
     CHAT_DELTA = "chat.delta"
@@ -420,6 +467,7 @@ class EventType(Enum):
     CHAT_TOOL_UPDATE = "chat.tool_update"
     CHAT_TOOL_RESULT = "chat.tool_result"
     CHAT_SYMPHONY_STATUS = "chat.symphony_status"
+    CHAT_MESSAGE_UPDATED = "chat.message_updated"
     CONTEXT_USAGE = "context.usage"
     TODO_UPDATED = "todo.updated"
     CHAT_PROCESSING_STATUS = "chat.processing_status"

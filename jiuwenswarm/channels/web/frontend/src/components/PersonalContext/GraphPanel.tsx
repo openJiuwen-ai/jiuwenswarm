@@ -15,7 +15,7 @@ import {
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react';
 import {
   computeConnectedComponents,
   seedPositions,
@@ -30,6 +30,7 @@ import {
   type ContextNode,
   type ContextSearchResultItem,
   type ContextSourceDetail,
+  isFetchStopTimeoutError,
   PROVIDER_LABEL_KEYS,
   pcApi,
 } from '../../services/personalContextApi';
@@ -44,16 +45,30 @@ interface PersonalContextGraphPanelProps {
 
 type Transform = { x: number; y: number; scale: number };
 
-// 连线按类型分色：归属（contains，蓝色）更重要；提及（黄色）
-const GRAPH_EDGE_BELONG = '#6FA9FF';
-const GRAPH_EDGE_MENTION = '#F5C16B';
+// 连线按类型分色：归属（contains，蓝色）更重要；提及（黄色）。默认态按层级逐级淡化。
+const GRAPH_EDGE_BELONG = '#A6C6FA';
+const GRAPH_EDGE_MENTION = '#F8DBA8';
 const GRAPH_EDGE_BELONG_ACTIVE = '#4E82E0';
 const GRAPH_EDGE_MENTION_ACTIVE = '#D9A94D';
+const GRAPH_EDGE_DEPTH_STYLES = [
+  { alpha: 0.55, arrowAlpha: 0.62, width: 1.1 },
+  { alpha: 0.42, arrowAlpha: 0.48, width: 0.9 },
+  { alpha: 0.34, arrowAlpha: 0.4, width: 0.8 },
+  { alpha: 0.28, arrowAlpha: 0.34, width: 0.75 },
+] as const;
 const GRAPH_LABEL_DEFAULT = '#808080';
 const GRAPH_LABEL_DIMMED = '#bdbdbd';
 const GRAPH_LABEL_ACTIVE = '#191919';
 // 高保真：未聚焦元素透明度 40%
 const DIM_ALPHA = 0.4;
+// 来源悬浮卡片最大宽度，用于贴边收口，避免超出视口右侧
+const SOURCE_CARD_MAX_WIDTH = 340;
+
+/** 层级边默认态样式：root→二级最清晰，之后每层减弱。 */
+function graphEdgeIdleStyle(depth: number) {
+  const level = Math.max(1, Math.min(GRAPH_EDGE_DEPTH_STYLES.length, depth - 1));
+  return GRAPH_EDGE_DEPTH_STYLES[level - 1];
+}
 
 // 高保真节点多层光晕调色板（CSS background 多层 radial-gradient → Canvas 叠加）
 type GlowLayer = { r: number; g: number; b: number; stops: Array<[number, number]> };
@@ -110,8 +125,11 @@ function truncate(value: string, limit: number): string {
   return value.length > limit ? `${value.slice(0, limit - 1)}...` : value;
 }
 
-/** 取节点的文件名（path/label 的最后一段）；取不到返回空串，调用方据此决定是否显示。 */
-function nodeFileName(node: { label?: string; path?: string }): string {
+/** 取画布节点展示名：目录用 description.md 的标题，文档用文件名。 */
+function nodeDisplayName(node: { kind?: string; label?: string; path?: string }): string {
+  if (node.kind === 'directory') {
+    return node.label?.trim() ?? '';
+  }
   const raw = (node.path && node.path.trim()) || (node.label && node.label.trim()) || '';
   if (!raw) return '';
   const segs = raw.split(/[\\/]+/).map((s) => s.trim()).filter(Boolean);
@@ -207,8 +225,8 @@ function buildFileTree(nodes: ContextNode[]): TreeNode[] {
     return parent as TreeNode;
   };
 
-  // 收录 document 与 source 节点（source 节点 path 形如 src_xxx.md，也平铺在根）
-  const leaves = nodes.filter((n) => n.kind === 'document' || n.kind === 'source');
+  // directory 节点本身就是各层级的 description.md；它作为文件叶子展示，同时由路径自动形成所在虚拟目录。
+  const leaves = nodes.filter((n) => n.kind === 'directory' || n.kind === 'document' || n.kind === 'source');
   leaves
     .slice()
     .sort((a, b) => a.path.localeCompare(b.path))
@@ -220,19 +238,22 @@ function buildFileTree(nodes: ContextNode[]): TreeNode[] {
       (parent ? parent.children : roots).push(leaf);
     });
 
-  // 同层级排序：文件夹（无 node 的目录节点）排在文件前，同类按名称字典序
-  const sortDirFirst = (list: TreeNode[]): TreeNode[] => {
+  // 同层级排序：description.md 最前，其次文件夹（无 node 的目录节点），同类按名称字典序
+  const sortTreeNodes = (list: TreeNode[]): TreeNode[] => {
     list.sort((a, b) => {
+      const aIsDescription = a.node?.kind === 'directory';
+      const bIsDescription = b.node?.kind === 'directory';
+      if (aIsDescription !== bIsDescription) return aIsDescription ? -1 : 1;
       const aIsDir = !a.node;
       const bIsDir = !b.node;
       if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
-    list.forEach((n) => sortDirFirst(n.children));
+    list.forEach((n) => sortTreeNodes(n.children));
     return list;
   };
 
-  return sortDirFirst(roots);
+  return sortTreeNodes(roots);
 }
 
 /** 高亮 snippet 中的查询关键字，返回分段 + 命中次数。 */
@@ -258,6 +279,11 @@ function highlightSnippet(
   return { segments, count };
 }
 
+/** 去掉 markdown 中的 HTML 注释（如 <!-- personal-context:navigation:start -->），详情页不展示。 */
+function stripMarkdownComments(markdown: string): string {
+  return markdown.replace(/<!--[\s\S]*?-->/g, '');
+}
+
 export function PersonalContextGraphPanel({
   isConnected,
   isActive,
@@ -266,6 +292,9 @@ export function PersonalContextGraphPanel({
   const { t } = useTranslation();
   const { graph, loadingGraph, status, config, loadGraph, loadStatus } = usePersonalContextStore();
   const [query, setQuery] = useState('');
+  const [treeCollapsed, setTreeCollapsed] = useState(false);
+  const [treeExpanded, setTreeExpanded] = useState(true);
+  const [treeToggleVersion, setTreeToggleVersion] = useState(0);
   const [searchResults, setSearchResults] = useState<ContextSearchResultItem[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
@@ -276,7 +305,9 @@ export function PersonalContextGraphPanel({
   const [nodeSources, setNodeSources] = useState<string[]>([]);
   const [sourceCard, setSourceCard] = useState<ContextSourceDetail | null>(null);
   const [sourceCardLoading, setSourceCardLoading] = useState(false);
+  const [sourceHover, setSourceHover] = useState<{ x: number; y: number } | null>(null);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
+  const [dismissedLastError, setDismissedLastError] = useState<string | null>(null);
   const collapsedDirsRef = useRef<Set<string>>(new Set());
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -288,6 +319,8 @@ export function PersonalContextGraphPanel({
   const rafRef = useRef<number | null>(null);
   const dragRef = useRef({ active: false, moved: false, x: 0, y: 0 });
   const hoveredRef = useRef<string | null>(null);
+  const collapseBadgeVisibleIdRef = useRef<string | null>(null);
+  const collapseBadgeHideTimerRef = useRef<number | null>(null);
   const autoFitRequestRef = useRef(0);
   const autoFitCancelledRef = useRef(false);
   const layoutTicksRemainingRef = useRef(0);
@@ -297,6 +330,10 @@ export function PersonalContextGraphPanel({
   const searchReqRef = useRef(0);
   const detailReqRef = useRef(0);
   const sourceReqRef = useRef(0);
+  /** 当前悬浮的来源链接 id（避免 mousemove 频繁重复拉取）。 */
+  const hoverSourceIdRef = useRef<string | null>(null);
+  /** 延迟收起的定时器 id。 */
+  const hideTimerRef = useRef<number | null>(null);
   const searchTimerRef = useRef<number | null>(null);
 
   // 同步 collapsedDirs → ref（draw 循环读取 ref 避免重建 RAF）
@@ -304,10 +341,26 @@ export function PersonalContextGraphPanel({
     collapsedDirsRef.current = collapsedDirs;
   }, [collapsedDirs]);
 
+  useEffect(() => () => {
+    if (collapseBadgeHideTimerRef.current !== null) {
+      window.clearTimeout(collapseBadgeHideTimerRef.current);
+      collapseBadgeHideTimerRef.current = null;
+    }
+  }, []);
+
   // 上下文是否就绪
   const contextReady = status?.context_ready === true || (graph?.context_ready ?? false);
   const runtimeState = status?.state ?? 'CREATED';
-  const lastErrorText = status?.last_error?.message ?? null;
+  const lastError = status?.last_error ?? null;
+  const lastErrorSignature = lastError
+    ? `${lastError.code}:${lastError.status}:${lastError.operation}:${lastError.message}`
+    : null;
+  const lastErrorText =
+    lastError &&
+      !isFetchStopTimeoutError(lastError) &&
+      dismissedLastError !== lastErrorSignature
+    ? lastError.message
+    : null;
   const nodeCount = graph?.nodes.length ?? 0;
   const edgeCount = graph?.edges.length ?? 0;
 
@@ -390,7 +443,7 @@ export function PersonalContextGraphPanel({
       const ctx = canvas.getContext('2d');
       ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (!transformInitializedRef.current) {
-        transformRef.current = { x: rect.width * 0.35, y: rect.height / 2, scale: 1 };
+        transformRef.current = { x: rect.width * 0.5, y: rect.height / 2, scale: 1 };
         transformInitializedRef.current = true;
       }
       if ((becameVisible || resized) && nodesRef.current.length > 0) {
@@ -428,6 +481,46 @@ export function PersonalContextGraphPanel({
     return null;
   }, [screenToWorld]);
 
+  // 命中目录节点右侧的 +/- 展开收起按钮（绘制位置见 draw 中 badgeR/bx/by）
+  const findCollapseBadgeAt = useCallback((clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const point = screenToWorld(clientX - rect.left, clientY - rect.top);
+    const nodes = nodesRef.current;
+    const depthMap = computeDepthMap(nodes, layoutEdgesRef.current);
+    const scale = transformRef.current.scale;
+    for (let i = nodes.length - 1; i >= 0; i -= 1) {
+      const n = nodes[i];
+      const ctxNode = nodeByIdRef.current.get(n.id);
+      if (!ctxNode || ctxNode.kind !== 'directory' || !ctxNode.has_children) continue;
+      if (collapseBadgeVisibleIdRef.current !== n.id) continue;
+      const radius = nodeRadius(depthMap.get(n.id) || 1, nodes.length) / scale;
+      const displayRadius = n.id === selectedNodeId ? radius + 2 / scale : radius;
+      const badgeR = Math.max(4, displayRadius * 0.42);
+      const bx = n.x + displayRadius + badgeR + 2;
+      const by = n.y;
+      if (Math.hypot(bx - point.x, by - point.y) <= badgeR + 3 / scale) return n;
+    }
+    return null;
+  }, [screenToWorld, selectedNodeId]);
+
+  /** 展开按钮随节点 hover 出现；移出后保留 100ms，避免边缘移动导致闪烁。 */
+  const setCollapseBadgeVisible = useCallback((nodeId: string | null) => {
+    if (collapseBadgeHideTimerRef.current !== null) {
+      window.clearTimeout(collapseBadgeHideTimerRef.current);
+      collapseBadgeHideTimerRef.current = null;
+    }
+    if (nodeId) {
+      collapseBadgeVisibleIdRef.current = nodeId;
+      return;
+    }
+    collapseBadgeHideTimerRef.current = window.setTimeout(() => {
+      collapseBadgeHideTimerRef.current = null;
+      collapseBadgeVisibleIdRef.current = null;
+    }, 100);
+  }, []);
+
   const fitView = useCallback(() => {
     const canvas = canvasRef.current;
     const nodes = nodesRef.current;
@@ -453,7 +546,7 @@ export function PersonalContextGraphPanel({
     );
     transformRef.current = {
       scale,
-      x: rect.width * 0.35 - ((minX + maxX) / 2) * scale,
+      x: rect.width * 0.5 - ((minX + maxX) / 2) * scale,
       y: rect.height / 2 - ((minY + maxY) / 2) * scale,
     };
   }, []);
@@ -609,11 +702,12 @@ export function PersonalContextGraphPanel({
         if (!source || !target) return;
         const active = Boolean(focusId && (edge.source === focusId || edge.target === focusId));
         const isBelong = edge.type === 'contains';
+        const idleStyle = graphEdgeIdleStyle(depthMap.get(edge.target) || 1);
         const edgeColor = isBelong ? GRAPH_EDGE_BELONG : GRAPH_EDGE_MENTION;
         ctx.strokeStyle = active ? (isBelong ? GRAPH_EDGE_BELONG_ACTIVE : GRAPH_EDGE_MENTION_ACTIVE) : edgeColor;
-        ctx.globalAlpha = active ? 0.8 : focusId ? DIM_ALPHA : 0.55;
-        // 边线宽度用屏幕像素（普通 1px、高亮 1.5px），反缩放避免少节点图 fitView 放大后变粗。
-        ctx.lineWidth = (active ? 1.5 : 1) / transform.scale;
+        ctx.globalAlpha = active ? 0.8 : focusId ? DIM_ALPHA : idleStyle.alpha;
+        // 边线宽度用屏幕像素（默认按层级减弱、高亮 1.5px），反缩放避免少节点图 fitView 放大后变粗。
+        ctx.lineWidth = (active ? 1.5 : idleStyle.width) / transform.scale;
         ctx.beginPath();
         ctx.moveTo(source.x, source.y);
         ctx.lineTo(target.x, target.y);
@@ -627,7 +721,7 @@ export function PersonalContextGraphPanel({
         const y = target.y - Math.sin(angle) * radius;
         // 箭头边长用屏幕像素（4px），反缩放保证不随 fitView 放大；比节点半径小一档，避免与节点体量相当。
         const arrowLen = 4 / transform.scale;
-        ctx.globalAlpha = active ? 0.92 : focusId ? DIM_ALPHA : 0.68;
+        ctx.globalAlpha = active ? 0.92 : focusId ? DIM_ALPHA : idleStyle.arrowAlpha;
         ctx.fillStyle = ctx.strokeStyle;
         ctx.beginPath();
         ctx.moveTo(x, y);
@@ -645,7 +739,7 @@ export function PersonalContextGraphPanel({
         const ctxNode = nodeByIdRef.current.get(n.id);
         if (!ctxNode) return;
         const selected = selectedId === n.id;
-        const hovered = hoveredId === n.id;
+        const hovered = hoveredId === n.id || collapseBadgeVisibleIdRef.current === n.id;
         const depth = depthMap.get(n.id) || 1;
         const radius = nodeRadius(depth, nodes.length);
         const focused = focusId === n.id;
@@ -653,7 +747,7 @@ export function PersonalContextGraphPanel({
         const dimmed = Boolean(focusId && !focused && !relatedNodeIds.has(n.id));
         const displayRadius = selected ? radius + 2 : radius;
         // 只显示根节点和二级节点的名称；三级及以下节点数量多、显示名称会让页面更乱，故不显示标签。
-        const fileName = nodeFileName(ctxNode);
+        const fileName = nodeDisplayName(ctxNode);
         if (fileName && depth <= 2) {
           labels.push({
             text: truncate(fileName, 26),
@@ -730,8 +824,10 @@ export function PersonalContextGraphPanel({
         }
         ctx.restore();
         ctx.globalAlpha = 1;
-        // 绘制 +/- 展开收起标记
-        if (ctxNode.kind === 'directory' && ctxNode.has_children) {
+        // 绘制 +/- 展开收起标记（仅节点 hover 时显示）
+        const shouldShowCollapseBadge = hoveredId === n.id
+          || collapseBadgeVisibleIdRef.current === n.id;
+        if (ctxNode.kind === 'directory' && ctxNode.has_children && shouldShowCollapseBadge) {
           const isCollapsed = collapsed.has(n.id);
           const badgeR = Math.max(4, displayRadius * 0.42);
           const bx = n.x + displayRadius + badgeR + 2;
@@ -831,30 +927,7 @@ export function PersonalContextGraphPanel({
       return false; // 锚点或外部 http 链接，走默认行为
     }
 
-    // source 链接形如 ../source-meta/src_xxx.md → 拉取来源详情卡片
-    const srcMatch = href.match(/source-meta\/?(src_[a-f0-9]+)\.md/);
-    if (srcMatch) {
-      event.preventDefault();
-      const sourceId = srcMatch[1];
-      const reqId = ++sourceReqRef.current;
-      setSourceCardLoading(true);
-      setSourceCard(null);
-      void pcApi.getSource(sourceId)
-        .then((sd) => {
-          if (reqId !== sourceReqRef.current) return;
-          setSourceCard(sd);
-        })
-        .catch(() => {
-          if (reqId !== sourceReqRef.current) return;
-          setSourceCard(null);
-        })
-        .finally(() => {
-          if (reqId !== sourceReqRef.current) return;
-          setSourceCardLoading(false);
-        });
-      return true;
-    }
-
+    // source 链接（../source-meta/src_xxx.md）由 hover 悬浮卡片处理，点击仅阻止默认导航。
     const currentNode = nodeByIdRef.current.get(selectedNodeId);
     if (!currentNode) {
       event.preventDefault();
@@ -908,6 +981,78 @@ export function PersonalContextGraphPanel({
     return true;
   }, [selectedNodeId]);
 
+  const cancelHide = useCallback(() => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
+  // 来源链接悬浮：鼠标移到 [来源N] 锚点上，在光标下方浮出来源详情卡片（替代原先固定在详情顶部的卡片）。
+  const showSourceCard = useCallback((sourceId: string, x: number, y: number) => {
+    cancelHide();
+    setSourceHover({ x, y });
+    if (hoverSourceIdRef.current === sourceId) return; // 同一来源已在加载/已显示，仅更新位置
+    hoverSourceIdRef.current = sourceId;
+    const reqId = ++sourceReqRef.current;
+    setSourceCardLoading(true);
+    setSourceCard(null);
+    void pcApi.getSource(sourceId)
+      .then((sd) => {
+        if (reqId !== sourceReqRef.current) return;
+        setSourceCard(sd);
+      })
+      .catch(() => {
+        if (reqId !== sourceReqRef.current) return;
+        setSourceCard(null);
+      })
+      .finally(() => {
+        if (reqId !== sourceReqRef.current) return;
+        setSourceCardLoading(false);
+      });
+  }, [cancelHide]);
+
+  const hideSourceCard = useCallback(() => {
+    if (hoverSourceIdRef.current === null) return; // 无悬浮卡片，跳过
+    hoverSourceIdRef.current = null;
+    sourceReqRef.current += 1; // 使在途请求作废
+    setSourceHover(null);
+    setSourceCard(null);
+    setSourceCardLoading(false);
+  }, []);
+
+  // 延迟收起：给鼠标从锚点移到悬浮卡片留出过渡时间，避免一离开锚点就消失。
+  const scheduleHide = useCallback(() => {
+    cancelHide();
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      hideSourceCard();
+    }, 100);
+  }, [cancelHide, hideSourceCard]);
+
+  // markdown 区 mousemove：命中的锚点若是来源链接则悬浮，否则延迟收起。
+  const handleMarkdownMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const link = (event.target as HTMLElement).closest('a[href]') as HTMLAnchorElement | null;
+    if (!link) { scheduleHide(); return; }
+    const href = link.getAttribute('href') ?? '';
+    const srcMatch = href.match(/source-meta\/?(src_[a-f0-9]+)\.md/);
+    if (!srcMatch) { scheduleHide(); return; }
+    showSourceCard(srcMatch[1], event.clientX, event.clientY);
+  }, [showSourceCard, scheduleHide]);
+
+  const handleMarkdownMouseLeave = useCallback(() => {
+    scheduleHide();
+  }, [scheduleHide]);
+
+  // 悬浮卡片自身可交互：移入保持显示（取消延迟收起），移出延迟收起。
+  const handlePopoverMouseEnter = useCallback(() => {
+    cancelHide();
+  }, [cancelHide]);
+
+  const handlePopoverMouseLeave = useCallback(() => {
+    scheduleHide();
+  }, [scheduleHide]);
+
   // 选中节点 → 拉详情 + 解析采集来源
   useEffect(() => {
     if (!selectedNodeId) {
@@ -922,7 +1067,7 @@ export function PersonalContextGraphPanel({
     void pcApi.getNode(selectedNodeId)
       .then((d) => {
         if (reqId !== detailReqRef.current) return;
-        setNodeDetail({ markdown: d.markdown, title: d.title });
+        setNodeDetail({ markdown: stripMarkdownComments(d.markdown), title: d.title });
         // 解析 markdown 中的 [来源N](../source-meta/src_xxx.md) 链接，拉取来源详情
         const sourceIds: string[] = [];
         const re = /\]\(\.\.\/source-meta\/(src_[a-f0-9]+)\.md\)/g;
@@ -959,7 +1104,35 @@ export function PersonalContextGraphPanel({
     return buildFileTree(graph.nodes);
   }, [graph]);
 
+  // 选中节点的路径 + 其祖先目录路径（用于目录树自动展开 + 自动跳转）
+  const selectedNodePath = useMemo(() => {
+    if (!selectedNodeId || !graph) return null;
+    return graph.nodes.find((n) => n.id === selectedNodeId)?.path ?? null;
+  }, [selectedNodeId, graph]);
 
+  const selectedAncestorPaths = useMemo(() => {
+    if (!selectedNodePath) return new Set<string>();
+    const segs = selectedNodePath.split('/');
+    const set = new Set<string>();
+    let acc = '';
+    for (let i = 0; i < segs.length - 1; i += 1) {
+      acc = acc ? `${acc}/${segs[i]}` : segs[i];
+      set.add(acc);
+    }
+    return set;
+  }, [selectedNodePath]);
+
+  // 目录树容器 ref（选中节点后滚动到对应行）
+  const treeContentRef = useRef<HTMLDivElement | null>(null);
+
+  // 选中节点变化 → 目录树滚动到对应 markdown 文档行（自动跳转）
+  useEffect(() => {
+    if (!selectedNodeId) return;
+    const root = treeContentRef.current;
+    if (!root) return;
+    const el = root.querySelector(`[data-node-id="${CSS.escape(selectedNodeId)}"]`);
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [selectedNodeId]);
 
   // 切换目录节点展开/收起
   const toggleDirCollapse = useCallback((nodeId: string) => {
@@ -974,13 +1147,28 @@ export function PersonalContextGraphPanel({
   // canvas 交互
   const handlePointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     dragRef.current = { active: true, moved: false, x: event.clientX, y: event.clientY };
+    event.currentTarget.style.cursor = 'grabbing';
     event.currentTarget.setPointerCapture(event.pointerId);
   }, []);
 
   const handlePointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
     const found = findNodeAt(event.clientX, event.clientY);
+    const badge = findCollapseBadgeAt(event.clientX, event.clientY);
     hoveredRef.current = found ? found.id : null;
+    if (badge) setCollapseBadgeVisible(badge.id);
+    else if (found) {
+      const ctxNode = nodeByIdRef.current.get(found.id);
+      setCollapseBadgeVisible(
+        ctxNode?.kind === 'directory' && ctxNode.has_children ? found.id : null,
+      );
+    } else {
+      setCollapseBadgeVisible(null);
+    }
+    // 光标：拖动中 grabbing；悬停节点/按钮 pointer；空白处 grab
+    event.currentTarget.style.cursor = (drag.active && drag.moved)
+      ? 'grabbing'
+      : (found || badge) ? 'pointer' : 'grab';
     if (drag.active) {
       const dx = event.clientX - drag.x;
       const dy = event.clientY - drag.y;
@@ -990,27 +1178,44 @@ export function PersonalContextGraphPanel({
       drag.x = event.clientX;
       drag.y = event.clientY;
     }
-  }, [findNodeAt]);
+  }, [findNodeAt, findCollapseBadgeAt, setCollapseBadgeVisible]);
+
+  const handlePointerLeave = useCallback(() => {
+    hoveredRef.current = null;
+    dragRef.current.active = false;
+    setCollapseBadgeVisible(null);
+    if (canvasRef.current) canvasRef.current.style.cursor = 'grab';
+  }, [setCollapseBadgeVisible]);
 
   const handlePointerUp = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
+    const canvas = event.currentTarget;
     if (!drag.moved) {
+      // 优先命中目录节点右侧的 +/- 展开收起按钮 → 只切换展开/收起
+      const badgeNode = findCollapseBadgeAt(event.clientX, event.clientY);
+      if (badgeNode) {
+        toggleDirCollapse(badgeNode.id);
+        canvas.style.cursor = 'pointer';
+        dragRef.current = { active: false, moved: false, x: 0, y: 0 };
+        canvas.releasePointerCapture(event.pointerId);
+        return;
+      }
+      // 其次命中节点本体 → 选中（打开详情），不再切换展开/收起
       const found = findNodeAt(event.clientX, event.clientY);
       if (found) {
-        const ctxNode = nodeByIdRef.current.get(found.id);
-        // directory 节点且有子节点 → 切换展开/收起
-        if (ctxNode?.kind === 'directory' && ctxNode.has_children) {
-          toggleDirCollapse(found.id);
-        }
         autoFitCancelledRef.current = true;
         setSelectedNodeId(found.id);
+        canvas.style.cursor = 'pointer';
       } else {
         setSelectedNodeId(null);
+        canvas.style.cursor = 'grab';
       }
+    } else {
+      canvas.style.cursor = 'grab';
     }
     dragRef.current = { active: false, moved: false, x: 0, y: 0 };
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  }, [findNodeAt, toggleDirCollapse]);
+    canvas.releasePointerCapture(event.pointerId);
+  }, [findNodeAt, findCollapseBadgeAt, toggleDirCollapse]);
 
   const handleWheel = useCallback((event: React.WheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
@@ -1050,21 +1255,30 @@ export function PersonalContextGraphPanel({
             className="pc-graph__add"
             onClick={onNavigateServices}
           >
-            <Plus size={16} />
             <span>{t('personalContext.info.addKnowledge')}</span>
           </button>
         </div>
       </div>
 
       {lastErrorText && (
-        <div className="pc-graph__error" role="alert">
-          {t('personalContext.info.publishFailed')}: {lastErrorText}
+        <div className="pc-graph__error pc-graph__error--dismissible" role="alert">
+          <span>
+            {t('personalContext.info.publishFailed')}: {lastErrorText}
+          </span>
+          <button
+            type="button"
+            className="pc-graph__error-close"
+            aria-label={t('common.close')}
+            onClick={() => setDismissedLastError(lastErrorSignature)}
+          >
+            <X size={14} />
+          </button>
         </div>
       )}
 
       <div className="pc-graph__main">
         {/* 左侧栏：固定头部（页签 + 搜索）+ 滚动内容（文件树/搜索结果） */}
-        <aside className="pc-graph__tree">
+        <aside className={`pc-graph__tree${treeCollapsed ? ' pc-graph__tree--collapsed' : ''}`}>
           <div className="pc-graph__tree-header">
             <div className="pc-graph__tabs">
               <span className="pc-graph__tab">
@@ -1075,6 +1289,17 @@ export function PersonalContextGraphPanel({
                 {t('personalContext.info.tabEdges')}
                 <span className="pc-graph__tab-count">{edgeCount}</span>
               </span>
+              <button
+                type="button"
+                className="pc-graph__tree-collapse"
+                onClick={() => setTreeCollapsed((v) => !v)}
+                aria-label={treeCollapsed ? 'expand' : 'collapse'}
+              >
+                <ChevronDown
+                  size={16}
+                  className={`pc-graph__tree-collapse-icon${treeCollapsed ? '' : ' pc-graph__tree-collapse-icon--expanded'}`}
+                />
+              </button>
             </div>
 
             <div className="pc-graph__search">
@@ -1100,7 +1325,23 @@ export function PersonalContextGraphPanel({
             </div>
           </div>
 
-          <div className="pc-graph__tree-content">
+          {!treeCollapsed && (
+          <>
+          {fileTree.length > 0 && (
+            <div className="pc-graph__tree-toggle-all">
+              <button
+                type="button"
+                className="pc-graph__tree-toggle-all-btn"
+                onClick={() => {
+                  setTreeExpanded((v) => !v);
+                  setTreeToggleVersion((v) => v + 1);
+                }}
+              >
+                {t(treeExpanded ? 'personalContext.info.collapseTree' : 'personalContext.info.expandTree')}
+              </button>
+            </div>
+          )}
+          <div className="pc-graph__tree-content" ref={treeContentRef}>
             {hasQuery ? (
               <>
                 <div className="pc-graph__search-meta">
@@ -1157,10 +1398,15 @@ export function PersonalContextGraphPanel({
                   hits={searchHits}
                   onSelect={(id) => { autoFitCancelledRef.current = true; setSelectedNodeId(id); }}
                   selectedId={selectedNodeId}
+                  selectedAncestorPaths={selectedAncestorPaths}
+                  initialExpanded={treeExpanded}
+                  key={treeToggleVersion}
                 />
               )
             )}
           </div>
+          </>
+          )}
         </aside>
 
         {/* 图谱 canvas */}
@@ -1172,7 +1418,7 @@ export function PersonalContextGraphPanel({
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
-            onPointerLeave={() => { hoveredRef.current = null; dragRef.current.active = false; }}
+            onPointerLeave={handlePointerLeave}
             onWheel={handleWheel}
           />
           {!contextReady && nodeCount === 0 && (
@@ -1199,44 +1445,87 @@ export function PersonalContextGraphPanel({
               <Loader2 className="spin" size={16} />
             ) : nodeDetail ? (
               <div className="pc-graph__detail-content">
-                {sourceCardLoading && <Loader2 className="spin" size={14} />}
-                {sourceCard && (
-                  <div className="pc-graph__source-card">
-                    <div className="pc-graph__source-head">
-                      <span className="pc-graph__source-badge">{t('personalContext.info.sourceBadge')}</span>
-                      <button className="pc-graph__source-close" onClick={() => setSourceCard(null)}>×</button>
-                    </div>
-                    <div className="pc-graph__source-title">{sourceCard.title}</div>
-                    <dl className="pc-graph__source-meta">
-                      <div>
-                        <dt>{t('personalContext.info.sourceProvider')}</dt>
-                        <dd>{(() => { const k = PROVIDER_LABEL_KEYS[sourceCard.provider as keyof typeof PROVIDER_LABEL_KEYS]; return k ? t(k) : sourceCard.provider; })()}</dd>
-                      </div>
-                      <div>
-                        <dt>{t('personalContext.info.sourceType')}</dt>
-                        <dd>{sourceCard.source_type}</dd>
-                      </div>
-                      <div>
-                        <dt>{t('personalContext.info.sourceLocator')}</dt>
-                        <dd>
-                          {sourceCard.locator ? (
-                            <a className="pc-graph__source-link" href={sourceCard.locator} target="_blank" rel="noopener noreferrer">{sourceCard.locator}</a>
-                          ) : '—'}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>{t('personalContext.info.sourceFirstSeen')}</dt>
-                        <dd>{sourceCard.first_seen || '—'}</dd>
-                      </div>
-                    </dl>
-                  </div>
-                )}
-                <MarkdownRenderer content={nodeDetail.markdown} onLinkClick={handleDetailLinkClick} />
+                <div
+                  className="pc-graph__markdown-zone"
+                  onMouseMove={handleMarkdownMouseMove}
+                  onMouseLeave={handleMarkdownMouseLeave}
+                >
+                  <MarkdownRenderer className="prose prose-sm max-w-none pc-graph__markdown" content={nodeDetail.markdown} onLinkClick={handleDetailLinkClick} />
+                </div>
               </div>
             ) : (
               <div className="pc-graph__empty">—</div>
             )}
           </aside>
+        )}
+
+        {sourceHover && (
+          <div
+            className="pc-graph__source-popover"
+            onMouseEnter={handlePopoverMouseEnter}
+            onMouseLeave={handlePopoverMouseLeave}
+            style={{
+              left: Math.max(8, Math.min(sourceHover.x, window.innerWidth - SOURCE_CARD_MAX_WIDTH - 16)),
+              top: sourceHover.y + 14,
+            }}
+          >
+            {sourceCardLoading ? (
+              <div className="pc-graph__source-popover-loading">
+                <Loader2 className="spin" size={14} />
+              </div>
+            ) : sourceCard ? (
+              <div className="pc-graph__source-card">
+                <div className="pc-graph__source-head">
+                  <span className="pc-graph__source-badge">{t('personalContext.info.sourceBadge')}</span>
+                </div>
+                <div className="pc-graph__source-title">{sourceCard.title}</div>
+                <dl className="pc-graph__source-meta">
+                  <div>
+                    <dt>{t('personalContext.info.sourceProvider')}</dt>
+                    <dd>{(() => { const k = PROVIDER_LABEL_KEYS[sourceCard.provider as keyof typeof PROVIDER_LABEL_KEYS]; return k ? t(k) : sourceCard.provider; })()}</dd>
+                  </div>
+                  <div>
+                    <dt>{t('personalContext.info.sourceType')}</dt>
+                    <dd>{sourceCard.source_type}</dd>
+                  </div>
+                  <div>
+                    <dt>{t('personalContext.info.sourceLocator')}</dt>
+                    <dd>
+                      {sourceCard.locator ? (
+                        <a className="pc-graph__source-link" href={sourceCard.locator} target="_blank" rel="noopener noreferrer">{sourceCard.locator}</a>
+                      ) : '—'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t('personalContext.info.sourceFirstSeen')}</dt>
+                    <dd>{sourceCard.first_seen || '—'}</dd>
+                  </div>
+                </dl>
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {/* 图例：主区域底部居中，根节点/目录/Markdown 文档/关系 */}
+        {nodeCount > 0 && (
+          <div className="pc-graph__legend" data-testid="personal-context-graph-legend">
+            <div className="pc-graph__legend-item">
+              <span className="pc-graph__legend-node pc-graph__legend-node--root" />
+              <span className="pc-graph__legend-text">{t('personalContext.info.legendRoot')}</span>
+            </div>
+            <div className="pc-graph__legend-item">
+              <span className="pc-graph__legend-node pc-graph__legend-node--folder" />
+              <span className="pc-graph__legend-text">{t('personalContext.info.legendFolder')}</span>
+            </div>
+            <div className="pc-graph__legend-item">
+              <span className="pc-graph__legend-node pc-graph__legend-node--doc" />
+              <span className="pc-graph__legend-text">{t('personalContext.info.legendDoc')}</span>
+            </div>
+            <div className="pc-graph__legend-item">
+              <span className="pc-graph__legend-edge" />
+              <span className="pc-graph__legend-text">{t('personalContext.info.legendEdge')}</span>
+            </div>
+          </div>
         )}
       </div>
     </div>
@@ -1249,12 +1538,16 @@ function FileTree({
   hits,
   onSelect,
   selectedId,
+  selectedAncestorPaths,
+  initialExpanded = true,
   depth = 0,
 }: {
   nodes: TreeNode[];
   hits: Set<string>;
   onSelect: (id: string) => void;
   selectedId: string | null;
+  selectedAncestorPaths: Set<string>;
+  initialExpanded?: boolean;
   depth?: number;
 }) {
   return (
@@ -1269,6 +1562,7 @@ function FileTree({
               <button
                 type="button"
                 className={`pc-graph__tree-row${isSelected ? ' pc-graph__tree-row--active' : ''}${isHit ? ' pc-graph__tree-row--hit' : ''}`}
+                data-node-id={nodeId}
                 onClick={() => nodeId && onSelect(nodeId)}
               >
                 <span className="pc-graph__tree-icon">
@@ -1277,9 +1571,9 @@ function FileTree({
                 <span className="pc-graph__tree-name">{n.name}</span>
               </button>
             ) : (
-              <FolderRow name={n.name} isHit={isHit}>
+              <FolderRow name={n.name} path={n.path} isHit={isHit} selectedAncestorPaths={selectedAncestorPaths} initialExpanded={initialExpanded}>
                 {n.children.length > 0 && (
-                  <FileTree nodes={n.children} hits={hits} onSelect={onSelect} selectedId={selectedId} depth={depth + 1} />
+                  <FileTree nodes={n.children} hits={hits} onSelect={onSelect} selectedId={selectedId} selectedAncestorPaths={selectedAncestorPaths} initialExpanded={initialExpanded} depth={depth + 1} />
                 )}
               </FolderRow>
             )}
@@ -1293,14 +1587,22 @@ function FileTree({
 /** 文件夹行：文件夹图标 + 名称 + 右侧收起按钮（可折叠）。 */
 function FolderRow({
   name,
+  path,
   isHit,
+  selectedAncestorPaths,
+  initialExpanded,
   children,
 }: {
   name: string;
+  path: string;
   isHit: boolean;
+  selectedAncestorPaths: Set<string>;
+  initialExpanded: boolean;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(initialExpanded);
+  // 选中节点在该目录内时强制展开，保证目录树自动跳转可见
+  const isOpen = open || selectedAncestorPaths.has(path);
   return (
     <>
       <div
@@ -1308,14 +1610,14 @@ function FolderRow({
         onClick={() => setOpen((v) => !v)}
       >
         <span className="pc-graph__tree-icon">
-          <FolderIcon open={open} />
+          <FolderIcon open={isOpen} />
         </span>
         <span className="pc-graph__tree-name">{name}</span>
         <span className="pc-graph__tree-toggle">
-          <CollapseIcon open={open} />
+          <CollapseIcon open={isOpen} />
         </span>
       </div>
-      {open && children}
+      {isOpen && children}
     </>
   );
 }

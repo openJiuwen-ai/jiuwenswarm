@@ -194,6 +194,7 @@ def _is_regular_skill_evolution_rail(rail):
         ("team.plan", ("team", "plan", "team.plan.normal")),
         ("team.plan.normal", ("team", "plan", "team.plan.normal")),
         ("team.plan.code", ("code", "team", "team.plan.code")),
+        ("auto_harness", ("auto_harness", "auto_harness", "auto_harness")),
         (None, ("agent", None, "agent")),
     ],
 )
@@ -219,6 +220,15 @@ def test_resolve_agent_request_mode_aligns_single_agent_with_work_mode(
         raw_mode,
         work_mode=work_mode,
     ) == expected
+
+
+def test_auto_harness_uses_distinct_agent_cache_identity():
+    from jiuwenswarm.server.runtime.agent_manager import _make_agent_cache_key
+
+    regular = _make_agent_cache_key("agent", None, None)
+    harness = _make_agent_cache_key("agent", "auto_harness", None)
+
+    assert regular != harness
 
 
 def test_team_plan_params_are_team_mode():
@@ -360,7 +370,8 @@ def test_resolve_request_project_dir_falls_back_to_cwd_for_legacy_clients():
     assert agent_ws_server_module.resolve_request_project_dir(request) == "/tmp/params"
 
 
-def test_build_inputs_keeps_stable_project_dir_and_dynamic_cwd(monkeypatch):
+@pytest.mark.asyncio
+async def test_build_inputs_keeps_stable_project_dir_and_dynamic_cwd(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     class FakeSkillManager:
@@ -423,7 +434,7 @@ def test_build_inputs_keeps_stable_project_dir_and_dynamic_cwd(monkeypatch):
         },
     )
 
-    asyncio.run(interface_module.JiuWenSwarm().process_message(request))
+    await interface_module.JiuWenSwarm().process_message(request)
 
     inputs = fake_adapter.seen_inputs
     assert inputs["project_dir"] == "/tmp/project"
@@ -515,6 +526,73 @@ def test_build_inputs_maps_skill_evolution_interrupt_answers_to_actions(monkeypa
         assert interactive_input is not None
         assert interactive_input.user_inputs["call_123"] == {"action": expected_action}
         assert "approved" not in interactive_input.user_inputs["call_123"]
+
+
+@pytest.mark.parametrize(
+    ("selected_option", "expected_payload"),
+    [
+        (
+            "本次允许",
+            {"approved": True, "auto_confirm": False, "feedback": ""},
+        ),
+        (
+            "会话内记住",
+            {
+                "approved": True,
+                "auto_confirm": True,
+                "persist_allow": False,
+                "feedback": "",
+            },
+        ),
+        (
+            "永久记住",
+            {
+                "approved": True,
+                "auto_confirm": True,
+                "persist_allow": True,
+                "feedback": "",
+            },
+        ),
+        (
+            "拒绝",
+            {"approved": False, "auto_confirm": False, "feedback": "用户拒绝"},
+        ),
+    ],
+)
+def test_build_inputs_maps_paired_develop_permission_scopes(
+    monkeypatch,
+    selected_option: str,
+    expected_payload: dict[str, object],
+) -> None:
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    request = AgentRequest(
+        request_id="req-permission-answer",
+        channel_id="shared-transport",
+        session_id="permission-session",
+        params={
+            "query": "",
+            "request_id": "tool-call-17",
+            "answers": [
+                {
+                    "selected_options": [selected_option],
+                    "custom_input": "",
+                    "card_id": "tool-invocation-17",
+                }
+            ],
+            "source": "permission_interrupt",
+        },
+    )
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(request)
+
+    assert isinstance(inputs["query"], InteractiveInput)
+    assert inputs["query"].user_inputs == {
+        "tool-invocation-17": expected_payload
+    }
 
 
 @pytest.mark.parametrize(
@@ -637,7 +715,7 @@ def test_build_inputs_maps_team_plan_reject_answers_to_interactive_input(monkeyp
     assert raw_query.text is inputs["query"]
 
 
-def test_build_inputs_preserves_original_request_on_ask_user_answers(monkeypatch):
+def test_build_inputs_keeps_ask_user_answers_on_the_exact_tool_call(monkeypatch):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -669,7 +747,6 @@ def test_build_inputs_preserves_original_request_on_ask_user_answers(monkeypatch
     assert inputs["query"].user_inputs == {
         "tool-ask-1": {
             "answers": {"你希望用什么技术实现？": "浏览器（HTML/CSS/JS）"},
-            "original_request": "做一个斗地主游戏",
         }
     }
 
@@ -760,7 +837,8 @@ def test_build_inputs_drops_bare_other_without_custom_input(monkeypatch):
     }
 
 
-def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeypatch):
+@pytest.mark.asyncio
+async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     class FakeAdapter:
@@ -797,14 +875,17 @@ def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeypatch):
         },
     )
 
-    response = asyncio.run(interface_module.JiuWenSwarm().process_message(request))
+    response = await interface_module.JiuWenSwarm().process_message(request)
 
     assert response.ok is True
     assert response.payload == {"routed": "adapter"}
     assert fake_adapter.requests == [request]
 
 
-def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team_follow_up(monkeypatch):
+@pytest.mark.asyncio
+async def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team_follow_up(
+    monkeypatch,
+):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -882,7 +963,7 @@ def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team_follo
     async def collect_chunks():
         return [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
 
-    chunks = asyncio.run(collect_chunks())
+    chunks = await collect_chunks()
 
     assert FakeSessionManager.submit_task_calls == []
     assert len(FakeTeamManager.interact_calls) == 0
@@ -893,7 +974,67 @@ def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team_follo
     assert chunks[-1].is_complete is True
 
 
-def test_process_message_stream_routes_web_evolution_interrupt_without_user_history(monkeypatch):
+def test_deliver_control_input_uses_existing_adapter_without_opening_work_turn(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    class FakeSessionManager:
+        @staticmethod
+        def get_session_id(session_id=None):
+            return session_id or "default"
+
+    class FakeAdapter:
+        seen_inputs = None
+
+        @staticmethod
+        async def process_message_stream_impl(_request, inputs):
+            FakeAdapter.seen_inputs = inputs
+            yield AgentResponseChunk(
+                request_id="answer",
+                channel_id="web",
+                payload={"event_type": "runtime.accepted"},
+                is_complete=True,
+            )
+
+    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
+    monkeypatch.setattr(
+        interface_module.JiuWenSwarm,
+        "_ensure_adapter",
+        lambda self, mode="agent": FakeAdapter(),
+    )
+    swarm = interface_module.JiuWenSwarm()
+    monkeypatch.setattr(swarm, "_build_inputs", lambda _request: ({"query": "answer"}, "disabled", None))
+
+    async def reconcile(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(swarm, "reconcile_session_mcp", reconcile)
+    request = AgentRequest(
+        request_id="answer",
+        channel_id="web",
+        session_id="session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={
+            "query": "",
+            "mode": "agent",
+            "request_id": "ask-call",
+            "answers": [{"selected_options": ["A"]}],
+            "source": "ask_user_interrupt",
+        },
+        is_stream=True,
+    )
+
+    async def collect_chunks():
+        return [chunk async for chunk in swarm.deliver_control_input(request)]
+
+    chunks = asyncio.run(collect_chunks())
+    assert FakeAdapter.seen_inputs == {"query": "answer"}
+    assert chunks[0].payload == {"event_type": "runtime.accepted"}
+
+
+@pytest.mark.asyncio
+async def test_process_message_stream_routes_web_evolution_interrupt_without_user_history(
+    monkeypatch,
+):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -954,7 +1095,7 @@ def test_process_message_stream_routes_web_evolution_interrupt_without_user_hist
     async def collect_chunks():
         return [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
 
-    chunks = asyncio.run(collect_chunks())
+    chunks = await collect_chunks()
 
     assert isinstance(FakeAdapter.seen_inputs["query"], InteractiveInput)
     assert FakeAdapter.seen_inputs["query"].user_inputs == {
@@ -965,7 +1106,10 @@ def test_process_message_stream_routes_web_evolution_interrupt_without_user_hist
     assert chunks[-1].is_complete is True
 
 
-def test_process_message_stream_keeps_passive_evolution_approval_as_user_history(monkeypatch):
+@pytest.mark.asyncio
+async def test_process_message_stream_keeps_passive_evolution_approval_as_user_history(
+    monkeypatch,
+):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -1031,14 +1175,17 @@ def test_process_message_stream_keeps_passive_evolution_approval_as_user_history
     async def collect_chunks():
         return [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
 
-    chunks = asyncio.run(collect_chunks())
+    chunks = await collect_chunks()
 
     assert isinstance(FakeAdapter.seen_inputs["query"], InteractiveInput)
     assert [record for record in history_records if record["role"] == "user"]
     assert chunks[-1].is_complete is True
 
 
-def test_process_message_stream_rejects_malformed_team_plan_approval_payload(monkeypatch):
+@pytest.mark.asyncio
+async def test_process_message_stream_rejects_malformed_team_plan_approval_payload(
+    monkeypatch,
+):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
@@ -1074,7 +1221,7 @@ def test_process_message_stream_rejects_malformed_team_plan_approval_payload(mon
     async def collect_chunks():
         return [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
 
-    chunks = asyncio.run(collect_chunks())
+    chunks = await collect_chunks()
 
     assert chunks[0].payload == {
         "event_type": "chat.error",
@@ -1085,7 +1232,10 @@ def test_process_message_stream_rejects_malformed_team_plan_approval_payload(mon
     assert chunks[-1].is_complete is True
 
 
-def test_process_message_stream_treats_team_plan_confirm_resume_as_team_follow_up(monkeypatch):
+@pytest.mark.asyncio
+async def test_process_message_stream_treats_team_plan_confirm_resume_as_team_follow_up(
+    monkeypatch,
+):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -1188,7 +1338,7 @@ def test_process_message_stream_treats_team_plan_confirm_resume_as_team_follow_u
     async def collect_chunks():
         return [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
 
-    chunks = asyncio.run(collect_chunks())
+    chunks = await collect_chunks()
 
     assert isinstance(fake_adapter.seen_inputs["query"], InteractiveInput)
     assert fake_adapter.seen_inputs["query"].user_inputs == {
@@ -1206,7 +1356,10 @@ def test_process_message_stream_treats_team_plan_confirm_resume_as_team_follow_u
     assert chunks[-1].is_complete is True
 
 
-def test_process_message_stream_treats_plain_team_query_as_first_request_after_round_end(monkeypatch):
+@pytest.mark.asyncio
+async def test_process_message_stream_treats_plain_team_query_as_first_request_after_round_end(
+    monkeypatch,
+):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     class FakeSessionManager:
@@ -1285,7 +1438,7 @@ def test_process_message_stream_treats_plain_team_query_as_first_request_after_r
     async def collect_chunks():
         return [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
 
-    chunks = asyncio.run(collect_chunks())
+    chunks = await collect_chunks()
 
     # Ordinary chat (including team first request) is scheduled by the facade
     # task itself; DeepAgent interaction owns session concurrency, so
@@ -1316,7 +1469,8 @@ def test_process_message_stream_treats_plain_team_query_as_first_request_after_r
         },
     ],
 )
-def test_team_plan_answer_routing(monkeypatch, params):
+@pytest.mark.asyncio
+async def test_team_plan_answer_routing(monkeypatch, params):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     class FakeAdapter:
@@ -1348,13 +1502,16 @@ def test_team_plan_answer_routing(monkeypatch, params):
         params=params,
     )
 
-    response = asyncio.run(interface_module.JiuWenSwarm().process_message(request))
+    response = await interface_module.JiuWenSwarm().process_message(request)
 
     assert response.ok is True
     assert response.payload == {"routed": "adapter"}
 
 
-def test_deep_adapter_registers_evolution_interrupt_rail_before_skill_evolution(monkeypatch):
+@pytest.mark.asyncio
+async def test_deep_adapter_registers_evolution_interrupt_rail_before_skill_evolution(
+    monkeypatch,
+):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     class FakeSkillEvolutionRail:
@@ -1418,7 +1575,7 @@ def test_deep_adapter_registers_evolution_interrupt_rail_before_skill_evolution(
         _fake_configure,
     )
 
-    asyncio.run(adapter._update_rails_for_mode("agent.plan"))
+    await adapter._update_rails_for_mode("agent.plan")
 
     registered = adapter._instance.registered
     interrupt_index = next(
@@ -1432,19 +1589,26 @@ def test_deep_adapter_registers_evolution_interrupt_rail_before_skill_evolution(
 
 def test_deep_adapter_build_agent_rails_adds_ask_user_for_agent_modes(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
+        RootPermissionQueueRail,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_context_rail import (
+        RootContextRail,
+    )
 
     class FakeHooksConfig:
         events = {}
 
     adapter = JiuWenSwarmDeepAdapter()
     adapter.set_heartbeat_service(object())
+    adapter._sys_operation = object()
     ask_user_rail = object()
     orchestration_rail = object()
+    permission_build_calls = []
 
     monkeypatch.setattr(adapter, "_filesystem_rail_enabled_for_profile", lambda: False)
     monkeypatch.setattr(adapter, "_build_runtime_prompt_rail", lambda: None)
     monkeypatch.setattr(adapter, "_build_response_prompt_rail", lambda: None)
-    monkeypatch.setattr(adapter, "_build_stream_event_rail", lambda: None)
     monkeypatch.setattr(adapter, "_build_task_planning_rail", lambda: None)
     monkeypatch.setattr(adapter, "_build_security_rail", lambda: None)
     monkeypatch.setattr(adapter, "_build_circuit_breaker_rail", lambda: None)
@@ -1454,13 +1618,23 @@ def test_deep_adapter_build_agent_rails_adds_ask_user_for_agent_modes(monkeypatc
     monkeypatch.setattr(adapter, "_build_skill_retrieval_prompt_rail", lambda: None)
     monkeypatch.setattr(adapter, "_build_symphony_orchestration_rail", lambda: orchestration_rail)
     monkeypatch.setattr(adapter, "_build_structured_ask_user_rail", lambda: ask_user_rail)
-    monkeypatch.setattr(interface_deep_module, "build_permission_rail", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "build_permission_rail",
+        lambda **kwargs: permission_build_calls.append(kwargs),
+    )
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda **_kwargs: None)
     monkeypatch.setattr(interface_deep_module, "load_hooks_config", lambda _config: FakeHooksConfig())
 
-    plan_rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent.plan")
-    fast_rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent.fast")
-    code_rails = adapter._build_agent_rails({}, {"models": {}}, mode="code.normal")
+    plan_rails = adapter._build_agent_rails(
+        {}, {"models": {}}, mode="agent.plan", composition_scope="single_agent"
+    )
+    fast_rails = adapter._build_agent_rails(
+        {}, {"models": {}}, mode="agent.fast", composition_scope="single_agent"
+    )
+    code_rails = adapter._build_agent_rails(
+        {}, {"models": {}}, mode="code.normal", composition_scope="single_agent"
+    )
 
     from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
 
@@ -1470,9 +1644,35 @@ def test_deep_adapter_build_agent_rails_adds_ask_user_for_agent_modes(monkeypatc
     assert ask_user_rail in fast_rails
     assert any(isinstance(rail, HeartbeatRail) for rail in plan_rails)
     assert any(isinstance(rail, HeartbeatRail) for rail in code_rails)
+    # These configs are manual; only an enabled Smart group owns root rails.
+    # Real Smart assembly is covered by test_permission_cold_build.py.
+    for rails in (plan_rails, fast_rails, code_rails):
+        assert not any(isinstance(rail, RootPermissionQueueRail) for rail in rails)
+        assert not any(isinstance(rail, RootContextRail) for rail in rails)
+    assert RootPermissionQueueRail.priority > RootContextRail.priority
+    assert len(permission_build_calls) == 3
+    assert all(
+        kwargs["enable_auto_permission"] is False
+        for kwargs in permission_build_calls
+    )
+
+    def fail_permission_build(**_kwargs):
+        raise RuntimeError("permission_build_failed")
+
+    monkeypatch.setattr(interface_deep_module, "build_permission_rail", fail_permission_build)
+    with pytest.raises(RuntimeError, match="permission_build_failed"):
+        adapter._build_agent_rails(
+            {},
+            {"permissions": {"enabled": True}},
+            mode="agent.fast",
+            composition_scope="single_agent",
+        )
 
 
-def test_deep_adapter_unregisters_evolution_runtime_rails_when_leaving_plan(monkeypatch):
+@pytest.mark.asyncio
+async def test_deep_adapter_unregisters_evolution_runtime_rails_when_leaving_plan(
+    monkeypatch,
+):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     class FakeAbilityManager:
@@ -1512,7 +1712,7 @@ def test_deep_adapter_unregisters_evolution_runtime_rails_when_leaving_plan(monk
     monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
 
-    asyncio.run(adapter._update_rails_for_mode("agent.fast"))
+    await adapter._update_rails_for_mode("agent.fast")
 
     # agent.fast is now a legacy token for the merged agent mode. It should no
     # longer unload the former plan-mode rails.
@@ -1523,7 +1723,8 @@ def test_deep_adapter_unregisters_evolution_runtime_rails_when_leaving_plan(monk
     assert adapter._ask_user_rail is ask_user_rail
 
 
-def test_deep_adapter_registers_ask_user_rail_when_entering_plan_mode(monkeypatch):
+@pytest.mark.asyncio
+async def test_deep_adapter_registers_ask_user_rail_when_entering_plan_mode(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     class FakeAbilityManager:
@@ -1557,13 +1758,14 @@ def test_deep_adapter_registers_ask_user_rail_when_entering_plan_mode(monkeypatc
     monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
 
-    asyncio.run(adapter._update_rails_for_mode("agent.plan"))
+    await adapter._update_rails_for_mode("agent.plan")
 
     assert ask_user_rail in adapter._instance.registered
     assert adapter._ask_user_rail is ask_user_rail
 
 
-def test_deep_adapter_registers_ask_user_rail_when_entering_fast_mode(monkeypatch):
+@pytest.mark.asyncio
+async def test_deep_adapter_registers_ask_user_rail_when_entering_fast_mode(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     class FakeAbilityManager:
@@ -1596,7 +1798,7 @@ def test_deep_adapter_registers_ask_user_rail_when_entering_fast_mode(monkeypatc
     monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
     monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
 
-    asyncio.run(adapter._update_rails_for_mode("agent.fast"))
+    await adapter._update_rails_for_mode("agent.fast")
 
     assert ask_user_rail in adapter._instance.registered
     assert adapter._ask_user_rail is ask_user_rail
@@ -1634,7 +1836,11 @@ def test_deep_adapter_disables_and_restores_ask_user_for_request_capability(monk
     assert adapter._ask_user_rail is restored_rail
 
 
-def test_deep_adapter_reconfigures_plan_evolution_rails_idempotently(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_deep_adapter_reconfigures_plan_evolution_rails_idempotently(
+    monkeypatch,
+    tmp_path,
+):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
@@ -1702,8 +1908,8 @@ def test_deep_adapter_reconfigures_plan_evolution_rails_idempotently(monkeypatch
 
     monkeypatch.setattr(interface_deep_module, "get_agent_skills_dir", lambda: tmp_path)
 
-    asyncio.run(adapter._ensure_active_evolution_rails_registered())
-    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+    await adapter._ensure_active_evolution_rails_registered()
+    await adapter._ensure_active_evolution_rails_registered()
 
     registered = adapter._instance._registered_rails
     assert (
@@ -1729,7 +1935,11 @@ def test_deep_adapter_reconfigures_plan_evolution_rails_idempotently(monkeypatch
     assert skill_evolution_rail.review_trigger is True
 
 
-def test_deep_adapter_rebuilds_plan_evolution_rails_when_language_changes(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_deep_adapter_rebuilds_plan_evolution_rails_when_language_changes(
+    monkeypatch,
+    tmp_path,
+):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
@@ -1808,13 +2018,13 @@ def test_deep_adapter_rebuilds_plan_evolution_rails_when_language_changes(monkey
     monkeypatch.setattr(interface_deep_module, "get_agent_skills_dir", lambda: tmp_path)
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: language)
 
-    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+    await adapter._ensure_active_evolution_rails_registered()
     first_rail = adapter._skill_evolution_rail
     assert first_rail is not None
     assert getattr(first_rail, "_language") == "cn"
 
     language = "en"
-    asyncio.run(adapter._ensure_active_evolution_rails_registered())
+    await adapter._ensure_active_evolution_rails_registered()
 
     registered = adapter._instance._registered_rails
     skill_rails = [
@@ -1837,7 +2047,10 @@ def test_deep_adapter_rebuilds_plan_evolution_rails_when_language_changes(monkey
     assert adapter._evolution_interrupt_rail is interrupt_rails[0]
 
 
-def test_deep_adapter_handle_user_answer_ignores_team_plan_approval_compat(monkeypatch):
+@pytest.mark.asyncio
+async def test_deep_adapter_handle_user_answer_ignores_team_plan_approval_compat(
+    monkeypatch,
+):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     monkeypatch.setattr(
@@ -1858,12 +2071,13 @@ def test_deep_adapter_handle_user_answer_ignores_team_plan_approval_compat(monke
         },
     )
 
-    response = asyncio.run(adapter.handle_user_answer(request))
+    response = await adapter.handle_user_answer(request)
 
     assert response.payload["resolved"] is False
 
 
-def test_deep_adapter_routes_team_simplify_answer_by_evolution_meta(monkeypatch):
+@pytest.mark.asyncio
+async def test_deep_adapter_routes_team_simplify_answer_by_evolution_meta(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     calls: list[tuple[str, str]] = []
@@ -1907,13 +2121,14 @@ def test_deep_adapter_routes_team_simplify_answer_by_evolution_meta(monkeypatch)
         },
     )
 
-    response = asyncio.run(adapter.handle_user_answer(request))
+    response = await adapter.handle_user_answer(request)
 
     assert response.payload["resolved"] is True
     assert calls == [("approve_simplify", "evolve_simplify_team123")]
 
 
-def test_build_inputs_threads_workspace_dir_into_cwd(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_build_inputs_threads_workspace_dir_into_cwd(monkeypatch, tmp_path):
     """``params.workspace_dir`` scopes a single prompt's cwd AND workspace to
     the supplied directory and creates it on demand. Threaded into BOTH
     ``inputs["cwd"]`` (so tools that read ``get_cwd()`` resolve relative paths
@@ -1980,7 +2195,7 @@ def test_build_inputs_threads_workspace_dir_into_cwd(monkeypatch, tmp_path):
         params={"query": "hello", "workspace_dir": str(scratch)},
     )
 
-    asyncio.run(interface_module.JiuWenSwarm().process_message(request))
+    await interface_module.JiuWenSwarm().process_message(request)
 
     inputs = fake_adapter.seen_inputs
     # Path is resolved (symlinks followed, absolute form) before threading.
@@ -1993,7 +2208,8 @@ def test_build_inputs_threads_workspace_dir_into_cwd(monkeypatch, tmp_path):
     assert scratch.is_dir(), "_build_inputs must mkdir the scratch dir"
 
 
-def test_build_inputs_omits_cwd_when_workspace_dir_unset(monkeypatch):
+@pytest.mark.asyncio
+async def test_build_inputs_omits_cwd_when_workspace_dir_unset(monkeypatch):
     """When ``params.workspace_dir`` is absent or empty, ``_build_inputs``
     does not overwrite ``inputs.cwd`` -- letting the explicit ``params.cwd``
     (or the downstream default) win.
@@ -2052,14 +2268,15 @@ def test_build_inputs_omits_cwd_when_workspace_dir_unset(monkeypatch):
         params={"query": "hello", "cwd": "/tmp/explicit-cwd"},  # no workspace_dir
     )
 
-    asyncio.run(interface_module.JiuWenSwarm().process_message(request))
+    await interface_module.JiuWenSwarm().process_message(request)
 
     inputs = fake_adapter.seen_inputs
     # params.cwd is preserved untouched
     assert inputs["cwd"] == "/tmp/explicit-cwd"
 
 
-def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
     class FakeAgent:
         def __init__(self):
             self.seen_request = None
@@ -2113,7 +2330,7 @@ def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
         await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
         return fake_manager, fake_ws, request
 
-    fake_manager, fake_ws, request = asyncio.run(run_case())
+    fake_manager, fake_ws, request = await run_case()
 
     assert fake_manager.calls == [
         {
@@ -2135,7 +2352,8 @@ def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
     ]
 
 
-def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
+@pytest.mark.asyncio
+async def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
     class FakeAgent:
         def __init__(self):
             self.seen_request = None
@@ -2189,7 +2407,7 @@ def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
         await server.handle_stream_for_test(fake_ws, request, asyncio.Lock())
         return fake_manager, fake_ws, request
 
-    fake_manager, fake_ws, request = asyncio.run(run_case())
+    fake_manager, fake_ws, request = await run_case()
 
     assert fake_manager.calls == [
         {
@@ -2211,7 +2429,8 @@ def test_handle_stream_accepts_code_team_sub_mode(monkeypatch):
     ]
 
 
-def test_agent_manager_creates_code_adapter_for_code_team(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_manager_creates_code_adapter_for_code_team(monkeypatch):
     from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -2252,7 +2471,7 @@ def test_agent_manager_creates_code_adapter_for_code_team(monkeypatch):
         manager = agent_manager_module.AgentManager()
         await manager.get_agent(channel_id="tui", mode="code", sub_mode="team")
 
-    asyncio.run(run_case())
+    await run_case()
 
     assert {"adapter_mode": "code"} in calls
     assert {
@@ -2262,7 +2481,8 @@ def test_agent_manager_creates_code_adapter_for_code_team(monkeypatch):
     } in calls
 
 
-def test_agent_manager_creates_deep_adapter_for_team_plan_alias(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_manager_creates_deep_adapter_for_team_plan_alias(monkeypatch):
     from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -2305,7 +2525,7 @@ def test_agent_manager_creates_deep_adapter_for_team_plan_alias(monkeypatch):
         await manager.get_agent(channel_id="tui", mode=mode, sub_mode=sub_mode)
         return canonical_mode
 
-    canonical_mode = asyncio.run(run_case())
+    canonical_mode = await run_case()
 
     assert canonical_mode == "team.plan.normal"
     assert {"adapter_mode": "team"} in calls
@@ -2316,7 +2536,8 @@ def test_agent_manager_creates_deep_adapter_for_team_plan_alias(monkeypatch):
     } in calls
 
 
-def test_agent_manager_uses_project_dir_in_cache_identity(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_agent_manager_uses_project_dir_in_cache_identity(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -2366,8 +2587,381 @@ def test_agent_manager_uses_project_dir_in_cache_identity(monkeypatch, tmp_path)
         first_again = await manager.get_agent(channel_id="tui", mode="agent", project_dir=str(project_a))
         return first, second, first_again
 
-    first, second, first_again = asyncio.run(run_case())
+    first, second, first_again = await run_case()
 
     assert first is first_again
     assert first is not second
     assert len(created) == 2
+
+def _fake_ttse_agent_instance():
+    class FakeAbilityManager:
+        @staticmethod
+        def list():
+            return []
+
+    class FakeInstance:
+        def __init__(self):
+            self.registered = []
+            self.unregistered = []
+            self.ability_manager = FakeAbilityManager()
+
+        async def register_rail(self, rail):
+            self.registered.append(rail)
+
+        async def unregister_rail(self, rail):
+            self.unregistered.append(rail)
+
+    return FakeInstance()
+
+
+def test_ttse_consult_eager_helper_inserts_when_enabled():
+    tools = ["tools_search", "invoke_tool", "skill_acceleration_exec"]
+    out = interface_deep_module._ensure_ttse_consult_eager_tool(
+        list(tools),
+        {"ttse": {"enabled": True, "inject_enabled": True}},
+    )
+    assert out.index("ttse_consult") < out.index("skill_acceleration_exec")
+
+
+def test_ttse_consult_eager_helper_strips_when_disabled():
+    tools = ["tools_search", "ttse_consult", "invoke_tool"]
+    out = interface_deep_module._ensure_ttse_consult_eager_tool(
+        list(tools),
+        {"ttse": {"enabled": False, "inject_enabled": True}},
+    )
+    assert "ttse_consult" not in out
+
+
+def test_ttse_consult_should_be_eager_requires_inject(monkeypatch):
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    assert (
+        interface_deep_module._ttse_consult_should_be_eager(
+            {"ttse": {"enabled": True, "inject_enabled": False}}
+        )
+        is False
+    )
+    assert (
+        interface_deep_module._ttse_consult_should_be_eager(
+            {"ttse": {"enabled": True, "inject_enabled": True}}
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_registers_ttse_rail_when_enabled(monkeypatch):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_ttse_agent_instance()
+    adapter._config_cache = {
+        "ttse": {"enabled": True},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._config_base_cache = {"react": {"evolution": {"skill_evolution": False}}}
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    ttse_rail = object()
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", _noop)
+    monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
+    monkeypatch.setattr(adapter, "_mark_ttse_consult_direct_exposure", lambda: None)
+    monkeypatch.setattr(
+        interface_deep_module, "_build_context_processor_rail", lambda _config: None
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True}}},
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_skill_evolution_enabled",
+        lambda _config=None: False,
+    )
+
+    await adapter._update_agent_rails()
+
+    assert adapter._ttse_rail is ttse_rail
+    assert adapter._instance.registered.count(ttse_rail) == 1
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_skips_ttse_rail_when_disabled(monkeypatch):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_ttse_agent_instance()
+    adapter._config_cache = {
+        "ttse": {"enabled": False},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._config_base_cache = {"react": {"evolution": {"skill_evolution": False}}}
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    built = []
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", _noop)
+    monkeypatch.setattr(
+        adapter,
+        "_build_ttse_rail",
+        lambda _config: built.append("built") or object(),
+    )
+    monkeypatch.setattr(
+        interface_deep_module, "_build_context_processor_rail", lambda _config: None
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": False}}},
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_skill_evolution_enabled",
+        lambda _config=None: False,
+    )
+
+    await adapter._update_agent_rails()
+
+    assert adapter._ttse_rail is None
+    assert built == []
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_unregisters_ttse_rail_when_disabled(monkeypatch):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_ttse_agent_instance()
+    adapter._config_cache = {"ttse": {"enabled": True}}
+    adapter._config_base_cache = {"react": {"evolution": {"skill_evolution": False}}}
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+    adapter._context_processor_rail = None
+
+    ttse_rail = object()
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(adapter, "_unconfigure_active_evolution_rails", _noop)
+    monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
+    monkeypatch.setattr(adapter, "_mark_ttse_consult_direct_exposure", lambda: None)
+    monkeypatch.setattr(
+        interface_deep_module, "_build_context_processor_rail", lambda _config: None
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True}}},
+    )
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_skill_evolution_enabled",
+        lambda _config=None: False,
+    )
+
+    await adapter._update_agent_rails()
+    assert adapter._ttse_rail is ttse_rail
+
+    adapter._config_cache["ttse"] = {"enabled": False}
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": False}}},
+    )
+    await adapter._update_agent_rails()
+
+    assert adapter._ttse_rail is None
+    assert adapter._instance.unregistered == [ttse_rail]
+
+
+def test_build_ttse_rail_uses_workspace_bank_path_and_fixed_dream(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    fake_processor = object()
+    tenant_ws = tmp_path / "tenant_ws"
+    tenant_ws.mkdir()
+    shared_ws = tmp_path / "shared_default"
+    shared_ws.mkdir()
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: shared_ws)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
+        lambda: fake_processor,
+    )
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tenant_ws)
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail(
+        {
+            "ttse": {
+                "evolve_enabled": False,
+                "dream_enabled": False,
+                # yaml dream knobs must be ignored
+                "dream_interval": 5,
+                "dream_min_hours": 12,
+                "dream_ttl_days": 30,
+            }
+        }
+    )
+
+    assert isinstance(rail, FakeTTSERail)
+    assert captured["config"]["store_path"] == str(tenant_ws / ".ttse" / "bank.json")
+    assert captured["config"]["store_path"] != str(shared_ws / ".ttse" / "bank.json")
+    assert captured["config"]["evolve_enabled"] is False
+    assert captured["config"]["inject_enabled"] is True
+    assert "trajectory_export_enabled" not in captured["config"]
+    assert captured["config"]["embedding"] is None
+    assert captured["config"]["dream_enabled"] is False
+    assert captured["config"]["dream_interval"] == 50
+    assert captured["config"]["dream_min_hours"] == 24.0
+    assert captured["config"]["dream_ttl_days"] == 90
+    assert captured["rail"]["model"] == "test-model"
+    assert captured["rail"]["trajectory_span_processor"] is fake_processor
+
+
+def test_build_ttse_rail_skips_when_trajectory_processor_unavailable(monkeypatch, tmp_path):
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            pass
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            raise AssertionError("should not build")
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
+        lambda: None,
+    )
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    assert adapter._build_ttse_rail({"ttse": {"enabled": True}}) is None
+
+
+def test_sync_ttse_rail_config_does_not_pass_trajectory_export(monkeypatch, tmp_path):
+    applied = {}
+
+    class FakeCfg:
+        dream_enabled = True
+        dream_interval = 0
+        dream_min_hours = 0.0
+        dream_ttl_days = 0
+
+    class FakeRail:
+        def __init__(self):
+            self._ttse_config = FakeCfg()
+
+        def apply_runtime_config(self, **kwargs):
+            applied.update(kwargs)
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._ttse_rail = FakeRail()
+    adapter._config_cache = {
+        "ttse": {
+            "evolve_enabled": False,
+            "inject_enabled": True,
+            "dream_enabled": False,
+            "trajectory_export_enabled": True,
+        }
+    }
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+
+    adapter._sync_ttse_rail_config()
+
+    assert set(applied) == {"store_path", "evolve_enabled", "inject_enabled"}
+    assert applied["evolve_enabled"] is False
+    assert applied["inject_enabled"] is True
+    assert adapter._ttse_rail._ttse_config.dream_interval == 50
+    assert adapter._ttse_rail._ttse_config.dream_min_hours == 24.0
+    assert adapter._ttse_rail._ttse_config.dream_ttl_days == 90
+    assert adapter._ttse_rail._ttse_config.dream_enabled is False
+
+
+def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    fake_processor = object()
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    class FakeEmbedding:
+        def __init__(self, **kwargs):
+            captured["embedding"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
+        lambda: fake_processor,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.memory.embeddings.OpenAICompatibleEmbeddingProvider",
+        FakeEmbedding,
+    )
+
+    adapter = interface_deep_module.JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tmp_path)
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail(
+        {
+            "ttse": {
+                "embedding": {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                }
+            }
+        }
+    )
+
+    assert isinstance(rail, FakeTTSERail)
+    assert isinstance(captured["config"]["embedding"], FakeEmbedding)
+    assert captured["embedding"] == {
+        "api_key": "k",
+        "base_url": "https://example.invalid/v1",
+        "model": "m",
+    }

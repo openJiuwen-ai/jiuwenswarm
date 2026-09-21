@@ -1,5 +1,5 @@
-.settings-section + .settings-section {
-  margin-top: 36px;
+.settings-section:not(:last-child) {
+  margin-bottom: 36px;
 }
 
 .settings-section__heading {

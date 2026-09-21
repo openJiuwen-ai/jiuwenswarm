@@ -823,6 +823,16 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     ]
 
 
+def test_host_deadline_preserves_other_run_context_without_mutating_input():
+    inputs = {"query": "test", "run": {"context": {"extra": {"existing": "kept"}}}}
+    request = SimpleNamespace(metadata={"execution_deadline_at": 123456.0})
+    updated = JiuWenSwarmDeepAdapter._with_execution_deadline(inputs, request)
+    assert updated["run"]["context"]["extra"] == {"existing": "kept", "execution_deadline_at": 123456.0}
+    assert inputs["run"]["context"]["extra"] == {"existing": "kept"}
+    ordinary = SimpleNamespace(metadata={})
+    assert JiuWenSwarmDeepAdapter._with_execution_deadline(inputs, ordinary) is inputs
+
+
 @pytest.mark.asyncio
 async def test_symphony_tool_model_is_isolated_from_interleaved_adapter_requests(
     monkeypatch,
@@ -1095,9 +1105,17 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "## Browser Capability Routing Rules" in task_section.content["en"]
     assert 'set `subagent_type` to `"browser_agent"`' in task_section.content["en"]
     assert "do not preflight with paid_search" in task_section.content["en"]
+    assert "genuinely unanswered requirements" in task_section.content["en"]
+    assert "a partial label or unmapped field alone does not justify" in task_section.content["en"]
     assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
+    assert "Delegate only the original goal and necessary constraints" in task_section.content["en"]
+    assert "top AI/knowledge/weather answers with attribution" in task_section.content["en"]
+    assert "preserve explicit natural-result/detail-visit requests" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
+    assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
+    assert "派发描述只保留原始目标和必要约束" in build_browser_task_prompt("cn")
+    assert "用户明确要求自然结果或进入详情时仍须执行" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
         SubAgentConfig(
@@ -1255,7 +1273,8 @@ async def test_runtime_git_status_is_stable_system_context_for_one_invoke(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monkeypatch):
+@pytest.mark.parametrize("channel", ["tui", "process_cli"])
+async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monkeypatch, channel):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
     stale_dir = tmp_path / "missing-worktree"
@@ -1275,7 +1294,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="en", channel="tui")
+    runtime_rail = RuntimePromptRail(language="en", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_trusted_dirs([str(stale_dir), str(current_dir), str(extra_dir)])
     runtime_rail.set_runtime_paths(cwd=str(current_dir), project_dir=str(project_dir))
@@ -1312,8 +1331,9 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["tui", "process_cli"])
 async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, channel
 ):
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -1332,7 +1352,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="cn", channel="tui")
+    runtime_rail = RuntimePromptRail(language="cn", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=str(current_dir), project_dir=str(project_dir))
     ctx = AgentCallbackContext(
@@ -1356,8 +1376,90 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("language", "core_heading", "extensions_heading", "rules_heading"),
+    [
+        ("cn", "### 核心内部数据", "### 已安装扩展资产", "### 目录使用规则"),
+        (
+            "en",
+            "### Core Internal Data",
+            "### Installed Extension Assets",
+            "### Directory Usage Rules",
+        ),
+    ],
+)
+async def test_runtime_prompt_lists_installed_extensions_from_global_workspace(
+    tmp_path,
+    monkeypatch,
+    language,
+    core_heading,
+    extensions_heading,
+    rules_heading,
+):
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    installed_workspace = tmp_path / "installed-agent-workspace"
+    member_workspace = tmp_path / "member-workspace"
+    project_dir = tmp_path / "project"
+    for directory in (installed_workspace, member_workspace, project_dir):
+        directory.mkdir()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_workspace_dir",
+        lambda: installed_workspace,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        lambda: tmp_path / "jiuwenswarm-data",
+    )
+
+    runtime_rail = RuntimePromptRail(language=language, channel="web")
+    runtime_rail.init(agent)
+    runtime_rail.set_runtime_paths(
+        cwd=str(project_dir),
+        project_dir=str(project_dir),
+        workspace_dir=str(member_workspace),
+    )
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=None,
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await runtime_rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert core_heading in prompt
+    assert extensions_heading in prompt
+    assert rules_heading in prompt
+    assert str(member_workspace) in prompt
+    assert str(installed_workspace / "skills" / "{skill_name}") in prompt
+    assert (
+        str(installed_workspace / "plugins" / "agent_templates" / "local")
+        in prompt
+    )
+    assert (
+        str(
+            tmp_path
+            / "jiuwenswarm-data"
+            / ".agent_teams"
+            / "agent_groups"
+            / "local"
+        )
+        in prompt
+    )
+    assert (
+        str(installed_workspace / "plugins" / "plugin_packages" / "local")
+        in prompt
+    )
+    assert str(installed_workspace / "mcp" / "mcp_hub") in prompt
+    assert str(member_workspace / "plugins" / "agent_templates" / "local") not in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
 async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, channel
 ):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
@@ -1374,7 +1476,7 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="en", channel="web")
+    runtime_rail = RuntimePromptRail(language="en", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=str(project_dir), project_dir=str(project_dir))
     ctx = AgentCallbackContext(
@@ -1394,7 +1496,8 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, monkeypatch):
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
+async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, monkeypatch, channel):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
     agent_data_dir = tmp_path / "agent-data"
@@ -1410,7 +1513,7 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="en", channel="web")
+    runtime_rail = RuntimePromptRail(language="en", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=str(task_dir), project_dir=None)
     ctx = AgentCallbackContext(
@@ -1430,7 +1533,8 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkeypatch):
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
+async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkeypatch, channel):
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
     agent_data_dir = tmp_path / "agent-data"
@@ -1444,7 +1548,7 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="cn", channel="web")
+    runtime_rail = RuntimePromptRail(language="cn", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=None, project_dir=None)
     ctx = AgentCallbackContext(
@@ -1463,9 +1567,55 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "cn"])
+@pytest.mark.parametrize("mode", ["agent.code.normal", "agent.code.plan", "agent.work.normal", "agent.work.plan"])
+async def test_process_cli_directory_prompt_refreshes_across_requests(
+    tmp_path, monkeypatch, language, mode
+):
+    import jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail as runtime_module
+
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    internal = tmp_path / "agent-data"
+    first = tmp_path / "first-project"
+    second = tmp_path / "second-project"
+    current = tmp_path / "task-cwd"
+    for directory in (internal, first, second, current):
+        directory.mkdir()
+    monkeypatch.setattr(runtime_module, "get_agent_workspace_dir", lambda: internal)
+    monkeypatch.setattr(runtime_module, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime_module, "get_runtime_state_path", lambda _: tmp_path / "absent.yaml")
+    monkeypatch.setattr(RuntimePromptRail, "_configured_model_names", staticmethod(lambda: []))
+    rail = RuntimePromptRail(language=language, channel="process_cli")
+    rail.init(agent)
+    rail.set_mode(mode)
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+
+    for previous, project in ((None, first), (first, second)):
+        rail.set_runtime_paths(cwd=str(current), project_dir=str(project), workspace_dir=str(internal))
+        await rail.before_model_call(ctx)
+        prompt = builder.build()
+        assert str(project) in prompt
+        assert str(current) in prompt
+        assert str(internal) in prompt
+        if previous is not None:
+            assert str(previous) not in prompt
+        rule = (
+            "不要把普通任务产物写入智能体内部目录或启动配置目录"
+            if language == "cn"
+            else "Do not write ordinary task artifacts to the Agent internal data"
+        )
+        assert rule in prompt
+        assert rail._cwd == str(current)
+        assert rail._project_dir == str(project)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
 async def test_runtime_prompt_clears_directory_boundaries_outside_web_and_tui(
     tmp_path,
     monkeypatch,
+    channel,
 ):
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -1476,7 +1626,7 @@ async def test_runtime_prompt_clears_directory_boundaries_outside_web_and_tui(
         lambda: agent_data_dir,
     )
 
-    runtime_rail = RuntimePromptRail(language="cn", channel="web")
+    runtime_rail = RuntimePromptRail(language="cn", channel=channel)
     runtime_rail.init(agent)
     ctx = AgentCallbackContext(
         agent=agent,
@@ -1610,8 +1760,9 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     rendered = agent.prompt_attachment_manager.render(
         await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     )
-    assert "## 已安装 Skill" in rendered
-    assert "当前没有可用 Skill" in rendered
+    assert "## 已安装 Skill" not in rendered
+    assert "## 已安装 Skill" in builder.build()
+    assert "当前没有可用 Skill" in builder.build()
     assert "## Skill 发现" not in rendered
 
     class _AttachmentContext:
@@ -1627,7 +1778,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
 
     history = _AttachmentContext()
     manager = agent.prompt_attachment_manager
-    assert await manager.sync_to_context(history, "sess1") is not None
+    assert await manager.sync_to_context(history, "sess1") is None
 
     # before_invoke runs before the model tool list exists. It must not clear
     # and then re-add the same large snapshot on every user turn.
@@ -1641,7 +1792,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     )
     await rail.before_model_call(ctx)
     assert await manager.sync_to_context(history, "sess1") is None
-    assert len(history.messages) == 1
+    assert len(history.messages) == 0
 
     missing_index_ctx = AgentCallbackContext(
         agent=agent,
@@ -1964,6 +2115,7 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
     with (
         patch.object(adapter, "_resolve_runtime_language", return_value="cn"),
         patch.object(adapter, "_browser_runtime_enabled", return_value=True),
+        patch.object(adapter, "_prepare_browser_runtime_security"),
         patch(
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep.build_research_agent_config",
             return_value="research_spec",
@@ -2006,6 +2158,7 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
     with (
         patch.object(adapter, "_resolve_runtime_language", return_value="cn"),
         patch.object(adapter, "_browser_runtime_enabled", return_value=True),
+        patch.object(adapter, "_prepare_browser_runtime_security"),
         patch(
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep.build_research_agent_config",
             return_value="research_spec",

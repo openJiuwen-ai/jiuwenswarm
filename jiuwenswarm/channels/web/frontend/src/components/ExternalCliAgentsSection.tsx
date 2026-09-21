@@ -54,6 +54,8 @@ export type ExternalCliPendingChoice = {
 
 export const EXTERNAL_CLI_AGENT_KINDS: ExternalCliAgentKind[] = ['claude', 'codex'];
 
+const EXTERNAL_CLI_AUTO_DETECT_DELAY_MS = 400;
+
 export const EXTERNAL_CLI_AGENT_CONFIG_KEYS = new Set([
   'external_cli_agent_claude_enabled',
   'external_cli_agent_claude_use_builtin',
@@ -130,6 +132,7 @@ export function externalCliSaveValidationMessage(
       ? t('config.externalCli.missingPath', { path: requestedPath })
       : t('config.externalCli.missingInPath', { agent: agentName });
   }
+  if (result.reason === 'directory') return t('config.externalCli.directoryPath', { path: requestedPath });
   if (result.status === 'unsupported') return t('config.externalCli.windowsScriptPath');
   return t('config.externalCli.unavailableCli', {
     agent: agentName,
@@ -167,6 +170,11 @@ export function ExternalCliAgentsSection({
   );
   const [copied, setCopied] = useState<Record<ExternalCliAgentKind, boolean>>({ claude: false, codex: false });
   const copiedTimersRef = useRef<Partial<Record<ExternalCliAgentKind, number>>>({});
+  const detectRequestIdsRef = useRef<Record<ExternalCliAgentKind, number>>({ claude: 0, codex: 0 });
+  const observedCliPathsRef = useRef<Record<ExternalCliAgentKind, string>>({
+    claude: draftValues[externalCliKey('claude', 'cli_path')] || '',
+    codex: draftValues[externalCliKey('codex', 'cli_path')] || '',
+  });
 
   useEffect(
     () => () => {
@@ -200,15 +208,19 @@ export function ExternalCliAgentsSection({
   const detect = useCallback(
     async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
       if (!onDetect) return;
+      const requestId = detectRequestIdsRef.current[cliAgent] + 1;
+      detectRequestIdsRef.current[cliAgent] = requestId;
       setDetecting((prev) => ({ ...prev, [cliAgent]: true }));
       try {
         const result = await onDetect(cliAgent, cliPath);
+        if (detectRequestIdsRef.current[cliAgent] !== requestId) return;
         setResults((prev) => {
           const next = { ...prev, [cliAgent]: result };
           onResultsChange?.(next);
           return next;
         });
       } catch (error) {
+        if (detectRequestIdsRef.current[cliAgent] !== requestId) return;
         const message = error instanceof Error ? error.message : String(error);
         setResults((prev) => {
           const next = {
@@ -219,10 +231,36 @@ export function ExternalCliAgentsSection({
           return next;
         });
       } finally {
-        setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+        if (detectRequestIdsRef.current[cliAgent] === requestId) {
+          setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+        }
       }
     },
     [onDetect, onResultsChange],
+  );
+
+  const clearDetectResult = useCallback(
+    (cliAgent: ExternalCliAgentKind) => {
+      detectRequestIdsRef.current[cliAgent] += 1;
+      setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
+      setResults((prev) => {
+        if (!prev[cliAgent]) return prev;
+        const next = { ...prev };
+        delete next[cliAgent];
+        onResultsChange?.(next);
+        return next;
+      });
+    },
+    [onResultsChange],
+  );
+
+  const changeCliPath = useCallback(
+    (cliAgent: ExternalCliAgentKind, cliPathKey: string, value: string) => {
+      observedCliPathsRef.current[cliAgent] = value;
+      clearDetectResult(cliAgent);
+      onChange(cliPathKey, value);
+    },
+    [clearDetectResult, onChange],
   );
 
   const selectFile = useCallback(
@@ -232,8 +270,7 @@ export function ExternalCliAgentsSection({
       try {
         const selectedPath = await onSelectFile(cliAgent, draftValues[cliPathKey] || '');
         if (!selectedPath) return;
-        onChange(cliPathKey, selectedPath);
-        await detect(cliAgent, selectedPath);
+        changeCliPath(cliAgent, cliPathKey, selectedPath);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setResults((prev) => ({
@@ -248,15 +285,41 @@ export function ExternalCliAgentsSection({
         setSelecting((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [detect, draftValues, onChange, onSelectFile, t],
+    [changeCliPath, draftValues, onSelectFile, t],
   );
 
+  const claudeCliPath = draftValues[externalCliKey('claude', 'cli_path')] || '';
+  const codexCliPath = draftValues[externalCliKey('codex', 'cli_path')] || '';
+
   useEffect(() => {
-    if (!onDetect) return;
+    const currentPaths: Record<ExternalCliAgentKind, string> = {
+      claude: claudeCliPath,
+      codex: codexCliPath,
+    };
     for (const cliAgent of EXTERNAL_CLI_AGENT_KINDS) {
-      void detect(cliAgent, draftValues[externalCliKey(cliAgent, 'cli_path')] || '');
+      if (observedCliPathsRef.current[cliAgent] === currentPaths[cliAgent]) continue;
+      observedCliPathsRef.current[cliAgent] = currentPaths[cliAgent];
+      clearDetectResult(cliAgent);
     }
-  }, [detect, onDetect]);
+  }, [claudeCliPath, clearDetectResult, codexCliPath]);
+
+  useEffect(() => {
+    if (!onDetect) return undefined;
+    const timer = window.setTimeout(
+      () => void detect('claude', claudeCliPath),
+      EXTERNAL_CLI_AUTO_DETECT_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [claudeCliPath, detect, onDetect]);
+
+  useEffect(() => {
+    if (!onDetect) return undefined;
+    const timer = window.setTimeout(
+      () => void detect('codex', codexCliPath),
+      EXTERNAL_CLI_AUTO_DETECT_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [codexCliPath, detect, onDetect]);
 
   const statusClass = (status?: ExternalCliDetectResult['status']) => {
     if (status === 'ok') return 'text-ok';
@@ -284,6 +347,9 @@ export function ExternalCliAgentsSection({
       return result.reference_version
         ? t('config.externalCli.compatibilityWarningWithVersion', { version: result.reference_version })
         : t('config.externalCli.compatibilityWarning');
+    }
+    if (result.reason === 'directory') {
+      return t('config.externalCli.directoryPath', { path: requestedPath.trim() });
     }
     if (result.reason === 'windows_script') return t('config.externalCli.windowsScriptPath');
     if (result.status === 'missing') {
@@ -410,7 +476,7 @@ export function ExternalCliAgentsSection({
                   type="text"
                   value={draftValues[cliPathKey] ?? ''}
                   disabled={disabled || !enabled}
-                  onChange={(event) => onChange(cliPathKey, event.target.value)}
+                  onChange={(event) => changeCliPath(cliAgent, cliPathKey, event.target.value)}
                   placeholder={displayResult?.path || t('config.externalCli.cliPathPlaceholder', { agent: cliAgent })}
                   data-testid="settings-panel-external-cli-agent-cli-path-input"
                   data-variant={cliAgent}

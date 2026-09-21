@@ -15,7 +15,11 @@ from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract imp
     classify_permission_result,
     load_openjiuwen_permission_contract,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
+    JiuwenSwarmPermissionInterruptRail,
+)
 from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
+from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
     RootPermissionQueue,
@@ -34,20 +38,12 @@ def test_openjiuwen_permission_contract_imports() -> None:
     assert contract.supports_permission_engine_factory is True
 
 
-def test_manual_interrupt_helpers_uses_permission_engine_factory(monkeypatch) -> None:
-    calls = []
-    sentinel = object()
-
-    def factory(**kwargs):
-        calls.append(kwargs)
-        return sentinel
-
-    monkeypatch.setattr("openjiuwen.harness.security.build_permission_interrupt_rail", factory)
+def test_manual_interrupt_helpers_wires_host_snapshot() -> None:
     rail = build_permission_rail({"permissions": {"enabled": True}})
-    assert rail is sentinel
-    assert len(calls) == 1
-    assert calls[0]["permissions"]["enabled"] is True
-    assert callable(calls[0]["host"].get_permissions_snapshot)
+    assert type(rail) is JiuwenSwarmPermissionInterruptRail
+    assert isinstance(rail, PermissionInterruptRail)
+    assert callable(rail._host.get_permissions_snapshot)
+    assert rail._host.get_permissions_snapshot()["enabled"] is True
 
 
 def test_build_denied_permission_response() -> None:

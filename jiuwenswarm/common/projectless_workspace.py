@@ -167,6 +167,24 @@ def get_projectless_task_workspace(
     )
 
 
+def get_registered_projectless_task_root(
+    session_id: str | None = None,
+) -> Path | None:
+    """Return the bound projectless task root for a session, if one exists.
+
+    Unlike :func:`get_projectless_task_workspace`, this never allocates a new
+    task directory. Permission and other read-only lookups use it to align
+    manual-mode workspace boundaries with an already-bound projectless session.
+    """
+    raw_session = str(session_id or "").strip()
+    if not raw_session:
+        return None
+    safe_session = slugify(raw_session, fallback="default")
+    if not safe_session:
+        return None
+    return _read_registered_root(get_projectless_tasks_dir(), safe_session)
+
+
 def allocate_task_workspace(
     tasks_dir: Path,
     *,

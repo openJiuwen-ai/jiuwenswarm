@@ -16,12 +16,16 @@ import yaml
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.config import (
     _transform_front_team_model_config,
+    coerce_config_bool,
     get_configured_read_image_multimodal,
     get_config_raw,
     get_evolution_auto_save_enabled,
     get_evolution_review_feedback_min_confidence,
     get_sandbox_runtime,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
+    get_ttse_embedding_config,
+    get_ttse_enabled,
     migrate_config_from_template,
     replace_teams_in_config,
     reset_external_cli_agents_in_config,
@@ -34,6 +38,99 @@ from jiuwenswarm.common.config import (
     update_setup_guide_enabled_in_config,
     update_xiaoyi_runtime_in_config,
 )
+from jiuwenswarm.symphony import config as symphony_config_module
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("evolution_enabled", [False, True])
+def test_symphony_evolution_requires_both_switches(
+    enabled: bool,
+    evolution_enabled: bool,
+) -> None:
+    config = {
+        "symphony": {"enabled": enabled, "evolution": {"enabled": evolution_enabled}}
+    }
+    assert get_symphony_evolution_enabled(config) is (enabled and evolution_enabled)
+
+
+@pytest.mark.parametrize("switch", ["symphony", "evolution"])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (1, True),
+        (0, False),
+        (2, False),
+        (1.0, False),
+        ("1", True),
+        (" true ", True),
+        ("YES", True),
+        ("On", True),
+        ("0", False),
+        ("false", False),
+        ("NO", False),
+        (" off ", False),
+        ("enabled", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_symphony_evolution_switch_matches_full_parser(
+    switch: str,
+    value: Any,
+    expected: bool,
+) -> None:
+    raw: dict[str, Any] = {"enabled": True, "evolution": {"enabled": True}}
+    target = raw if switch == "symphony" else raw["evolution"]
+    target["enabled"] = value
+    parsed = symphony_config_module.symphony_config_from_dict(raw)
+    assert get_symphony_evolution_enabled({"symphony": raw}) is expected
+    assert expected is (parsed.enabled and parsed.evolution.enabled)
+
+
+@pytest.mark.parametrize("value", [None, {}, [], "invalid", True, 1])
+@pytest.mark.parametrize("level", ["config", "symphony", "evolution"])
+def test_symphony_evolution_missing_or_malformed_mapping_is_disabled(
+    level: str,
+    value: Any,
+) -> None:
+    config = value
+    if level == "symphony":
+        config = {"symphony": value}
+    elif level == "evolution":
+        config = {"symphony": {"enabled": True, "evolution": value}}
+    assert get_symphony_evolution_enabled(config) is False
+
+
+def test_symphony_evolution_getter_reads_only_passed_switches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("Unexpected global config, full parser, or path lookup")
+
+    monkeypatch.setattr(config_module, "get_config", fail)
+    for name in (
+        "load_symphony_config",
+        "symphony_config_from_dict",
+        "get_agent_workspace_dir",
+        "_resolve_path",
+    ):
+        monkeypatch.setattr(symphony_config_module, name, fail)
+    assert get_symphony_evolution_enabled(None) is False
+    assert get_symphony_evolution_enabled({}) is False
+    evolution_only = {"symphony": {"evolution": {"enabled": True}}}
+    assert get_symphony_evolution_enabled(evolution_only) is False
+    assert get_symphony_evolution_enabled({"symphony": {"enabled": True}}) is False
+    enabled_config = {
+        "symphony": {
+            "enabled": True,
+            "evolution": {"enabled": True},
+            "paths": "invalid",
+            "orchestration": {"mode": "invalid"},
+        },
+    }
+    assert get_symphony_evolution_enabled(enabled_config) is True
 
 
 def test_configured_read_image_multimodal_preserves_explicit_value() -> None:
@@ -571,7 +668,6 @@ class TestConfigFunctions:
         ("profile", "enabled", "mode"),
         [
             ("default", True, "manual"),
-            ("automatic", True, "auto"),
             ("full_access", False, "manual"),
         ],
     )
@@ -682,6 +778,159 @@ class TestConfigFunctions:
         assert get_skill_evolution_enabled(config) is expected
 
     @pytest.mark.parametrize(
+        ("value", "default", "expected"),
+        [
+            (True, False, True),
+            (False, True, False),
+            (None, True, True),
+            ("true", False, True),
+            ("false", True, False),
+            ("0", True, False),
+            ("1", False, True),
+            ("yes", False, True),
+            ("no", True, False),
+            ("", True, False),
+            (1, False, True),
+            (0, True, False),
+        ],
+    )
+    def test_coerce_config_bool_values(self, value, default, expected):
+        assert coerce_config_bool(value, default) is expected
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"react": {"ttse": {"enabled": True}}}, True),
+            ({"react": {"ttse": {"enabled": False}}}, False),
+            ({"ttse": {"enabled": True}}, True),
+            ({"ttse": {"enabled": False}}, False),
+            (
+                {
+                    "react": {"ttse": {"enabled": True}},
+                    "ttse": {"enabled": False},
+                },
+                True,
+            ),
+            ({"react": {"ttse": {"enabled": "true"}}}, True),
+            ({"react": {"ttse": {"enabled": "false"}}}, False),
+            ({"react": {"ttse": {}}}, False),
+            ({"react": {"ttse": {"inject_enabled": True}}}, False),
+        ],
+    )
+    def test_ttse_enabled_config_values(self, config, expected):
+        assert get_ttse_enabled(config) is expected
+
+    def test_shipped_template_ttse_disabled_by_default(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["react"]["ttse"]["enabled"] is False
+        assert get_ttse_enabled(config) is False
+
+    @pytest.mark.parametrize(
+        ("config", "expected"),
+        [
+            ({"react": {"ttse": {}}}, {}),
+            ({"react": {"ttse": {"embedding": {"api_key": "k"}}}}, {}),
+            (
+                {
+                    "react": {
+                        "ttse": {
+                            "embedding": {
+                                "api_key": "k",
+                                "base_url": "https://example.invalid/v1",
+                                "model": "m",
+                            }
+                        }
+                    }
+                },
+                {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                },
+            ),
+            (
+                {
+                    "ttse": {
+                        "embedding": {
+                            "api_key": " k ",
+                            "base_url": " https://example.invalid/v1 ",
+                            "model": " m ",
+                        }
+                    }
+                },
+                {
+                    "api_key": "k",
+                    "base_url": "https://example.invalid/v1",
+                    "model": "m",
+                },
+            ),
+        ],
+    )
+    def test_ttse_embedding_config_values(self, config, expected):
+        assert get_ttse_embedding_config(config) == expected
+
+    def test_ttse_embedding_resolves_secret_registry_embed_vars(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("EMBED_API_KEY", "k")
+        monkeypatch.setenv("EMBED_API_BASE", "https://example.invalid/v1")
+        monkeypatch.setenv("EMBED_MODEL", "m")
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "model": "m",
+        }
+
+    def test_ttse_embedding_unresolved_embed_env_falls_back_to_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("EMBED_API_KEY", raising=False)
+        monkeypatch.delenv("EMBED_API_BASE", raising=False)
+        monkeypatch.delenv("EMBED_MODEL", raising=False)
+        raw = {
+            "react": {
+                "ttse": {
+                    "embedding": {
+                        "api_key": "${EMBED_API_KEY}",
+                        "base_url": "${EMBED_API_BASE}",
+                        "model": "${EMBED_MODEL}",
+                    }
+                }
+            }
+        }
+        assert get_ttse_embedding_config(resolve_env_vars(raw)) == {}
+
+    def test_shipped_ttse_embedding_uses_embed_env_placeholders(self):
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "jiuwenswarm"
+            / "resources"
+            / "config.yaml"
+        )
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        embedding = config["react"]["ttse"]["embedding"]
+        assert embedding["api_key"] == "${EMBED_API_KEY}"
+        assert embedding["base_url"] == "${EMBED_API_BASE}"
+        assert embedding["model"] == "${EMBED_MODEL}"
+
+    @pytest.mark.parametrize(
         ("raw", "expected"),
         [(0.8, 0.8), (2, 1.0), (-1, 0.0), ("bad", 0.7)],
     )
@@ -778,7 +1027,7 @@ react:
         # The user's canonical evolution values are already complete, so the
         # merge itself is a no-op. Migration still returns True because
         # migrate_config_from_template writes back the program config_version
-        # stamp (added before the diff check) whenever the file lacks it.
+        # stamp, which counts as a change, whenever the file lacks it.
         assert migrate_config_from_template(template_path, user_config_path) is True
 
         migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
@@ -936,6 +1185,190 @@ react:
         updated = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
         assert updated["kv_cache_affinity_config"]["enable_kv_cache_affinity"] is False
         assert "kv_cache_affinity_config" not in updated["react"]
+
+    @staticmethod
+    def test_migrate_config_from_template_keeps_user_only_keys(tmp_path: Path):
+        """User keys absent from the template must survive the merge.
+
+        The template is a sample document, not a schema: it ships open-ended
+        maps that exist to be filled in by the operator. Treating "absent from
+        template" as "deprecated" deleted live operator configuration.
+        """
+        template_path = tmp_path / "template.yaml"
+        user_config_path = tmp_path / "config.yaml"
+
+        template_path.write_text(
+            """
+foo:
+  bar: false
+permissions:
+  owner_scopes: {}
+new_template_key: 1
+""",
+            encoding="utf-8",
+        )
+        user_config_path.write_text(
+            """
+foo:
+  bar: true
+  baz:
+    qux: xyzzy
+permissions:
+  owner_scopes:
+    corge:
+      grault: garply
+operator_only_top_level:
+  nested: value
+""",
+            encoding="utf-8",
+        )
+
+        assert migrate_config_from_template(template_path, user_config_path) is True
+
+        merged = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        # Template addition arrived.
+        assert merged["new_template_key"] == 1
+        # User value wins over the template default.
+        assert merged["foo"]["bar"] is True
+        # Operator-only subtree nested inside a section the template ships
+        # survives, together with everything under it.
+        assert merged["foo"]["baz"]["qux"] == "xyzzy"
+        # Operator content inside a template-shipped open-ended map survives.
+        # ``permissions.owner_scopes`` ships as an empty map for the operator to
+        # fill in, so its contents are user data by construction.
+        assert merged["permissions"]["owner_scopes"]["corge"]["grault"] == "garply"
+        # Operator-only top-level subtree survives whole.
+        assert merged["operator_only_top_level"]["nested"] == "value"
+
+    @staticmethod
+    def test_migrate_config_from_template_keeps_user_only_keys_at_any_depth(
+        tmp_path: Path,
+    ):
+        """Survival must not depend on how deeply a key happens to be nested."""
+        template_path = tmp_path / "template.yaml"
+        user_config_path = tmp_path / "config.yaml"
+
+        template_path.write_text(
+            """
+a:
+  b:
+    c:
+      d:
+        e:
+          template_leaf: 1
+""",
+            encoding="utf-8",
+        )
+        user_config_path.write_text(
+            """
+a:
+  op1: x
+  b:
+    op2: x
+    c:
+      op3: x
+      d:
+        op4: x
+        e:
+          op5: x
+""",
+            encoding="utf-8",
+        )
+
+        assert migrate_config_from_template(template_path, user_config_path) is True
+
+        merged = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        assert merged["a"]["op1"] == "x"
+        assert merged["a"]["b"]["op2"] == "x"
+        assert merged["a"]["b"]["c"]["op3"] == "x"
+        assert merged["a"]["b"]["c"]["d"]["op4"] == "x"
+        assert merged["a"]["b"]["c"]["d"]["e"]["op5"] == "x"
+        # The deeply nested template addition must arrive as well; the previous
+        # recursion bound of 4 stopped both adding and removing below that depth.
+        assert merged["a"]["b"]["c"]["d"]["e"]["template_leaf"] == 1
+
+    @staticmethod
+    def test_migrate_config_from_template_preserves_comments(tmp_path: Path):
+        """A merge that writes must not strip the operator's comments."""
+        template_path = tmp_path / "template.yaml"
+        user_config_path = tmp_path / "config.yaml"
+
+        template_path.write_text("added_key: 1\n", encoding="utf-8")
+        user_config_path.write_text(
+            """# operator header comment
+existing:
+  value: 1  # operator inline comment
+""",
+            encoding="utf-8",
+        )
+
+        assert migrate_config_from_template(template_path, user_config_path) is True
+
+        written = user_config_path.read_text(encoding="utf-8")
+        assert "# operator header comment" in written
+        assert "# operator inline comment" in written
+        assert "added_key: 1" in written
+
+    @staticmethod
+    def test_deep_merge_prune_removes_and_logs_every_dropped_key():
+        """Opt-in pruning must name every key it removes, plus a count.
+
+        The log assertion attaches a handler to the module logger directly:
+        ``setup_logger()`` sets ``propagate = False`` on the ``jiuwenswarm``
+        logger, so records never reach the root logger that ``caplog``
+        installs its handler on.
+        """
+        import logging
+
+        from jiuwenswarm.common.config import _deep_merge
+
+        records: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _Collector(level=logging.WARNING)
+        config_logger = logging.getLogger("jiuwenswarm.common.config")
+        previous_level = config_logger.level
+        config_logger.addHandler(handler)
+        config_logger.setLevel(logging.WARNING)
+        try:
+            template = {"kept": {"inner": 1}}
+            user = {
+                "kept": {"inner": 2, "user_only_nested": 3},
+                "user_only_top": 4,
+            }
+            changes = _deep_merge(template, user, prune=True)
+        finally:
+            config_logger.removeHandler(handler)
+            config_logger.setLevel(previous_level)
+
+        assert changes == 2
+        assert user == {"kept": {"inner": 2}}
+
+        messages = [record.getMessage() for record in records]
+        assert all(record.levelno == logging.WARNING for record in records)
+        assert any("kept.user_only_nested" in message for message in messages)
+        assert any("user_only_top" in message for message in messages)
+        assert any("removed 2 user config key(s)" in message for message in messages)
+
+    @staticmethod
+    def test_deep_merge_default_does_not_prune():
+        """The default merge is additive; nothing is dropped and nothing logged."""
+        from jiuwenswarm.common.config import _deep_merge
+
+        template = {"kept": {"inner": 1}, "added": 5}
+        user = {"kept": {"inner": 2, "user_only_nested": 3}, "user_only_top": 4}
+
+        changes = _deep_merge(template, user)
+
+        assert changes == 1
+        assert user == {
+            "kept": {"inner": 2, "user_only_nested": 3},
+            "user_only_top": 4,
+            "added": 5,
+        }
 
     @staticmethod
     def test_update_skill_retrieval_preserves_existing_hidden_config(

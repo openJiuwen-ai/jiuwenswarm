@@ -10,13 +10,12 @@ import {
   type AuthorizationResult,
   type ContextGraph,
   type FetchServiceConfig,
+  type FetchServicePatch,
   type FetchProvider,
+  type FetchRunRecord,
   type PersonalContextConfig,
   type PersonalContextStatus,
-  clearGithubToken,
-  getGithubToken,
   pcApi,
-  setGithubToken,
 } from '../services/personalContextApi';
 
 export type InfoTab = 'graph' | 'services';
@@ -25,9 +24,10 @@ export type InfoTab = 'graph' | 'services';
 const UNCONFIGURED: PersonalContextConfig = {
   configured: false,
   collection_enabled: false,
-  agent_use_enabled: true,
-  strategy_profile: 'rules',
+  agent_use_enabled: false,
+  strategy_profile: 'agent',
   model_index: null,
+  model_id: null,
   fetch_services: [],
 };
 
@@ -37,6 +37,8 @@ interface PersonalContextState {
   status: PersonalContextStatus | null;
   graph: ContextGraph | null;
   authByProvider: Record<string, AuthorizationResult>;
+  /** 各服务采集运行历史（由 batchRefresh 一并覆盖，与 config/status 同步写入）。 */
+  runHistories: Record<string, FetchRunRecord[]>;
 
   // UI
   infoTab: InfoTab;
@@ -44,8 +46,6 @@ interface PersonalContextState {
   loadingStatus: boolean;
   loadingGraph: boolean;
   loadingServices: boolean;
-  /** GitHub PAT 是否已存（localStorage mock；飞书态在 authByProvider.feishu）。 */
-  githubAuthorized: boolean;
   /** 按字段记录正在提交中的写操作，用于禁用对应控件。 */
   pendingWrites: Record<string, boolean>;
 
@@ -57,12 +57,20 @@ interface PersonalContextState {
   loadGraph: () => Promise<void>;
   loadAll: () => Promise<void>;
 
+  /** 一次 RTT 拉齐 services + status + runHistories，合并成单次 set()。
+   *  由 5s 轮询的刷新任务调用，避免三次独立 set() 触发三次级联渲染。 */
+  batchRefresh: () => Promise<void>;
+
   setEnabled: (enabled: boolean) => Promise<void>;
   setAgentUseEnabled: (enabled: boolean) => Promise<void>;
+  /** 总开关：无独立持久化状态，仅联动两个子开关——开启=两者开，关闭=两者关。 */
+  setMasterEnabled: (enabled: boolean) => Promise<void>;
   setStrategyProfile: (profile: PersonalContextConfig['strategy_profile']) => Promise<void>;
   selectModel: (modelIndex: number) => Promise<void>;
 
-  createService: (service: Omit<FetchServiceConfig, 'state' | 'last_error'>) => Promise<void>;
+  createService: (service: FetchServiceConfig) => Promise<void>;
+  /** 保存（编辑）已有采集任务：只更新参数，名称/来源不可改。 */
+  updateService: (serviceId: string, patch: FetchServicePatch) => Promise<void>;
   deleteService: (serviceId: string) => Promise<void>;
   setServiceEnabled: (serviceId: string, enabled: boolean) => Promise<void>;
   runOne: (serviceId: string) => Promise<void>;
@@ -70,12 +78,12 @@ interface PersonalContextState {
   stopRun: (serviceId: string) => Promise<void>;
 
   loadAuthStatus: (provider: string) => Promise<void>;
-  authorizeProvider: (provider: string) => Promise<AuthorizationResult>;
-  /** 保存 GitHub PAT 到 localStorage（后端无 GitHub 授权接口，前端 mock）。 */
-  saveGithubAuth: (token: string) => void;
-  /** 清除 GitHub PAT。 */
-  clearGithubAuth: () => void;
-  /** 派生：provider 是否已授权（飞书真态 / github localStorage / 其余 true）。 */
+  /** 授权（飞书 OAuth 设备流不带 credentials；github/gitcode 传 {token}/{pat}）。 */
+  authorizeProvider: (
+    provider: string,
+    credentials?: Record<string, string>,
+  ) => Promise<AuthorizationResult>;
+  /** 派生：provider 是否已授权（飞书/github/gitcode 走 authByProvider 真实态，其余无需授权）。 */
   isProviderAuthorized: (provider: FetchProvider) => boolean;
 }
 
@@ -84,13 +92,13 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   status: null,
   graph: null,
   authByProvider: {},
+  runHistories: {},
 
   infoTab: 'graph',
   loadingConfig: false,
   loadingStatus: false,
   loadingGraph: false,
   loadingServices: false,
-  githubAuthorized: !!getGithubToken(),
   pendingWrites: {},
 
   setInfoTab: (tab) => set({ infoTab: tab }),
@@ -143,22 +151,53 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     await Promise.all([get().loadConfig(), get().loadStatus(), get().loadGraph()]);
   },
 
+  batchRefresh: async () => {
+    // 一次 RTT 拉齐三路数据后合并成单次 set()，避免三次独立 set() 在轮询期间
+    // 触发三次级联重渲染（见抖动问题）。某一路失败时保留旧值，不阻断其余刷新。
+    const [services, status, runHistories] = await Promise.all([
+      pcApi.listServices().catch(() => null),
+      pcApi.getStatus().catch(() => null),
+      pcApi.getRunStatus().catch(() => null),
+    ]);
+    set((state) => ({
+      ...(services
+        ? { config: { ...state.config, fetch_services: services.services } }
+        : {}),
+      ...(status ? { status } : {}),
+      ...(runHistories
+        ? {
+            runHistories: Object.fromEntries(
+              runHistories.services.map((item) => [item.service_id, item.runs]),
+            ),
+          }
+        : {}),
+    }));
+  },
+
   setEnabled: async (enabled) => {
     set({ pendingWrites: { ...get().pendingWrites, collection_enabled: true } });
     const prev = get().config;
     set({ config: { ...prev, collection_enabled: enabled } });
     try {
       const next = enabled ? await pcApi.startRuntime() : await pcApi.stopRuntime();
-      // 同步 agent_use_enabled：开启上下文时一并开启 agent 使用，关闭时一并关闭
-      const synced = { ...next, agent_use_enabled: enabled };
-      set({ config: synced, status: await pcApi.getStatus().catch(() => get().status) });
-      // 持久化 agent_use_enabled 到后端（与开关值一致）
-      void get().setAgentUseEnabled(enabled).catch(() => {});
+      set({ config: next, status: await pcApi.getStatus().catch(() => get().status) });
     } catch (e) {
       set({ config: prev });
       throw e;
     } finally {
       set({ pendingWrites: { ...get().pendingWrites, collection_enabled: false } });
+    }
+  },
+
+  setMasterEnabled: async (enabled) => {
+    // 总开关为派生状态，本身不落库：开=两个子开关都开，关=两个子开关都关。
+    if (enabled) {
+      // 开启顺序：先采集（可能触发后端首次初始化 config），再 agent 使用
+      await get().setEnabled(true);
+      await get().setAgentUseEnabled(true);
+    } else {
+      await get().setEnabled(false);
+      await get().setAgentUseEnabled(false);
     }
   },
 
@@ -212,8 +251,33 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     try {
       await pcApi.createService(service);
       await get().loadServices();
+    } catch (e) {
+      const requestTimedOut = (e as { code?: unknown })?.code === 'REQUEST_TIMEOUT';
+      if (requestTimedOut) {
+        try {
+          await get().loadServices();
+        } catch {
+          // 保留原始超时错误；刷新失败不应掩盖更关键的事实。
+        }
+        if (get().config.fetch_services.some((item) => item.service_id === service.service_id)) {
+          return;
+        }
+      }
+      throw e;
     } finally {
       set({ pendingWrites: { ...get().pendingWrites, create_service: false } });
+    }
+  },
+
+  updateService: async (serviceId, patch) => {
+    set({ pendingWrites: { ...get().pendingWrites, [`patch:${serviceId}`]: true } });
+    try {
+      await pcApi.patchService(serviceId, patch);
+      await get().loadServices();
+    } finally {
+      const next = { ...get().pendingWrites };
+      delete next[`patch:${serviceId}`];
+      set({ pendingWrites: next });
     }
   },
 
@@ -288,10 +352,10 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     }
   },
 
-  authorizeProvider: async (provider) => {
+  authorizeProvider: async (provider, credentials) => {
     set({ pendingWrites: { ...get().pendingWrites, [`auth:${provider}`]: true } });
     try {
-      const result = await pcApi.authorizeProvider(provider);
+      const result = await pcApi.authorizeProvider(provider, credentials);
       set({ authByProvider: { ...get().authByProvider, [provider]: result } });
       return result;
     } finally {
@@ -301,22 +365,9 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     }
   },
 
-  saveGithubAuth: (token) => {
-    setGithubToken(token);
-    set({ githubAuthorized: true });
-  },
-
-  clearGithubAuth: () => {
-    clearGithubToken();
-    set({ githubAuthorized: false });
-  },
-
   isProviderAuthorized: (provider) => {
-    if (provider === 'feishu') {
-      return get().authByProvider.feishu?.state === 'authorized';
-    }
-    if (provider === 'github') {
-      return get().githubAuthorized;
+    if (provider === 'feishu' || provider === 'github' || provider === 'gitcode') {
+      return get().authByProvider[provider]?.state === 'authorized';
     }
     return true;
   },

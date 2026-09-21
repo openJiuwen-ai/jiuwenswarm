@@ -284,12 +284,23 @@ async def _execute(
         return await host.stop_fetch_run(_text(params, "service_id"))
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS:
         return await host.get_fetch_run_status(
-            cast(str | None, params.get("service_id"))
+            cast(str | None, params.get("service_id")),
+            run_id=cast(str | None, params.get("run_id")),
         )
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS:
         return await host.get_authorization_status(_text(params, "provider"))
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER:
-        return await host.authorize_provider(_text(params, "provider"))
+        credentials = params.get("credentials")
+        if credentials is not None and not isinstance(credentials, dict):
+            raise ValueError("credentials must be an object")
+        reauthorize = params.get("reauthorize", False)
+        if not isinstance(reauthorize, bool):
+            raise ValueError("reauthorize must be a boolean")
+        return await host.authorize_provider(
+            _text(params, "provider"),
+            credentials=cast(dict[str, object] | None, credentials),
+            reauthorize=reauthorize,
+        )
     if method == ReqMethod.PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES:
         return await host.search_graph(_text(params, "query"))
     if method == ReqMethod.PERSONAL_CONTEXT_CONTEXT_GET_NODE:
@@ -374,7 +385,7 @@ async def handle_personal_context_request(
             request,
             send_lock,
             message=exc.message,
-            code=exc.code,
+            code=str(exc.code),
             status=exc.status.name,
         )
     except Exception as exc:  # noqa: BLE001

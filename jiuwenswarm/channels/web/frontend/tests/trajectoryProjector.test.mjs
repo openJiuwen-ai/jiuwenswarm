@@ -6,6 +6,19 @@ import {
   createTrajectoryV2Reducer,
   projectOtelTrajectory,
 } from '../node_modules/.cache/trajectory-projector/projector.mjs';
+import {
+  GEN_AI_ATTRIBUTES,
+  GEN_AI_SEMCONV_ATTRIBUTE_COUNT,
+  GEN_AI_SEMCONV_REVISION,
+} from '../node_modules/.cache/trajectory-projector/gen-ai-semconv.mjs';
+
+test('generated GenAI semantic-convention attributes are complete and unique', () => {
+  const attributes = Object.values(GEN_AI_ATTRIBUTES);
+  assert.match(GEN_AI_SEMCONV_REVISION, /^[0-9a-f]{40}$/);
+  assert.equal(attributes.length, GEN_AI_SEMCONV_ATTRIBUTE_COUNT);
+  assert.equal(new Set(attributes).size, attributes.length);
+  assert.ok(attributes.every(attribute => attribute.startsWith('gen_ai.')));
+});
 
 function fixtureUrl(name) {
   return new URL(`../src/features/trajectory/fixtures/${name}`, import.meta.url);
@@ -99,17 +112,17 @@ function v2Record({
             v2Attribute('openjiuwen.trajectory.subject_id', subjectId),
             v2Attribute('openjiuwen.trajectory.subject_sequence', sequence, true),
             v2Attribute('openjiuwen.trajectory.sequence_epoch', sequenceEpoch),
-            v2Attribute('openjiuwen.trajectory.session_id', 'session-v2'),
-            v2Attribute('openjiuwen.trajectory.request_id', requestId),
+            v2Attribute('gen_ai.conversation.id', 'session-v2'),
+            v2Attribute('openjiuwen.request.id', requestId),
             v2Attribute('openjiuwen.trajectory.recorded_at_unix_nano', time, true),
             v2Attribute('openjiuwen.turn.number', turn, true),
             v2Attribute('openjiuwen.step.number', step, true),
             ...(stepId === undefined
               ? []
-              : [v2Attribute('openjiuwen.trajectory.step_id', stepId)]),
+              : [v2Attribute('openjiuwen.step.id', stepId)]),
             ...(turnId === undefined
               ? []
-              : [v2Attribute('openjiuwen.trajectory.turn_id', turnId)]),
+              : [v2Attribute('openjiuwen.turn.id', turnId)]),
             v2Attribute('openjiuwen.trajectory.payload', JSON.stringify(payload)),
             v2Attribute('langfuse.gen_ai.prompt.0.role', 'user'),
             v2Attribute('langfuse.gen_ai.prompt.0.content', 'must never become a v2 row'),
@@ -199,7 +212,7 @@ function trajectoryLogEventRecord({ eventKind, eventId, payload, sequence, time 
               v2Attribute('openjiuwen.trajectory.subject_id', 'team-leader'),
               v2Attribute('openjiuwen.trajectory.subject_sequence', sequence, true),
               v2Attribute('openjiuwen.trajectory.sequence_epoch', 'ask-user-epoch'),
-              v2Attribute('openjiuwen.trajectory.session_id', 'team-session'),
+              v2Attribute('gen_ai.conversation.id', 'team-session'),
               v2Attribute('openjiuwen.trajectory.recorded_at_unix_nano', time, true),
               v2Attribute('openjiuwen.trajectory.payload', JSON.stringify(payload)),
             ],
@@ -273,7 +286,7 @@ test('Core forced-close child projects as error with its diagnostic reason', asy
   assert.equal(forcedTool.result, 'trace_safety_flush');
 });
 
-test('historical MCP raw lifecycle span is folded into its authoritative tool', async () => {
+test('MCP raw lifecycle span is folded into its authoritative tool by resource id', async () => {
   const records = await fixtureRecords('core-contract-records.json');
   const tools = spansOf(records).filter(span => span.name.startsWith('tool.'));
   const authoritative = tools.find(span => span.attributes.some(attribute => (
@@ -282,10 +295,10 @@ test('historical MCP raw lifecycle span is folded into its authoritative tool', 
   const lifecycle = tools.find(span => span !== authoritative);
   assert.ok(authoritative && lifecycle);
   const resourceId = 'playwright.playwright-official.browser_navigate';
-  setStringAttribute(authoritative, 'gen_ai.tool.type', 'mcp');
-  setStringAttribute(authoritative, 'openjiuwen.tool.type', 'mcp');
+  setStringAttribute(authoritative, 'gen_ai.tool.type', 'extension');
+  setStringAttribute(authoritative, 'openjiuwen.tool.protocol', 'mcp');
   setStringAttribute(authoritative, 'openjiuwen.tool.resource_id', resourceId);
-  setStringAttribute(lifecycle, 'gen_ai.tool.id', resourceId);
+  setStringAttribute(lifecycle, 'openjiuwen.tool.resource_id', resourceId);
   lifecycle.parentSpanId = authoritative.spanId;
   lifecycle.attributes = lifecycle.attributes.filter(attribute => (
     attribute.key !== 'gen_ai.tool.call.id'
@@ -361,14 +374,20 @@ test('ownerless ask_user result remains one routed TOOL while other ownerless to
   assert.match(askUserCells[0].text, /^ask_user/);
   assert.equal(askUserCells[0].callId, 'call-ask-user');
   assert.match(askUserCells[0].inputDetail, /Keep local/);
-  assert.match(askUserCells[0].outputDetail, /Keep local/);
+  // The span records what the invocation returned. No request recorded the
+  // tool message the model read, so the call has only its raw result.
+  assert.match(askUserCells[0].rawOutputDetail, /Keep local/);
+  assert.equal(askUserCells[0].outputDetail, undefined);
   assert.equal(askUserCells[0].requestRecordId, undefined);
   assert.equal(askUserCells[0].requestless, true);
 
   assert.equal(cellsOf(projectOtelTrajectory([askUserRecord])).length, 0);
-  setStringAttribute(askUser, 'gen_ai.tool.name', 'bash');
-  askUser.name = 'tool.bash';
-  assert.equal(cellsOf(projectOtelTrajectory([routedRootRecord, askUserRecord])).length, 0);
+  // Received records are immutable, so a changed tool is a new record.
+  const bashRecord = structuredClone(askUserRecord);
+  const bash = spansOf([bashRecord])[0];
+  setStringAttribute(bash, 'gen_ai.tool.name', 'bash');
+  bash.name = 'tool.bash';
+  assert.equal(cellsOf(projectOtelTrajectory([routedRootRecord, bashRecord])).length, 0);
 });
 
 test('system and external user lead pre-model tools while generated context follows them', async () => {
@@ -453,11 +472,10 @@ test('system and external user lead pre-model tools while generated context foll
   assert.ok(cells.findIndex(cell => cell.text === 'prepared browser state') > cells.indexOf(setupTool));
 });
 
-test('standard and OpenJiuwen fields win over conflicting legacy aliases', async () => {
+test('standard and OpenJiuwen fields populate the request inspector', async () => {
   const records = await fixtureRecords('core-contract-records.json');
   const inference = spansOf(records).find(span => span.name === 'llm.call');
   assert.ok(inference);
-  setIntAttribute(inference, 'gen_ai.usage.total_tokens', 999);
   const snapshot = projectOtelTrajectory(records);
   const request = snapshot.requests?.[0];
   const assistant = cellsOf(snapshot).find(cell => cell.kind === 'message');
@@ -1085,6 +1103,145 @@ test('model-free compaction remains visible without a physical model request', (
   )));
 });
 
+test('a compaction window shows its new context at the next request that reads it', () => {
+  // A compaction commits the window it produced: the commit hangs off the
+  // live agent span (its model call has ended by then) and names that call
+  // through model_requests, the way the compaction.completed event does. The
+  // reader sees the rewrite where the model does, in the next request's
+  // input, and never sees the messages the compaction removed.
+  const system = contextMessage('openjiuwen:request-system-slot:0', 'system', 'rules', 'harness_internal');
+  const original = contextMessage('message-original-user', 'user', 'research the bash tool');
+  const answer = contextMessage('message-answer', 'assistant', 'done', 'harness_internal');
+  const memory = contextMessage(
+    'message-compacted-memory',
+    'user',
+    '<memory_block_round>compressed work</memory_block_round>',
+    'harness_internal',
+  );
+  const next = contextMessage('message-next-user', 'user', 'continue');
+  const before = v2Record({
+    eventId: 'event-before-own-compaction',
+    sequence: 1,
+    payload: contextCommit('window-before', null, [system, original, answer], []),
+  });
+  const compacted = v2Record({
+    eventId: 'event-own-compaction-completed',
+    eventKind: 'compaction.completed',
+    sequence: 2,
+    payload: {
+      type: 'context.compression_state',
+      operation_id: 'operation-own-compaction',
+      status: 'completed',
+      processor: 'RoundLevelCompressor',
+      model: 'GLM-5.3',
+      model_requests: [{ request_id: 'physical-compaction-request', inference_id: 'inference-compaction' }],
+      summary: 'Compressed 3 -> 2 messages',
+      compact_summary: '# Compacted context',
+    },
+  });
+  const output = v2Record({
+    eventId: 'event-own-compaction-output',
+    sequence: 3,
+    inferenceId: 'agent-run-span',
+    payload: {
+      ...contextCommit('window-after', 'window-before', [system, memory], [
+        { op: 'remove', message_id: original.message_id, index: 1 },
+        { op: 'remove', message_id: answer.message_id, index: 2 },
+        { op: 'insert', message_id: memory.message_id, index: 1, message: memory },
+      ]),
+      request_purpose: 'compaction',
+      transition_kind: 'compaction',
+      caused_by_operation_id: 'operation-own-compaction',
+      input_window_id: 'window-before',
+      output_window_id: 'window-after',
+      model_requests: [{ request_id: 'physical-compaction-request', inference_id: 'inference-compaction' }],
+    },
+  });
+  const following = v2Record({
+    eventId: 'event-after-own-compaction',
+    sequence: 4,
+    payload: contextCommit('window-next', 'window-after', [system, memory, next], [
+      { op: 'insert', message_id: next.message_id, index: 2, message: next },
+    ]),
+  });
+
+  const reduction = createTrajectoryV2Reducer().apply([following, output, compacted, before]);
+  const main = reduction.subjects.get('main');
+
+  assert.deepEqual(main.diagnostics, []);
+  const outputEvent = main.events.find(event => event.sequence === 3);
+  assert.deepEqual(outputEvent.cells, []);
+  const followingEvent = main.events.find(event => event.sequence === 4);
+  assert.deepEqual(followingEvent.cells.map(cell => [cell.kind, cell.text]), [
+    ['context', '<memory_block_round>compressed work</memory_block_round>'],
+    ['user', 'continue'],
+  ]);
+  assert.ok(followingEvent.cells.every(cell => cell.physicalInferenceId === 'inference-4'));
+  assert.ok(main.handledInferenceIds.has('inference-compaction'));
+  assert.ok(!main.handledInferenceIds.has('agent-run-span'));
+  const cells = cellsOf(projectOtelTrajectory([following, output, compacted, before]));
+  assert.deepEqual(cells.map(cell => cell.kind), ['system', 'user', 'compacted', 'context', 'user']);
+});
+
+test('a model-free compaction commits its output window without any model request', () => {
+  const original = contextMessage('message-trimmed-user', 'user', 'long tool output follows');
+  const before = v2Record({
+    eventId: 'event-before-model-free-output',
+    sequence: 1,
+    payload: contextCommit('window-before-trim', null, [original], []),
+  });
+  const compacted = v2Record({
+    eventId: 'event-model-free-compaction-with-output',
+    eventKind: 'compaction.completed',
+    sequence: 2,
+    payload: {
+      operation_id: 'operation-model-free-output',
+      status: 'completed',
+      processor: 'ToolResultWindowProcessor',
+      model: '',
+      model_requests: [],
+      summary: 'Compressed 1 -> 1 messages, saved 5.9k tokens',
+      compact_summary: '',
+    },
+  });
+  const trimmed = { ...original, content: 'long tool output trimmed' };
+  const output = v2Record({
+    eventId: 'event-model-free-output',
+    sequence: 3,
+    inferenceId: 'agent-run-span',
+    payload: {
+      ...contextCommit('window-after-trim', 'window-before-trim', [trimmed], [
+        { op: 'replace', message_id: original.message_id, index: 0, message: trimmed },
+      ]),
+      request_purpose: 'compaction',
+      transition_kind: 'compaction',
+      caused_by_operation_id: 'operation-model-free-output',
+      input_window_id: 'window-before-trim',
+      output_window_id: 'window-after-trim',
+      model_requests: [],
+    },
+  });
+
+  const following = v2Record({
+    eventId: 'event-after-model-free-output',
+    sequence: 4,
+    payload: contextCommit('window-next-trim', 'window-after-trim', [trimmed], []),
+  });
+
+  const reduction = createTrajectoryV2Reducer().apply([following, output, compacted, before]);
+  const main = reduction.subjects.get('main');
+
+  assert.deepEqual(main.diagnostics, []);
+  assert.deepEqual(main.events.find(event => event.sequence === 3).cells, []);
+  // The trimmed message is shown once, as the next request reads it.
+  const followingEvent = main.events.find(event => event.sequence === 4);
+  assert.deepEqual(followingEvent.cells.map(cell => [cell.kind, cell.text, cell.physicalInferenceId]), [
+    ['user', 'long tool output trimmed', 'inference-4'],
+  ]);
+  assert.ok(!main.handledInferenceIds.has('agent-run-span'));
+  assert.ok(!main.handledInferenceIds.has(undefined));
+});
+
 test('v2 request context keeps logical input order when its event timestamp follows inference start', async () => {
   const records = structuredClone(await fixtureRecords('core-contract-records.json'));
   const inferenceRecord = records[1];
@@ -1150,6 +1307,33 @@ test('schema-v2 subject state stays isolated when concurrent subagents reuse seq
 
   assert.deepEqual(cellsOf(firstSnapshot).map(cell => cell.text), ['first subagent']);
   assert.deepEqual(cellsOf(secondSnapshot).map(cell => cell.text), ['second subagent']);
+});
+
+test('the v2 reducer rebuilds only subjects whose events changed', () => {
+  const commit = (subjectId, eventId, sequence, text) => {
+    const message = contextMessage(`${eventId}-message`, 'user', text);
+    return v2Record({
+      eventId,
+      sequence,
+      subjectId,
+      time: sequence * 1_000_000,
+      payload: contextCommit(`${eventId}-window`, null, [message], [
+        { op: 'insert', message_id: message.message_id, index: 0, message },
+      ]),
+    });
+  };
+  const first = commit('subagent:first', 'first-1', 1, 'first');
+  const second = commit('subagent:second', 'second-1', 1, 'second');
+  const reducer = createTrajectoryV2Reducer();
+
+  const initial = reducer.apply([first, second]);
+  const repeated = reducer.apply([first, second]);
+  const grown = reducer.apply([first, second, commit('subagent:second', 'second-2', 2, 'more')]);
+
+  assert.equal(repeated.subjects.get('subagent:first'), initial.subjects.get('subagent:first'));
+  assert.equal(repeated.subjects.get('subagent:second'), initial.subjects.get('subagent:second'));
+  assert.equal(grown.subjects.get('subagent:first'), initial.subjects.get('subagent:first'));
+  assert.notEqual(grown.subjects.get('subagent:second'), initial.subjects.get('subagent:second'));
 });
 
 test('schema-v2 sequence validation is isolated across runtime epochs', () => {
@@ -1592,6 +1776,30 @@ test('attribute-pressure llm.call spans keep tool-only and final Assistant reque
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:inference:inference-21',
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:inference:inference-22',
   ]);
+});
+
+test('an agent-kind span named llm.call is not projected as an inference', () => {
+  const recordOf = kind => {
+    const record = legacyInferenceRecord({
+      output: 'bridged turn output',
+      requestNumber: 1,
+      spanId: 'agent-bridge-span',
+      startTimeUnixNano: 1_000_000,
+      stepId: 'step-1',
+      stepNumber: 1,
+    });
+    setStringAttribute(spansOf([record])[0], 'openjiuwen.trajectory.record.kind', kind);
+    // Every canonical span states the span schema version; it must not make
+    // an ordinary span look like a v2 event.
+    setStringAttribute(spansOf([record])[0], 'openjiuwen.trajectory.schema_version', '2');
+    return record;
+  };
+  const messages = snapshot => cellsOf(snapshot).filter(cell => cell.kind === 'message');
+
+  // The closed record-kind set must know "agent": an unknown kind used to be
+  // dropped, and the span then fell through to the llm.call name heuristic.
+  assert.equal(messages(projectOtelTrajectory([recordOf('agent')])).length, 0);
+  assert.equal(messages(projectOtelTrajectory([recordOf('inference')])).length, 1);
 });
 
 test('canonical v2 context suppresses partial legacy diagnostics for its physical inference', async () => {
@@ -2158,7 +2366,7 @@ test('tool-ancestor branches do not reset the physical main context chain', asyn
   ]);
 });
 
-test('legacy tool-call aliases do not duplicate structured calls in one physical inference', async () => {
+test('nonstandard tool-call aliases are ignored beside canonical structured calls', async () => {
   const records = await fixtureRecords('core-contract-records.json');
   const inference = spansOf(records).find(span => span.spanId === '2000000000000000');
   assert.ok(inference);
@@ -2183,7 +2391,7 @@ test('legacy tool-call aliases do not duplicate structured calls in one physical
   assert.equal(assistant.sourceBlocks.filter(block => block.type === 'tool-call').length, 1);
 });
 
-test('no-id calls keep physical multiplicity within one source and across output messages', async () => {
+test('no-id canonical calls keep physical multiplicity across output messages', async () => {
   const records = await fixtureRecords('core-contract-records.json');
   const inference = spansOf(records).find(span => span.spanId === '2000000000000000');
   assert.ok(inference);
@@ -2192,10 +2400,6 @@ test('no-id calls keep physical multiplicity within one source and across output
     {
       role: 'assistant',
       parts: [call],
-      tool_calls: [
-        { name: 'search', arguments: { q: 'same' } },
-        { name: 'search', arguments: { q: 'same' } },
-      ],
     },
     { role: 'assistant', parts: [call] },
   ]));
@@ -2203,7 +2407,7 @@ test('no-id calls keep physical multiplicity within one source and across output
   const assistant = cellsOf(projectOtelTrajectory(records)).find(cell => cell.kind === 'message');
   assert.ok(assistant);
   const calls = assistant.sourceBlocks.filter(block => block.type === 'tool-call');
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 2);
 });
 
 test('provisional inference projects running lifecycle without a fabricated end time', async () => {
@@ -2286,4 +2490,750 @@ test('every inference keeps an independent request identity inside a shared step
   ));
   assert.ok(ownedTool && owner);
   assert.equal(ownedTool.requestRecordId, owner.requestRecordId);
+});
+
+function exceptionSpanEvent(attributes) {
+  return {
+    timeUnixNano: '1700000000000000000',
+    name: 'exception',
+    attributes: Object.entries(attributes).map(([key, value]) => ({
+      key,
+      value: { stringValue: value },
+    })),
+  };
+}
+
+async function errorProjection(spanId, { status, events }) {
+  const records = await fixtureRecords('agent-loop-records.json');
+  const span = spansOf(records).find(candidate => candidate.spanId === spanId);
+  assert.ok(span, `expected span ${spanId} in fixture`);
+  span.status = status;
+  span.events = events;
+  const snapshot = projectOtelTrajectory(records);
+  const request = snapshot.requests?.find(candidate => (
+    candidate.status === 'error' && candidate.error !== undefined
+  ));
+  const assistant = cellsOf(snapshot).find(cell => (
+    cell.kind === 'message' && cell.recordId?.includes(spanId)
+  ));
+  return { snapshot, request, assistant };
+}
+
+test('a blank stream-timeout message falls back to the exception type', async () => {
+  const { request, assistant } = await errorProjection('5000000000000005', {
+    status: { code: 2, message: '' },
+    events: [exceptionSpanEvent({
+      'exception.message': '',
+      'exception.type': 'TimeoutError',
+      'exception.stacktrace': 'Traceback (most recent call last): ...',
+    })],
+  });
+
+  assert.ok(request, 'failed request should carry an error reason');
+  assert.equal(request.error, 'TimeoutError');
+  assert.equal(assistant.isError, true);
+  assert.equal(assistant.result, 'TimeoutError');
+});
+
+test('a recorded stream-timeout summary is shown verbatim', async () => {
+  const summary = 'LLM stream timeout: stage=idle_chunk, timeout=60.0s, '
+    + 'chunk_count=368, idle_elapsed=60.00s, total_elapsed=91.15s, model=GLM-5.3';
+  const { request, assistant } = await errorProjection('5000000000000005', {
+    status: { code: 2, message: summary },
+    events: [exceptionSpanEvent({
+      'exception.message': summary,
+      'exception.type': 'TimeoutError',
+      'exception.stacktrace': 'TimeoutError\n',
+    })],
+  });
+
+  assert.equal(request.error, summary);
+  assert.equal(assistant.result, summary);
+});
+
+test('a whitespace-only status message falls through to the exception reason', async () => {
+  const { request } = await errorProjection('5000000000000005', {
+    status: { code: 2, message: '   \n  ' },
+    events: [exceptionSpanEvent({
+      'exception.message': 'provider down',
+      'exception.type': 'RuntimeError',
+    })],
+  });
+
+  assert.ok(request);
+  assert.equal(request.error, 'provider down');
+});
+
+test('the first informative exception message wins across multiple exception events', async () => {
+  const { request } = await errorProjection('5000000000000005', {
+    status: { code: 2, message: '' },
+    events: [
+      exceptionSpanEvent({ 'exception.message': '', 'exception.type': '' }),
+      exceptionSpanEvent({ 'exception.message': 'provider down', 'exception.type': 'RuntimeError' }),
+    ],
+  });
+
+  assert.ok(request);
+  assert.equal(request.error, 'provider down');
+});
+
+test('without exception events the error.type attribute is the last fallback', async () => {
+  const records = await fixtureRecords('agent-loop-records.json');
+  const span = spansOf(records).find(candidate => candidate.spanId === '5000000000000005');
+  assert.ok(span);
+  span.status = { code: 2, message: '' };
+  span.events = [];
+  setStringAttribute(span, 'error.type', 'TimeoutError');
+
+  const snapshot = projectOtelTrajectory(records);
+  const request = snapshot.requests?.find(candidate => candidate.status === 'error');
+  assert.ok(request);
+  assert.equal(request.error, 'TimeoutError');
+});
+
+test('a HITL resume continues its turn across the trace boundary', () => {
+  // The agent stops to ask (ask_user / permission / confirm); the answer comes
+  // back as its own request and runs in its own trace, but the ReAct loop it
+  // resumes is the same one, so both traces are one turn.
+  const asked = v2Record({
+    eventId: 'event-turn-asked',
+    requestId: 'request-asked',
+    sequence: 1,
+    time: 1_000_000,
+    traceId: '1'.repeat(32),
+    turn: 4,
+    turnId: 'turn-hitl',
+    payload: contextCommit('window-asked', null, [
+      contextMessage('message-asked', 'user', 'deploy it'),
+    ], []),
+  });
+  const resumed = v2Record({
+    eventId: 'event-turn-resumed',
+    requestId: 'request-resumed',
+    sequence: 2,
+    time: 2_000_000,
+    traceId: '2'.repeat(32),
+    turn: 4,
+    turnId: 'turn-hitl',
+    payload: contextCommit('window-resumed', 'window-asked', [
+      contextMessage('message-asked', 'user', 'deploy it'),
+      contextMessage('message-answer', 'user', 'yes, go ahead'),
+    ], [
+      { op: 'insert', message_id: 'message-answer', index: 1, message: contextMessage('message-answer', 'user', 'yes, go ahead') },
+    ]),
+  });
+
+  const snapshot = projectOtelTrajectory([asked, resumed]);
+
+  assert.equal(snapshot.turns.length, 1);
+  assert.equal(snapshot.turns[0].turn, 4);
+});
+
+test('distinct turn ids stay separate even when they claim one number', () => {
+  // A session that lost its durable turn state restarts numbering, so two
+  // distinct turns can both state number 1. The id is the identity, so they
+  // stay apart; the number is shown as stated rather than rewritten to hide it.
+  const first = v2Record({
+    eventId: 'event-turn-first',
+    requestId: 'request-first',
+    sequence: 1,
+    time: 1_000_000,
+    traceId: '3'.repeat(32),
+    turn: 1,
+    turnId: 'turn-first',
+    payload: contextCommit('window-first', null, [
+      contextMessage('message-first', 'user', 'first ask'),
+    ], []),
+  });
+  const second = v2Record({
+    eventId: 'event-turn-second',
+    requestId: 'request-second',
+    sequence: 2,
+    time: 2_000_000,
+    traceId: '4'.repeat(32),
+    turn: 1,
+    turnId: 'turn-second',
+    payload: contextCommit('window-second', null, [
+      contextMessage('message-second', 'user', 'second ask'),
+    ], []),
+  });
+
+  const snapshot = projectOtelTrajectory([first, second]);
+
+  assert.equal(snapshot.turns.length, 2);
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, 1]);
+});
+
+function turnSpanRecord({ attributes, name, spanId, startTimeUnixNano, traceId }) {
+  return {
+    resourceSpans: [{
+      scopeSpans: [{
+        spans: [{
+          traceId,
+          spanId,
+          name,
+          startTimeUnixNano: String(startTimeUnixNano),
+          endTimeUnixNano: String(startTimeUnixNano + 1_000),
+          attributes,
+        }],
+      }],
+    }],
+  };
+}
+
+test('a resumed tool rejoins the step the interrupt paused', () => {
+  // The interrupt pauses step 4; the resume finishes that step's tool work in
+  // its own trace, where no step span was reopened to take an id from. It must
+  // land in step 4, not open a second "Step 4" beside it.
+  const paused = turnSpanRecord({
+    name: 'llm.call',
+    spanId: 'aaaaaaaaaaaaaaa1',
+    startTimeUnixNano: 1_000_000,
+    traceId: '5'.repeat(32),
+    attributes: [
+      v2Attribute('gen_ai.conversation.id', 'session-resume'),
+      v2Attribute('openjiuwen.trajectory.record.kind', 'inference'),
+      v2Attribute('openjiuwen.turn.id', 'turn-paused'),
+      v2Attribute('openjiuwen.turn.number', 3, true),
+      v2Attribute('openjiuwen.step.number', 4, true),
+      v2Attribute('openjiuwen.step.id', 'step-paused'),
+      v2Attribute('openjiuwen.inference.id', 'inference-paused'),
+      v2Attribute('gen_ai.output.messages', JSON.stringify([
+        structuredMessage('assistant', 'checking with you first'),
+      ])),
+    ],
+  });
+  const replayed = turnSpanRecord({
+    name: 'execute_tool search',
+    spanId: 'bbbbbbbbbbbbbbb1',
+    startTimeUnixNano: 5_000_000,
+    traceId: '6'.repeat(32),
+    attributes: [
+      v2Attribute('gen_ai.conversation.id', 'session-resume'),
+      v2Attribute('openjiuwen.trajectory.record.kind', 'tool'),
+      v2Attribute('gen_ai.operation.name', 'execute_tool'),
+      v2Attribute('gen_ai.tool.name', 'search'),
+      v2Attribute('gen_ai.tool.call.id', 'call-resumed'),
+      v2Attribute('openjiuwen.turn.id', 'turn-paused'),
+      v2Attribute('openjiuwen.turn.number', 3, true),
+      v2Attribute('openjiuwen.step.number', 4, true),
+      v2Attribute('openjiuwen.step.id', 'step-paused'),
+    ],
+  });
+
+  const snapshot = projectOtelTrajectory([paused, replayed]);
+
+  assert.equal(snapshot.turns.length, 1);
+  assert.deepEqual(snapshot.turns[0].groups.map(group => group.title), ['Step 4']);
+});
+
+test('a tool result is the tool message the model read, with the invocation return kept raw', () => {
+  // The real shape of a bash call: the invocation returns a structured result,
+  // and the harness renders only its content into the tool message the model
+  // reads. Reading the raw return as the model's view misleads, so the Result
+  // is the tool message and the raw return sits beside it.
+  const traceId = '4'.repeat(32);
+  const rawReturn = '{"success": true, "data": {"content": "Command: pwd\\nStdout: /tmp"}}';
+  const modelView = 'Command: pwd\nStdout: /tmp';
+  const toolSpan = (spanId, name, callId, result) => turnSpanRecord({
+    name: `execute_tool ${name}`,
+    spanId,
+    startTimeUnixNano: 2_000_000,
+    traceId,
+    attributes: [
+      v2Attribute('gen_ai.conversation.id', 'session-v2'),
+      v2Attribute('openjiuwen.trajectory.record.kind', 'tool'),
+      v2Attribute('gen_ai.operation.name', 'execute_tool'),
+      v2Attribute('gen_ai.tool.name', name),
+      ...(callId === undefined ? [] : [v2Attribute('gen_ai.tool.call.id', callId)]),
+      v2Attribute('gen_ai.tool.call.result', result),
+      v2Attribute('openjiuwen.turn.number', 1, true),
+      v2Attribute('openjiuwen.step.number', 1, true),
+    ],
+  });
+  const user = contextMessage('user-1', 'user', 'where am I');
+  const toolMessage = {
+    ...contextMessage('tool-1', 'tool', modelView, 'harness_internal'),
+    tool_call_id: 'call-bash',
+  };
+  const baseline = v2Record({
+    eventId: 'event-tool-baseline',
+    sequence: 1,
+    traceId,
+    payload: contextCommit('window-1', null, [user], []),
+  });
+  const withToolResult = v2Record({
+    eventId: 'event-tool-result',
+    sequence: 2,
+    traceId,
+    payload: contextCommit('window-2', 'window-1', [user, toolMessage], [
+      { op: 'insert', message_id: toolMessage.message_id, index: 1, message: toolMessage },
+    ]),
+  });
+  // A later rewrite of the same message, such as a compaction trimming it,
+  // does not change what the model read when it acted on the result.
+  const trimmed = { ...toolMessage, content: '[trimmed]' };
+  const rewritten = v2Record({
+    eventId: 'event-tool-trimmed',
+    sequence: 3,
+    traceId,
+    payload: contextCommit('window-3', 'window-2', [user, trimmed], [
+      { op: 'replace', message_id: toolMessage.message_id, index: 1, message: trimmed },
+    ]),
+  });
+  const records = [
+    baseline,
+    withToolResult,
+    rewritten,
+    toolSpan('ccccccccccccccc1', 'bash', 'call-bash', rawReturn),
+    // A Team member's tool span names no call id, so no tool message can be
+    // joined to it and it has only its raw return.
+    toolSpan('ccccccccccccccc2', 'write_file', undefined, 'success=True data={}'),
+  ];
+
+  const reduction = createTrajectoryV2Reducer().apply(records.slice(0, 3));
+  assert.equal(reduction.subjects.get('main').modelToolResults.get('call-bash'), modelView);
+
+  const tools = cellsOf(projectOtelTrajectory(records)).filter(cell => cell.kind === 'tool');
+  const bash = tools.find(cell => cell.text.startsWith('bash'));
+  assert.equal(bash.outputDetail, modelView);
+  assert.deepEqual(JSON.parse(bash.rawOutputDetail), JSON.parse(rawReturn));
+  assert.equal(bash.result, modelView);
+  const writeFile = tools.find(cell => cell.text.startsWith('write_file'));
+  assert.equal(writeFile.outputDetail, undefined);
+  assert.equal(writeFile.rawOutputDetail, 'success=True data={}');
+  assert.equal(writeFile.result, 'success=True data={}');
+});
+
+test('schema-v2 rebuilds a window from a delta-only commit', () => {
+  // Only the baseline states a complete window; every later commit carries its
+  // change alone and the reader applies it onto the chain it already holds.
+  const one = contextMessage('one', 'user', 'one');
+  const two = contextMessage('two', 'user', 'two');
+  const baseline = v2Record({
+    eventId: 'event-1',
+    sequence: 1,
+    payload: contextCommit('window-1', null, [one], []),
+  });
+  const deltaOnly = v2Record({
+    eventId: 'event-2',
+    sequence: 2,
+    payload: contextCommit('window-2', 'window-1', undefined, [
+      { op: 'insert', message_id: 'two', index: 1, message: two },
+    ]),
+  });
+
+  const projected = projectOtelTrajectory([baseline, deltaOnly], {
+    v2Reducer: createTrajectoryV2Reducer(),
+  });
+
+  assert.deepEqual(cellsOf(projected).map(cell => cell.text), ['one', 'two']);
+  assert.deepEqual(projected.diagnostics ?? [], []);
+});
+
+test('schema-v2 reports a delta-only commit whose base was never read', () => {
+  // Without a stated window and without the base it applies onto, the chain is
+  // broken here and the commit cannot be rendered.
+  const two = contextMessage('two', 'user', 'two');
+  const orphan = v2Record({
+    eventId: 'event-2',
+    sequence: 2,
+    payload: contextCommit('window-2', 'never-read', undefined, [
+      { op: 'insert', message_id: 'two', index: 0, message: two },
+    ]),
+  });
+
+  const projected = projectOtelTrajectory([orphan], {
+    v2Reducer: createTrajectoryV2Reducer(),
+  });
+
+  assert.deepEqual(cellsOf(projected).map(cell => cell.text), []);
+  assert.ok((projected.diagnostics ?? []).some(item => item.code === 'v2.missing_base_window'));
+});
+
+function compactionAttemptRecord({
+  sequence,
+  compactionNumber,
+  failed,
+  turnId = 'turn-compaction-attempts',
+  stepId = 'step-compaction-attempts',
+  subjectId = 'main',
+  traceId = '77777777777777777777777777777777',
+}) {
+  const time = sequence * 1_000_000;
+  const attributes = [
+    v2Attribute('gen_ai.operation.name', 'chat'),
+    v2Attribute('gen_ai.conversation.id', 'session-compaction'),
+    v2Attribute('openjiuwen.trajectory.record.kind', 'inference'),
+    v2Attribute('openjiuwen.request.purpose', 'compaction'),
+    v2Attribute('openjiuwen.compaction.number', compactionNumber, true),
+    v2Attribute('openjiuwen.context.operation.id', `operation-${compactionNumber}`),
+    v2Attribute('openjiuwen.execution.subject.id', subjectId),
+    v2Attribute('openjiuwen.execution.subject.request.number', sequence, true),
+    v2Attribute('openjiuwen.request.number', sequence, true),
+    v2Attribute('openjiuwen.turn.id', turnId),
+    v2Attribute('openjiuwen.step.id', stepId),
+    v2Attribute('openjiuwen.step.number', 4, true),
+    v2Attribute('openjiuwen.inference.id', `inference-compaction-${sequence}`),
+  ];
+  return {
+    resourceSpans: [{
+      scopeSpans: [{
+        spans: [{
+          traceId,
+          spanId: String(sequence).padStart(16, '0'),
+          name: 'chat',
+          startTimeUnixNano: String(time),
+          endTimeUnixNano: String(time + 1),
+          attributes,
+          status: failed
+            ? { code: 2, message: "Error code: 429 - {'error': {'code': '429'}}" }
+            : { code: 1 },
+        }],
+      }],
+    }],
+  };
+}
+
+test('every attempt of one compaction is shown under its own numbered group', () => {
+  // The real shape behind a request number that appeared to skip: one
+  // compaction the provider throttled four times before it succeeded.
+  const records = [1, 2, 3, 4, 5].map(sequence => compactionAttemptRecord({
+    sequence,
+    compactionNumber: 2,
+    failed: sequence < 5,
+  }));
+  const snapshot = projectOtelTrajectory(records);
+
+  const groups = snapshot.turns.flatMap(turn => turn.groups)
+    .filter(group => group.title.startsWith('Compaction'));
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].title, 'Compaction #2');
+  // All five attempts survive; showing only the last one is what hid the
+  // retries and made the surrounding request numbers look discontinuous.
+  assert.equal(groups[0].cells.length, 5);
+  assert.deepEqual(groups[0].cells.map(cell => cell.isError === true), [
+    true, true, true, true, false,
+  ]);
+  // An attempt is a model call, not a reply: it marks its own request and
+  // takes no assistant row.
+  assert.ok(groups[0].cells.every(cell => cell.kind === 'compacted' && cell.requestOnly === true));
+  assert.equal(new Set(groups[0].cells.map(cell => cell.requestRecordId)).size, 5);
+  // Each request keeps its raw record for the request detail.
+  const compactionRequests = snapshot.requests.filter(request => request.purpose === 'compaction');
+  assert.equal(compactionRequests.length, 5);
+  assert.ok(compactionRequests.every(request => typeof request.traceDetail === 'object'));
+});
+
+function withoutTurn(record) {
+  for (const span of spansOf([record])) {
+    span.attributes = span.attributes.filter(attribute => (
+      attribute.key !== 'openjiuwen.turn.number' && attribute.key !== 'openjiuwen.turn.id'
+    ));
+  }
+  return record;
+}
+
+test('a manual compaction shows between the turns it ran between, and its context opens the next turn', () => {
+  // The real shape of a manual /compact between two chat turns: its run
+  // names no turn, makes no conversational model call, and commits the window
+  // its summary produced. It takes no turn number: its attempts and outcome
+  // show between the turns, and the checkpoint it inserted shows at the start
+  // of the next turn, where the model first reads it.
+  const chatTrace = 'abababababababababababababababab';
+  const compactTrace = '77777777777777777777777777777777';
+  const nextTrace = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd';
+  const user = contextMessage('message-user-1', 'user', 'first question');
+  const memory = contextMessage(
+    'message-memory',
+    'user',
+    '<memory_block_round>summary</memory_block_round>',
+    'harness_internal',
+  );
+  const next = contextMessage('message-user-2', 'user', 'next question');
+  const modelRequests = [{ request_id: 'request-compaction', inference_id: 'inference-compaction-2' }];
+
+  const firstInference = legacyInferenceRecord({
+    output: 'first answer',
+    requestNumber: 1,
+    spanId: 'a'.repeat(16),
+    startTimeUnixNano: 1_000_000,
+    stepId: 'step-chat-1',
+    stepNumber: 1,
+  });
+  const firstCommit = v2Record({
+    eventId: 'event-chat-1',
+    sequence: 1,
+    traceId: chatTrace,
+    inferenceId: 'a'.repeat(16),
+    turn: 1,
+    payload: contextCommit('window-1', null, [user], []),
+  });
+  const attempt = withoutTurn(compactionAttemptRecord({
+    sequence: 2,
+    compactionNumber: 1,
+    failed: false,
+    traceId: compactTrace,
+  }));
+  const completed = withoutTurn(v2Record({
+    eventId: 'event-manual-compaction',
+    eventKind: 'compaction.completed',
+    sequence: 2,
+    time: 3_000_000,
+    traceId: compactTrace,
+    payload: {
+      operation_id: 'operation-1',
+      status: 'completed',
+      model_requests: modelRequests,
+      summary: 'Compressed 2 -> 1 messages',
+      compact_summary: '<memory_block_round>summary</memory_block_round>',
+    },
+  }));
+  const compactionCommit = withoutTurn(v2Record({
+    eventId: 'event-manual-compaction-window',
+    sequence: 3,
+    time: 3_000_001,
+    traceId: compactTrace,
+    inferenceId: 'agent-run-span',
+    payload: {
+      ...contextCommit('window-2', 'window-1', [memory], [
+        { op: 'remove', message_id: user.message_id, index: 0 },
+        { op: 'insert', message_id: memory.message_id, index: 0, message: memory },
+      ]),
+      request_purpose: 'compaction',
+      transition_kind: 'compaction',
+      caused_by_operation_id: 'operation-1',
+      input_window_id: 'window-1',
+      output_window_id: 'window-2',
+      model_requests: modelRequests,
+    },
+  }));
+  const nextInference = legacyInferenceRecord({
+    output: 'next answer',
+    requestNumber: 3,
+    spanId: 'c'.repeat(16),
+    startTimeUnixNano: 4_000_000,
+    stepId: 'step-chat-2',
+    stepNumber: 1,
+  });
+  spansOf([nextInference])[0].traceId = nextTrace;
+  setIntAttribute(spansOf([nextInference])[0], 'openjiuwen.turn.number', 2);
+  const nextCommit = v2Record({
+    eventId: 'event-chat-2',
+    sequence: 4,
+    traceId: nextTrace,
+    inferenceId: 'c'.repeat(16),
+    turn: 2,
+    payload: contextCommit('window-3', 'window-2', [memory, next], [
+      { op: 'insert', message_id: next.message_id, index: 1, message: next },
+    ]),
+  });
+
+  const snapshot = projectOtelTrajectory([
+    nextCommit, nextInference, compactionCommit, completed, attempt, firstCommit, firstInference,
+  ]);
+
+  assert.deepEqual(snapshot.diagnostics ?? [], []);
+  // The chat turns keep their own numbering; the compaction takes none.
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, null, 2]);
+  const between = snapshot.turns[1];
+  assert.deepEqual(between.groups.map(group => group.title), ['Compaction #1']);
+  // The COMPACTED outcome marks the compaction's model request; the request
+  // itself takes no assistant row.
+  assert.deepEqual(between.groups[0].cells.map(cell => cell.kind), ['compacted']);
+  assert.equal(
+    between.groups[0].cells[0].requestRecordId,
+    `${compactTrace}:inference:inference-compaction-2`,
+  );
+  const nextTurnInputs = snapshot.turns[2].groups
+    .flatMap(group => group.cells)
+    .filter(cell => cell.kind !== 'message')
+    .map(cell => [cell.kind, cell.text]);
+  assert.deepEqual(nextTurnInputs, [
+    ['context', '<memory_block_round>summary</memory_block_round>'],
+    ['user', 'next question'],
+  ]);
+});
+
+test('a compaction inside a conversation turn still follows that turn between turns', () => {
+  const trace = 'abababababababababababababababab';
+  const inference = legacyInferenceRecord({
+    output: 'answer',
+    requestNumber: 1,
+    spanId: 'a'.repeat(16),
+    startTimeUnixNano: 1_000_000,
+    stepId: 'step-chat-1',
+    stepNumber: 1,
+  });
+  const attempt = compactionAttemptRecord({
+    sequence: 5,
+    compactionNumber: 1,
+    failed: false,
+    traceId: trace,
+  });
+
+  const snapshot = projectOtelTrajectory([attempt, inference]);
+
+  assert.deepEqual(
+    snapshot.turns.map(turn => [turn.turn, turn.groups.map(group => group.title)]),
+    [[1, ['Step 1']], [null, ['Compaction #1']]],
+  );
+});
+
+test('each compaction of one manual run is its own group marking its own request', () => {
+  // The real shape of a manual /compact that ran two processors back to back:
+  // two operations, each with one model call and one outcome. They used to
+  // share one group as "Attempt 1" and "Attempt 2" assistant rows, and only
+  // the group's first row marked a request.
+  const trace = '77777777777777777777777777777777';
+  const records = [
+    [1, 2, 'Compressed 103 -> 92 messages'],
+    [2, 3, 'Compressed 92 -> 8 messages'],
+  ].flatMap(([compactionNumber, sequence, summary]) => [
+    withoutTurn(compactionAttemptRecord({
+      sequence,
+      compactionNumber,
+      failed: false,
+      traceId: trace,
+    })),
+    withoutTurn(v2Record({
+      eventId: `event-compaction-${compactionNumber}`,
+      eventKind: 'compaction.completed',
+      sequence: compactionNumber,
+      time: sequence * 1_000_000 + 500_000,
+      traceId: trace,
+      payload: {
+        operation_id: `operation-${compactionNumber}`,
+        status: 'completed',
+        model_requests: [{ request_id: `request-${sequence}`, inference_id: `inference-compaction-${sequence}` }],
+        summary,
+        compact_summary: `summary ${compactionNumber}`,
+      },
+    })),
+  ]);
+
+  const snapshot = projectOtelTrajectory(records);
+
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [null]);
+  const groups = snapshot.turns[0].groups;
+  assert.deepEqual(groups.map(group => group.title), ['Compaction #1', 'Compaction #2']);
+  assert.deepEqual(groups.map(group => group.cells.map(cell => [cell.kind, cell.requestRecordId])), [
+    [['compacted', `${trace}:inference:inference-compaction-2`]],
+    [['compacted', `${trace}:inference:inference-compaction-3`]],
+  ]);
+});
+
+test('a compaction still groups when its number is absent', () => {
+  const records = [compactionAttemptRecord({ sequence: 1, compactionNumber: 0, failed: false })];
+  const snapshot = projectOtelTrajectory(records);
+  const groups = snapshot.turns.flatMap(turn => turn.groups)
+    .filter(group => group.title.startsWith('Compaction'));
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].title, 'Compaction');
+});
+
+test('content the store no longer holds is told apart from a silent model', () => {
+  const spanId = 'f'.repeat(16);
+  const traceId = 'abababababababababababababababab';
+  const record = legacyInferenceRecord({
+    output: 'never rebuilt',
+    requestNumber: 1,
+    spanId,
+    startTimeUnixNano: 1_000_000,
+    stepId: 'step-1',
+    stepNumber: 1,
+  });
+  // What storage leaves behind when the content a record refers to is gone:
+  // the reference itself, which no reader can turn back into messages.
+  const attributes = record.resourceSpans[0].scopeSpans[0].spans[0].attributes;
+  const output = attributes.find(entry => entry.key === 'gen_ai.output.messages');
+  output.value = { stringValue: `@oj-seq:1:${'a'.repeat(64)}:1` };
+
+  const messageText = snapshot => cellsOf(snapshot)
+    .filter(cell => cell.kind === 'message')
+    .map(cell => cell.text);
+
+  const silent = messageText(projectOtelTrajectory([record]));
+  const expired = messageText(projectOtelTrajectory([record], {
+    unresolvedAttributesByRecordId: new Map([
+      [`${traceId}:${spanId}`, ['gen_ai.output.messages']],
+    ]),
+  }));
+
+  assert.ok(silent.includes('No output content'), `got ${JSON.stringify(silent)}`);
+  assert.ok(
+    expired.includes('Output content is no longer stored'),
+    `got ${JSON.stringify(expired)}`,
+  );
+});
+
+test('a resumed run does not present the messages it resumed with as newly said', () => {
+  // A restart commits a baseline: the whole window, not the change. Every
+  // message the run resumed with is in it, so without comparing against the
+  // epoch before, the user sees their old messages again next to the new one.
+  const askedBefore = {
+    ...contextMessage('msg-first', 'user', 'the first thing asked'),
+    source_kind: 'query',
+  };
+  const askedNow = {
+    ...contextMessage('msg-second', 'user', 'what was asked after the restart'),
+    source_kind: 'query',
+  };
+  const records = [
+    v2Record({
+      eventId: 'event-1',
+      sequence: 1,
+      sequenceEpoch: 'epoch-1',
+      turn: 1,
+      payload: contextCommit('window-1', null, [askedBefore], []),
+    }),
+    v2Record({
+      eventId: 'event-2',
+      sequence: 1,
+      sequenceEpoch: 'epoch-2',
+      turn: 2,
+      payload: contextCommit('window-2', null, [askedBefore, askedNow], []),
+    }),
+  ];
+
+  const snapshot = projectOtelTrajectory(records);
+  const userText = snapshot.turns
+    .flatMap(turn => turn.groups.flatMap(group => group.cells))
+    .filter(cell => cell.kind === 'user')
+    .map(cell => String(cell.text ?? ''));
+
+  // Each message appears once. Presenting the baseline as all-new would show
+  // the first one twice, which is what a reader saw after every restart.
+  assert.deepEqual(userText, ['the first thing asked', 'what was asked after the restart']);
+});
+
+test('tool payload unwraps a recorded invocation signature to the model arguments', async () => {
+  const records = await fixtureRecords('agent-loop-records.json');
+  const tool = spansOf(records).find(span => span.name === 'tool.search');
+  assert.ok(tool);
+  setStringAttribute(
+    tool,
+    'gen_ai.tool.call.arguments',
+    '[[{"command":"pwd","description":"show cwd"}],{"session":"session:legacy"}]',
+  );
+
+  const cell = cellsOf(projectOtelTrajectory(records)).find(candidate => candidate.kind === 'tool');
+  assert.ok(cell);
+  assert.deepEqual(JSON.parse(cell.inputDetail), { command: 'pwd', description: 'show cwd' });
+});
+
+test('tool payload stays as recorded when the wrapper is not an invocation signature', async () => {
+  const records = await fixtureRecords('agent-loop-records.json');
+  const tool = spansOf(records).find(span => span.name === 'tool.search');
+  assert.ok(tool);
+  setStringAttribute(
+    tool,
+    'gen_ai.tool.call.arguments',
+    '[[{"command":"pwd"}],{"user":"u1"}]',
+  );
+
+  const cell = cellsOf(projectOtelTrajectory(records)).find(candidate => candidate.kind === 'tool');
+  assert.ok(cell);
+  assert.deepEqual(JSON.parse(cell.inputDetail), [[{ command: 'pwd' }], { user: 'u1' }]);
 });

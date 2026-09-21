@@ -1,4 +1,5 @@
-import { Check, ChevronRight, Circle } from 'lucide-react';
+import { ChevronRight, Circle } from 'lucide-react';
+import CheckIcon from '../../assets/work-mode/check.svg?react';
 import i18n from '../../i18n';
 import { ParsedTeamEvent, parseTeamEventMessage } from '../ChatPanel/teamEventUtils';
 import type { Message, TodoItem } from '../../types';
@@ -52,6 +53,8 @@ export interface MemberTask {
   raw?: Record<string, unknown>;
 }
 
+export type ProcessDetailRow = [label: string, value: string];
+
 export interface ProcessItem {
   id: string;
   type: 'execution' | 'message' | 'task';
@@ -64,6 +67,7 @@ export interface ProcessItem {
   execution?: TeamMemberExecutionEvent;
   linkedResult?: TeamMemberExecutionEvent;
   raw?: TeamTaskEvent;
+  detailRows?: ProcessDetailRow[];
 }
 
 interface BaseTeamAreaProps {
@@ -93,7 +97,7 @@ export type TeamAreaProps = BaseTeamAreaProps &
     }
   );
 
-export type TabType = 'planning' | 'team' | 'artifacts' | 'review';
+export type TabType = 'planning' | 'team' | 'artifacts' | 'review' | 'browser';
 export type TeamDetailTab = 'members' | 'group';
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'error';
 export type TaskColumnKey = 'waiting' | 'running' | 'completed' | 'cancelled';
@@ -349,9 +353,13 @@ export function StatusIcon({ status }: { status: TaskStatus }) {
   const completed = status === 'completed';
   const inProgress = status === 'in_progress';
 
+  if (completed) {
+    return <CheckIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed)]" />;
+  }
+
   return (
     <span className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${getTaskStatusIconClass(status)}`}>
-      {completed ? <Check size={10} strokeWidth={2.5} /> : inProgress ? <Circle size={6} strokeWidth={2} /> : <Circle size={8} strokeWidth={1.5} />}
+      {inProgress ? <Circle size={6} strokeWidth={2} /> : <Circle size={8} strokeWidth={1.5} />}
     </span>
   );
 }

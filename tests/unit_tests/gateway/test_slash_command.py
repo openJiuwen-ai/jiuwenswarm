@@ -377,16 +377,57 @@ def test_first_batch_registry_ids() -> None:
 
 def test_web_slash_picker_command_contract() -> None:
     commands = list_builtin_commands({"work_mode": "code.normal"})["commands"]
-    assert [command["name"] for command in commands] == ["compact", "plan", "persist"]
-    assert commands[0]["req_method"] == "command.compact"
-    assert commands[1]["execution"] == "chat.send_with_mode"
-    assert commands[1]["takesArgs"] is False
-    assert commands[1]["usage"] == "/plan"
-    assert commands[1]["example"] is None
-    assert commands[1]["plan_entry_source"] == "slash_command"
-    assert commands[2]["usage"] == "/persist <任务>"
-    assert commands[2]["execution"] == "session.create"
-    assert commands[2]["requires_session"] is False
+    assert [command["name"] for command in commands] == [
+        "new", "fork", "side", "compact", "plan", "goal", "persist",
+    ]
+    assert commands[0]["usage"] == "/new"
+    assert commands[0]["execution"] == "client"
+    assert commands[0]["requires_session"] is False
+    assert commands[1]["usage"] == "/fork"
+    assert commands[1]["req_method"] == "session.fork"
+    assert commands[1]["requires_session"] is True
+    assert commands[2]["usage"] == "/side [问题]"
+    assert commands[2]["takesArgs"] is True
+    assert commands[2]["req_method"] == "session.fork"
+    assert commands[3]["req_method"] == "command.compact"
+    assert commands[4]["execution"] == "chat.send_with_mode"
+    assert commands[4]["takesArgs"] is False
+    assert commands[4]["usage"] == "/plan"
+    assert commands[4]["example"] is None
+    assert commands[4]["plan_entry_source"] == "slash_command"
+    assert commands[5]["usage"] == "/goal [set <目标>|pause|resume|clear]"
+    assert commands[5]["takesArgs"] is True
+    assert commands[5]["req_method"] == "command.goal"
+    assert commands[5]["requires_session"] is False
+    assert commands[6]["usage"] == "/persist <任务>"
+    assert commands[6]["execution"] == "session.create"
+    assert commands[6]["requires_session"] is False
+
+
+def test_web_slash_picker_descriptions_are_bilingual_and_backward_compatible() -> None:
+    commands = list_builtin_commands()["commands"]
+    expected_legacy_descriptions = [
+        "新建一个空白会话",
+        "分叉当前会话并切换到副本",
+        "基于当前上下文创建一个临时侧会话",
+        "压缩对话历史，保留摘要以节省上下文",
+        "切换计划模式（只读规划 → 审批 → 执行）",
+        "设置、查看、暂停、恢复或清除持续目标",
+        "开启永续会话并开始任务（仅限新会话，创建后不可更改）",
+    ]
+    assert [command["description"] for command in commands] == expected_legacy_descriptions
+    for command in commands:
+        descriptions = command["description_i18n"]
+        assert descriptions["zh"] == command["description"]
+        assert descriptions["en"].strip()
+        assert not any("\u3400" <= char <= "\u9fff" for char in descriptions["en"])
+
+
+def test_web_slash_picker_returns_independent_translation_maps() -> None:
+    commands = list_builtin_commands()["commands"]
+    original_english = commands[0]["description_i18n"]["en"]
+    commands[0]["description_i18n"]["en"] = "changed by caller"
+    assert list_builtin_commands()["commands"][0]["description_i18n"]["en"] == original_english
 
 
 def test_exit_parse_rejects_short_form_requires_full_team_session_ref() -> None:

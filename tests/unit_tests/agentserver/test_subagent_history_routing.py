@@ -90,3 +90,40 @@ def test_subagent_user_history_does_not_replace_parent_delivery_context(
             "route_metadata": None,
         }
     ]
+
+
+def test_cross_session_user_history_keeps_human_activity_and_delivery_route(
+    monkeypatch,
+) -> None:
+    metadata_updates = []
+    delivery_updates = []
+    monkeypatch.setattr(
+        session_history,
+        "_enqueue_history_item",
+        lambda session_id, item, *, subagent_id=None: None,
+    )
+    monkeypatch.setattr(
+        session_metadata,
+        "update_session_metadata",
+        lambda **kwargs: metadata_updates.append(kwargs),
+    )
+    monkeypatch.setattr(
+        session_metadata,
+        "set_session_delivery_context",
+        lambda **kwargs: delivery_updates.append(kwargs),
+    )
+
+    session_history.append_history_record(
+        session_id="target-session",
+        request_id="session-message-sm-1",
+        channel_id="web",
+        role="user",
+        content="agent task",
+        timestamp=100.0,
+        mode="agent.code.normal",
+        extra={"message_origin": "cross_session_agent"},
+    )
+
+    assert metadata_updates[0]["user_content"] is None
+    assert metadata_updates[0]["last_user_message_at"] is None
+    assert delivery_updates == []

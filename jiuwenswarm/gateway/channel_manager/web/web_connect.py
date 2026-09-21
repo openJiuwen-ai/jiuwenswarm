@@ -28,11 +28,7 @@ from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
 from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 from jiuwenswarm.common.security.ws_origin import (
-    extract_handshake_request,
-    forbidden_origin_response,
     get_header_value,
-    is_origin_check_enabled,
-    is_allowed_browser_origin,
 )
 from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
 from jiuwenswarm.common.ws_diagnostics import (
@@ -44,6 +40,37 @@ from jiuwenswarm.common.ws_diagnostics import (
 logger = logging.getLogger(__name__)
 
 _WEB_CONNECTION_USER_ID_ATTR = "_web_connection_user_id"
+
+
+def _resolve_ws_auth_session(ws: Any) -> str:
+    """从 WS 握手里取登录会话 id：``X-Auth-Session`` 头优先，其次 cookie。
+
+    两种来源对应两类客户端：浏览器靠 cookie（``jiuwenswarm_auth``，登录回调时
+    种下、path=/，同源握手会自动带上），TUI / CLI 这类没有 cookie jar 的客户端
+    用请求头。和 ``/api/v1/auth/*`` 的双通道是同一套约定。
+
+    取不到返回空串——这不是错误，只是"这条连接没有登录身份"。
+
+    **只在握手时读一次，之后这条连接就一直用这份值。** 而登录走的是 HTTP、发生在
+    握手之后，所以「WS 已连上再去登录」时这里拿到的是登录前那份（空串或已被顶掉的
+    旧会话 id），凭据会挂不上。前端因此在登录态变化后主动重连一次
+    """
+    headers = getattr(ws, "request_headers", None)
+    if headers is None:
+        return ""
+    try:
+        header_value = headers.get("x-auth-session") or headers.get("X-Auth-Session")
+        if header_value and str(header_value).strip():
+            return str(header_value).strip()
+        raw_cookie = headers.get("cookie") or headers.get("Cookie") or ""
+    except Exception:  # noqa: BLE001 — 握手头拿不到不该让连接建不起来
+        logger.debug("[WebChannel] 读取登录会话失败", exc_info=True)
+        return ""
+    for part in str(raw_cookie).split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "jiuwenswarm_auth" and value.strip():
+            return value.strip()
+    return ""
 
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 _LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
@@ -67,11 +94,16 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "heartbeat.relay",
         "context.usage",
         "context.compression_state",
+        "personal_context.context.start",
+        "personal_context.context.nodes",
+        "personal_context.context.edges",
+        "personal_context.context.end",
         "chat.ask_user_question",
         "chat.subtask_update",
         "chat.subagent_activity",
         "chat.symphony_status",
         "chat.notice",
+        "chat.message_updated",
         "history.message",
         "chat.session_result",
         "chat.usage_metadata",
@@ -86,6 +118,13 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "plan.mode_exited",
         "runtime.accepted",
         "execution.error",
+        "proactive_recommendation",
+        # RSI pushes contain the complete node/progress payload.  Reducing
+        # them to {session_id, content} would make the evolution tree appear
+        # empty in the browser.
+        "rsi.training.status.changed",
+        "rsi.training.progress",
+        "rsi.training.tree.delta",
     }
 )
 
@@ -118,9 +157,6 @@ class WebChannelConfig:
     port: int = 19000
     path: str = "/ws"
     allow_from: list[str] = field(default_factory=list)
-    # True: uvicorn+FastAPI on the same port (WS now; HTTP routes can be added later).
-    # False: legacy websockets.serve only (rollback).
-    dual_protocol: bool = True
 
 
 class WebChannel(BaseWsChannel):
@@ -142,7 +178,6 @@ class WebChannel(BaseWsChannel):
         self.config: WebChannelConfig = config
         # Phase 2：注入 AgentServerClient，供 _process_files 文件导入 E2A 转发使用
         self.agent_client: Any = agent_client
-        self._server: Any = None
         self._uvicorn_server: Any = None
         self._on_message_cb: Callable[[Message], Any] | None = None
         self._method_handlers: dict[str, MethodHandler] = {}
@@ -160,9 +195,6 @@ class WebChannel(BaseWsChannel):
         self.git_watcher_registry: Any = None
         # AgentOSRouterClient for same-port HTTP container file APIs (set by handlers).
         self.container_file_client: Any = None
-        self._trajectory_event_loop: asyncio.AbstractEventLoop | None = None
-        self._trajectory_listener_registered = False
-        self._trajectory_update_listener = self._on_trajectory_updates
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
 
@@ -603,23 +635,13 @@ class WebChannel(BaseWsChannel):
             logger.warning("WebChannel 未启用（enabled=False）")
             return
 
-        self._trajectory_event_loop = asyncio.get_running_loop()
-        if not self._trajectory_listener_registered:
-            from jiuwenswarm.observability.updates import trajectory_update_broker
-
-            trajectory_update_broker.register(self._trajectory_update_listener)
-            self._trajectory_listener_registered = True
-
         try:
-            if self.config.dual_protocol:
-                await self._start_dual_protocol()
-                return
-            await self._start_websockets_legacy()
+            await self._start_uvicorn_server()
         finally:
-            self._unregister_trajectory_listener()
+            self._stop_trajectory_hints()
 
-    async def _start_dual_protocol(self) -> None:
-        """Same port: FastAPI/uvicorn (WS today; HTTP routes can be mounted later)."""
+    async def _start_uvicorn_server(self) -> None:
+        """同一端口承载 WebChannel 的 WebSocket 与 HTTP 路由（uvicorn/FastAPI）。"""
         import uvicorn
 
         from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
@@ -639,46 +661,17 @@ class WebChannel(BaseWsChannel):
         self._uvicorn_server = uvicorn.Server(uv_cfg)
         self._running = True
         logger.info(
-            "WebChannel 正在启动(dual_protocol): ws://%s:%s%s",
+            "WebChannel 已启动: ws://%s:%s%s (HTTP+WS same port)",
             self.config.host,
             self.config.port,
             self.config.path,
         )
         await self._uvicorn_server.serve()
 
-    async def _start_websockets_legacy(self) -> None:
-        """Rollback path: pure websockets.serve (no HTTP on this port)."""
-        try:
-            from websockets.legacy.server import serve as ws_serve
-        except Exception:  # pragma: no cover
-            import websockets
-
-            ws_serve = websockets.serve
-
-        from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
-
-        self._server = await ws_serve(
-            self.handle_connection,
-            self.config.host,
-            self.config.port,
-            process_request=self._process_request,
-            ping_interval=20,
-            ping_timeout=60,
-            max_size=WEB_WS_MAX_MESSAGE_BYTES,
-        )
-        self._running = True
-        logger.info(
-            "WebChannel 已启动(legacy): ws://%s:%s%s",
-            self.config.host,
-            self.config.port,
-            self.config.path,
-        )
-        await self._server.wait_closed()
-
     async def stop(self) -> None:
         """停止 WebSocket 服务并清理连接."""
         self._running = False
-        self._unregister_trajectory_listener()
+        self._stop_trajectory_hints()
 
         all_clients = list(self.clients)
         close_tasks = [client.close(code=1001, reason="server shutdown") for client in all_clients]
@@ -689,34 +682,21 @@ class WebChannel(BaseWsChannel):
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
         # 兜底清理未走正常断连路径的 writer 协程（正常断连已由 unregister_ws 清理）
         await self._shutdown_all_writers()
         logger.info("WebChannel 已停止")
 
-    def _unregister_trajectory_listener(self) -> None:
-        """Detach the commit listener during every server shutdown path."""
-        if self._trajectory_listener_registered:
-            from jiuwenswarm.observability.updates import trajectory_update_broker
+    def _stop_trajectory_hints(self) -> None:
+        """Drop queued trajectory hints during every server shutdown path.
 
-            trajectory_update_broker.unregister(self._trajectory_update_listener)
-            self._trajectory_listener_registered = False
+        Hints reach this channel from AgentServer over the gateway socket
+        (``schedule_trajectory_updates``); nothing here listens in-process.
+        """
         send_task = self._trajectory_send_task
         if send_task is not None and not send_task.done():
             send_task.cancel()
         self._trajectory_send_task = None
         self._trajectory_pending_updates.clear()
-        self._trajectory_event_loop = None
-
-    def _on_trajectory_updates(self, updates: tuple[Any, ...]) -> None:
-        """Move writer-thread commit hints onto the WebChannel event loop."""
-        loop = self._trajectory_event_loop
-        if loop is None or loop.is_closed():
-            return
-        loop.call_soon_threadsafe(self.schedule_trajectory_updates, updates)
 
     def schedule_trajectory_updates(self, updates: tuple[Any, ...]) -> None:
         """Coalesce high-frequency Span revisions before WebSocket fan-out.
@@ -735,11 +715,22 @@ class WebChannel(BaseWsChannel):
                 continue
             key = (session_id, trace_id)
             current = self._trajectory_pending_updates.get(key)
-            revision = int(getattr(update, "revision", 0))
-            current_revision = (
-                int(getattr(current, "revision", 0)) if current is not None else -1
+            # Records and frames advance on separate watermarks, so a hint
+            # bringing new frames for an unchanged record has to outrank the
+            # one it is coalesced against rather than tie with it.
+            incoming = (
+                int(getattr(update, "revision", 0)),
+                int(getattr(update, "frame_seq", 0)),
             )
-            if revision >= current_revision:
+            held = (
+                (
+                    int(getattr(current, "revision", 0)),
+                    int(getattr(current, "frame_seq", 0)),
+                )
+                if current is not None
+                else (-1, -1)
+            )
+            if incoming >= held:
                 self._trajectory_pending_updates[key] = update
         task = self._trajectory_send_task
         if self._trajectory_pending_updates and (task is None or task.done()):
@@ -775,6 +766,7 @@ class WebChannel(BaseWsChannel):
                 "session_id": session_id,
                 "trace_id": str(getattr(update, "trace_id", "") or ""),
                 "revision": int(getattr(update, "revision", 0)),
+                "frame_seq": int(getattr(update, "frame_seq", 0)),
                 "store_epoch": getattr(update, "store_epoch", None),
                 "lifecycle": str(getattr(update, "lifecycle", "final") or "final"),
             }
@@ -788,39 +780,6 @@ class WebChannel(BaseWsChannel):
     async def disconnect(self) -> None:
         """兼容方法：调用 stop."""
         await self.stop()
-
-    async def _process_request(self, *args: Any) -> Any:
-        """在握手阶段执行 Origin 校验，兼容 legacy/new websockets APIs。"""
-        path, request_headers = extract_handshake_request(args)
-        origin = get_header_value(request_headers, "Origin")
-        enable_origin_check = is_origin_check_enabled()
-        if not enable_origin_check:
-            logger.info(
-                "WebChannel 握手检查 path=%s origin=%s enable_origin_check=%s allowed=%s",
-                path,
-                origin,
-                enable_origin_check,
-                True,
-            )
-            return None
-
-        allowed = is_allowed_browser_origin(origin)
-        logger.info(
-            "WebChannel 握手检查 path=%s origin=%s enable_origin_check=%s allowed=%s",
-            path,
-            origin,
-            enable_origin_check,
-            allowed,
-        )
-        if allowed:
-            return None
-
-        logger.warning(
-            "WebChannel 握手拒绝 path=%s origin=%s reason=origin_not_allowed",
-            path,
-            origin,
-        )
-        return forbidden_origin_response(args)
 
     @staticmethod
     def _should_preserve_full_payload(event_name: str) -> bool:
@@ -886,6 +845,10 @@ class WebChannel(BaseWsChannel):
             }
             for _key in (
                 "role", "member_name", "member_action", "source_channel", "user_id", "display_name",
+                # 后台跨会话轮必须保留请求边界和来源。前端据此创建独立 turn，
+                # 不能把它的流式输出复用到上一轮用户消息上。
+                "request_id", "turn_request_id", "final_mode", "segment_id",
+                "message_origin", "session_message_id", "cross_session",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
                 # 否则前端无法按 source 短路：proactive 的 chat.reasoning 会被当作
                 # 用户轮思考流追加进 reasoningSegments，污染上一条消息的思考状态。
@@ -899,6 +862,8 @@ class WebChannel(BaseWsChannel):
                 _val = msg.payload.get(_key)
                 if _val is not None:
                     payload[_key] = _val
+            if cls._should_backfill_request_id(event_name) and "request_id" not in payload and msg.id:
+                payload["request_id"] = msg.id
             if event_name in {"chat.delta", "chat.final", "chat.reasoning"}:
                 agent_template_name = msg.payload.get("agent_template_name")
                 if agent_template_name is not None:
@@ -1239,7 +1204,7 @@ class WebChannel(BaseWsChannel):
     # ── 内部实现 ──────────────────────────────────────────
 
     async def handle_connection(self, ws: Any, path: str | None = None) -> None:
-        """Public entry for serving one accepted WebSocket (dual-protocol / adapters)."""
+        """Public entry for serving one accepted WebSocket (FastAPI adapter or tests)."""
         await self._connection_handler(ws, path=path)
 
     async def _connection_handler(self, ws: Any, path: str | None = None) -> None:
@@ -1295,6 +1260,9 @@ class WebChannel(BaseWsChannel):
         # 否则 send() 按 session_id 反查会落空导致 ACK 丢弃。
         # 注：此 sid 仅为传输层占位，首条 chat.send 携带真实 session_id 时会 re-register 覆盖。
         setattr(ws, "_jiuwen_initial_sid", _initial_sid)
+        # 握手时把调用方的**登录会话**认出来，供后续每条请求判定"这次是谁"。
+        # 只能在这里做：登录凭据在握手的 cookie / 头里，之后的每条 WS 消息都没有它。
+        setattr(ws, "_jiuwen_auth_session", _resolve_ws_auth_session(ws))
 
         # 上报连接事件
         self.report_connect(ws)
@@ -1559,6 +1527,9 @@ class WebChannel(BaseWsChannel):
                 # V2: 注入 ws_id 供 MessageHandler 构造 WebDeliveryTarget(ws_id=真值)。
                 "ws_id": getattr(ws, "_jiuwen_ws_id", ""),
                 "user_id": req_user_id,
+                # 登录会话id（握手时认的)。Gateway据此
+                # 给登录模型挂上**这个用户**的凭据，见 common/auth/passthrough.py。
+                "auth_session": getattr(ws, "_jiuwen_auth_session", "") or "",
             },
         )
 

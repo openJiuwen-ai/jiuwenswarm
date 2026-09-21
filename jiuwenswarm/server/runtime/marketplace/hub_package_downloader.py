@@ -137,9 +137,10 @@ class HubPackageDownloader:
             raise HubDownloadError("下载文件校验失败（SHA256 不匹配）")
 
     @staticmethod
-    def _validated_members(
+    def validated_members(
         archive: zipfile.ZipFile,
     ) -> list[tuple[zipfile.ZipInfo, PurePosixPath]]:
+        """Return ZIP members after rejecting unsafe paths, links, and oversized entries."""
         infos = archive.infolist()
         if len(infos) > _MAX_FILE_COUNT:
             raise HubDownloadError("ZIP 文件数量超过限制")
@@ -173,7 +174,7 @@ class HubPackageDownloader:
         root = destination.resolve()
         try:
             with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
-                members = cls._validated_members(archive)
+                members = cls.validated_members(archive)
                 if archive.testzip() is not None:
                     raise HubDownloadError("下载 ZIP 文件已损坏")
                 for info, relative in members:

@@ -2,7 +2,7 @@
 
 """根据 Skill frontmatter / 资源识别 skill_type.
 
-优先级固定：swarm_skill > multimodal_skill > skill。
+优先级固定：skillpack > swarm_skill > multimodal_skill > skill。
 swarm 判定依据 frontmatter ``kind: swarm-skill`` 或兼容别名 ``kind: team-skill``。
 扫描多媒体时排除根级 ``.archive/``。
 """
@@ -15,8 +15,13 @@ from pathlib import Path
 import yaml
 
 from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
+from jiuwenswarm.server.runtime.skill.skillpack import (
+    SKILLPACK_SKILL_TYPE,
+    is_skillpack,
+)
 
 SKILL_TYPE_SKILL = "skill"
+SKILL_TYPE_SKILLPACK = SKILLPACK_SKILL_TYPE
 SKILL_TYPE_SWARM = "swarm_skill"
 SKILL_TYPE_MULTIMODAL = "multimodal_skill"
 
@@ -44,6 +49,9 @@ def detect_skill_type(skill_dir: Path | None) -> str:
     """识别 Skill 类型；目录无效时返回普通 ``skill``."""
     if skill_dir is None or not skill_dir.is_dir():
         return SKILL_TYPE_SKILL
+
+    if is_skillpack(skill_dir):
+        return SKILL_TYPE_SKILLPACK
 
     if _frontmatter_kind_is_swarm(skill_dir):
         return SKILL_TYPE_SWARM

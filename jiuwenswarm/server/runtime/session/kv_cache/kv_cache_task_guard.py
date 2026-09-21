@@ -13,21 +13,19 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
-KVCGuardAction = Literal["offload", "prefetch", "evict"]
+KVCGuardAction = Literal["offload", "prefetch"]
 
 
 @dataclass(frozen=True, slots=True)
 class KVCGuardActionRequest:
     action: KVCGuardAction
     session_id: str
-    channel_id: str
     is_team: bool
 
 
 @dataclass(slots=True)
 class SessionKVCFacts:
     session_id: str
-    channel_id: str = "default"
     is_team: bool = False
     foreground_view_ids: set[str] = field(default_factory=set)
     running_tasks: int = 0
@@ -43,9 +41,6 @@ class SessionKVCacheTaskGuard:
     def __init__(self) -> None:
         self._facts: dict[str, SessionKVCFacts] = {}
 
-    def clear(self) -> None:
-        self._facts.clear()
-
     def forget(self, session_id: str) -> None:
         self._facts.pop(_normalize(session_id), None)
 
@@ -58,13 +53,11 @@ class SessionKVCacheTaskGuard:
         session_id: str,
         view_id: str,
         visible: bool,
-        channel_id: str,
         is_team: bool,
         has_history: bool = False,
     ) -> KVCGuardActionRequest | None:
         facts = self._ensure(
             session_id,
-            channel_id=channel_id,
             is_team=is_team,
             has_history=has_history,
         )
@@ -84,13 +77,11 @@ class SessionKVCacheTaskGuard:
         *,
         session_id: str,
         intent_id: str,
-        channel_id: str,
         is_team: bool,
         has_history: bool = False,
     ) -> KVCGuardActionRequest | None:
         facts = self._ensure(
             session_id,
-            channel_id=channel_id,
             is_team=is_team,
             has_history=has_history,
         )
@@ -111,13 +102,11 @@ class SessionKVCacheTaskGuard:
         self,
         *,
         session_id: str,
-        channel_id: str,
         is_team: bool,
         has_history: bool = False,
     ) -> KVCGuardActionRequest | None:
         facts = self._ensure(
             session_id,
-            channel_id=channel_id,
             is_team=is_team,
             has_history=has_history,
         )
@@ -148,19 +137,16 @@ class SessionKVCacheTaskGuard:
         self,
         *,
         session_id: str,
-        channel_id: str,
         is_team: bool,
-    ) -> KVCGuardActionRequest | None:
+    ) -> None:
         facts = self._ensure(
             session_id,
-            channel_id=channel_id,
             is_team=is_team,
         )
         if facts is None or facts.deleted:
-            return None
+            return
         facts.deleted = True
         facts.foreground_view_ids.clear()
-        return self._request(facts, "evict")
 
     def restore_after_failed_delete(self, session_id: str) -> None:
         """Undo only the process-local tombstone when product deletion fails."""
@@ -173,7 +159,6 @@ class SessionKVCacheTaskGuard:
         self,
         session_id: str,
         *,
-        channel_id: str,
         is_team: bool,
         has_history: bool = False,
     ) -> SessionKVCFacts | None:
@@ -184,7 +169,6 @@ class SessionKVCacheTaskGuard:
         if facts is None:
             facts = SessionKVCFacts(session_id=normalized_session_id)
             self._facts[normalized_session_id] = facts
-        facts.channel_id = _normalize(channel_id) or facts.channel_id
         facts.is_team = bool(is_team)
         facts.has_history = facts.has_history or bool(has_history)
         return facts
@@ -209,7 +193,6 @@ class SessionKVCacheTaskGuard:
         return KVCGuardActionRequest(
             action=action,
             session_id=facts.session_id,
-            channel_id=facts.channel_id,
             is_team=facts.is_team,
         )
 

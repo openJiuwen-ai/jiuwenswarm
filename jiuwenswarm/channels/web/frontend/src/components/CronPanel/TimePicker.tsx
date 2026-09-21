@@ -40,13 +40,13 @@ export default function TimePicker({ value, onChange, placeholder, className = '
         type="button"
         onClick={() => setOpen((v) => !v)}
         data-testid="cron-time-picker-trigger"
-        className="flex w-full flex-nowrap items-center justify-between gap-1 rounded-md border border-border bg-card px-3 py-1.5 text-sm outline-none hover:border-border-strong"
+        className="flex w-full flex-nowrap items-center justify-between gap-1 rounded-md border-input bg-card px-3 py-1.5 text-sm outline-none"
       >
         {/* 兜底  ：value 和 placeholder 都为空（"留白"用法）时，空 <span> 行盒会塌陷，
             触发按钮高度就只剩图标的高度，比同排 DatePicker（内部是 <input>，空值也保留行高）矮一截。
             填一个不可见空格占住一行行高，让两者等高（见 bug002 第 4 轮反馈）。 */}
         <span className={`truncate ${value ? 'text-text' : 'text-text-muted'}`}>{value || placeholder || ' '}</span>
-        <Clock size={15} className="shrink-0 text-text-muted" />
+        <Clock size={15} className="shrink-0" color="var(--color-text-meta)" />
       </button>
       {open && (
         <div className={`absolute top-[calc(100%+4px)] z-30 flex w-40 overflow-hidden rounded-lg border border-border bg-card shadow-lg ${align === 'right' ? 'right-0' : 'left-0'}`}>

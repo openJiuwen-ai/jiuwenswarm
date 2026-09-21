@@ -2,12 +2,9 @@
  * WebSocket 消息类型
  */
 
-export type WebConnectionState =
-  | 'idle'
-  | 'connecting'
-  | 'ready'
-  | 'reconnecting'
-  | 'closed';
+import type { AutoReviewerMetadata } from './message';
+
+export type WebConnectionState = 'idle' | 'connecting' | 'ready' | 'reconnecting' | 'closed';
 
 export interface WsRequest {
   type: 'req';
@@ -109,7 +106,7 @@ export interface InterruptResultPayload {
   new_input?: string;
   merged_input?: string;
   paused_task?: string;
-  has_active_task?: boolean;  // 是否有活跃任务，false 表示任务已完成
+  has_active_task?: boolean; // 是否有活跃任务，false 表示任务已完成
 }
 
 /**
@@ -147,11 +144,13 @@ export interface QuestionOption {
  * 问题定义
  */
 export interface Question {
-  card_id?: string;
   question: string;
   header: string;
   options: QuestionOption[];
   multi_select?: boolean;
+  card_id?: string;
+  tool_payload?: unknown;
+  reviewer_metadata?: AutoReviewerMetadata;
 }
 
 /**

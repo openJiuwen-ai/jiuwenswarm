@@ -1,0 +1,163 @@
+{
+  "name": "sequence_conflict",
+  "derived_from": "jiuwenswarm/channels/web/frontend/tests/trajectoryProjector.test.mjs: schema-v2 still rejects duplicate sequences inside one epoch",
+  "records": [
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000001",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "1000000",
+      "endTimeUnixNano": "1000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-same-epoch-first"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "1"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "runtime-a"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "1000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-same-epoch-first\", \"base_window_id\": null, \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"same-epoch-first\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"first\"}], \"transition_kind\": \"epoch_baseline\", \"baseline_reason\": \"runtime_epoch_start\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-a"
+    },
+    {
+      "traceId": "99999999999999999999999999999999",
+      "spanId": "0000000000000001",
+      "name": "context.window.commit",
+      "startTimeUnixNano": "2000000",
+      "endTimeUnixNano": "2000001",
+      "attributes": [
+        {
+          "key": "openjiuwen.trajectory.schema_version",
+          "value": {
+            "stringValue": "2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.record.kind",
+          "value": {
+            "stringValue": "event"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_id",
+          "value": {
+            "stringValue": "event-same-epoch-second"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.event_kind",
+          "value": {
+            "stringValue": "context.window.commit"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_id",
+          "value": {
+            "stringValue": "main"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.subject_sequence",
+          "value": {
+            "intValue": "1"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.sequence_epoch",
+          "value": {
+            "stringValue": "runtime-a"
+          }
+        },
+        {
+          "key": "gen_ai.conversation.id",
+          "value": {
+            "stringValue": "session-v2"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.recorded_at_unix_nano",
+          "value": {
+            "intValue": "2000000"
+          }
+        },
+        {
+          "key": "openjiuwen.trajectory.payload",
+          "value": {
+            "stringValue": "{\"window_id\": \"window-same-epoch-second\", \"base_window_id\": null, \"complete\": true, \"delta\": [], \"request_purpose\": \"assistant\", \"messages\": [{\"message_id\": \"same-epoch-second\", \"role\": \"user\", \"origin\": \"external_user\", \"source_kind\": \"web\", \"content\": \"second\"}], \"transition_kind\": \"epoch_baseline\", \"baseline_reason\": \"runtime_epoch_start\"}"
+          }
+        }
+      ],
+      "parentSpanId": "inference-b"
+    }
+  ],
+  "expected": {
+    "windows": {
+      "main": {
+        "window-same-epoch-first": [
+          "same-epoch-first"
+        ]
+      }
+    },
+    "by_inference": {
+      "inference-a": [
+        "same-epoch-first"
+      ]
+    },
+    "issue_codes": [
+      "v2.sequence_conflict"
+    ]
+  }
+}

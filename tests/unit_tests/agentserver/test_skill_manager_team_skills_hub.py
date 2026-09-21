@@ -352,9 +352,12 @@ async def test_handle_skills_team_skills_hub_install_success(tmp_path):
     manager.set_mock_get_data(_fake_get_data)
     manager.set_mock_download(_fake_download)
 
-    payload = await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
+    payload = await manager.handle_skills_team_skills_hub_install(
+        {"asset_id": "demo-skill", "display_name": "演示技能"}
+    )
     assert payload["success"] is True
     assert payload["skill"]["name"] == "demo-skill"
+    assert payload["skill"]["display_name"] == "演示技能"
     dest = tmp_path / "skills" / "demo-skill"
     assert (dest / "SKILL.md").is_file()
     assert (dest / ".archive" / "versions" / "index.json").is_file()
@@ -366,6 +369,9 @@ async def test_handle_skills_team_skills_hub_install_success(tmp_path):
     assert (dest / ".archive" / "versions" / "content" / storage_id / "SKILL.md").is_file()
     plugins = manager._state.get("installed_plugins", [])
     assert plugins and "version" not in plugins[0]
+    assert plugins[0].get("display_name") == "演示技能"
+    local_skills = manager._state.get("local_skills", [])
+    assert local_skills and local_skills[0].get("display_name") == "演示技能"
 
 
 @pytest.mark.asyncio
@@ -819,3 +825,20 @@ def _safe_rmtree_for_test(path: Path) -> None:
     import shutil
 
     shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('output', ['out', 'dist'])
+async def test_pack_excludes_credentials_and_own_output_on_repeat(tmp_path, output):
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    skill = tmp_path / 'skills' / 'safe-pack'
+    skill.mkdir(parents=True)
+    (skill / 'SKILL.md').write_text('---\nname: safe-pack\ndescription: safe\n---\nbody\n')
+    (skill / '.env').write_text('TOKEN=synthetic-test-value')
+    original = (skill / 'SKILL.md').read_bytes()
+    for _ in range(2):
+        result = await manager.handle_skills_team_skills_hub_pack({'path': str(skill), 'output': output})
+        assert result['success'] is True, result
+        with zipfile.ZipFile(result['path']) as archive:
+            assert not any(name.endswith(('.zip', '/.env')) for name in archive.namelist())
+    assert (skill / 'SKILL.md').read_bytes() == original

@@ -1,5 +1,6 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
+import { FreeModelsSettings } from './FreeModelsSettings';
 import { ModelsSettings } from './ModelsSettings';
 
 export const modelsModule: SettingsModuleDefinition = {
@@ -9,14 +10,14 @@ export const modelsModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
+      id: 'limited-free-models',
+      separatedRows: true,
+      items: [{ id: 'limited-free-models', component: 'custom', render: FreeModelsSettings }],
+    },
+    {
       id: 'model-manager',
       separatedRows: true,
       items: [{ id: 'model-manager', component: 'custom', render: ModelsSettings }],
-    },
-    {
-      id: 'free-models',
-      titleKey: 'settingsPanel.models.freeModels',
-      items: [{ id: 'enable-free-models', component: 'switch', key: 'enable_free_models' }],
     },
   ],
 };

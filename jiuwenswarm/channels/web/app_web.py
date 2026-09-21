@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hmac
 import http.client
 import json
 import logging
@@ -26,8 +27,8 @@ import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
-from urllib.parse import ParseResult, quote, unquote, urlparse
+from typing import TYPE_CHECKING, Any, Mapping
+from urllib.parse import ParseResult, parse_qs, quote, unquote, urlencode, urlparse
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early
@@ -45,6 +46,29 @@ from jiuwenswarm.gateway.routing.agent_http_bridge import (
 
 _resolve_agent_http_base = resolve_agent_http_base
 _resolve_agent_upload_base = resolve_agent_upload_base
+
+if TYPE_CHECKING:
+    from jiuwenswarm.channels.web.share_image_export import (
+        ShareImageExportManager,
+        ShareImageRenderAuth,
+    )
+
+_share_image_export_manager: ShareImageExportManager | None = None
+_share_image_export_manager_lock = threading.Lock()
+
+
+def _get_share_image_export_manager() -> ShareImageExportManager:
+    """Create the share-image job registry on first use to keep startup lazy."""
+    global _share_image_export_manager
+    if _share_image_export_manager is None:
+        with _share_image_export_manager_lock:
+            if _share_image_export_manager is None:
+                from jiuwenswarm.channels.web.share_image_export import (
+                    ShareImageExportManager,
+                )
+
+                _share_image_export_manager = ShareImageExportManager()
+    return _share_image_export_manager
 
 
 def _get_user_workspace_dir() -> Path:
@@ -276,6 +300,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     # 仅一体机场景为 True; 普通部署为 False。前端据此决定是否显示登出按钮。
     remote_mode = False
     ws_disable_compress = False
+
+    # --- 桌面对话页面限制: 启动 token + HttpOnly Cookie ---
+    # 仅保护 SPA 文档入口; 静态资源/API/WS 保持原有访问规则。
+    # 桌面窗口首次导航经 ?dt=<token> 换取 HttpOnly Cookie。
+    # 源码 web 模式不设置该值, 行为与之前完全一致。
+    desktop_token = ""
+    # Cookie 名按端口区分: 同 host 多桌面实例(端口偏移)互不覆盖。
+    desktop_cookie_name = "__wsdt"
+    _DESKTOP_TOKEN_QUERY_PARAM = "dt"
 
     # --- /auth-api cookie-based auth bridge ---
     # access_token 实测 TTL 15min(900s), refresh_token 实测 7d(604800s)。
@@ -1016,6 +1049,81 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             except Exception:  # noqa: BLE001
                 pass
 
+    def _send_desktop_forbidden(self) -> None:
+        """桌面锁定: 拒绝未认证请求的 403 提示页。"""
+        body = (
+            "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>禁止访问</title></head>"
+            "<body style=\"font-family:system-ui,sans-serif;background:#0f172a;"
+            "color:#e2e8f0;display:flex;align-items:center;justify-content:center;"
+            "height:100vh;margin:0\">"
+            "<div style=\"text-align:center\">"
+            "<h1 style=\"font-size:22px;font-weight:600\">禁止访问</h1>"
+            "<p style=\"color:#94a3b8;margin-top:12px\">"
+            "此服务仅限桌面端访问，请使用桌面应用打开。</p>"
+            "</div></body></html>"
+        ).encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _check_desktop_access(self) -> bool:
+        """桌面锁定校验。返回 True 表示请求已被响应(403/302), 调用方应终止处理。
+
+        - 源码 web 模式 (desktop_token 为空) 恒返回 False, 不做任何校验;
+        - 首次导航携带匹配的 ?dt=<token>: 下发 HttpOnly Cookie 并 302 到
+          去掉 dt 的干净 URL (token 不留在地址栏/前端路由里);
+        - 仅在返回 SPA 文档时调用; 无有效 Cookie 的页面访问返回 403。
+        """
+        if not self.desktop_token:
+            return False
+
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        values = query.get(self._DESKTOP_TOKEN_QUERY_PARAM, [])
+        if values:
+            provided = str(values[0])
+            # bytes 比较: compare_digest 的 str 形式要求 ASCII-only,
+            # 恶意非 ASCII 输入会抛 TypeError 导致连接崩溃。
+            if provided and hmac.compare_digest(
+                provided.encode("utf-8"), self.desktop_token.encode("utf-8")
+            ):
+                remaining = {
+                    key: val
+                    for key, val in query.items()
+                    if key != self._DESKTOP_TOKEN_QUERY_PARAM
+                }
+                location = parsed.path or "/"
+                if remaining:
+                    location += "?" + urlencode(remaining, doseq=True)
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header(
+                    "Set-Cookie",
+                    f"{self.desktop_cookie_name}="
+                    f"{quote(self.desktop_token, safe='')}; "
+                    "Path=/; HttpOnly; SameSite=Lax",
+                )
+                self.end_headers()
+            else:
+                self._send_desktop_forbidden()
+            return True
+
+        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
+        if cookie_token and hmac.compare_digest(
+            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
+        ):
+            return False
+
+        self._send_desktop_forbidden()
+        return True
+
     def _dispatch_proxy(self) -> bool:
         if self._is_auth_api_route():
             # /auth-api/* 优先, 反代到 control-panel (IAM), 走 cookie 桥接
@@ -1173,6 +1281,65 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if _uses_agentos_routing():
             self._write_json(503, {"error": "agentserver_file_rpc_required"})
             return
+        if parsed.path == "/share-api/jobs":
+            query = self._parse_query(parsed.query)
+            session_id = (query.get("session_id") or "").strip()
+            if not session_id:
+                self._write_json(400, {"error": "missing_session_id"})
+                return
+            status = _get_share_image_export_manager().get_active_status(session_id)
+            if status is None:
+                self._write_json(404, {"error": "active_job_not_found"})
+                return
+            self._write_json(200, status)
+            return
+        job_match = re.fullmatch(
+            r"/share-api/jobs/([a-f0-9]{32})(?:/(snapshot|download))?",
+            parsed.path,
+        )
+        if job_match:
+            job_id, resource = job_match.groups()
+            if resource is None:
+                status = _get_share_image_export_manager().get_status(job_id)
+                if status is None:
+                    self._write_json(404, {"error": "job_not_found"})
+                    return
+                self._write_json(200, status)
+                return
+
+            if resource == "snapshot":
+                file_path = _get_share_image_export_manager().get_snapshot_path(job_id)
+                filename = "snapshot.json"
+                content_type = "application/json; charset=utf-8"
+            else:
+                result = _get_share_image_export_manager().get_result(job_id)
+                if result is None:
+                    status = _get_share_image_export_manager().get_status(job_id)
+                    self._write_json(
+                        404 if status is None else 409,
+                        {"error": "job_not_found" if status is None else "job_not_completed"},
+                    )
+                    return
+                file_path, filename = result
+                content_type = "application/zip" if filename.lower().endswith(".zip") else "image/png"
+
+            if file_path is None or not file_path.is_file():
+                self._write_json(404, {"error": "job_file_not_found"})
+                return
+            file_size = file_path.stat().st_size
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Cache-Control", "no-store")
+            if resource == "download":
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.end_headers()
+            if self.command != "HEAD":
+                with file_path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        self.wfile.write(chunk)
+            return
+
         if parsed.path != "/share-api/snapshot":
             self._write_json(404, {"error": "not_found"})
             return
@@ -1192,6 +1359,72 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._write_json(400, {"error": str(exc)})
             return
         self._write_json(200, {"filename": filename, "snapshot": snapshot})
+
+    def _handle_share_api_post(self, parsed) -> None:
+        if _uses_agentos_routing():
+            self._write_json(503, {"error": "agentserver_file_rpc_required"})
+            return
+        if parsed.path != "/share-api/jobs":
+            self._write_json(404, {"error": "not_found"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            self._write_json(400, {"error": "invalid_content_length"})
+            return
+        if length < 0:
+            self._write_json(400, {"error": "invalid_content_length"})
+            return
+        if length > 64 * 1024:
+            self._write_json(413, {"error": "request_too_large"})
+            return
+        try:
+            body = json.loads(self._read_request_body().decode("utf-8") or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._write_json(400, {"error": "invalid_json"})
+            return
+        session_id = body.get("session_id", "") if isinstance(body, dict) else ""
+        if not isinstance(session_id, str) or not session_id.strip():
+            self._write_json(400, {"error": "missing_session_id"})
+            return
+        session_id = session_id.strip()
+        active_status = _get_share_image_export_manager().get_active_status(session_id)
+        if active_status is not None:
+            self._write_json(200, {**active_status, "reused": True})
+            return
+        locale = body.get("locale", "zh") if isinstance(body, dict) else "zh"
+        normalized_locale = locale.strip() if isinstance(locale, str) and locale.strip() else "zh"
+        try:
+            snapshot, filename = self._build_share_snapshot(session_id=session_id)
+        except FileNotFoundError:
+            self._write_json(404, {"error": "history_not_found"})
+            return
+        except ValueError as exc:
+            self._write_json(400, {"error": str(exc)})
+            return
+
+        port = int(self.server.server_address[1])
+        # 桌面模式: 长图任务使用独立的 Playwright 无头 BrowserContext, 不共享
+        # 桌面 WebView 的 Cookie, 必须把当前实例的 desktop cookie 名与 token
+        # 交给渲染器注入, 否则 /share-export-runner 返回 403。普通 web 模式
+        # desktop_token 为空, 不构造认证信息, 行为保持不变。
+        render_auth: ShareImageRenderAuth | None = None
+        if self.desktop_token:
+            from jiuwenswarm.channels.web.share_image_export import ShareImageRenderAuth
+
+            render_auth = ShareImageRenderAuth(
+                cookie_name=self.desktop_cookie_name,
+                cookie_value=self.desktop_token,
+            )
+        status = _get_share_image_export_manager().create_job(
+            session_id=session_id,
+            snapshot=snapshot,
+            filename=filename,
+            locale=normalized_locale,
+            base_url=f"http://127.0.0.1:{port}",
+            render_auth=render_auth,
+        )
+        self._write_json(200 if status.get("reused") else 202, status)
 
     def _handle_file_api_get(self, parsed) -> None:
         path = parsed.path
@@ -1402,11 +1635,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._write_json(500, {"error": "download_module_unavailable"})
             return
 
-        payload = validate_file_download_token(token)
+        # Delivered artifacts remain valid even when legacy tokens contain exp.
+        # Signature verification is still mandatory; scoped image tokens below
+        # retain their original lifetime and session constraints.
+        payload = validate_file_download_token(token, check_expiry=False)
         # Skill 正文图片 token intentionally does not carry an absolute path.
         # In the legacy shared-directory layout it must therefore be resolved
         # through the skill manifest before entering the generic file bridge.
         if payload is not None and str(payload.get("purpose") or "") == PURPOSE_SKILL_CONTENT_IMAGE:
+            if validate_file_download_token(token, check_expiry=True) is None:
+                self._write_json(403, {"error": "invalid_or_expired_token"})
+                return
             request_sid = extract_request_session_id(query=query, headers=self.headers)
             error = validate_skill_content_image_payload(
                 payload, request_session_id=request_sid
@@ -1626,8 +1865,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         Gateway），由 AgentServer 校验 upload token 并落盘注入目录。
         AgentServer 不可达 → 503 可重试错误（方案 §8 禁止本地 fallback）。
         """
-        from urllib.parse import parse_qs
-
         query = parse_qs(parsed.query)
         token = (query.get("token") or [""])[0]
         if not token:
@@ -1860,6 +2097,33 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/oauth/hub/callback":
+            from jiuwenswarm.channels.web.hub_oauth import complete
+
+            query = {key: values[0] for key, values in parse_qs(parsed.query, keep_blank_values=True).items()}
+            status, _ = complete(query)
+            self.send_response(303 if status == 200 else status)
+            if status == 200:
+                self.send_header("Location", "/oauth/hub/done")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if parsed.path == "/oauth/hub/done":
+            body = (
+                '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+                '<title>授权已完成</title><script>window.close()</script>'
+                '<p>授权已完成。如果此标签页没有自动关闭，请手动关闭并返回 JiuwenSwarm。</p>'
+                '</html>'
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)
             return
@@ -1875,6 +2139,34 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
+            from jiuwenswarm.channels.web.hub_oauth import result, start
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096:
+                    raise ValueError("invalid length")
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict):
+                    raise ValueError("invalid payload")
+            except ValueError:
+                self._write_json(400, {"error": "invalid_request"})
+                return
+            if parsed.path.endswith("/start"):
+                status, response = start(payload.get("provider", ""), self.headers.get("Host", ""))
+            else:
+                status, response = result(payload.get("flow", ""), payload.get("claim", ""))
+            data = json.dumps(response, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if self._is_share_api_route():
+            self._handle_share_api_post(parsed)
+            return
         if self._is_file_api_route():
             self._handle_file_api_post(parsed)
             return
@@ -1904,6 +2196,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def do_HEAD(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if self._is_share_api_route():
+            self._handle_share_api_get(parsed)
+            return
         if self._is_file_api_route():
             self._handle_file_api_get(parsed)
             return
@@ -1912,10 +2207,41 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.info("%s - %s", self.address_string(), format % args)
+        self.logger.info("%s - %s", self.address_string(), self._redact_desktop_token(format % args))
 
     def log_error(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.error("%s - %s", self.address_string(), format % args)
+        self.logger.error("%s - %s", self.address_string(), self._redact_desktop_token(format % args))
+
+    def _redact_desktop_token(self, message: str) -> str:
+        message = re.sub(r"([?&]dt=)[^&\s\"#]*", r"\1[REDACTED]", message)
+        message = re.sub(r"([?&]oauth_session=)[^&\s\"#]*", r"\1[REDACTED]", message)
+        if self.desktop_token:
+            message = message.replace(quote(self.desktop_token, safe=""), "[REDACTED]")
+            message = message.replace(self.desktop_token, "[REDACTED]")
+        return message
+
+    # Vite 产物文件名携带内容哈希（assets/<name>-<hash>.<ext>），内容变更即
+    # 换文件名，可安全长缓存（immutable 让浏览器跳过条件请求）；index.html
+    # 与 SPA fallback 引用的是哈希名，必须每次回源验证才能拿到新版本引用。
+    _IMMUTABLE_ASSET_RE = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$")
+    _IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+    _REVALIDATE_CACHE_CONTROL = "no-cache"
+
+    @classmethod
+    def _cache_control_for_static(cls, rel_path: str) -> str:
+        if cls._IMMUTABLE_ASSET_RE.match(rel_path):
+            return cls._IMMUTABLE_CACHE_CONTROL
+        return cls._REVALIDATE_CACHE_CONTROL
+
+    def end_headers(self) -> None:
+        # 缓存策略在 send_head 里决定、这里统一落头：super().send_head() 内部
+        # 就会调用 end_headers，之后再追加头已来不及。非静态路径不设置该
+        # 标记，API/代理响应仍走各自的 no-store。
+        cache_control = getattr(self, "_static_cache_control", None)
+        if cache_control:
+            self._static_cache_control = None
+            self.send_header("Cache-Control", cache_control)
+        super().end_headers()
 
     def send_head(self):
         parsed = urlparse(self.path)
@@ -1926,9 +2252,20 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         target = (base_dir / rel_path).resolve()
         in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
 
+        # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
+        # 现存静态资源及其他 HTML 产物不需要桌面 Cookie。
+        spa_index = (base_dir / "index.html").resolve()
+        serves_spa = not (in_base and target.exists()) or target == spa_index
+        if in_base and target.is_dir():
+            serves_spa = (target / "index.html").resolve() == spa_index
+        if serves_spa and self._check_desktop_access():
+            return None
+
         if in_base and target.exists():
+            self._static_cache_control = self._cache_control_for_static(rel_path)
             return super().send_head()
 
+        self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
         self.path = "/index.html"
         return super().send_head()
 
@@ -2083,6 +2420,13 @@ def main() -> None:
         help="Disable websocket compression for easier ws req/res/event debug logging.",
     )
     parser.add_argument(
+        "--desktop-token",
+        default=None,
+        metavar="TOKEN",
+        help="Desktop lock token: enable desktop-only access control "
+        "(default: JIUWENSWARM_DESKTOP_TOKEN env, empty = disabled).",
+    )
+    parser.add_argument(
         "--name",
         metavar="<name>",
         help="Start a named instance from instances.yaml.",
@@ -2126,6 +2470,15 @@ def main() -> None:
     _ConfiguredHandler.iam_target = iam_target
     _ConfiguredHandler.remote_mode = remote_mode
     _ConfiguredHandler.ws_disable_compress = args.ws_disable_compress
+    # 桌面锁定: 桌面端经 JIUWENSWARM_DESKTOP_TOKEN env 注入一次性 token;
+    # 源码 web 模式为空 = 不启用, 浏览器访问行为与之前完全一致。
+    desktop_token = (
+        args.desktop_token
+        if args.desktop_token is not None
+        else os.getenv("JIUWENSWARM_DESKTOP_TOKEN", "")
+    ).strip()
+    _ConfiguredHandler.desktop_token = desktop_token
+    _ConfiguredHandler.desktop_cookie_name = f"__wsdt{args.port}"
     _ConfiguredHandler.project_root = project_root
     _ConfiguredHandler.workspace_root = workspace_root
     _ConfiguredHandler.agent_teams_root = agent_teams_root
@@ -2160,6 +2513,10 @@ def main() -> None:
         logger.info("[jiuwenswarm-web] /auth-api -> %s", iam_target)
         logger.info("[jiuwenswarm-web] all-in-one (remote) mode: %s", remote_mode)
         logger.info("[jiuwenswarm-web] ws disable compress: %s", args.ws_disable_compress)
+        logger.info(
+            "[jiuwenswarm-web] desktop lock: %s",
+            "enabled" if desktop_token else "disabled",
+        )
         logger.info("[jiuwenswarm-web] /file-api roots -> %s, %s, %s", workspace_root, agent_teams_root, logs_root)
 
         _web_info_path = (_get_user_workspace_dir() / ".updates").resolve()

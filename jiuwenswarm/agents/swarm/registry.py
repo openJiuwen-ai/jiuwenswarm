@@ -77,6 +77,7 @@ WEB_FETCH = _OJ_WEB_FETCH
 WEB_PAID_SEARCH = _OJ_WEB_PAID_SEARCH
 VISION = _OJ_VISION
 AUDIO = _OJ_AUDIO
+PERSONAL_CONTEXT = _member_rails.PERSONAL_CONTEXT
 RUNTIME_PROMPT = _member_rails.RUNTIME_PROMPT
 TEAM_SKILL_STORAGE_POLICY = _member_rails.TEAM_SKILL_STORAGE_POLICY
 TEAM_SKILL_LIBRARY_RELOAD = _member_rails.TEAM_SKILL_LIBRARY_RELOAD
@@ -92,6 +93,7 @@ TEAM_SKILL_EVOLUTION = _evolution_rails.TEAM_SKILL_EVOLUTION
 TEAM_SKILL_CREATE = _evolution_rails.TEAM_SKILL_CREATE
 MEMBER_SKILL_EVOLUTION = _evolution_rails.MEMBER_SKILL_EVOLUTION
 EVOLUTION_INTERRUPT = _evolution_rails.EVOLUTION_INTERRUPT
+SYMPHONY_GRAPH_EVOLUTION = _evolution_rails.SYMPHONY_GRAPH_EVOLUTION
 
 # Code-profile (code.team / team.plan.code) swarm-owned rail provider names.
 CODE_EXTRA_TOOLS = _tools.CODE_EXTRA_TOOLS
@@ -182,6 +184,7 @@ def register_swarm_providers() -> None:
 
 
 __all__ = [
+    "PERSONAL_CONTEXT",
     "register_swarm_providers",
     "SKILL_TOOLKIT",
     "SKILL_RETRIEVAL",

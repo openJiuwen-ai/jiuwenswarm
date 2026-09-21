@@ -1,0 +1,7 @@
+# 本地离线 OCR 技能依赖清单
+# 安装：pip install -r requirements.txt
+# 建议使用隔离虚拟环境（如 venv / conda），避免污染全局 Python。
+rapidocr-onnxruntime>=1.3.0
+pymupdf>=1.23.0
+pillow>=10.0.0
+numpy>=1.24.0

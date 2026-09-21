@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import i18n from '../i18n';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
+import { archivedTaskClient, findBatchSessionResult } from '../features/workspace/archivedTaskClient';
 import { persistWorkMode, readStoredWorkMode } from '../features/workspace/workModeStorage';
 import type { ProjectInfo, Session, WorkMode } from '../types';
 import { useChatStore } from './chatStore';
@@ -45,17 +46,22 @@ interface WorkspaceState {
   isLoadingProjects: boolean;
   error: string | null;
   setWorkMode: (workMode: WorkMode) => Promise<void>;
-  loadProjects: () => Promise<void>;
-  loadProjectSessions: (projectId: string, limit?: number) => Promise<void>;
+  loadProjects: (refreshEpoch?: number) => Promise<boolean>;
+  loadProjectSessions: (projectId: string, limit?: number, refreshEpoch?: number) => Promise<void>;
   showMoreSessions: (projectId: string) => Promise<void>;
   collapseSessions: (projectId: string) => Promise<void>;
-  loadPinnedSessions: () => Promise<void>;
+  loadPinnedSessions: (refreshEpoch?: number) => Promise<void>;
   setSelectedProject: (project: ProjectInfo | null) => void;
   toggleProjectExpanded: (projectId: string) => void;
   createProject: (name: string, projectDir: string) => Promise<ProjectInfo>;
   renameProject: (projectId: string, name: string) => Promise<void>;
   pinProject: (projectId: string, pinned: boolean) => Promise<void>;
-  removeProject: (projectId: string) => Promise<void>;
+  removeProject: (projectId: string) => Promise<{ deleted: boolean; deleted_conversation_sessions: number; deleted_cron_jobs: number; skipped_running_session_ids?: string[] }>;
+  removeSessions: (sessionIds: string[]) => void;
+  archiveSession: (sessionId: string) => Promise<void>;
+  /** 归档成功后同步从侧边栏移除会话，供 toast 与列表同帧更新。 */
+  removeSessionLocally: (sessionId: string) => void;
+  refreshWorkspaceData: () => Promise<void>;
   upsertSession: (session: Session, options?: UpsertSessionOptions) => void;
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
@@ -92,7 +98,7 @@ function findProjectIdForSession(projects: ProjectInfo[], session: Pick<Session,
     return projectId;
   }
   const project = findProject(projects, projectId);
-  return project && !project.hidden ? project.project_id : findDefaultProjectId(projects);
+  return project ? project.project_id : findDefaultProjectId(projects);
 }
 
 function patchSessionLists(
@@ -240,6 +246,9 @@ function getProjectSessionListsAfterPin(
   };
 }
 
+/** 工作区全量刷新代数：新刷新开始时递增，过期请求在写回前丢弃，避免归档/撤销竞态导致列表闪烁。 */
+let workspaceRefreshEpoch = 0;
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workMode: readStoredWorkMode(),
   projects: [],
@@ -269,12 +278,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjects();
   },
 
-  loadProjects: async () => {
+  loadProjects: async (refreshEpoch?: number) => {
     const requestedWorkMode = get().workMode;
     set({ isLoadingProjects: true, error: null });
     try {
       const payload = await projectRegistryClient.list('all', requestedWorkMode);
-      if (get().workMode !== requestedWorkMode) return;
+      if (get().workMode !== requestedWorkMode) return true;
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return true;
       const projects = (payload.projects || []).map((project) => (
         normalizeProject(project, requestedWorkMode)
       ));
@@ -297,16 +307,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           isLoadingProjects: false,
         };
       });
-      await get().loadPinnedSessions();
+      await get().loadPinnedSessions(refreshEpoch);
+      return true;
     } catch (error) {
       set({ isLoadingProjects: false, error: error instanceof Error ? error.message : String(error) });
+      return false;
     }
   },
 
-  loadProjectSessions: async (projectId, limit) => {
+  loadProjectSessions: async (projectId, limit, refreshEpoch) => {
     const requestedLimit = limit ?? getVisibleCount(get(), projectId);
     try {
       const payload = await projectRegistryClient.getSessions(projectId, requestedLimit);
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
       const sessions = reconcileVisibleProjectSessions(
         payload.sessions || [],
         get().projectSessions[projectId] || [],
@@ -343,18 +356,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjectSessions(projectId, PROJECT_SESSION_PAGE_SIZE);
   },
 
-  loadPinnedSessions: async () => {
-    const payload = await projectRegistryClient.pinnedSessions();
-    const { workMode, projects } = get();
-    const visibleProjectIds = new Set(projects.map((project) => project.project_id));
-    set({
-      pinnedSessions: mergeLocalSessionTitles(payload.sessions || [])
-        .filter((session) => {
-          if (session.work_mode) return session.work_mode === workMode;
-          if (session.project_id) return visibleProjectIds.has(session.project_id);
-          return workMode === 'work';
-        }),
-    });
+  loadPinnedSessions: async (refreshEpoch) => {
+    try {
+      const payload = await projectRegistryClient.pinnedSessions();
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
+      const { workMode, projects } = get();
+      const visibleProjectIds = new Set(projects.map((project) => project.project_id));
+      set({
+        pinnedSessions: mergeLocalSessionTitles(payload.sessions || [])
+          .filter((session) => {
+            if (session.work_mode) return session.work_mode === workMode;
+            if (session.project_id) return visibleProjectIds.has(session.project_id);
+            return workMode === 'work';
+          }),
+      });
+    } catch (error) {
+      console.error('Failed to load pinned sessions', error);
+      set({ error: error instanceof Error ? error.message : String(error) });
+    }
   },
 
   setSelectedProject: (project) => set({ selectedProject: project }),
@@ -366,11 +385,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   })),
 
   createProject: async (name, projectDir) => {
-    const { project_id: projectId } = await projectRegistryClient.create(
-      name,
-      projectDir,
-      get().workMode,
-    );
+    const projectId = (await projectRegistryClient.create(name, projectDir, get().workMode)).project_id;
     await get().loadProjects();
     const project = findProject(get().projects, projectId);
     if (!project) throw new Error('project.create returned a project that is missing from project.list');
@@ -391,13 +406,87 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjects();
   },
 
+  // 删除项目：后端先删除 cron 与已停止会话；运行中的普通会话会保留。
   removeProject: async (projectId) => {
-    await projectRegistryClient.remove(projectId);
-    await get().loadProjects();
+    const result = await projectRegistryClient.remove(projectId);
+    const sessionState = useSessionStore.getState();
+    const ids = new Set([
+      ...(get().projectSessions[projectId] || []).map((session) => session.session_id),
+      ...get().pinnedSessions.filter((session) => session.project_id === projectId).map((session) => session.session_id),
+      ...sessionState.sessions.filter((session) => session.project_id === projectId).map((session) => session.session_id),
+    ]);
+    if (sessionState.currentSession?.project_id === projectId) ids.add(sessionState.currentSession.session_id);
+    const retained = new Set(result.skipped_running_session_ids || []);
+    get().removeSessions([...ids].filter((id) => !retained.has(id)));
+    await get().refreshWorkspaceData();
+    return result;
+  },
+
+  archiveSession: async (sessionId) => {
+    const response = await archivedTaskClient.archiveSession(sessionId);
+    const result = findBatchSessionResult(response, sessionId);
+    if (!result?.ok) {
+      const error = new Error(result?.error || 'Failed to archive session');
+      Object.assign(error, { code: result?.code });
+      throw error;
+    }
+  },
+
+  removeSessionLocally: (sessionId) => {
+    set((state) => {
+      let ownerProjectId: string | null = null;
+      for (const [projectId, sessions] of Object.entries(state.projectSessions)) {
+        if (sessions.some((session) => session.session_id === sessionId)) {
+          ownerProjectId = projectId;
+          break;
+        }
+      }
+      if (
+        !ownerProjectId
+        && !state.pinnedSessions.some((session) => session.session_id === sessionId)
+      ) {
+        return state;
+      }
+      return {
+        projectSessions: patchSessionLists(
+          state.projectSessions,
+          sessionId,
+          {},
+          { removeFromProjectLists: true },
+        ),
+        pinnedSessions: state.pinnedSessions.filter((session) => session.session_id !== sessionId),
+        projectSessionTotals: ownerProjectId
+          ? {
+              ...state.projectSessionTotals,
+              [ownerProjectId]: Math.max(0, (state.projectSessionTotals[ownerProjectId] ?? 1) - 1),
+            }
+          : state.projectSessionTotals,
+      };
+    });
+  },
+
+  // 归档/恢复/删除相关事件与操作后的统一对账入口：刷新项目、置顶会话
+  // 以及默认项目与已展开项目的会话列表。用 epoch 丢弃过期写回，避免归档/撤销交错时列表闪烁。
+  refreshWorkspaceData: async () => {
+    const epoch = ++workspaceRefreshEpoch;
+    // loadProjects 内部会以同一 epoch 刷新置顶会话，此处无需重复请求。
+    await get().loadProjects(epoch);
+    if (epoch !== workspaceRefreshEpoch) return;
     const state = get();
     await Promise.all(state.projects
       .filter((project) => isDefaultProject(project) || Boolean(state.expandedProjectIds[project.project_id]))
-      .map((project) => state.loadProjectSessions(project.project_id)));
+      .map((project) => state.loadProjectSessions(project.project_id, undefined, epoch)));
+  },
+
+  removeSessions: (sessionIds) => {
+    const ids = new Set(sessionIds);
+    for (const id of ids) useSessionStore.getState().removeSession(id);
+    set((state) => ({
+      projectSessions: Object.fromEntries(Object.entries(state.projectSessions).map(([id, sessions]) => [
+        id, sessions.filter((session) => !ids.has(session.session_id)),
+      ])),
+      pinnedSessions: state.pinnedSessions.filter((session) => !ids.has(session.session_id)),
+    }));
   },
 
   upsertSession: (session, options = {}) => {

@@ -217,12 +217,6 @@ export interface TrajectoryTimelineProps {
   turns: readonly TrajectoryTurnModel[]
   mode: TrajectoryTimelineMode
   range: TrajectoryTimeRange | null
-  /** Whether one earlier history page request is pending anywhere. */
-  olderHistoryLoading?: boolean
-  /** Whether the loaded timeline omits an earlier history prefix. */
-  hasEarlierRecords?: boolean
-  /** Load one earlier history page from the truncation control. */
-  onLoadEarlier?: () => Promise<boolean>
   selectedIndex?: number | null
   /** Record indexes matching the active ledger search, or null without a query. */
   searchMatchIndexes?: ReadonlySet<number> | null
@@ -353,51 +347,11 @@ function LaneLabels({ mode }: { mode: TrajectoryTimelineMode }) {
   )
 }
 
-function EarlierHistoryBoundary({
-  loading,
-  onHover,
-  onLoad,
-}: {
-  loading: boolean
-  onHover: () => void
-  onLoad: (() => void) | undefined
-}) {
-  return (
-    <Tooltip
-      label={loading ? 'Loading earlier history…' : 'Click to load earlier history'}
-      side="right"
-      delayMs={TIMELINE_TOOLTIP_DELAY_MS}
-    >
-      <button
-        type="button"
-        className={css.earlierHistory}
-        data-earlier-history
-        data-loading={loading || undefined}
-        aria-label={loading ? 'Loading earlier history' : 'Load earlier history'}
-        aria-disabled={loading || onLoad === undefined}
-        disabled={loading || onLoad === undefined}
-        onClick={onLoad}
-        onPointerEnter={(event) => {
-          event.stopPropagation()
-          onHover()
-        }}
-        onPointerMove={(event) => { event.stopPropagation() }}
-        onPointerDown={(event) => { event.stopPropagation() }}
-      >
-        …
-      </button>
-    </Tooltip>
-  )
-}
-
 /** Overview renderer with deferred wheel zoom, horizontal panning, range focus, and reset. */
 export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   turns,
   mode,
   range,
-  olderHistoryLoading = false,
-  hasEarlierRecords = false,
-  onLoadEarlier,
   selectedIndex = null,
   searchMatchIndexes = null,
   onRangeChange,
@@ -431,12 +385,6 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
   const wheelCommitTimerRef = useRef<number | null>(null)
   const [draft, setDraft] = useState<TrajectoryTimeRange | null>(null)
   const [hover, setHover] = useState<HoverPoint | null>(null)
-  const loadingEarlierRef = useRef<Promise<boolean> | null>(null)
-  const [localOlderHistoryLoading, setLocalOlderHistoryLoading] = useState(false)
-  useEffect(() => {
-    loadingEarlierRef.current = null
-    setLocalOlderHistoryLoading(false)
-  }, [onLoadEarlier])
   const [panning, setPanning] = useState(false)
   const [viewport, setViewport] = useState<TrajectoryTimeRange | null>(null)
   const [animateViewport, setAnimateViewport] = useState(false)
@@ -495,23 +443,6 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
     ? { domainDuration: 1, domainStart: 0, fullDuration: 1 }
     : viewportGeometry(model, viewport)
   const { domainDuration, domainStart, fullDuration } = geometry
-  const showsEarlierBoundary = hasEarlierRecords
-    && model !== null
-    && domainStart === model.start
-  const olderBusy = olderHistoryLoading || localOlderHistoryLoading
-  const loadEarlier = onLoadEarlier === undefined || olderBusy
-    ? undefined
-    : () => {
-      if (loadingEarlierRef.current !== null || olderHistoryLoading) return
-      const operation = onLoadEarlier()
-      loadingEarlierRef.current = operation
-      setLocalOlderHistoryLoading(true)
-      void operation.finally(() => {
-        if (loadingEarlierRef.current !== operation) return
-        loadingEarlierRef.current = null
-        setLocalOlderHistoryLoading(false)
-      })
-    }
   const domainStyle = model === null
     ? undefined
     : projectedDomainStyle(model, viewport)
@@ -588,13 +519,6 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
           <LaneLabels mode={mode} />
           <div className={css.track}>
             <span className={css.empty}>No timing data</span>
-            {hasEarlierRecords && (
-              <EarlierHistoryBoundary
-                loading={olderBusy}
-                onHover={() => { setHover(null) }}
-                onLoad={loadEarlier}
-              />
-            )}
           </div>
         </div>
       </section>
@@ -891,13 +815,6 @@ export const TrajectoryTimeline = memo(function TrajectoryTimeline({
             event.preventDefault()
           }}
         >
-          {showsEarlierBoundary && (
-            <EarlierHistoryBoundary
-              loading={olderBusy}
-              onHover={() => { setHover(null) }}
-              onLoad={loadEarlier}
-            />
-          )}
           {hover !== null && hover.recordIndex === null && draft === null && (
             <div
               className={css.hoverLine}

@@ -220,6 +220,20 @@ async def test_asset_port_search_maps_local_expert_kind_to_upstream_type() -> No
 
 
 @pytest.mark.asyncio
+async def test_asset_port_searches_expert_groups_with_distinct_hub_type() -> None:
+    payload = _catalog_payload()
+    payload["items"][0]["asset_type"] = "agent-group"
+    payload["items"][0]["plugin_type"] = "agent-group"
+    transport = RecordingTransport([payload])
+    client = HubClient(transport=transport)
+
+    page = await client.search_assets(HubSearchRequest(kind="agent_group"))
+
+    assert page.items[0].kind == "agent_group"
+    assert transport.requests[0][1]["plugin_type"] == "agent-group"
+
+
+@pytest.mark.asyncio
 async def test_asset_port_search_keeps_uuid_separate_from_package_name() -> None:
     payload = _catalog_payload()
     payload["items"][0].update(
@@ -262,6 +276,22 @@ async def test_asset_port_search_normalizes_relative_icon_against_hub_base_url()
     assert page.items[0].icon_uri == (
         "https://hub.example.test/catalog/icons/sales.png"
     )
+
+
+@pytest.mark.asyncio
+async def test_asset_port_search_reads_icon_alias_when_icon_uri_missing() -> None:
+    payload = _catalog_payload()
+    payload["items"][0].pop("icon_uri", None)
+    payload["items"][0]["icon"] = "https://example.test/from-icon.png"
+    payload["items"][0]["asset_type"] = "agent-template"
+    payload["items"][0]["plugin_type"] = "agent-template"
+    client = HubClient(transport=RecordingTransport([payload]))
+
+    page = await client.search_assets(
+        HubSearchRequest(kind="agent_template", page=1, page_size=20)
+    )
+
+    assert page.items[0].icon_uri == "https://example.test/from-icon.png"
 
 
 @pytest.mark.asyncio

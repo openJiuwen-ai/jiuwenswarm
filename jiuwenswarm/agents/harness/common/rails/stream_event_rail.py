@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """JiuSwarmStreamEventRail — Stream event emission, pause checks, context fix.
 
@@ -16,15 +16,16 @@ import re
 from collections.abc import Mapping
 from typing import Any, List, Optional
 
-from openjiuwen.core.context_engine.context.context_utils import ContextUtils
 from openjiuwen.core.foundation.llm import (
     AssistantMessage,
     ToolMessage,
 )
 from openjiuwen.core.session.agent import Session
 from openjiuwen.core.session.stream import OutputSchema
+from openjiuwen.core.single_agent.ability_manager import resolve_tool_result_text
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
+    AgentCallbackEvent,
     InvokeInputs,
     ToolCallInputs,
 )
@@ -66,10 +67,10 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
 )
 from jiuwenswarm.common.tool_display import (
-    build_tool_display_name,
     extract_call_goal,
     inject_call_goal_schema,
 )
+from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
 
@@ -290,6 +291,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
     priority = 80
 
+    # AFTER_TOOL_CALL projects the call's final outcome: the ``tool_result``
+    # and the tool message the model reads, after every rail that rewrites
+    # them (e.g. plan approval, user hooks, the core browser runtime and mobile
+    # skill rails). The hook alone runs this far below ``priority``; the other
+    # hooks keep their position.
+    _AFTER_TOOL_CALL_READER_OFFSET = 1_000_000
+
     # Key used in ctx.extra to carry session_id from before_invoke to checkpoints.
     # ctx.extra persists across all events within a single invoke, so sub-agent
     # checkpoints inherit the parent's session_id (correct: parent abort → sub stops).
@@ -324,7 +332,24 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # cross-session leakage in concurrent collect→get→clear sequences).
         self._cancelled_tool_results: dict[str, list[dict[str, Any]]] = {}
         self._quarantined_sessions: set[str] = set()
+        # tool_call_id -> sid of calls whose tool_call/tool_update chunks were
+        # already emitted.  Resume replays the full rail cycle for the same
+        # tool_call_id; without this latch history.jsonl gets a duplicate
+        # tool_call + tool_update pair (#3785).  Lifecycle: set on first emit,
+        # popped in after_tool_call on normal completion — the latch must hold
+        # across the interrupt → user answer → resume window (so
+        # reset_for_new_task never touches it), but must not outlive the call:
+        # some providers reset tool_call ids per response (call_0, call_1...),
+        # and a stale latch would swallow the next round's legitimate call.
+        # cleanup_session drops leftovers when the session is destroyed.
+        self._emitted_tool_call_ids: dict[str, str] = {}
         self._symphony_stream_handler = SymphonyToolStreamHandler()
+
+    def callback_priority(self, event: AgentCallbackEvent) -> int:
+        """Run ``after_tool_call`` after every rail that produces the tool result."""
+        if event == AgentCallbackEvent.AFTER_TOOL_CALL:
+            return self.priority - self._AFTER_TOOL_CALL_READER_OFFSET
+        return self.priority
 
     def init(self, agent: Any) -> None:
         self._deep_agent = agent
@@ -594,6 +619,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._conversation_ids.pop(sid, None)
         self._main_sessions.pop(sid, None)
         self._cancelled_tool_results.pop(sid, None)
+        # Drop this session's leftover latch entries (interrupted calls that
+        # never completed).  Other sessions' entries must stay: shared adapters
+        # serve many sessions concurrently.
+        self._emitted_tool_call_ids = {
+            tc_id: owner_sid
+            for tc_id, owner_sid in self._emitted_tool_call_ids.items()
+            if owner_sid != sid
+        }
 
     def quarantine_session(
         self, session_id: str, session: Session | None = None
@@ -950,7 +983,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if session is not None and isinstance(ctx.inputs, ToolCallInputs):
             # 主模型随 tool_call 产出的目标文案（call_goal）：取出后剥掉，避免 schema 拒收。
             # 绝不碰 display_name（team 成员名等业务字段）。
-            model_display, cleaned_args = extract_call_goal(
+            call_goal, cleaned_args = extract_call_goal(
                 getattr(tc, "arguments", {}) if tc else {}
             )
             # 无论是否填了 call_goal，都写回清洗后的 arguments，避免执行侧拿到该字段。
@@ -964,33 +997,39 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                         exc,
                     )
                 ctx.inputs.tool_args = cleaned_args
-            tool_call_emitted = await self._emit_tool_call(
-                session,
-                tc,
-                model_display_name=model_display,
-            )
-            in_progress_emitted = await self._emit_tool_update(
-                session,
-                tc,
-                status="in_progress",
-            )
-            if (
-                tool_call_emitted
-                and in_progress_emitted
-                and reviewer_progress_metadata is not None
-            ):
-                await self._emit_reviewer_tool_update(
+            # 同一 tool_call_id 只向会话发射一次 tool_call/tool_update：resume 重放
+            # rail 周期时会带着相同 id 再进这里，重复发射会在 history.jsonl 留下
+            # 重复记录（#3785）。
+            tc_id = getattr(tc, "id", "")
+            if not (tc_id and self._emitted_tool_call_ids.get(tc_id) == sid):
+                tool_call_emitted = await self._emit_tool_call(
                     session,
-                    tool_call_id=getattr(tc, "id", "") if tc is not None else "",
-                    reviewer_metadata=reviewer_progress_metadata,
+                    tc,
+                    call_goal=call_goal,
                 )
+                in_progress_emitted = await self._emit_tool_update(
+                    session,
+                    tc,
+                    status="in_progress",
+                )
+                if (
+                    tool_call_emitted
+                    and in_progress_emitted
+                    and reviewer_progress_metadata is not None
+                ):
+                    await self._emit_reviewer_tool_update(
+                        session,
+                        tool_call_id=tc_id,
+                        reviewer_metadata=reviewer_progress_metadata,
+                    )
+                if tc_id:
+                    self._emitted_tool_call_ids[tc_id] = sid
             self._symphony_stream_handler.bind_progress(
                 ctx,
                 session,
                 tc,
             )
             # Track in-flight tool call for cancellation
-            tc_id = getattr(tc, "id", "")
             if tc_id:
                 self._inflight_tool_calls[tc_id] = {
                     "tool_call": tc,
@@ -1014,6 +1053,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if getattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, None):
             return
         setattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, "projecting")
+        projected = False
         try:
             self._symphony_stream_handler.reset_progress(ctx)
             if tc_id:
@@ -1024,28 +1064,35 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             tool_result = ctx.inputs.tool_result
             if tool_result is None and ctx.exception is not None:
                 tool_result = ctx.exception
-            projected = await self._emit_tool_result(
-                session,
-                tc,
-                tool_result,
-                reviewer_metadata=reviewer_metadata,
+            interrupt = (
+                _extract_tool_interrupt(tool_result)
+                or _extract_tool_interrupt(ctx.exception)
             )
-            if not projected:
-                return
-            setattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, "projected")
-            consume_reviewer_tool_result_metadata(
-                getattr(ctx, "extra", None), tool_call_id=tc_id
-            )
+            if interrupt is None:
+                projected = await self._emit_tool_result(
+                    session,
+                    tc,
+                    tool_result,
+                    rendered_result=resolve_tool_result_text(ctx.inputs, ctx.exception),
+                    reviewer_metadata=reviewer_metadata,
+                )
+                if projected:
+                    setattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, "projected")
+                    consume_reviewer_tool_result_metadata(
+                        getattr(ctx, "extra", None), tool_call_id=tc_id
+                    )
+                    self._emitted_tool_call_ids.pop(tc_id, None)
         finally:
             if getattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, None) == "projecting":
                 delattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE)
-        if not projected:
+        if interrupt is None and not projected:
             return
-        self._symphony_stream_handler.request_force_finish(
-            ctx,
-            tc,
-            tool_result,
-        )
+        if projected:
+            self._symphony_stream_handler.request_force_finish(
+                ctx,
+                tc,
+                tool_result,
+            )
         await self._emit_ask_user_question_if_interrupted(
             session,
             tc,
@@ -1084,7 +1131,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         session: Session,
         tool_call: Any,
         *,
-        model_display_name: str = "",
+        call_goal: str = "",
     ) -> bool:
         try:
             name = getattr(tool_call, "name", "")
@@ -1094,12 +1141,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "arguments": arguments,
                 "tool_call_id": getattr(tool_call, "id", ""),
             }
-            # 优先用主模型随 tool_call 产出的目标文案；未填时再规则兜底。
-            display_name = (model_display_name or "").strip() or build_tool_display_name(
-                name, arguments
-            )
-            if display_name:
-                tool_call_payload["display_name"] = display_name
+            # 模型自然语言目标；前端原样作副标题，不再生成 display_name。
+            goal = (call_goal or "").strip()
+            if goal:
+                tool_call_payload["call_goal"] = goal
             await session.write_stream(
                 OutputSchema(
                     type="tool_call",
@@ -1118,8 +1163,19 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         tool_call: Any,
         result: Any,
         *,
+        rendered_result: str | None = None,
         reviewer_metadata: Mapping[str, Any] | None = None,
     ) -> bool:
+        """Emit one ``tool_result`` event.
+
+        ``result`` is a compatibility field: ``str()`` of the structured tool
+        result, which existing web / TUI / history consumers still parse.
+        ``rendered_result`` is the independent text the model read, used for
+        display and history restore. A ``structured_result`` field is
+        intentionally not emitted yet; once web and TUI migrate to structured
+        data, ``result`` and every parser built on its string form are removed
+        end to end.
+        """
         try:
             raw_output = _structured_tool_result_payload(result)
             tool_result_payload = {
@@ -1127,6 +1183,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "tool_call_id": getattr(tool_call, "id", "") if tool_call else "",
                 "result": str(result)[:60000] if result is not None else "",
             }
+            if rendered_result is not None:
+                tool_result_payload["rendered_result"] = rendered_result[:60000]
             if raw_output is not None:
                 tool_result_payload["raw_output"] = raw_output
                 self._symphony_stream_handler.enrich_result_payload(
@@ -1337,15 +1395,23 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             logger.debug("Failed to get model_name from ctx.agent", exc_info=True)
 
         try:
-            # raw_total_tokens: model max context window — use agent-core's resolver
-            # with built-in dict + 200000 fallback (never returns 0)
-            raw_total_tokens = ContextUtils.resolve_context_max(
+            # raw_total_tokens: resolve only explicit runtime values and the
+            # fixed JiuwenSwarm fallback; never fetch model metadata here.
+            raw_total_tokens = resolve_context_window_tokens(
                 model_name=model_name,
-                fallback_context_window_tokens=(
-                    getattr(context, "_context_window_tokens", None)
-                    or getattr(context, "_model_context_window_tokens_override", None)
+                context_engine_config={
+                    "context_window_tokens": getattr(
+                        context,
+                        "_global_context_window_tokens",
+                        getattr(context, "_context_window_tokens", None),
+                    ),
+                    "model_context_window_tokens": getattr(
+                        context, "_model_context_window_tokens", None
+                    ),
+                },
+                model_context_window_override=getattr(
+                    context, "_model_context_window_tokens_override", None
                 ),
-                model_context_window_tokens=getattr(context, "_model_context_window_tokens", None),
             )
 
             # The context window contains model input, not the generated reply.

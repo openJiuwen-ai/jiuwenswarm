@@ -133,6 +133,7 @@
 | `components/HarnessPackagePanel` | `harness-package-panel` | harness 包面板 |
 | `components/UpdatePanel` | `update-panel` | 更新面板 |
 | `components/BrowserPanel` | `browser-panel` | 浏览器面板 |
+| `components/DesktopBrowserPane` | `desktop-browser` | Electron 浏览器面板及成员页面切换 |
 | `components/ChannelsPanel` | `channels-panel` | 频道面板 |
 | `features/modelSetupGuide` | `model-setup-guide` | 模型配置引导 |
 | `features/code-mode` | `code-mode` | 代码模式;代码审查面板 |
@@ -144,4 +145,6 @@
 | `features/trajectory` | `trajectory` | 轨迹面板(归档导入/导出;原始数据检视器) |
 | `features/trajectory` | `single-agent` | 单 Agent 工作台(chat/trajectory 双 tab 切换) |
 | `features/trajectory` | `team-trajectory` | 团队轨迹工作台(泳道视图) |
+| `components/AssetPublishDrawer` | `asset-publish` | 四类资源发布表单、预检、任务及 OAuth 恢复 |
+| `components/marketplace` | `marketplace` | 公共市场布局与目录缓存状态 |
 | `App.tsx` | `app` | 应用外壳;全局布局与 toast |

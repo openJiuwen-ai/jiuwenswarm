@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import type { Message, TeamMemberContextCompressionState } from '../../types';
@@ -8,27 +8,27 @@ import { parseTeamEventMessage, type ParsedTeamEvent } from '../ChatPanel/teamEv
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember, isUserMember } from '../../utils/teamMemberAvatar';
 import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { getSkillAvatar } from '../../utils/skillAvatar';
 import teamIcon from '../../assets/team.svg';
 import PendingIcon from '../../assets/pending.svg?react';
+import LoadingIcon from '../../assets/subagent/loading.svg?react';
+
 import BackIcon from '../../assets/back.svg?react';
 import { MemberListItem } from './MemberListItem';
-import { MemberTaskListBar, MemberTaskListItems } from './MemberTaskList';
+import { MemberOverviewCard } from './MemberOverviewCard';
+import { ProcessListCard } from './ProcessListCard';
+import { MemberTaskListBar, MemberTaskListPanel } from './MemberTaskList';
 import {
   buildProcessItems,
   buildTaskMap,
-  Chevron,
   getMemberDisplayName,
   getMemberStatusKey,
-  getTaskStatusLabel,
   latestUserPrompt,
   mergeUniqueMessages,
-  StatusIcon,
-  type ProcessItem,
-  type TaskStatus,
   type TeamDetailTab,
   type TeamMember,
 } from './shared';
-import { AlertTriangle, CircleAlert, LoaderCircle, MessageSquare, Wrench, X } from 'lucide-react';
+import { AlertTriangle, CircleAlert, LoaderCircle, X } from 'lucide-react';
 
 type TeamMembersPanelProps = {
   variant: 'compact' | 'expanded';
@@ -45,10 +45,6 @@ type TeamMembersPanelProps = {
 };
 
 type GroupMessageItem = { message: Message; event: ParsedTeamEvent };
-type ProcessDetailRow = [label: string, value: string];
-type Translate = (key: string, options?: Record<string, unknown>) => string;
-
-const GROUP_LEADER_MEMBER_ID = 'team_leader';
 
 function getGroupMemberIds(members: TeamMember[]): string[] {
   return members.map((member) => member.member_id).filter((memberId) => !isTeamLeaderMember(memberId));
@@ -67,64 +63,6 @@ function buildGroupMessageItems(historyMessages: Message[], messages: Message[])
     .map((message) => ({ message, event: parseTeamEventMessage(message) }))
     .filter(isGroupMessageItem)
     .sort((a, b) => getGroupMessageTime(a) - getGroupMessageTime(b));
-}
-
-function getProcessMessageType(item: ProcessItem, t: Translate): string {
-  if (item.event?.isBroadcast) {
-    return t('team.process.broadcastMessage');
-  }
-  if (item.event?.isP2P) {
-    return t('team.process.p2pMessage');
-  }
-  return t('team.process.collaborationMessage');
-}
-
-function buildProcessDetailRows(item: ProcessItem, t: Translate): ProcessDetailRow[] {
-  if (item.type === 'execution') {
-    const rows: ProcessDetailRow[] = [
-      [t('team.process.fields.type'), getExecutionKindLabel(item.kind, t)],
-      [t('team.process.fields.tool'), item.execution?.tool_name || '-'],
-    ];
-
-    // 如果有配对的结果，显示调用参数和结果
-    if (item.linkedResult) {
-      if (item.execution?.content) {
-        rows.push([t('team.process.fields.call'), item.execution.content]);
-      }
-      rows.push([t('team.process.fields.result'), item.linkedResult.content || '-']);
-    } else {
-      // 没有配对结果，正常显示内容
-      if (item.execution?.content) {
-        rows.push([t('team.process.fields.content'), item.execution.content]);
-      }
-    }
-
-    return rows;
-  }
-
-  if (item.type === 'message') {
-    return [
-      [t('team.process.fields.type'), getProcessMessageType(item, t)],
-      [t('team.process.fields.sender'), item.event?.fromMember || '-'],
-      [t('team.process.fields.receiver'), item.event?.isBroadcast ? t('team.allMembers') : item.event?.toMember || '-'],
-      [t('team.process.fields.content'), item.event?.content || item.subtitle || '-'],
-    ];
-  }
-
-  return [
-    [t('team.process.fields.eventType'), item.raw?.type || '-'],
-    [t('team.process.fields.taskId'), item.raw?.task_id || '-'],
-    [t('team.process.fields.taskStatus'), getTaskStatusLabel(item.status as TaskStatus)],
-    [t('team.process.fields.description'), item.subtitle || '-'],
-  ];
-}
-
-function getExecutionKindLabel(kind: ProcessItem['kind'], t: Translate): string {
-  if (kind === 'final') return t('team.process.execution.final');
-  if (kind === 'tool_call') return t('team.process.execution.toolCall');
-  if (kind === 'tool_result') return t('team.process.execution.toolResult');
-  if (kind === 'file') return t('team.process.execution.file');
-  return t('team.process.execution.event');
 }
 
 function normalizeMemberKey(value: string): string {
@@ -182,6 +120,11 @@ export function TeamMembersPanel({
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const teamLeaderMemberIds = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
   const groupMessages = useMemo(() => buildGroupMessageItems(historyMessages, messages), [historyMessages, messages]);
+  const groupMemberNames = [t('team.leader'), ...getGroupMemberIds(members).map(getMemberDisplayName)].join(
+    t('team.memberSeparator'),
+  );
+  // 群聊头像：文字取本地化群聊名的首字符（getSkillAvatar 的配色也按同一名字哈希），随语言切换
+  const groupAvatar = getSkillAvatar(t('team.groupChat'));
   const visibleMembers = useMemo(
     () => members.filter((member) => !isLeaderMember(member, teamLeaderMemberIds)),
     [members, teamLeaderMemberIds],
@@ -246,41 +189,62 @@ export function TeamMembersPanel({
       data-testid="team-area-members-panel"
       data-variant="expanded"
     >
-      {activeDetailTab === 'members' && (
-        <aside
-          className="w-[240px] shrink-0 overflow-y-auto border-r border-border bg-card"
-          data-testid="team-area-members-sidebar"
-        >
-          <div className="px-[24px] pt-[24px]">
-            <DetailTabSwitch activeTab={activeDetailTab} onChange={onDetailTabChange} />
-          </div>
+      <aside
+        className="w-[240px] shrink-0 overflow-y-auto border-r border-border bg-card"
+        data-testid="team-area-members-sidebar"
+      >
+        <div className="px-[24px] pt-[24px]">
+          <DetailTabSwitch activeTab={activeDetailTab} onChange={onDetailTabChange} />
+        </div>
 
-          <div className="space-y-3 px-[24px] py-4" data-testid="team-area-members-sidebar-list">
-            {visibleMembers.length === 0 ? (
-              <div className="py-10 text-center text-sm text-text-muted" data-testid="team-area-members-sidebar-empty">
-                {t('team.noMemberData')}
+        <div className="space-y-3 px-[24px] py-4" data-testid="team-area-members-sidebar-list">
+          {activeDetailTab === 'group' ? (
+            <div
+              className="flex w-full items-center gap-3 rounded-md border border-transparent bg-[var(--color-tool-tab-active-bg)] px-[8px] py-[9px] text-left"
+              data-testid="team-area-member-item"
+              data-variant="group-chat"
+            >
+              <div className="relative shrink-0" data-testid="team-area-member-item-avatar">
+                <span
+                  className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full text-sm font-semibold"
+                  style={groupAvatar.style}
+                >
+                  {groupAvatar.firstChar}
+                </span>
               </div>
-            ) : (
-              visibleMembers.map((member) => (
-                <MemberListItem
-                  key={member.member_id}
-                  member={member}
-                  selected={visibleSelectedMember?.member_id === member.member_id}
-                  onClick={() => onSelectMember?.(member.member_id)}
-                />
-              ))
-            )}
-          </div>
-        </aside>
-      )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-semibold text-text" data-testid="team-area-member-item-name">
+                    {t('team.groupChat')}
+                  </span>
+                </div>
+                <div
+                  className="mt-0.5 truncate text-xs text-[var(--color-team-member-item-id-text)]"
+                  data-testid="team-area-member-item-id"
+                >
+                  {groupMemberNames}
+                </div>
+              </div>
+            </div>
+          ) : visibleMembers.length === 0 ? (
+            <div className="py-10 text-center text-sm text-text-muted" data-testid="team-area-members-sidebar-empty">
+              {t('team.noMemberData')}
+            </div>
+          ) : (
+            visibleMembers.map((member) => (
+              <MemberListItem
+                key={member.member_id}
+                member={member}
+                selected={visibleSelectedMember?.member_id === member.member_id}
+                onClick={() => onSelectMember?.(member.member_id)}
+              />
+            ))
+          )}
+        </div>
+      </aside>
 
       {activeDetailTab === 'group' ? (
-        <GroupChatDetail
-          items={groupMessages}
-          members={members}
-          activeTab={activeDetailTab}
-          onTabChange={onDetailTabChange}
-        />
+        <GroupChatDetail items={groupMessages} />
       ) : visibleSelectedMember ? (
         <MemberTaskDetail
           member={visibleSelectedMember}
@@ -311,7 +275,7 @@ function DetailTabSwitch({
 
   return (
     <div
-      className="grid grid-cols-2 rounded-md bg-[var(--color-connector-tag-surface)] p-1 text-sm"
+      className="grid grid-cols-2 rounded-md bg-[var(--color-tag-surface)] p-1 text-sm"
       data-testid="team-area-detail-tab-switch"
     >
       <button
@@ -334,23 +298,10 @@ function DetailTabSwitch({
   );
 }
 
-function GroupChatDetail({
-  items,
-  members,
-  activeTab,
-  onTabChange,
-}: {
-  items: GroupMessageItem[];
-  members: TeamMember[];
-  activeTab: TeamDetailTab;
-  onTabChange?: (tab: TeamDetailTab) => void;
-}) {
+function GroupChatDetail({ items }: { items: GroupMessageItem[] }) {
   const { t } = useTranslation();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
-  const groupMemberIds = getGroupMemberIds(members);
-  const memberNames = [t('team.leader'), ...groupMemberIds.map(getMemberDisplayName)].join(t('team.memberSeparator'));
-  const avatarMemberIds = [GROUP_LEADER_MEMBER_ID, ...groupMemberIds];
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -368,28 +319,6 @@ function GroupChatDetail({
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-card" data-testid="team-area-group-chat">
-      <div
-        className="flex shrink-0 items-center justify-between gap-5 border-b border-border bg-card px-[24px] pt-[22px] pb-[24px]"
-        data-testid="team-area-group-chat-section"
-      >
-        <div className="w-[192px] shrink-0">
-          <DetailTabSwitch activeTab={activeTab} onChange={onTabChange} />
-        </div>
-        <div className="flex min-w-0 items-center justify-end gap-3">
-          <div className="min-w-0 text-right">
-            <div className="text-base font-semibold text-text" data-testid="team-area-group-chat-title">
-              {t('team.groupChat')}
-            </div>
-            <div className="mt-1 truncate text-xs text-text-muted" data-testid="team-area-group-chat-member-names">
-              {memberNames}
-            </div>
-          </div>
-          <div className="flex -space-x-2" data-testid="team-area-group-chat-avatar-stack">
-            <GroupAvatarStack memberIds={avatarMemberIds} />
-          </div>
-        </div>
-      </div>
-
       <div
         ref={scrollContainerRef}
         className="team-group-chat-message-list min-h-0 flex-1 overflow-y-auto px-7 py-6"
@@ -412,27 +341,6 @@ function GroupChatDetail({
         )}
       </div>
     </section>
-  );
-}
-
-function GroupAvatarStack({ memberIds }: { memberIds: string[] }) {
-  const visibleMemberIds = memberIds.length > 3 ? memberIds.slice(0, 2) : memberIds;
-  const hiddenCount = memberIds.length - visibleMemberIds.length;
-
-  return (
-    <>
-      {visibleMemberIds.map((memberId) => (
-        <TeamMemberAvatar key={memberId} member={memberId} className="!h-7 !w-7 ring-2 ring-card" />
-      ))}
-      {hiddenCount > 0 && (
-        <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-team-overflow-surface)] text-xs font-medium text-accent ring-2 ring-card"
-          data-testid="team-area-group-chat-avatar-overflow"
-        >
-          +{hiddenCount}
-        </span>
-      )}
-    </>
   );
 }
 
@@ -507,7 +415,7 @@ function MemberOverviewPanel({
         ) : (
           <div className="flex flex-col gap-4" data-testid="team-area-member-overview-grid">
             {members.map((member, index) => (
-              <MemberOverviewCard
+              <TeamMemberOverviewCard
                 key={member.member_id}
                 member={member}
                 sequence={index + 1}
@@ -523,7 +431,7 @@ function MemberOverviewPanel({
   );
 }
 
-const MemberOverviewCard = memo(function MemberOverviewCard({
+const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
   member,
   sequence,
   tasks,
@@ -537,7 +445,6 @@ const MemberOverviewCard = memo(function MemberOverviewCard({
   onClick?: () => void;
 }) {
   const { t } = useTranslation();
-  const [expandedProcessIds, setExpandedProcessIds] = useState<Set<string>>(new Set());
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
@@ -561,86 +468,24 @@ const MemberOverviewCard = memo(function MemberOverviewCard({
     [member.member_id, memberTasks, processMessages, t, teamMemberExecutionEvents, teamTaskEvents],
   );
 
-  useEffect(() => {
-    setExpandedProcessIds(new Set());
-  }, [member.member_id]);
-
-  const toggleProcess = (itemId: string) => {
-    setExpandedProcessIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(itemId)) next.delete(itemId);
-      else next.add(itemId);
-      return next;
-    });
-  };
-
   const displayName = getMemberDisplayName(member);
   const statusKey = getMemberStatusKey(member);
   const isRunning = statusKey === 'running';
+  const statusIcon = isRunning ? (
+    <LoadingIcon className="h-4 w-4 shrink-0 text-muted animate-spin" />
+  ) : (
+    <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
+  );
 
   return (
-    <div
-      data-testid="team-area-member-overview-card"
-      data-variant={member.member_id}
-      className="relative flex h-[240px] flex-col gap-3 overflow-hidden rounded-[8px] border-[1.5px] border-border bg-card p-4 text-left hover:border-[var(--color-action-primary)] transition-colors"
-    >
-      <button
-        type="button"
-        onClick={onClick}
-        className="flex items-center gap-3 text-left cursor-pointer"
-        data-testid="team-area-member-overview-card-header"
-      >
-        <span
-          className="absolute left-0 top-0 flex h-[18px] w-[18px] items-center justify-center text-[12px] leading-[18px] text-text bg-[var(--color-member-card-badge-surface)] rounded-tl-[4px] rounded-br-[8px] rounded-tr-none rounded-bl-none"
-          data-testid="team-area-member-overview-card-sequence"
-        >
-          {sequence}
-        </span>
-        <div className="relative shrink-0">
-          <TeamMemberAvatar
-            member={member.member_id}
-            alt={displayName}
-            className="h-8 w-8 rounded-full"
-            imageClassName="rounded-full"
-          />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-normal text-text" data-testid="team-area-member-overview-card-name">
-            {displayName}
-          </div>
-          <div className="mt-0.5 truncate text-xs text-text-muted" data-testid="team-area-member-overview-card-id">
-            @{member.member_id}
-          </div>
-        </div>
-        {isRunning ? (
-          <svg
-            className="w-4 h-4 text-info animate-spin shrink-0"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 2v4" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m16.2 7.8 2.9-2.9" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 12h4" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m16.2 16.2 2.9 2.9" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18v4" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m4.9 19.1 2.9-2.9" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2 12h4" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m4.9 4.9 2.9 2.9" />
-          </svg>
-        ) : (
-          <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
-        )}
-      </button>
-      <div className="min-w-0 flex-1 overflow-hidden">
-        <ProcessListCard
-          items={processItems}
-          expandedIds={expandedProcessIds}
-          onToggle={toggleProcess}
-          maxListHeight="100%"
-        />
-      </div>
-    </div>
+    <MemberOverviewCard
+      memberId={member.member_id}
+      displayName={displayName}
+      sequence={sequence}
+      statusIcon={statusIcon}
+      onClick={onClick}
+      items={processItems}
+    />
   );
 });
 
@@ -658,6 +503,18 @@ function MemberTaskDetail({
   const { t } = useTranslation();
   const [taskListExpanded, setTaskListExpanded] = useState(false);
   const [expandedProcessIds, setExpandedProcessIds] = useState<Set<string>>(new Set());
+  const footerRef = useRef<HTMLDivElement>(null);
+  // 任务列表卡片（popup）展开时：点击外部收起
+  useEffect(() => {
+    if (!taskListExpanded) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!footerRef.current?.contains(event.target as Node)) setTaskListExpanded(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [taskListExpanded]);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
@@ -727,12 +584,15 @@ function MemberTaskDetail({
         </div>
       </div>
 
-      <div className="member-detail-body min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7" data-testid="team-area-member-detail-body">
+      <div
+        className="member-detail-body min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7"
+        data-testid="team-area-member-detail-body"
+      >
         <ProcessListCard items={processItems} expandedIds={expandedProcessIds} onToggle={toggleProcess} />
         <FinalSummaryList events={finalEvents} />
       </div>
 
-      <div className="shrink-0 border-t border-border bg-card" data-testid="team-area-member-detail-footer">
+      <div ref={footerRef} className="relative shrink-0 border-t border-border bg-card">
         <TeamMemberContextCompressionBar
           state={contextCompressionState}
           onClose={() => {
@@ -741,19 +601,16 @@ function MemberTaskDetail({
             }
           }}
         />
-        <MemberTaskListBar
-          tasks={memberTasks}
-          expanded={taskListExpanded}
-          onToggle={() => setTaskListExpanded((expanded) => !expanded)}
-        />
-        {taskListExpanded && (
-          <div
-            className="px-5 pb-4 max-h-[200px] overflow-y-auto"
-            data-testid="team-area-member-detail-task-list-panel"
-          >
-            <MemberTaskListItems tasks={memberTasks} />
+        {memberTasks.length > 0 ? (
+          <div data-testid="team-area-member-detail-footer">
+            <MemberTaskListBar
+              tasks={memberTasks}
+              expanded={taskListExpanded}
+              onToggle={() => setTaskListExpanded((expanded) => !expanded)}
+            />
+            {taskListExpanded && <MemberTaskListPanel tasks={memberTasks} />}
           </div>
-        )}
+        ) : null}
       </div>
     </section>
   );
@@ -857,10 +714,7 @@ function FinalSummaryList({ events }: { events: TeamMemberExecutionEvent[] }) {
   }
 
   return (
-    <div
-      className="mt-5 border-t border-[var(--color-team-detail-divider)] pt-4"
-      data-testid="team-area-final-summary"
-    >
+    <div className="mt-5 border-t border-[var(--color-team-detail-divider)] pt-4" data-testid="team-area-final-summary">
       <div className="mt-4 space-y-6">
         {events.map((event) => (
           <section
@@ -876,127 +730,6 @@ function FinalSummaryList({ events }: { events: TeamMemberExecutionEvent[] }) {
               {event.content || '-'}
             </div>
           </section>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ProcessListCard({
-  items,
-  expandedIds,
-  onToggle,
-  maxListHeight,
-}: {
-  items: ProcessItem[];
-  expandedIds: Set<string>;
-  onToggle: (id: string) => void;
-  maxListHeight?: string;
-}) {
-  const { t } = useTranslation();
-
-  return (
-    <div
-      className="w-full rounded-md border border-border bg-card pt-2 pb-1"
-      style={maxListHeight ? { maxHeight: maxListHeight, overflowY: 'auto', scrollbarGutter: 'stable' } : undefined}
-      data-testid="team-area-process-card"
-    >
-      {items.length === 0 ? (
-        <div className="px-3 py-12 text-center text-sm text-text-muted" data-testid="team-area-process-card-empty">
-          {t('team.noProcessData')}
-        </div>
-      ) : (
-        <div>
-          {items.flatMap((item, index) => {
-            const expanded = expandedIds.has(item.id);
-            const nodes: ReactNode[] = [
-              <div key={item.id} data-testid="team-area-process-item" data-variant={item.id}>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggle(item.id);
-                  }}
-                  data-testid="team-area-process-item-toggle"
-                  className="flex h-[22px] w-full items-center gap-3 px-3 pr-1 text-left hover:bg-secondary"
-                >
-                  <ProcessIcon item={item} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-center gap-2 text-sm text-text-muted">
-                      <span className="shrink-0 text-muted-strong" data-testid="team-area-process-item-title">
-                        {item.title}
-                      </span>
-                      {item.subtitle && (
-                        <>
-                          <span className="flex" data-testid="team-area-process-item-separator">
-                            <span className="w-[1px] h-[10px] bg-border" />
-                          </span>
-                          <span className="truncate text-muted" data-testid="team-area-process-item-subtitle">
-                            {item.subtitle}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <span className="shrink-0 text-muted">
-                    <Chevron expanded={expanded} />
-                  </span>
-                </button>
-                {expanded && <ProcessDetail item={item} />}
-              </div>,
-            ];
-            if (index < items.length - 1) {
-              nodes.push(
-                <div key={`divider-${item.id}`} className="flex h-4 py-px pl-[20px]">
-                  <span className="w-[1px] h-[10px] -translate-x-1/2 rounded-full bg-border" />
-                </div>,
-              );
-            }
-            return nodes;
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ProcessIcon({ item }: { item: ProcessItem }) {
-  if (item.type === 'message') {
-    return (
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted">
-        <MessageSquare size={13} />
-      </span>
-    );
-  }
-  if (item.type === 'execution') {
-    return (
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted">
-        <Wrench size={13} />
-      </span>
-    );
-  }
-  return <StatusIcon status={item.status as TaskStatus} />;
-}
-
-function ProcessDetail({ item }: { item: ProcessItem }) {
-  const { t } = useTranslation();
-  const rows = buildProcessDetailRows(item, t);
-
-  return (
-    <div
-      className="border-t border-border bg-secondary px-12 py-3 text-xs text-text"
-      data-testid="team-area-process-detail"
-    >
-      <div className="space-y-2">
-        {rows.map(([label, value]) => (
-          <div key={label} className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
-            <span className="text-muted" data-testid="team-area-process-detail-label">
-              {label}
-            </span>
-            <span className="whitespace-pre-wrap break-words" data-testid="team-area-process-detail-value">
-              {value}
-            </span>
-          </div>
         ))}
       </div>
     </div>

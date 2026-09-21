@@ -16,6 +16,7 @@ manifest 是整个 plugin 插件包的总清单，声明包的元信息、组件
 | `display_description` | `{en, zh}`  | 是   | 能力介绍，中文约 40-50 字                                                                  |
 | `category`           | string      | 是   | 插件分类；用于列表页筛选，见下方「category 取值」                                                     |
 | `source`             | string      | 是   | 来源标识，**固定** `"local"`                                                             |
+| `avatar`             | string      | 否   | 头像包内相对路径，与专家包同一字段。有图时写 `"avatars/avatar.png"`；没有则写 `""` 或整段省略 |
 | `default_init_input`   | `{en, zh}`  | 是   | 首次对话引导语，须与 `quick_inputs` 第一条一致                                                    |
 | `tags`               | `[{en,zh}]` | 是   | 能力标签，固定 3 个                                                                       |
 | `quick_inputs`        | `[{en,zh}]` | 是   | 推荐提示词，固定 3 个；写**能力触发场景**                                                          |
@@ -81,6 +82,7 @@ manifest 是整个 plugin 插件包的总清单，声明包的元信息、组件
   },
   "category": "{category}",
   "source": "local",
+  "avatar": "",
   "default_init_input": {
     "zh": "{中文引导语}",
     "en": "{English prompt}"

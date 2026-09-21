@@ -5,10 +5,10 @@
 职责:
   - ``_loop`` 周期扫描 due jobs,调用 ``_tick_once``。
   - ``_handle_due_job``:session 校验 + 并发策略 + dispatch。
-  - ``_dispatch_job``:构造 ``CHAT_SEND`` 投递回原 session,带 automation metadata。
-  - ``_finish_run``:更新 last_run_at/run_count/next_run_at;达成停止条件则 completed。
+  - ``_dispatch_claimed_job``:构造 ``CHAT_SEND`` 投递回原 session,带 automation metadata。
+  - ``on_run_finished``:更新 last_run_at/run_count/next_run_at;达成停止条件则 completed。
   - ``compute_next_run``:interval/cron/once 下一次触发。
-  - ``_apply_concurrency_policy``:skip/queue/replace。
+  - ``claim_run``:在 store 内原子处理 skip/queue/replace。
   - ``_handle_missing_session``:session 删除/不可恢复按 session_deleted_policy 处理。
   - ``reload``/``_check_store_changed``:外部编辑 heartbeat_jobs.json 后刷新。
   - ghost task 清理:job 被删除后取消当前 run。
@@ -26,7 +26,7 @@ import asyncio
 import logging
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo
@@ -183,8 +183,7 @@ class HeartbeatSchedulerService:
 
     async def reload(self) -> None:
         """重新加载 store;清理 ghost run 并恢复超时的持久化 run。"""
-        await self._store.list_jobs()  # 触发读盘 + 缓存刷新
-        # 清理 store 中已不存在的 job 的活跃 run
+        # 触发读盘 + 缓存刷新,并清理 store 中已不存在的 job 的活跃 run
         all_jobs = await self._store.list_jobs()
         live_job_ids = {j.id for j in all_jobs}
         ghost_run_ids = [
@@ -193,6 +192,9 @@ class HeartbeatSchedulerService:
             if jid not in live_job_ids
         ]
         for rid in ghost_run_ids:
+            cancelled = await self._execution_service.cancel(rid)
+            if not cancelled and self._execution_service.has_active_run(rid):
+                raise RuntimeError(f"failed to cancel ghost heartbeat run: {rid}")
             self._active_runs.pop(rid, None)
             logger.info(
                 "[HeartbeatScheduler] cleared ghost run: run_id=%s (job no longer in store)",
@@ -204,11 +206,14 @@ class HeartbeatSchedulerService:
         for job in all_jobs:
             rid = job.run_state.current_run_id
             started = job.run_state.current_run_started_at
-            if not rid or started is None or rid in self._active_runs:
+            if not rid:
+                if job.run_state.queued_run_id:
+                    await self._consume_queued_run(job.id)
                 continue
             if self._execution_service.has_active_run(rid):
-                self._active_runs[rid] = (job.id, started)
+                self._active_runs[rid] = (job.id, started or self._now_fn())
                 continue
+            self._active_runs.pop(rid, None)
             await self.on_run_finished(
                 job.id,
                 rid,
@@ -321,6 +326,13 @@ class HeartbeatSchedulerService:
                 job.status,
                 job.enabled,
             )
+            return
+        if (
+            job.run_state.current_run_id is None
+            and job.run_state.queued_run_id is not None
+        ):
+            if not self._session_is_busy(job):
+                await self._consume_queued_run(job.id)
             return
         if job.next_run_at is None or job.next_run_at > now:
             return
@@ -477,7 +489,12 @@ class HeartbeatSchedulerService:
         )
 
     async def _dispatch_claimed_job(
-        self, job: HeartbeatJob, run_id: str, now: float
+        self,
+        job: HeartbeatJob,
+        run_id: str,
+        now: float,
+        *,
+        preserve_as_queued: bool = False,
     ) -> None:
         """Start a claimed run inside AgentServer through the shared admission."""
         self._active_runs[run_id] = (job.id, now)
@@ -485,7 +502,11 @@ class HeartbeatSchedulerService:
             msg = self._build_message(job, run_id, now)
             admitted = await self._execution_service.dispatch(job, run_id, msg)
             if not admitted:
-                await self.on_session_busy_after_dispatch(job.id, run_id)
+                await self.on_session_busy_after_dispatch(
+                    job.id,
+                    run_id,
+                    preserve_as_queued=preserve_as_queued,
+                )
         except Exception as exc:
             logger.warning(
                 "[HeartbeatScheduler] dispatch failed job=%s run_id=%s: %s",
@@ -622,10 +643,19 @@ class HeartbeatSchedulerService:
         error: str | None = None,
         pause_schedule: bool = False,
         consume_queue: bool = True,
+        before_queue: Callable[[], Awaitable[None]] | None = None,
     ) -> bool:
         """Complete the exact run reported by the AgentServer execution owner."""
         job = await self._store.get_job(job_id)
-        if job is None or job.run_state.current_run_id != run_id:
+        if job is None:
+            return False
+        if job.run_state.current_run_id != run_id:
+            self._active_runs.pop(run_id, None)
+            if before_queue is not None:
+                await before_queue()
+            if consume_queue and job.run_state.current_run_id is None:
+                if job.run_state.queued_run_id is not None and not job.is_terminal():
+                    await self._consume_queued_run(job.id)
             return False
         now = self._now_fn()
         normalized = {
@@ -663,13 +693,19 @@ class HeartbeatSchedulerService:
             pause_schedule=pause_schedule,
         )
         self._active_runs.pop(run_id, None)
+        if before_queue is not None:
+            await before_queue()
         if not matched or finished.is_terminal() or not consume_queue:
             return matched
         await self._consume_queued_run(job.id)
         return matched
 
     async def on_session_busy_after_dispatch(
-        self, job_id: str, run_id: str
+        self,
+        job_id: str,
+        run_id: str,
+        *,
+        preserve_as_queued: bool = False,
     ) -> bool:
         """Return an exact claim to its original due time after a dispatch race."""
         try:
@@ -677,6 +713,7 @@ class HeartbeatSchedulerService:
                 job_id,
                 run_id,
                 now=self._now_fn(),
+                preserve_as_queued=preserve_as_queued,
             )
         except KeyError:
             matched = False
@@ -685,18 +722,18 @@ class HeartbeatSchedulerService:
 
     async def _consume_queued_run(self, job_id: str) -> None:
         """Start the single queued run, if the job is still runnable."""
-        queued = await self._store.pop_queued_run(job_id)
-        if queued is not None:
-            queued_id, trigger, queued_reschedule = queued
-            refreshed = await self._store.get_job(job_id)
-            if refreshed is not None:
-                await self._start_run(
-                    refreshed,
-                    queued_id,
-                    self._now_fn(),
-                    trigger=trigger,
-                    reschedule=queued_reschedule,
-                )
+        promoted = await self._store.promote_queued_run(
+            job_id, now=self._now_fn()
+        )
+        if promoted is None:
+            return
+        job, run_id = promoted
+        await self._dispatch_claimed_job(
+            job,
+            run_id,
+            self._now_fn(),
+            preserve_as_queued=True,
+        )
 
     # ---- 取消执行 ----
 

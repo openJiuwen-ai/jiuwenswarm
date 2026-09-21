@@ -27,7 +27,13 @@ export type FetchServiceState =
   | 'FAILED';
 
 /** 后端 fetch_run_progress[id].run_state 用小写值（与 fetch_service_states 的大写枚举是两套体系）。 */
-export type FetchRunState = 'idle' | 'running' | 'succeeded' | 'cancelled' | 'failed';
+export type FetchRunState =
+  | 'idle'
+  | 'running'
+  | 'stopping'
+  | 'succeeded'
+  | 'cancelled'
+  | 'failed';
 
 /** 单服务采集进度（后端 get_fetch_run_status / status.fetch_run_progress[id]）。 */
 export type FetchRunProgress = {
@@ -37,6 +43,22 @@ export type FetchRunProgress = {
   total_items: number;
   completed_items: number;
   last_error: string | null;
+};
+
+/** get_fetch_run_status 返回的单次运行记录；终端记录会保留 run_id 和起止时间。 */
+export type FetchRunRecord = FetchRunProgress & {
+  run_id: string;
+  started_at: string;
+  finished_at: string | null;
+};
+
+export type FetchRunStatusService = {
+  service_id: string;
+  runs: FetchRunRecord[];
+};
+
+export type FetchRunStatusResponse = {
+  services: FetchRunStatusService[];
 };
 
 export type PersonalContextStatus = {
@@ -59,12 +81,39 @@ export type PersonalContextStatus = {
   } | null;
 };
 
+/**
+ * 运行时停止超时不属于图谱发布失败；它应由采集任务页处理。
+ * Core 目前会把 timeout 模板参数缺失渲染成 `<missing:timeout>`，所以这里只匹配稳定字段。
+ */
+export function isFetchStopTimeoutError(
+  error: PersonalContextStatus['last_error'] | undefined,
+): boolean {
+  return (
+    error?.status === 'CONTEXT_PROACTIVE_RUNTIME_TIMEOUT' &&
+    error.operation === 'deactivate_runtime' &&
+    error.message.includes('PersonalContext stop timed out')
+  );
+}
+
+/**
+ * 采集任务运行时后端拒绝配置修改的错误码（host_api._apply_configuration_locked 的
+ * CONTEXT_PROACTIVE_STATE_INVALID = 154001，见 openjiuwen/.../status_codes.py）。
+ * 前端捕获此码时用简短提示（alert）替代持久错误条。
+ */
+export const FETCH_TASK_RUNNING_ERROR_CODE = 154001;
+
+/** 判断某个请求错误是否由「采集任务正在运行，配置修改被拒绝」触发。 */
+export function isFetchTaskRunningError(error: unknown): boolean {
+  return String((error as { code?: unknown })?.code ?? '') === String(FETCH_TASK_RUNNING_ERROR_CODE);
+}
+
 // ── runtime.get_config / patch / select_model 返回的 stored config ─────────
 export type StrategyProfile = 'rules' | 'balanced' | 'agent';
 
 export type FetchProvider =
   | 'local_files'
   | 'github'
+  | 'gitcode'
   | 'feishu'
   | 'browser_bookmarks'
   | 'zhihu_reader'
@@ -86,8 +135,23 @@ export type FetchServiceConfig = {
   max_items_per_run: number | null;
   time_range: TimeRange;
   source: Record<string, unknown>;
-  credentials: Record<string, string>;
+  /**
+   * 凭证由后端 provider 授权托管（github/gitcode 的 token/pat、飞书 OAuth），
+   * 创建时前端不传；list 返回后端也会 _project_service 剥离该字段。故设为可选。
+   */
+  credentials?: Record<string, string>;
 };
+
+/**
+ * patch_service 可写字段（对齐后端 host_api.patch_fetch_service 的 allowed 集合）。
+ * 名称/来源不可改；credentials 由后端 provider 授权托管，也不可写。
+ */
+export type FetchServicePatch = Partial<
+  Pick<
+    FetchServiceConfig,
+    'interval_seconds' | 'max_items_per_run' | 'source' | 'time_range'
+  >
+>;
 
 export type PersonalContextConfig = {
   configured: boolean;
@@ -95,6 +159,7 @@ export type PersonalContextConfig = {
   agent_use_enabled: boolean;
   strategy_profile: StrategyProfile;
   model_index: number | null;
+  model_id: string | null;
   fetch_services: FetchServiceConfig[];
 };
 
@@ -169,94 +234,74 @@ export type ContextSourceDetail = {
   last_seen: string;
 };
 
-export type FetchRunStatusItem = {
-  service_id: string;
-  run_state: FetchRunState;
-  progress_percent: number;
-  total_items: number;
-  completed_items: number;
-  last_error: string | null;
-};
-
-// ── GitHub PAT 本地 mock 存储 ──────────────────────────────────────────────
-// 后端 authorize_provider 仅支持 feishu，GitHub 走 credentials.token（PAT），
-// 无独立授权/token 存储接口。前端用 localStorage 暂存 PAT，创建 GitHub service
-// 时读出填入 credentials.token。
-// TODO(backend): GitHub PAT 存储/校验接口；落地后此 mock 可移除。
-const GITHUB_TOKEN_STORAGE_KEY = 'jiuwen.pc.githubToken';
-
-export function getGithubToken(): string | null {
-  try {
-    return localStorage.getItem(GITHUB_TOKEN_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function setGithubToken(token: string): void {
-  try {
-    localStorage.setItem(GITHUB_TOKEN_STORAGE_KEY, token);
-  } catch {
-    // 静默；存储不可用不阻塞
-  }
-}
-
-export function clearGithubToken(): void {
-  try {
-    localStorage.removeItem(GITHUB_TOKEN_STORAGE_KEY);
-  } catch {
-    // 静默
-  }
-}
+// ── API 方法 ──────────────────────────────────────────────────────────────
+/**
+ * 采集单次运行/停止 RPC 的客户端超时。
+ * run_fetch 虽为立即返回 accepted，但受后端 _operation_lock 串行影响；stop_fetch_run 会
+ * await 采集任务真正落停。两者都放宽到 60s，避免默认 15s 造成的"后端其实已受理，前端却误报请求超时"。
+ */
+const FETCH_OP_TIMEOUT_MS = 60_000;
 
 /**
- * provider 当前是否已授权（内容页"添加内容"下拉可选性门控）。
- * - feishu：走 authByProvider 真实态
- * - github：localStorage 有 token 即视为已授权
- * - 其它 provider：无需授权，返回 true
+ * 配置变更类 RPC 的客户端超时。create_service 受 _operation_lock 串行，且运行时会
+ * 先 deactivate（上限 30s）再重建，可能与正在等待/执行的 stop 叠加，故放宽到 90s。
  */
-export function isProviderAuthorized(
-  provider: FetchProvider,
-  authByProvider: Record<string, AuthorizationResult>,
-): boolean {
-  if (provider === 'feishu') {
-    return authByProvider.feishu?.state === 'authorized';
-  }
-  if (provider === 'github') {
-    return !!getGithubToken();
-  }
-  return true;
-}
+const FETCH_CONFIG_TIMEOUT_MS = 90_000;
 
-// ── API 方法 ──────────────────────────────────────────────────────────────
+/** 运行历史只读且数据量很小；超时后轮询会跳过后续周期，避免堆积请求。 */
+const FETCH_RUN_STATUS_TIMEOUT_MS = 15_000;
+
 export const pcApi = {
   getStatus: () =>
     webRequest<PersonalContextStatus>('personal_context.runtime.status'),
 
   startRuntime: () =>
-    webRequest<PersonalContextConfig>('personal_context.runtime.start_collection'),
+    webRequest<PersonalContextConfig>(
+      'personal_context.runtime.start_collection',
+      {},
+      // start_collection 会加载 embedding / activate_runtime，且受 _operation_lock 串行，
+      // 可能慢于默认 15s；stop_collection 后端会 await 到 _STOP_TIMEOUT_SECONDS(30s) 才返回，
+      // 故起停都放宽到 60s，避免"后端其实已停完/起完，前端却先报请求超时"。
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
 
   stopRuntime: () =>
-    webRequest<PersonalContextConfig>('personal_context.runtime.stop_collection'),
+    webRequest<PersonalContextConfig>(
+      'personal_context.runtime.stop_collection',
+      {},
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
 
   startAgentUse: () =>
-    webRequest<PersonalContextConfig>('personal_context.runtime.start_agent_use'),
+    webRequest<PersonalContextConfig>(
+      'personal_context.runtime.start_agent_use',
+      {},
+      // 走 _operation_lock，与慢速 stop_collection 串行时可能被拖慢，统一放宽。
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
 
   stopAgentUse: () =>
-    webRequest<PersonalContextConfig>('personal_context.runtime.stop_agent_use'),
+    webRequest<PersonalContextConfig>(
+      'personal_context.runtime.stop_agent_use',
+      {},
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
 
   getConfig: () =>
     webRequest<PersonalContextConfig>('personal_context.runtime.get_config'),
 
   patchConfig: (patch: { strategy_profile?: StrategyProfile }) =>
-    webRequest<PersonalContextConfig>('personal_context.runtime.patch_config', {
-      patch,
-    }),
+    webRequest<PersonalContextConfig>(
+      'personal_context.runtime.patch_config',
+      { patch },
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
+    ),
 
   selectModel: (model_index: number) =>
     webRequest<PersonalContextConfig>(
       'personal_context.runtime.select_model',
       { model_index },
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
     ),
 
   listServices: () =>
@@ -267,70 +312,70 @@ export const pcApi = {
   createService: (service: FetchServiceConfig) =>
     webRequest<FetchServiceConfig>('personal_context.fetch.create_service', {
       service,
-    }),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
   deleteService: (service_id: string) =>
     webRequest<{ ok: true }>('personal_context.fetch.delete_service', {
       service_id,
-    }),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
-  patchService: (
-    service_id: string,
-    patch: Partial<
-      Pick<
-        FetchServiceConfig,
-        'interval_seconds' | 'max_items_per_run' | 'source' | 'credentials'
-      >
-    >,
-  ) =>
+  patchService: (service_id: string, patch: FetchServicePatch) =>
     webRequest<FetchServiceConfig>('personal_context.fetch.patch_service', {
       service_id,
       patch,
-    }),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
   startService: (service_id: string) =>
     webRequest<{ ok: true }>('personal_context.fetch.start_service', {
       service_id,
-    }),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
   stopService: (service_id: string) =>
     webRequest<{ ok: true }>('personal_context.fetch.stop_service', {
       service_id,
-    }),
-
-  // 预留公共 API：批量启动所有已启用采集任务（当前 UI 仅用 runOne，保留以备后续批量操作或外部调用）。
-  runAll: () =>
-    webRequest<{ state: string; service_ids: string[] }>(
-      'personal_context.fetch.run_all',
-    ),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
   runOne: (service_id: string) =>
     webRequest<{ state: string; service_ids: string[] }>(
       'personal_context.fetch.run_one',
       { service_id },
+      // run_fetch 后端立即返回 accepted，但受 _operation_lock 串行影响，极端下可能慢于默认 15s。
+      // 放宽超时避免"后端其实已接受/完成，前端却先报请求超时"的假象（同 connectorApi 的教训）。
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
   stopRun: (service_id: string) =>
-    webRequest<{ ok: true }>('personal_context.fetch.stop_run', {
-      service_id,
-    }),
+    webRequest<{ ok: true }>(
+      'personal_context.fetch.stop_run',
+      { service_id },
+      // stop_fetch_run 会 await 采集任务真正落停（asyncio.shield），耗时随采集进度不定，放宽超时。
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
 
-  // 预留公共 API：查询单次采集运行态（当前 UI 用 status 快照轮询，保留以备外部按需查询）。
-  getRunStatus: (service_id?: string) =>
-    webRequest<
-      FetchRunStatusItem | { services: FetchRunStatusItem[] }
-    >('personal_context.fetch.get_run_status', { service_id }),
+  getRunStatus: () =>
+    webRequest<FetchRunStatusResponse>(
+      'personal_context.fetch.get_run_status',
+      {},
+      { timeoutMs: FETCH_RUN_STATUS_TIMEOUT_MS },
+    ),
 
   getAuthStatus: (provider: string) =>
     webRequest<AuthorizationResult>(
       'personal_context.fetch.get_authorization_status',
       { provider },
+      // 后端会真连 GitHub/GitCode 探活（_validate_repository_pat，15s 超时），
+      // 走 _operation_lock 串行时可能慢于前端默认 15s，放宽避免"后端已成功，前端却先报超时"。
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
-  authorizeProvider: (provider: string) =>
+  authorizeProvider: (provider: string, credentials?: Record<string, string>) =>
     webRequest<AuthorizationResult>(
       'personal_context.fetch.authorize_provider',
-      { provider },
+      {
+        provider,
+        ...(credentials ? { credentials } : {}),
+      },
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
   /**
@@ -405,11 +450,13 @@ export const pcApi = {
         ),
       );
 
-      webClient.sendFireAndForget('personal_context.context.stream_graph', {}, { isStream: true }).catch(
-        (e: unknown) => {
+      // depth 显式传满（后端上限 10），否则默认 3 会截断深层子目录，
+      // 导致左侧文件树与画布节点都丢失更深的文件信息。
+      webClient
+        .sendFireAndForget('personal_context.context.stream_graph', { depth: 10 }, { isStream: true })
+        .catch((e: unknown) => {
           finish(false, undefined, e instanceof Error ? e : new Error(String(e)));
-        },
-      );
+        });
     }),
 
   searchPages: (query: string) =>
@@ -437,6 +484,7 @@ export const pcApi = {
 export const PROVIDER_LABEL_KEYS: Record<FetchProvider, string> = {
   local_files: 'personalContext.provider.localFiles',
   github: 'personalContext.provider.github',
+  gitcode: 'personalContext.provider.gitcode',
   feishu: 'personalContext.provider.feishu',
   browser_bookmarks: 'personalContext.provider.browserBookmarks',
   zhihu_reader: 'personalContext.provider.zhihuReader',
@@ -446,7 +494,7 @@ export const PROVIDER_LABEL_KEYS: Record<FetchProvider, string> = {
 /**
  * provider 展示顺序（单一事实源）。
  * 内容页左侧分类列表与「添加内容」下拉共用，避免两处顺序不一致。
- * 顺序：本地文件夹 → Edge 收藏夹 → 知乎专栏 → 今日头条 → 飞书 → GitHub。
+ * 顺序：本地文件夹 → Edge 收藏夹 → 知乎专栏 → 今日头条 → 飞书 → GitHub → GitCode。
  */
 export const PROVIDER_ORDER: readonly FetchProvider[] = [
   'local_files',
@@ -455,13 +503,14 @@ export const PROVIDER_ORDER: readonly FetchProvider[] = [
   'toutiao_reader',
   'feishu',
   'github',
+  'gitcode',
 ];
 
-/** 采集模式下拉选项。 */
+/** 采集模式下拉选项（智能体默认置顶，规则模式放在最末）。 */
 export const STRATEGY_OPTIONS: StrategyProfile[] = [
-  'rules',
-  'balanced',
   'agent',
+  'balanced',
+  'rules',
 ];
 
 /** GitHub 可采集资源，与后端 _GITHUB_RESOURCES 对齐（config.py:30）。 */
@@ -475,6 +524,19 @@ export const GITHUB_RESOURCE_LABEL_KEYS: Record<GithubResource, string> = {
   pull_requests: 'personalContext.addContent.github.pullRequests',
   commits: 'personalContext.addContent.github.commits',
   code: 'personalContext.addContent.github.code',
+};
+
+/** GitCode 可采集资源，与后端 _REPOSITORY_RESOURCES 对齐（config.py:33，与 GitHub 同一套）。 */
+export const GITCODE_RESOURCES = ['readme', 'issues', 'pull_requests', 'commits', 'code'] as const;
+export type GitcodeResource = (typeof GITCODE_RESOURCES)[number];
+
+/** GitCode 资源 → 本地化 label key。 */
+export const GITCODE_RESOURCE_LABEL_KEYS: Record<GitcodeResource, string> = {
+  readme: 'personalContext.addContent.gitcode.readme',
+  issues: 'personalContext.addContent.gitcode.issues',
+  pull_requests: 'personalContext.addContent.gitcode.pullRequests',
+  commits: 'personalContext.addContent.gitcode.commits',
+  code: 'personalContext.addContent.gitcode.code',
 };
 
 /**
@@ -507,24 +569,28 @@ export const FREQUENCY_SECONDS: Record<FrequencyUnit, number> = {
 };
 
 /**
- * 单次最大采集条数，对齐后端 config.py: max_items_per_run int|None，ge=1, le=10000。
- * None（前端留空）= 用各 provider 默认值；填值须在 [1,10000]。
+ * 单次最大采集条数，前端业务上限 [1,40]（后端 config.py 仍允许 le=10_000，
+ * 此处按产品要求在前端收窄，后端未同步修改）。
+ * None（前端留空）= 用各 provider 默认值；填值须在 [1,40]。
  * （后端不接受 0；前端以留空表达"不限/用默认"。）
  */
 export const MAX_ITEMS_MIN = 1;
-export const MAX_ITEMS_MAX = 10000;
+export const MAX_ITEMS_MAX = 40;
 
 /**
- * service_id 前端预校验，对齐后端 _safe_segment（config.py: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$，禁 ./..）。
+ * 采集频率上限（秒），对齐后端 PersonalContextFetchServiceConfig.interval_seconds 的 le=31_536_000（365 天）。
+ * 前端 spinner 递增时据此钳制，避免 freqValue × 86400 撞后端上限报「invalid PersonalContext configuration」。
+ */
+export const INTERVAL_MAX_SECONDS = 31_536_000;
+
+/**
+ * service_id 前端仅做长度限制（≤500），格式校验由后端负责。
  * 返回 null 表示通过；否则返回错误信息。
  */
 export function validateServiceId(value: string): string | null {
   const text = value.trim();
   if (!text) return 'service_id is required';
-  if (text === '.' || text === '..') return 'service_id must not be . or ..';
-  if (!/^[A-Za-z0-9\u4e00-\u9fff][A-Za-z0-9\u4e00-\u9fff ._\-\/]{0,127}$/.test(text)) {
-    return 'service_id must start with a letter/digit/Chinese char and contain only letters, digits, Chinese, spaces, . _ - / (max 128 chars)';
-  }
+  if (text.length > 500) return 'service_id must be at most 500 characters';
   return null;
 }
 
@@ -590,6 +656,37 @@ export function parseGithubRepoUrl(value: string): { owner: string; repo: string
   const seg = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
   if (owner === '.' || owner === '..' || !seg.test(owner)) return { error: 'github owner is invalid' };
   if (repo === '.' || repo === '..' || !seg.test(repo)) return { error: 'github repo is invalid' };
+  return { owner, repo };
+}
+
+/**
+ * GitCode 仓库 URL → {owner, repo} 解析（类比 GitHub）。
+ * 接受 https://gitcode.com/<owner>/<repo> 或 git@gitcode.com:<owner>/<repo>(.git)
+ * 对齐后端 _safe_segment 规则：owner/repo 须匹配 ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+ * 返回 null + 不合法时返回错误信息。
+ */
+export function parseGitcodeRepoUrl(value: string): { owner: string; repo: string } | { error: string } {
+  const text = value.trim();
+  if (!text) return { error: 'gitcode repo url is required' };
+  let owner = '';
+  let repo = '';
+  const m = text.match(/^https?:\/\/(?:[^/]*\.)?gitcode\.com\/([^/]+)\/([^/?#]+)/i);
+  if (m) {
+    owner = m[1];
+    repo = m[2];
+  } else {
+    const m2 = text.match(/^git@gitcode\.com:([^/]+)\/([^?#]+)$/i);
+    if (m2) {
+      owner = m2[1];
+      repo = m2[2];
+    } else {
+      return { error: 'invalid GitCode repository URL' };
+    }
+  }
+  repo = repo.replace(/\.git$/i, '');
+  const seg = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+  if (owner === '.' || owner === '..' || !seg.test(owner)) return { error: 'gitcode owner is invalid' };
+  if (repo === '.' || repo === '..' || !seg.test(repo)) return { error: 'gitcode repo is invalid' };
   return { owner, repo };
 }
 

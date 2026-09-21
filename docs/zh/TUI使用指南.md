@@ -144,10 +144,10 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 | `/config` | `/settings`, `/setting` | 查看/设置后端配置 | `/config`、`/config get`、`/config set key value` | 全部 |
 | `/context` | - | 查看上下文窗口占用与 Token 用量明细 | `/context` | 全部 |
 | `/diff` | - | 交互式回顾按轮次 diff + 未提交工作树改动 | `/diff` | 全部 |
-| `/evolve` | - | 触发技能演进 | `/evolve myskill 修正错误处理` | `agent.plan` / `team`（见下） |
-| `/evolve_list` | - | 列出某技能的演进条目 | `/evolve_list myskill --sort score` | `agent.plan` / `team` |
-| `/evolve_rebuild` | - | 从归档与演进记录重建 SKILL.md | `/evolve_rebuild myskill 强化错误处理` | `agent.plan` / `team` |
-| `/evolve_simplify` | - | 整理、合并某技能的演进经验 | `/evolve_simplify myskill 合并重复经验` | `agent.plan` / `team` |
+| `/evolve` | - | 触发技能演进 | `/evolve myskill 修正错误处理` | Agent / Team（见下） |
+| `/evolve_list` | - | 列出某技能的演进条目 | `/evolve_list myskill` | Agent / Team |
+| `/evolve_rebuild` | - | 从归档与演进记录重建 SKILL.md | `/evolve_rebuild myskill 强化错误处理` | Agent / Team |
+| `/evolve_simplify` | - | 整理、合并某技能的演进经验 | `/evolve_simplify myskill 合并重复经验` | Agent / Team |
 | `/init` | - | 在 **Code 模式** 下初始化 `JIUWENSWARM.md` / `JIUWENSWARM.local.md` | `/init` | **仅 `code.*`** |
 | `/mcp` | - | 管理 MCP 服务 | `/mcp list`、`/mcp add ...` | 全部 |
 | `/mode` | - | 切换或查看模式 | `/mode`、`/mode code`、`/mode team` | 全部 |
@@ -357,16 +357,16 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 
 | 命令 | 用途 | 行为要点 |
 |------|------|----------|
-| `/evolve <skill_name> [user_query]` | 为单个 Skill 生成演进记录 | `agent.plan` 下会先扫描当前会话中的工具失败和用户纠错信号；若没有信号且未给 `user_query`，返回“未发现明确演进信号”。Team 模式必须提供 `<user_query>`。 |
-| `/evolve_list <skill_name> [--sort score]` | 查看某 Skill 的经验库 | 展示记录数、平均分、使用/反馈统计、目标 section 与内容预览；当前实现按 score 获取记录。 |
+| `/evolve <skill_name> [user_intent]` | 为指定 Skill 发起演进审查 | 尾随文本是可选的审查意图。显式命令按目标实际类型处理，支持 Team 模式手动演进普通 Skill，也支持普通模式手动演进 Team/Swarm Skill。 |
+| `/evolve_list <skill_name>` | 查看某 Skill 的经验库 | 展示记录数、平均分、使用/反馈统计、目标 section 与内容预览；当前实现按 score 获取记录。 |
 | `/evolve_simplify <skill_name> [user_intent]` | 智能整理经验库 | 生成可审批的整理方案，用于合并、拆分或清理演进经验。尾随文本会作为整理意图传给后端，不是独立 CLI flag。 |
 | `/evolve_rebuild <skill_name> [user_intent]` | 重建 SKILL.md | 由后端生成 follow-up prompt，并继续作为普通 Agent / Team 任务执行，用归档历史与演进记录重建 Skill 文档。 |
 
 适用条件：
 
-- `agent.plan`：用于单 Agent Skill 自演进；其它 Agent / Code 子模式不处理这组命令。
-- `team`：使用团队技能演进 rail；`/evolve <skill_name> <user_query>`、`/evolve_list`、`/evolve_simplify`、`/evolve_rebuild` 可用。
-- 无参数 `/evolve` 仅在 `agent.plan` 下返回待处理演进记录摘要；Team 模式会要求补充 Skill 名称和演进意图。
+- Agent 普通或规划模式：自动建议面向普通 Skill；上述命令可用。
+- Team 模式：自动建议面向 Team/Swarm Skill；`/evolve <skill_name> [user_intent]`、`/evolve_list`、`/evolve_simplify`、`/evolve_rebuild` 可用。
+- 无参数 `/evolve` 在 Agent 模式下返回待处理演进记录摘要；Team 模式会要求补充 Skill 名称，演进意图仍为可选。
 
 审批与状态：
 

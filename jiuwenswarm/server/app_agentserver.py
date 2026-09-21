@@ -171,6 +171,11 @@ from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
 
 install_shell_tool_safety_hooks()
 
+# Normalize known provider compatibility gaps before any runtime Model is built.
+from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
+
+apply_provider_compat_patches()
+
 # 兼容 SSE-only 网关：让非流式 invoke()（subagent / 心跳等）能解析 text/event-stream 响应
 # 仅当 channels.xiaoyi.mode == xiaoyi_claw 时才打补丁（该网关以 SSE-only 方式返回非流式响应）。
 from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
@@ -199,6 +204,14 @@ def _should_apply_sse_invoke_patch() -> bool:
 
 if _should_apply_sse_invoke_patch():
     apply_openai_sse_invoke_patch()
+
+# 登录模型的api_key是凭据句柄
+try:
+    from jiuwenswarm.common.auth.login_credentials import apply_login_credential_patch
+
+    apply_login_credential_patch()
+except Exception:  # noqa: BLE001 — 补丁装不上不该拖垮启动
+    logging.getLogger(__name__).warning("[LoginCredential] 凭据钩子安装失败", exc_info=True)
 _mark_startup_import_phase("entry_module_ready")
 
 # ``TaskTool`` 的 /debug 跟踪补丁按首个开启 subagent trace 的请求再加载。

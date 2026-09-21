@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock, Mock
 from dataclasses import dataclass, field
 
 import pytest
@@ -98,6 +99,24 @@ def _parse_visible_identity(query: str) -> tuple[dict, str]:
     identity_raw, message = query[len(prefix) :].split(suffix, 1)
     assert message.endswith("\n</im_message>")
     return json.loads(identity_raw), message[: -len("\n</im_message>")]
+
+
+@pytest.mark.asyncio
+async def test_explicit_supplement_keeps_sender_without_consuming_pending_question(monkeypatch):
+    processor = AsyncMock()
+    pipeline = IMInboundPipeline(processor=processor, adapters={"feishu": _FakeAdapter()})
+    pending = Mock(side_effect=AssertionError("supplement must not consume pending answer"))
+    monkeypatch.setattr(pipeline, "_peek_pending", pending)
+    msg = _group_message("ou_li", "请补充测试结果")
+    msg.params["input_mode"] = "steer"
+    msg.metadata["is_resume_message"] = True
+    msg.metadata["dm_pending_interaction_id"] = "still-pending"
+    assert await pipeline.apply(msg)
+    identity, text = _parse_visible_identity(msg.params["query"])
+    assert identity["user_id"] == "ou_li"
+    assert text == "请补充测试结果"
+    pending.assert_not_called()
+    processor.process.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,8 @@
+import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
 import { create } from 'zustand';
 import i18n from '../i18n';
 import { connectorApi } from '../services/connectorApi';
-import type { ConnectorConnectResponse, ConnectorDetail, ConnectorSummary, McpBusyKind } from '../types/connector';
+import type { ConnectorConnectResponse, ConnectorDetail, ConnectorInstallResponse, ConnectorSummary, McpBusyKind } from '../types/connector';
 import type { WebError } from '../types/websocket';
 
 // 命名/组织风格照抄 cronStore.ts：inline action、无独立 actions 对象。
@@ -74,7 +75,7 @@ interface ConnectorState {
 
   loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean }) => Promise<void>;
   loadDetail: (name: string, options?: { refresh?: boolean }) => Promise<void>;
-  installPackage: (assetId: string) => Promise<boolean>;
+  installPackage: (assetId: string) => Promise<ConnectorInstallResponse | null>;
   uninstallPackage: (identifier: string) => Promise<boolean>;
   connect: (name: string) => Promise<ConnectorConnectResponse | null>;
   disconnect: (name: string) => Promise<void>;
@@ -235,9 +236,12 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
   loadList: async (filter, options) => {
     const silent = options?.silent ?? false;
     const mySeq = ++listRequestSeq[filter];
+    const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
       const response = await connectorApi.list(filter);
+      if (requestScope !== catalogScope()) return;
+      scheduleCatalogRefresh('connectorStore.ts:' + filter, response.cache, () => { void get().loadList(filter, { silent: true }); }, () => listRequestSeq[filter] === mySeq);
       if (listRequestSeq[filter] !== mySeq) return; // 已有更新的同 filter 调用发起过，这次结果作废
       const fresh = response;
       set((state) => ({
@@ -249,7 +253,6 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       if (listRequestSeq[filter] !== mySeq) return;
       if (silent) return;
       set({
-        ...(filter === 'builtin' ? { builtinConnectors: [] } : { myConnectors: [] }),
         isLoading: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -269,6 +272,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
   },
 
   installPackage: async (assetId: string) => {
+    if (get().busyMap[assetId]) return null;
     set((state) => ({
       busyMap: { ...state.busyMap, [assetId]: 'install' },
       error: null,
@@ -276,28 +280,37 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
     try {
       const response = await connectorApi.install(assetId);
       const runtimeName = response.item.name;
+      const connectResult = response.connect;
       const patchInstalled = (items: ConnectorSummary[]) =>
         items.map((item) =>
           item.id === assetId || item.runtimePackageName === runtimeName
-            ? { ...item, name: runtimeName, runtimePackageName: runtimeName, installed: true }
+            ? {
+                ...item,
+                name: runtimeName,
+                runtimePackageName: runtimeName,
+                installed: true,
+                connectionState: connectResult?.type === 'connected' ? 'connected' : item.connectionState,
+              }
             : item,
         );
       set((state) => ({
         connectors: patchInstalled(state.connectors),
         builtinConnectors: patchInstalled(state.builtinConnectors),
         myConnectors: patchInstalled(state.myConnectors),
+        detailCache: invalidateDetail(state.detailCache, runtimeName),
         busyMap: { ...state.busyMap, [assetId]: undefined },
-        successMessage: successKey.mcpInstalled,
+        successMessage: connectResult?.type === 'connected' ? successKey.mcpConnected : successKey.mcpInstalled,
       }));
       void get().loadList('builtin', { silent: true });
       void get().loadList('local', { silent: true });
-      return true;
+      return response;
     } catch (error) {
       set((state) => ({
         busyMap: { ...state.busyMap, [assetId]: undefined },
         error: error instanceof Error ? error.message : String(error),
       }));
-      return false;
+      scheduleQuickRefresh(get);
+      return null;
     }
   },
 

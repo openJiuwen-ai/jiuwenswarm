@@ -20,6 +20,7 @@ from jiuwenswarm.common.mode_matrix import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,7 @@ def sync_chat_request_metadata(
         else None
     )
     is_chat_turn = request.req_method in CHAT_TURN_METHODS
+    is_cross_session_turn = isinstance(params.get(SESSION_MESSAGE_INTERNAL_KEY), dict)
     legacy_eternal_value = params.get("eternal_conversation_enabled")
     legacy_persist_session: bool | None = None
     if isinstance(legacy_eternal_value, bool):
@@ -207,9 +209,14 @@ def sync_chat_request_metadata(
             cron_id=request_cron_id,
             user_id=str(user_id or "").strip() or None,
             last_user_message_at=(
-                dt.datetime.now(dt.timezone.utc).timestamp() if is_chat_turn else None
+                dt.datetime.now(dt.timezone.utc).timestamp()
+                if is_chat_turn and not is_cross_session_turn
+                else None
             ),
-            is_chat_turn=is_chat_turn,
+            # The history writer touches last_message_at after the internal
+            # Agent turn is actually recorded. Preparing it is not a human
+            # activity signal and must not move the Session prematurely.
+            is_chat_turn=is_chat_turn and not is_cross_session_turn,
             explicit_mode_provided=explicit_mode_provided,
             explicit_model_provided=explicit_model_provided,
             work_mode=params.get("work_mode"),
@@ -233,6 +240,9 @@ def resolve_agent_request_mode(
     new_mode_resolved = resolve_new_canonical_mode(mode_text)
     if new_mode_resolved is not None:
         return new_mode_resolved
+
+    if mode_text == "auto_harness":
+        return "auto_harness", "auto_harness", "auto_harness"
 
     normalized_work_mode = (
         work_mode.strip().lower() if isinstance(work_mode, str) else ""
@@ -319,6 +329,8 @@ async def prepare_chat_turn(
     *,
     sync_metadata: bool = True,
     metadata_sync: Callable[..., str | None] = sync_chat_request_metadata,
+    agent_definition: dict[str, Any] | None = None,
+    agent_definition_fingerprint: str | None = None,
 ) -> tuple[str, str | None, Any]:
     """Resolve session semantics and select an agent from the shared manager."""
     params = request.params if isinstance(request.params, dict) else {}
@@ -400,50 +412,76 @@ async def prepare_chat_turn(
     canonical_mode = (
         request.params.get("mode") if isinstance(request.params, dict) else None
     )
-    if sync_metadata:
-        project_dir = metadata_sync(
-            request,
-            requested_project_dir,
-            canonical_mode if canonical_mode else mode,
-            explicit_mode_provided=explicit_mode_provided,
-            user_id=str(getattr(request, "user_id", "") or "").strip(),
+
+    def admit_request() -> str | None:
+        nonlocal session_metadata
+        if sync_metadata:
+            project_dir = metadata_sync(
+                request,
+                requested_project_dir,
+                canonical_mode if canonical_mode else mode,
+                explicit_mode_provided=explicit_mode_provided,
+                user_id=str(getattr(request, "user_id", "") or "").strip(),
+            )
+            if session_id:
+                # Re-read only after permission admission succeeds. A rejected
+                # workspace transition must not mutate the session metadata.
+                from jiuwenswarm.server.runtime.session.session_metadata import (
+                    get_session_metadata,
+                )
+
+                session_metadata = get_session_metadata(
+                    session_id,
+                    enable_writeback=False,
+                )
+        else:
+            project_dir = requested_project_dir
+            if not (
+                isinstance(project_dir, str) and project_dir.strip()
+            ) and session_id:
+                from jiuwenswarm.server.runtime.session.session_metadata import (
+                    get_session_metadata,
+                )
+
+                readonly_metadata = get_session_metadata(
+                    session_id,
+                    cache_bust=True,
+                    enable_writeback=False,
+                )
+                locked = (
+                    readonly_metadata.get("project_dir")
+                    if isinstance(readonly_metadata, dict)
+                    else None
+                )
+                if isinstance(locked, str) and locked.strip():
+                    project_dir = locked.strip()
+
+        if isinstance(project_dir, str) and project_dir.strip():
+            project_dir = project_dir.strip()
+            request.params["project_dir"] = project_dir
+            request.metadata = dict(request.metadata or {})
+            request.metadata["project_dir"] = project_dir
+        return project_dir
+
+    await agent_manager.wait_for_session_prewarm(request.session_id)
+    get_agent_for_request = getattr(agent_manager, "get_agent_for_request", None)
+    if not callable(get_agent_for_request):
+        raise TypeError(
+            "agent_manager must implement atomic get_agent_for_request admission"
         )
-        if session_id:
-            # Metadata sync may initialize a legacy record. Re-read it so the
-            # first upgraded turn observes the atomically locked values.
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_session_metadata,
-            )
-
-            session_metadata = get_session_metadata(
-                session_id,
-                enable_writeback=False,
-            )
-    else:
-        project_dir = requested_project_dir
-        if not (isinstance(project_dir, str) and project_dir.strip()) and session_id:
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_session_metadata,
-            )
-
-            session_metadata = get_session_metadata(
-                session_id,
-                cache_bust=True,
-                enable_writeback=False,
-            )
-            locked = (
-                session_metadata.get("project_dir")
-                if isinstance(session_metadata, dict)
-                else None
-            )
-            if isinstance(locked, str) and locked.strip():
-                project_dir = locked.strip()
-
-    if isinstance(project_dir, str) and project_dir.strip():
-        project_dir = project_dir.strip()
-        request.params["project_dir"] = project_dir
-        request.metadata = dict(request.metadata or {})
-        request.metadata["project_dir"] = project_dir
+    agent_kwargs: dict[str, Any] = {
+        "mode": agent_mode,
+        "sub_mode": sub_mode,
+        "admit_request": admit_request,
+    }
+    if agent_definition is not None:
+        agent_kwargs["agent_definition"] = agent_definition
+        agent_kwargs["agent_definition_fingerprint"] = (
+            agent_definition_fingerprint
+        )
+    agent = await get_agent_for_request(request, **agent_kwargs)
+    if agent is None:
+        raise ValueError("Failed to get agent")
 
     # Persist Session is a session-creation identity. Per-turn request values
     # are advisory only; expose the locked value through the legacy internal
@@ -477,15 +515,6 @@ async def prepare_chat_turn(
         )
     params["eternal_conversation_enabled"] = effective_persist_session
 
-    await agent_manager.wait_for_session_prewarm(request.session_id)
-    agent = await agent_manager.get_agent(
-        channel_id=channel_id,
-        mode=agent_mode,
-        project_dir=project_dir,
-        sub_mode=sub_mode,
-    )
-    if agent is None:
-        raise ValueError("Failed to get agent")
     return mode, sub_mode, agent
 
 

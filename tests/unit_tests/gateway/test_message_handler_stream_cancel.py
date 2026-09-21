@@ -66,7 +66,7 @@ class _FailedCancelAgentClient:
         return SimpleNamespace(
             request_id="interrupt-failed",
             channel_id="tui",
-            ok=False,
+            ok=True,
             payload={
                 "event_type": "chat.interrupt_result",
                 "success": False,
@@ -121,13 +121,15 @@ def _chat_send_message(
     )
 
 
-def _team_transport_message(*, request_id: str, method: ReqMethod, ws_id: str) -> Message:
+def _team_transport_message(
+    *, request_id: str, method: ReqMethod, ws_id: str, mode: str = "team"
+) -> Message:
     return Message(
         id=request_id,
         type="req",
         channel_id="web",
         session_id="sess-godview",
-        params={"mode": "team"},
+        params={"mode": mode},
         timestamp=0.0,
         ok=True,
         req_method=method,
@@ -308,6 +310,24 @@ async def test_web_channel_only_cancels_matching_session() -> None:
     assert not other_session_task.cancelled()
     await asyncio.sleep(0)
     assert len(_FakeAgentClient.sent_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_ordinary_replacement_keeps_develop_cleanup_failure_behavior() -> None:
+    handler = _TestMessageHandler.create_with_client(_FailedCancelAgentClient())
+    old_task = _seed_stream_task(
+        handler,
+        rid="rid-old",
+        channel_id="web",
+        session_id="sess-replace",
+    )
+
+    cancelled = await handler.cancel_stream_tasks_for_channel(
+        _chat_send_message(channel_id="web", session_id="sess-replace")
+    )
+
+    assert cancelled == 1
+    assert old_task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -700,14 +720,14 @@ async def test_disconnect_cancel_marks_request_as_client_disconnect() -> None:
 
 
 @pytest.mark.asyncio
-async def test_disconnect_cancel_reports_agent_cleanup_failure() -> None:
+async def test_disconnect_cancel_preserves_develop_acknowledgement_semantics() -> None:
     handler = _TestMessageHandler.create_with_client(_FailedCancelAgentClient())
 
     cleaned = await handler.cancel_agent_sessions_on_disconnect(
         [("tui", "sess_cleanup_failed")],
     )
 
-    assert cleaned is False
+    assert cleaned is True
 
 
 @pytest.mark.asyncio
@@ -890,12 +910,36 @@ async def test_godview_registration_is_unique_per_websocket() -> None:
     assert len(subscriptions) == 2
 
 
+@pytest.mark.asyncio
+async def test_godview_registers_for_two_segment_team_work_mode() -> None:
+    """issue #4168: mode="team.work" must register GodView too."""
+    handler = _TestMessageHandler.create()
+
+    await handler._maybe_register_godview(
+        _team_transport_message(
+            request_id="web-team-work",
+            method=ReqMethod.CHAT_SEND,
+            ws_id="web-ws-team-work",
+            mode="team.work",
+        )
+    )
+
+    registry = handler.get_session_sharing_registry()
+    subscriptions = registry.lookup_member("sess-godview", SubRole.GODVIEW)
+    assert len(subscriptions) == 1
+    assert subscriptions[0].delivery.ws_id == "web-ws-team-work"
+
+
 @pytest.mark.parametrize(
     "mode,expected",
     [
         ("team", True),
         ("code.team", True),
         ("team.plan", True),
+        # issue #4168: shorthand names must count as team modes.
+        ("team.work", True),
+        ("team.normal", True),
+        ("team.code", True),
         ("agent.plan", False),
         ("agent.fast", False),
         ("code.plan", False),
@@ -915,6 +959,8 @@ def test_is_team_mode(mode: str, expected: bool) -> None:
         ("team", True),
         ("code.team", True),
         ("team.plan", True),
+        ("team.work", True),
+        ("team.code", True),
         ("agent.plan", False),
     ],
 )

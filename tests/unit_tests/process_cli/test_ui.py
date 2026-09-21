@@ -110,6 +110,35 @@ def test_process_cli_diagnostics_use_the_configured_stream() -> None:
     )
 
 
+def test_process_cli_renders_installed_and_available_skills(monkeypatch) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    output = TtyBuffer()
+    ui = ProcessCliUI(output, columns=80)
+
+    ui.skills(
+        [
+            {
+                "name": "local-skill",
+                "source": "local",
+                "description": "本地技能",
+                "installed": True,
+            },
+            {
+                "name": "builtin-skill",
+                "is_builtin_source": True,
+                "description": "内置技能",
+                "installed": False,
+            },
+        ]
+    )
+
+    text = output.getvalue()
+    assert "已安装技能（1）" in text
+    assert "- local-skill [local] · 本地技能" in text
+    assert "可安装技能（1）" in text
+    assert "- builtin-skill [内置] · 内置技能" in text
+
+
 def test_human_renderer_shows_chinese_runtime_states(monkeypatch) -> None:
     monkeypatch.setenv("NO_COLOR", "1")
     output = TtyBuffer()
@@ -135,6 +164,53 @@ def test_human_renderer_shows_chinese_runtime_states(monkeypatch) -> None:
     assert "\033[" not in text
 
 
+@pytest.mark.parametrize(
+    ("event_type", "payload", "expected"),
+    [
+        (
+            "session.created",
+            {"session_id": "process_cli_created"},
+            "已创建并切换到会话 process_cli_created",
+        ),
+        (
+            "session.switched",
+            {"session_id": "process_cli_resumed"},
+            "已恢复会话 process_cli_resumed",
+        ),
+        (
+            "session.forked",
+            {"session_id": "process_cli_forked", "title": "实验分支"},
+            "已创建并切换到会话分支 process_cli_forked · 实验分支",
+        ),
+        (
+            "session.deleted",
+            {"session_id": "process_cli_deleted"},
+            "已删除会话 process_cli_deleted",
+        ),
+    ],
+)
+def test_human_renderer_shows_session_lifecycle_results(
+    monkeypatch,
+    event_type: str,
+    payload: dict[str, str],
+    expected: str,
+) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    output = TtyBuffer()
+    renderer = EventRenderer("human", stdout=output, stderr=output)
+
+    renderer.render(
+        RuntimeEvent.control(
+            request_id="session-request",
+            channel_id="process_cli",
+            session_id=payload["session_id"],
+            payload={"event_type": event_type, **payload},
+        )
+    )
+
+    assert expected in output.getvalue()
+
+
 def test_human_renderer_ignores_none_terminal_sentinel() -> None:
     output = TtyBuffer()
     renderer = EventRenderer("human", stdout=output, stderr=output)
@@ -151,6 +227,44 @@ def test_human_renderer_ignores_none_terminal_sentinel() -> None:
 
     assert output.getvalue() == ""
     assert renderer.events[0]["payload"] is None
+
+
+def test_human_renderer_displays_skills_list_without_chat_completion(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    output = TtyBuffer()
+    renderer = EventRenderer("human", stdout=output, stderr=output)
+    event = RuntimeEvent(
+        request_id="skills-request",
+        channel_id="process_cli",
+        session_id=None,
+        payload={
+            "skills": [
+                {
+                    "name": "demo",
+                    "source": "local",
+                    "description": "示例技能",
+                    "installed": True,
+                }
+            ]
+        },
+        is_complete=True,
+    )
+
+    renderer.working()
+    renderer.render(event, view="skills.list")
+    renderer.finish(
+        session_id="",
+        request_id="skills-request",
+        show_completion=False,
+    )
+
+    text = output.getvalue()
+    assert "已安装技能（1）" in text
+    assert "demo [local] · 示例技能" in text
+    assert "执行完成 · 会话" not in text
+    assert renderer.events == [event.to_dict()]
 
 
 @pytest.mark.asyncio

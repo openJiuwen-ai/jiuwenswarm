@@ -37,6 +37,9 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
             invoke_timeout_s=config.invoke_timeout_s,
             agent_timeout_s=config.agent_timeout_s,
             agent_namespace=config.agent_namespace,
+            probe_settings=config.probes,
+            wait_running_timeout_s=config.probes.wait_running_timeout_seconds,
+            wait_running_interval_s=config.probes.wait_running_interval_seconds,
         )
         self._registry_client = RegistryClient(config.registry)
         self._agent_manager = AgentManager(
@@ -62,6 +65,7 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
                 config.disconnect_cleanup_timeout_seconds
             ),
             connect_warmup_enabled=config.connect_warmup_enabled,
+            probe_settings=config.probes,
             auth_client=AgentOSAuthenticator(config.auth_service_url, config.timeout) if config.auth_enabled else None
         )
         self._third_agent = AgentOSThirdAgent(self._router_client)

@@ -8,6 +8,8 @@ import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialog
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { ModelNameField } from '../models/ModelNameField';
 import { ModelProviderSelect } from '../models/ModelProviderSelect';
+import { ContextWindowField } from '../models/ContextWindowField';
+import { parseContextWindowTokens } from '../models/contextWindow';
 import {
   CUSTOM_VENDOR_SELECTION,
   findVendorPreset,
@@ -86,6 +88,10 @@ function validateMediaModelDraft(
 
   if (!modelName) errors.model_name = t('config.modelList.modelNameRequired');
   else if (modelName.length > 100) errors.model_name = t('config.modelList.modelNameTooLong');
+
+  if (parseContextWindowTokens(value.context_window_tokens) === null) {
+    errors.context_window_tokens = t('settingsPanel.models.validation.contextWindowInvalid');
+  }
 
   return errors;
 }
@@ -400,6 +406,26 @@ export function MediaModelConfigDialog({
     ),
   });
 
+  formItems.push({
+    name: 'context_window_tokens',
+    label: t('settingsPanel.models.contextWindow'),
+    component: 'custom',
+    required: true,
+    helpTips: t('settingsPanel.models.contextWindowHint'),
+    render: ({ id, value, error, disabled, onChange, onBlur }) => (
+      <ContextWindowField
+        id={id}
+        value={value}
+        error={error}
+        disabled={disabled}
+        placeholder={t('settingsPanel.models.contextWindowPlaceholder')}
+        presetLabel={t('settingsPanel.models.contextWindowPresets')}
+        onChange={onChange}
+        onBlur={onBlur}
+      />
+    ),
+  });
+
   const confirm = async () => {
     if (Object.keys(errors).length) {
       form.validate();
@@ -469,6 +495,7 @@ export function MediaModelConfigDialog({
             api_base: [{ validator: () => errors.api_base }],
             api_key: [{ validator: () => errors.api_key }],
             model_name: [{ validator: () => errors.model_name }],
+            context_window_tokens: [{ validator: () => errors.context_window_tokens }],
           }}
           items={formItems}
         />

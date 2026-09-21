@@ -1,4 +1,4 @@
-export type SettingsModuleTarget = 'models' | 'agent' | 'personalContext';
+export type SettingsModuleTarget = 'models' | 'agent' | 'personalContext' | 'archivedTasks';
 
 export const SETTINGS_MODULE_NAVIGATION_EVENT = 'jiuwen:settings-module';
 

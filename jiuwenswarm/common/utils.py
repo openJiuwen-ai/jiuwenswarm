@@ -21,7 +21,8 @@ Runtime layout:
 - <root>/agent/sessions
 - <root>/agent/workspace/agent-data.json
 - <root>/agent/.checkpoint
-- <root>/agent/.logs（gateway.log / channel.log / agent_server.log / full.log）
+- <root>/agent/.logs（channel.log / agent_server.log / full.log；gateway.log 默认同目录，
+  可通过环境变量 AGENTOS_GATEWAY_LOG_DIR 指定独立目录，如 Linux 部署的 /var/log/agentos）
 
 内置模板位于包内 ``jiuwenswarm/resources/``（含 ``agent/`` 下各技能模板以及 ``skills_state.json``）。
 """
@@ -47,6 +48,11 @@ from ruamel.yaml import YAML
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
+
+# gateway 支持独立的日志目录（与其余组件日志分离），轮转归档文件同样落在该目录下。
+# 默认不启用（gateway.log 与其它日志同目录），由环境变量 AGENTOS_GATEWAY_LOG_DIR 指定，
+# Linux 部署脚本（deploy/yuanrong/gateway_handler.sh）注入 /var/log/agentos。
+_GATEWAY_LOG_DIR_ENV = "AGENTOS_GATEWAY_LOG_DIR"
 
 
 @dataclass
@@ -292,6 +298,17 @@ class _ComponentNameFilter(logging.Filter):
         return _log_component_from_logger_name(record.name) == self.component
 
 
+class _ExcludeComponentFilter(logging.Filter):
+    """仅拦截指定组件（由 logger 名判定）的日志记录，其余全部放行。"""
+
+    def __init__(self, component: str) -> None:
+        super().__init__()
+        self.component = component
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _log_component_from_logger_name(record.name) != self.component
+
+
 class _CompositeFilter(logging.Filter):
     """组合多个过滤器，任一通过即放行"""
 
@@ -401,8 +418,6 @@ def get_user_workspace_dir() -> Path:
     1. Cached value (if already set via set_user_workspace_dir or previous call)
     2. JIUWENSWARM_DATA_DIR environment variable (for multi-instance isolation)
     3. get_user_home() / ".jiuwenswarm" (default instance)
-
-    Also performs one-time migration from ~/.jiuwenclaw/ to ~/.jiuwenswarm/ if needed.
     """
     global _workspace_base_dir
     if _workspace_base_dir is not None:
@@ -411,9 +426,6 @@ def get_user_workspace_dir() -> Path:
     if env_workspace:
         _workspace_base_dir = Path(env_workspace)
         return _workspace_base_dir
-
-    # One-time migration from .jiuwenclaw to .jiuwenswarm
-    _migrate_from_jiuwenclaw_root()
 
     _workspace_base_dir = get_user_home() / ".jiuwenswarm"
     return _workspace_base_dir
@@ -560,14 +572,6 @@ def prompt_preferred_language() -> Optional[Literal["zh", "en"]]:
         return "en"
     print("[jiuwenswarm-init] 无效选项；未选择有效语言，初始化已取消（与拒绝 yes/no 相同）。")
     return None
-
-
-def _get_builtin_skill_names() -> set[str]:
-    """Get the set of built-in skill names from package resources."""
-    builtin_skills_dir = get_builtin_skills_dir()
-    if not builtin_skills_dir.exists():
-        return set()
-    return {item.name for item in builtin_skills_dir.iterdir() if item.is_dir()}
 
 
 def _update_skills_state_for_builtin(
@@ -737,6 +741,16 @@ def _install_default_builtin_skills(
     - swarmskill-creator: Swarm技能创建助手（由 skill-creator 路由选中）
     - skill-omni-creation: 链接/网页/视频技能创建助手（由 skill-creator 路由选中）
     - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
+    - rsi-program-dataset-creator: 程序演进任务设计与评测编排
+    - agent-creator: Agent 模板包创建助手
+    - agent-group-creator: 专家团包创建助手
+    - plugin-creator: 插件能力扩展包创建助手
+    - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
+    - docx-pro: Word 富格式文档生成/Markdown 互转/目录水印
+    - local-doc-ocr: 本地离线 OCR（扫描件 PDF/图片提取文字）
+    - xlsx: 电子表格创建/读取/分析/编辑/修复（零格式损失，中文/CJK 友好）
+    - pdf-extraction: PDF 文本/表格/元数据提取
+    - pptx-generator: PowerPoint 演示文稿生成与编辑
 
     Args:
         builtin_dir: 内置技能目录路径
@@ -751,8 +765,16 @@ def _install_default_builtin_skills(
         "swarmskill-creator",
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
+        "rsi-program-dataset-creator",
         "agent-creator",
-        "plugin-creator"
+        "agent-group-creator",
+        "plugin-creator",
+        "baoyu-image-gen",
+        "docx-pro",
+        "local-doc-ocr",
+        "xlsx",
+        "pdf-extraction",
+        "pptx-generator",
     ]
 
     if not builtin_dir.exists() or not builtin_dir.is_dir():
@@ -819,6 +841,16 @@ def ensure_default_builtin_skills() -> None:
         "swarmskill-creator",
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
+        "rsi-program-dataset-creator",
+        "agent-creator",
+        "agent-group-creator",
+        "plugin-creator",
+        "baoyu-image-gen",
+        "docx-pro",
+        "local-doc-ocr",
+        "xlsx",
+        "pdf-extraction",
+        "pptx-generator",
     ]
 
     user_skills_dir.mkdir(parents=True, exist_ok=True)
@@ -854,6 +886,14 @@ def ensure_config_migrated_from_template(
 
     版本号短路：用户 config.config_version == 程序 VERSION 时跳过迁移；
     不一致时迁移，迁移成功后由 migrate_config_from_template 把 config_version 写回程序版本。
+
+    合并为纯增量操作：只补齐模板新增项，不会删除用户 config.yaml 中
+    模板里没有的配置项（模板是示例文档而非 schema，其中本就包含留给
+    用户填写的开放式配置节）。因此本函数可以每次启动安全调用。
+
+    Merges newly added template keys into the user's config.yaml. The merge is
+    purely additive: keys the operator added that the template does not contain
+    are preserved, so this is safe to call on every start.
     """
     from jiuwenswarm.common.config import migrate_config_from_template, load_yaml_round_trip
     from jiuwenswarm.common._build_config import VERSION
@@ -889,240 +929,6 @@ def ensure_config_migrated_from_template(
 
     logger.info(f"已从模板合并新增配置项: {config_path} (config_version -> {VERSION})")
     return True
-
-
-def _migrate_from_jiuwenclaw_root() -> bool:
-    """Migrate from legacy ~/.jiuwenclaw/ to ~/.jiuwenswarm/.
-
-    This is a one-time migration that moves the entire root directory.
-    Called at startup before any workspace operations.
-
-    Returns:
-        True if migration was performed, False otherwise.
-    """
-    user_home = get_user_home()
-    old_root = user_home / ".jiuwenclaw"
-    new_root = user_home / ".jiuwenswarm"
-
-    # No migration needed if old doesn't exist or new already exists
-    if not old_root.exists():
-        return False
-    if new_root.exists():
-        # New workspace exists, don't migrate
-        print(f"[migration] Both .jiuwenclaw and .jiuwenswarm exist, skipping migration")
-        return False
-
-    print(f"[migration] Migrating from {old_root} to {new_root}")
-
-    try:
-        shutil.move(str(old_root), str(new_root))
-        print(f"[migration] Migration completed: {old_root} -> {new_root}")
-        return True
-    except OSError as e:
-        print(f"[migration] ERROR: Failed to migrate from .jiuwenclaw to .jiuwenswarm: {e}")
-        return False
-
-
-def _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir: Path) -> None:
-    """Migrate from legacy jiuwenclaw_workspace directory name to workspace.
-
-    Migration:
-    - Old: ~/.jiuwenswarm/agent/jiuwenclaw_workspace/
-    - New: ~/.jiuwenswarm/agent/workspace/
-
-    Args:
-        workspace_dir: Path to workspace root (~/.jiuwenswarm).
-    """
-    old_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
-    new_workspace = workspace_dir / "agent" / "workspace"
-
-    if not old_workspace.exists():
-        return
-    if new_workspace.exists():
-        # Both exist - merge carefully
-        print(f"[migration] Both jiuwenclaw_workspace and workspace exist, merging...")
-        for item in old_workspace.iterdir():
-            dest = new_workspace / item.name
-            if item.is_dir():
-                if dest.exists():
-                    # Merge directories
-                    shutil.copytree(item, dest, dirs_exist_ok=True)
-                else:
-                    shutil.copytree(item, dest)
-            else:
-                if not dest.exists():
-                    shutil.copy2(item, dest)
-        # Remove old after successful merge
-        shutil.rmtree(old_workspace)
-        print(f"[migration] Merged and removed: {old_workspace}")
-    else:
-        # Simple rename
-        shutil.move(str(old_workspace), str(new_workspace))
-        print(f"[migration] Renamed: {old_workspace} -> {new_workspace}")
-
-
-def _migrate_legacy_workspace(
-    workspace_dir: Path,
-    preferred_language: Optional[str] = None,
-) -> None:
-    """Migrate from legacy layout to new DeepAgent workspace layout.
-
-    This handles VERY old layouts where skills, memory, and home were
-    separate directories outside of the workspace.
-
-    Migration:
-    - Old: ~/.jiuwenswarm/agent/home/ (PRINCIPLE.md, TONE.md)
-    - Old: ~/.jiuwenswarm/agent/skills/
-    - Old: ~/.jiuwenswarm/agent/memory/
-
-    - New: ~/.jiuwenswarm/agent/workspace/ (DeepAgent standard)
-
-    Mapping:
-    - agent/skills/ -> agent/workspace/skills/
-    - agent/memory/ -> agent/workspace/memory/
-
-    Note: jiuwenclaw_workspace -> workspace renaming is handled separately by
-    _migrate_jiuwenclaw_workspace_to_workspace.
-
-    Args:
-        workspace_dir: Path to workspace root (~/.jiuwenswarm).
-        preferred_language: Preferred language for config (zh/en).
-    """
-    logger.info(f"Migrating from legacy layout: {workspace_dir}")
-
-    old_home = workspace_dir / "agent" / "home"
-    old_skills = workspace_dir / "agent" / "skills"
-    old_memory = workspace_dir / "agent" / "memory"
-
-    new_workspace = workspace_dir / "agent" / "workspace"
-    new_workspace.mkdir(parents=True, exist_ok=True)
-
-    # 1. Migrate old home files
-    if old_home.exists():
-        # Merge PRINCIPLE.md and TONE.md into SOUL.md
-        old_principle = old_home / "PRINCIPLE.md"
-        old_tone = old_home / "TONE.md"
-        new_soul = new_workspace / "SOUL.md"
-        if not new_soul.exists() and (old_principle.exists() or old_tone.exists()):
-            soul_content = ["# Agent Soul\n\n"]
-            if old_principle.exists():
-                principle_text = old_principle.read_text(encoding="utf-8")
-                soul_content.append("## Principles\n\n")
-                soul_content.append(principle_text)
-                soul_content.append("\n\n")
-            if old_tone.exists():
-                tone_text = old_tone.read_text(encoding="utf-8")
-                soul_content.append("## Tone\n\n")
-                soul_content.append(tone_text)
-                soul_content.append("\n\n")
-            new_soul.write_text("".join(soul_content), encoding="utf-8")
-            logger.info("Merged PRINCIPLE.md and TONE.md into SOUL.md")
-
-    new_skills = new_workspace / "skills"
-    if old_skills.exists():
-        if new_skills.exists():
-            shutil.rmtree(new_skills)
-        shutil.copytree(old_skills, new_skills)
-        logger.info(f"Migrated skills: {old_skills} -> {new_skills}")
-
-        builtin_skill_names = _get_builtin_skill_names()
-        for skill_dir in new_skills.iterdir():
-            if skill_dir.is_dir() and (skill_dir.name in builtin_skill_names \
-                 or skill_dir.name in ["daily-report", "skill-creation"]):
-                shutil.rmtree(skill_dir)
-
-    # 4. Migrate memory
-    new_memory = new_workspace / "memory"
-    new_memory.mkdir(parents=True, exist_ok=True)
-
-    if old_memory.exists():
-        # 4.1 Migrate USER.md to workspace root (not in memory/)
-        old_user = old_memory / "USER.md"
-        new_user = new_workspace / "USER.md"
-        if old_user.exists() and not new_user.exists():
-            shutil.copy2(old_user, new_user)
-            logger.info("Migrated USER.md from memory/ to workspace root")
-
-        # 4.2 Create daily_memory directory
-        daily_memory = new_memory / "daily_memory"
-        daily_memory.mkdir(parents=True, exist_ok=True)
-
-        # 4.3 Merge memory files (skip if already exists)
-        # Date pattern: YYYY-MM-DD.md (e.g., 2026-04-14.md)
-        date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
-
-        for item in old_memory.iterdir():
-            if item.name == "USER.md":
-                continue  # Already handled above
-            if item.name == "MEMORY.md":
-                dest = new_memory / "MEMORY.md"
-                if not dest.exists():
-                    shutil.copy2(item, dest)
-                    logger.info("Migrated MEMORY.md")
-            elif item.is_file():
-                # Date-based memory files (YYYY-MM-DD.md) -> daily_memory/
-                # Other files -> new_memory/ root
-                dest = daily_memory / item.name if date_pattern.match(item.name) else new_memory / item.name
-                if not dest.exists():
-                    shutil.copy2(item, dest)
-                    logger.info(f"Migrated memory file: {item.name}")
-            elif item.is_dir():
-                # Other directories (e.g., specific memory categories)
-                dest = new_memory / item.name
-                if not dest.exists():
-                    shutil.copytree(item, dest)
-                    logger.info(f"Migrated memory directory: {item.name}")
-
-        logger.info(f"Migrated memory: {old_memory} -> {new_memory}")
-
-    # 5. Migrate cron_jobs.json from old_home to gateway
-    # This ensures cron jobs are not lost during migration
-    old_cron_jobs = old_home / "cron_jobs.json"
-    gateway_dir = workspace_dir / "gateway"
-    new_cron_jobs = gateway_dir / "cron_jobs.json"
-    if old_cron_jobs.exists():
-        gateway_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            # Read old cron jobs data
-            old_data = json.loads(old_cron_jobs.read_text(encoding="utf-8"))
-            # Add 'expired': false to each job if not present (schema migration)
-            if "jobs" in old_data and isinstance(old_data["jobs"], list):
-                for job in old_data["jobs"]:
-                    if isinstance(job, dict) and "expired" not in job:
-                        job["expired"] = False
-            if not new_cron_jobs.exists():
-                # Write migrated data to new location
-                new_cron_jobs.write_text(
-                    json.dumps(old_data, ensure_ascii=False, indent=2),
-                    encoding="utf-8"
-                )
-                logger.info(f"Migrated cron_jobs.json: {old_cron_jobs} -> {new_cron_jobs}")
-            else:
-                # Both exist - backup old, log warning
-                backup_cron = gateway_dir / f"cron_jobs.json.backup.{int(time.time())}"
-                shutil.copy2(old_cron_jobs, backup_cron)
-                logger.warning(
-                    f"Both old and new cron_jobs.json exist. "
-                    f"Kept new version, backed up old to {backup_cron}"
-                )
-        except (json.JSONDecodeError, IOError) as e:
-            logger.error(f"Failed to migrate cron_jobs.json: {e}")
-
-    # 6. Clean up old directories after successful migration
-    try:
-        if old_home.exists():
-            shutil.rmtree(old_home)
-            logger.info(f"Removed old home: {old_home}")
-        if old_skills.exists():
-            shutil.rmtree(old_skills)
-            logger.info(f"Removed old skills: {old_skills}")
-        if old_memory.exists():
-            shutil.rmtree(old_memory)
-            logger.info(f"Removed old memory: {old_memory}")
-    except OSError as e:
-        logger.warning(f"Failed to remove some old directories: {e}")
-
-    logger.info(f"Migration completed: {new_workspace}")
 
 
 def cleanup_team_files(workspace_dir: Path) -> None:
@@ -1281,39 +1087,6 @@ def prepare_workspace(
     # Create logs directory at workspace root (~/.jiuwenswarm/logs)
     (workspace_dir / "logs").mkdir(parents=True, exist_ok=True)
 
-    # Migrate from legacy jiuwenclaw_workspace directory name to workspace
-    _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir)
-
-    # Check for legacy workspace migration or cleanup (pre-DeepAgent layout)
-    # These are even older layouts: agent/workspace, agent/home, agent/skills, agent/memory
-    old_workspace = workspace_dir / "agent" / "workspace"
-    old_home = workspace_dir / "agent" / "home"
-    old_skills = workspace_dir / "agent" / "skills"
-    old_memory = workspace_dir / "agent" / "memory"
-
-    # Check for legacy directory migration (for start command, overwrite=False)
-    # Migration triggers when ANY legacy directory exists, not just old_workspace
-    legacy_dirs_exist = (
-        old_home.exists() or old_skills.exists() or old_memory.exists()
-    )
-
-    if legacy_dirs_exist and not overwrite:
-        _migrate_legacy_workspace(workspace_dir, preferred_language)
-    # If overwrite (init command), clean up old legacy directories first
-    elif overwrite:
-        try:
-            if old_home.exists():
-                shutil.rmtree(old_home)
-                logger.info(f"Removed old home: {old_home}")
-            if old_skills.exists():
-                shutil.rmtree(old_skills)
-                logger.info(f"Removed old skills: {old_skills}")
-            if old_memory.exists():
-                shutil.rmtree(old_memory)
-                logger.info(f"Removed old memory: {old_memory}")
-        except OSError as e:
-            logger.warning(f"Failed to remove some old directories: {e}")
-
     # ----- config: copy config.yaml -----
     resources_dir = package_root / "resources"
     config_yaml_src = _find_config_template_path()
@@ -1330,17 +1103,6 @@ def prepare_workspace(
             overwrite=overwrite,
         ):
             shutil.copy2(config_yaml_src, config_yaml_dest)
-
-    builtin_rules_src = resources_dir / "builtin_rules.yaml"
-    builtin_rules_dest = config_dest_dir / "builtin_rules.yaml"
-    if builtin_rules_src.is_file() and (overwrite or not builtin_rules_dest.exists()):
-        with TrackCopyDiff(
-            dest=builtin_rules_dest,
-            is_file=True,
-            cumulative=cumulative_diff,
-            overwrite=overwrite,
-        ):
-            shutil.copy2(builtin_rules_src, builtin_rules_dest)
 
     resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
@@ -1705,7 +1467,7 @@ def _ensure_mcp_builtins(
             if path.is_dir() and not path.name.startswith(".")
         ]
         packages = iter_mcp_packages(tmp_dir)
-        if not package_dirs or len(packages) != len(package_dirs):
+        if len(packages) != len(package_dirs):
             raise OSError("MCP seed contains an invalid package manifest")
     except (OSError, zipfile.BadZipFile) as exc:
         logger.error("[mcp_builtins] extract %s failed: %s", seed_zip, exc)
@@ -1756,19 +1518,16 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     workspace_dir = get_user_workspace_dir()
     config_file = workspace_dir / "config" / "config.yaml"
     new_workspace = workspace_dir / "agent" / "workspace"
-    old_workspace = workspace_dir / "agent" / "jiuwenclaw_workspace"
     mcp_builtins_dir = new_workspace / "mcp" / "mcp_builtins"
 
     cleanup_team_files(workspace_dir)
 
     config_missing = not config_file.exists()
-    workspace_migration_needed = old_workspace.exists() and not new_workspace.exists()
     mcp_builtins_missing = not mcp_builtins_dir.is_dir()
     mcp_builtins_update_needed = mcp_builtins_seed_update_needed(workspace_dir)
     workspace_preparation_needed = any(
         (
             config_missing,
-            workspace_migration_needed,
             mcp_builtins_missing,
             mcp_builtins_update_needed,
         )
@@ -1839,7 +1598,6 @@ def init_user_workspace(
 
     上述内容会被复制到:
     - ~/.jiuwenswarm/config/config.yaml（含 preferred_language）
-    - ~/.jiuwenswarm/config/builtin_rules.yaml（内置 shell 安全规则模板，与 config 同目录）
     - ~/.jiuwenswarm/config/.env
     - ~/.jiuwenswarm/agent/...
 
@@ -1850,7 +1608,7 @@ def init_user_workspace(
 
     Args:
         overwrite: True 时强制清理整个工作空间目录后初始化；
-                   False 时保留原有数据，执行迁移合并逻辑。
+                   False 时保留原有数据，仅增量补齐缺失文件。
         workspace_dir: 工作空间目录路径，若不指定则使用 get_user_workspace_dir() 获取。
     """
     if workspace_dir is None:
@@ -1921,9 +1679,6 @@ def _resolve_paths() -> None:
         return
 
     workspace_dir = get_user_workspace_dir()
-
-    # Migrate from legacy jiuwenclaw_workspace directory name to workspace
-    _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir)
 
     # 优先使用已初始化的用户工作区 (~/.jiuwenswarm)，
     # 保证源码运行与安装包运行后的读写路径完全一致。
@@ -2477,26 +2232,12 @@ def get_interactions_dir() -> Path:
 
 
 def get_cron_jobs_path() -> Path:
-    """Path to cron_jobs.json, following wherever this workspace keeps it.
+    """Canonical path for cron_jobs.json, pinned to ``agent/home``.
 
-    ``_migrate_legacy_workspace`` relocates the file to ``gateway/`` while this
-    getter pointed at ``agent/home/``, so after a migration the scheduler read a
-    missing path and silently loaded zero jobs. Resolution order:
-
-    1. ``gateway/`` if present -- the migration ran.
-    2. ``agent/home/`` if present -- it has not; repointing unconditionally
-       would empty the schedules of every deployment that never migrated.
-    3. ``gateway/`` otherwise, so a fresh workspace never creates
-       ``agent/home``, whose existence alone marks a workspace legacy.
+    Gateway、Agent 工具与存储层统一经本函数取路径，禁止在业务代码中
+    硬编码该路径。历史版本遗留的 ``gateway/cron_jobs.json`` 不再读取。
     """
-    workspace = get_user_workspace_dir()
-    gateway_path = workspace / "gateway" / "cron_jobs.json"
-    legacy_path = workspace / "agent" / "home" / "cron_jobs.json"
-    if gateway_path.exists():
-        return gateway_path
-    if legacy_path.exists():
-        return legacy_path
-    return gateway_path
+    return get_agent_home_dir() / "cron_jobs.json"
 
 
 def get_heartbeat_jobs_path() -> Path:
@@ -2656,6 +2397,20 @@ def get_logs_dir() -> Path:
     return get_agent_root_dir() / ".logs"
 
 
+def get_gateway_log_dir() -> Optional[Path]:
+    """获取 gateway 独立日志目录；未配置时返回 ``None``（与其它日志同目录）。
+
+    gateway.log 及其轮转归档文件可独立存放于该目录，与其它组件日志
+    （channel.log / agent_server.log / full.log 位于 ``agent/.logs``）分离。
+    通过环境变量 ``AGENTOS_GATEWAY_LOG_DIR`` 指定（如 Linux 部署的
+    ``/var/log/agentos``）；服务可能运行于 Windows 等系统，代码中不设默认值。
+    """
+    env_dir = os.getenv(_GATEWAY_LOG_DIR_ENV, "").strip()
+    if env_dir:
+        return Path(env_dir)
+    return None
+
+
 def get_xy_tmp_dir() -> Path:
     workspace_dir = get_user_workspace_dir()
     xy_tmp_dir = workspace_dir / "tmp" / "xiaoyi"
@@ -2779,6 +2534,9 @@ _SENSITIVE_PATTERNS: list[re.Pattern[str]] = [
 _SENSITIVE_PII_PATTERNS: tuple[re.Pattern[str], ...] = tuple(_SENSITIVE_PATTERNS[-3:])
 # 凭证类 prefix pattern：掩码并附指纹（同 key 指纹一致可关联、不可逆）。
 _SENSITIVE_CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(_SENSITIVE_PATTERNS[:4])
+_SAFE_AUTHORIZATION_OUTCOME_PATTERN = re.compile(
+    r'"authorization_outcome":"(?:allow|deny|block|cancel)"'
+)
 
 
 def _fingerprint(value: str) -> str:
@@ -2829,7 +2587,18 @@ def _sanitize_log_text(text: str) -> str:
     if not text:
         return text
 
-    masked = text
+    protected = text
+    replacements: list[tuple[str, str]] = []
+    for index, match in enumerate(
+        tuple(_SAFE_AUTHORIZATION_OUTCOME_PATTERN.finditer(text))
+    ):
+        marker = f"__JIUWEN_SAFE_OUTCOME_{index}__"
+        while marker in text:
+            marker += "_"
+        protected = protected.replace(match.group(0), marker, 1)
+        replacements.append((marker, match.group(0)))
+
+    masked = protected
     masked = _DATA_IMAGE_PATTERN.sub("data:image/*;base64,******", masked)
     # _KV_SENSITIVE_PATTERN: 组1=键名, 组2=分隔符, 组4=值（组3/5 为可选引号）。
     masked = _KV_SENSITIVE_PATTERN.sub(
@@ -2853,6 +2622,8 @@ def _sanitize_log_text(text: str) -> str:
     # PII（邮箱/手机/身份证）：纯掩码，不附指纹。
     for pattern in _SENSITIVE_PII_PATTERNS:
         masked = pattern.sub(_SENSITIVE_MASK, masked)
+    for marker, original in replacements:
+        masked = masked.replace(marker, original)
     return masked
 
 
@@ -2982,19 +2753,45 @@ def install_source_record_masking() -> None:
     _source_record_masking_installed = True
 
 
+def _reconfigure_stdio_utf8() -> None:
+    """把 ``sys.stdout`` / ``sys.stderr`` 原地重配置为 UTF-8。
+
+    Windows 控制台默认编码常为 cp1252，无法编码中文日志消息（例如扩展加载器的
+    ``[ExtensionLoader] 开始搜索扩展路径``），会导致 ``logging.StreamHandler.emit``
+    抛出 ``UnicodeEncodeError``；随后的 ``logging.handleError`` 想把异常栈打印到
+    ``sys.stderr``，又因同一编码问题二次失败，连锁中断启动。这里在日志体系初始化前
+    把标准流原地改为 UTF-8 + ``backslashreplace``，覆盖 emit / handleError / print 三个路径。
+    """
+    for _stream in (sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if not callable(_reconfigure):
+            continue
+        try:
+            _reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError, RuntimeError):
+            # 流已被使用 / 不支持重配置：忽略，保留原流，避免影响启动。
+            pass
+
+
 def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
-    """配置 ``jiuwenswarm`` 根日志：控制台 + 分组件文件 + 汇总 full.log。
+    """配置 ``jiuwenswarm`` 根日志：控制台 + 分组件文件 + 汇总 full.log（不含 gateway）。
 
     各模块应使用 ``logging.getLogger(__name__)``，分文件规则：
     - ``jiuwenswarm.channel.*`` → channel.log
     - ``jiuwenswarm.agents.*`` 或 ``jiuwenswarm.server.*`` → agent_server.log
     - 其余 ``jiuwenswarm.*``（含 ``jiuwenswarm.app``、gateway、evolution、utils 等）→ gateway.log
 
-    所有分类日志同时写入 ``full.log``。输出目录：``~/.jiuwenswarm/agent/.logs/``。
+    channel / agent_server（含 permissions）日志同时汇总写入 ``full.log``；
+    gateway 日志**不写入** full.log（无论 gateway.log 是否独立目录）。输出目录：
+    ``~/.jiuwenswarm/agent/.logs/``；gateway.log 默认同目录，可通过环境变量
+    ``AGENTOS_GATEWAY_LOG_DIR`` 指定独立目录（如 Linux 部署的 ``/var/log/agentos``；
+    目录不可写时降级回 ``agent/.logs``）。
 
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
     （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
     """
+    # 必须在创建 StreamHandler 之前完成：cp1252 → UTF-8，否则中文日志会触发 UnicodeEncodeError。
+    _reconfigure_stdio_utf8()
     logs_root = get_logs_dir()
     logs_root.mkdir(parents=True, exist_ok=True)
 
@@ -3016,11 +2813,13 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     def _add_rotating(
         filename: str,
         level: int,
-        name_filter: Optional[_ComponentNameFilter] = None,
+        name_filter: Optional[logging.Filter] = None,
         custom_formatter: Optional[logging.Formatter] = None,
+        target_dir: Optional[Path] = None,
     ) -> None:
+        base_dir = target_dir if target_dir is not None else logs_root
         h = SafeRotatingFileHandler(
-            filename=logs_root / filename,
+            filename=base_dir / filename,
             maxBytes=_LOG_FILE_MAX_BYTES,
             backupCount=_LOG_FILE_BACKUP_COUNT,
             encoding="utf-8",
@@ -3032,11 +2831,31 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
             h.addFilter(name_filter)
         root.addHandler(h)
 
-    _add_rotating("gateway.log", levels.gateway, _ComponentNameFilter("gateway"))
+    # gateway 日志独立目录（仅当环境变量 AGENTOS_GATEWAY_LOG_DIR 指定时启用），
+    # 轮转归档同样落在该目录。目录不可创建/不可写时降级回 logs_root，
+    # 避免日志目录权限问题导致服务无法启动。
+    gateway_log_dir = get_gateway_log_dir()
+    if gateway_log_dir is not None:
+        try:
+            gateway_log_dir.mkdir(parents=True, exist_ok=True)
+            # 探测可写性（部分场景目录存在但无写权限）
+            _probe = gateway_log_dir / ".write_probe"
+            _probe.touch()
+            _probe.unlink()
+        except OSError as exc:
+            print(
+                f"[jiuwenswarm] gateway log dir {gateway_log_dir} is not writable ({exc}); "
+                f"falling back to {logs_root}",
+                file=sys.stderr,
+            )
+            gateway_log_dir = None
+
+    _add_rotating("gateway.log", levels.gateway, _ComponentNameFilter("gateway"),
+        target_dir=gateway_log_dir)
     _add_rotating("channel.log", levels.channel, _ComponentNameFilter("channel"))
     _add_rotating("agent_server.log", levels.agent_server,
         _CompositeFilter([_ComponentNameFilter("agent_server"), _ComponentNameFilter("permissions")]))
-    _add_rotating("full.log", levels.full, None)
+    _add_rotating("full.log", levels.full, _ExcludeComponentFilter("gateway"))
     json_formatter = JsonOnlyFormatter()
     _add_rotating("permissions.log", levels.agent_server, _ComponentNameFilter("permissions"), json_formatter)
 

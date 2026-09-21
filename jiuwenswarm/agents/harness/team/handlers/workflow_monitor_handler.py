@@ -49,6 +49,16 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         # Session-wide (leader-shared) budget snapshot, updated from each
         # progress event's ``budget`` field and persisted to session metadata.
         self._session_budget: Optional[dict] = None
+        # team.task/team.member conversion dedup. Session-scoped on purpose:
+        # the consumer loop is cancelled on team pause and restarted on wake,
+        # and a resume relaunch REPLAYS the cached prefix (completed agents
+        # re-emit started+completed) — a per-loop table would re-emit the
+        # replay and double-count finished work on the task board. Public:
+        # the consumer (_consume_workflow_events) owns the emission contract
+        # and reads them cross-class.
+        self.seen_phase: dict[str, str] = {}
+        self.seen_agent: dict[str, str] = {}
+        self.spawned_members: set[str] = set()
 
     # ------------------------------------------------------------------
     # Properties

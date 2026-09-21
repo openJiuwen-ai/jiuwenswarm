@@ -57,6 +57,14 @@ function applyRuntimeSettings(
 
 export function resetNewConversationRuntime(settings: ConversationRuntimeSettings): void {
   const preservedDraft = useChatStore.getState().getRuntime(NEW_CONVERSATION_ID)?.inputValue ?? '';
+  // 草稿会话（'new'）的专家/专家团选择与输入草稿一样只存在于内存 runtime
+  // （sessionStore 对 'new' 刻意不落 localStorage），removeRuntime 重建会丢，
+  // 表现为输入框下方专家 tag"过一会儿自动消失"而输入文字还在。重建后原样恢复。
+  const previousRuntime = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
+  const preservedAgentSelection =
+    previousRuntime?.agentSelectionIntent.kind === 'select' ? previousRuntime.agentSelectionIntent : null;
+  const preservedAgentGroupSelection =
+    previousRuntime?.agentGroupSelectionIntent.kind === 'select' ? previousRuntime.agentGroupSelectionIntent : null;
   useChatStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useSessionStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   useTodoStore.getState().removeRuntime(NEW_CONVERSATION_ID);
@@ -64,6 +72,12 @@ export function resetNewConversationRuntime(settings: ConversationRuntimeSetting
   useGoalStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   usePlanStore.getState().removeRuntime(NEW_CONVERSATION_ID);
   applyRuntimeSettings(NEW_CONVERSATION_ID, settings);
+  if (preservedAgentSelection) {
+    useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, preservedAgentSelection);
+  }
+  if (preservedAgentGroupSelection) {
+    useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, preservedAgentGroupSelection);
+  }
   if (preservedDraft) {
     useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, preservedDraft);
   }

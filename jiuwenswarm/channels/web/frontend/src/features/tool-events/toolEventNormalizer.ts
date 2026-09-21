@@ -1,8 +1,11 @@
 import { parseSkillTreePath, type SkillTreePath } from '../../types/skillTree';
+import { parseBeamSearchProgress, type BeamSearchProgress } from '../../types/beamSearch';
+import type { AutoReviewerMetadata } from '../../types';
 import {
-  parseBeamSearchProgress,
-  type BeamSearchProgress,
-} from '../../types/beamSearch';
+  effectiveReviewerStatus,
+  normalizeReviewerMetadata,
+  reviewerIndicatesFailure,
+} from './reviewerMetadata';
 
 type UnknownPayload = Record<string, unknown>;
 
@@ -74,14 +77,17 @@ function parseArguments(raw: unknown): Record<string, unknown> {
   return {};
 }
 
+function isPermissionFailureResult(result: string): boolean {
+  const normalized = result.trim();
+  return normalized.startsWith('[PERMISSION_DENIED]') || normalized.startsWith('[PERMISSION_REJECTED]') || normalized.startsWith('[PERMISSION_BLOCKED]');
+}
+
+function isFailureStatus(status: string): boolean {
+  return ['error', 'failed', 'failure', 'rejected', 'denied', 'blocked'].includes(status.trim().toLowerCase());
+}
+
 function resolveToolCallId(payload: UnknownPayload, fallback?: UnknownPayload): string | undefined {
-  const candidates = [
-    payload.id,
-    payload.tool_call_id,
-    payload.toolCallId,
-    fallback?.tool_call_id,
-    fallback?.toolCallId,
-  ];
+  const candidates = [payload.id, payload.tool_call_id, payload.toolCallId, fallback?.tool_call_id, fallback?.toolCallId];
   for (const item of candidates) {
     if (typeof item === 'string' && item) {
       return item;
@@ -91,10 +97,7 @@ function resolveToolCallId(payload: UnknownPayload, fallback?: UnknownPayload): 
 }
 
 function resolveMemberName(payload: UnknownPayload, fallback?: UnknownPayload): string | undefined {
-  const candidates = [
-    payload.member_name,
-    fallback?.member_name,
-  ];
+  const candidates = [payload.member_name, fallback?.member_name];
   for (const item of candidates) {
     if (typeof item === 'string' && item.trim()) {
       return item.trim();
@@ -220,9 +223,12 @@ export interface NormalizedToolCall {
   arguments: Record<string, unknown>;
   description?: string;
   formatted_args?: string;
-  /** 后端下发的可读展示名（部分工具带），前端优先直接展示，省去本地推断。 */
+  /** 模型生成的自然语言目标，原样展示，不走 i18n。 */
+  call_goal?: string;
+  /** @deprecated 仅用于兼容旧事件，不参与标题渲染 */
   display_name?: string;
   memberName?: string;
+  reviewer?: AutoReviewerMetadata;
 }
 
 export interface NormalizedToolResult {
@@ -239,29 +245,29 @@ export interface NormalizedToolResult {
   beamSearch?: BeamSearchProgress;
   /** 仅 symphony_compose_graph 的合法 planned_graph 前端展示投影。 */
   mermaid?: string;
+  reviewer?: AutoReviewerMetadata;
 }
 
 export interface NormalizedToolUpdate {
   toolName: string;
   toolCallId?: string;
   beamSearch?: BeamSearchProgress;
+  reviewer?: AutoReviewerMetadata;
 }
 
 export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToolCall {
   const toolCallPayload = asRecord(payload.tool_call) ?? payload;
   const id = resolveToolCallId(toolCallPayload, payload) || `tool-${Date.now()}`;
-  const name =
-    (typeof toolCallPayload.name === 'string' && toolCallPayload.name) ||
-    (typeof payload.tool_name === 'string' && payload.tool_name) ||
-    'unknown';
-  const description =
-    typeof toolCallPayload.description === 'string'
-      ? toolCallPayload.description
-      : undefined;
-  const formatted_args =
-    typeof toolCallPayload.formatted_args === 'string'
-      ? toolCallPayload.formatted_args
-      : undefined;
+  const name = (typeof toolCallPayload.name === 'string' && toolCallPayload.name) || (typeof payload.tool_name === 'string' && payload.tool_name) || 'unknown';
+  const description = typeof toolCallPayload.description === 'string' ? toolCallPayload.description : undefined;
+  const formatted_args = typeof toolCallPayload.formatted_args === 'string' ? toolCallPayload.formatted_args : undefined;
+  const callGoalRaw =
+    typeof toolCallPayload.call_goal === 'string'
+      ? toolCallPayload.call_goal
+      : typeof toolCallPayload.callGoal === 'string'
+        ? toolCallPayload.callGoal
+        : '';
+  const call_goal = callGoalRaw.trim() || undefined;
   const displayNameRaw =
     (typeof toolCallPayload.display_name === 'string' && toolCallPayload.display_name) ||
     (typeof toolCallPayload.displayName === 'string' && toolCallPayload.displayName) ||
@@ -275,8 +281,10 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
     arguments: parseArguments(toolCallPayload.arguments),
     description,
     formatted_args,
+    call_goal,
     display_name,
     memberName,
+    reviewer: normalizeReviewerMetadata(payload),
   };
 }
 
@@ -306,9 +314,18 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     typeof rawOutputRecord?.output === 'string'
       ? rawOutputRecord.output
       : undefined;
+  // `rendered_result` is the text the model read for the call. `result` is the
+  // compatibility str() of the structured tool result; it is only a fallback
+  // for events that predate `rendered_result` and is removed once the UI reads
+  // structured data.
+  const renderedResult =
+    typeof toolResultPayload.rendered_result === 'string'
+      ? toolResultPayload.rendered_result
+      : undefined;
   const result =
     rawOutputResult ||
     nestedDataResult ||
+    renderedResult ||
     (typeof toolResultPayload.result === 'string' &&
       toolResultPayload.result) ||
     directDataResult ||
@@ -327,22 +344,28 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
           : '';
   const pending = status === 'pending';
   const timedOut = status === 'timeout' || status === 'timed_out';
-  const statusFailed =
-    !pending &&
-    (timedOut || status === 'error' || status === 'failed' || status === 'failure');
-  const success =
-    pending
-      ? true
-      : typeof toolResultPayload.success === 'boolean'
-        ? toolResultPayload.success && !timedOut
-        : status
-          ? !statusFailed
-          : true;
+  const statusFailed = !pending && (timedOut || ['error', 'failed', 'failure'].includes(status));
+  const reviewer = normalizeReviewerMetadata(payload) ?? normalizeReviewerMetadata(toolResultPayload);
+  const reviewerStatus = effectiveReviewerStatus(reviewer);
+  const hasExplicitSuccess = typeof toolResultPayload.success === 'boolean';
+  const trustedApproval = reviewerStatus === 'approved' || reviewerStatus === 'deterministic_allow';
+  // Old text-only failures have no approval identity; never infer a reviewer.
+  const legacyMarkerFailure =
+    !hasExplicitSuccess && !status && !trustedApproval &&
+    [payload, toolResultPayload, rawOutputRecord, rawOutputData].every(item => item?.pending === undefined) &&
+    isPermissionFailureResult(result);
+  const permissionFailure = reviewerIndicatesFailure(reviewer);
+  const effectivePending = pending && !permissionFailure;
+  const baseSuccess = pending
+    ? true
+    : hasExplicitSuccess
+      ? toolResultPayload.success === true && !timedOut
+      : status ? !statusFailed : true;
+  const success = baseSuccess && !permissionFailure && !legacyMarkerFailure &&
+    !(reviewerStatus && !pending && isFailureStatus(status));
   const toolName =
-    (typeof toolResultPayload.tool_name === 'string' &&
-      toolResultPayload.tool_name) ||
-    (typeof toolResultPayload.name === 'string' &&
-      toolResultPayload.name) ||
+    (typeof toolResultPayload.tool_name === 'string' && toolResultPayload.tool_name) ||
+    (typeof toolResultPayload.name === 'string' && toolResultPayload.name) ||
     'unknown';
   const toolCallId = resolveToolCallId(toolResultPayload, payload);
   const summary =
@@ -367,21 +390,22 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     toolCallId,
     result,
     success,
-    ...(pending ? { pending: true } : {}),
+    ...(effectivePending ? { pending: true } : {}),
     ...(timedOut ? { timedOut: true } : {}),
     summary,
     skillTree,
     beamSearch,
     ...(mermaid ? { mermaid } : {}),
+    reviewer,
   };
 }
 
 export function normalizeToolUpdatePayload(payload: UnknownPayload): NormalizedToolUpdate {
   const update = asRecord(payload.tool_update) ?? payload;
   return {
-    toolName:
-      (typeof update.tool_name === 'string' && update.tool_name) || 'unknown',
+    toolName: (typeof update.tool_name === 'string' && update.tool_name) || 'unknown',
     toolCallId: resolveToolCallId(update, payload),
     beamSearch: parseBeamSearchProgress(update.beam_search_event),
+    reviewer: normalizeReviewerMetadata(update) ?? normalizeReviewerMetadata(payload),
   };
 }

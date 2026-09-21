@@ -1,9 +1,13 @@
+import asyncio
 from types import SimpleNamespace
+
+import pytest
 
 from jiuwenswarm.common.model_config_validation import (
     is_placeholder_api_base,
     is_placeholder_model_entry,
     model_client_config_view,
+    probe_model_connection,
 )
 
 
@@ -55,3 +59,70 @@ def test_model_client_config_view_normalizes_dict_and_object():
     assert is_placeholder_model_entry(model_client_config_view(obj)) == is_placeholder_model_entry(
         {"api_base": obj.api_base, "api_key": obj.api_key, "model_name": obj.model_name}
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_failure", ["exception", "empty"])
+async def test_probe_model_connection_retries_with_supremum_tokens(first_failure):
+    calls = []
+
+    class FakeModel:
+        async def invoke(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            if len(calls) == 1:
+                if first_failure == "exception":
+                    raise RuntimeError("token budget too small")
+                return {"content": "", "reasoning_content": ""}
+            return {"content": "hello"}
+
+    result = await probe_model_connection(
+        FakeModel(),
+        token_limits=(3, 16),
+        invoke_kwargs={"temperature": 0},
+    )
+
+    assert [kwargs["max_tokens"] for _, kwargs in calls] == [3, 16]
+    assert all(kwargs["temperature"] == 0 for _, kwargs in calls)
+    assert result.content == "hello"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"content": "", "reasoning_content": "thinking"},
+        {"content": "", "usage_metadata": {"output_tokens": 3}},
+        SimpleNamespace(
+            content="",
+            reasoning_content="",
+            usage_metadata=SimpleNamespace(output_tokens=3),
+        ),
+    ],
+)
+async def test_probe_model_connection_accepts_reasoning_or_generated_tokens(response):
+    calls = []
+
+    class FakeModel:
+        async def invoke(self, messages, **kwargs):
+            calls.append((messages, kwargs))
+            return response
+
+    result = await probe_model_connection(FakeModel())
+
+    assert len(calls) == 1
+    assert result.response is response
+
+
+@pytest.mark.asyncio
+async def test_probe_model_connection_enforces_invocation_deadline():
+    class HangingModel:
+        async def invoke(self, messages, **kwargs):
+            del messages, kwargs
+            await asyncio.Event().wait()
+
+    with pytest.raises(TimeoutError):
+        await probe_model_connection(
+            HangingModel(),
+            token_limits=(16,),
+            timeout_seconds=0.01,
+        )

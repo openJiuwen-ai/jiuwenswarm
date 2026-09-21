@@ -19,6 +19,20 @@ from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server import agent_ws_server
 
 
+class _SessionRuntimeStub:
+    """Implement the Session ownership surface used by the stream host."""
+
+    def __init__(self) -> None:
+        self._session_ids: set[str] = set()
+
+    def owns_session(self, session_id: str) -> bool:
+        return session_id in self._session_ids
+
+    async def register_session(self, *, session_id: str, channel_id: str) -> None:
+        del channel_id
+        self._session_ids.add(session_id)
+
+
 @pytest.mark.asyncio
 async def test_keepalive_child_is_cancelled_when_stop_owner_is_cancelled() -> None:
     """Owner cancellation must not orphan its keepalive child task."""
@@ -86,7 +100,7 @@ async def test_cancelled_stream_owner_cleans_keepalive_and_registry() -> None:
     runtime_started = asyncio.Event()
     manager = object()
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """Remain pending until cancellation reaches the stream owner."""
 
         agent_manager = manager
@@ -155,7 +169,7 @@ async def test_closed_connection_cleans_keepalive_and_registry(monkeypatch) -> N
             send_attempted.set()
             raise WebSocketConnectionClosed(None, None)
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """Finish after the keepalive observes the closed connection."""
 
         agent_manager = manager
@@ -232,7 +246,7 @@ async def test_stream_close_error_still_cleans_keepalive_and_registry() -> None:
             """Expose the cleanup failure under test."""
             raise RuntimeError("stream close failed")
 
-    class CloseFailingRuntime:  # pylint: disable=too-few-public-methods
+    class CloseFailingRuntime(_SessionRuntimeStub):
         """Return a stream whose cleanup fails."""
 
         agent_manager = manager
@@ -280,7 +294,7 @@ async def test_stream_keepalive_roundtrips_over_live_websocket(monkeypatch) -> N
     stream_finished = asyncio.Event()
     hold_connection_open = asyncio.Event()
 
-    class LiveRuntime:
+    class LiveRuntime(_SessionRuntimeStub):
         """Yield one terminal event after the client observes a keepalive."""
 
         agent_manager = object()
@@ -422,7 +436,7 @@ async def test_stream_keepalive_shutdown_does_not_depend_on_task_cancellation(
             """Delegate an unmodified asyncio API."""
             return getattr(real_asyncio, name)
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """End only after the keepalive owner enters its idle wait."""
 
         agent_manager = manager
@@ -501,7 +515,7 @@ async def test_stream_keepalive_cleanup_is_bounded_when_cancellation_is_ignored(
             finally:
                 send_finished.set()
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """Finish after the keepalive send has become stuck."""
 
         agent_manager = manager
@@ -583,7 +597,7 @@ async def test_stream_keepalive_is_sent_only_before_terminal_chunk(
             if json.loads(payload).get("sequence") == -1:
                 keepalive_sent.set()
 
-    class SlowRuntime:
+    class SlowRuntime(_SessionRuntimeStub):
         """Remain idle long enough for a keepalive, then terminate."""
 
         agent_manager = manager
@@ -693,7 +707,7 @@ async def test_stream_keepalive_rechecks_activity_after_waiting_for_send_lock(
             del exc_type, exc, traceback
             self._lock.release()
 
-    class ActiveRuntime:
+    class ActiveRuntime(_SessionRuntimeStub):
         """Produce real activity after the keepalive is already lock-queued."""
 
         agent_manager = manager
@@ -777,7 +791,7 @@ async def test_stream_keepalive_rechecks_stop_after_waiting_for_send_lock(
             """Release the synthetic lock context."""
             del exc_type, exc, traceback
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """Finish while the keepalive is queued for the send lock."""
 
         agent_manager = manager

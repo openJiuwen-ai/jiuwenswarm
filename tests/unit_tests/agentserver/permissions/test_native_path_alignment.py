@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import subprocess
+import sys
+import textwrap
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,7 +35,7 @@ from jiuwenswarm.agents.harness.common.tools import pdf_tools
 
 
 @pytest.fixture
-def native(tmp_path):
+def native(tmp_path, internal_auto_mode):
     root = tmp_path / "task"
     work = root / "work"
     work.mkdir(parents=True)
@@ -389,7 +392,8 @@ async def test_read_edit_and_grep_use_actual_workspace_files(native):
     assert frozen.tool_args["pattern"] == "updated"
 
 
-async def test_pdf_keeps_its_workspace_not_cwd_resolution(native, monkeypatch):
+@pytest.mark.parametrize("level", ["allow", "ask", "deny"])
+async def test_pdf_keeps_its_workspace_not_cwd_resolution(native, monkeypatch, level):
     tool = pdf_tools.read_pdf
     registered = Runner.resource_mgr.get_tool(tool.card.id)
     monkeypatch.setattr(tool.card, "stateless", True)
@@ -411,7 +415,48 @@ async def test_pdf_keeps_its_workspace_not_cwd_resolution(native, monkeypatch):
         facts = build_tool_decision_facts("read_pdf", frozen.tool_args,
             workspace_root=native.root, original_args_were_valid_object=True)
         assert facts.read_paths == (str(target),)
+        configured = deepcopy(native.permissions)
+        configured["file_guard"]["paths"] = [{"path": str(target), "read": level}]
+        base = native.rail.base_rail
+        policy = OpenJiuwenPolicyEvaluator(base, permission_config_getter=lambda: configured)
+        assert (await policy.evaluate(frozen)).level == level
+        expected = [(str(target), "read")] if level == "ask" else []
+        assert base._collect_file_guard_persist_accesses("read_pdf", frozen.tool_args, configured) == expected
     finally:
         native.manager.remove(tool.card.name)
         if registered is None:
             Runner.resource_mgr.remove_tool(tool.card.id)
+
+
+def test_smart_construction_leaves_process_file_registry_unchanged(tmp_path):
+    # A fresh interpreter prevents earlier permission tests from hiding a registration leak.
+    result = subprocess.run([sys.executable, "-c", textwrap.dedent('''
+        import sys
+        from pathlib import Path
+        from openjiuwen.harness.security.permission_engine.fileguard.file_tool_specs import lookup_file_tool_specs
+        from openjiuwen.harness.security.permission_engine.fileguard.file_guard import (
+            FileGuardChecker, EffectiveFileGuardConfig, FileGuardAxisDefaults,
+        )
+        from openjiuwen.harness.security.models import PermissionLevel
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
+        from jiuwenswarm.agents.harness.common.rails.permissions import auto_config
+        auto_config._VALID_RUNTIME_MODES = {*auto_config._VALID_RUNTIME_MODES, auto_config.AUTO_PERMISSION_MODE}
+        root = Path(sys.argv[1])
+        defaults = FileGuardAxisDefaults(*(PermissionLevel.ASK,) * 3)
+        checker = FileGuardChecker(EffectiveFileGuardConfig(True, "native", defaults, (), root))
+        args = {"pdf_path": str(root.parent / "outside.pdf")}
+        assert lookup_file_tool_specs("read_pdf") is None
+        before = checker.evaluate("read_pdf", args)
+        config = {"enabled": True, "mode": "auto", "file_guard": {"enabled": True}}
+        for _ in range(2):
+            rail = build_permission_rail(
+                {"permissions": config}, enable_auto_permission=True,
+                installed_permissions=config, workspace_root=root,
+            )
+            assert rail is not None
+            assert lookup_file_tool_specs("read_pdf") is None
+            assert checker.evaluate("read_pdf", args) == before
+            del rail
+        assert lookup_file_tool_specs("read_pdf") is None
+    '''), str(tmp_path)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.gateway.cron.models import validate_cron_model
+from jiuwenswarm.gateway.cron.models import (
+    CronJob,
+    normalize_cron_job_mcp,
+    validate_cron_model,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +41,22 @@ def _user_model_entry() -> dict:
     }
 
 
-def _zen_free_entry(model_id: str = "deepseek-v4-flash-free", alias: str = "DeepSeek V4 Flash") -> dict:
+def _environment_model_entry(model_name: str = "${MODEL_NAME}") -> dict:
+    return {
+        "model_client_config": {
+            "api_base": "${API_BASE}",
+            "api_key": "${API_KEY}",
+            "model_name": model_name,
+            "client_provider": "${MODEL_PROVIDER}",
+        },
+        "is_default": True,
+        "alias": "默认模型",
+    }
+
+
+def _zen_free_entry(
+    model_id: str = "deepseek-v4-flash-free", alias: str = "DeepSeek V4 Flash"
+) -> dict:
     return {
         "model_client_config": {
             "api_base": "https://opencode.ai/zen/v1",
@@ -56,7 +75,9 @@ def test_validate_cron_model_none_or_empty(monkeypatch: pytest.MonkeyPatch) -> N
     assert validate_cron_model("   ") is None
 
 
-def test_validate_cron_model_resolves_user_model(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_validate_cron_model_resolves_user_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def fake_get_model_config(name: str, index: int | None = None) -> dict | None:
         # 模拟 config.py 的真实语义：model_name 或 alias 命中都返回条目
         if name in ("my-model", "我的模型"):
@@ -67,10 +88,73 @@ def test_validate_cron_model_resolves_user_model(monkeypatch: pytest.MonkeyPatch
         "jiuwenswarm.common.config.get_model_config",
         fake_get_model_config,
     )
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: ["我的模型"])
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_model_names", lambda: ["我的模型"]
+    )
     assert validate_cron_model("my-model") == "my-model"
     # alias 也解析为 canonical model_name
     assert validate_cron_model("我的模型") == "my-model"
+
+
+def test_validate_cron_model_resolves_environment_model_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MODEL_NAME", "deployed-model")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config_raw",
+        lambda: {"models": {"defaults": [_environment_model_entry()]}},
+    )
+
+    assert validate_cron_model("deployed-model") == "deployed-model"
+    assert validate_cron_model("默认模型") == "deployed-model"
+
+
+def test_validate_cron_model_uses_environment_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config_raw",
+        lambda: {
+            "models": {
+                "defaults": [_environment_model_entry("${MODEL_NAME:-fallback-model}")]
+            }
+        },
+    )
+
+    assert validate_cron_model("fallback-model") == "fallback-model"
+    assert validate_cron_model("默认模型") == "fallback-model"
+
+
+def test_validate_cron_model_rejects_empty_environment_model_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config_raw",
+        lambda: {"models": {"defaults": [_environment_model_entry()]}},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Configured model '默认模型'.*resolves to an empty value.*MODEL_NAME",
+    ):
+        validate_cron_model("默认模型")
+
+
+def test_validate_cron_model_rejects_whitespace_only_model_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config_raw",
+        lambda: {"models": {"defaults": [_environment_model_entry("   ")]}},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Configured model '默认模型'.*resolves to an empty value",
+    ):
+        validate_cron_model("默认模型")
 
 
 def test_validate_cron_model_accepts_zen_free_model_id(
@@ -134,3 +218,47 @@ def test_validate_cron_model_zen_cache_empty_still_rejected(
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
     with pytest.raises(ValueError, match="Unknown model 'deepseek-v4-flash-free'"):
         validate_cron_model("deepseek-v4-flash-free")
+
+
+# ---------------------------------------------------------------------------
+# 会话级 MCP 选择（mcp）：类型规范化 + CronJob 序列化 round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_cron_job_mcp_variants() -> None:
+    assert normalize_cron_job_mcp(None) is None
+    assert normalize_cron_job_mcp("not-a-list") is None
+    assert normalize_cron_job_mcp(42) is None
+    assert normalize_cron_job_mcp([]) is None
+    # strip / 去空 / 去重 / 过滤非字符串元素
+    assert normalize_cron_job_mcp([" a ", "b", "b", "", None, 123]) == ["a", "b"]
+    assert normalize_cron_job_mcp(("x",)) == ["x"]
+
+
+def _mcp_round_trip_job() -> CronJob:
+    return CronJob(
+        id="job-mcp-1",
+        name="daily",
+        enabled=True,
+        cron_expr="0 0 9 * * ? *",
+        timezone="Asia/Shanghai",
+        description="hello",
+        targets="web",
+        mcp=["feishu-doc", "github"],
+    )
+
+
+def test_cron_job_mcp_round_trip() -> None:
+    job = _mcp_round_trip_job()
+    d = job.to_dict()
+    assert d["mcp"] == ["feishu-doc", "github"]
+    restored = CronJob.from_dict(d)
+    assert restored.mcp == ["feishu-doc", "github"]
+
+
+def test_cron_job_without_mcp_round_trip_keeps_none() -> None:
+    """旧数据无 mcp 字段 → from_dict 兜底 None，行为与改造前一致。"""
+    job = _mcp_round_trip_job()
+    legacy = {k: v for k, v in job.to_dict().items() if k != "mcp"}
+    assert "mcp" not in legacy
+    assert CronJob.from_dict(legacy).mcp is None

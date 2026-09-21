@@ -1,3 +1,4 @@
+import { withCatalogCache, type CatalogCacheMetadata } from '../catalogCache';
 import { connectorApi } from '../../services/connectorApi';
 import { webRequest } from '../../services/webClient';
 import { requestEquipmentList } from '../equipmentListRequest';
@@ -16,17 +17,20 @@ import {
   normalizeAgentTemplateDetail,
   normalizeAgentTemplateListItem,
   normalizeSkillOption,
+  normalizeTeamMarketplaceSkill,
 } from './adapter';
+import type { McpOption, SkillOption } from './types';
 import type {
   RawAgentDetailPayload,
   RawAgentFileListPayload,
   RawAgentFileReadPayload,
   RawAgentListPayload,
   RawSkillListPayload,
+  RawTeamSkillMarketplacePayload,
 } from './raw';
 
 export { AgentManagementError } from './port';
-export type { AgentCatalogListOptions, AgentInstallResult, AgentManagementClient } from './port';
+export type { AgentCatalogListOptions, AgentInstallResult, AgentManagementClient, SkillListOptions } from './port';
 
 function rethrowAgentError(error: unknown): never {
   if (error instanceof AgentManagementError) {
@@ -64,11 +68,23 @@ function extractPendingConnectors(error: unknown): string[] | undefined {
   return names && names.length > 0 ? names : undefined;
 }
 
+function mergeTeamMarketplaceSkillOptions(
+  skillOptions: SkillOption[],
+  teamMarketplace: RawTeamSkillMarketplacePayload,
+): SkillOption[] {
+  const byId = new Map(skillOptions.map((skill) => [skill.id, skill]));
+  (teamMarketplace.skills ?? teamMarketplace.items ?? []).forEach((raw) => {
+    const normalized = normalizeTeamMarketplaceSkill(raw, byId.get(raw.name?.trim() || ''));
+    if (normalized) byId.set(normalized.id, normalized);
+  });
+  return Array.from(byId.values());
+}
+
 async function enrichCatalogTags(items: ReturnType<typeof normalizeAgentTemplateListItem>[]) {
   const missingTags = items.filter((item) => item.tags.length === 0);
   if (missingTags.length === 0) return items;
 
-  const enriched = await Promise.all(
+  const enriched = await Promise.allSettled(
     missingTags.map(async (item) => {
       const payload = await webRequest<RawAgentDetailPayload>('agent_templates.show', { id: item.id });
       if (!payload.template) {
@@ -81,7 +97,9 @@ async function enrichCatalogTags(items: ReturnType<typeof normalizeAgentTemplate
     }),
   );
   const tagsById = new Map<string, ReturnType<typeof normalizeAgentTemplateListItem>['tags']>();
-  enriched.forEach(({ id, tags }) => {
+  enriched.forEach((result) => {
+    if (result.status !== 'fulfilled') return;
+    const { id, tags } = result.value;
     if (tags.length > 0) tagsById.set(id, tags);
   });
   return items.map((item) => {
@@ -95,20 +113,27 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     source: 'live',
     async listCatalog(options: AgentCatalogListOptions = {}) {
       try {
-        const payload = await requestEquipmentList<RawAgentListPayload>(webRequest, 'agent_templates.list', {
-          ...(options.filter ? { filter: options.filter } : {}),
-        });
+        const payload = await requestEquipmentList<RawAgentListPayload & { cache?: CatalogCacheMetadata }>(
+          webRequest,
+          'agent_templates.list',
+          {
+            ...(options.filter ? { filter: options.filter } : {}),
+            ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
+          },
+        );
+
         const items = (payload.templates || []).map((item) =>
           normalizeAgentTemplateListItem(item, getAgentManagementLocale()),
         );
-        return options.enrichTags === false ? items : enrichCatalogTags(items);
+        // Cached cards must not wait for remote details. Tag enrichment is an explicit optional operation.
+        return withCatalogCache(options.enrichTags === true ? await enrichCatalogTags(items) : items, payload.cache);
       } catch (error) {
         return rethrowAgentError(error);
       }
     },
     async getDefinition(id) {
       try {
-        const payload = await webRequest<RawAgentDetailPayload>('agent_templates.show', { id });
+        const payload = await webRequest<RawAgentDetailPayload>('agent_templates.show', { id }, { timeoutMs: 90000 });
         if (!payload.template) {
           throw new AgentManagementError('Agent detail is empty', 'agent_detail_empty', false);
         }
@@ -136,31 +161,127 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
         return rethrowAgentError(error);
       }
     },
-    async listSkillOptions() {
+    async listSkillOptions(options = {}) {
       try {
         const payload = await webRequest<RawSkillListPayload>('skills.list', { with_installed: true });
-        return (payload.skills || [])
-          .filter((item) => item.installed === true && item.source !== 'mcp')
+        const skillOptions = (payload.skills || [])
+          .filter((item) => item.source !== 'mcp')
           .map(normalizeSkillOption)
           .filter((item) => item.id.length > 0);
+        if (!options.includeTeamMarketplace) return skillOptions;
+
+        const fetchTeamMarketplace = () =>
+          webRequest<RawTeamSkillMarketplacePayload>(
+            'skills.swarmskillshub.recommend',
+            { top_k: 500, cache_mode: 'prefer_cache', plugin_type: 'swarmskill' },
+            { timeoutMs: 30000 },
+          );
+
+        // Preserve the old awaitable behavior for callers that do not opt into progressive enrichment.
+        if (!options.onTeamMarketplaceLoaded) {
+          const teamMarketplace = await fetchTeamMarketplace();
+          if (teamMarketplace.success === false) return skillOptions;
+          return mergeTeamMarketplaceSkillOptions(skillOptions, teamMarketplace);
+        }
+
+        // The base list is usable on its own; enrich it asynchronously so a slow Hub never blocks the picker.
+        setTimeout(() => {
+          void fetchTeamMarketplace()
+            .then((teamMarketplace) => {
+              if (teamMarketplace.success === false) return;
+              options.onTeamMarketplaceLoaded?.(
+                mergeTeamMarketplaceSkillOptions(skillOptions, teamMarketplace),
+                teamMarketplace.cache,
+              );
+            })
+            .catch(() => {
+              // Team marketplace is optional enrichment; keep local and installed skills usable when it fails.
+            });
+        }, 0);
+        return skillOptions;
       } catch (error) {
         return rethrowAgentError(error);
       }
     },
     async listMcpOptions() {
       try {
-        const local = await connectorApi.list('local');
-        return local
-          .map((item) => ({
-            id: item.name,
-            name: item.displayName || item.name,
+        const [marketplaceResult, localResult] = await Promise.allSettled([
+          connectorApi.list('builtin'),
+          connectorApi.list('local'),
+        ]);
+        if (localResult.status === 'rejected') throw localResult.reason;
+        const marketplace = marketplaceResult.status === 'fulfilled' ? marketplaceResult.value : [];
+        const local = localResult.value;
+        const byRuntimeName = new Map<string, McpOption>();
+        [...marketplace, ...local].forEach((item) => {
+          const runtimePackageName = item.runtimePackageName || item.name;
+          if (!runtimePackageName) return;
+          const next: McpOption = {
+            id: runtimePackageName,
+            name: item.displayName || runtimePackageName,
             description: item.description || '',
             category: item.category || '',
             integrationType: item.integrationType,
             connectionState: item.connectionState,
             source: item.source,
-          }))
-          .filter((item) => item.id.length > 0);
+            runtimePackageName,
+            ...(item.hubAssetId ? { hubAssetId: item.hubAssetId } : {}),
+            installed: item.installed,
+            icon: item.icon,
+          };
+          const previous = byRuntimeName.get(runtimePackageName);
+          byRuntimeName.set(
+            runtimePackageName,
+            previous
+              ? {
+                  ...previous,
+                  ...next,
+                  hubAssetId: next.hubAssetId || previous.hubAssetId,
+                }
+              : next,
+          );
+        });
+        return Array.from(byRuntimeName.values()).filter((item) => item.id.length > 0);
+      } catch (error) {
+        return rethrowAgentError(error);
+      }
+    },
+    async installSkill(option) {
+      try {
+        const hubAssetId = option.hubAssetId?.trim();
+        if (option.source === 'teamskillshub' && hubAssetId) {
+          const payload = await webRequest<{ success?: boolean; detail?: string }>(
+            'skills.teamskillshub.install',
+            { asset_id: hubAssetId, force: false, display_name: option.name },
+            { timeoutMs: 180000 },
+          );
+          if (payload?.success === false) {
+            throw new AgentManagementError(
+              payload.detail || 'Team skill installation failed',
+              'skill_install_failed',
+              false,
+              payload,
+            );
+          }
+          return;
+        }
+        const spec = option.installSpec?.trim();
+        if (!spec) {
+          throw new AgentManagementError('Skill install specification is missing', 'skill_install_spec_missing', false);
+        }
+        const payload = await webRequest<{ success?: boolean; detail?: string }>(
+          'skills.install',
+          { spec },
+          { timeoutMs: 180000 },
+        );
+        if (payload?.success === false) {
+          throw new AgentManagementError(
+            payload.detail || 'Skill installation failed',
+            'skill_install_failed',
+            false,
+            payload,
+          );
+        }
       } catch (error) {
         return rethrowAgentError(error);
       }
@@ -182,6 +303,31 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
         return rethrowAgentError(error);
       }
     },
+    async updateAgent(draft) {
+      try {
+        await webRequest('agent_templates.update', {
+          id: draft.id,
+          name: draft.name,
+          description: draft.description,
+          persona: draft.persona,
+          tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
+          skills: draft.skillRefs,
+          mcps: draft.mcpRefs,
+          quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
+        });
+        invalidateAgentCatalog();
+      } catch (error) {
+        return rethrowAgentError(error);
+      }
+    },
+    async deleteDefinition(id) {
+      try {
+        await webRequest('agent_templates.delete', { id });
+        invalidateAgentCatalog();
+      } catch (error) {
+        return rethrowAgentError(error);
+      }
+    },
     async importAgentTemplate(path) {
       try {
         const payload = await webRequest<{ id?: string }>('agent_templates.import_local', { path });
@@ -196,7 +342,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async installDefinition(id) {
       try {
-        await webRequest('agent_templates.install', { id });
+        await webRequest('agent_templates.install', { id }, { timeoutMs: 180000 });
         invalidateAgentCatalog();
         return { kind: 'ok' };
       } catch (error) {

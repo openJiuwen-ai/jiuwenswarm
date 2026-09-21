@@ -14,7 +14,7 @@ const avatarPalette = [
 
 export interface AvatarStyle {
   firstChar: string;
-  /** 头像容器内联样式：surface 色 20% 背景 + surface 色实色外扩描边 + 配套 text 色文字；尺寸/圆角/字号由调用方 className 控制 */
+  /** 头像容器内联样式：surface 色 20% 背景 + surface 色实色 inset 描边 + 配套 text 色文字；尺寸/圆角/字号由调用方 className 控制 */
   style: CSSProperties;
 }
 
@@ -32,17 +32,15 @@ function hexToRgba(hex: string, alpha: number): string {
  * `style` 会覆盖调用方的 `text-text-inverse`（浅色底上白字不可读，字母改用配套深色）。 */
 export function getSkillAvatar(name: string): AvatarStyle {
   const trimmed = String(name || '').trim() || '?';
-  const firstChar = trimmed.charAt(0).toUpperCase();
-  const colorSeed = trimmed.charAt(0).toLowerCase().charCodeAt(0) || 0;
+  // Array.from 按码点取首字符：中文正常，emoji 等增补平面字符不会被切成半个代理对
+  const firstChar = (Array.from(trimmed)[0] ?? '?').toUpperCase();
+  const colorSeed = (Array.from(trimmed)[0] ?? '?').toLowerCase().codePointAt(0) || 0;
   const { surface, text } = avatarPalette[colorSeed % avatarPalette.length];
   return {
     firstChar,
     style: {
       backgroundColor: hexToRgba(surface, 0.2),
-      // 描边用外扩 1px 的 box-shadow 实现而不是 border：border 要么占掉盒子内部空间（内容被
-      // 挤成 46px，即"内缩"），要么把布局尺寸撑到 50px；box-shadow 不占布局，内容保持完整
-      // 尺寸，1px surface 实色描边沿圆角向外扩一圈。
-      boxShadow: `0 0 0 1px ${surface}`,
+      boxShadow: `inset 0 0 0 1px ${surface}`,
       color: text,
     },
   };

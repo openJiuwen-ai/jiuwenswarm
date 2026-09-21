@@ -1,0 +1,47 @@
+# --- VCS ---
+.git/
+.gitattributes
+
+# --- Python virtualenv / caches ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyspy/
+
+# --- Test / coverage artifacts ---
+htmlcov/
+.coverage
+coverage.xml
+.test_logs/
+
+# --- Build artifacts (rebuilt inside the image) ---
+# NOTE: packages/ is a local path dependency (workswarm-tui) - do NOT exclude it.
+build/
+dist/
+
+# --- Frontend artifacts (rebuilt inside the image) ---
+**/node_modules/
+**/dist/
+**/test-results/
+**/.vite/
+
+# --- Local scratch / profiling / logs ---
+logs/
+*.log
+*.diff
+diff_*.txt
+_scratch_samples.txt
+scalene-profile.*
+.macro_tmp/
+_pptx_selftest_tmp/
+
+# --- Local tool caches ---
+.playwright-mcp/
+.research_cache/
+.ai_research/
+.learnings/

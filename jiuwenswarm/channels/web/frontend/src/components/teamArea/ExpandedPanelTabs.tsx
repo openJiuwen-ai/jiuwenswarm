@@ -1,9 +1,10 @@
-import { useId, type ReactNode } from 'react';
+import { useId, type KeyboardEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Minimize2 } from 'lucide-react';
+import { Globe2, Minimize2 } from 'lucide-react';
 import MaximizeIcon from '../../assets/maximize.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
-import RecentTasksIcon from '../../assets/work-mode/progress-tasks.svg?react';
+import RecentTasksIcon from '../../assets/work-mode/recent-tasks.svg?react';
+import TabCloseIcon from '../../assets/work-mode/close.svg?react';
 import artifactsIcon from '../../assets/artifacts.svg';
 import reviewIcon from '../../assets/review.svg';
 import '../subagent/Subagent.css';
@@ -14,6 +15,8 @@ export interface PanelTabItem {
   label: string;
   icon?: ReactNode;
   count?: string | number;
+  /** 页签文字右侧渲染关闭按钮（当前仅 browser 页签使用） */
+  closable?: boolean;
 }
 
 export function useExpandedPanelTabs({
@@ -21,11 +24,13 @@ export function useExpandedPanelTabs({
   showMiddleTab,
   artifactsCount,
   reviewPanel,
+  showBrowserTab,
 }: {
   middleTab: { key: string; label: string; icon: ReactNode };
   showMiddleTab: boolean;
   artifactsCount: number;
   reviewPanel?: ReactNode;
+  showBrowserTab?: boolean;
 }): PanelTabItem[] {
   const { t } = useTranslation();
   return [
@@ -44,7 +49,25 @@ export function useExpandedPanelTabs({
           },
         ]
       : []),
-    ...(reviewPanel ? [{ key: 'review', label: t('codeMode.review'), icon: <img src={reviewIcon} width={16} height={16} aria-hidden="true" /> }] : []),
+    ...(reviewPanel
+      ? [
+          {
+            key: 'review',
+            label: t('codeMode.review'),
+            icon: <img src={reviewIcon} width={16} height={16} aria-hidden="true" />,
+          },
+        ]
+      : []),
+    ...(showBrowserTab
+      ? [
+          {
+            key: 'browser',
+            label: t('browser.pane.tabLabel'),
+            icon: <Globe2 className="h-4 w-4" aria-hidden="true" />,
+            closable: true,
+          },
+        ]
+      : []),
   ];
 }
 
@@ -52,6 +75,7 @@ export function ExpandedPanelTabs({
   tabs,
   activeTab,
   onTabChange,
+  onTabClose,
   onCollapse,
   onToggleFullscreen,
   isFullscreen,
@@ -61,6 +85,7 @@ export function ExpandedPanelTabs({
   tabs: PanelTabItem[];
   activeTab: string;
   onTabChange: (tab: string) => void;
+  onTabClose?: (tab: string) => void;
   onCollapse?: () => void;
   onToggleFullscreen?: () => void;
   isFullscreen?: boolean;
@@ -70,6 +95,13 @@ export function ExpandedPanelTabs({
   const { t } = useTranslation();
   const tabPanelId = useId();
 
+  const handleTabCloseKeyDown = (event: KeyboardEvent<HTMLSpanElement>, tabKey: string) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    event.stopPropagation();
+    onTabClose?.(tabKey);
+  };
+
   return (
     <div data-testid={`${testIdPrefix}-expanded-header`} className="single-agent-tool-tabs">
       <div
@@ -78,7 +110,7 @@ export function ExpandedPanelTabs({
         role="tablist"
         aria-label={tabListLabel ?? t('team.toolTabs')}
       >
-        {tabs.map(tab => {
+        {tabs.map((tab) => {
           const isActive = activeTab === tab.key;
           const countSuffix = tab.count !== undefined ? ` (${tab.count})` : '';
           return (
@@ -97,6 +129,24 @@ export function ExpandedPanelTabs({
               {tab.icon}
               {tab.label}
               {countSuffix}
+              {tab.closable && onTabClose && (
+                <span
+                  data-testid={`${testIdPrefix}-tab-close`}
+                  data-variant={tab.key}
+                  role="button"
+                  tabIndex={0}
+                  className="ml-1 -mr-0.5 rounded-sm p-0.5 text-text-muted hover:bg-secondary hover:text-text"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onTabClose(tab.key);
+                  }}
+                  onKeyDown={(event) => handleTabCloseKeyDown(event, tab.key)}
+                  title={t('browser.pane.closeTab')}
+                  aria-label={t('browser.pane.closeTab')}
+                >
+                  <TabCloseIcon className="h-2.5 w-2.5" aria-hidden="true" />
+                </span>
+              )}
             </button>
           );
         })}
@@ -111,7 +161,11 @@ export function ExpandedPanelTabs({
             aria-label={isFullscreen ? t('team.restore') : t('team.maximize')}
             title={isFullscreen ? t('team.restore') : t('team.maximize')}
           >
-            {isFullscreen ? <Minimize2 className="h-[21.33px] w-[21.33px]" /> : <MaximizeIcon className="h-[21.33px] w-[21.33px]" aria-hidden="true" />}
+            {isFullscreen ? (
+              <Minimize2 className="h-[21.33px] w-[21.33px]" />
+            ) : (
+              <MaximizeIcon className="h-[21.33px] w-[21.33px]" aria-hidden="true" />
+            )}
           </button>
         )}
         {onCollapse && (

@@ -1,6 +1,13 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import asyncio
 import json
+
+# TEST ONLY: URL literals use reserved domains or mocked loopback endpoints;
+# these tests do not open sockets or contact running services.
+
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -79,6 +86,115 @@ def patch_wire_encoder(monkeypatch):
         "encode_agent_response_for_wire",
         fake_encode_agent_response_for_wire,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True, None])
+@pytest.mark.parametrize("outcome", ["started", "start_failed", "write_failed", "external", "darwin"])
+async def test_internal_jiuwenbox_bootstrap_persists_enabled(
+    server,
+    monkeypatch,
+    tmp_path,
+    enabled,
+    outcome,
+):
+    from jiuwenswarm.common.config import resolve_sandbox_enabled
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    policy_path = tmp_path / "policy.yaml"
+    policy_path.write_text("version: 1\n", encoding="utf-8")
+    endpoint_updates = []
+    runtime_updates = []
+    sandbox = {"type": "jiuwenbox", "url": "http://sandbox.invalid:8321"}
+    if enabled is not None:
+        sandbox["enabled"] = enabled
+
+    def persist_runtime(patch):
+        runtime_updates.append(patch)
+        if outcome == "write_failed":
+            raise OSError("test persistence failure")
+        sandbox.update(patch)
+
+    class Runner:
+        async def ensure_running(self, **_kwargs):
+            return outcome != "start_failed"
+
+        def get_stderr_tail(self, _lines):
+            return "test startup failure"
+
+    monkeypatch.setattr(agent_ws_server_module.sys, "platform", "darwin" if outcome == "darwin" else "linux")
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "get_sandbox_startup_mode_explicit",
+        lambda: "external" if outcome == "external" else "internal",
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "get_sandbox_endpoint",
+        lambda: {
+            "url": "http://sandbox.invalid:8321",
+            "type": "jiuwenbox",
+            "policy_file": "policy.yaml",
+        },
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "resolve_sandbox_policy_path",
+        lambda _path: policy_path,
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "update_sandbox_endpoint",
+        lambda *args, **kwargs: endpoint_updates.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "update_sandbox_runtime",
+        persist_runtime,
+    )
+    monkeypatch.setattr(
+        server,
+        "_parse_sandbox_host_port",
+        lambda _url: ("127.0.0.1", 8321),
+    )
+    monkeypatch.setattr(
+        server,
+        "_allocate_internal_jiuwenbox_port",
+        lambda _host, port: port,
+    )
+    server._jiuwenbox_runner = Runner()
+
+    await server._bootstrap_internal_jiuwenbox()
+
+    started = outcome in {"started", "write_failed"}
+    assert runtime_updates == ([{"enabled": True}] if started else [])
+    assert endpoint_updates == ([
+        (
+            ("http://sandbox.invalid:8321", "jiuwenbox"),
+            {
+                "startup_mode": "internal",
+                "policy_file": "policy.yaml",
+            },
+        )
+    ] if started else [])
+
+    # Verify the production provider-selection branch without registering tools
+    # or opening a connection to the reserved test endpoint.
+    monkeypatch.setattr(interface_deep, "get_sandbox_endpoint", lambda: sandbox)
+    monkeypatch.setattr(interface_deep, "get_sandbox_runtime", lambda: {"enabled": resolve_sandbox_enabled(sandbox)})
+    local = MagicMock(return_value=None)
+    monkeypatch.setattr(interface_deep, "create_local_sysop_card", local)
+    for smart in (False, True):
+        adapter = interface_deep.JiuWenSwarmDeepAdapter()
+        adapter._enable_auto_permission = smart
+        remote = MagicMock(return_value=None)
+        monkeypatch.setattr(adapter, "_create_sandbox_sys_operation", remote)
+        monkeypatch.setattr(adapter, "_resolve_project_dir_for_sandbox", lambda: None)
+        local.reset_mock()
+        adapter._resolve_sys_operation()
+        expected_remote = outcome == "started" or enabled is True
+        assert remote.called is expected_remote
+        assert local.called is not expected_remote
 
 
 @pytest.mark.asyncio
@@ -170,9 +286,11 @@ async def test_browser_runtime_restart_uses_identity_scoped_sdk_reset():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("smart", [False, True])
 async def test_handle_command_add_dir_returns_path_and_remember(
-    server, fake_ws, monkeypatch
+    server, fake_ws, monkeypatch, smart
 ):
+    monkeypatch.setattr(server.get_agent_manager(), "has_smart_permission_lifecycle", lambda _: smart)
     persist_stub = {
         "ok": True,
         "normalized": "/tmp/demo",
@@ -184,6 +302,12 @@ async def test_handle_command_add_dir_returns_path_and_remember(
         agent_ws_server_module,
         "persist_cli_trusted_directory",
         lambda _raw: persist_stub,
+    )
+    reload_notify = MagicMock()
+    monkeypatch.setattr(
+        server.get_agent_manager(),
+        "schedule_permissions_reload",
+        reload_notify,
     )
     request = AgentRequest(
         request_id="req-add-dir",
@@ -205,10 +329,47 @@ async def test_handle_command_add_dir_returns_path_and_remember(
             "ok": True,
         }
     ]
+    assert reload_notify.call_args_list == ([call()] if smart else [])
 
 
 @pytest.mark.asyncio
-async def test_handle_command_add_dir_does_not_wait_for_agent_reload(
+async def test_handle_command_add_dir_reports_reload_schedule_failure(
+    server, fake_ws, monkeypatch
+):
+    monkeypatch.setattr(server.get_agent_manager(), "has_smart_permission_lifecycle", lambda _: True)
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "persist_cli_trusted_directory",
+        lambda _raw: {"ok": True, "normalized": "/tmp/demo"},
+    )
+    monkeypatch.setattr(
+        server.get_agent_manager(),
+        "schedule_permissions_reload",
+        MagicMock(side_effect=RuntimeError("scheduler unavailable")),
+    )
+    request = AgentRequest(
+        request_id="req-add-dir-schedule-failed",
+        channel_id="tui",
+        req_method=ReqMethod.COMMAND_ADD_DIR,
+        params={"path": "/tmp/demo"},
+    )
+
+    await server.handle_command_add_dir_for_test(fake_ws, request, asyncio.Lock())
+
+    assert fake_ws.sent == [
+        {
+            "response_id": "req-add-dir-schedule-failed",
+            "payload": {
+                "error": "scheduler unavailable",
+                "code": "SESSION_CREATE_FAILED",
+            },
+            "ok": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_command_add_dir_sends_no_target_dirty_signal_without_waiting(
     server, fake_ws, monkeypatch
 ):
     persist_stub = {
@@ -220,18 +381,22 @@ async def test_handle_command_add_dir_does_not_wait_for_agent_reload(
         "persist_cli_trusted_directory",
         lambda _raw: persist_stub,
     )
-    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {})
     reload_started = asyncio.Event()
+    reload_release = asyncio.Event()
+    reload_calls = []
 
-    async def _blocking_reload(_config, _env):
+    async def _blocking_reload(_config, **kwargs):
+        reload_calls.append(kwargs)
         reload_started.set()
-        await asyncio.Event().wait()
+        await reload_release.wait()
 
-    monkeypatch.setattr(
-        server.get_agent_manager(),
-        "reload_agents_config",
-        _blocking_reload,
-    )
+    manager = server.get_agent_manager()
+    manager.agents = {"tui": {"agent": SimpleNamespace(
+        has_smart_permission_lifecycle=lambda _: True,
+        reload_permissions_config=_blocking_reload,
+    )}}
+    full_reload = AsyncMock(side_effect=AssertionError("add-dir must not dirty ordinary owners"))
+    monkeypatch.setattr(manager, "reload_agents_config", full_reload)
     request = AgentRequest(
         request_id="req-add-dir-no-reload-wait",
         channel_id="tui",
@@ -244,7 +409,10 @@ async def test_handle_command_add_dir_does_not_wait_for_agent_reload(
         timeout=0.5,
     )
 
-    assert not reload_started.is_set()
+    await asyncio.wait_for(reload_started.wait(), timeout=0.5)
+    assert reload_calls == [
+        {"include_legacy": False},
+    ]
     assert fake_ws.sent == [
         {
             "response_id": "req-add-dir-no-reload-wait",
@@ -256,6 +424,9 @@ async def test_handle_command_add_dir_does_not_wait_for_agent_reload(
             "ok": True,
         }
     ]
+    reload_release.set()
+    await manager.wait_for_permissions_ready()
+    full_reload.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -266,13 +437,14 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
         req_method=ReqMethod.COMMAND_COMPACT,
         params={"instructions": "focus on architecture"},
     )
+    captured = {}
 
     class MockAgent:
         async def ensure_instance(self):
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
-
-        async def compress_context(self, session_id, *, return_state=False):
+        async def compress_context(self, session_id, *, return_state=False, processor_types=None):
+            captured["processor_types"] = processor_types
             return {
                 "result": "compressed",
                 "stats": {
@@ -315,6 +487,10 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
             "ok": True,
         }
     ]
+    assert captured["processor_types"] == [
+        "MessageSummaryOffloader",
+        "RoundLevelCompressor",
+    ]
 
 
 @pytest.mark.asyncio
@@ -331,8 +507,7 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
         async def ensure_instance(self):
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
-
-        async def compress_context(self, session_id, *, return_state=False):
+        async def compress_context(self, session_id, *, return_state=False, processor_types=None):
             return {
                 "result": "compressed",
                 "stats": {
@@ -391,9 +566,8 @@ async def test_handle_command_compact_attributes_team_work_to_live_leader(server
         async def ensure_instance(self):
             return None
 
-        async def compress_context(self, session_id, *, return_state=False):
+        async def compress_context(self, session_id, *, return_state=False, processor_types=None):
             return {"result": "noop", "stats": None}
-
     subject = SimpleNamespace(
         subject_id="team-member:session-team:demo:leader",
         display_name="Leader",
@@ -423,6 +597,66 @@ async def test_handle_command_compact_attributes_team_work_to_live_leader(server
 
     assert captured["execution_subject"] is subject
     assert captured["mode"] == "team.work.normal"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_mode", "expected_trajectory_mode"),
+    [
+        ("agent", "agent.work.normal"),
+        ("agent.plan", "agent.work.plan"),
+        ("agent.work.normal", "agent.work.normal"),
+    ],
+)
+async def test_handle_command_compact_opens_run_span_with_canonical_mode(
+    server,
+    fake_ws,
+    monkeypatch,
+    request_mode,
+    expected_trajectory_mode,
+):
+    # The trajectory store only serves traces stamped with a canonical mode;
+    # a legacy ``agent`` on the manual /compact run span hid the whole
+    # compaction trace from the viewer.
+    from openjiuwen.harness import observability as harness_observability
+    from jiuwenswarm.agents.harness import agent_observability
+
+    request = AgentRequest(
+        request_id="req-compact-mode",
+        channel_id="web",
+        session_id="session-compact-mode",
+        req_method=ReqMethod.COMMAND_COMPACT,
+        params={"mode": request_mode},
+    )
+
+    class MockAgent:
+        async def ensure_instance(self):
+            return None
+
+        async def compress_context(self, session_id, *, return_state=False):
+            return {"result": "noop", "stats": None}
+    captured = {}
+
+    monkeypatch.setattr(
+        server.get_agent_manager_for_test(),
+        "get_agent_for_session_nowait",
+        lambda channel_id, session_id: MockAgent(),
+    )
+    monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda: None)
+    monkeypatch.setattr(
+        harness_observability,
+        "open_agent_run_span",
+        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(),
+    )
+    monkeypatch.setattr(harness_observability, "close_agent_run_span", lambda *args, **kwargs: None)
+
+    await server.handle_command_compact_for_test(fake_ws, request, asyncio.Lock())
+
+    assert captured["mode"] == expected_trajectory_mode
+    # A manual compaction runs outside every turn and names none; the viewer
+    # shows it between the turns it happened between.
+    assert "turn_id" not in captured
+    assert "turn_number" not in captured
 
 
 @pytest.mark.asyncio
@@ -1394,7 +1628,8 @@ async def test_handle_command_session_returns_remote_handoff(server, fake_ws):
             "response_id": "req-session",
             "payload": {
                 "session_id": "sess_demo",
-                "remote_url": "https://example.com/session/sess_demo",
+                # Reserved test-only host: this URL cannot resolve publicly.
+                "remote_url": "https://example.invalid/session/sess_demo",
                 "qr_text": "session:sess_demo",
             },
             "ok": True,
@@ -1422,12 +1657,12 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
         lambda _req: _Resp(),
         raising=True,
     )
-    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: {})
+    reload_calls = []
+    captured = {"models": {"default": "captured"}}
+    monkeypatch.setattr(agent_ws_server_module, "get_config", lambda: captured)
 
-    reload_calls = {"n": 0}
-
-    async def _slow_reload(_config, _env):
-        reload_calls["n"] += 1
+    async def _slow_reload(_config, _env, **kwargs):
+        reload_calls.append((_config, _env, kwargs))
         await asyncio.sleep(0.2)  # 模拟慢 reload
 
     monkeypatch.setattr(server.get_agent_manager(), "reload_agents_config", _slow_reload)
@@ -1451,4 +1686,37 @@ async def test_handle_permissions_config_does_not_block_on_slow_reload(server, f
 
     # reload 在后台被调度: 等它跑完确认调用过一次
     await asyncio.sleep(0.3)
-    assert reload_calls["n"] == 1, f"期望 reload 被调用 1 次, 实际 {reload_calls['n']}"
+    assert reload_calls == [
+        (captured, None, {"permission_notification": True}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_permissions_config_reports_reload_schedule_failure(
+    server, fake_ws, monkeypatch
+):
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_config_rpc as _rpc_mod
+
+    response = SimpleNamespace(ok=True, payload={"ok": True})
+    monkeypatch.setattr(
+        _rpc_mod,
+        "dispatch_permissions_config_request",
+        lambda _request: response,
+    )
+    monkeypatch.setattr(
+        server.get_agent_manager(),
+        "schedule_permissions_reload",
+        MagicMock(side_effect=RuntimeError("scheduler unavailable")),
+    )
+    request = AgentRequest(
+        request_id="req-perm-schedule-failed",
+        channel_id="tui",
+        session_id="sess_demo",
+        req_method=ReqMethod.PERMISSIONS_TOOLS_UPDATE,
+        params={"tool": "bash", "level": "deny"},
+    )
+
+    # As in develop, the enclosing WebSocket dispatcher owns RPC exceptions.
+    with pytest.raises(RuntimeError, match="scheduler unavailable"):
+        await server.handle_permissions_config_for_test(fake_ws, request, asyncio.Lock())
+    assert fake_ws.sent == []

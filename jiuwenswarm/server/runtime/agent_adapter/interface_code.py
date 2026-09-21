@@ -74,6 +74,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.electron_sideview import apply_session_sideview_target
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
@@ -529,6 +530,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # Treat a same-named resource entry as fixed so it cannot be mounted a
         # second time (or resolve to agent-core's deprecated RunKind rail).
         "HeartbeatRail",
+        "SessionMessagingRouteRail",
     })
 
     def __init__(self) -> None:
@@ -555,6 +557,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._custom_code_spec_active: bool = False
         self._session_instance_spec: DeepAgentSpec | None = None
         self._session_instance_build_context: BuildContext | None = None
+        self._session_instance_agent_definition: dict[str, Any] | None = None
 
     # ─── Language override ────────────────────────
 
@@ -603,12 +606,61 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _session_instance_extra_create_kwargs(self) -> dict[str, Any]:
         """Propagate an explicit Spec through lazy root and session builds."""
-        if self._session_instance_spec is None:
-            return {}
-        return {
-            "spec": self._session_instance_spec,
-            "build_context": self._session_instance_build_context,
+        if self._session_instance_spec is not None:
+            return {
+                "spec": self._session_instance_spec,
+                "build_context": self._session_instance_build_context,
+            }
+        if self._session_instance_agent_definition is not None:
+            return {
+                "agent_definition": dict(
+                    self._session_instance_agent_definition
+                )
+            }
+        return {}
+
+    @staticmethod
+    def _apply_runtime_agent_definition(
+        spec: DeepAgentSpec,
+        definition: dict[str, Any],
+    ) -> DeepAgentSpec:
+        """Overlay SDK identity fields on the complete product Code Spec.
+
+        Starting from the configured product Spec preserves its permission,
+        security, resilience, tool and extension rails. The declarative Agent
+        changes only identity, instructions and supported execution limits;
+        ``tools='*'`` retains the governed configured set.
+        """
+        if definition.get("tools") != "*":
+            raise ValueError("custom Agent tools must use the configured set")
+        name = str(definition.get("name") or "").strip()
+        instructions = str(definition.get("instructions") or "")
+        if not name or not instructions.strip():
+            raise ValueError("custom Agent name and instructions are required")
+
+        card = spec.card or AgentCard(name=name, id=_AGENT_CARD_ID)
+        card_updates: dict[str, Any] = {"name": name}
+        description = definition.get("description")
+        if isinstance(description, str) and description.strip():
+            card_updates["description"] = description.strip()
+        card = card.model_copy(deep=True, update=card_updates)
+
+        base_prompt = str(spec.system_prompt or "").rstrip()
+        instruction_prompt = instructions.strip()
+        system_prompt = (
+            f"{base_prompt}\n\n# Agent Instructions\n{instruction_prompt}"
+            if base_prompt
+            else instruction_prompt
+        )
+        updates: dict[str, Any] = {
+            "card": card,
+            "system_prompt": system_prompt,
+            "skills": list(definition.get("skills") or ()),
         }
+        max_iterations = definition.get("max_iterations")
+        if max_iterations is not None:
+            updates["max_iterations"] = max_iterations
+        return spec.model_copy(deep=True, update=updates)
 
     def _prepare_custom_code_build_context(
         self,
@@ -795,6 +847,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         sub_mode: str = None,
         spec: DeepAgentSpec | None = None,
         build_context: BuildContext | None = None,
+        agent_definition: dict[str, Any] | None = None,
     ) -> None:
         """Build Code mode from config.yaml or a caller-supplied DeepAgentSpec.
 
@@ -809,6 +862,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             raise TypeError("build_context must be a BuildContext")
         if spec is None and build_context is not None:
             raise ValueError("build_context requires a custom spec")
+        if spec is not None and agent_definition is not None:
+            raise ValueError("spec and agent_definition are mutually exclusive")
+        if agent_definition is not None and not isinstance(agent_definition, dict):
+            raise TypeError("agent_definition must be a dict")
         if spec is not None:
             # Treat caller input like config.yaml: snapshot it at the API
             # boundary so later caller mutations cannot change deferred root
@@ -825,7 +882,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._session_instance_sub_mode = sub_mode
         self._session_instance_spec = spec
         self._session_instance_build_context = build_context
-        self._custom_code_spec_active = spec is not None
+        self._session_instance_agent_definition = (
+            deepcopy(agent_definition) if agent_definition is not None else None
+        )
+        self._custom_code_spec_active = (
+            spec is not None or agent_definition is not None
+        )
         # Channel id drives the MCP load strategy (see the init gate below and
         # JiuWenSwarmDeepAdapter._sync_mcp_servers_for_runtime): TUI loads the
         # global-default set on init, web loads nothing. Mirror the deep
@@ -903,6 +965,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._code_agent_spec, self._code_build_context = (
                 self._build_code_spec_snapshot(config_base, config, model)
             )
+            if agent_definition is not None:
+                self._code_agent_spec = self._apply_runtime_agent_definition(
+                    self._code_agent_spec,
+                    agent_definition,
+                )
         else:
             code_agent_spec.register_code_spec_providers()
             self._code_build_context = self._prepare_custom_code_build_context(
@@ -1112,6 +1179,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 "[JiuwenSwarmCodeAdapter] rollback initialization failed: %s",
                 exc,
             )
+
+    def _sync_multimodal_tools_for_runtime(self) -> None:
+        """Code mode excludes multimodal tools, including during scoped reloads.
+
+        Keep the inherited snapshot refresh and session fan-out behavior without
+        allowing the deep adapter's reload path to register these capabilities.
+        """
 
     async def reload_agent_config(
         self,
@@ -1368,7 +1442,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             if getattr(tool, "card", None) is not None
         }
         with self._code_spec_config_scope(config_base):
-            self._sync_multimodal_tools_for_runtime()
             self._sync_paid_search_tool_for_runtime()
             self._sync_symphony_tools_for_runtime(config_base)
             self._sync_skill_retrieval_tools_for_runtime(config_base)
@@ -1444,6 +1517,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
+            _RailBuildInfo(
+                "_session_messaging_route_rail",
+                self._build_session_messaging_route_rail,
+            ),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
             *self._permission_interrupt_rail_infos(config_base),
@@ -1982,6 +2059,20 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     ),
                 )
                 self._prepare_browser_runtime_security(browser_spec)
+                # Electron 每会话隔离：把本会话 sideview 的 CDP TargetID 注入
+                # browser subagent 的 MCP env（与 swarm.browser_agent 同一契约；
+                # 放在安全加固之后，注入的 env 落在最终 guarded settings 之上。
+                # resolver 不可用时返回原 settings，回退 openjiuwen 默认行为）。
+                _electron_session_id = str(
+                    getattr(self, "_parent_session_id", "") or ""
+                ).strip()
+                if (
+                    _electron_session_id
+                    and (browser_spec.factory_kwargs or {}).get("settings") is not None
+                ):
+                    browser_spec.factory_kwargs["settings"] = apply_session_sideview_target(
+                        browser_spec.factory_kwargs["settings"], _electron_session_id
+                    )
                 browser_spec.factory_kwargs["auto_create_workspace"] = False
                 subagents.append(browser_spec)
 
@@ -2053,6 +2144,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     "[JiuwenSwarmCodeAdapter] CodingMemoryRail (re)registered for %s",
                     mode,
                 )
+
+        self._last_mode = mode
+        await self._sync_personal_context_rail(mode)
 
     def _build_code_agent_rail(self) -> CodeAgentRail | None:
         """构建 CodeAgentRail，管理 /agents 创建的自定义 agent。"""

@@ -11,6 +11,7 @@ r"""JiuwenSwarm PyInstaller 打包配置。
 import glob
 import os
 import runpy
+import shutil
 import sys
 from pathlib import Path
 
@@ -244,6 +245,7 @@ http2_submodules = [
 
 # 部分包需要显式声明隐藏导入
 hiddenimports = webview_hiddenimports + http2_submodules + [
+    "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
     # Keep them explicit so the installed executable can diagnose a broken
@@ -279,7 +281,6 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
     "tkinter",
-    "matplotlib",
     "scipy",
     "numpy.tests",
     # External CLI SDKs and their native executables are optional runtimes.
@@ -312,6 +313,27 @@ icon_path = os.path.join(
 # the binary placed here.
 import sysconfig as _sysconfig
 _bundled_binaries = []
+
+# RSI is initialized lazily from AgentWebSocketServer. Collect the complete
+# service trees so PyInstaller keeps their nested modules and package data,
+# including the native harness_config.yaml fallback used by clean workspaces.
+_rsi_datas, _rsi_binaries, _rsi_hidden = collect_all(
+    "jiuwenswarm.agents.harness.common.rsi"
+)
+_server_rsi_datas, _server_rsi_binaries, _server_rsi_hidden = collect_all(
+    "jiuwenswarm.server.rsi"
+)
+datas += _rsi_datas + _server_rsi_datas
+hiddenimports += _rsi_hidden + _server_rsi_hidden
+_bundled_binaries += _rsi_binaries + _server_rsi_binaries
+
+# 论文 reporting 阶段会动态生成 PDF 结果图。显式收集 matplotlib，避免
+# PyInstaller 因延迟导入或 backend/font 数据遗漏导致冻结包运行失败。
+_matplotlib_datas, _matplotlib_binaries, _matplotlib_hidden = collect_all("matplotlib")
+datas += _matplotlib_datas
+hiddenimports += _matplotlib_hidden
+_bundled_binaries += _matplotlib_binaries
+
 _ruff_suffix = ".exe" if sys.platform == "win32" else ""
 _ruff_scripts_dir = _sysconfig.get_path("scripts")
 _ruff_candidates = []
@@ -328,6 +350,40 @@ for _c in _ruff_candidates:
 if not _bundled_binaries:
     print("WARNING: ruff binary not found in venv; auto-harness lint will be "
           "unavailable in the frozen exe (install ruff in the build venv)")
+
+# Bundle the GitCode CLI so bare `gitcode` works inside the frozen exe without
+# Python on the user's machine: gitcode-cli ships one pre-compiled binary per
+# platform (gc_cli/bin/gc-<os>-<arch>) and only the current one is staged. The
+# frozen entry already puts _internal on PATH, and `gitcode version` matching
+# the connector's pinned minVersion (compared for exact equality, so bumping it
+# needs a rebuild here too) skips the connector's pip-based init step.
+try:
+    from gc_cli.wrapper import get_binary_path as _gc_binary_path
+except ImportError:
+    raise SystemExit(
+        "错误: 打包环境缺少 gitcode-cli，冻结包将无法内置 gitcode CLI。"
+        "请先执行 uv sync --extra dev。"
+    )
+
+try:
+    _gc_source = str(_gc_binary_path())
+except RuntimeError as _gc_exc:
+    # 上游未提供当前平台的预编译二进制（如 Windows arm64），保持构建可用，
+    # 此时冻结包不内置 gitcode，连接器会退回 pip 安装流程。
+    print(f"WARNING: gitcode-cli has no prebuilt binary for this platform "
+          f"({_gc_exc}); the frozen exe will not bundle the gitcode CLI")
+except FileNotFoundError as _gc_exc:
+    raise SystemExit(f"错误: gitcode-cli 缺少当前平台的二进制文件: {_gc_exc}")
+else:
+    _gc_stage_dir = os.path.join(project_root, "build", "_gitcode_runtime")
+    os.makedirs(_gc_stage_dir, exist_ok=True)
+    _gc_stage = os.path.join(
+        _gc_stage_dir, "gitcode.exe" if sys.platform == "win32" else "gitcode"
+    )
+    shutil.copyfile(_gc_source, _gc_stage)
+    if sys.platform != "win32":
+        os.chmod(_gc_stage, 0o755)
+    _bundled_binaries.append((_gc_stage, "."))
 
 
 # Bundle pytest (pure-Python) so that `python -m pytest` works inside the
@@ -385,6 +441,14 @@ _rust_datas, _rust_binaries, _rust_hidden = collect_all("chromadb_rust_bindings"
 datas += _rust_datas
 hiddenimports += _rust_hidden
 _bundled_binaries = _bundled_binaries + _rust_binaries
+
+# sqlite-vec 是 SQLite 的可加载扩展，包内仅含纯 Python __init__.py 与动态库 vec0.dll。
+# collect_all("sqlite_vec") 会把 vec0.dll 作为 data file 收进冻结包；缺了它，运行时
+# `sqlite_vec.load()` 找不到动态库，报 "找不到指定的模块"，记忆向量能力降级（issue #4319）。
+_sqlite_vec_datas, _sqlite_vec_binaries, _sqlite_vec_hidden = collect_all("sqlite_vec")
+datas += _sqlite_vec_datas
+hiddenimports += _sqlite_vec_hidden
+_bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
 
 a = Analysis(
     [entry_script],

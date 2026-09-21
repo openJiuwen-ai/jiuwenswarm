@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  normalizeToolCallPayload,
   normalizeToolResultPayload,
   plannedGraphToMermaid,
 } from '../node_modules/.cache/tool-event-normalizer/toolEventNormalizer.js';
+
 
 function payload(nodes, edges = []) {
   return {
@@ -126,4 +128,62 @@ test('only successful symphony_compose_graph results receive Mermaid', () => {
   ]) {
     assert.equal(normalizeToolResultPayload(result).mermaid, undefined);
   }
+});
+
+test('displays rendered_result instead of the compatibility result string', () => {
+  const normalized = normalizeToolResultPayload({
+    tool_result: {
+      tool_name: 'shutdown_member',
+      tool_call_id: 'call-1',
+      success: true,
+      result: "success=True data={'member_name': 'dev-1'} error=None",
+      rendered_result: 'Member shutdown: member_name=dev-1',
+    },
+  });
+  assert.equal(normalized.result, 'Member shutdown: member_name=dev-1');
+
+  const legacy = normalizeToolResultPayload({ tool_name: 'bash', result: 'legacy text' });
+  assert.equal(legacy.result, 'legacy text');
+
+  const rawOutputFirst = normalizeToolResultPayload({
+    tool_name: 'mcp_weather',
+    raw_output: { result: 'Sunny' },
+    rendered_result: 'Sunny, 25°C',
+    result: "{'result': 'Sunny'}",
+  });
+  assert.equal(rawOutputFirst.result, 'Sunny');
+});
+
+test('normalizeToolCallPayload reads call_goal and callGoal without inventing from display_name', () => {
+  const snake = normalizeToolCallPayload({
+    tool_call: {
+      name: 'read_file',
+      arguments: { path: '/workspace/foo.py' },
+      tool_call_id: 'call-1',
+      call_goal: '调研 openJiuwen 官网信息',
+    },
+  });
+  assert.equal(snake.call_goal, '调研 openJiuwen 官网信息');
+  assert.equal(snake.name, 'read_file');
+
+  const camel = normalizeToolCallPayload({
+    tool_call: {
+      name: 'read_file',
+      arguments: {},
+      tool_call_id: 'call-2',
+      callGoal: 'Research the site',
+    },
+  });
+  assert.equal(camel.call_goal, 'Research the site');
+
+  const legacyDisplay = normalizeToolCallPayload({
+    tool_call: {
+      name: 'read_file',
+      arguments: {},
+      tool_call_id: 'call-3',
+      display_name: '读取 foo.py',
+    },
+  });
+  assert.equal(legacyDisplay.call_goal, undefined);
+  assert.equal(legacyDisplay.display_name, '读取 foo.py');
 });

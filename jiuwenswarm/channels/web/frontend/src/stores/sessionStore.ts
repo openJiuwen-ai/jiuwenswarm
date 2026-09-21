@@ -26,7 +26,7 @@ import {
   registerConfirmedTaskCreation,
   type TaskProgressBaseline,
 } from '../features/teamTaskProgressBaseline';
-import type { AgentSelectionIntent } from '../features/agentManagement/types';
+import type { AgentGroupSelectionIntent, AgentSelectionIntent } from '../features/agentManagement/types';
 import { isTeamAgentMode, stripPlanSuffix } from '../features/planMode/wireMode';
 import {
   applyWorkflowUpdate as applyWorkflowUpdateImpl,
@@ -36,10 +36,15 @@ import {
   type WorkflowRun,
 } from '../components/teamArea/workflowTypes';
 import { requestAgentDetail, requestPhaseAgents } from '../services/webClient';
+import {
+  normalizeTeamLeaderIdentity,
+  type TeamLeaderIdentity,
+} from '../features/teamLeaderIdentity';
 
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
 const AGENT_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_selection';
+const AGENT_GROUP_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_group_selection';
 const TRANSIENT_NEW_CONVERSATION_ID = 'new';
 
 function clearStoredAgentSelection(sessionId: string): void {
@@ -126,6 +131,70 @@ function sameAgentSelectionIntent(
   return left.kind !== 'select' || right.kind === 'select' && left.id === right.id;
 }
 
+function clearStoredAgentGroupSelection(sessionId: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const stored = localStorage.getItem(AGENT_GROUP_SELECTION_STORAGE_KEY);
+    if (!stored) return;
+    const parsed: unknown = JSON.parse(stored);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+    const selections = { ...(parsed as Record<string, unknown>) };
+    if (!Object.prototype.hasOwnProperty.call(selections, sessionId)) return;
+    delete selections[sessionId];
+    if (Object.keys(selections).length === 0) localStorage.removeItem(AGENT_GROUP_SELECTION_STORAGE_KEY);
+    else localStorage.setItem(AGENT_GROUP_SELECTION_STORAGE_KEY, JSON.stringify(selections));
+  } catch {
+    // Browser storage can be unavailable in private/restricted contexts.
+  }
+}
+
+function loadAgentGroupSelectionIntent(sessionId: string): AgentGroupSelectionIntent {
+  if (typeof localStorage === 'undefined') return { kind: 'keep' };
+  if (sessionId === TRANSIENT_NEW_CONVERSATION_ID) {
+    clearStoredAgentGroupSelection(sessionId);
+    return { kind: 'keep' };
+  }
+  try {
+    const stored = localStorage.getItem(AGENT_GROUP_SELECTION_STORAGE_KEY);
+    if (!stored) return { kind: 'keep' };
+    const parsed: unknown = JSON.parse(stored);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'keep' };
+    const selectedId = (parsed as Record<string, unknown>)[sessionId];
+    return typeof selectedId === 'string' && selectedId.trim() ? { kind: 'select', id: selectedId } : { kind: 'keep' };
+  } catch {
+    return { kind: 'keep' };
+  }
+}
+
+function saveAgentGroupSelectionIntent(sessionId: string, intent: AgentGroupSelectionIntent): void {
+  if (typeof localStorage === 'undefined') return;
+  if (sessionId === TRANSIENT_NEW_CONVERSATION_ID) {
+    clearStoredAgentGroupSelection(sessionId);
+    return;
+  }
+  try {
+    const stored = localStorage.getItem(AGENT_GROUP_SELECTION_STORAGE_KEY);
+    const parsed: unknown = stored ? JSON.parse(stored) : {};
+    const selections = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? { ...(parsed as Record<string, unknown>) }
+      : {};
+    if (intent.kind === 'select' && intent.id.trim()) selections[sessionId] = intent.id;
+    else delete selections[sessionId];
+    if (Object.keys(selections).length === 0) localStorage.removeItem(AGENT_GROUP_SELECTION_STORAGE_KEY);
+    else localStorage.setItem(AGENT_GROUP_SELECTION_STORAGE_KEY, JSON.stringify(selections));
+  } catch {
+    // Browser storage can be unavailable in private/restricted contexts.
+  }
+}
+
+function sameAgentGroupSelectionIntent(
+  left: AgentGroupSelectionIntent,
+  right: AgentGroupSelectionIntent,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  return left.kind !== 'select' || right.kind === 'select' && left.id === right.id;
+}
+
 function loadModeFromStorage(): AgentMode {
   if (typeof localStorage === 'undefined') return DEFAULT_MODE;
   try {
@@ -188,12 +257,7 @@ export function resolveEffectiveModel(
 ): ModelEntry | null {
   if (chatAvailableModels.length === 0) return null;
   const displayed = selectedModelName || defaultModelName;
-  // selectedModelName 可能存的是展示名（用户从下拉框选择时存的是 alias），
-  // 也可能存的是真实 API id（后端 session.metadata.model 回传恢复时是
-  // model_name，例如 Zen 免费模型的 "deepseek-v4-flash-free"）。两者都要能
-  // 命中同一个 entry，否则后端回传 model_name 后无法匹配有 alias 的免费
-  // 模型，会回退到 chatAvailableModels[0]（首个配置模型），表现为"对话
-  // 完成后下拉框自动切回配置的模型"。
+  // 兼容历史保存的 alias 和后端会话元数据中的 model_name，使展示与请求命中同一条目。
   return (
     chatAvailableModels.find(
       (m) => m.alias === displayed || m.model_name === displayed,
@@ -441,6 +505,14 @@ export interface SessionRuntime {
   metadata?: Record<string, unknown>;
   /** 当前会话的智能体挂载草稿；keep 表示不修改后端当前挂载 */
   agentSelectionIntent: AgentSelectionIntent;
+  /** 当前会话的 AgentGroup 挂载草稿；绑定后由 agentGroupBinding 提供只读展示。 */
+  agentGroupSelectionIntent: AgentGroupSelectionIntent;
+  /** 后端已确认的 AgentGroup 绑定；非空时首条绑定参数不再重复发送。 */
+  agentGroupBinding: string | null;
+  /** 首条 AgentGroup 消息已发出、等待后端确认期间的乐观锁定。 */
+  agentGroupBindingPending: string | null;
+  /** 首次 AgentGroup 绑定时锁定的 leader 身份；普通 Team 为 null。 */
+  teamLeaderIdentity: TeamLeaderIdentity | null;
   /**
    * 本会话期间持续启用的插件id/MCP名，由输入框"+"菜单"扩展"面板的开关控制。与
    * selectedSkills 不同：这两个字段发 chat.send 后不清空，会一直带在每条消息里，直到用户在
@@ -480,6 +552,10 @@ function createEmptyRuntime(sessionId?: string): SessionRuntime {
     selectedSkills: [],
     metadata: undefined,
     agentSelectionIntent: sessionId ? loadAgentSelectionIntent(sessionId) : { kind: 'keep' },
+    agentGroupSelectionIntent: sessionId ? loadAgentGroupSelectionIntent(sessionId) : { kind: 'keep' },
+    agentGroupBinding: null,
+    agentGroupBindingPending: null,
+    teamLeaderIdentity: null,
     enabledPlugins: [],
     enabledMcps: [],
     extensionsHydrated: false,
@@ -549,6 +625,11 @@ interface SessionState {
   /** 输入栏智能体选择：选择、清空或恢复为不修改 */
   setAgentSelectionIntent: (sessionId: string, intent: AgentSelectionIntent) => void;
   clearAgentSelectionIntent: (sessionId: string, expectedIntent?: AgentSelectionIntent) => void;
+  setAgentGroupSelectionIntent: (sessionId: string, intent: AgentGroupSelectionIntent) => void;
+  clearAgentGroupSelectionIntent: (sessionId: string, expectedIntent?: AgentGroupSelectionIntent) => void;
+  setAgentGroupBinding: (sessionId: string, groupId: string | null) => void;
+  setAgentGroupBindingPending: (sessionId: string, groupId: string | null) => void;
+  setTeamLeaderIdentity: (sessionId: string, identity: TeamLeaderIdentity | null) => void;
   /** 本会话启用插件：追加（去重） */
   addEnabledPlugin: (sessionId: string, pluginId: string) => void;
   /** 本会话启用插件：移除指定项 */
@@ -650,8 +731,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 后端 team_helpers 会把它透传给未显式配置 per-agent model 的团队成员。
     //
     // 注意：这里返回的是 model_name 而非 alias。后端 _model_cache 以 model_name 为
-    // key 查找（包括 Zen 免费模型如 "laguna-s-2.1-free"）；alias 只是展示名（如
-    // "Laguna S 2.1"），后端无法据此解析，会回退到默认模型。
+    // key 查找；alias 只是展示名，后端无法据此解析。
     const resolved = resolveEffectiveModel(
       state.chatAvailableModels,
       runtime.selectedModelName,
@@ -677,11 +757,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const sessionId = normalizedSession.session_id;
       const existingRuntime = state.runtimes[sessionId];
       const baseRuntime = existingRuntime || createEmptyRuntime(sessionId);
+      const hasGroupBinding = Object.prototype.hasOwnProperty.call(normalizedSession, 'agent_group_name');
+      const hasTeamLeaderIdentity = Object.prototype.hasOwnProperty.call(normalizedSession, 'team_leader_identity');
+      const sessionGroupBinding = typeof normalizedSession.agent_group_name === 'string' && normalizedSession.agent_group_name.trim()
+        ? normalizedSession.agent_group_name.trim()
+        : null;
+      const nextAgentGroupBinding = sessionGroupBinding || baseRuntime.agentGroupBinding;
       const nextRuntime: SessionRuntime = {
         ...baseRuntime,
         mode: normalizedSession.mode || baseRuntime.mode,
         persistSession: normalizedSession.persist_session === true,
         teamHistoryMessages: baseRuntime.teamHistoryMessages,
+        agentGroupBinding: hasGroupBinding ? nextAgentGroupBinding : baseRuntime.agentGroupBinding,
+        agentGroupBindingPending: sessionGroupBinding
+          ? null
+          : baseRuntime.agentGroupBindingPending,
+        teamLeaderIdentity: hasTeamLeaderIdentity
+          ? normalizeTeamLeaderIdentity(normalizedSession.team_leader_identity)
+          : baseRuntime.teamLeaderIdentity,
       };
       return {
         currentSession: normalizedSession,
@@ -732,11 +825,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (normalizedMode !== 'agent') {
       saveAgentSelectionIntent(sessionId, { kind: 'clear' });
     }
+    if (normalizedMode !== 'team') {
+      saveAgentGroupSelectionIntent(sessionId, { kind: 'clear' });
+    }
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       const agentSelectionIntent = normalizedMode === 'agent'
         ? runtime.agentSelectionIntent
+        : { kind: 'clear' as const };
+      const agentGroupSelectionIntent = normalizedMode === 'team'
+        ? runtime.agentGroupSelectionIntent
         : { kind: 'clear' as const };
       // 切离 team 模式时自动关闭 swarmflow
       const closingSwarmflow =
@@ -749,6 +848,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             mode: normalizedMode,
             contextUsageSnapshot: runtime.mode === normalizedMode ? runtime.contextUsageSnapshot : null,
             agentSelectionIntent,
+            agentGroupSelectionIntent,
+            ...(normalizedMode !== 'team' ? { agentGroupBinding: null } : {}),
+            ...(normalizedMode !== 'team' ? { agentGroupBindingPending: null } : {}),
             ...(closingSwarmflow
               ? { enableSwarmflow: false, swarmflowBudget: null }
               : {}),
@@ -1186,6 +1288,88 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, agentSelectionIntent: { kind: 'keep' } },
+        },
+      };
+    });
+  },
+
+  setAgentGroupSelectionIntent: (sessionId, intent) => {
+    saveAgentGroupSelectionIntent(sessionId, intent);
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, agentGroupSelectionIntent: intent },
+        },
+      };
+    });
+  },
+
+  clearAgentGroupSelectionIntent: (sessionId, expectedIntent) => {
+    saveAgentGroupSelectionIntent(sessionId, { kind: 'clear' });
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.agentGroupSelectionIntent.kind === 'keep') return state;
+      if (expectedIntent && !sameAgentGroupSelectionIntent(runtime.agentGroupSelectionIntent, expectedIntent)) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, agentGroupSelectionIntent: { kind: 'keep' } },
+        },
+      };
+    });
+  },
+
+  setAgentGroupBinding: (sessionId, groupId) => {
+    const normalized = typeof groupId === 'string' && groupId.trim() ? groupId.trim() : null;
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      const nextSessions = state.sessions.map((session) => session.session_id === sessionId
+        ? { ...session, agent_group_name: normalized }
+        : session);
+      const nextCurrentSession = state.currentSession?.session_id === sessionId
+        ? { ...state.currentSession, agent_group_name: normalized }
+        : state.currentSession;
+      return {
+        sessions: nextSessions,
+        currentSession: nextCurrentSession,
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            agentGroupBinding: normalized,
+            agentGroupBindingPending: null,
+            teamLeaderIdentity: normalized && (!runtime.agentGroupBinding || runtime.agentGroupBinding === normalized)
+              ? runtime.teamLeaderIdentity
+              : null,
+            agentGroupSelectionIntent: normalized ? { kind: 'keep' } : runtime.agentGroupSelectionIntent,
+          },
+        },
+      };
+    });
+  },
+
+  setAgentGroupBindingPending: (sessionId, groupId) => {
+    const normalized = typeof groupId === 'string' && groupId.trim() ? groupId.trim() : null;
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, agentGroupBindingPending: normalized },
+        },
+      };
+    });
+  },
+
+  setTeamLeaderIdentity: (sessionId, identity) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamLeaderIdentity: identity },
         },
       };
     });
@@ -1680,8 +1864,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setAvailableModels: (models, activeModel) => {
     set((state) => {
       const defaultModels = models.filter((m) => m.is_default !== false);
-      // 过滤为空时回退到全量列表，保证聊天下拉框始终有可选项（例如用户自配模型
-      // 均未设为 is_default、且关闭了 Opencode Zen 免费模型时，不至于无模型可选）。
+      // 没有组内默认配置时，使用其余已配置模型。
       const chatModels = defaultModels.length > 0 ? defaultModels : models;
       // 优先使用后端返回的 activeModel（默认模型），其次取第一个；状态统一保存真实
       // model_name，alias 只用于界面展示。各会话 runtime 的 selectedModelName 不在这里

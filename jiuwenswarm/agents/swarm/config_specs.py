@@ -46,8 +46,10 @@ from jiuwenswarm.common.config import (
     get_default_model_provider,
     get_evolution_auto_save_enabled,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
+    KVCacheAffinityConfig,
     build_kv_cache_affinity_config,
     get_default_model_client_config,
 )
@@ -102,6 +104,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.MULTIMODAL_IMAGE,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
+    registry.PERSONAL_CONTEXT,
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
@@ -153,6 +156,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_AGENT_MODE,
     registry.STRUCTURED_ASK_USER,
     registry.CONTEXT_PROCESSOR,
+    registry.PERSONAL_CONTEXT,
     registry.CODE_TASK_PLANNING,
     registry.CODE_AGENT_RAIL,
     registry.USER_HOOKS,
@@ -512,10 +516,14 @@ def _code_base_rail_names(role: str) -> tuple[str, ...]:
 
 def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
     """Return the role-specific skill-evolution rails (shared by both profiles)."""
+    rails: list[RailSpec] = []
+    if role == "leader" and get_symphony_evolution_enabled(config):
+        rails.append(RailSpec(type=registry.SYMPHONY_GRAPH_EVOLUTION, params={}))
     if not get_skill_evolution_enabled(config):
-        return []
+        return rails
     if role == "leader":
         return [
+            *rails,
             RailSpec(
                 type=registry.TEAM_SKILL_EVOLUTION,
                 params=_team_evolution_rail_params(config),
@@ -883,31 +891,6 @@ def build_member_deep_agent_spec(
     merged_rails = _collapse_skill_use_rails(
         merged_rails, retrieval_enabled=retrieval_enabled
     )
-
-    if role == "leader" and not _is_code_mode(mode):
-        # Add the leader-facing PermissionInterruptRail. The chat-team leader
-        # is user-facing and can resolve ASK dialogs; teammates are headless
-        # and use TeamPermissionRail instead (see _build_team_capability_specs).
-        # Code mode is excluded to avoid surprising existing code-team flows.
-        _perms_cfg = (
-            config.get("permissions") if isinstance(config, dict) else None
-        )
-        if isinstance(_perms_cfg, dict) and _perms_cfg.get("enabled"):
-            from jiuwenswarm.agents.swarm.permission_rail_spec import (
-                PERMISSION_RAIL_BUNDLE,
-                register_permission_rail_provider,
-            )
-            register_permission_rail_provider()
-            if not any(
-                isinstance(_s, RailSpec) and _s.type == PERMISSION_RAIL_BUNDLE
-                for _s in merged_rails
-            ):
-                merged_rails.append(
-                    RailSpec(
-                        type=PERMISSION_RAIL_BUNDLE,
-                        params={"permissions_config": _perms_cfg},
-                    ),
-                )
 
     update: dict[str, Any] = {
         "rails": merged_rails,

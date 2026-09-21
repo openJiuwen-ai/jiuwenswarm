@@ -75,6 +75,8 @@ type SkillGraphPayload = {
   graph?: {
     nodes?: RawRecord[];
     edges?: RawRecord[];
+    pack_nodes?: RawRecord[];
+    pack_edges?: RawRecord[];
     skills?: RawRecord[];
   };
   skills?: {
@@ -172,8 +174,12 @@ type DetailListItem = {
 const GRAPH_NODE_DEFAULT = '#3f8ff3';
 const GRAPH_NODE_HIGHLIGHT = '#0868f7';
 const GRAPH_NODE_DIMMED = '#b2d1fb';
+const GRAPH_NODE_PACK = '#f59e0b'; // 琥珀色
+const GRAPH_NODE_PACK_HIGHLIGHT = '#d97706';
+const GRAPH_NODE_PACK_DIMMED = '#fcd34d';
 const GRAPH_EDGE_DEFAULT = '#c2c7ce';
 const GRAPH_EDGE_HIGHLIGHT = '#1677ff';
+const GRAPH_EDGE_CONTAINS = '#f59e0b'; // pack 连接边用琥珀色
 const GRAPH_LABEL_DEFAULT = '#6b7280';
 const GRAPH_LABEL_DIMMED = '#adb3bc';
 const GRAPH_LABEL_ACTIVE = '#111827';
@@ -394,6 +400,12 @@ function normalizeGraph(payload: SkillGraphPayload): NormalizedGraph {
     }
   });
 
+  // Add pack nodes
+  asArray(payload.graph?.pack_nodes).forEach((node, index) => {
+    const normalized = normalizeNode(node, nodeMap.size + index, skillsById);
+    nodeMap.set(normalized.id, normalized);
+  });
+
   const edges = asArray(payload.graph?.edges)
     .map(normalizeEdge)
     .filter((edge): edge is GraphEdge => {
@@ -401,9 +413,18 @@ function normalizeGraph(payload: SkillGraphPayload): NormalizedGraph {
       return nodeMap.has(edge.source) && nodeMap.has(edge.target);
     });
 
+  // Add pack edges (contains edges)
+  const packEdges = asArray(payload.graph?.pack_edges)
+    .map(normalizeEdge)
+    .filter((edge): edge is GraphEdge => {
+      if (!edge) return false;
+      return nodeMap.has(edge.source) && nodeMap.has(edge.target);
+    });
+
+  const allEdges = [...edges, ...packEdges];
   const nodes = [...nodeMap.values()];
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  edges.forEach((edge) => {
+  allEdges.forEach((edge) => {
     const source = byId.get(edge.source);
     const target = byId.get(edge.target);
     if (source) {
@@ -416,7 +437,7 @@ function normalizeGraph(payload: SkillGraphPayload): NormalizedGraph {
     }
   });
   seedPositions(nodes, 920, 620);
-  return { nodes, edges };
+  return { nodes, edges: allEdges };
 }
 
 function nodeSearchText(node: GraphNode): string {
@@ -1407,9 +1428,22 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         const target = nodeById.get(edge.target);
         if (!source || !target) return;
         const active = Boolean(focusId && (edge.source === focusId || edge.target === focusId));
-        ctx.strokeStyle = active ? GRAPH_EDGE_HIGHLIGHT : GRAPH_EDGE_DEFAULT;
+        const isContains = edge.type === 'contains';
+        ctx.strokeStyle = isContains
+          ? GRAPH_EDGE_CONTAINS
+          : active
+          ? GRAPH_EDGE_HIGHLIGHT
+          : GRAPH_EDGE_DEFAULT;
         ctx.globalAlpha = active ? 0.9 : focusId ? 0.5 : 0.72;
-        ctx.lineWidth = active ? 1.8 : 1;
+        ctx.lineWidth = active ? 1.8 : isContains ? 1.5 : 1;
+
+        // 对 contains 边使用虚线
+        if (isContains) {
+          ctx.setLineDash([5, 5]);
+        } else {
+          ctx.setLineDash([]);
+        }
+
         ctx.beginPath();
         ctx.moveTo(source.x, source.y);
         ctx.lineTo(target.x, target.y);
@@ -1429,6 +1463,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         ctx.closePath();
         ctx.fill();
         ctx.globalAlpha = 1;
+        ctx.setLineDash([]); // 重置虚线样式
       });
 
       visibleRef.current.nodes.forEach((node) => {
@@ -1440,6 +1475,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         const highlighted = Boolean(focusId && (focused || relatedNodeIds.has(node.id)) && !selected);
         const dimmed = Boolean(focusId && !focused && !relatedNodeIds.has(node.id));
         const displayRadius = selected ? radius + 2 : radius;
+        const isPack = node.type === 'skill_pack';
         ctx.save();
         if (selected) {
           const fill = ctx.createRadialGradient(
@@ -1450,22 +1486,37 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
             node.y,
             displayRadius * 1.15,
           );
-          fill.addColorStop(0, '#78b5ff');
-          fill.addColorStop(0.52, '#2b8cff');
-          fill.addColorStop(1, '#0668f7');
+          if (isPack) {
+            fill.addColorStop(0, '#fcd34d');
+            fill.addColorStop(0.52, '#fbbf24');
+            fill.addColorStop(1, '#d97706');
+            ctx.shadowColor = 'rgba(245, 158, 11, 0.32)';
+          } else {
+            fill.addColorStop(0, '#78b5ff');
+            fill.addColorStop(0.52, '#2b8cff');
+            fill.addColorStop(1, '#0668f7');
+            ctx.shadowColor = 'rgba(22, 119, 255, 0.32)';
+          }
           ctx.fillStyle = fill;
           ctx.strokeStyle = '#ffffff';
           ctx.lineWidth = 2.6;
-          ctx.shadowColor = 'rgba(22, 119, 255, 0.32)';
           ctx.shadowBlur = 16;
         } else {
-          ctx.fillStyle = dimmed
-            ? GRAPH_NODE_DIMMED
-            : highlighted || hovered
-              ? GRAPH_NODE_HIGHLIGHT
-              : GRAPH_NODE_DEFAULT;
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.72)';
-          ctx.lineWidth = 1;
+          if (isPack) {
+            ctx.fillStyle = dimmed
+              ? GRAPH_NODE_PACK_DIMMED
+              : highlighted || hovered
+                ? GRAPH_NODE_PACK_HIGHLIGHT
+                : GRAPH_NODE_PACK;
+          } else {
+            ctx.fillStyle = dimmed
+              ? GRAPH_NODE_DIMMED
+              : highlighted || hovered
+                ? GRAPH_NODE_HIGHLIGHT
+                : GRAPH_NODE_DEFAULT;
+          }
+          ctx.strokeStyle = isPack ? '#92400e' : 'rgba(255, 255, 255, 0.72)';
+          ctx.lineWidth = isPack ? 2 : 1;
         }
         ctx.beginPath();
         ctx.arc(node.x, node.y, displayRadius, 0, Math.PI * 2);
@@ -1920,6 +1971,43 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
               <span data-testid="skill-graph-panel-detail-in-degree">{t('skills.graph.inDegree')}<strong>{selectedNode.inDegree}</strong></span>
               <span data-testid="skill-graph-panel-detail-out-degree">{t('skills.graph.outDegree')}<strong>{selectedNode.outDegree}</strong></span>
             </div>
+            {selectedNode.type === 'skill_pack' && Array.isArray(selectedNode.properties.member_ids) && selectedNode.properties.member_ids.length > 0 && (
+              <section data-testid="skill-graph-panel-pack-members" className="skill-graph-panel__pack-members">
+                <h4 className="skill-graph-panel__detail-section-title">Pack Members</h4>
+                <div className="skill-graph-panel__tags">
+                  {selectedNode.properties.member_ids.map((memberId: string) => {
+                    const memberNode = graph.nodes.find(n => n.id === `skill:${memberId}` || n.id === memberId);
+                    return (
+                      <button
+                        key={memberId}
+                        type="button"
+                        className="skill-graph-panel__tag"
+                        onClick={() => memberNode && selectNode(memberNode)}
+                        title={`View ${memberId}`}
+                      >
+                        {memberNode?.label || memberId}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+            {selectedNode.type === 'skill_pack' && (asString(selectedNode.properties.task_description) || asString(selectedNode.properties.query)) ? (
+              <section data-testid="skill-graph-panel-pack-query" className="skill-graph-panel__description">
+                <h4 className="skill-graph-panel__detail-section-title">任务描述</h4>
+                <p data-testid="skill-graph-panel-pack-query-content" className="skill-graph-panel__description-content">
+                  {asString(selectedNode.properties.task_description) || asString(selectedNode.properties.query)}
+                </p>
+              </section>
+            ) : null}
+            {selectedNode.type === 'skill_pack' && asString(selectedNode.properties.execution_narrative) ? (
+              <section data-testid="skill-graph-panel-pack-traces" className="skill-graph-panel__description">
+                <h4 className="skill-graph-panel__detail-section-title">流程</h4>
+                <p data-testid="skill-graph-panel-pack-traces-content" className="skill-graph-panel__description-content skill-graph-panel__trace-content">
+                  {asString(selectedNode.properties.execution_narrative)}
+                </p>
+              </section>
+            ) : null}
             {asString(selectedNode.properties.description) ? (
               <section data-testid="skill-graph-panel-detail-description" className="skill-graph-panel__description">
                 <h4 className="skill-graph-panel__detail-section-title">{t('skills.graph.description')}</h4>

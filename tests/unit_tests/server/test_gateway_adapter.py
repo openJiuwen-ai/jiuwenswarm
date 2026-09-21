@@ -106,6 +106,80 @@ async def test_workspace_upload_chunks_stay_in_injected_user_dir(
     assert Path(actual_path).read_bytes() == b"first-second"
 
 
+@pytest.mark.asyncio
+async def test_workspace_verified_download_revalidates_every_bounded_chunk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
+        VerifiedDownloadAssetOwner,
+    )
+    from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+        WebFileDownloadManager,
+    )
+
+    source = tmp_path / "approved report.txt"
+    source.write_bytes(b"approved-content")
+    owner = VerifiedDownloadAssetOwner(
+        root=tmp_path / "assets",
+        start_sweeper=False,
+    )
+    asset = owner.stage(
+        source,
+        file_name=source.name,
+        expires_at=10_000_000_000,
+    )
+    manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    token = manager.generate_verified_asset_token(
+        asset,
+        file_name=source.name,
+        session_id="current-session",
+    )
+    adapter = WorkspaceFileAdapter()
+
+    first = await adapter.handle(
+        _request(
+            ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+            {"token": token, "offset": 0, "limit": 8},
+        )
+    )
+    assert first.ok is True
+    assert base64.b64decode(first.payload["data_base64"]) == b"approved"
+    assert first.payload["name"] == source.name
+    assert first.payload["size"] == len(b"approved-content")
+
+    owner.revoke(asset)
+    rejected = await adapter.handle(
+        _request(
+            ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+            {"token": token, "offset": 8, "limit": 8},
+        )
+    )
+    assert rejected.ok is False
+    assert rejected.payload["code"] == "FORBIDDEN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("offset", "limit"),
+    [(-1, 1), (0, 0), (0, 512 * 1024 + 1)],
+)
+async def test_workspace_verified_download_rejects_unbounded_ranges(
+    offset: int,
+    limit: int,
+) -> None:
+    response = await WorkspaceFileAdapter().handle(
+        _request(
+            ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+            {"token": "opaque", "offset": offset, "limit": limit},
+        )
+    )
+
+    assert response.ok is False
+    assert response.payload["code"] == "BAD_REQUEST"
+
+
 @pytest.fixture
 def patched_sessions(monkeypatch: pytest.MonkeyPatch):
     """替换 SessionAdapter 依赖的 get_all_sessions_metadata。"""
@@ -312,16 +386,19 @@ class TestSessionAdapter:
         assert "partial" not in contents
         assert "think" not in contents
 
-    async def test_session_delete_team_returns_agent_unavailable(self, monkeypatch) -> None:
-        """SessionAdapter.session.delete：team 会话的本地删除不可用（AGENT_UNAVAILABLE）。
+    async def test_session_delete_team_offline_requires_runtime(self, monkeypatch) -> None:
+        """Team Session 离线删除必须等待 Runtime 可用。
 
-        与原 Web/TUI handler fallback 语义一致：team 会话需由 AgentServer 处理，
-        本地共享目录 fallback 拒绝并返回 AGENT_UNAVAILABLE，不触发 evict，也不删目录。
+        本地共享目录 fallback 只返回 AGENT_UNAVAILABLE，不触发
+        KVC 清理，也不删除存储。
         """
         evict_calls: list[dict] = []
+        metadata_reads: list[bool] = []
         monkeypatch.setattr(
             "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
-            lambda sid, cache_bust=False: {"mode": "team"},
+            lambda sid, cache_bust=False: (
+                metadata_reads.append(cache_bust) or {"mode": "team"}
+            ),
         )
         monkeypatch.setattr(
             "openjiuwen.core.session.agent.create_agent_session",
@@ -333,11 +410,14 @@ class TestSessionAdapter:
         assert resp.ok is False
         assert resp.payload["code"] == "AGENT_UNAVAILABLE"
         assert evict_calls == []
+        assert metadata_reads == [True]
 
-    async def test_session_delete_missing_returns_not_found_without_evict(
+    async def test_session_delete_missing_offline_returns_runtime_result_without_evict(
         self, monkeypatch, tmp_path,
     ) -> None:
-        """SessionAdapter.session.delete：目标会话目录不存在时返回 NOT_FOUND 且不 evict。"""
+        """离线删除由维护型 Runtime 判定 NOT_FOUND，且不创建 KVC。"""
+        from jiuwenswarm.runtime.session_delete import SessionDeleteResult
+
         evict_calls: list[dict] = []
         missing_dir = tmp_path / "sessions" / "missing"
         monkeypatch.setattr(
@@ -352,6 +432,15 @@ class TestSessionAdapter:
             "openjiuwen.core.session.agent.create_agent_session",
             lambda **kwargs: evict_calls.append(kwargs),
         )
+        async def _delete_offline_session(**_kwargs):
+            return SessionDeleteResult.failure(
+                "missing", code="NOT_FOUND", message="session not found"
+            )
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.offline_session_cleanup.delete_offline_session",
+            _delete_offline_session,
+        )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_DELETE, {"session_id": "missing"})
         )
@@ -359,10 +448,26 @@ class TestSessionAdapter:
         assert resp.payload["code"] == "NOT_FOUND"
         assert evict_calls == []
 
-    async def test_session_delete_offline_fallback_evicts_and_removes_dir(
-        self, monkeypatch, tmp_path,
+    @pytest.mark.parametrize("affinity_enabled", [False, True])
+    @pytest.mark.parametrize("release_fails", [False, True])
+    async def test_session_delete_offline_uses_runtime_without_kvc(
+        self, monkeypatch, tmp_path, affinity_enabled, release_fails,
     ) -> None:
-        """SessionAdapter.session.delete：普通会话的本地 fallback 触发 root evict 并删除目录。"""
+        """Offline delete never activates KVC, regardless of configured affinity."""
+        from jiuwenswarm.runtime.session_delete import SessionDeleteResult
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider.is_kv_cache_affinity_enabled",
+            lambda: affinity_enabled,
+        )
+        runtime = object()
+        def get_runtime():
+            assert affinity_enabled, "OFF must not look up or create KVC runtime"
+            return runtime
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime.get_kv_cache_runtime",
+            get_runtime,
+        )
         evict_calls: list[dict] = []
         session_root = tmp_path / "sessions" / "sess-del"
         session_root.mkdir(parents=True)
@@ -383,20 +488,129 @@ class TestSessionAdapter:
                         "parent_session_id": "sess-del",
                     }
                 )
+                if release_fails:
+                    raise RuntimeError("KVC unavailable")
                 return True
 
         monkeypatch.setattr(
             "openjiuwen.core.session.agent.create_agent_session",
             lambda **_kwargs: _Session(),
         )
+        calls: list[dict] = []
+
+        async def _delete_offline_session(**kwargs):
+            calls.append(kwargs)
+            return SessionDeleteResult(
+                ok=True,
+                session_id=kwargs["session_id"],
+                deleted=True,
+            )
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.offline_session_cleanup.delete_offline_session",
+            _delete_offline_session,
+        )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_DELETE, {"session_id": "sess-del"})
         )
         assert resp.ok is True
+        assert calls == [{"channel_id": "web", "session_id": "sess-del"}]
+        assert evict_calls == []
+
+    async def test_session_delete_offline_fallback_erases_mailbox_content(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        from jiuwenswarm.server.runtime.gateway_adapter import session_adapter as module
+        from jiuwenswarm.server.runtime.session.session_message_store import (
+            SessionMessageStore,
+        )
+
+        session_root = tmp_path / "sessions" / "sess-del"
+        session_root.mkdir(parents=True)
+        mailbox = SessionMessageStore(tmp_path / "session_messages.sqlite3")
+        record, _ = mailbox.enqueue(
+            owner_scope_id="user-1",
+            source_session_id="source-1",
+            source_title_snapshot="Source",
+            source_request_id="request-1",
+            source_tool_call_id="call-1",
+            idempotency_key="call-1",
+            target_session_id="sess-del",
+            content="sensitive content",
+            hop_count=1,
+        )
+        monkeypatch.setattr(module, "get_agent_root_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+            lambda sid, cache_bust=False: {"mode": "agent"},
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_history.resolve_session_dir",
+            lambda sid, sessions_root=None: (session_root, None),
+        )
+
+        class _Session:
+            async def release_kvc(self):
+                return True
+
+        monkeypatch.setattr(
+            "openjiuwen.core.session.agent.create_agent_session",
+            lambda **_kwargs: _Session(),
+        )
+
+        resp = await SessionAdapter().handle(
+            _request(ReqMethod.SESSION_DELETE, {"session_id": "sess-del"})
+        )
+
+        assert resp.ok is True
+        erased = mailbox.get(record.message_id)
+        assert erased.status == "cancelled"
+        assert erased.content == ""
+
+    async def test_session_delete_succeeds_when_mailbox_cleanup_fails(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        from jiuwenswarm.server.runtime.gateway_adapter import session_adapter as module
+        from jiuwenswarm.server.runtime.session import session_message_store
+
+        session_root = tmp_path / "sessions" / "sess-del"
+        session_root.mkdir(parents=True)
+        monkeypatch.setattr(module, "get_agent_root_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+            lambda sid, cache_bust=False: {"mode": "agent"},
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_history.resolve_session_dir",
+            lambda sid, sessions_root=None: (session_root, None),
+        )
+
+        class _Session:
+            async def release_kvc(self):
+                return True
+
+        class _Mailbox:
+            def __init__(self, _path):
+                pass
+
+            def exists(self):
+                return True
+
+            def cancel_pending_for_target(self, _target):
+                raise RuntimeError("mailbox unavailable")
+
+        monkeypatch.setattr(
+            "openjiuwen.core.session.agent.create_agent_session",
+            lambda **_kwargs: _Session(),
+        )
+        monkeypatch.setattr(session_message_store, "SessionMessageStore", _Mailbox)
+
+        resp = await SessionAdapter().handle(
+            _request(ReqMethod.SESSION_DELETE, {"session_id": "sess-del"})
+        )
+
+        assert resp.ok is True
         assert resp.payload == {"session_id": "sess-del"}
-        assert evict_calls == [
-            {"session_id": "sess-del", "parent_session_id": "sess-del"}
-        ]
         assert not session_root.exists()
 
 
@@ -430,7 +644,7 @@ class TestWorkspaceFileAdapter:
         assert resp.payload["content"] == "x"
 
     async def test_document_persist(self, monkeypatch) -> None:
-        def _fake_persist(normalized):
+        def _fake_persist(normalized, session_id):
             normalized["documents"] = [{"path": "/tmp/d.md"}]
             normalized["forbidden_formats"] = [".exe"]
 
@@ -878,9 +1092,10 @@ class TestAdapterRegistry:
 
         assert registry.contains(ReqMethod.SESSION_LIST.value)
         assert isinstance(registry.get(ReqMethod.SESSION_LIST.value), SessionAdapter)
-        # SESSION_DELETE / SESSION_RENAME 注册在 SessionAdapter：供 e2a_proxy
-        # 单用户离线 fallback 使用（在线 dispatch 由 AgentWebSocketServer 显式
-        # 跳过适配器、走既有 handler）。
+        # SESSION_DELETE / SESSION_RENAME 注册在 SessionAdapter，供 e2a_proxy
+        # 单用户离线 fallback 使用。delete 经无 KVC participant 的维护型
+        # Runtime 处理；rename 保留离线处理。AgentServer 在线 delete 由更早的 lifecycle
+        # handler 交给 Runtime，rename 由 legacy handler 处理。
         assert isinstance(registry.get(ReqMethod.SESSION_DELETE.value), SessionAdapter)
         assert isinstance(registry.get(ReqMethod.SESSION_RENAME.value), SessionAdapter)
         assert registry.get("session.unknown") is None

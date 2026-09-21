@@ -24,12 +24,17 @@ from openjiuwen.agent_teams.paths import (
 )
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
+
+from jiuwenswarm.server.runtime.session.history_io import (
+    run_history_io, run_stream_parser, stream_chunk_writes_history,
+)
 
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
 from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
@@ -705,9 +710,14 @@ def sync_team_identity_metadata(
     session_id: str,
     ready_team_name: str,
     activation_kind: str | None,
+    team_leader_identity: dict[str, Any] | None = None,
 ) -> None:
     """Persist team identity when a team runtime becomes ready."""
-    metadata = get_session_metadata(session_id)
+    metadata = (
+        get_session_metadata(session_id, cache_bust=True)
+        if team_leader_identity is not None
+        else get_session_metadata(session_id)
+    )
     existing_team_name = str(metadata.get("team_name") or "").strip()
     normalized_kind = str(activation_kind or "").strip()
 
@@ -727,11 +737,28 @@ def sync_team_identity_metadata(
     # team.work.plan / team.work.normal 盖回光杆 "team"，制造 session.plan_status
     # 等按 metadata.mode 判定 plan 的读取方读到误报 false 的空窗。会话的真实
     # mode 由 sync_session_request_metadata / append_history_record 按每轮请求维护。
-    update_session_metadata(
-        session_id=session_id,
-        channel_id=_resolve_channel_id(channel_id),
-        team_name=ready_team_name,
-    )
+    metadata_kwargs: dict[str, Any] = {
+        "session_id": session_id,
+        "channel_id": _resolve_channel_id(channel_id),
+        "team_name": ready_team_name,
+    }
+    if team_leader_identity is not None:
+        metadata_kwargs.update(
+            team_leader_identity=team_leader_identity,
+            cache_bust=True,
+            sync_write=True,
+        )
+    update_session_metadata(**metadata_kwargs)
+
+
+def _attach_team_leader_identity(
+    parsed: dict[str, Any],
+    identity: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Add the optional snapshot only to the existing runtime-ready event."""
+    if identity is not None and parsed.get("event_type") == "team.runtime_ready":
+        parsed["team_leader_identity"] = dict(identity)
+    return parsed
 
 
 def persist_workflow_runs(
@@ -1540,13 +1567,15 @@ async def _broadcast_event(
     tm = get_team_manager(channel_id)
     if event and event.get("event_type") == 'team.error':
         event.update({"event_type": "chat.error"})
-    result = tm.broadcast_event(session_id, event)
+    result = tm.broadcast_event(session_id, event, channel_id=channel_id)
     if inspect.isawaitable(result):
         await result
     _try_finish_cron_team_stream(channel_id, session_id, event)
 
 
 def _approval_chunk_from_event(evt: Any) -> dict[str, Any] | None:
+    if stream_chunk_writes_history(evt):
+        return None
     parsed = parse_stream_chunk(evt)
     if not isinstance(parsed, dict) or parsed.get("event_type") != "chat.ask_user_question":
         return None
@@ -1594,7 +1623,7 @@ async def _broadcast_team_state_snapshot(
                     "new_status": m["status"],
                 },
             }
-            _persist_team_history_event(channel_id, session_id, event)
+            await run_history_io(_persist_team_history_event, channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
 
         # Broadcast task status snapshot
@@ -1616,7 +1645,7 @@ async def _broadcast_team_state_snapshot(
                     "content_original_size": t.get("content_original_size"),
                 },
             }
-            _persist_team_history_event(channel_id, session_id, event)
+            await run_history_io(_persist_team_history_event, channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
     except Exception:
         logger.debug(
@@ -1699,6 +1728,9 @@ async def _announce_team_roster(
         fresh: list[dict[str, Any]] = []
         for member in members:
             candidate_id = str(member.get("member_id") or "").strip()
+            member_status = str(member.get("status") or "").strip().lower()
+            if member_status == MemberStatus.SHUTDOWN.value:
+                continue
             if not candidate_id or candidate_id in announced_members:
                 continue
             fresh.append(member)
@@ -1727,7 +1759,7 @@ async def _announce_team_roster(
                     "cli_agent": member.get("cli_agent"),
                 },
             }
-            _persist_team_history_event(channel_id, session_id, event)
+            await run_history_io(_persist_team_history_event, channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
         logger.info(
             "[TeamHelpers] announced team roster: channel_id=%s session_id=%s members=%s",
@@ -1824,7 +1856,7 @@ def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     next_event = dict(parsed)
     truncated = False
     original_size = 0
-    for key in ("result", "raw_output"):
+    for key in ("result", "rendered_result", "raw_output"):
         value = next_event.get(key)
         if not isinstance(value, str):
             continue
@@ -2184,6 +2216,7 @@ async def _start_team_stream_round(
     source: str = "first",
     exclusive_waiter: bool = False,
     request_queue: asyncio.Queue | None = None,
+    team_leader_identity: dict[str, Any] | None = None,
 ) -> asyncio.Queue:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -2218,14 +2251,19 @@ async def _start_team_stream_round(
     if debug:
         stream_envs[_STREAM_TRACE_ENV_KEY] = "1"
     round_id = increment_session_round_count(session_id)
+    stream_kwargs: dict[str, Any] = {
+        "round_id": round_id,
+        "envs": stream_envs or None,
+    }
+    if team_leader_identity is not None:
+        stream_kwargs["team_leader_identity"] = team_leader_identity
     stream_task = asyncio.create_task(
         _consume_stream_with_query(
             channel_id,
             session_id,
             team_spec,
             query,
-            round_id=round_id,
-            envs=stream_envs or None,
+            **stream_kwargs,
         )
     )
     team_manager.register_stream_task(session_id, stream_task)
@@ -2239,17 +2277,30 @@ async def process_team_message_stream(
 ) -> AsyncIterator[AgentResponseChunk]:
     """Hold the session startup lock until registration, never while streaming."""
     team_manager = get_team_manager(request.channel_id)
-    startup_lock = team_manager.get_startup_lock(request.session_id or "default")
-    async with AsyncExitStack() as startup:
-        await startup.enter_async_context(startup_lock)
-        async with aclosing(_process_team_message_stream(
-            request, inputs, deep_agent, team_manager=team_manager, startup=startup,
-        )) as stream:
-            async for chunk in stream:
-                # Early replies (validation errors, slash commands) also end
-                # startup ownership before handing control to the caller.
-                await startup.aclose()
-                yield chunk
+    session_id = request.session_id or "default"
+    request_id = str(request.request_id or "")
+    # 归档闸门：Team 回合从进入适配器起即算「运行中」，直到本轮 round 终止
+    # （round 之前的 spec 组装 / 运行时激活等准备阶段也要覆盖）。
+    begin_request = getattr(team_manager, "begin_request", None)
+    end_request = getattr(team_manager, "end_request", None)
+    if callable(begin_request):
+        begin_request(session_id, request_id)
+    try:
+        startup_lock = team_manager.get_startup_lock(session_id)
+        async with AsyncExitStack() as startup:
+            await startup.enter_async_context(startup_lock)
+            async with aclosing(_process_team_message_stream(
+                request, inputs, deep_agent, team_manager=team_manager, startup=startup,
+            )) as stream:
+                async for chunk in stream:
+                    # Early replies (validation errors, slash commands) also end
+                    # startup ownership before handing control to the caller.
+                    await startup.aclose()
+                    yield chunk
+    finally:
+        # 兜底：提前返回（校验失败/斜杠命令）也要解除运行中标记。
+        if callable(end_request):
+            end_request(session_id, request_id)
 
 
 async def _process_team_message_stream(
@@ -2460,6 +2511,33 @@ async def _process_team_message_stream(
             params=params_obj if isinstance(params_obj, dict) else None,
             is_first_request=is_first_request,
         )
+        team_leader_identity: dict[str, Any] | None = None
+        if agent_group_name:
+            from jiuwenswarm.server.runtime.extension_package_manager import (
+                normalize_agent_group_leader_identity,
+                resolve_agent_group_leader_identity,
+            )
+
+            stored_identity = normalize_agent_group_leader_identity(
+                get_session_metadata(session_id, cache_bust=True).get(
+                    "team_leader_identity"
+                )
+            )
+            if stored_identity is not None:
+                team_leader_identity = stored_identity
+            elif persist_agent_group or is_first_request:
+                try:
+                    team_leader_identity = resolve_agent_group_leader_identity(
+                        agent_group_name
+                    )
+                except Exception as identity_exc:  # noqa: BLE001 — identity is optional
+                    logger.warning(
+                        "[TeamHelpers] unable to resolve AgentGroup leader identity: "
+                        "session_id=%s agent_group_name=%s error=%s",
+                        session_id,
+                        agent_group_name,
+                        identity_exc,
+                    )
         # Validate against the effective session binding before assembling a
         # Team or writing visibility, including follow-ups and cold recovery.
         team_skill_names = _resolve_team_skill_selection(
@@ -2473,6 +2551,14 @@ async def _process_team_message_stream(
             if isinstance(params_obj, dict)
             else ""
         ) or None
+        # 选的是登录送的免费模型时，按 Gateway 随请求带下来的凭据造条目（api_key 是占位值，
+        # 真 token 发请求时才换上）。不传的话集群按名字查不到它，会静默用配置里的第一个模型。
+        from jiuwenswarm.common.auth.login_credentials import build_login_model_entry
+
+        login_model_entry = build_login_model_entry(
+            params_obj if isinstance(params_obj, dict) else None,
+            requested_model_name or "",
+        )
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
         # 会话级 swarmflow 配置：请求 params > metadata > config.yaml
@@ -2484,13 +2570,16 @@ async def _process_team_message_stream(
         team_spec = await team_manager.get_swarm_enriched_team_spec(
             session_id=session_id,
             mode=resolved_mode,
-            project_dir=request_metadata.get("project_dir"),
+            project_dir=(
+                inputs.get("project_dir") or request_metadata.get("project_dir")
+            ),
             trusted_dirs=_request_trusted_dirs(request),
             request_id=rid,
             user_id=str(getattr(request, "user_id", "") or "").strip() or None,
             channel_id=channel_id,
             request_metadata=request_metadata,
             requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
             agent_group_name=agent_group_name,
             swarmflow_config=swarmflow_config,
         )
@@ -2508,13 +2597,16 @@ async def _process_team_message_stream(
                 skill_names=team_skill_names,
             )
         if persist_agent_group and agent_group_name:
-            update_session_metadata(
-                session_id=session_id,
-                agent_group_name=agent_group_name,
-                touch_last_message_at=False,
-                cache_bust=True,
-                sync_write=True,
-            )
+            metadata_kwargs = {
+                "session_id": session_id,
+                "agent_group_name": agent_group_name,
+                "touch_last_message_at": False,
+                "cache_bust": True,
+                "sync_write": True,
+            }
+            if team_leader_identity is not None:
+                metadata_kwargs["team_leader_identity"] = team_leader_identity
+            update_session_metadata(**metadata_kwargs)
         _persist_team_file_monitor_roots(session_id, team_spec)
         # Drop unreachable MCPs before the team runtime starts so one bad MCP
         # can't cancel the whole stream via openjiuwen's fail-fast raise.
@@ -2536,10 +2628,28 @@ async def _process_team_message_stream(
             )
     except Exception as exc:
         logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)
+        error_payload: dict[str, Any] = {
+            "event_type": "chat.error",
+            "error": str(exc),
+        }
+        error_code = getattr(exc, "code", None)
+        if isinstance(error_code, str) and error_code.startswith("AGENT_GROUP_"):
+            error_payload["code"] = error_code
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=channel_id,
-            payload={"event_type": "chat.error", "error": str(exc)},
+            payload=error_payload,
+            is_complete=False,
+        )
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=channel_id,
+            payload={
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "is_processing": False,
+                "is_complete": True,
+            },
             is_complete=False,
         )
         yield AgentResponseChunk(
@@ -2898,6 +3008,7 @@ async def _process_team_message_stream(
                     source=first_request_source,
                     exclusive_waiter=is_heartbeat_request,
                     request_queue=request_queue,
+                    team_leader_identity=team_leader_identity,
                 )
             except BaseException:
                 team_manager.remove_waiter(session_id, rid)
@@ -3087,6 +3198,7 @@ async def _consume_stream_with_query(
     *,
     round_id: int,
     envs: dict[str, Any] | None = None,
+    team_leader_identity: dict[str, Any] | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     _envs = envs or {}
@@ -3195,7 +3307,7 @@ async def _consume_stream_with_query(
             # _is_leader_output returns True.
             if _team_hide_teammate_enabled() and not is_leader:
                 continue
-            parsed = parse_stream_chunk(chunk)
+            parsed = await run_stream_parser(parse_stream_chunk, chunk)
             if parsed is not None:
                 # Time to first token: the first frame actually produced by a
                 # model (reasoning counts — on a thinking model it comes first).
@@ -3229,6 +3341,7 @@ async def _consume_stream_with_query(
                     # （leader 不在 _ROLE_FANOUT 中，落到 [godview]）。
                     parsed["role"] = TeamRole.LEADER.value
                 parsed = _truncate_team_tool_result_event(parsed)
+                parsed = _attach_team_leader_identity(parsed, team_leader_identity)
                 if parsed.get("event_type") == "team.runtime_ready":
                     ready_team_name = str(parsed.get("team_name") or team_spec.team_name)
                     activation_kind = str(parsed.get("activation_kind") or "").strip()
@@ -3237,6 +3350,7 @@ async def _consume_stream_with_query(
                         session_id=session_id,
                         ready_team_name=ready_team_name,
                         activation_kind=activation_kind,
+                        team_leader_identity=team_leader_identity,
                     )
                     tm = get_team_manager(channel_id)
                     tm.commit_runtime_ready(session_id, ready_team_name)
@@ -3557,7 +3671,7 @@ async def _consume_monitor_events(
             session_id,
         )
         async for event in monitor_handler.events():
-            _persist_team_history_event(channel_id, session_id, event)
+            await run_history_io(_persist_team_history_event, channel_id, session_id, event)
             await _broadcast_event(channel_id, session_id, event)
 
         logger.info(
@@ -3810,9 +3924,12 @@ async def _consume_workflow_events(
     并检测 ``waiting_for_human`` agent 生成 ``chat.ask_user_question`` 事件。
     """
     is_tui = _resolve_channel_id(channel_id) == "tui"
-    seen_phase: dict[str, str] = {}
-    seen_agent: dict[str, str] = {}
-    spawned_members: set[str] = set()
+    # Phase/agent dedup lives on the handler (session-scoped): this loop is
+    # cancelled on team pause, and a resume relaunch replays the cached
+    # prefix — a fresh per-loop table would re-emit the replay as new tasks.
+    seen_phase = workflow_handler.seen_phase
+    seen_agent = workflow_handler.seen_agent
+    spawned_members = workflow_handler.spawned_members
     seen_human_waiting: set[str] = set()
     try:
         logger.info(
@@ -3842,6 +3959,8 @@ async def _consume_workflow_events(
             wf_status = (wf.get("status") or "").strip()
 
             # ── 所有通道都广播原始 workflow.updated（供 web 树视图渲染）──
+            # channel_id 随事件传下去：终态事件在 waiter 已被 cancel 拆除时，
+            # broadcast_event 用它走 gateway server-push 兜底投递。
             await _broadcast_event(channel_id, session_id, event)
 
             # The idle guard may be holding a swallowed team.idle for this
@@ -3889,7 +4008,7 @@ async def _consume_workflow_events(
             for team_ev in _workflow_updated_to_team_events(
                 event, session_id, seen_phase, seen_agent, spawned_members
             ):
-                _persist_team_history_event(channel_id, session_id, team_ev)
+                await run_history_io(_persist_team_history_event, channel_id, session_id, team_ev)
                 await _broadcast_event(channel_id, session_id, team_ev)
 
             # ── 非 TUI: 检测 waiting_for_human → chat.ask_user_question ──

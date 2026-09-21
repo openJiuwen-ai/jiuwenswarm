@@ -11,6 +11,8 @@ export type AgentManagementState = {
   catalog: AgentCatalogItem[];
   catalogStatus: RequestStatus;
   catalogError: string | null;
+  catalogCompatibilityStatus: RequestStatus;
+  catalogCompatibilityError: string | null;
   detail: AgentDetail | null;
   detailStatus: RequestStatus;
   detailError: string | null;
@@ -30,6 +32,8 @@ export function createInitialAgentManagementState(): AgentManagementState {
     catalog: [],
     catalogStatus: 'idle',
     catalogError: null,
+    catalogCompatibilityStatus: 'idle',
+    catalogCompatibilityError: null,
     detail: null,
     detailStatus: 'idle',
     detailError: null,
@@ -51,6 +55,9 @@ export type AgentManagementAction =
   | { type: 'catalog.loading' }
   | { type: 'catalog.loaded'; catalog: AgentCatalogItem[] }
   | { type: 'catalog.error'; message: string }
+  | { type: 'catalog.compatibility.loading' }
+  | { type: 'catalog.compatibility.loaded' }
+  | { type: 'catalog.compatibility.error'; message: string }
   | { type: 'detail.loading' }
   | { type: 'detail.loaded'; detail: AgentDetail }
   | { type: 'detail.error'; message: string }
@@ -75,7 +82,13 @@ export function agentManagementReducer(
     case 'catalog.loaded':
       return { ...state, catalog: action.catalog, catalogStatus: 'success', catalogError: null };
     case 'catalog.error':
-      return { ...state, catalog: [], catalogStatus: 'error', catalogError: action.message };
+      return { ...state, catalogStatus: state.catalog.length ? 'success' : 'error', catalogError: action.message };
+    case 'catalog.compatibility.loading':
+      return { ...state, catalogCompatibilityStatus: 'loading', catalogCompatibilityError: null };
+    case 'catalog.compatibility.loaded':
+      return { ...state, catalogCompatibilityStatus: 'success', catalogCompatibilityError: null };
+    case 'catalog.compatibility.error':
+      return { ...state, catalogCompatibilityStatus: 'error', catalogCompatibilityError: action.message };
     case 'detail.loading':
       return {
         ...state,

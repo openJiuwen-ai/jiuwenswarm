@@ -110,12 +110,14 @@ class _ProductionSearchCallbacks:
     ) -> None:
         self.queue_rail = queue_rail
         self.permission_rail = permission_rail
+        self.contexts: list[AgentCallbackContext] = []
 
     async def execute(
         self,
         event: AgentCallbackEvent,
         ctx: AgentCallbackContext,
     ) -> None:
+        self.contexts.append(ctx)
         if event is AgentCallbackEvent.BEFORE_TOOL_CALL:
             await self.queue_rail.before_tool_call(ctx)
             await self.permission_rail.before_tool_call(ctx)
@@ -204,11 +206,8 @@ async def test_adapter_matches_upstream_output_and_argument_normalization(
     url = "https://release-notes.invalid/v1"
     calls: list[tuple[str, int, int]] = []
 
-    async def fake_search(
-        session: object, query: str, max_results: int, timeout_seconds: int
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session
-        calls.append((query, max_results, timeout_seconds))
+    async def fake_search(request: Any) -> tuple[str, list[dict[str, str]]]:
+        calls.append((request.query, request.max_results, request.timeout_seconds))
         return (
             "duckduckgo",
             [
@@ -262,13 +261,8 @@ async def test_root_queue_real_search_execution_records_fetch_provenance(
     manager = AbilityManager()
     tool = TrustedWebFreeSearchTool(agent_id="agent-1")
 
-    async def fake_search(
-        session: object,
-        query: str,
-        max_results: int,
-        timeout_seconds: int,
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session, query, max_results, timeout_seconds
+    async def fake_search(request: Any) -> tuple[str, list[dict[str, str]]]:
+        del request
         return "duckduckgo", [
             {"title": "Result", "url": url, "snippet": "Summary"}
         ]
@@ -341,9 +335,16 @@ async def test_root_queue_real_search_execution_records_fetch_provenance(
 
     assert fetch_result[0][0] == "fetched"
     assert len(reviewer.requests) == 1
-    metadata = parent.extra["permission_reviewer_metadata_by_tool_call_id"][
+    fetch_context = next(
+        ctx
+        for ctx in reversed(callbacks.contexts)
+        if getattr(getattr(ctx.inputs, "tool_call", None), "id", None)
+        == "call-fetch"
+    )
+    metadata = fetch_context.extra["permission_reviewer_metadata_by_tool_call_id"][
         "call-fetch"
     ]
+    assert "permission_reviewer_metadata_by_tool_call_id" not in parent.extra
     assert metadata["decision_source"] == "deterministic_bounded_scope"
     assert metadata["host_route_source"] == "recent_search_result"
     assert metadata["reviewer_called"] is False
@@ -355,10 +356,8 @@ async def test_adapter_matches_upstream_without_recording_unsuccessful_results(
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
 ) -> None:
-    async def fake_search(
-        session: object, query: str, max_results: int, timeout_seconds: int
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session, query, max_results, timeout_seconds
+    async def fake_search(request: Any) -> tuple[str, list[dict[str, str]]]:
+        del request
         if outcome == "failure":
             raise RuntimeError("search unavailable")
         return "duckduckgo", []
@@ -403,10 +402,8 @@ async def test_adapter_keeps_provenance_when_rendering_fails_after_rows(
 ) -> None:
     url = "https://release-notes.invalid/v1"
 
-    async def fake_search(
-        session: object, query: str, max_results: int, timeout_seconds: int
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session, query, max_results, timeout_seconds
+    async def fake_search(request: Any) -> tuple[str, list[dict[str, str]]]:
+        del request
         return "duckduckgo", [{"url": url}]
 
     monkeypatch.setattr(WebFreeSearchTool, "_search_free", staticmethod(fake_search))

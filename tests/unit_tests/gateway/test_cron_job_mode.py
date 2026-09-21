@@ -408,8 +408,8 @@ class TestCronJobLazyMigration:
         assert _read_cron_jobs(store_path)[0]["work_mode"] == "code"
 
     @pytest.mark.asyncio
-    async def test_legacy_job_project_id_hits_hidden_project(self, tmp_path, monkeypatch):
-        """project_id 命中已隐藏项目时,仍继承该项目的 work_mode(最准确的归属)。"""
+    async def test_legacy_job_project_id_preserves_mode_after_migration(self, tmp_path, monkeypatch):
+        """旧项目迁移后 cron 继续按项目 ID 继承 work_mode。"""
         root = tmp_path / "agent"
         root.mkdir()
         monkeypatch.setattr(
@@ -419,7 +419,10 @@ class TestCronJobLazyMigration:
         from jiuwenswarm.server.runtime.session import project_store
         project_store.invalidate_cache()
         proj = project_store.create_project("P", str(tmp_path / "app"), work_mode="code")
-        project_store.hide_project(proj.project_id)  # 软删除(hidden=True)
+        records = json.loads((root / "projects.json").read_text(encoding="utf-8"))
+        records["projects"][0]["hidden"] = True
+        (root / "projects.json").write_text(json.dumps(records), encoding="utf-8")
+        project_store.migrate_archived_projects()
 
         store_path = tmp_path / "cron_jobs.json"
         _write_cron_jobs(store_path, [
@@ -481,7 +484,9 @@ class TestCronJobLazyMigration:
             ],
         )
 
-        with patch(f"{CronJobStore.__module__}.logger.warning") as warning_mock:
+        with patch(
+            "jiuwenswarm.runtime.cron.cron_job_mutations.logger.warning"
+        ) as warning_mock:
             jobs = await CronJobStore(path=store_path).list_jobs()
 
         assert [job.id for job in jobs] == ["valid"]
@@ -530,7 +535,7 @@ class TestCronJobLazyMigration:
 
         # mock _build_cron_project_lookup 验证不被调用
         with patch(
-            "jiuwenswarm.gateway.cron.store._build_cron_project_lookup"
+            "jiuwenswarm.runtime.cron.cron_job_mutations.build_cron_project_lookup"
         ) as mock_lookup:
             jobs = await store.list_jobs()
             mock_lookup.assert_not_called()

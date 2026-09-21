@@ -33,6 +33,8 @@ from openjiuwen.agent_teams.rails.team_context import (
 )
 from openjiuwen.harness.rails import ModelAnomalyDetectionRail
 
+from openjiuwen.harness.rails.personal_context import PersonalContextRail
+
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
     RuntimePromptRail,
@@ -56,10 +58,13 @@ from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail impor
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
+from jiuwenswarm.common.cron_session import is_cron_execution_session
+
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
 logger = logging.getLogger(__name__)
 
+PERSONAL_CONTEXT = "swarm.personal_context"
 RUNTIME_PROMPT = "swarm.runtime_prompt"
 TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 # Renamed from ``swarm.team_shared_skill_link_refresh``: the rail behind the
@@ -97,6 +102,20 @@ def _build_heartbeat_rail(
     if service is None or not session_id:
         return None
     metadata = dict(getattr(context, "request_metadata", None) or {})
+    # cron 执行会话不挂心跳工具（判定信号与 swarm.cron_tools / code_rails 的
+    # permission rail 对齐）：心跳任务绑定创建它的会话，从 cron 运行里再派生
+    # 心跳任务与"禁止 cron 派生 cron"同理，且随一次性 cron 会话回收无意义；
+    # 普通会话三个信号都不命中，心跳能力不受影响。
+    if (
+        metadata.get("cron")
+        or str(getattr(context, "channel_id", None) or "").strip() == "__cron__"
+        or is_cron_execution_session(session_id)
+    ):
+        logger.info(
+            "[swarm.heartbeat] skip HeartbeatRail for cron execution session %s",
+            session_id,
+        )
+        return None
     tool_context = SimpleNamespace(
         channel_id=str(getattr(context, "channel_id", None) or "web"),
         session_id=session_id,
@@ -108,6 +127,27 @@ def _build_heartbeat_rail(
         ),
     )
     return HeartbeatRail(service=service, context=tool_context)
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=PERSONAL_CONTEXT,
+    description="Personal context shared with work/code, gated by the fixed-home Agent-use switch on each model call.",
+)
+def _build_personal_context_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> PersonalContextRail | None:
+    """Mount even when disabled so live members observe subsequent switch changes."""
+    del params, context
+    try:
+        return PersonalContextRail(Path.home() / ".jiuwenswarm" / ".personal_context")
+    except Exception as exc:
+        logger.warning(
+            "[swarm.personal_context] optional Rail construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:

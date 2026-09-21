@@ -10,22 +10,24 @@
  * 数据走 usePersonalContextStore；状态轮询 5s。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, PlayCircle } from 'lucide-react';
+import { Loader2, PlayCircle, Plus, X } from 'lucide-react';
 import { Switch } from '../Switch';
 import { usePersonalContextStore } from '../../stores';
 import {
   type FetchProvider,
   type FetchRunProgress,
+  type FetchRunRecord,
   type FetchServiceConfig,
   type FetchServiceState,
   PROVIDER_LABEL_KEYS,
   PROVIDER_ORDER,
   FREQUENCY_SECONDS,
-  isProviderAuthorized,
-  pcApi,
+  isFetchTaskRunningError,
 } from '../../services/personalContextApi';
+import { requestSettingsModule } from '../../features/settings/settingsNavigation';
+import { toast } from '../../components/ui/Toast/toastStore';
 import { AddContentDrawer } from './AddContentDrawer';
 import localFilesIcon from '../../assets/settings/channels/local-files.svg';
 import edgeBookmarksIcon from '../../assets/settings/channels/edge-bookmarks.svg';
@@ -33,9 +35,31 @@ import zhihuIcon from '../../assets/settings/channels/zhihu.svg';
 import toutiaoIcon from '../../assets/settings/channels/toutiao.svg';
 import feishuIcon from '../../assets/settings/channels/feishu.svg';
 import githubIcon from '../../assets/settings/channels/GitHub.svg';
+import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
 import './ServicesPanel.css';
 
 const POLL_INTERVAL_MS = 5000;
+
+function runTimestampValue(value: string | null | undefined): number {
+  const timestamp = value ? new Date(value).getTime() : Number.NEGATIVE_INFINITY;
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
+function latestFetchRun(runs?: FetchRunRecord[]): FetchRunRecord | null {
+  if (!runs?.length) return null;
+  return runs.reduce(
+    (latest, run) => (runTimestampValue(run.started_at) > runTimestampValue(latest.started_at) ? run : latest),
+    runs[0],
+  );
+}
+
+function formatRunTimestamp(value: string | null | undefined): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 const PROVIDER_ICON: Record<FetchProvider, string> = {
   local_files: localFilesIcon,
@@ -44,6 +68,7 @@ const PROVIDER_ICON: Record<FetchProvider, string> = {
   toutiao_reader: toutiaoIcon,
   feishu: feishuIcon,
   github: githubIcon,
+  gitcode: gitcodeIcon,
 };
 
 interface PersonalContextServicesPanelProps {
@@ -51,6 +76,10 @@ interface PersonalContextServicesPanelProps {
   isActive: boolean;
   onBackToGraph: () => void;
 }
+
+type PanelNotice =
+  | { kind: 'success'; key: string }
+  | { kind: 'error'; message: string };
 
 export function PersonalContextServicesPanel({
   isConnected,
@@ -62,48 +91,38 @@ export function PersonalContextServicesPanel({
     config,
     graph,
     status,
+    runHistories,
     loadingServices,
     pendingWrites,
-    loadServices,
-    loadStatus,
+    batchRefresh,
     setServiceEnabled,
     deleteService,
     runOne,
     stopRun,
     authByProvider,
     loadAuthStatus,
-    authorizeProvider,
+    isProviderAuthorized,
   } = usePersonalContextStore();
-  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<PanelNotice | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<FetchServiceConfig | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<FetchProvider>(PROVIDER_ORDER[0]);
   /** 用户是否手动点过分类；为 true 后不再自动切换默认分类。 */
   const [userTouched, setUserTouched] = useState(false);
-  const pollRef = useRef<number | null>(null);
 
-  // 轮询同时刷新服务列表与运行态进度（fetch_service_states / fetch_run_progress），
-  // 否则任务页进度会停留在进页快照（见 ServicesPanel.refresh 旧实现只刷 loadServices）。
-  const refresh = useCallback(() => {
-    void loadServices().catch((e: unknown) => {
-      setError(e instanceof Error ? e.message : String(e));
-    });
-    void loadStatus().catch(() => {
-      // 进度刷新失败不阻断列表展示
-    });
-    // 同步飞书授权状态（设备流异步，后端需用户完成浏览器授权后才会变 authorized）
-    void loadAuthStatus('feishu').catch(() => {});
-  }, [loadServices, loadStatus, loadAuthStatus]);
-
+  // 5s 轮询：一次 RTT 拉齐 services + status + runHistories，合并成单次 set()
+  // 避免此前三路独立请求在不同时刻独立 set() 造成的三次级联重渲染与 UI 抖动。
   useEffect(() => {
     if (!isConnected || !isActive) return;
-    refresh();
-    pollRef.current = window.setInterval(refresh, POLL_INTERVAL_MS);
-    return () => {
-      if (pollRef.current != null) window.clearInterval(pollRef.current);
-      pollRef.current = null;
-    };
-  }, [isConnected, isActive, refresh]);
+    batchRefresh().catch(() => {});
+    // 授权态进页只读一次：github/gitcode 后端会真实校验 PAT（打外部 API），
+    // 飞书也只需进页同步一次（authorizing 态另有专用轮询），均不宜随 5s 轮询反复调用。
+    void loadAuthStatus('feishu').catch(() => {});
+    void loadAuthStatus('github').catch(() => {});
+    void loadAuthStatus('gitcode').catch(() => {});
+    const id = window.setInterval(() => batchRefresh().catch(() => {}), POLL_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [isConnected, isActive, batchRefresh, loadAuthStatus]);
 
   const services = config.fetch_services;
 
@@ -119,19 +138,19 @@ export function PersonalContextServicesPanel({
 
   const handleRun = useCallback(
     (serviceId: string) => {
-      setError(null);
+      setNotice(null);
       void runOne(serviceId)
-        .then(() => setError(t('personalContext.services.runSubmitted')))
-        .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+        .then(() => setNotice({ kind: 'success', key: 'personalContext.services.runSubmitted' }))
+        .catch((e: unknown) => setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) }));
     },
     [runOne, t],
   );
 
   const handleStop = useCallback(
     (serviceId: string) => {
-      setError(null);
+      setNotice(null);
       void stopRun(serviceId).catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
       });
     },
     [stopRun],
@@ -139,9 +158,9 @@ export function PersonalContextServicesPanel({
 
   const handleToggle = useCallback(
     (serviceId: string, enabled: boolean) => {
-      setError(null);
+      setNotice(null);
       void setServiceEnabled(serviceId, enabled).catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
       });
     },
     [setServiceEnabled],
@@ -149,7 +168,7 @@ export function PersonalContextServicesPanel({
 
   const handleDelete = useCallback(
     async (serviceId: string, state?: FetchServiceState) => {
-      setError(null);
+      setNotice(null);
       if (!window.confirm(t('personalContext.services.deleteConfirm'))) return;
       // 后端要求 STOPPED 才能删；非 STOPPED 先停（走 store 有 pending+乐观更新）
       try {
@@ -158,7 +177,11 @@ export function PersonalContextServicesPanel({
         }
         await deleteService(serviceId);
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        if (isFetchTaskRunningError(e)) {
+          toast.open({ content: t('personalContext.services.fetchTaskRunning'), variant: 'warning' });
+          return;
+        }
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
       }
     },
     [deleteService, setServiceEnabled, t],
@@ -166,17 +189,10 @@ export function PersonalContextServicesPanel({
 
   const openDrawer = useCallback(() => setDrawerOpen(true), []);
 
-  const handleAuthorize = useCallback((provider: FetchProvider) => {
-    if (provider !== 'feishu') return;
-    setError(null);
-    void authorizeProvider('feishu').then((result) => {
-      if (result?.verification_url) {
-        window.open(result.verification_url, '_blank', 'noopener,noreferrer');
-      }
-    }).catch((e: unknown) => {
-      setError(e instanceof Error ? e.message : String(e));
-    });
-  }, [authorizeProvider]);
+  // 未授权来源统一「去授权」跳转设置页：飞书走设置页 OAuth、GitHub/GitCode 走设置页 PAT 录入。
+  const handleGoAuthorize = useCallback(() => {
+    requestSettingsModule('personalContext');
+  }, []);
 
   const feishuState = authByProvider.feishu?.state;
 
@@ -189,9 +205,51 @@ export function PersonalContextServicesPanel({
 
   const categoryServices = services.filter((s) => s.provider === selectedProvider);
 
+  useEffect(() => {
+    if (notice?.kind !== 'success') return;
+    const timer = window.setTimeout(() => setNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   return (
     <div className="pc-services" data-testid="personal-context-services">
-      {error && <div className="pc-services__error" role="alert">{error}</div>}
+      {notice && (
+        <div
+          className={`pc-services__error${notice.kind === 'success' ? ' pc-services__notice--success' : ' pc-services__error--dismissible'}`}
+          role={notice.kind === 'success' ? 'status' : 'alert'}
+        >
+          {notice.kind === 'success' && (
+            <svg
+              className="pc-services__success-icon"
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="8" fill="#5CB300" />
+              <path
+                d="M4.5 8.2L6.9 10.6L11.5 5.6"
+                stroke="#FFFFFF"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+          <span>{notice.kind === 'success' ? t(notice.key) : notice.message}</span>
+          {notice.kind === 'error' && (
+            <button
+              type="button"
+              className="pc-services__error-close"
+              aria-label={t('common.close')}
+              onClick={() => setNotice(null)}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      )}
 
       {loadingServices && services.length === 0 ? (
         <div className="pc-services__loading"><Loader2 className="spin" size={20} /></div>
@@ -210,6 +268,7 @@ export function PersonalContextServicesPanel({
               onClick={openDrawer}
               disabled={!isConnected}
             >
+              <Plus size={16} />
               {t('personalContext.services.addContent')}
             </button>
           </div>
@@ -237,7 +296,7 @@ export function PersonalContextServicesPanel({
             {PROVIDER_ORDER.map((p) => {
               const count = services.filter((s) => s.provider === p).length;
               const active = p === selectedProvider;
-              const authorized = isProviderAuthorized(p, authByProvider);
+              const authorized = isProviderAuthorized(p);
               return (
                 <button
                   key={p}
@@ -245,14 +304,20 @@ export function PersonalContextServicesPanel({
                   className={`pc-services__cat${active ? ' is-active' : ''}${!authorized ? ' is-disabled' : ''}`}
                   onClick={() => { setSelectedProvider(p); setUserTouched(true); }}
                 >
-                  <span className="pc-services__cat-icon">
+                  <span className={'pc-services__cat-icon' + (p === 'gitcode' ? ' pc-services__cat-icon--gitcode' : '')}>
                     <img src={PROVIDER_ICON[p]} alt="" />
                   </span>
                   <span className="pc-services__cat-name">{t(PROVIDER_LABEL_KEYS[p])}</span>
                   {authorized ? (
                     <span className="pc-services__cat-count">{count}</span>
                   ) : (
-                    <button type="button" className="pc-services__cat-authorize" onClick={(e) => { e.stopPropagation(); handleAuthorize(p); }}>{t('personalContext.authorization.authorize')}</button>
+                    <span
+                      role="button"
+                      className="pc-services__cat-authorize"
+                      onClick={(e) => { e.stopPropagation(); handleGoAuthorize(); }}
+                    >
+                      {t('personalContext.authorization.goAuthorize')}
+                    </span>
                   )}
                 </button>
               );
@@ -263,20 +328,21 @@ export function PersonalContextServicesPanel({
           <section className="pc-services__list">
             <div className="pc-services__list-head">
               <div className="pc-services__list-head-left">
-                <span className="pc-services__list-icon">
+                <span className={'pc-services__list-icon' + (selectedProvider === 'gitcode' ? ' pc-services__list-icon--gitcode' : '')}>
                   <img src={PROVIDER_ICON[selectedProvider]} alt="" />
                 </span>
                 <h3 className="pc-services__list-title">{t(PROVIDER_LABEL_KEYS[selectedProvider])}</h3>
               </div>
-              <button
-                type="button"
-                className="pc-services__collect-all"
-                onClick={() => categoryServices.forEach((s) => handleRun(s.service_id))}
-                disabled={!isConnected || categoryServices.length === 0}
-              >
-                <PlayCircle size={16} />
-                {t('personalContext.services.collectAll')}
-              </button>
+              {false && <button
+                  type="button"
+                  className="pc-services__collect-all"
+                  onClick={() => categoryServices.forEach((s) => handleRun(s.service_id))}
+                  disabled={!isConnected || categoryServices.length === 0}
+                >
+                  <PlayCircle size={16} />
+                  {t('personalContext.services.collectAll')}
+                </button>
+              }
             </div>
 
             {categoryServices.length === 0 ? (
@@ -291,6 +357,7 @@ export function PersonalContextServicesPanel({
                   onClick={openDrawer}
                   disabled={!isConnected}
                 >
+                  <Plus size={16} />
                   {t('personalContext.services.addContent')}
                 </button>
               </div>
@@ -303,12 +370,14 @@ export function PersonalContextServicesPanel({
                     state={status?.fetch_service_states[s.service_id] ?? 'STOPPED'}
                     lastError={status?.fetch_service_errors[s.service_id] ?? null}
                     progress={status?.fetch_run_progress[s.service_id]}
+                    lastRun={latestFetchRun(runHistories[s.service_id])}
                     pending={
                       !!pendingWrites[`svc:${s.service_id}`] ||
                       !!pendingWrites[`run:${s.service_id}`] ||
                       !!pendingWrites[`stop:${s.service_id}`] ||
                       !!pendingWrites[`del:${s.service_id}`]
                     }
+                    stopping={!!pendingWrites[`stop:${s.service_id}`]}
                     onRun={handleRun}
                     onStop={handleStop}
                     onToggle={handleToggle}
@@ -332,10 +401,10 @@ export function PersonalContextServicesPanel({
       )}
 
       {editing && (
-        <ServiceEditModal
-          service={editing}
+        <AddContentDrawer
+          editService={editing}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); refresh(); }}
+          onCreated={() => { setEditing(null); batchRefresh().catch(() => {}); }}
         />
       )}
     </div>
@@ -374,6 +443,7 @@ const STATUS_RING_COLORS: Record<string, string> = {
   stateCompleted: '#5CB300',
   stateFailed: '#F23030',
   stateCollecting: '#5CB300',
+  stateStopping: '#808080',
 };
 
 function StatusIcon({ statusKey }: { statusKey: string }) {
@@ -400,7 +470,9 @@ function ServiceCard({
   state,
   lastError,
   progress,
+  lastRun,
   pending,
+  stopping,
   onRun,
   onStop,
   onToggle,
@@ -411,7 +483,9 @@ function ServiceCard({
   state: FetchServiceState;
   lastError: string | null;
   progress?: FetchRunProgress;
+  lastRun?: FetchRunRecord | null;
   pending: boolean;
+  stopping: boolean;
   onRun: (id: string) => void;
   onStop: (id: string) => void;
   onToggle: (id: string, enabled: boolean) => void;
@@ -421,25 +495,32 @@ function ServiceCard({
   const { t } = useTranslation();
   const runState = progress?.run_state;
   const serviceRunning = state === 'STARTING' || state === 'RUNNING' || state === 'STOPPING';
+  // 采集运行态：run_state 有值时以小写进度态为准；快照尚未带进度时回退到大写服务态。
+  // running / stopping 都算"采集中"，保证采集期间进度条与「停止采集」按钮持续可见。
   const isCollecting = runState != null
-    ? runState === 'running'
-    : serviceRunning && state !== 'RUNNING';
+    ? runState === 'running' || runState === 'stopping'
+    : serviceRunning;
   const isFailed = runState != null
     ? runState === 'failed'
     : state === 'FAILED' || (!!lastError && state === 'STOPPED');
 
-  const statusKey = isCollecting
-    ? 'stateCollecting'
-    : isFailed
-      ? 'stateFailed'
-      : runState === 'succeeded'
-        ? 'stateCompleted'
-        : !service.enabled
-          ? 'stateStopped'
-          : 'stateWaiting';
+  const isStopping = state === 'STOPPING' || stopping || runState === 'stopping';
+
+  const statusKey = isStopping
+    ? 'stateStopping'
+    : isCollecting
+      ? 'stateCollecting'
+      : isFailed
+        ? 'stateFailed'
+        : runState === 'succeeded'
+          ? 'stateCompleted'
+          : !service.enabled
+            ? 'stateStopped'
+            : 'stateWaiting';
 
   const percent = progress?.progress_percent;
-  const hasProgress = isCollecting && typeof percent === 'number' && percent > 0;
+  // 采集中即展示进度条（含 0%），避免后端尚未上报总量时进度条消失，让用户看到"采集中"进度占位。
+  const hasProgress = isCollecting && typeof percent === 'number';
 
   const interval = service.interval_seconds;
   const isHour = interval % FREQUENCY_SECONDS.hour === 0;
@@ -449,6 +530,15 @@ function ServiceCard({
     : isHour
       ? t('personalContext.services.intervalHour', { n: Math.floor(interval / FREQUENCY_SECONDS.hour) })
       : `${interval}s`;
+  const lastRunText = formatRunTimestamp(lastRun?.finished_at ?? lastRun?.started_at);
+  const lastRunTitle = lastRun
+    ? [
+      `${t('personalContext.services.startedAt')} ${formatRunTimestamp(lastRun.started_at)}`,
+      lastRun.finished_at
+        ? `${t('personalContext.services.finishedAt')} ${formatRunTimestamp(lastRun.finished_at)}`
+        : null,
+    ].filter(Boolean).join(' · ')
+    : undefined;
 
   return (
     <div className="pc-services__card">
@@ -456,9 +546,23 @@ function ServiceCard({
         {service.service_id}
       </div>
       <div className="pc-services__card-body">
-        {/* 左：采样周期 */}
-        <div className="pc-services__card-freq">
-          {freqText}
+        {/* 左：采样周期 + 上次采集时间 */}
+        <div className="pc-services__card-schedule">
+          <div className="pc-services__card-freq">
+            {freqText}
+          </div>
+          <span
+            className="pc-services__card-schedule-divider"
+            aria-hidden={!lastRun || !lastRunText}
+            style={{ visibility: !lastRun || !lastRunText ? 'hidden' : 'visible' }}
+          />
+          <div
+            className={`pc-services__card-last-run${!lastRun || !lastRunText ? ' pc-services__card-last-run--empty' : ''}`}
+            title={lastRun && lastRunText ? lastRunTitle : undefined}
+          >
+            <span>{t('personalContext.services.lastRun')}</span>
+            <span>{lastRunText || ''}</span>
+          </div>
         </div>
 
         {/* 中：采集状态 */}
@@ -514,102 +618,6 @@ function ServiceCard({
             disabled={pending}
             title={service.enabled ? t('personalContext.services.autoOffHint') : t('personalContext.services.autoOnHint')}
           />
-        </div>
-      </div>
-    </div>
-  );
-}
-function ServiceEditModal({
-  service,
-  onClose,
-  onSaved,
-}: {
-  service: FetchServiceConfig;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const { t } = useTranslation();
-  const [intervalSeconds, setIntervalSeconds] = useState(service.interval_seconds);
-  const [maxItems, setMaxItems] = useState<number | null>(service.max_items_per_run);
-  const [sourceJson, setSourceJson] = useState(JSON.stringify(service.source, null, 2));
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const handleSave = async () => {
-    setError(null);
-    if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0 || intervalSeconds > 31536000) {
-      setError(t('personalContext.services.intervalRangeError'));
-      return;
-    }
-    let source = service.source;
-    if (sourceJson.trim()) {
-      try {
-        source = JSON.parse(sourceJson);
-        if (!source || typeof source !== 'object' || Array.isArray(source)) {
-          setError(t('personalContext.services.sourceJsonObjectError'));
-          return;
-        }
-      } catch {
-        setError(t('personalContext.services.sourceJsonInvalidError'));
-        return;
-      }
-    }
-    setSaving(true);
-    try {
-      await pcApi.patchService(service.service_id, {
-        interval_seconds: intervalSeconds,
-        max_items_per_run: maxItems,
-        source,
-      });
-      onSaved();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="pc-services__modal-overlay" onClick={onClose}>
-      <div className="pc-services__modal" onClick={(e) => e.stopPropagation()}>
-        <h3 className="pc-services__modal-title">
-          {t('personalContext.services.actionEdit')} — {service.service_id}
-        </h3>
-        <div className="pc-services__field">
-          <label>{t('personalContext.services.intervalSeconds')}</label>
-          <input
-            type="number"
-            className="pc-services__input"
-            value={intervalSeconds}
-            onChange={(e) => setIntervalSeconds(Number(e.target.value))}
-          />
-        </div>
-        <div className="pc-services__field">
-          <label>{t('personalContext.services.maxItems')}</label>
-          <input
-            type="number"
-            className="pc-services__input"
-            value={maxItems ?? ''}
-            onChange={(e) => setMaxItems(e.target.value ? Number(e.target.value) : null)}
-          />
-        </div>
-        <div className="pc-services__field">
-          <label>source (JSON)</label>
-          <textarea
-            className="pc-services__textarea"
-            rows={4}
-            value={sourceJson}
-            onChange={(e) => setSourceJson(e.target.value)}
-          />
-        </div>
-        {error && <div className="pc-services__error">{error}</div>}
-        <div className="pc-services__modal-actions">
-          <button type="button" className="btn" onClick={onClose} disabled={saving}>
-            {t('personalContext.services.cancel')}
-          </button>
-          <button type="button" className="btn primary" onClick={handleSave} disabled={saving}>
-            {saving ? <Loader2 className="spin" size={14} /> : t('personalContext.services.save')}
-          </button>
         </div>
       </div>
     </div>

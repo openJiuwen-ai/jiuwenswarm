@@ -12,11 +12,12 @@ from typing import Any, cast
 
 import pytest
 
-from jiuwenswarm.runtime import (
+from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
     RuntimeSessionProvisioner,
     SessionCreateInput,
     SessionCreateResult,
+    SessionDescriptor,
     SessionForkInput,
     SessionForkResult,
     SessionProvisionCommitContext,
@@ -104,13 +105,14 @@ async def _commit(
 def test_session_provision_contract_cold_import_has_no_transport_modules() -> None:
     script = """
 import sys
-from jiuwenswarm.runtime import (
+from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
     SessionProvisionCommitContext,
     SessionProvisionCommitTiming,
     SessionProvisionerContract,
     SessionCreateInput,
     SessionCreateResult,
+    SessionDescriptor,
     SessionForkInput,
     SessionForkResult,
     SessionProvisionState,
@@ -122,6 +124,7 @@ assert PreparedSessionProvision
 assert SessionProvisionCommitContext and SessionProvisionCommitTiming
 assert SessionProvisionerContract
 assert SessionCreateInput and SessionCreateResult
+assert SessionDescriptor
 assert SessionSwitchInput and SessionSwitchResult
 assert SessionForkInput and SessionForkResult
 assert SessionProvisionState
@@ -194,6 +197,14 @@ def test_inputs_and_results_are_frozen_transport_neutral_domain_values() -> None
         canonical_mode="code.normal",
         explicit_id_compatibility=True,
     )
+    descriptor = SessionDescriptor(
+        session_id="external-session",
+        channel_id="process_cli",
+        mode="agent.code.normal",
+        work_mode="code",
+        project_id="project-id",
+        project_dir="D:/project",
+    )
     switch_result = SessionSwitchResult(
         channel_id="web",
         session_id="target-session",
@@ -206,6 +217,7 @@ def test_inputs_and_results_are_frozen_transport_neutral_domain_values() -> None
         switch_input,
         fork_input,
         create_result,
+        descriptor,
         switch_result,
         fork_result,
     )

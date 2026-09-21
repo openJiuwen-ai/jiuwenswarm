@@ -31,6 +31,9 @@ export type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, 'onChange' 
   clearLabel?: string;
   onClear?: () => void;
 
+  showCounter?: boolean;
+  counterTestId?: string;
+
   size?: 'small' | 'middle';
   rootClassName?: string;
 
@@ -69,6 +72,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
     onClear,
     disabled,
     readOnly,
+    showCounter,
+    counterTestId,
+    maxLength,
     ...props
   },
   ref,
@@ -85,8 +91,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   const allowClearEnabled = Boolean(allowClear);
   const clearIcon = typeof allowClear === 'object' ? allowClear.clearIcon : undefined;
   const needsAffix = Boolean(prefix) || Boolean(suffix) || allowClearEnabled || canToggle;
-  const showClear =
-    allowClearEnabled && String(mergedValue ?? '').length > 0 && !disabled && !readOnly;
+  const showClear = allowClearEnabled && String(mergedValue ?? '').length > 0 && !disabled && !readOnly;
   const inputId = id ?? generatedId;
   const sizeClass = size === 'small' ? ' ui-input--small' : '';
 
@@ -165,6 +170,19 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
     needsAffix ? ' ui-input--affixed' : ''
   }${sizeClass}${allowClearEnabled ? ' ui-input--allow-clear' : ''}${className ? ` ${className}` : ''}`;
 
+  const showCounterElement = showCounter && maxLength !== undefined;
+  const valueLength = String(mergedValue ?? '').length;
+  const counterElement = showCounterElement ? (
+    <span
+      aria-hidden="true"
+      className={`ui-input-counter${valueLength >= maxLength ? ' is-limit' : ''}`}
+      data-testid={counterTestId}
+    >
+      {valueLength}
+      <span className="ui-input-counter-separator">/{maxLength}</span>
+    </span>
+  ) : null;
+
   if (!needsAffix) {
     return (
       <span className={`ui-input-wrap${rootClassName ? ` ${rootClassName}` : ''}`}>
@@ -177,14 +195,16 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           readOnly={readOnly}
           min={min}
           max={max}
+          maxLength={maxLength}
           aria-invalid={invalid || undefined}
-          className={`ui-input${invalid ? ' ui-input--invalid' : ''}${sizeClass}${
+          className={`ui-input${invalid ? ' ui-input--invalid' : ''}${sizeClass}${showCounterElement ? ' ui-input--with-counter' : ''}${
             className ? ` ${className}` : ''
           }`}
           {...(isControlled ? { value: mergedValue } : { defaultValue })}
           onChange={handleChange}
           onBlur={handleBlur}
         />
+        {counterElement}
       </span>
     );
   }
@@ -209,6 +229,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
         readOnly={readOnly}
         min={min}
         max={max}
+        maxLength={maxLength}
         value={mergedValue ?? ''}
         aria-invalid={invalid || undefined}
         className={inputClassName}
@@ -222,6 +243,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           {visibilityButton}
         </span>
       ) : null}
+      {counterElement}
     </span>
   );
 });

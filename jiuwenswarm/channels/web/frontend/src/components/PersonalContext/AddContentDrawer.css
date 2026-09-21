@@ -78,6 +78,15 @@
   flex-shrink: 0;
 }
 
+/* 提交条件未满足时的说明，靠左显示、与按钮同一行 */
+.pc-drawer__foot-hint {
+  margin-right: auto;
+  align-self: center;
+  font-size: 12px;
+  line-height: 18px;
+  color: #8a8f99;
+}
+
 /* 表单字段 */
 .pc-drawer__field {
   display: flex;
@@ -307,7 +316,7 @@
 }
 
 .pc-drawer__provider-card--disabled {
-  cursor: not-allowed;
+  cursor: pointer;
   opacity: 0.7;
 }
 
@@ -328,6 +337,15 @@
   width: 32px;
   height: 32px;
   display: block;
+}
+
+/* GitCode 彩色方形 logo 四周留白，避免贴边（与其他 SVG 图标的全幅占满区分）。 */
+.pc-drawer__provider-icon--gitcode img {
+  width: 100%;
+  height: 100%;
+  padding: 6px;
+  box-sizing: border-box;
+  object-fit: contain;
 }
 
 .pc-drawer__provider-name {
@@ -353,6 +371,28 @@
 
 .pc-drawer__provider-authorize:hover {
   text-decoration: underline;
+}
+
+/* 编辑模式：名称/来源锁定只读展示 */
+.pc-drawer__locked {
+  padding: 6px 10px;
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  background: #fafafa;
+  color: #595959;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.pc-drawer__provider-locked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  background: #fafafa;
 }
 
 /* 高级配置折叠 */
@@ -1077,4 +1117,31 @@
 
 .pc-cal__field-input:focus {
   border-color: #1476ff;
+}
+.pc-drawer__path-input {
+  position: relative;
+}
+.pc-drawer__path-input .pc-drawer__input {
+  padding-right: 36px;
+}
+.pc-drawer__path-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0;
+  transition: color 0.12s ease;
+}
+.pc-drawer__path-btn:hover {
+  color: #1476ff;
 }

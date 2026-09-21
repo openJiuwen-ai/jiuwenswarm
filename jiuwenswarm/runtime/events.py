@@ -20,6 +20,7 @@ class RuntimeEvent:
     metadata: dict[str, Any] | None = None
     is_complete: bool = False
     ok: bool = True
+    runtime_completion: str | None = None
 
     @property
     def event_type(self) -> str:
@@ -28,7 +29,10 @@ class RuntimeEvent:
         return str(self.payload.get("event_type") or "")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        # Execution-only state must not change existing JSON/wire renderers.
+        value.pop("runtime_completion", None)
+        return value
 
     @classmethod
     def from_agent_message(
@@ -68,6 +72,7 @@ class RuntimeEvent:
             ),
             is_complete=bool(getattr(message, "is_complete", default_complete)),
             ok=bool(getattr(message, "ok", True)),
+            runtime_completion=getattr(message, "runtime_completion", None),
         )
 
     @classmethod
@@ -107,4 +112,24 @@ class RuntimeEvent:
         )
 
 
-__all__ = ["RuntimeEvent"]
+# Terminal error event types: a model/agent/runtime failure surfaced as a
+# stream event rather than a raised exception. Such events can arrive with
+# ``ok=True`` because ``RuntimeEvent.from_agent_message`` defaults ``ok`` to
+# True, so consumers must inspect ``event_type`` in addition to ``event.ok``.
+# Relying on ``event.ok`` alone misclassifies failed runs as succeeded (the
+# bug behind 心跳任务 showing 「上次运行成功」 while every model call failed).
+# Shared so every consumer -- AgentServer heartbeat/session-message executors,
+# cron scheduler, runtime turn confirmation -- agrees on the set, and adding a
+# new terminal error type is a one-place change.
+TERMINAL_ERROR_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "chat.error",
+        "runtime.error",
+        "execution.error",
+        "team.error",
+        "error",
+    }
+)
+
+
+__all__ = ["RuntimeEvent", "TERMINAL_ERROR_EVENT_TYPES"]

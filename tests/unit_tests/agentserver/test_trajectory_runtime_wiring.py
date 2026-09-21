@@ -59,6 +59,114 @@ def test_agent_evolution_enables_observability_without_manual_switch(monkeypatch
     assert agent_observability._agent_observability_active is True
 
 
+def test_agent_symphony_capture_enables_observability_without_manual_switch(
+    monkeypatch,
+):
+    acquired = []
+    monkeypatch.setattr(
+        agent_observability,
+        "get_config",
+        lambda: {
+            "react": {"evolution": {"skill_evolution": False}},
+            "agent_observability": {"enabled": False},
+            "symphony": {"enabled": True, "evolution": {"enabled": True}},
+        },
+    )
+    monkeypatch.setattr(
+        agent_observability,
+        "acquire_observability",
+        lambda config: acquired.append(config) or False,
+    )
+
+    agent_observability.sync_agent_observability()
+
+    assert len(acquired) == 1
+    assert agent_observability._agent_observability_active is True
+
+
+def test_agent_ttse_enables_observability_without_manual_switch(monkeypatch):
+    """TTSERail needs LLM/tool spans; react.ttse.enabled must pull OTel up."""
+    acquired = []
+    monkeypatch.setattr(
+        agent_observability,
+        "get_config",
+        lambda: {
+            "react": {
+                "evolution": {"skill_evolution": False},
+                "ttse": {"enabled": True},
+            },
+            "agent_observability": {"enabled": False},
+        },
+    )
+    monkeypatch.setattr(
+        agent_observability,
+        "acquire_observability",
+        lambda config: acquired.append(config) or False,
+    )
+
+    agent_observability.sync_agent_observability()
+
+    assert len(acquired) == 1
+    assert agent_observability._agent_observability_active is True
+
+
+def test_agent_ttse_disabled_does_not_enable_observability_alone(monkeypatch):
+    shutdown_calls = []
+    monkeypatch.setattr(
+        agent_observability,
+        "get_config",
+        lambda: {
+            "react": {
+                "evolution": {"skill_evolution": False},
+                "ttse": {"enabled": False},
+            },
+            "agent_observability": {"enabled": False},
+        },
+    )
+    monkeypatch.setattr(
+        agent_observability,
+        "acquire_observability",
+        lambda config: (_ for _ in ()).throw(AssertionError("should not acquire")),
+    )
+
+    def _fake_shutdown() -> None:
+        shutdown_calls.append(True)
+        agent_observability._agent_observability_active = False
+
+    monkeypatch.setattr(agent_observability, "shutdown_agent_observability", _fake_shutdown)
+    agent_observability._agent_observability_active = True
+
+    agent_observability.sync_agent_observability()
+
+    assert shutdown_calls == [True]
+    assert agent_observability._agent_observability_active is False
+
+
+def test_team_symphony_capture_enables_observability_without_manual_switch(
+    monkeypatch,
+):
+    acquired = []
+    monkeypatch.setattr(
+        team_manager,
+        "get_config",
+        lambda: {
+            "react": {"evolution": {"skill_evolution": False}},
+            "team_observability": {"enabled": False},
+            "symphony": {"enabled": True, "evolution": {"enabled": True}},
+        },
+    )
+    monkeypatch.setattr(
+        team_manager.team_observability,
+        "acquire_observability",
+        lambda config: acquired.append(config) or False,
+    )
+
+    team_manager.sync_team_observability()
+
+    assert len(acquired) == 1
+    assert team_manager._observability_active is True
+
+
 def test_team_evolution_enables_observability_without_manual_switch(monkeypatch):
     acquired = []
     monkeypatch.setattr(

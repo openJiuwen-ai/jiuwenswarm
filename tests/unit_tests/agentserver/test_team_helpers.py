@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 
 from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
@@ -422,7 +423,9 @@ class _InactiveTeamRuntimeManagerMixin:
         pass
 
     @staticmethod
-    def broadcast_event(session_id: str, event: dict) -> None:
+    def broadcast_event(
+        session_id: str, event: dict, *, channel_id: str | None = None
+    ) -> None:
         pass
 
     def begin_round(
@@ -1819,13 +1822,19 @@ async def test_handle_team_slash_command_allows_evolve_rollback(monkeypatch, tmp
 
 
 @pytest.mark.anyio
-async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch, tmp_path):
+async def test_process_team_message_stream_forwards_project_dir_and_handles_team_evolve_list(
+    monkeypatch,
+    tmp_path,
+):
     _write_team_skill(
         tmp_path,
         "demo-skill",
         records=[_evolution_record("First summary line")],
     )
     captured_spec: list[object] = []
+    captured_build_kwargs: list[dict[str, Any]] = []
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
@@ -1834,6 +1843,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
 
         @staticmethod
         async def get_swarm_enriched_team_spec(**kwargs):
+            captured_build_kwargs.append(kwargs)
             spec = SimpleNamespace(
                 team_name="unit-team",
                 workspace=SimpleNamespace(root_path=str(tmp_path / "team-workspace")),
@@ -1841,21 +1851,27 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
             captured_spec.append(spec)
             return spec
 
-    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers, "get_team_manager", lambda channel_id: _FakeManager()
+    )
 
     request = SimpleNamespace(
         session_id="sess-team-stream",
         request_id="req-team-stream",
         channel_id="web",
         metadata=None,
+        params={"mode": "team", "project_dir": str(project_dir)},
     )
-    inputs = {"query": "/evolve_list demo-skill"}
+    inputs = {
+        "query": "/evolve_list demo-skill",
+        "project_dir": str(project_dir),
+    }
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-            request,
-            inputs,
-            object(),
+        request,
+        inputs,
+        object(),
     ):
         chunks.append(chunk)
 
@@ -1872,6 +1888,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
     assert chunks[1].is_complete is False
     assert chunks[2].is_complete is True
     assert captured_spec
+    assert captured_build_kwargs[0]["project_dir"] == str(project_dir)
 
 
 @pytest.mark.anyio
@@ -2675,12 +2692,19 @@ async def test_process_team_message_stream_rejects_agent_group_with_skills(
         )
     ]
 
-    assert len(chunks) == 2
+    assert len(chunks) == 3
     assert chunks[0].payload == {
         "event_type": "chat.error",
         "error": "skills cannot be selected when an agent_group_name is selected or bound",
     }
     assert chunks[0].is_complete is False
+    assert chunks[1].payload == {
+        "event_type": "chat.processing_status",
+        "session_id": "sess-group-skill-conflict",
+        "is_processing": False,
+        "is_complete": True,
+    }
+    assert chunks[1].is_complete is False
     assert chunks[-1].is_complete is True
     manager.get_swarm_enriched_team_spec.assert_not_awaited()
     manager.interact.assert_not_awaited()
@@ -2688,6 +2712,57 @@ async def test_process_team_message_stream_rejects_agent_group_with_skills(
     start_round.assert_not_awaited()
     persist_metadata.assert_not_called()
     persist_roots.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_stops_when_team_assembly_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _AgentGroupMissingError(ValueError):
+        code = "AGENT_GROUP_NOT_INSTALLED"
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        get_swarm_enriched_team_spec = AsyncMock(
+            side_effect=_AgentGroupMissingError(
+                "agent_group package not installed: deleted-group"
+            )
+        )
+
+    manager = _FakeManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel_id: manager)
+
+    request = SimpleNamespace(
+        session_id="sess-deleted-group",
+        request_id="req-deleted-group",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team"},
+        user_id="owner",
+    )
+    chunks = [
+        chunk
+        async for chunk in team_helpers.process_team_message_stream(
+            request,
+            {"query": "continue"},
+            object(),
+        )
+    ]
+
+    assert [chunk.payload for chunk in chunks] == [
+        {
+            "event_type": "chat.error",
+            "error": "agent_group package not installed: deleted-group",
+            "code": "AGENT_GROUP_NOT_INSTALLED",
+        },
+        {
+            "event_type": "chat.processing_status",
+            "session_id": "sess-deleted-group",
+            "is_processing": False,
+            "is_complete": True,
+        },
+        None,
+    ]
+    assert [chunk.is_complete for chunk in chunks] == [False, False, True]
 
 
 @pytest.mark.anyio
@@ -5289,6 +5364,10 @@ async def test_consume_workflow_events_broadcasts_raw_for_tui(monkeypatch):
 
     class _FakeWorkflowHandler:
         is_running = True
+        # The consumer owns the emission contract and reads these cross-class.
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
 
         async def events(self):
             yield event
@@ -5329,6 +5408,10 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
 
     class _FakeWorkflowHandler:
         is_running = True
+        # The consumer owns the emission contract and reads these cross-class.
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
 
         async def events(self):
             yield event
@@ -5352,6 +5435,82 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
 
 
 @pytest.mark.anyio
+async def test_consume_workflow_events_dedup_survives_consumer_restart(monkeypatch):
+    """A resume relaunch replays the whole event history (cached prefix):
+    every already-completed phase's agents re-emit started+completed. The
+    dedup state must live on the handler (session-scoped) — the consumer
+    loop is cancelled on team pause and restarted on wake, and a fresh
+    loop re-emitted the replayed events, double-counting finished work on
+    the task board.
+    """
+    from jiuwenswarm.agents.harness.team.handlers.workflow_monitor_handler import (
+        WorkflowMonitorHandler,
+    )
+
+    broadcasted: list[dict[str, object]] = []
+    replay = {
+        "event_type": "workflow.updated", "session_id": "s",
+        "workflow": {"id": "r", "status": "running", "phases": [{
+            "id": "p1", "name": "p1", "status": "completed",
+            "agents": [{"id": "a1", "name": "w", "status": "completed"}],
+        }]},
+    }
+    live = {
+        "event_type": "workflow.updated", "session_id": "s",
+        "workflow": {"id": "r", "status": "running", "phases": [{
+            "id": "p2", "name": "p2", "status": "running",
+            "agents": [{"id": "a2", "name": "w", "status": "running"}],
+        }]},
+    }
+
+    class _Handler(WorkflowMonitorHandler):
+        def __init__(self):
+            # Bypass the real __init__ (it needs a TeamMonitor); keep the
+            # session-scoped dedup state the consumer reads.
+            self._runs = {}
+            self.seen_phase = {}
+            self.seen_agent = {}
+            self.spawned_members = set()
+
+        is_running = True
+
+        async def events(self):
+            yield replay
+
+    # First consumer pass sees the phase-1 events (counts them), then the
+    # team pauses: the loop is cancelled, its local dedup dies.
+    class _TM:
+        def pop_held_idle(self, sid):
+            return None
+
+    handler = _Handler()
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda cid: _TM())
+    await _TeamHelpersTestApi.consume_workflow_events("web", "s", handler)
+
+    first_pass = [e for e in broadcasted if e.get("event_type") == "team.task"]
+    assert any(e["event"]["task_id"].endswith("p1") for e in first_pass)
+
+    # Second consumer pass (after wake): the engine replays the SAME phase-1
+    # events plus the genuinely new phase-2 agent.
+    async def events2():
+        yield replay
+        yield live
+
+    handler.events = events2
+    broadcasted.clear()  # second_pass must only see what THIS pass emits
+    await _TeamHelpersTestApi.consume_workflow_events("web", "s", handler)
+
+    second_pass = [e for e in broadcasted if e.get("event_type") == "team.task"]
+    p1_events = [e for e in second_pass if e["event"]["task_id"].endswith("p1")]
+    p2_events = [e for e in second_pass if e["event"]["task_id"].endswith("p2")]
+    # replayed phase-1 events are deduped (no new claimed/completed);
+    # the new phase-2 agent is announced.
+    assert p1_events == []
+    assert any(e["event"]["type"] == "team.task.claimed" for e in p2_events)
+
+
+@pytest.mark.anyio
 async def test_consume_workflow_events_releases_held_idle_when_last_run_leaves_active(monkeypatch):
     """team.idle is a one-shot marker. When the idle guard swallows it because
     a run is active, and a tree-view pause/stop later drains the active set
@@ -5367,6 +5526,9 @@ async def test_consume_workflow_events_releases_held_idle_when_last_run_leaves_a
 
     class _Handler:
         is_running = True
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
         async def events(self):
             yield event
         def get_run_states(self):
@@ -5413,6 +5575,9 @@ async def test_consume_workflow_events_keeps_held_idle_on_natural_completion(mon
 
     class _Handler:
         is_running = True
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
         async def events(self):
             for e in events:
                 yield e
@@ -5451,6 +5616,9 @@ async def test_consume_workflow_events_keeps_held_idle_while_a_run_is_active(mon
 
     class _Handler:
         is_running = True
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
         async def events(self):
             yield event
         def get_run_states(self):
@@ -5741,7 +5909,7 @@ async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(m
 
 @pytest.mark.anyio
 async def test_announce_team_roster_broadcasts_created_members_once(monkeypatch):
-    """Created-but-unstarted members are announced, and only once per stream."""
+    """Active roster members are announced once while shutdown members stay hidden."""
     broadcast_events: list[dict] = []
 
     class _FakeMonitorHandler:
@@ -5763,6 +5931,14 @@ async def test_announce_team_roster_broadcasts_created_members_once(monkeypatch)
                     "execution_status": "idle",
                     "mode": "build_mode",
                     "role": "human_agent",
+                },
+                {
+                    "member_id": "retired-member",
+                    "name": "Retired member",
+                    "status": MemberStatus.SHUTDOWN.value,
+                    "execution_status": "idle",
+                    "mode": "build_mode",
+                    "role": "teammate",
                 },
             ]
 
@@ -6843,3 +7019,18 @@ def test_inject_swarmflow_context_explicit_request_acts_else_asks() -> None:
         # every listed run carries a stop call so "停止" is actionable
         assert 'swarmflow(resume_id="r1", action="stop")' in text
         assert 'swarmflow(resume_id="r2", action="stop")' in text
+
+
+def test_team_tool_result_truncation_covers_rendered_result():
+    limit = team_helpers._TEAM_TOOL_RESULT_TEXT_LIMIT
+    event = {
+        "event_type": "chat.tool_result",
+        "result": "r" * 10,
+        "rendered_result": "x" * (limit + 5),
+    }
+
+    trimmed = team_helpers._truncate_team_tool_result_event(event)
+
+    assert trimmed["rendered_result"] == "x" * limit
+    assert trimmed["result"] == "r" * 10
+    assert trimmed["truncated"] is True
