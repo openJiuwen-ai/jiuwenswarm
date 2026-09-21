@@ -46,6 +46,9 @@ def _env_int(name: str, default: int) -> int:
 
 
 _CONNECT_TIMEOUT_SECONDS = 10.0
+# 流式响应读超时（秒）：连续该时长无字节视为半开/卡死连接，主动断开，避免
+# AgentServer 无响应时网关协程与连接无限期挂起（原 read=None 即无超时）。
+_STREAM_READ_TIMEOUT = 600.0
 _PUSH_RETRY_SECONDS = 3.0
 # 企业按 Pod 订阅：连续 TCP 失败才停，避免活 Pod 闪断被立刻 drop。
 _PUSH_MAX_CONNECT_FAILURES = 3
@@ -461,7 +464,7 @@ class HttpSseAgentServerClient(AgentServerClient):
             self._supersede_other_streams(rid, scope)
             if rid:
                 self._inflight_stream_ids[rid] = scope
-        timeout = httpx.Timeout(None, connect=_CONNECT_TIMEOUT_SECONDS)
+        timeout = httpx.Timeout(_STREAM_READ_TIMEOUT, connect=_CONNECT_TIMEOUT_SECONDS)
         try:
             async with http.stream(
                 assembled.verb,
@@ -526,7 +529,7 @@ class HttpSseAgentServerClient(AgentServerClient):
             url = f"{api_root}/events/stream"
             try:
                 http = self._ensure_http()
-                timeout = httpx.Timeout(None, connect=_CONNECT_TIMEOUT_SECONDS)
+                timeout = httpx.Timeout(_STREAM_READ_TIMEOUT, connect=_CONNECT_TIMEOUT_SECONDS)
                 async with http.stream(
                     "GET",
                     url,

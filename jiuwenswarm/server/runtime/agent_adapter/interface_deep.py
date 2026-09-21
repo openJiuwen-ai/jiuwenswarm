@@ -11940,7 +11940,7 @@ class JiuWenSwarmDeepAdapter:
             session_id: Session the current turn belongs to. Heartbeat and cron
                 sessions drive the scheduler themselves and get no cron tools.
         """
-        if session_id is not None and session_id.startswith(("heartbeat", "cron")):
+        if session_id is not None and session_id.startswith(("heartbeat", "cron", "diagnosis")):
             return
         if os.getenv("JIUWENCLAW_DISABLE_CRON_TOOLS") == "1":
             for existing in list(self._instance.ability_manager.list() or []):

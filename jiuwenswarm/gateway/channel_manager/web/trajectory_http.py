@@ -118,7 +118,7 @@ class TrajectoryHttpService:
     ) -> Response:
         """Build the paginated trace-list response for one single-Agent session."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = self.validate_access(session_id, settings)
         if error is not None:
             return error
         if not 1 <= limit <= 100:
@@ -163,7 +163,7 @@ class TrajectoryHttpService:
     async def export_archive(self, session_id: str) -> Response:
         """Export a stable archive of every current record in one session."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = self.validate_access(session_id, settings)
         if error is not None:
             return error
         try:
@@ -202,7 +202,7 @@ class TrajectoryHttpService:
     async def get_session_usage(self, session_id: str) -> Response:
         """Return session-complete request usage partitioned by execution subject."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = self.validate_access(session_id, settings)
         if error is not None:
             return error
         try:
@@ -236,7 +236,7 @@ class TrajectoryHttpService:
     ) -> Response:
         """Build one stable page of trace summaries changed since a cursor."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = self.validate_access(session_id, settings)
         if error is not None:
             return error
         if not 1 <= limit <= 100:
@@ -303,7 +303,7 @@ class TrajectoryHttpService:
     ) -> Response:
         """Build a complete or incremental trace-detail response."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = self.validate_access(session_id, settings)
         if error is not None:
             return error
         normalized_trace_id = str(trace_id or "").strip().lower()
@@ -357,7 +357,7 @@ class TrajectoryHttpService:
     ) -> Response:
         """Return the exact stored OTLP bytes for one session-owned span."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = self.validate_access(session_id, settings)
         if error is not None:
             return error
         normalized_trace_id = str(trace_id or "").strip().lower()
@@ -395,7 +395,7 @@ class TrajectoryHttpService:
             },
         )
 
-    def _validate_access(
+    def validate_access(
         self,
         session_id: str,
         settings: TrajectoryStoreSettings,

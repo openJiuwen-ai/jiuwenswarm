@@ -12,6 +12,7 @@ import PluginIcon from '../../assets/sidebar/plugin.svg?react';
 import ConfigIcon from '../../assets/sidebar/config.svg?react';
 import A2AIcon from '../../assets/sidebar/a2a.svg?react';
 import WebIcon from '../../assets/sidebar/web.svg?react';
+import DiagnosisIcon from '../../assets/sidebar/logs.svg?react';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
 import logoIcon from '/logo.svg';
 import AdvancedConfigIcon from '../../assets/sidebar/advanced-config-new.svg?react';
@@ -96,6 +97,7 @@ const moreNavItems: NavItem[] = [
   { key: 'browserpanel', labelKey: 'nav.browser', icon: <WebIcon aria-hidden /> },
   { key: 'a2aingress', labelKey: 'nav.a2aIngress', icon: <A2AIcon aria-hidden /> },
   { key: 'updatepanel', labelKey: 'nav.update', icon: <UpdateIcon aria-hidden /> },
+  { key: 'diagnosis', labelKey: 'nav.diagnosis', icon: <DiagnosisIcon aria-hidden /> },
 ];
 
 // Advanced Config Panel Component

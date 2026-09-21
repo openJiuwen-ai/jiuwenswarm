@@ -103,6 +103,27 @@ def _log_inbound_payload(raw: str | bytes, data: dict[str, Any]) -> None:
     )
 
 
+def _maybe_bind_diagnosis_request_id(data: Any) -> None:
+    """诊断请求早期 request_id 绑定（B 类修复）。
+
+    wire_parse 入口（bind_incoming_request 之前）先行 set，让 _log_inbound_payload
+    与 [E2A][in] 日志带上 diagnosis- request_id 进 diagnosis.log。仅 diagnosis- 前缀
+    绑定（保守，零主流程影响）；bind_incoming_request 随后幂等覆盖，生命周期由其托管。
+    """
+    if not isinstance(data, dict):
+        return
+    rid = data.get("request_id")
+    if isinstance(rid, str) and rid.startswith("diagnosis-"):
+        try:
+            from openjiuwen.extensions.observability.span_context import (
+                set_current_request_id,
+            )
+            set_current_request_id(rid)
+        except Exception as e:
+            logger.warning(f"set diagnosis request id failed: {e}.")
+            pass
+
+
 def _payload_to_request(data: dict[str, Any]) -> AgentRequest:
     """将 Gateway 发送的 JSON 载荷解析为 AgentRequest."""
     req_method = data.get("req_method")
@@ -166,6 +187,7 @@ def parse_inbound(raw: str | bytes) -> ParseResult:
     """
     try:
         data = json.loads(raw)
+        _maybe_bind_diagnosis_request_id(data)
         _log_inbound_payload(raw, data)
     except json.JSONDecodeError as e:
         return ParseResult(
