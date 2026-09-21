@@ -4,7 +4,6 @@
 
 > **读者**：企业版（`gateway.edition = enterprise`）接入方——浏览器、BFF 或经 Ingress / 反向代理访问 Gateway 的 HTTP 客户端。
 > **范围**：以 `/skills/enterprise` 开头的六个企业租户 HTTP 操作（§4、§5），并保留企业版可用的通用 Skill 接口作为补充（§1–§3）。企业接口与通用接口分别注册，不能互相替代；个人市场、本地导入、检索和演进不在本次补齐范围。
-> **基线**：`dev-stable` 提交 `718bfe3908f3c48b4aeedd302c5abea05f771ada`（2026-09-21）。本文按 Gateway 路由、HTTP 适配层和 AgentServer handler 核对；示例为契约示例，不代表已执行线上安装/卸载或已确认部署镜像版本。
 
 ---
 
@@ -384,7 +383,7 @@ JSON Body 应为对象；不符合 FastAPI 参数类型的请求可能返回 HTT
 
 #### 4.1 `POST /skills/enterprise/actions/uninstall`（skills.enterprise.uninstall）
 
-**含义**：卸载目标 workspace 中 `source_type=user` 的安装，调用 `handle_skills_web_uninstall`；预置及其他非 user 类型不可卸载。适用基线、身份与入口见 A1/A2。
+**含义**：卸载目标 workspace 中 `source_type=user` 的安装，调用 `handle_skills_web_uninstall`；预置及其他非 user 类型不可卸载。身份与入口见 A1/A2。
 
 **Query**：可选 `group_id/bot_id/user_id/service_id/agent_id`，取值与身份来源见 A2；`session_id` 可在 Body 或 `X-Session-Id` 中传递，该路由没有声明它的 Query 参数。
 
@@ -760,7 +759,7 @@ curl -X POST 'https://gateway.example.com/api/v1/skills/enterprise/sources/actio
 
 ### C3 源码核对入口
 
-以下均为本仓库相对链接，版本基线见概述：
+以下均为本仓库相对链接：
 
 - [Gateway HTTP 路由表](../channel_manager/web/web_http_routes.py)：六个企业路由及各自 Query/Body 声明；通用来源安装为 `/skills/sources/actions/install`。
 - [HTTP 参数与响应适配](../channel_manager/web/web_http_app.py)：`_params_from_mapped_route`、`_merge_header_params`、`_envelope_from_res`。
