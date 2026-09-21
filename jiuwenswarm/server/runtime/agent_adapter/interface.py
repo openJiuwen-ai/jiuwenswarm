@@ -1297,13 +1297,12 @@ class JiuWenSwarm:
             "query": final_query,
             "channel": channel,
             "language": language,
-            # Xiaoyi's mobile client cannot render/answer the ask_user card;
-            # keep interaction disabled there even when the legacy client omits
-            # the capability flag. Other channels remain backward compatible.
-            "supports_user_interaction": (
-                channel.strip().lower() != "xiaoyi"
-                and params.get("supports_user_interaction") is not False
-            ),
+            # 2026-09-20 AskUser 选项卡上线（gateway 出站 status-update
+            # input-required + AskUser data part，入站 askUserAnswer 结构化应答
+            # + 文本/PermissionReply 兜底），手机端已能渲染并回答审批卡，
+            # xiaoyi 渠道恢复交互能力。老客户端不携卡场景由 gateway 的文本
+            # 回退路径兜底（词表/其他意见），交互保持可用。
+            "supports_user_interaction": params.get("supports_user_interaction") is not False,
         }
         if _request_debug:
             inputs["_request_debug"] = True

@@ -5355,8 +5355,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 "(context_engine_config.enabled=false)"
             )
 
-        if self._is_xiaoyi_channel():
-            rail_infos = [info for info in rail_infos if info.attr_name != "_permission_rail"]
+        # 2026-09-20 AskUser 选项卡上线：xiaoyi 渠道不再摘除 permission_rail/
+        # ask_user_rail（手机端可渲染并回答审批卡，gateway 侧有结构化应答 +
+        # 文本/PermissionReply 三条回复路径兜底）。
 
         # SkillEvolutionRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
         # 智能模式下关闭自演进，plan 模式下按配置启用
@@ -5387,8 +5388,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             ),
         )
         if isinstance(mode, str) and mode.startswith("agent"):
-            if not self._is_xiaoyi_channel():
-                rail_infos.append(_RailBuildInfo("_ask_user_rail", self._build_structured_ask_user_rail))
+            rail_infos.append(_RailBuildInfo("_ask_user_rail", self._build_structured_ask_user_rail))
 
             # work 单 agent 常挂 plan rails，与 code 侧一致：plan 是会话运行期状态，
             # 不是另一种 agent 装配，所以不能按 sub_mode 决定挂不挂——否则开关 Plan
@@ -6539,9 +6539,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         return "_ask_user_rail"
 
     async def _set_user_interaction_enabled(self, enabled: bool) -> None:
-        """Expose ``ask_user`` only when the requesting client can answer it."""
-        if self._is_xiaoyi_channel():
-            enabled = False
+        """Expose ``ask_user`` only when the requesting client can answer it.
+
+        2026-09-20 起 xiaoyi 渠道同样可交互（AskUser 选项卡 + gateway 文本/
+        PermissionReply 兜底），不再强制关闭。
+        """
         attr_name = self._user_interaction_rail_attribute()
         rail = getattr(self, attr_name, None)
         if enabled:
@@ -6571,12 +6573,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             if self._task_planning_rail is not None:
                 await self._instance.register_rail(self._task_planning_rail)
                 logger.info("[JiuWenSwarmDeepAdapter] TaskPlanningRail registered for agent mode")
-        if self._is_xiaoyi_channel():
-            if self._ask_user_rail is not None:
-                await self._instance.unregister_rail(self._ask_user_rail)
-                self._ask_user_rail = None
-                logger.info("[JiuWenSwarmDeepAdapter] StructuredAskUserRail disabled for Xiaoyi channel")
-        elif self._ask_user_rail is None:
+        if self._ask_user_rail is None:
             self._ask_user_rail = self._build_structured_ask_user_rail()
             if self._ask_user_rail is not None:
                 await self._instance.register_rail(self._ask_user_rail)

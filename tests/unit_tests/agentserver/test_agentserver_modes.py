@@ -318,7 +318,12 @@ def test_build_inputs_propagates_user_interaction_capability(monkeypatch):
     assert inputs["supports_user_interaction"] is False
 
 
-def test_build_inputs_disables_user_interaction_by_default_for_xiaoyi(monkeypatch):
+def test_build_inputs_keeps_user_interaction_for_xiaoyi(monkeypatch):
+    """2026-09-20 AskUser 选项卡上线：xiaoyi 渠道恢复交互（不再强制关闭）。
+
+    未显式携带 capability flag 的 xiaoyi 请求 → 交互可用（gateway 侧文本/
+    PermissionReply/askUserAnswer 三条回复路径兜底）。
+    """
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
@@ -329,6 +334,25 @@ def test_build_inputs_disables_user_interaction_by_default_for_xiaoyi(monkeypatc
         channel_id="xiaoyi",
         session_id="xiaoyi_session",
         params={"query": "hello"},
+    )
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(request)
+
+    assert inputs["supports_user_interaction"] is True
+
+
+def test_build_inputs_disables_user_interaction_when_xiaoyi_explicitly_opts_out(monkeypatch):
+    """显式 supports_user_interaction=False 仍然生效（渠道无差异）。"""
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+
+    request = AgentRequest(
+        request_id="req-xiaoyi-optout",
+        channel_id="xiaoyi",
+        session_id="xiaoyi_session",
+        params={"query": "hello", "supports_user_interaction": False},
     )
 
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(request)
@@ -603,7 +627,13 @@ def test_build_inputs_merges_multi_select_custom_input(monkeypatch):
 
 
 def test_build_inputs_drops_bare_other_without_custom_input(monkeypatch):
-    """Regression for #2330: empty Other must not become answer value \"Other\"."""
+    """Regression for #2330: empty Other must not become answer value \"Other\".
+
+    2026-09-15 f47e0bedc 起，空答案不再丢弃题目条目，而是保留题目并以
+    「跳过」显式传递语义（interface.py ``answer_value or "跳过"``）。
+    本用例断言随该语义更新：bare Other + 空白 custom_input 的问题条目
+    保留，值为「跳过」；不得出现字面量 "Other" 作为答案值。
+    """
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -637,11 +667,14 @@ def test_build_inputs_drops_bare_other_without_custom_input(monkeypatch):
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(request)
 
     assert isinstance(inputs["query"], InteractiveInput)
-    assert inputs["query"].user_inputs == {
-        "tool-ask-1": {
-            "answers": {},
-        }
+    answers = inputs["query"].user_inputs["tool-ask-1"]["answers"]
+    # 空答案保留题目、显式传递「跳过」语义（不再整条丢弃）
+    assert answers == {
+        "选择技术栈？": "跳过",
+        "多选模块？": "跳过",
     }
+    # #2330 原始回归点：任何答案值都不得是字面量 "Other"
+    assert "Other" not in answers.values()
 
 
 def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeypatch):
@@ -1350,7 +1383,8 @@ def test_deep_adapter_build_agent_rails_adds_ask_user_for_agent_modes(monkeypatc
     assert ask_user_rail in fast_rails
 
 
-def test_deep_adapter_skips_interactive_and_permission_rails_for_xiaoyi(monkeypatch):
+def test_deep_adapter_keeps_interactive_and_permission_rails_for_xiaoyi(monkeypatch):
+    """2026-09-20 AskUser 选项卡上线：xiaoyi 渠道不再摘除 ask_user/permission rails。"""
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     class FakeHooksConfig:
@@ -1381,8 +1415,8 @@ def test_deep_adapter_skips_interactive_and_permission_rails_for_xiaoyi(monkeypa
 
     rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
 
-    assert ask_user_rail not in rails
-    assert permission_rail not in rails
+    assert ask_user_rail in rails
+    assert permission_rail in rails
 
 
 def test_deep_adapter_unregisters_evolution_runtime_rails_when_leaving_plan(monkeypatch):
@@ -1750,7 +1784,14 @@ def test_deep_adapter_rebuilds_plan_evolution_rails_when_language_changes(monkey
     assert adapter._evolution_interrupt_rail is interrupt_rails[0]
 
 
+@pytest.mark.filterwarnings("ignore::ResourceWarning")
 def test_deep_adapter_handle_user_answer_ignores_team_plan_approval_compat(monkeypatch):
+    """team_plan_approval 兼容载荷不得经 get_team_manager.interact 路由。
+
+    filterwarnings：同进程先前用例（deep adapter 装配链路）可能遗留 unclosed
+    socket，其 GC 落在本用例执行期会被 pytest unraisable 插件放大成失败
+    （与断言无关的顺序耦合 flaky），在此显式豁免 ResourceWarning。
+    """
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     monkeypatch.setattr(
