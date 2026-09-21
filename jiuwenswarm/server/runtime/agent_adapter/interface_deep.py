@@ -106,14 +106,6 @@ except ImportError:
         return "auto" if default_auto_save else "suggest"
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
-from jiuwenswarm.agents.harness.common.browser_defaults import (
-    DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
-)
-from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
-    DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
-    STATUSLINE_SETUP_AGENT_TYPE,
-    build_statusline_setup_agent_config,
-)
 from openjiuwen.harness.tools import (
     create_audio_tools,
     create_vision_tools,
@@ -126,6 +118,14 @@ from openjiuwen.harness.schema.interaction import (
 )
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
+from jiuwenswarm.agents.harness.common.browser_defaults import (
+    DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+)
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    STATUSLINE_SETUP_AGENT_TYPE,
+    build_statusline_setup_agent_config,
+)
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch import (
     get_deepresearch_tools,
@@ -9618,8 +9618,8 @@ class JiuWenSwarmDeepAdapter:
             return True
         return configured_value
 
+    @staticmethod
     def _resolve_enable_subagent_runtime(
-        self,
         config_base: dict[str, Any] | None = None,
     ) -> bool:
         """Return whether persistent subagent runtime tools should be enabled."""

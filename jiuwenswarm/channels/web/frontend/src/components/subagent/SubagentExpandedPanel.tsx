@@ -541,9 +541,6 @@ function buildSubagentProcessItems(
       subtitle: getSubagentActivityPreview(previewGroup) || undefined,
       status: 'execution',
       ...(activity.kind === 'tool_call' || activity.kind === 'tool_result' ? { kind: activity.kind } : {}),
-      detailRows: linkedResult
-        ? [...buildActivityDetailRows(group, t), [t('subagent.activity.fields.result'), linkedResult.summary || '-']]
-        : buildActivityDetailRows(group, t),
       execution: toSubagentExecutionEvent(memberId, activity),
       ...(linkedResult ? { linkedResult: toSubagentExecutionEvent(memberId, linkedResult) } : {}),
     });

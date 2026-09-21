@@ -40,6 +40,8 @@ from openjiuwen.harness.subagents.browser_agent import build_browser_agent_confi
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
+from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
+from openjiuwen.harness.workspace.workspace import Workspace
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
@@ -48,8 +50,6 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     STATUSLINE_SETUP_AGENT_TYPE,
     build_statusline_setup_agent_config,
 )
-from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
-from openjiuwen.harness.workspace.workspace import Workspace
 
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
