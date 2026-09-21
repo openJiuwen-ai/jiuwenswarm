@@ -28,6 +28,7 @@ from openjiuwen.agent_teams.observability import (
     init_observability,
     shutdown_observability,
 )
+from openjiuwen.extensions.observability.setup import get_observability_runtime
 from openjiuwen.agent_teams.observability.span_context import (
     clear_team_span,
     set_current_agent_span,
@@ -540,6 +541,12 @@ async def test_real_model_decorators_normalize_positional_input_and_llm_output_o
     assert attrs["gen_ai.decision.type"] == "tool_call"
     assert attrs["gen_ai.decision.tool_names"] == ("weather",)
     assert "observable answer" in attrs["gen_ai.output.messages"]
+    reasoning_spans = [
+        span for span in telemetry_env.exporter.get_finished_spans()
+        if span.name == "llm.reasoning"
+    ]
+    assert len(reasoning_spans) == 1
+    assert "observable reasoning" in reasoning_spans[0].attributes["gen_ai.output.messages"]
     assert attrs["gen_ai.usage.cache_read.input_tokens"] == 3
     assert attrs["gen_ai.usage.cache_creation.input_tokens"] == 2
     assert attrs["gen_ai.usage.cache_read_tokens"] == 3
@@ -895,7 +902,7 @@ async def test_enterprise_metric_labels_filter_empty_values_and_provider_is_unkn
 
 
 @pytest.mark.asyncio
-async def test_message_policy_keeps_shape_without_content_and_redacts_separately(
+async def test_host_message_policy_does_not_disable_sdk_trajectory_content(
     telemetry_env: SimpleNamespace,
 ) -> None:
     telemetry_env.callbacks._config = TelemetryConfig(
@@ -1487,23 +1494,35 @@ async def test_agent_and_common_attributes_and_parent_token_totals(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("redact_prompts", "redact_completions", "event_output_expected"),
+    ("redact_prompts", "redact_completions", "input_expected", "output_expected"),
     [
-        (True, False, "completion-secret"),
-        (False, True, "[REDACTED]"),
+        (True, False, "sha256:", "completion-secret"),
+        (False, True, "prompt-secret", "sha256:"),
     ],
 )
 async def test_prompt_and_completion_redaction_are_independent(
     telemetry_env: SimpleNamespace,
     redact_prompts: bool,
     redact_completions: bool,
-    event_output_expected: str,
+    input_expected: str,
+    output_expected: str,
 ) -> None:
     telemetry_env.callbacks._config = TelemetryConfig(
         enabled=True,
         log_messages=True,
         redact_prompts=redact_prompts,
         redact_completions=redact_completions,
+    )
+    # The SDK owns the span payload on develop; keep its policy in sync with
+    # the host callback policy that this test changes after fixture setup.
+    sdk_runtime = get_observability_runtime()
+    sdk_handler = sdk_runtime._callback_handler
+    assert sdk_handler is not None
+    sdk_handler._config = sdk_handler._config.model_copy(
+        update={
+            "redact_prompts": redact_prompts,
+            "redact_completions": redact_completions,
+        }
     )
     await telemetry_env.framework.trigger(
         LLMCallEvents.LLM_INVOKE_INPUT,
@@ -1529,17 +1548,19 @@ async def test_prompt_and_completion_redaction_are_independent(
         for item in telemetry_env.exporter.get_finished_spans()
         if item.name == "llm.call"
     ][0]
-    # Agent-core owns gen_ai.{input,output}.messages and does not honor
-    # jiuwenswarm redact_* flags on those attributes.
-    _ = redact_prompts
-    assert "prompt-secret" in span.attributes["gen_ai.input.messages"]
-    assert "completion-secret" in span.attributes["gen_ai.output.messages"]
+    assert input_expected in span.attributes["gen_ai.input.messages"]
+    assert output_expected in span.attributes["gen_ai.output.messages"]
+    if redact_prompts:
+        assert "prompt-secret" not in span.attributes["gen_ai.input.messages"]
+    if redact_completions:
+        assert "completion-secret" not in span.attributes["gen_ai.output.messages"]
     assert "gen_ai.tool.definitions" in span.attributes
     assistant_events = [
         event for event in span.events if event.name == "gen_ai.assistant.message"
     ]
     assert len(assistant_events) == 1
-    assert event_output_expected in assistant_events[0].attributes["content"]
+    event_expected = "[REDACTED]" if redact_completions else output_expected
+    assert event_expected in assistant_events[0].attributes["content"]
 
 
 @pytest.mark.asyncio
@@ -1551,6 +1572,12 @@ async def test_completion_redaction_hides_tool_call_arguments(
         log_messages=True,
         redact_completions=True,
         attribute_value_max_length=256,
+    )
+    sdk_runtime = get_observability_runtime()
+    sdk_handler = sdk_runtime._callback_handler
+    assert sdk_handler is not None
+    sdk_handler._config = sdk_handler._config.model_copy(
+        update={"redact_completions": True}
     )
     await telemetry_env.framework.trigger(
         LLMCallEvents.LLM_STREAM_INPUT,
@@ -1580,18 +1607,22 @@ async def test_completion_redaction_hides_tool_call_arguments(
         if item.name == "llm.call"
     ][0]
     output = span.attributes["gen_ai.output.messages"]
-    assert "completion-secret" in output
+    assert "completion-secret" not in output
+    assert "reasoning-secret" not in output
+    assert "super-secret" not in output
+    # The SDK's structured output keeps the redacted answer in this field;
+    # tool-call metadata is recorded separately, not embedded in the answer.
+    assert "sha256:" in output
     assistant_events = [
         event for event in span.events if event.name == "gen_ai.assistant.message"
     ]
     assert len(assistant_events) == 1
     event_content = assistant_events[0].attributes["content"]
+    assert "[REDACTED]" in event_content
     assert len(event_content) <= 256
     assert "completion-secret" not in event_content
     assert "reasoning-secret" not in event_content
     assert "super-secret" not in event_content
-    assert "private_tool" in event_content
-    assert "[REDACTED]" in event_content
 
 
 @pytest.mark.asyncio

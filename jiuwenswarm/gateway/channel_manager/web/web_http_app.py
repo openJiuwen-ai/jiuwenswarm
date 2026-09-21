@@ -37,6 +37,9 @@ from jiuwenswarm.gateway.channel_manager.web.web_http_sessions_compat import (
     catalog_sessions_compat_entries,
     register_sessions_compat_routes,
 )
+from jiuwenswarm.gateway.channel_manager.web.trajectory_http import (
+    attach_trajectory_routes,
+)
 
 _HEADER_TO_PARAM = {
     "x-user-id": "user_id",
@@ -613,6 +616,7 @@ def create_web_http_app(channel: Any) -> FastAPI:
     _register_mapped_routes(app, channel, mapped_routes)
     register_sessions_compat_routes(app)
     register_file_compat_routes(app)
+    attach_trajectory_routes(app, channel)
     return app
 
 

@@ -7,6 +7,38 @@ export type DesktopSaveApiResult = Promise<boolean | DesktopSaveResult> | boolea
 
 export type DesktopSaveOutcome = 'saved' | 'cancelled' | 'failed';
 
+export type BlobSaveTransport = 'browser-download' | 'browser-file-picker' | 'desktop';
+
+export interface BlobSaveResult {
+  outcome: DesktopSaveOutcome;
+  transport: BlobSaveTransport;
+}
+
+export interface BlobSaveOptions {
+  preferBrowserFilePicker?: boolean;
+}
+
+export function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export async function saveBlobWithResult(
+  blob: Blob,
+  filename: string,
+  _options: BlobSaveOptions = {},
+): Promise<BlobSaveResult> {
+  downloadBlob(blob, filename);
+  return { outcome: 'saved', transport: 'browser-download' };
+}
+
 export function isDesktopSaveCancelled(result: boolean | DesktopSaveResult): boolean {
   return typeof result === 'object' && result.cancelled === true;
 }

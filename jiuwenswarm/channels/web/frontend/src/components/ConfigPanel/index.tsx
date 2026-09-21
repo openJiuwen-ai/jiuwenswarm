@@ -361,6 +361,7 @@ const HIDDEN_CONFIG_KEYS = new Set([
 ]);
 const MEMORY_KEYS = new Set(["memory_forbidden_enabled", "memory_forbidden_description"]);
 const A2UI_KEYS = new Set(["a2ui_enabled"]);
+const TRAJECTORY_UI_KEYS = new Set(["trajectory_ui_enabled"]);
 const SWARMFLOW_KEYS = new Set(["swarmflow_enabled"]);
 const SYMPHONY_BOOLEAN_KEYS = new Set([
   "symphony_enabled",
@@ -412,6 +413,7 @@ function classifyKey(key: string): string {
   if (FREE_SEARCH_KEYS.has(key)) return "free_search";
   if (MEMORY_KEYS.has(key)) return "memory";
   if (A2UI_KEYS.has(key)) return "a2ui";
+  if (TRAJECTORY_UI_KEYS.has(key)) return "trajectory_ui";
   if (SWARMFLOW_KEYS.has(key)) return "swarmflow";
   if (SYMPHONY_KEYS.has(key)) return "symphony";
   if (PROACTIVE_KEYS.has(key)) return "proactive";
@@ -600,6 +602,7 @@ function isBooleanKey(key: string): boolean {
     key === "permissions_enabled" ||
     key === "memory_forbidden_enabled" ||
     key === "a2ui_enabled" ||
+    key === "trajectory_ui_enabled" ||
     key === "swarmflow_enabled" ||
     SYMPHONY_BOOLEAN_KEYS.has(key) ||
     SKILL_RETRIEVAL_BOOLEAN_KEYS.has(key) ||
@@ -660,6 +663,7 @@ function getBooleanKeyLabel(key: string, t: (key: string) => string): string {
     permissions_enabled: t('config.booleanLabels.enabled'),
     memory_forbidden_enabled: t('config.booleanLabels.enabled'),
     a2ui_enabled: t('config.booleanLabels.enabled'),
+    trajectory_ui_enabled: t('config.booleanLabels.enabled'),
     swarmflow_enabled: t('config.booleanLabels.enabled'),
     symphony_enabled: t('config.booleanLabels.enabled'),
     symphony_dynamic_graph_enabled: t('config.booleanLabels.dynamicGraph'),
@@ -712,6 +716,7 @@ function getGroupMeta(t: (key: string) => string): Record<string, { label: strin
     kv_cache_affinity: { label: t('config.groups.kvCacheAffinity.label'), order: 8.5, hint: t('config.groups.kvCacheAffinity.hint') },
     permissions: { label: t('config.groups.permissions.label'), order: 9, hint: t('config.groups.permissions.hint') },
     a2ui: { label: t('config.groups.a2ui.label'), order: 10, hint: t('config.groups.a2ui.hint') },
+    trajectory_ui: { label: t('config.groups.trajectoryUi.label'), order: 10.1, hint: t('config.groups.trajectoryUi.hint') },
     swarmflow: { label: t('config.groups.swarmflow.label'), order: 10.2, hint: t('config.groups.swarmflow.hint') },
     symphony: { label: t('config.groups.symphony.label'), order: 10.4, hint: t('config.groups.symphony.hint') },
     skill_retrieval: { label: t('config.groups.skillRetrieval.label'), order: 10.5, hint: t('config.groups.skillRetrieval.hint') },

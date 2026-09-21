@@ -314,6 +314,12 @@ from jiuwenswarm.agents.harness.common.rails.concurrent_safe_rails import (
 from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
+from jiuwenswarm.common.mode_matrix import (
+    canonicalize_mode_text,
+    compose_web_mode,
+    deprecate_mode,
+    normalize_work_mode,
+)
 from jiuwenswarm.common.stage_timer import StageTimer
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
@@ -784,6 +790,18 @@ def get_runtime_tool_a2a_policy_id() -> str:
     return _RUNTIME_TOOL_A2A_POLICY_ID.get()
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_observability_mode(params: dict[str, Any]) -> str:
+    """Return the canonical mode written into trajectory span attributes."""
+    raw_mode = params.get("mode", "agent")
+    normalized_mode = canonicalize_mode_text(raw_mode)
+    work_mode = normalize_work_mode(params.get("work_mode"))
+    if work_mode is not None:
+        composed_mode = compose_web_mode(normalized_mode, work_mode)
+        if composed_mode is not None:
+            return str(deprecate_mode(composed_mode[2]))
+    return str(deprecate_mode(raw_mode))
 
 _PERSISTENT_CHECKPOINTER_LOCK: asyncio.Lock | None = None
 _PERSISTENT_CHECKPOINTER_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
@@ -1698,28 +1716,95 @@ def _deep_agent_kv_cache_affinity_config(
 
 def _build_context_assemble_rail(
     disabled_tools: list[str] | None = None,
+    tool_name_allowlist: list[str] | None = None,
 ) -> ContextAssembleRail | None:
     """Build ContextAssembleRail.
 
     ``disabled_tools`` seeds the tools prompt hide-list. Product adapters own
     the blacklist data flow at construction time (and optional later
-    ``update_disabled_tools`` calls). Compatible with older openjiuwen / test
-    fakes whose constructor does not accept ``disabled_tools=``: fall back to
-    no-arg construction and ``update_disabled_tools`` when available.
+    ``update_disabled_tools`` calls).
+
+    ``tool_name_allowlist`` (typically ProgressiveToolRail.eager_tools) keeps the
+    system ``# 可用工具`` section aligned with the fixed eager schema so deferred
+    / OfficeClaw MCP registrations do not rewrite the prompt prefix mid-task.
+    Compatible with older openjiuwen / test fakes whose constructor does not
+    accept the newer kwargs.
+
+    Merge order: land agent-core !2840 (``tool_name_allowlist`` + tools-section
+    fingerprint ``has_section`` guard) before this change. Without !2840 the
+    modern kwargs raise ``TypeError`` and we silently fall back to the legacy
+    constructor / optional setter path.
     """
     try:
+        ctor_path = "modern"
+        effective_disabled: list[str] | None = disabled_tools
+        effective_allowlist: list[str] | None = tool_name_allowlist
         try:
-            context_assemble_rail = ContextAssembleRail(disabled_tools=disabled_tools)
+            context_assemble_rail = ContextAssembleRail(
+                disabled_tools=disabled_tools,
+                tool_name_allowlist=tool_name_allowlist,
+            )
         except TypeError:
-            context_assemble_rail = ContextAssembleRail()
-            update = getattr(context_assemble_rail, "update_disabled_tools", None)
-            if callable(update) and disabled_tools:
-                update(disabled_tools)
-        logger.info("[JiuWenSwarmDeepAdapter] ContextAssembleRail create success")
+            # Requested allowlist is not in effect until a setter applies it.
+            effective_allowlist = None
+            try:
+                context_assemble_rail = ContextAssembleRail(disabled_tools=disabled_tools)
+                ctor_path = "legacy_disabled_kw"
+            except TypeError:
+                context_assemble_rail = ContextAssembleRail()
+                ctor_path = "legacy_no_args"
+                effective_disabled = None
+                update = getattr(context_assemble_rail, "update_disabled_tools", None)
+                if callable(update) and disabled_tools:
+                    update(disabled_tools)
+                    effective_disabled = list(disabled_tools)
+            setter = getattr(context_assemble_rail, "set_tool_name_allowlist", None)
+            if callable(setter) and tool_name_allowlist is not None:
+                setter(tool_name_allowlist)
+                effective_allowlist = list(tool_name_allowlist)
+        # Prefer instance state when the rail exposes what actually stuck.
+        for attr in ("tool_name_allowlist", "_tool_name_allowlist"):
+            if hasattr(context_assemble_rail, attr):
+                effective_allowlist = getattr(context_assemble_rail, attr)
+                break
+        for attr in ("disabled_tools", "_disabled_tools"):
+            if hasattr(context_assemble_rail, attr):
+                value = getattr(context_assemble_rail, attr)
+                if isinstance(value, (set, frozenset)):
+                    effective_disabled = sorted(str(item) for item in value)
+                elif value is not None:
+                    effective_disabled = list(value)
+                else:
+                    effective_disabled = None
+                break
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] ContextAssembleRail create success "
+            "(path=%s disabled_tools=%s allowlist=%s)",
+            ctor_path,
+            list(effective_disabled) if effective_disabled else None,
+            list(effective_allowlist) if effective_allowlist else None,
+        )
     except Exception as exc:
         logger.warning("[JiuWenSwarmDeepAdapter] ContextAssembleRail create failed: %s", exc)
         context_assemble_rail = None
     return context_assemble_rail
+
+
+def _sync_context_assemble_tool_allowlist(
+    assemble: ContextAssembleRail | None,
+    progressive: Any | None,
+) -> None:
+    """Keep ContextAssemble tools-section allowlist aligned with eager schema."""
+    if assemble is None:
+        return
+    setter = getattr(assemble, "set_tool_name_allowlist", None)
+    if not callable(setter):
+        return
+    if progressive is None:
+        setter(None)
+        return
+    eager = getattr(progressive, "eager_tools", None) or []
+    setter(list(eager))
 
 
 def _resolve_session_memory_config(context_engine_cfg: dict[str, Any]) -> dict[str, Any] | None:
@@ -8092,7 +8177,7 @@ class JiuWenSwarmDeepAdapter:
         """
         if not get_skill_evolution_enabled(config):
             return None
-        from jiuwenswarm.agents.harness.observability_runtime import (
+        from openjiuwen.extensions.observability.demand import (
             get_trajectory_span_processor,
         )
 
@@ -8204,7 +8289,7 @@ class JiuWenSwarmDeepAdapter:
                     base_url=emb_cfg["base_url"],
                     model=emb_cfg["model"],
                 )
-            from jiuwenswarm.agents.harness.observability_runtime import (
+            from openjiuwen.extensions.observability.demand import (
                 get_trajectory_span_processor,
             )
 
@@ -8337,7 +8422,7 @@ class JiuWenSwarmDeepAdapter:
             if self._skill_manager is not None
             else []
         )
-        from jiuwenswarm.agents.harness.observability_runtime import (
+        from openjiuwen.extensions.observability.demand import (
             get_trajectory_span_processor,
         )
 
@@ -8552,7 +8637,7 @@ class JiuWenSwarmDeepAdapter:
                 logger.debug("[JiuWenSwarmDeepAdapter] SkillCreateRail disabled by config")
                 return None
 
-            from jiuwenswarm.agents.harness.observability_runtime import (
+            from openjiuwen.extensions.observability.demand import (
                 get_trajectory_span_processor,
             )
 
@@ -9375,19 +9460,17 @@ class JiuWenSwarmDeepAdapter:
         # for task-loop runs, or agent.<name>.invoke for single-round) under the root
         # run span per iteration/round. It is the only thing that creates the
         # task_iteration / invoke spans that llm.call + tool.* nest under. It
-        # self-disables (before_* returns early when get_team_span() is None), so
+        # self-disables (before_* returns early when there is no run root span), so
         # attaching it unconditionally is safe and also adapts to runtime
         # enable/disable of agent_observability without rebuilding the agent.
+        # The harness rail owns the complete single-agent tier; team identity is
+        # supplied separately by the team blueprint.
         try:
-            from openjiuwen.agent_teams.observability.rail import ObservabilityRail
-            from jiuwenswarm.agents.harness.agent_observability import (
-                AgentTraceBindingRail,
-            )
+            from openjiuwen.harness.observability import AgentObservabilityRail
 
-            rails_list.append(AgentTraceBindingRail())
-            rails_list.append(ObservabilityRail())
+            rails_list.append(AgentObservabilityRail())
         except Exception as exc:
-            logger.warning("%s Failed to attach ObservabilityRail: %s", log_prefix, exc)
+            logger.warning("%s Failed to attach AgentObservabilityRail: %s", log_prefix, exc)
         stage_timer.mark("observability_rail")
 
         # Bind tenant checkpointer after rails exist (set_checkpoint runs earlier).
@@ -9927,8 +10010,16 @@ class JiuWenSwarmDeepAdapter:
                         ),
                         invocation_id=active_mcp.invocation_id or None,
                     )
+                _sync_context_assemble_tool_allowlist(
+                    self._context_assemble_rail,
+                    progressive_tool_rail,
+                )
             elif old_progressive_tool_rail is not None:
                 rails_to_unregister.append(old_progressive_tool_rail)
+                _sync_context_assemble_tool_allowlist(
+                    self._context_assemble_rail,
+                    None,
+                )
 
         # 统一工具开关热更新：重建式（与 ProgressiveToolRail 一致）。
         # 旧 rail uninit 时回滚它注销的工具（重新注册），新 rail init 再按新名单注销。
@@ -10568,7 +10659,7 @@ class JiuWenSwarmDeepAdapter:
                 should_enable_general_agent = should_add_general_agent and (
                     sub_mode == "plan" or (isinstance(mode, str) and mode.startswith("agent"))
                 )
-                from jiuwenswarm.agents.harness.observability_runtime import (
+                from openjiuwen.extensions.observability.demand import (
                     get_trajectory_span_processor,
                 )
 
@@ -11538,14 +11629,22 @@ class JiuWenSwarmDeepAdapter:
                 )
             self._context_assemble_rail = _build_context_assemble_rail(
                 disabled_tools=disabled_list or None,
+                tool_name_allowlist=(
+                    list(self._progressive_tool_rail.eager_tools)
+                    if self._progressive_tool_rail is not None
+                    else None
+                ),
             )
             self._context_assemble_mode = "agent"
             if self._context_assemble_rail is not None:
                 await self._instance.register_rail(self._context_assemble_rail)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] ContextAssembleRail registered for agent mode "
-                    "(disabled_tools=%s)",
+                    "(disabled_tools=%s allowlist=%s)",
                     disabled_list,
+                    list(self._progressive_tool_rail.eager_tools)
+                    if self._progressive_tool_rail is not None
+                    else None,
                 )
             else:
                 logger.warning(
@@ -18324,17 +18423,18 @@ class JiuWenSwarmDeepAdapter:
             # Sync single-agent / coding-agent observability with current
             # config before running, and open a root span so OtelCallbackHandler
             # has a parent for LLM/tool spans (see streaming path for details).
-            from jiuwenswarm.agents.harness.agent_observability import (
+            from openjiuwen.harness.observability import (
                 close_agent_run_span,
                 open_agent_run_span,
+            )
+            from jiuwenswarm.agents.harness.agent_observability import (
                 sync_agent_observability,
             )
             sync_agent_observability()
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 request_id=request.request_id,
-                channel_id=request.channel_id,
-                mode=mode,
+                mode=_resolve_observability_mode(request.params),
             )
             attach_goal = self._wants_attach_goal(request.params)
             dispatch_mode = self._resolve_input_dispatch_mode(request.params)
@@ -19439,17 +19539,18 @@ class JiuWenSwarmDeepAdapter:
             )
             # Sync single-agent / coding-agent observability with current config
             # before running.
-            from jiuwenswarm.agents.harness.agent_observability import (
+            from openjiuwen.harness.observability import (
                 close_agent_run_span,
                 open_agent_run_span,
+            )
+            from jiuwenswarm.agents.harness.agent_observability import (
                 sync_agent_observability,
             )
             sync_agent_observability(force=_dbg_settings.otel_enabled)
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 request_id=rid,
-                channel_id=cid,
-                mode=mode,
+                mode=_resolve_observability_mode(request.params),
             )
             _otel_trace_id = ""
             _otel_span_id = ""

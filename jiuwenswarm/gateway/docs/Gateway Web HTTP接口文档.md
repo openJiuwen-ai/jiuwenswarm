@@ -6,7 +6,7 @@
 > **对应实现**：`jiuwenswarm/gateway/channel_manager/web/web_http_app.py`、`web_http_dispatch.py`、`web_http_routes.py`、`outbound.py`、`web_http_server.py`；Handler / MessageHandler 与 A1 共用。  
 > **证据原则**：标注「代码行为」均可回溯至上述源码；未实现项写「代码未定义」，**禁止当作已冻结承诺**。产品排期、Ingress 超时、Token claims、限流等以运行中 `/openapi.json` 与部署约定为准，本文不承诺未落地行为。
 
-> **A2A 专项接口**：13 个出站 Web HTTP 路由、企业版实际放行范围以及 Manager Config Receiver 的 6 个写操作，统一见 [Gateway A2A HTTP 接口文档](../../../docs/zh/Gateway%20A2A接口文档.md)。本文保留 Web HTTP 通用信封、身份头和状态码约定，不重复维护 A2A DTO。
+> **A2A 专项接口**：13 个出站 Web HTTP 路由、企业版实际放行范围以及 Manager Config Receiver 的 6 个写操作，统一见 [Gateway A2A HTTP 接口文档](./Gateway%20A2A接口文档.md)。本文保留 Web HTTP 通用信封、身份头和状态码约定，不重复维护 A2A DTO。
 
 ```text
 【WS / A1】浏览器/前端 ── JSON 帧 ──► Gateway /ws        ──► Handler / MH ──► Agent
@@ -70,7 +70,7 @@ WebSocket 侧通过单一连接 + `method` 字段路由到不同 Handler。HTTP 
 - `POST /api/v1/chat/{session_id}/actions/answer` → 同 `user_answer`
 
 **其它前端常需接口（同进程已落地，完整表见** `GET /api/v1/catalog`**）：**  
-`GET /api/v1/health`、`GET /api/v1/connection/status`、`GET/PATCH/DELETE /api/v1/sessions…`、`GET …/history`、`POST /api/v1/chat/resume`、config / models / locale / cron / permissions / skills / harness、企业兼容 `GET /api/sessions*`、`/file-api/*`。
+`GET /api/v1/health`、`GET /api/v1/connection/status`；会话管理 **§2.4**；历史 / 旁路 **§2.5**；`POST /api/v1/chat/resume` **§4.6**；config / models / locale / cron / permissions / skills / harness、`/file-api/*`。
 
 ---
 
@@ -96,7 +96,7 @@ http://{host}:{port}/api/v1
 | OpenAPI   | `http://127.0.0.1:19002/openapi.json`                 |
 
 
-所有本文件接口路径均以 `/api/v1` 为前缀；版本号通过 URL 路径承载（`v1`）。
+所有 **`/api/v1`** 接口路径均以该前缀为准。企业旁路 `GET /api/sessions*` **没有** `/api/v1` 前缀，见 §2.5。
 
 > **入口边界**：本文件只描述 **Web HTTP**（浏览器 / 前端，默认 19002）。Manager 配置下发走 **Config Receiver**（默认 **8775**，信封 `{ code, message, data }`），见 [Gateway对接管理面接口文档.md](Gateway对接管理面接口文档.md)；二者端口、身份与返回格式均不同，不可混用。
 
@@ -300,7 +300,7 @@ id: {request_id}\nevent: {event}\ndata: {json.dumps(payload, ensure_ascii=False)
 
 
 
-## 2. 创建会话 — `session.create`
+## 2. 会话 — `session.create` 与会话管理
 
 对应 A1 `method: "session.create"`。
 
@@ -442,6 +442,359 @@ curl -sS -X POST "http://127.0.0.1:19002/api/v1/sessions" \
   -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1" \
   -d '{"create_token":"tok-1","mode":"agent"}'
 ```
+
+### 2.4 会话管理 HTTP 映射
+
+`session.list` / `session.get_metadata` / `session.rename` / `session.pin` / `session.delete` 的**业务字段**见 [Gateway接口文档.md](./Gateway接口文档.md) **§2.1–2.6**。本节只写 HTTP 的参数位置、PATCH 分流与信封；**不要用 WS `params` 表直接当 HTTP 契约**。
+
+实现：`web_http_app.py` 的 `session_list` / `session_get` / `session_patch` / `session_delete`，handler 与 A1 共用。Query 越界（如 `limit=0`）由 FastAPI 返回 **422**，不是 §1.3 信封。
+
+#### `GET /api/v1/sessions` — `session.list`
+
+`limit`、`offset` 只放 **query**（不在 path / body）。省略时 handler 默认 `limit=20`、`offset=0`。
+
+
+| query    | 必填  | 约束 | 说明 |
+| -------- | --- | --- | --- |
+| `limit`  | 否   | 1..200 | 每页条数 |
+| `offset` | 否   | ≥0     | 分页偏移 |
+
+
+```http
+GET /api/v1/sessions?limit=20&offset=0 HTTP/1.1
+Host: 127.0.0.1:19002
+X-Request-Id: req-list-1
+X-User-Id: u1
+X-Group-Id: g1
+X-Bot-Id: b1
+```
+
+成功 — `200`，`data` 对应 A1 `session.list` payload（`sessions[]` / `total` / `limit` / `offset`；元素字段见 Gateway接口文档 §2.1，remote 路径还可能带 `pinned` / `pin_order`）：
+
+```json
+{
+  "request_id": "req-list-1",
+  "ok": true,
+  "data": {
+    "sessions": [
+      {
+        "session_id": "web_a1b2c3d4e5f6",
+        "channel_id": "web",
+        "user_id": "u1",
+        "created_at": 1726800000.0,
+        "last_message_at": 1726800100.0,
+        "title": "会议纪要",
+        "message_count": 3,
+        "mode": "agent"
+      }
+    ],
+    "total": 1,
+    "limit": 20,
+    "offset": 0
+  },
+  "metadata": {
+    "rpc_method": "session.list",
+    "transport": "web-http"
+  }
+}
+```
+
+```bash
+curl -sS "http://127.0.0.1:19002/api/v1/sessions?limit=20&offset=0" \
+  -H "X-Request-Id: req-list-1" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
+```
+
+#### `GET /api/v1/sessions/{session_id}` — `session.get_metadata`
+
+`session_id` 只放 **path**。一元信封，`data` 即 metadata 对象（字段见 Gateway接口文档 §2.4）。
+
+```http
+GET /api/v1/sessions/web_a1b2c3d4e5f6 HTTP/1.1
+Host: 127.0.0.1:19002
+X-Request-Id: req-meta-1
+X-User-Id: u1
+X-Group-Id: g1
+X-Bot-Id: b1
+```
+
+成功 — `200`：
+
+```json
+{
+  "request_id": "req-meta-1",
+  "ok": true,
+  "data": {
+    "session_id": "web_a1b2c3d4e5f6",
+    "title": "会议纪要",
+    "mode": "agent",
+    "model": "",
+    "project_dir": "",
+    "project_id": "proj_001",
+    "pinned": false,
+    "pin_order": 0
+  },
+  "metadata": {
+    "rpc_method": "session.get_metadata",
+    "transport": "web-http"
+  }
+}
+```
+
+会话不存在时 handler 返回 `code=NOT_FOUND`（HTTP **404**，信封 `ok:false`）。remote 模式本地无目录时会回退 PG 投影，字段可能比本地 metadata 少，缺的键给缺省值。
+
+#### `PATCH /api/v1/sessions/{session_id}` — 重命名 **或** 置顶（二选一）
+
+`session_id` 放 **path**，写入 body。`session_patch` **按 body 键分流，一次请求只走一条 RPC**：
+
+
+| Body | 选中的 RPC | 说明 |
+| ---- | --------- | --- |
+| 含键 `pinned` **或** `pin` | `session.pin` | **不会**再执行 `session.rename` |
+| 否则 | `session.rename` | 即使同时想改标题，只要带了 `pinned`/`pin` 也不会改名 |
+
+
+推荐只传 **`pinned`（bool）**。仅传 `{"pin": true}` 仍会进入 pin 分支，但 handler 读的是 `pinned`，会得到 `400 BAD_REQUEST`（`pinned must be boolean`）。
+
+**重命名示例**
+
+```http
+PATCH /api/v1/sessions/web_a1b2c3d4e5f6 HTTP/1.1
+Host: 127.0.0.1:19002
+Content-Type: application/json
+X-Request-Id: req-rename-1
+X-User-Id: u1
+X-Group-Id: g1
+X-Bot-Id: b1
+```
+
+```json
+{
+  "title": "新标题"
+}
+```
+
+成功时 `data` 含 `title` 等（remote 典型为 `session_id` / `title` / `previous_title`）。`title` 语义与 Gateway接口文档 §2.5 相同：不传→查询；空串→清除；非空→设置（截断 200 字符）。
+
+**置顶示例**
+
+```json
+{
+  "pinned": true
+}
+```
+
+成功 — `200`，`data` 对齐 §2.6：
+
+```json
+{
+  "request_id": "req-pin-1",
+  "ok": true,
+  "data": {
+    "pinned": true,
+    "pin_order": 1
+  },
+  "metadata": {
+    "rpc_method": "session.pin",
+    "transport": "web-http"
+  }
+}
+```
+
+**同时传 `title` 与 `pinned`：** 只走 `session.pin`，**不等于**两个操作都执行。需要改名请再发一次不含 `pinned`/`pin` 的 PATCH。
+
+不存在：pin/rename 的 remote 与本地路径均可能返回 `404 NOT_FOUND`（`session not found`）。
+
+```bash
+curl -sS -X PATCH "http://127.0.0.1:19002/api/v1/sessions/web_a1b2c3d4e5f6" \
+  -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-rename-1" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1" \
+  -d '{"title":"新标题"}'
+
+curl -sS -X PATCH "http://127.0.0.1:19002/api/v1/sessions/web_a1b2c3d4e5f6" \
+  -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-pin-1" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1" \
+  -d '{"pinned":true}'
+```
+
+#### `DELETE /api/v1/sessions/{session_id}` — `session.delete`
+
+`session_id` 只放 **path**。
+
+```http
+DELETE /api/v1/sessions/web_a1b2c3d4e5f6 HTTP/1.1
+Host: 127.0.0.1:19002
+X-Request-Id: req-del-1
+X-User-Id: u1
+X-Group-Id: g1
+X-Bot-Id: b1
+```
+
+**本地存储（非 remote）成功 — `200`：** `data` 含已删除的 `session_id`（与 Gateway接口文档 §2.3 对齐）。目录不存在 → **404** `NOT_FOUND`（`session not found`）；非法 id → **400** `BAD_REQUEST`。
+
+**企业 remote（PG）实际行为：** handler **仍返回 `ok:true` / HTTP 200**，`data` 为 `{ "session_id": "…", "history_store_deleted": true|false }`。身份不匹配或行不存在时 `history_store_deleted` 为 `false`，**不会**改成 403/404。不要按「无权=403」去对接。
+
+```bash
+curl -sS -X DELETE "http://127.0.0.1:19002/api/v1/sessions/web_a1b2c3d4e5f6" \
+  -H "X-Request-Id: req-del-1" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
+```
+
+### 2.5 历史查询与旁路接口
+
+`history.get` 的 WS 事件语义见 [Gateway接口文档.md](./Gateway接口文档.md) **§3.4 / §20.4**（`history.message`）。HTTP 另有聚合 JSON 与企业旁路路径，**不能套用 WS 帧**。
+
+#### `GET /api/v1/sessions/{session_id}/history` — `history.get`
+
+| 参数 | 位置 | 约束 | 说明 |
+| --- | --- | --- | --- |
+| `session_id` | path | 必填 | 目标会话 |
+| `page_idx` | query | ≥1；省略则 **1** | 页码从 1 开始 |
+
+**返回形态由 `Accept` 决定**（`history_get`）：
+
+| `Accept` | 行为 |
+| -------- | --- |
+| 不含 `text/event-stream`（默认） | `_history_json`：等流结束，聚合成 **一元 JSON 信封** |
+| 含 `text/event-stream` | `_stream`：SSE；先可能 `web.response`（accepted），再 `history.message`，末帧 `status=done` |
+
+
+**默认聚合 JSON — `200`：**
+
+```http
+GET /api/v1/sessions/web_a1b2c3d4e5f6/history?page_idx=1 HTTP/1.1
+Host: 127.0.0.1:19002
+X-Request-Id: req-hist-1
+X-User-Id: u1
+X-Group-Id: g1
+X-Bot-Id: b1
+```
+
+```json
+{
+  "request_id": "req-hist-1",
+  "ok": true,
+  "data": {
+    "session_id": "web_a1b2c3d4e5f6",
+    "messages": [
+      {
+        "role": "user",
+        "content": "你好",
+        "timestamp": 1726800000.0,
+        "session_id": "web_a1b2c3d4e5f6",
+        "request_id": "req-send-1"
+      }
+    ],
+    "total_pages": 1,
+    "page_idx": 1
+  },
+  "metadata": {
+    "rpc_method": "history.get",
+    "transport": "web-http"
+  }
+}
+```
+
+JSON 路径若收到 `chat.error` 且文案含本地历史缺失，remote 模式可能回退 PG 合成同形 `data`；回退失败则 **404** `NOT_FOUND`。
+
+**SSE 示例：**
+
+```http
+GET /api/v1/sessions/web_a1b2c3d4e5f6/history?page_idx=1 HTTP/1.1
+Host: 127.0.0.1:19002
+Accept: text/event-stream
+X-Request-Id: req-hist-sse-1
+X-User-Id: u1
+X-Group-Id: g1
+X-Bot-Id: b1
+```
+
+```text
+id: req-hist-sse-1
+event: web.response
+data: {"accepted": true, "session_id": "web_a1b2c3d4e5f6", "page_idx": 1}
+
+id: req-hist-sse-1
+event: history.message
+data: {"event_type":"history.message","message":{"role":"user","content":"你好"},"session_id":"web_a1b2c3d4e5f6","total_pages":1,"page_idx":1}
+
+id: req-hist-sse-1
+event: history.message
+data: {"event_type":"history.message","status":"done","session_id":"web_a1b2c3d4e5f6","total_pages":1,"page_idx":1}
+```
+
+```bash
+curl -sS "http://127.0.0.1:19002/api/v1/sessions/web_a1b2c3d4e5f6/history?page_idx=1" \
+  -H "X-Request-Id: req-hist-1" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
+
+curl -N "http://127.0.0.1:19002/api/v1/sessions/web_a1b2c3d4e5f6/history?page_idx=1" \
+  -H "Accept: text/event-stream" \
+  -H "X-Request-Id: req-hist-sse-1" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1"
+```
+
+#### 企业旁路 `GET /api/sessions*`（无 `/api/v1` 前缀）
+
+挂在**同一 Web HTTP 端口**（默认 19002），仅 **enterprise** 注册（`web_http_sessions_compat.py`）。读 `ChatHistoryStore`，**不是** RPC `session.list` / `session.get_metadata`，**不用** `{ request_id, ok, data }` 信封。
+
+身份：query `user` 优先；缺省或空白则读 `X-User-Id`。本旁路路由**不**把 `X-Group-Id` / `X-Bot-Id` 传入 store。`user` 与 Header 都缺时，store 侧按 `guest` 过滤。
+
+##### `GET /api/sessions`
+
+
+| query    | 必填  | 默认 | 约束 | 说明 |
+| -------- | --- | --- | --- | --- |
+| `limit`  | 否   | 20  | 1..100 | 与 `/api/v1/sessions` 的 1..200 不同 |
+| `offset` | 否   | 0   | ≥0 | |
+| `user`   | 否   | —   | 优先于 `X-User-Id` | |
+
+
+成功直接：
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "web_a1b2c3d4e5f6",
+      "title": "会议纪要",
+      "user": "u1"
+    }
+  ]
+}
+```
+
+没有 `request_id` / `ok` / `data` / `total`。
+
+```bash
+curl -sS "http://127.0.0.1:19002/api/sessions?limit=20&offset=0&user=u1"
+curl -sS "http://127.0.0.1:19002/api/sessions?limit=20&offset=0" \
+  -H "X-User-Id: u1"
+```
+
+##### `GET /api/sessions/{session_id}`
+
+旁路详情（瘦对白 `messages` 等）。身份规则同上。不存在或身份不符 → **404** 且 body 为 `{"error":"not_found"}`（同样无统一信封）。path 为空 → **400** `{"error":"missing_session_id"}`。
+
+```bash
+curl -sS "http://127.0.0.1:19002/api/sessions/web_a1b2c3d4e5f6" \
+  -H "X-User-Id: u1"
+```
+
+#### `/api/v1/sessions*` 与 `/api/sessions*` 差异
+
+
+| 项 | `GET /api/v1/sessions*` | `GET /api/sessions*`（旁路） |
+| --- | --- | --- |
+| 谁注册 | 所有 edition | **仅 enterprise** |
+| 用途 | RPC：`session.list` / `get_metadata` / `history.get` | Web Pod 兼容：直读 ChatHistoryStore |
+| 身份 | 租户头走 dispatch 路由身份（`X-User-Id` / `X-Group-Id` / `X-Bot-Id`） | **仅** query `user`，否则 `X-User-Id`；不传 group/bot |
+| 信封 | §1.3 `{ request_id, ok, data\|error, metadata }` | 列表 `{sessions:[…]}`；详情为 store 对象；错误 `{error:…}` |
+| 历史 | `/api/v1/sessions/{id}/history`：JSON 或 SSE | 详情里带 messages；无独立 history SSE |
+| 分页 | list：`limit` 1..200；history：`page_idx`≥1 | list：`limit` 默认 20、1..100 |
+
 
 ---
 
@@ -793,6 +1146,61 @@ curl -sS -X POST "http://127.0.0.1:19002/api/v1/chat/web_a1b2c3d4e5f6/actions/in
   -H "X-Request-Id: req-interrupt-1" \
   -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1" \
   -d '{"intent":"cancel"}'
+```
+
+### 4.6 恢复对话 — `chat.resume`
+
+WS 业务语义见 [Gateway接口文档.md](./Gateway接口文档.md) **§3.5**（Web 前端也可用 **§4** `chat.interrupt` + `intent: "resume"`）。本节只写 HTTP 契约。
+
+`POST /api/v1/chat/resume` 走 `_unary(..., is_stream=True)`：等到首帧 `res` 后即拆 outbound，**本请求不返回 SSE**。`accepted: true` **只表示请求已被受理，不等于任务已完成**。HTTP **不保证**原 `chat.send` SSE 会续接后续 delta/final。
+
+**目标会话必须显式给出**：body `session_id` 或头 `X-Session-Id`（`bind_http_session`）。两者都缺时会生成内部 `webhttp_*` 占位 id，**不能**当作恢复目标。
+
+`chat.resume` 与 `chat.send` / `chat.user_answer` 一样做身份冲突检查：Header 与 body 同时带了同一身份字段且值不一致 → `400 IDENTITY_CONFLICT`。
+
+```http
+POST /api/v1/chat/resume HTTP/1.1
+Host: 127.0.0.1:19002
+Content-Type: application/json
+X-Request-Id: req-resume-1
+X-Session-Id: web_a1b2c3d4e5f6
+X-User-Id: u1
+X-Group-Id: g1
+X-Bot-Id: b1
+```
+
+```json
+{
+  "session_id": "web_a1b2c3d4e5f6"
+}
+```
+
+成功 — **一元 JSON `200`**（handler `_chat_resume` 的 payload 进 `data`）：
+
+```json
+{
+  "request_id": "req-resume-1",
+  "ok": true,
+  "data": {
+    "accepted": true,
+    "session_id": "web_a1b2c3d4e5f6"
+  },
+  "metadata": {
+    "rpc_method": "chat.resume",
+    "transport": "web-http"
+  }
+}
+```
+
+**按当前实现取恢复后结果：** 本 HTTP 调用结束后，用 `GET /api/v1/sessions/{session_id}/history`（§2.5）拉取会话历史；或再开一条 `POST /api/v1/chat/completions` SSE（那是**新**流，会按 `new_chat_send` 顶替在途生成）。不要假设旧 SSE 仍在推。
+
+```bash
+curl -sS -X POST "http://127.0.0.1:19002/api/v1/chat/resume" \
+  -H "Content-Type: application/json" \
+  -H "X-Request-Id: req-resume-1" \
+  -H "X-Session-Id: web_a1b2c3d4e5f6" \
+  -H "X-Group-Id: g1" -H "X-Bot-Id: b1" -H "X-User-Id: u1" \
+  -d '{"session_id":"web_a1b2c3d4e5f6"}'
 ```
 
 ---
@@ -1299,10 +1707,15 @@ sequenceDiagram
 | 接口                 | 路径                           | Promise / `data`                        | 额外事件                                     |
 | ------------------ | ---------------------------- | --------------------------------------- | ---------------------------------------- |
 | `session.create`   | `POST /sessions`             | `{ session_id, … }`（201）                | 无                                        |
+| `session.list`     | `GET /sessions`              | `{ sessions, total, limit, offset }`    | 无；query 见 §2.4                          |
+| `session.get_metadata` | `GET /sessions/{id}`     | metadata 对象                            | 无                                        |
+| `session.rename` / `session.pin` | `PATCH /sessions/{id}` | 见 §2.4 分流                             | **一次只走一条**                             |
+| `session.delete`   | `DELETE /sessions/{id}`      | 见 §2.4                                 | remote 可能仍 200 + `history_store_deleted` |
+| `history.get`      | `GET /sessions/{id}/history` | JSON `data.messages` 或 SSE             | 见 §2.5                                   |
 | `chat.send`        | `POST /chat/completions`     | `{ accepted, session_id }`（接单）          | `web.response` + §1.7 直至 `final`/`error` |
 | `chat.interrupt`   | `POST …/actions/interrupt`   | 含 `event_type=chat.interrupt_result`    | 前端可合成 interrupt 事件；原 SSE 不保证再推           |
 | `chat.user_answer` | `POST …/actions/user_answer` | `{ accepted, session_id, request_id? }` | 续流在**原** send SSE                        |
-| `chat.resume`      | `POST /chat/resume`          | `{ accepted, session_id }`（一元）          | 恢复中断对话；完整契约见 `/catalog` / OpenAPI         |
+| `chat.resume`      | `POST /chat/resume`          | `{ accepted, session_id }`（一元，非 SSE）   | **不保证**原 SSE 续接；结果用 history（§4.6）     |
 
 
 ---
@@ -1311,7 +1724,7 @@ sequenceDiagram
 
 ## 8. 联调必读（注意事项）
 
-1. 路径以 `/sessions`、`/chat/completions`、`…/actions/interrupt|user_answer` 为准；勿用清单草案扁平路径。
+1. 路径以 `/sessions`、`/chat/completions`、`…/actions/interrupt|user_answer`、`/chat/resume` 为准；勿用清单草案扁平路径。
 2. 只认标准 SSE，不要实现 NDJSON。
 3. `data:` 是 payload，不是整帧 WS JSON。
 4. `accepted` / `web.response` ≠ 成功结束。
@@ -1324,6 +1737,10 @@ sequenceDiagram
 11. `/ws` 与 `/api/v1` 可同进程并行；WS 下线日**代码未定义**。
 12. 以运行中 `/openapi.json` 与 `GET /api/v1/catalog` 为准。
 13. 图片附件用 `base64Data` / `base64_data`，不要用 `data`。
+14. `PATCH /sessions/{id}`：有 `pinned`/`pin` 键只走置顶，**不会**同时重命名；推荐 `{"pinned":true}`。
+15. `GET …/history` 默认聚合 JSON；`Accept: text/event-stream` 才是 SSE。
+16. `GET /api/sessions*` 无统一信封，且仅 enterprise；不要当成 `/api/v1/sessions*`。
+17. `POST /chat/resume` 一元 `accepted` ≠ 完成；结果用 `GET …/history`，不要假定原 SSE 续接。
 
 ---
 
@@ -1332,6 +1749,12 @@ sequenceDiagram
 ## 9. 回归检查清单
 
 - [ ] `POST /sessions` → **201** + 完整信封 + `data.session_id`  
+- [ ] `GET /sessions?limit=&offset=` → `data.sessions` / `total`  
+- [ ] `PATCH /sessions/{id}` `{"title":"新标题"}` 走 rename；`{"pinned":true}` 走 pin；两者同传只 pin  
+- [ ] `DELETE /sessions/{id}`：本地不存在为 404；remote 看 `history_store_deleted`  
+- [ ] `GET /sessions/{id}/history` 默认 JSON；带 `Accept: text/event-stream` 为 SSE `history.message`  
+- [ ] 企业 `GET /api/sessions` 返回 `{sessions:[…]}`，无 `ok`/`data`；`user` 优先于 `X-User-Id`  
+- [ ] `GET /api/sessions/{id}` 不存在 → 404 `{"error":"not_found"}`  
 - [ ] 租户头齐全，无企业路由 `VALIDATION`  
 - [ ] `POST /chat/completions` → `200` + `text/event-stream`  
 - [ ] 可解析 `web.response`（或合成 accepted），并以 `chat.final` / `chat.error` 结束  
@@ -1341,6 +1764,7 @@ sequenceDiagram
 - [ ] `interrupt` 一元含 `event_type: chat.interrupt_result`  
 - [ ] 仅关闭 SSE **不能**代替 interrupt  
 - [ ] 同 session 二次 send 顶替旧 SSE  
+- [ ] `POST /chat/resume` 一元 `{accepted, session_id}`；结果用 history，不假设原 SSE 续接  
 - [ ] `GET /cron/jobs` 租户头齐全 → `data.jobs[]`，缺失租户头返回 `400`  
 - [ ] `POST /cron/jobs/{id}/actions/run-now` → `data` 含 `accepted`/`run_id`/`session_id`  
 - [ ] cron 无 SSE push；轮询 `last_session_id` 变化可感知新结果  
@@ -1364,6 +1788,7 @@ sequenceDiagram
 | 取消流 / interrupt_result      | `…/message_handler/message_handler.py`                                        |
 | 事件白名单                       | `…/web_ws_transport.py`                                                       |
 | catalog                     | `…/web_http_routes.py`                                                        |
+| 企业旁路 `/api/sessions*`      | `…/web_http_sessions_compat.py`                                               |
 | cron 路由 / 租户头               | `…/web_http_routes.py`（`_CRON_ROUTES`）、`…/app_web_handlers.py`（`_cron_job_*`） |
 | cron 数据模型 / 字段语义            | `jiuwenswarm/gateway/cron/models.py`（`CronJob.to_dict`）                       |
 | cron 调度 / run-now / preview | `jiuwenswarm/gateway/cron/controller.py`                                      |

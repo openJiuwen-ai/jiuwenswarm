@@ -1,0 +1,73 @@
+[
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "spanId": "1000000000000001", "name": "llm.call",
+      "startTimeUnixNano": "10000000000", "endTimeUnixNano": "11000000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.conversation.id", "value": { "stringValue": "shape-session" } },
+        { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Question\"}]}]" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"reasoning\",\"content\":\"Private reasoning\"},{\"type\":\"text\",\"content\":\"Reasoned answer\"},{\"type\":\"tool_call\",\"id\":\"call-trimmed\",\"name\":\"lookup\",\"arguments\":{\"q\":\"one\"}}]}]" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "1" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "spanId": "2000000000000002", "name": "llm.call",
+      "startTimeUnixNano": "12000000000", "endTimeUnixNano": "13000000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.conversation.id", "value": { "stringValue": "shape-session" } },
+        { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Question\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Reasoned answer\"}]}]" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"reasoning\",\"content\":\"Tool reasoning\"},{\"type\":\"text\",\"content\":\"Tool answer\"},{\"type\":\"tool_call\",\"id\":\"call-shape\",\"name\":\"lookup\",\"arguments\":\"{\\\"limit\\\":2,\\\"q\\\":\\\"two\\\"}\"}]}]" } },
+        { "key": "gen_ai.tool_calls", "value": { "stringValue": "[{\"id\":\"call-shape\",\"name\":\"lookup\",\"arguments\":{\"q\":\"two\",\"limit\":2}}]" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "2" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "spanId": "3000000000000003", "name": "llm.call",
+      "startTimeUnixNano": "14000000000", "endTimeUnixNano": "15000000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.conversation.id", "value": { "stringValue": "shape-session" } },
+        { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Question\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Reasoned answer\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"reasoning\",\"content\":\"Tool reasoning\"},{\"type\":\"text\",\"content\":\"Tool answer\"},{\"type\":\"tool_call\",\"id\":\"call-shape\",\"arguments\":\"\"}]}]" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Gap output\"}]}]" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "3" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "spanId": "4000000000000004", "name": "llm.call",
+      "startTimeUnixNano": "16000000000", "endTimeUnixNano": "17000000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.conversation.id", "value": { "stringValue": "shape-session" } },
+        { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Question\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Reasoned answer\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"reasoning\",\"content\":\"Tool reasoning\"},{\"type\":\"text\",\"content\":\"Tool answer\"},{\"type\":\"tool_call\",\"id\":\"call-shape\",\"arguments\":\"\"}]}]" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Another output\"}]}]" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "4" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  },
+  {
+    "resourceSpans": [{ "scopeSpans": [{ "spans": [{
+      "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "spanId": "5000000000000005", "name": "llm.call",
+      "startTimeUnixNano": "18000000000", "endTimeUnixNano": "19000000000",
+      "attributes": [
+        { "key": "gen_ai.operation.name", "value": { "stringValue": "chat" } },
+        { "key": "gen_ai.conversation.id", "value": { "stringValue": "shape-session" } },
+        { "key": "gen_ai.input.messages", "value": { "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Question\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Reasoned answer\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"reasoning\",\"content\":\"Tool reasoning\"},{\"type\":\"text\",\"content\":\"Tool answer\"},{\"type\":\"tool_call\",\"id\":\"call-shape\",\"arguments\":\"\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Reasoned answer\"}]}]" } },
+        { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"End output\"}]}]" } },
+        { "key": "openjiuwen.request.number", "value": { "intValue": "5" } },
+        { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "inference" } }
+      ], "status": { "code": 1 }
+    }] }] }]
+  }
+]

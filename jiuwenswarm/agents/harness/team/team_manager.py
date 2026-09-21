@@ -20,6 +20,7 @@ from openjiuwen.agent_teams.paths import team_home
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.context import reset_session_id, set_session_id
+from openjiuwen.agent_teams import observability as team_observability
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.harness import DeepAgent
@@ -64,11 +65,9 @@ from jiuwenswarm.common.config import (
     get_skill_create_enabled,
     get_skill_evolution_enabled,
 )
-from jiuwenswarm.agents.harness.observability_runtime import (
-    acquire_observability_demand,
-    build_observability_config,
-    release_observability_demand,
-)
+from jiuwenswarm.agents.harness.observability_runtime import build_observability_config
+from jiuwenswarm.observability.config import load_trajectory_store_settings  # noqa: E402
+from jiuwenswarm.observability.runtime import sync_trajectory_runtime  # noqa: E402
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     MemberInfo,
@@ -141,6 +140,9 @@ def sync_team_observability() -> None:
     Evolution also requests the provider when the explicit switch is disabled.
     """
     global _observability_active, _runtime_managed_observability
+
+    config = get_config()
+    trajectory_settings = load_trajectory_store_settings(config)
     try:
         unified_active = bool(_get_unified_runtime().is_unified_active())
     except Exception as exc:
@@ -152,7 +154,7 @@ def sync_team_observability() -> None:
         # Same gap as single-agent: unified runtime must still host the
         # shared TrajectorySpanProcessor for skill / team evolution rails.
         try:
-            from jiuwenswarm.agents.harness.observability_runtime import (
+            from openjiuwen.extensions.observability.demand import (
                 ensure_trajectory_span_processor_attached,
             )
 
@@ -163,17 +165,24 @@ def sync_team_observability() -> None:
                 "on unified path: %s",
                 exc,
             )
+        try:
+            sync_trajectory_runtime(trajectory_settings, demand="team")
+        except Exception as exc:
+            logger.warning("[TeamObservability] trajectory runtime init failed: %s", exc)
         return
     if _runtime_managed_observability:
         _observability_active = False
         _runtime_managed_observability = False
 
-    config = get_config()
     cfg = config.get("team_observability", {}) or {}
     evolution_requested = get_skill_evolution_enabled(config)
-    want_enabled = bool(cfg.get("enabled", False)) or evolution_requested
+    want_enabled = bool(cfg.get("enabled", False)) or trajectory_settings.enabled or evolution_requested
 
     if not want_enabled:
+        try:
+            sync_trajectory_runtime(trajectory_settings, demand="team")
+        except Exception as exc:
+            logger.warning("[TeamObservability] trajectory runtime stop failed: %s", exc)
         if _observability_active:
             shutdown_team_observability()
         return
@@ -185,12 +194,13 @@ def sync_team_observability() -> None:
             service_name="jiuwenswarm",
             traces_dir=traces_dir,
         )
-        provider_existed = acquire_observability_demand(
-            "team",
-            observability_config=obs_cfg,
-        )
+        provider_existed = team_observability.acquire_observability(obs_cfg)
         was_active = _observability_active
         _observability_active = True
+        try:
+            sync_trajectory_runtime(trajectory_settings, demand="team")
+        except Exception as exc:
+            logger.warning("[TeamObservability] trajectory runtime init failed: %s", exc)
         if not was_active and not provider_existed:
             if cfg.get("exporter", "otlp_grpc") == "file":
                 logger.info(
@@ -223,7 +233,7 @@ def shutdown_team_observability() -> None:
         _runtime_managed_observability = False
         return
     try:
-        release_observability_demand("team")
+        team_observability.release_observability()
         _observability_active = False
         logger.info("[TeamObservability] disabled")
     except Exception as exc:
@@ -1819,7 +1829,8 @@ class TeamManager:
             logger.info("[TeamManager] all teams cleaned")
 
     def get_team_agent(self, session_id: str) -> TeamAgent | None:
-        return self._team_agents.get(session_id)
+        """Return the live Team leader for either supported runtime path."""
+        return self._team_agents.get(session_id) or self._runner_team_agents.get(session_id)
 
     def _lookup_cached_team_agent(self, session_id: str) -> TeamAgent | None:
         """Return the live TeamAgent if this process still holds one."""

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Parent-scoped subagent history must not land in dest parent jsonl."""
+"""Regression tests for parent-owned subagent history persistence."""
 
 from __future__ import annotations
 
@@ -8,7 +8,45 @@ from jiuwenswarm.common.schema.message import EventType
 from jiuwenswarm.gateway.channel_manager.web.web_ws_transport import (
     _WEB_FULL_PAYLOAD_EVENT_TYPES,
 )
-from jiuwenswarm.server.runtime.session import session_history
+from jiuwenswarm.server.runtime.session import session_history, session_metadata
+
+
+def test_subagent_history_writes_use_dedicated_child_bucket(monkeypatch) -> None:
+    persisted: list[tuple[str, str, list[dict], str | None]] = []
+    metadata_updates: list[dict] = []
+    monkeypatch.setattr(
+        session_history,
+        "_batch_write_subagent_items",
+        lambda sid, child_id, items, root: persisted.append((sid, child_id, items, root)),
+    )
+    monkeypatch.setattr(
+        session_metadata,
+        "update_session_metadata",
+        lambda **kwargs: metadata_updates.append(kwargs),
+    )
+
+    session_history.append_history_record(
+        session_id="parent-session",
+        request_id="request-1",
+        channel_id="web",
+        role="assistant",
+        content="result",
+        timestamp=1.0,
+        event_type="chat.final",
+        task_id="task-1",
+        subagent_id="subagent-1",
+        mode="subagent",
+    )
+
+    assert len(persisted) == 1
+    sid, child_id, items, _root = persisted[0]
+    assert sid == "parent-session"
+    assert child_id == "subagent-1"
+    assert len(items) == 1
+    assert items[0]["session_id"] == "parent-session"
+    assert items[0]["subagent_id"] == "subagent-1"
+    assert items[0]["mode"] == "subagent"
+    assert metadata_updates == []
 
 
 def test_subagent_rows_go_under_parent_subagents_dir(tmp_path, monkeypatch) -> None:

@@ -232,7 +232,7 @@ async def test_code_agent_tree_keeps_core_spans_and_adds_rich_attributes(
 
     assert len(llm_spans) == 1
     assert len(tool_spans) == 1
-    assert len(agent_spans) == 1
+    assert len(agent_spans) == 1, [span.name for span in spans]
     assert llm_callbacks[0] is business_result
     assert tool_callbacks[0] is tool_result
     assert llm_spans[0].attributes["gen_ai.input.messages.count"] == 1

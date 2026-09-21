@@ -944,6 +944,38 @@ class AgentManager:
             )
             return self._borrow_agent(agent)
 
+    def get_agent_for_session_nowait(
+        self,
+        channel_id: str,
+        session_id: str,
+    ) -> "JiuWenSwarm | None":
+        """Return the cached channel agent that owns ``session_id`` runtime."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+
+        channel_key = _normalize_channel_id(channel_id)
+        channel_agents = self.agents.get(channel_key, {})
+        if not isinstance(channel_agents, dict):
+            return None
+
+        for cache_key, agent in channel_agents.items():
+            has_runtime = getattr(agent, "has_session_runtime", None)
+            if not callable(has_runtime):
+                continue
+            try:
+                if has_runtime(sid):
+                    return self._borrow_agent(agent)
+            except Exception:
+                logger.exception(
+                    "[AgentManager] session runtime lookup failed: "
+                    "channel_id=%s session_id=%s cache_key=%s",
+                    channel_key,
+                    sid,
+                    cache_key,
+                )
+        return None
+
     def get_agent_nowait(
         self,
         channel_id: str = "",

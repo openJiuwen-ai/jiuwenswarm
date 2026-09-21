@@ -812,7 +812,7 @@ def parse_task_interaction_payload(payload: Any) -> dict[str, Any] | None:
 
     Rail-based interrupts already expose ``__interaction__`` payloads which
     ``_find_interaction_payloads`` picks up; this handles the remaining
-    native-harness shapes so the ask_user question still reaches the frontend. 
+    native-harness shapes so the ask_user question still reaches the frontend.
     Returns ``None`` when no ask_user value is embedded.
     """
     candidates = [

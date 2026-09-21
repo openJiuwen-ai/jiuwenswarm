@@ -5,6 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.handlers import ops as ops_handlers
+from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
+from tests.unit_tests.conftest import patch_handler_name
 
 
 _OJ_MEMORY_MANAGER_MODULE = "openjiuwen.core.memory.lite.manager"
@@ -23,14 +29,6 @@ def _maybe_patch_aclose_memory_cache():
             yield
     else:
         yield
-
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
-from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
-from jiuwenswarm.server.handlers import ops as ops_handlers
-from tests.unit_tests.conftest import patch_handler_name
-
 
 def _ctx_for_test(ws, request, send_lock, server=None):
     from jiuwenswarm.server.context import AgentServerServices, RequestContext

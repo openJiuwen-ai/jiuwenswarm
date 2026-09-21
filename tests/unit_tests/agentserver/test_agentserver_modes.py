@@ -3166,7 +3166,7 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: shared_ws)
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: fake_processor,
     )
 
@@ -3215,7 +3215,7 @@ def test_build_ttse_rail_skips_when_trajectory_processor_unavailable(monkeypatch
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: None,
     )
 
@@ -3248,7 +3248,7 @@ def test_build_ttse_rail_ignores_configured_store_path(monkeypatch, tmp_path):
         lambda: {"react": {"ttse": {"store_path": str(tmp_path / "yaml-bank.json")}}},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: object(),
     )
 
@@ -3286,7 +3286,7 @@ def test_build_ttse_rail_ignores_configured_inject_mode(monkeypatch, tmp_path):
         lambda: {"react": {"ttse": {"inject_mode": "legacy_system"}}},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: object(),
     )
 
@@ -3326,7 +3326,7 @@ def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):
         FakeProvider,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: object(),
     )
 
@@ -3374,7 +3374,7 @@ def test_build_ttse_rail_skips_embedding_when_incomplete(monkeypatch, tmp_path):
     monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: object(),
     )
 

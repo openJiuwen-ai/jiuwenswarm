@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import atexit
+import importlib
 import logging
 import logging.handlers
 import os
@@ -167,6 +168,13 @@ from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
 )
 
 apply_task_tool_debug_patch()
+
+# Ensure every harness-created subagent receives the SDK observability rail.
+# Loading this module earlier changes startup ordering, so keep it deferred
+# until the compatibility patches above are installed.
+importlib.import_module(
+    "openjiuwen.harness.observability"
+).install_subagent_observability_hook()
 
 # Subagent thinking control (task_tool optional ``thinking`` param).
 # Requires openjiuwen core with llm_call_kwargs + thinking_hook; otherwise no-op.
