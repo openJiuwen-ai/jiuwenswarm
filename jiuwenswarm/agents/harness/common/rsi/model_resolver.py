@@ -200,6 +200,12 @@ class RsiModelConfigResolver:
         request_data.pop("model_name", None)
         request_data["model"] = model_name
         request_data["max_tokens"] = RSI_MAX_OUTPUT_TOKENS
+        if request_data.get("context_window") is None:
+            from openjiuwen.core.context_engine.context.context_utils import ContextUtils
+
+            # Persist the resolved capacity, not an unrelated fixed UI default.
+            # A gateway-specific limit explicitly set on the model remains authoritative.
+            request_data["context_window"] = ContextUtils.resolve_context_max(model_name=model_name)
         payload = {
             "model_client_config": client_data,
             "model_request_config": request_data,

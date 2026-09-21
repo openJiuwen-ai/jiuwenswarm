@@ -123,6 +123,48 @@ def test_model_resolver_uses_models_list_global_origin_index(tmp_path: Path, rol
     assert payload["model_client_config"]["api_key"] == "secret-same"
 
 
+@pytest.mark.parametrize("window, expected", [(None, 1048576), (262144, 262144), (131072, 131072)])
+@pytest.mark.parametrize("role", ["evaluation", "analysis", "member_optimization", "judge"])
+def test_rsi_model_capacity_preserves_explicit_gateway_limits(tmp_path, window, expected, role):
+    entry = _entry("deepseek-v4-pro")
+    entry["model_config_obj"]["context_window"] = window
+    resolver = RsiModelConfigResolver(
+        config_loader=lambda: {},
+        defaults_loader=lambda _: [entry],
+        zen_loader=lambda: [],
+        model_builder=lambda mcc, mco: SimpleNamespace(
+            model_client_config=_FakeModelConfig(mcc),
+            model_config=_FakeModelConfig({"model_name": mcc["model_name"], **mco}),
+        ),
+    )
+    resolver.resolve_to_file("deepseek-v4-pro", role, tmp_path)
+    payload = yaml.safe_load((tmp_path / f"{role}.yaml").read_text(encoding="utf-8"))
+    assert payload["model_request_config"]["context_window"] == expected
+    assert entry["model_config_obj"]["context_window"] == window
+
+
+def test_shared_rsi_model_template_matches_materialized_capacity(tmp_path):
+    from importlib.resources import files
+
+    path = files("jiuwenswarm.resources").joinpath("rsi").joinpath("deepseek-v4-pro.yaml")
+    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["defaults"][0]
+    assert entry["model_client_config"]["api_key"] == "${RSI_OPTIMIZER_API_KEY}"
+    assert entry["model_client_config"]["api_base"] == "${RSI_OPTIMIZER_API_BASE}"
+    resolver = RsiModelConfigResolver(
+        config_loader=lambda: {},
+        defaults_loader=lambda _: [entry],
+        zen_loader=lambda: [],
+        model_builder=lambda mcc, mco: SimpleNamespace(
+            model_client_config=_FakeModelConfig(mcc),
+            model_config=_FakeModelConfig({"model_name": mcc["model_name"], **mco}),
+        ),
+    )
+    resolver.resolve_to_file("rsi-optimizer", "analysis", tmp_path)
+    request = yaml.safe_load((tmp_path / "analysis.yaml").read_text(encoding="utf-8"))["model_request_config"]
+    assert request["context_window"] == 1048576
+    assert request["max_tokens"] == 100000
+
+
 def test_model_resolver_rejects_unknown_reference_without_default_fallback(
     tmp_path: Path,
 ) -> None:

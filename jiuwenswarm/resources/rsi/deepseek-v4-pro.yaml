@@ -1,0 +1,18 @@
+# Merge this entry into models.defaults in your JiuwenSwarm configuration.
+# Set the endpoint and key through environment variables; never commit credentials.
+# Select rsi-optimizer in the RSI optimizer model picker.
+# Use a smaller context_window if your gateway imposes a lower limit.
+models:
+  defaults:
+    - alias: rsi-optimizer
+      model_client_config:
+        model_name: deepseek-v4-pro
+        client_provider: OpenAI
+        api_base: ${RSI_OPTIMIZER_API_BASE}
+        api_key: ${RSI_OPTIMIZER_API_KEY}
+        timeout: 900
+        max_retries: 0
+        verify_ssl: true
+      model_config_obj:
+        context_window: 1048576
+        max_tokens: 100000
