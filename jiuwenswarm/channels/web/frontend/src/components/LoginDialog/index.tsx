@@ -42,6 +42,12 @@ export function LoginDialog({ open, onClose }: LoginDialogProps) {
   const checkLogin = useAuthStore((s) => s.checkLogin);
   const cancelLogin = useAuthStore((s) => s.cancelLogin);
   const logout = useAuthStore((s) => s.logout);
+  const switchAccount = useAuthStore((s) => s.switchAccount);
+  const continueSwitchAccount = useAuthStore((s) => s.continueSwitchAccount);
+  const cancelSwitchAccount = useAuthStore((s) => s.cancelSwitchAccount);
+  const switchStep = useAuthStore((s) => s.switchStep);
+  const accountCenterUrl = useAuthStore((s) => s.accountCenterUrl);
+  const sameAccountAfterSwitch = useAuthStore((s) => s.sameAccountAfterSwitch);
 
   const isOpen = open ?? selfOpen;
 
@@ -114,12 +120,43 @@ export function LoginDialog({ open, onClose }: LoginDialogProps) {
     >
       {isOpen && (
         <div className="login-dialog__body">
-          {islogin ? (
+          {switchStep === 'signout' ? (
+            <div className="flex flex-col">
+              <h3 id={TITLE_ID} className="text-base font-semibold text-text mb-2">
+                {t('auth.huawei.switchAccount')}
+              </h3>
+              <p className="text-sm text-text-muted mb-2">{t('auth.huawei.switchSignOutHint')}</p>
+              <a
+                className="text-sm text-accent underline mb-4 break-all"
+                href={accountCenterUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {accountCenterUrl}
+              </a>
+              <div className="flex gap-2 justify-end">
+                <button type="button" className="btn !px-4 !py-2" onClick={cancelSwitchAccount}>
+                  {t('auth.huawei.cancel')}
+                </button>
+                <button
+                  type="button"
+                  className="btn primary !px-4 !py-2"
+                  onClick={() => void continueSwitchAccount()}
+                >
+                  {t('auth.huawei.switchContinue')}
+                </button>
+              </div>
+            </div>
+          ) : islogin ? (
             /* ── 已登录：账号面板。不再显示登录引导文案 ── */
             <div className="flex flex-col">
               <h3 id={TITLE_ID} className="text-base font-semibold text-text mb-4">
                 {t('auth.huawei.accountTitle')}
               </h3>
+
+              {sameAccountAfterSwitch && (
+                <p className="text-xs text-warning mb-3">{t('auth.huawei.switchSameAccount')}</p>
+              )}
 
               <div className="flex items-center gap-3 mb-4">
                 <span className="w-9 h-9 shrink-0 rounded-full bg-accent/15 text-accent flex items-center justify-center">
@@ -164,6 +201,9 @@ export function LoginDialog({ open, onClose }: LoginDialogProps) {
               <div className="flex gap-2 justify-end">
                 <button type="button" className="btn !px-4 !py-2" onClick={() => void logout()}>
                   {t('auth.huawei.logout')}
+                </button>
+                <button type="button" className="btn !px-4 !py-2" onClick={() => void switchAccount()}>
+                  {t('auth.huawei.switchAccount')}
                 </button>
                 <button type="button" className="btn primary !px-4 !py-2" onClick={close}>
                   {t('auth.huawei.done')}

@@ -81,9 +81,16 @@ function installDom() {
 }
 
 /** 挂一个只在挂载时 start() 一组名单的探针组件，把 flow 的回调计数暴露出来。 */
-function mountFlow({ names, connectMock }) {
+function mountFlow({ names, connectMock, installMock, loadListMock, builtinConnectors = [] }) {
   const { usePendingConnectorFlow, useConnectorStore } = hookMod;
-  useConnectorStore.setState({ connect: connectMock });
+  useConnectorStore.setState({
+    connect: connectMock,
+    installPackage: installMock ?? (async () => null),
+    loadList: loadListMock ?? (async () => {}),
+    connectors: [],
+    builtinConnectors,
+    myConnectors: [],
+  });
   const calls = { allConnected: 0, aborted: [] };
   const container = document.getElementById('root');
   const rootNode = createRoot(container);
@@ -156,6 +163,50 @@ test('全部连接成功：只触发 onAllConnected，不触发 onAborted', asyn
     await flow.render();
     assert.equal(flow.calls.allConnected, 1);
     assert.deepEqual(flow.calls.aborted, []);
+  } finally {
+    await flow.unmount();
+    restore();
+  }
+});
+
+test('Hub connector 未安装：先 mcp.install，不再误走 mcp.connect', async () => {
+  const restore = installDom();
+  const connected = [];
+  const installed = [];
+  const flow = mountFlow({
+    names: ['crm'],
+    builtinConnectors: [{
+      id: 'hub-crm',
+      name: 'crm',
+      runtimePackageName: 'crm',
+      hubAssetId: 'hub-crm',
+      displayName: 'crm',
+      description: '',
+      category: '',
+      integrationType: 'stdio-mcp',
+      connectionState: 'disconnected',
+      hasBundledSkills: false,
+      source: 'hub',
+      installed: false,
+    }],
+    connectMock: async (name) => {
+      connected.push(name);
+      return { type: 'connected', name };
+    },
+    installMock: async (assetId) => {
+      installed.push(assetId);
+      return {
+        type: 'installed',
+        item: { id: assetId, name: 'crm', installed: true },
+        connect: { type: 'connected', name: 'crm' },
+      };
+    },
+  });
+  try {
+    await flow.render();
+    assert.deepEqual(installed, ['hub-crm']);
+    assert.deepEqual(connected, []);
+    assert.equal(flow.calls.allConnected, 1);
   } finally {
     await flow.unmount();
     restore();

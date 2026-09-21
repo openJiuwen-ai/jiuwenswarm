@@ -1,12 +1,60 @@
 import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { X, Info, HelpCircle } from 'lucide-react';
+import { HelpCircle, CircleCheck, Clock3, CircleAlert, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { buildOAuthUrl, type OAuthProvider } from '../../utils/gitcodeOAuth';
+import tipIcon from '../../assets/tip.svg';
+import { FormDrawer, Input, Textarea } from '../ui';
+import {
+  beginHubOAuth,
+  getStoredOAuthProvider,
+  getStoredOAuthUser,
+  waitForHubOAuth,
+  type OAuthProvider,
+} from '../../utils/gitcodeOAuth';
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { publishOutcome, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
-import type { AssetReference, PublishMetadata } from '../../types/assetPublish';
+import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
+import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
+import githubIcon from '../../assets/settings/channels/GitHub.svg';
 import './style.css';
+
+/** 字段提示问号：useAdaptiveTooltip 弹出说明（hook 不能在 map 内调用，抽为子组件） */
+function FieldHint({
+  text,
+  field,
+  testId = 'asset-publish-field-hint',
+}: {
+  text: string;
+  field: string;
+  testId?: string;
+}) {
+  const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top' });
+  return (
+    <>
+      <span
+        className="asset-publish-hint"
+        tabIndex={0}
+        aria-label={text}
+        data-tooltip={text}
+        {...handlers}
+        onClick={(event) => {
+          if (!event.currentTarget.closest('summary')) return;
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        onKeyDown={(event) => {
+          if (event.currentTarget.closest('summary')) event.stopPropagation();
+        }}
+        data-testid={testId}
+        data-variant={field}
+      >
+        <HelpCircle size={14} aria-hidden="true" />
+      </span>
+      {tooltip}
+    </>
+  );
+}
+
 const messages = {
   zh: {
     title: '发布资源',
@@ -18,7 +66,8 @@ const messages = {
     display_name: '展示名称',
     version: '版本',
     description: '简介',
-    tags: '标签（逗号分隔）',
+    tags: '标签',
+    tagsPlaceholder: '输入多个标签时使用逗号分隔',
     version_desc: '版本说明',
     visibility: '可见范围',
     public: '公开',
@@ -63,6 +112,30 @@ const messages = {
     empty: '无',
     draftExpiry: '检查结果有效期',
     review: '请核对可见范围与内容，确认后由后台上传。',
+    localSource: '本地资源',
+    basicInfo: '基本信息',
+    publishSettings: '发布设置',
+    advancedSettings: '高级设置',
+    advancedHint: '更新已有资源或覆盖版本时使用',
+    publicDescription: '审核通过后可在 Hub 中公开展示。',
+    privateDescription: '仅对当前发布账号可见。',
+    switchAccount: '切换账号',
+    loginWith: '使用',
+    signedIn: '已登录',
+    forceWarning: '将尝试覆盖 Hub 中的同版本内容，请确认你有更新权限。',
+    history: '本地发布记录',
+    historyHelp: '显示当前账号在本机发起的发布任务，用于查看提交结果或找回超时任务，不代表 Hub 最新审核状态。',
+    historyEmpty: '暂无本地发布记录',
+    assetId: 'Hub 资产 ID',
+    resultVersion: '版本',
+    resultTime: '更新时间',
+    invalidAssetName: '仅支持小写字母、数字、下划线和连字符，最长 64 个字符。',
+    invalidVersion: '请输入 1.0.0 格式版本号或七位小写提交号。',
+    invalidDisplayName: '请输入展示名称，最长 128 个字符。',
+    assetNameHelp: '发布名称是 Hub 中资源包的技术标识，只支持小写字母、数字、下划线和连字符，最长 64 个字符。',
+    displayNameHelp: '展示名称用于 Hub 广场卡片和详情页展示，可以使用中文，最长 128 个字符。',
+    descriptionHelp: '简介发布后显示在 Hub 广场卡片和详情页中，用于说明资源的主要能力。',
+    tagsHelp: '标签用于 Hub 的分类、搜索和资源识别，多个标签使用逗号分隔。',
   },
   en: {
     title: 'Publish resource',
@@ -74,7 +147,8 @@ const messages = {
     display_name: 'Display name',
     version: 'Version',
     description: 'Description',
-    tags: 'Tags (comma separated)',
+    tags: 'Tags',
+    tagsPlaceholder: 'Separate multiple tags with commas',
     version_desc: 'Release notes',
     visibility: 'Visibility',
     public: 'Public',
@@ -120,24 +194,60 @@ const messages = {
     empty: 'None',
     draftExpiry: 'Review expires',
     review: 'Check visibility and package contents. Confirming starts the backend upload.',
+    localSource: 'Local resource',
+    basicInfo: 'Basic information',
+    publishSettings: 'Publishing settings',
+    advancedSettings: 'Advanced settings',
+    advancedHint: 'For updating an existing resource or overwriting a version',
+    publicDescription: 'Visible in Hub after moderation approval.',
+    privateDescription: 'Visible only to the publishing account.',
+    switchAccount: 'Switch account',
+    loginWith: 'Sign in with',
+    signedIn: 'signed in',
+    forceWarning: 'This will attempt to overwrite the same Hub version. Confirm that you have update permission.',
+    history: 'Local publishing history',
+    historyHelp:
+      'Shows publishing tasks started by this account on this device, for checking results or recovering timed-out submissions. It does not represent the latest Hub moderation status.',
+    historyEmpty: 'No local publishing records',
+    assetId: 'Hub asset ID',
+    resultVersion: 'Version',
+    resultTime: 'Updated',
+    invalidAssetName: 'Use lowercase letters, numbers, underscores, or hyphens; maximum 64 characters.',
+    invalidVersion: 'Enter a version such as 1.0.0 or a seven-character lowercase revision.',
+    invalidDisplayName: 'Enter a display name of at most 128 characters.',
+    assetNameHelp:
+      'The package identifier in Hub. Use lowercase letters, numbers, underscores, or hyphens; maximum 64 characters.',
+    displayNameHelp: 'The user-facing name shown on Hub cards and detail pages; maximum 128 characters.',
+    descriptionHelp: 'Shown on Hub cards and detail pages to explain the main capabilities of the resource.',
+    tagsHelp: 'Used for Hub categories, search, and discovery. Separate multiple tags with commas.',
   },
 };
 type MessageKey = keyof typeof messages.en;
 function display(value: unknown): string {
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }
+function hubHost(value?: string): string {
+  if (!value) return '';
+  try {
+    return new URL(value).host;
+  } catch {
+    return value;
+  }
+}
+const providerIcon = (provider: OAuthProvider) => (provider === 'github' ? githubIcon : gitcodeIcon);
 function AssetPublishDrawer({
   reference,
   restored,
   onClose,
 }: {
-  reference: AssetReference;
+  reference: AssetPublishOpenRequest;
   restored?: PublishMetadata;
   onClose: () => void;
 }) {
-  const { t, i18n } = useTranslation();
+  const { i18n } = useTranslation();
   const text = (key: MessageKey) => messages[i18n.language.startsWith('zh') ? 'zh' : 'en'][key];
-  const state = useAssetPublish(reference, restored);
+  const publishReference: AssetReference = { kind: reference.kind, local_id: reference.local_id };
+  const state = useAssetPublish(publishReference, restored);
   const dateText = (value: string | number | undefined) => {
     const time = publishTimestamp(value);
     return Number.isFinite(time) ? new Date(time).toLocaleString(i18n.language) : '';
@@ -165,8 +275,22 @@ function AssetPublishDrawer({
     };
     return code && known[code] ? known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '') : display(value);
   };
-  const panel = useRef<HTMLElement>(null);
+  const panel = useRef<HTMLElement | null>(null);
   const [review, setReview] = useState(false);
+  const [switchingAccount, setSwitchingAccount] = useState(false);
+  const [loginError, setLoginError] = useState('');
+  const [loginBusy, setLoginBusy] = useState(false);
+  const loginAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => loginAbort.current?.abort(), []);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  useEffect(() => {
+    if (state.targetAssetId || state.force) setAdvancedOpen(true);
+  }, [state.targetAssetId, state.force]);
+  useEffect(() => {
+    if (state.submissionLocked || state.error === 'commitUncertain') setHistoryOpen(true);
+  }, [state.submissionLocked, state.error]);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     panel.current?.focus();
@@ -193,302 +317,134 @@ function AssetPublishDrawer({
       previous?.focus();
     };
   }, [onClose]);
-  const login = (provider: OAuthProvider) => {
-    sessionStorage.setItem(PUBLISH_RESTORE_KEY, JSON.stringify({ reference, metadata: state.metadata }));
-    window.location.href = buildOAuthUrl(provider);
+  const login = async (provider: OAuthProvider) => {
+    if (loginBusy) return;
+    const desktopOpen = window.pywebview?.api?.open_external_url;
+    const browserTab = desktopOpen || window.__JIUWEN_DESKTOP__ ? null : window.open('', '_blank');
+    try {
+      setLoginError('');
+      setLoginBusy(true);
+      if (window.__JIUWEN_DESKTOP__ && !desktopOpen) throw new Error('桌面浏览器功能尚未就绪，请重试。');
+      if (!desktopOpen && !browserTab) throw new Error('浏览器阻止了授权窗口，请允许打开新标签页。');
+      if (browserTab) browserTab.opener = null;
+      const attempt = await beginHubOAuth(provider);
+      if (desktopOpen) {
+        const opened = await desktopOpen(attempt.authorize_url);
+        if (!opened) throw new Error('无法打开系统浏览器，请重试。');
+      } else if (browserTab) browserTab.location.href = attempt.authorize_url;
+      loginAbort.current?.abort();
+      const controller = new AbortController();
+      loginAbort.current = controller;
+      await waitForHubOAuth(attempt, controller.signal);
+      setSwitchingAccount(false);
+    } catch (failure) {
+      browserTab?.close();
+      setLoginError(failure instanceof Error ? failure.message : 'OAuth 登录不可用');
+    } finally {
+      setLoginBusy(false);
+    }
   };
   const invalid = validateMetadata(state.metadata).length > 0;
+  const invalidFields = new Set(validateMetadata(state.metadata));
   const fields = ['asset_name', 'version', 'display_name', 'description', 'tags', 'version_desc'] as const;
-  const fieldHints: Record<string, string> = {
-    asset_name: 'skillNameTooltip',
-    display_name: 'displayNameTooltip',
-    description: 'descriptionTooltip',
-    tags: 'tagsTooltip',
+  const fieldHints: Partial<Record<(typeof fields)[number], MessageKey>> = {
+    asset_name: 'assetNameHelp',
+    display_name: 'displayNameHelp',
+    description: 'descriptionHelp',
+    tags: 'tagsHelp',
   };
   const outcome = state.record ? publishOutcome(state.record) : null;
-  return createPortal(
-    <div className="asset-publish-backdrop" data-testid="asset-publish-backdrop">
-      <aside
-        ref={panel}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="asset-publish-title"
-        className="asset-publish-drawer"
-        data-testid="asset-publish-drawer"
-      >
-        <header className="asset-publish-header">
-          <h2 id="asset-publish-title" data-testid="asset-publish-title">
-            {text('title')}
-          </h2>
-          <button
-            type="button"
-            className="asset-publish-close"
-            onClick={onClose}
-            aria-label={text('close')}
-            data-testid="asset-publish-close"
-          >
-            <X size={16} aria-hidden="true" />
-          </button>
-        </header>
+  const ResultIcon =
+    outcome === 'failed'
+      ? CircleAlert
+      : ['queued', 'uploading', 'unknown'].includes(outcome || '')
+        ? Clock3
+        : CircleCheck;
+  const zh = i18n.language.startsWith('zh');
+  const provider = getStoredOAuthProvider();
+  const oauthUser = getStoredOAuthUser();
+  const providerName = provider === 'github' ? 'GitHub' : 'GitCode';
+  const accountName = oauthUser?.name || oauthUser?.login || `${providerName} ${text('signedIn')}`;
+  const assetType = {
+    skill: 'Skill',
+    agent_template: zh ? '专家' : 'Expert',
+    agent_group: zh ? '专家团' : 'Expert group',
+    plugin: zh ? '插件' : 'Plugin',
+    mcp: zh ? '连接器' : 'Connector',
+  }[reference.kind];
+  const invalidText: Partial<Record<(typeof fields)[number], MessageKey>> = {
+    asset_name: 'invalidAssetName',
+    version: 'invalidVersion',
+    display_name: 'invalidDisplayName',
+  };
+  const renderField = (field: (typeof fields)[number], className = '') => (
+    <label
+      key={field}
+      className={`asset-publish-field ${className}`.trim()}
+      data-testid="asset-publish-field"
+      data-variant={field}
+    >
+      <span>
+        {text(field)}
+        {['asset_name', 'display_name', 'version'].includes(field) && (
+          <span className="asset-publish-required" aria-hidden="true">
+            {' '}
+            *
+          </span>
+        )}
+        {fieldHints[field] && <FieldHint text={text(fieldHints[field])} field={field} />}
+      </span>
+      {field === 'description' || field === 'version_desc' ? (
+        <Textarea
+          data-testid={`asset-publish-${field.replaceAll('_', '-')}`}
+          value={state.metadata[field]}
+          onChange={(value) => state.edit({ [field]: value })}
+          rows={3}
+        />
+      ) : (
+        <Input
+          data-testid={`asset-publish-${field.replaceAll('_', '-')}`}
+          value={field === 'tags' ? state.metadata.tags.join(', ') : state.metadata[field]}
+          onChange={(value) =>
+            state.edit({
+              [field]: field === 'tags' ? value.split(',').map((item) => item.trim()) : value,
+            })
+          }
+          required={['asset_name', 'display_name', 'version'].includes(field)}
+          placeholder={
+            field === 'version' ? text('versionHint') : field === 'tags' ? text('tagsPlaceholder') : undefined
+          }
+          invalid={invalidFields.has(field)}
+        />
+      )}
+      {invalidFields.has(field) && invalidText[field] && (
+        <span className="asset-publish-field-error" data-testid="asset-publish-field-error">
+          {text(invalidText[field])}
+        </span>
+      )}
+    </label>
+  );
+  return (
+    <FormDrawer
+      title={text('title')}
+      onClose={onClose}
+      testId="asset-publish-drawer"
+      className="asset-publish-drawer"
+      panelRef={panel}
+      closeTestId="asset-publish-close"
+      notice={
         <div className="asset-publish-notice" data-testid="asset-publish-notice">
-          <Info size={14} aria-hidden="true" />
+          <img src={tipIcon} alt="" aria-hidden="true" className="w-4 h-4" />
           <span>{text('review')}</span>
         </div>
-        <div className="asset-publish-body" data-testid="asset-publish-body">
-          <p className="asset-publish-resource" data-testid="asset-publish-resource">
-            {reference.local_id}
-          </p>
-          <div className="asset-publish-login" data-testid="asset-publish-login">
-            <span>{text(state.loggedIn ? 'loginAgain' : 'login')}</span>
-            {(['gitcode', 'github'] as const).map((provider) => (
-              <button
-                type="button"
-                key={provider}
-                data-testid="asset-publish-provider"
-                data-variant={provider}
-                onClick={() => login(provider)}
-                disabled={state.busy}
-              >
-                {provider === 'github' ? 'GitHub' : 'GitCode'}
-              </button>
-            ))}
-          </div>
-          {state.description?.hub_url && (
-            <p data-testid="asset-publish-destination">
-              {text('destination')}: {state.description.hub_url}
+      }
+      footer={
+        <>
+          {!review && !state.record && invalid && (
+            <p className="asset-publish-footer-validation" data-testid="asset-publish-validation">
+              {text('invalid')}
             </p>
           )}
-          {state.loggedIn && state.description?.identity_verified === false && (
-            <p data-testid="asset-publish-account-scope">{text('accountScope')}</p>
-          )}
-          {state.error && (
-            <p role="alert" className="text-danger" data-testid="asset-publish-error">
-              {text(state.error as MessageKey)}
-            </p>
-          )}
-          {!review && !state.record && (
-            <form
-              id="asset-publish-form"
-              data-testid="asset-publish-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!invalid) {
-                  setReview(true);
-                  void state.prepare();
-                }
-              }}
-            >
-              <fieldset disabled={state.busy || (state.loggedIn && !state.description)}>
-                {fields.map((field) => (
-                  <label
-                    key={field}
-                    className="asset-publish-field"
-                    data-testid="asset-publish-field"
-                    data-variant={field}
-                  >
-                    <span>
-                      {text(field)}
-                      {['asset_name', 'display_name', 'version'].includes(field) && (
-                        <span className="asset-publish-required" aria-hidden="true">
-                          {' '}
-                          *
-                        </span>
-                      )}
-                      {fieldHints[field] && (
-                        <span
-                          className="asset-publish-hint"
-                          title={t(`skills.publishForm.${fieldHints[field]}`)}
-                          data-testid="asset-publish-field-hint"
-                          data-variant={field}
-                        >
-                          <HelpCircle size={14} aria-hidden="true" />
-                        </span>
-                      )}
-                    </span>
-                    {field === 'description' || field === 'version_desc' ? (
-                      <textarea
-                        data-testid={`asset-publish-${field.replaceAll('_', '-')}`}
-                        value={state.metadata[field]}
-                        onChange={(event) => state.edit({ [field]: event.target.value })}
-                        rows={3}
-                      />
-                    ) : (
-                      <input
-                        data-testid={`asset-publish-${field.replaceAll('_', '-')}`}
-                        value={field === 'tags' ? state.metadata.tags.join(', ') : state.metadata[field]}
-                        onChange={(event) =>
-                          state.edit({
-                            [field]:
-                              field === 'tags'
-                                ? event.target.value.split(',').map((value) => value.trim())
-                                : event.target.value,
-                          })
-                        }
-                        required={['asset_name', 'display_name', 'version'].includes(field)}
-                        placeholder={field === 'version' ? text('versionHint') : undefined}
-                      />
-                    )}
-                  </label>
-                ))}
-                <label className="asset-publish-field">
-                  <span data-testid="asset-publish-visibility-label">{text('visibility')}</span>
-                  <select
-                    data-testid="asset-publish-visibility"
-                    value={state.metadata.visibility}
-                    onChange={(event) => state.edit({ visibility: event.target.value as 'public' | 'private' })}
-                  >
-                    <option value="public">{text('public')}</option>
-                    <option value="private">{text('private')}</option>
-                  </select>
-                </label>
-                <label className="asset-publish-field">
-                  <span data-testid="asset-publish-target-label">{text('target')}</span>
-                  <input
-                    data-testid="asset-publish-target"
-                    value={state.targetAssetId}
-                    onChange={(event) => state.setTargetAssetId(event.target.value)}
-                  />
-                </label>
-                <p className="text-text-muted" data-testid="asset-publish-ownership-note">
-                  {text('ownership')}
-                </p>
-                <label className="asset-publish-checkbox">
-                  <input
-                    type="checkbox"
-                    data-testid="asset-publish-force"
-                    checked={state.force}
-                    onChange={(event) => state.setForce(event.target.checked)}
-                  />
-                  {text('force')}
-                </label>
-              </fieldset>
-              {invalid && (
-                <p className="text-warn" data-testid="asset-publish-validation">
-                  {text('invalid')}
-                </p>
-              )}
-              {state.description && !state.description.can_publish && (
-                <p role="alert" data-testid="asset-publish-unavailable">
-                  {text('unavailable')}
-                </p>
-              )}
-              {state.description?.errors?.map((issue, index) => (
-                <pre
-                  className="text-danger"
-                  data-testid="asset-publish-description-error"
-                  data-variant={index}
-                  key={index}
-                >
-                  {issueText(issue)}
-                </pre>
-              ))}
-            </form>
-          )}
-          {review && !state.record && (
-            <section data-testid="asset-publish-review">
-              <h3 data-testid="asset-publish-review-title">{text('check')}</h3>
-              <p data-testid="asset-publish-review-visibility">
-                {text('visibility')}: {text(state.metadata.visibility)}
-              </p>
-              <p>{text('review')}</p>
-              {state.draft && (
-                <>
-                  <p data-testid="asset-publish-package-summary">
-                    {state.draft.package_name} · {state.draft.version} · {state.draft.size_bytes} bytes
-                  </p>
-                  {(['files', 'excluded', 'normalizations', 'dependencies', 'warnings', 'errors'] as const).map(
-                    (key) => (
-                      <details
-                        key={key}
-                        open={key === 'errors' || key === 'warnings'}
-                        data-testid="asset-publish-review-section"
-                        data-variant={key}
-                      >
-                        <summary>
-                          {text(key)} ({state.draft?.[key]?.length || 0})
-                        </summary>
-                        {(state.draft?.[key] || []).map((item, index) => (
-                          <pre key={index} data-testid="asset-publish-review-item" data-variant={`${key}-${index}`}>
-                            {issueText(item)}
-                          </pre>
-                        ))}
-                      </details>
-                    ),
-                  )}
-                  <details data-testid="asset-publish-technical">
-                    <summary>{text('technical')}</summary>
-                    <pre>{state.draft.checksum_sha256 || state.draft.artifact_sha256}</pre>
-                    <p>
-                      {text('draftExpiry')}: {dateText(state.draft.expires_at)}
-                    </p>
-                  </details>
-                </>
-              )}
-            </section>
-          )}
-          {state.record && outcome && (
-            <section aria-live="polite" data-testid="asset-publish-result" data-variant={outcome}>
-              <h3>{text(outcome as MessageKey)}</h3>
-              <p>{state.record.result?.asset_id}</p>
-              {state.record.result?.visibility === null && (
-                <p role="status" data-testid="asset-publish-visibility-unconfirmed">
-                  {i18n.language.startsWith('zh')
-                    ? 'Hub 已返回提交结果，但未确认可见范围。请在 Hub 核对，当前不能据此认定为私有或公开。'
-                    : 'Hub returned a submission result without confirming visibility. Check it in Hub; public or private visibility is not yet verified.'}
-                </p>
-              )}
-              <p>{state.record.result?.version || state.record.version}</p>
-              {state.record.error && (
-                <p className="text-danger">
-                  {state.record.error.code}: {state.record.error.message}
-                </p>
-              )}
-              <p data-testid="asset-publish-observed-note">{text('observed')}</p>
-              {state.record.updated_at && <p>{dateText(state.record.updated_at)}</p>}
-              {!['queued', 'uploading', 'unknown'].includes(outcome) && (
-                <button
-                  type="button"
-                  data-testid="asset-publish-new-version"
-                  disabled={state.submissionLocked || state.busy}
-                  onClick={() => {
-                    state.edit({});
-                    setReview(false);
-                  }}
-                >
-                  {text('recheck')}
-                </button>
-              )}
-            </section>
-          )}
-          {state.loggedIn && (
-            <section data-testid="asset-publish-records">
-              <h3>{text('records')}</h3>
-              <button
-                type="button"
-                data-testid="asset-publish-refresh"
-                disabled={state.busy}
-                onClick={() => void state.refresh()}
-              >
-                {text('refresh')}
-              </button>
-              {state.records.map((record) => (
-                <button
-                  className="asset-publish-record"
-                  type="button"
-                  key={record.operation_id}
-                  data-testid="asset-publish-record"
-                  disabled={state.submissionLocked || state.busy}
-                  data-variant={record.operation_id}
-                  onClick={() => state.setRecord(record)}
-                >
-                  {record.result?.version || record.version} · {text(publishOutcome(record) as MessageKey)}
-                </button>
-              ))}
-            </section>
-          )}
-        </div>
-        <footer className="asset-publish-footer" data-testid="asset-publish-footer">
           {!review && !state.record && (
             <>
               <button type="button" onClick={onClose} data-testid="asset-publish-cancel">
@@ -534,23 +490,390 @@ function AssetPublishDrawer({
               {text('close')}
             </button>
           )}
-        </footer>
-      </aside>
-    </div>,
-    document.body,
+        </>
+      }
+    >
+      <section className="asset-publish-resource-summary" data-testid="asset-publish-resource-summary">
+        <span className="asset-publish-resource-avatar" aria-hidden="true">
+          {reference.avatar_url && !avatarFailed ? (
+            <img
+              src={reference.avatar_url}
+              alt=""
+              data-testid="asset-publish-resource-avatar-image"
+              onError={() => setAvatarFailed(true)}
+            />
+          ) : (
+            (state.metadata.display_name || reference.local_id).trim().charAt(0).toUpperCase()
+          )}
+        </span>
+        <div className="asset-publish-resource-copy">
+          <strong>{state.metadata.display_name || reference.local_id}</strong>
+          <div className="asset-publish-resource-meta">
+            <span>{assetType}</span>
+            <span>{text('localSource')}</span>
+          </div>
+          <span
+            className="asset-publish-resource-id"
+            data-testid="asset-publish-resource-id"
+            title={reference.local_id}
+          >
+            {reference.local_id}
+          </span>
+        </div>
+      </section>
+      {state.loggedIn ? (
+        <section className="asset-publish-account-card" data-testid="asset-publish-account-card">
+          <div className="asset-publish-account-copy">
+            <strong className="asset-publish-provider-identity">
+              <img
+                src={providerIcon(provider)}
+                alt=""
+                aria-hidden="true"
+                data-testid="asset-publish-provider-icon"
+                data-variant={provider}
+              />
+              {providerName}
+            </strong>
+            <span>{accountName}</span>
+            {state.description?.hub_url && (
+              <span data-testid="asset-publish-destination">{hubHost(state.description.hub_url)}</span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="asset-publish-text-button"
+            data-testid="asset-publish-switch-account"
+            aria-expanded={switchingAccount}
+            onClick={() => setSwitchingAccount((value) => !value)}
+          >
+            {text('switchAccount')}
+          </button>
+          {switchingAccount && (
+            <div className="asset-publish-provider-options">
+              {(['gitcode', 'github'] as const).map((nextProvider) => (
+                <button
+                  type="button"
+                  key={nextProvider}
+                  data-testid="asset-publish-provider"
+                  data-variant={nextProvider}
+                  onClick={() => login(nextProvider)}
+                  disabled={state.busy || loginBusy}
+                >
+                  <img src={providerIcon(nextProvider)} alt="" aria-hidden="true" />
+                  {nextProvider === 'github' ? 'GitHub' : 'GitCode'}
+                </button>
+              ))}
+            </div>
+          )}
+          {state.description?.identity_verified === false && (
+            <span className="asset-publish-account-note" data-testid="asset-publish-account-scope">
+              {text('accountScope')}
+            </span>
+          )}
+        </section>
+      ) : (
+        <section className="asset-publish-login" data-testid="asset-publish-login">
+          <span>{text('login')}</span>
+          {(['gitcode', 'github'] as const).map((nextProvider) => (
+            <button
+              type="button"
+              key={nextProvider}
+              data-testid="asset-publish-provider"
+              data-variant={nextProvider}
+              onClick={() => login(nextProvider)}
+              disabled={state.busy || loginBusy}
+            >
+              <img src={providerIcon(nextProvider)} alt="" aria-hidden="true" />
+              {text('loginWith')} {nextProvider === 'github' ? 'GitHub' : 'GitCode'}
+            </button>
+          ))}
+        </section>
+      )}
+      {loginError && (
+        <p role="alert" className="text-danger">
+          {loginError}
+        </p>
+      )}
+      {state.error && (
+        <p role="alert" className="text-danger" data-testid="asset-publish-error">
+          {text(state.error as MessageKey)}
+        </p>
+      )}
+      {!review && !state.record && (
+        <form
+          id="asset-publish-form"
+          data-testid="asset-publish-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!invalid) {
+              setReview(true);
+              void state.prepare();
+            }
+          }}
+        >
+          <fieldset
+            className="asset-publish-form-fields"
+            disabled={state.busy || (state.loggedIn && !state.description)}
+          >
+            <section
+              className="asset-publish-form-section"
+              data-testid="asset-publish-form-section"
+              data-variant="basic"
+            >
+              <h3>{text('basicInfo')}</h3>
+              <div className="asset-publish-field-row">
+                {renderField('asset_name')}
+                {renderField('version')}
+              </div>
+              {renderField('display_name')}
+              {renderField('description')}
+              {renderField('tags')}
+            </section>
+            <section
+              className="asset-publish-form-section"
+              data-testid="asset-publish-form-section"
+              data-variant="publish"
+            >
+              <h3>{text('publishSettings')}</h3>
+              <div className="asset-publish-field">
+                <span data-testid="asset-publish-visibility-label">{text('visibility')}</span>
+                <div className="asset-publish-visibility-options" role="radiogroup" aria-label={text('visibility')}>
+                  {(['public', 'private'] as const).map((visibility) => (
+                    <label
+                      key={visibility}
+                      className="asset-publish-visibility-option"
+                      data-testid="asset-publish-visibility-option"
+                      data-selected={state.metadata.visibility === visibility}
+                    >
+                      <input
+                        type="radio"
+                        name="asset-publish-visibility"
+                        value={visibility}
+                        checked={state.metadata.visibility === visibility}
+                        onChange={() => state.edit({ visibility })}
+                      />
+                      <span>
+                        <strong>{text(visibility)}</strong>
+                        <small>{text(visibility === 'public' ? 'publicDescription' : 'privateDescription')}</small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              {renderField('version_desc')}
+            </section>
+            <details
+              className="asset-publish-advanced"
+              data-testid="asset-publish-form-section"
+              data-variant="advanced"
+              open={advancedOpen}
+              onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+            >
+              <summary>
+                <span>{text('advancedSettings')}</span>
+                <FieldHint text={text('advancedHint')} field="advanced" testId="asset-publish-advanced-help" />
+              </summary>
+              <div className="asset-publish-advanced-content">
+                <label className="asset-publish-field">
+                  <span data-testid="asset-publish-target-label">{text('target')}</span>
+                  <Input
+                    data-testid="asset-publish-target"
+                    value={state.targetAssetId}
+                    onChange={(value) => state.setTargetAssetId(value)}
+                  />
+                </label>
+                <p className="text-text-muted" data-testid="asset-publish-ownership-note">
+                  {text('ownership')}
+                </p>
+                <label className="asset-publish-checkbox">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    data-testid="asset-publish-force"
+                    checked={state.force}
+                    onChange={(event) => state.setForce(event.target.checked)}
+                  />
+                  {text('force')}
+                </label>
+                {state.force && <p className="asset-publish-force-warning">{text('forceWarning')}</p>}
+              </div>
+            </details>
+          </fieldset>
+          {state.description && !state.description.can_publish && (
+            <p role="alert" data-testid="asset-publish-unavailable">
+              {text('unavailable')}
+            </p>
+          )}
+          {state.description?.errors?.map((issue, index) => (
+            <pre className="text-danger" data-testid="asset-publish-description-error" data-variant={index} key={index}>
+              {issueText(issue)}
+            </pre>
+          ))}
+        </form>
+      )}
+      {review && !state.record && (
+        <section data-testid="asset-publish-review">
+          <h3 data-testid="asset-publish-review-title">{text('check')}</h3>
+          <p data-testid="asset-publish-review-visibility">
+            {text('visibility')}: {text(state.metadata.visibility)}
+          </p>
+          <p>{text('review')}</p>
+          {state.draft && (
+            <>
+              <p data-testid="asset-publish-package-summary">
+                {state.draft.package_name} · {state.draft.version} · {state.draft.size_bytes} bytes
+              </p>
+              {(['files', 'excluded', 'normalizations', 'dependencies', 'warnings', 'errors'] as const).map((key) => (
+                <details
+                  key={key}
+                  open={key === 'errors' || key === 'warnings'}
+                  data-testid="asset-publish-review-section"
+                  data-variant={key}
+                >
+                  <summary>
+                    {text(key)} ({state.draft?.[key]?.length || 0})
+                  </summary>
+                  {(state.draft?.[key] || []).map((item, index) => (
+                    <pre key={index} data-testid="asset-publish-review-item" data-variant={`${key}-${index}`}>
+                      {issueText(item)}
+                    </pre>
+                  ))}
+                </details>
+              ))}
+              <details data-testid="asset-publish-technical">
+                <summary>{text('technical')}</summary>
+                <pre>{state.draft.checksum_sha256 || state.draft.artifact_sha256}</pre>
+                <p>
+                  {text('draftExpiry')}: {dateText(state.draft.expires_at)}
+                </p>
+              </details>
+            </>
+          )}
+        </section>
+      )}
+      {state.record && outcome && (
+        <section
+          aria-live="polite"
+          className="asset-publish-result-card"
+          data-testid="asset-publish-result"
+          data-variant={outcome}
+        >
+          <header className="asset-publish-result-header" data-testid="asset-publish-result-header">
+            <span className="asset-publish-result-icon" aria-hidden="true">
+              <ResultIcon size={20} />
+            </span>
+            <h3>{text(outcome as MessageKey)}</h3>
+          </header>
+          {state.record.result?.visibility === null && (
+            <p role="status" className="asset-publish-result-notice" data-testid="asset-publish-visibility-unconfirmed">
+              {i18n.language.startsWith('zh')
+                ? '可见范围暂未确认，请到 Hub 查看。'
+                : 'Visibility is not yet confirmed. Check it in Hub.'}
+            </p>
+          )}
+          <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
+            {state.record.result?.asset_id && (
+              <div>
+                <dt>{text('assetId')}</dt>
+                <dd title={state.record.result.asset_id}>{state.record.result.asset_id}</dd>
+              </div>
+            )}
+            <div>
+              <dt>{text('resultVersion')}</dt>
+              <dd>{state.record.result?.version || state.record.version || text('empty')}</dd>
+            </div>
+            {state.record.updated_at && (
+              <div>
+                <dt>{text('resultTime')}</dt>
+                <dd>{dateText(state.record.updated_at)}</dd>
+              </div>
+            )}
+          </dl>
+          {state.record.error && (
+            <p className="asset-publish-result-error text-danger">
+              {state.record.error.code}: {state.record.error.message}
+            </p>
+          )}
+          <footer className="asset-publish-result-footer" data-testid="asset-publish-result-footer">
+            <p data-testid="asset-publish-observed-note">{text('observed')}</p>
+            {!['queued', 'uploading', 'unknown'].includes(outcome) && (
+              <button
+                type="button"
+                data-testid="asset-publish-new-version"
+                disabled={state.submissionLocked || state.busy}
+                onClick={() => {
+                  state.edit({});
+                  setReview(false);
+                }}
+              >
+                {text('recheck')}
+              </button>
+            )}
+          </footer>
+        </section>
+      )}
+      {state.loggedIn && (
+        <details
+          className="asset-publish-records-fold"
+          data-testid="asset-publish-records-fold"
+          open={historyOpen}
+          onToggle={(event) => setHistoryOpen(event.currentTarget.open)}
+        >
+          <summary>
+            <span>{text('history')}</span>
+            <FieldHint text={text('historyHelp')} field="records" testId="asset-publish-records-help" />
+          </summary>
+          <section data-testid="asset-publish-records">
+            <div className="asset-publish-records-toolbar" data-testid="asset-publish-records-toolbar">
+              <button
+                type="button"
+                data-testid="asset-publish-refresh"
+                disabled={state.busy}
+                onClick={() => void state.refresh()}
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+                {text('refresh')}
+              </button>
+            </div>
+            {state.records.length === 0 && <p className="asset-publish-records-empty">{text('historyEmpty')}</p>}
+            {state.records.map((record) => (
+              <button
+                className="asset-publish-record"
+                type="button"
+                key={record.operation_id}
+                data-testid="asset-publish-record"
+                disabled={state.submissionLocked || state.busy}
+                data-variant={record.operation_id}
+                onClick={() => state.setRecord(record)}
+              >
+                <span className="asset-publish-record-main">
+                  <strong>{record.result?.version || record.version || text('empty')}</strong>
+                  {record.updated_at && <small>{dateText(record.updated_at)}</small>}
+                </span>
+                <span className="asset-publish-record-status" data-variant={publishOutcome(record)}>
+                  {text(publishOutcome(record) as MessageKey)}
+                </span>
+              </button>
+            ))}
+          </section>
+        </details>
+      )}
+    </FormDrawer>
   );
 }
 export function AssetPublishHost() {
-  const [selection, setSelection] = useState<{ reference: AssetReference; metadata?: PublishMetadata } | null>(null);
+  const [selection, setSelection] = useState<{ reference: AssetPublishOpenRequest; metadata?: PublishMetadata } | null>(
+    null,
+  );
   useEffect(() => {
-    const open = (event: Event) => setSelection({ reference: (event as CustomEvent<AssetReference>).detail });
+    const open = (event: Event) => setSelection({ reference: (event as CustomEvent<AssetPublishOpenRequest>).detail });
     const restore = () => {
       try {
         const value = sessionStorage.getItem(PUBLISH_RESTORE_KEY);
         if (!value) return;
         const saved = JSON.parse(value);
         if (
-          ['skill', 'agent_template', 'plugin', 'mcp'].includes(saved.reference?.kind) &&
+          ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp'].includes(saved.reference?.kind) &&
           typeof saved.reference?.local_id === 'string'
         )
           setSelection(saved);

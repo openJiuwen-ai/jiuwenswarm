@@ -412,7 +412,7 @@ async def test_runtime_activity_tracking_off_skips_target_and_history(monkeypatc
 
     started = await runtime._record_session_execution_started(request)
     runtime._record_session_execution_finished(request, succeeded=True)
-    prepare_result = await runtime.record_session_prepare(request)
+    prepare_result = await runtime.record_session_input_intent(request)
     await runtime.record_session_inactive(request)
 
     assert started is False

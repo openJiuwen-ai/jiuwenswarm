@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  normalizeToolCallPayload,
   normalizeToolResultPayload,
   plannedGraphToMermaid,
 } from '../node_modules/.cache/tool-event-normalizer/toolEventNormalizer.js';
+
 
 function payload(nodes, edges = []) {
   return {
@@ -150,4 +152,38 @@ test('displays rendered_result instead of the compatibility result string', () =
     result: "{'result': 'Sunny'}",
   });
   assert.equal(rawOutputFirst.result, 'Sunny');
+});
+
+test('normalizeToolCallPayload reads call_goal and callGoal without inventing from display_name', () => {
+  const snake = normalizeToolCallPayload({
+    tool_call: {
+      name: 'read_file',
+      arguments: { path: '/workspace/foo.py' },
+      tool_call_id: 'call-1',
+      call_goal: '调研 openJiuwen 官网信息',
+    },
+  });
+  assert.equal(snake.call_goal, '调研 openJiuwen 官网信息');
+  assert.equal(snake.name, 'read_file');
+
+  const camel = normalizeToolCallPayload({
+    tool_call: {
+      name: 'read_file',
+      arguments: {},
+      tool_call_id: 'call-2',
+      callGoal: 'Research the site',
+    },
+  });
+  assert.equal(camel.call_goal, 'Research the site');
+
+  const legacyDisplay = normalizeToolCallPayload({
+    tool_call: {
+      name: 'read_file',
+      arguments: {},
+      tool_call_id: 'call-3',
+      display_name: '读取 foo.py',
+    },
+  });
+  assert.equal(legacyDisplay.call_goal, undefined);
+  assert.equal(legacyDisplay.display_name, '读取 foo.py');
 });

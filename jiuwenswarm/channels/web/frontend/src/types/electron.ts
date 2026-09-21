@@ -26,6 +26,8 @@ export interface JiuwenElectronDesktopApi {
   minimizeWindow: () => Promise<boolean>;
   toggleFullscreenWindow: () => Promise<boolean>;
   closeWindow: () => Promise<boolean>;
+  getCloseAction: () => Promise<'ask' | 'hide' | 'quit' | null>;
+  setCloseAction: (action: 'ask' | 'hide' | 'quit') => Promise<boolean>;
   downloadFile: (url: string, filename: string) => Promise<boolean>;
   installUpdate: (installerPath: string) => Promise<boolean>;
   saveDataUrl: (dataUrl: string, filename: string) => Promise<{ ok: boolean; cancelled?: boolean }>;

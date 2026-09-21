@@ -264,7 +264,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           }
           actions={
             <div className="flex items-center gap-3" data-testid="connector-market-mcp-detail-actions">
-              {(connector.installed || connector.source !== 'hub') && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="connector-market-mcp-publish" onClick={() => openAssetPublish({ kind: 'mcp', local_id: connector.id })}>{t('skills.actions.publish')}</button>}
+              {(connector.installed || connector.source !== 'hub') && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="connector-market-mcp-publish" onClick={() => openAssetPublish({ kind: 'mcp', local_id: connector.id, avatar_url: connector.icon || undefined })}>{t('skills.actions.publish')}</button>}
               {/* 自定义 MCP 才能编辑（source==='customize'，built_in 没有可改的连接配置）——放在
               解绑左边，和"卸载/解绑的左边一个小编辑按键"的产品要求对齐。 */}
               {isCustomize && onEdit && (

@@ -9,13 +9,13 @@
 .ui-input {
   box-sizing: border-box;
   width: 100%;
-  min-height: 38px;
-  padding: 8px 11px;
+  height: 32px;
+  padding: 5px 12px;
   font: inherit;
-  font-size: var(--font-size-sm);
+  font-size: 14px;
   color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-input-strong);
+  border-radius: var(--radius-sm);
   outline: none;
   background: var(--color-surface-card);
 }
@@ -24,11 +24,13 @@
   padding: 6px 11px;
 }
 .ui-input::placeholder {
-  color: var(--color-text-tertiary);
+  color: var(--color-text-placeholder);
+}
+.ui-input:hover:not(:disabled):not(.ui-input--invalid) {
+  border-color: var(--color-control-emphasis);
 }
 .ui-input:focus {
-  border-color: var(--color-action-primary);
-  box-shadow: var(--effect-focus-ring);
+  border-color: var(--color-control-emphasis);
 }
 .ui-input:disabled {
   color: var(--color-text-tertiary);
@@ -72,22 +74,24 @@
   display: inline-flex;
   align-items: center;
   width: 100%;
-  min-height: 38px;
+  min-height: 32px;
   padding: 0 11px;
   font: inherit;
-  font-size: var(--font-size-sm);
+  font-size: 14px;
   color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-input-strong);
+  border-radius: var(--radius-sm);
   background: var(--color-surface-card);
 }
 .ui-input-affix-wrapper--small {
   min-height: 32px;
   padding: 0 11px;
 }
+.ui-input-affix-wrapper:hover:not(.ui-input-affix-wrapper--invalid) {
+  border-color: var(--color-control-emphasis);
+}
 .ui-input-affix-wrapper:focus-within {
-  border-color: var(--color-action-primary);
-  box-shadow: var(--effect-focus-ring);
+  border-color: var(--color-control-emphasis);
 }
 .ui-input-affix-wrapper--invalid {
   border-color: var(--color-border-danger);
@@ -100,6 +104,7 @@
 .ui-input--affixed {
   flex: 1 1 auto;
   min-width: 0;
+  height: auto;
   min-height: 0;
   padding: 0;
   border: 0;
@@ -150,4 +155,27 @@
 .ui-input__clear:hover {
   color: var(--color-text-primary);
   background: var(--color-surface-hover);
+}
+
+.ui-input-counter {
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+  user-select: none;
+}
+
+.ui-input-counter-separator {
+  color: var(--color-text-meta);
+}
+
+.ui-input-counter.is-limit {
+  color: var(--color-feedback-warning);
+}
+
+.ui-input--with-counter {
+  padding-right: 50px;
 }

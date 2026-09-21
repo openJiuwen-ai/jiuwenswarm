@@ -19,12 +19,12 @@ type SkillItem = {
  enabled?: boolean;
  installed?: boolean;
  tags?: string[];
-  /** 技能类型：skill | swarm_skill | multimodal_skill（后端 skills.list 返回） */
+  /** 技能类型：skill | skillpack | swarm_skill | multimodal_skill（后端 skills.list 返回） */
   skill_type?: SkillType;
 };
 
-/** 技能类型：skill | swarm_skill | multimodal_skill（后端 skills.list 返回） */
-type SkillType = 'skill' | 'swarm_skill' | 'multimodal_skill';
+/** 技能类型：skill | skillpack | swarm_skill | multimodal_skill（后端 skills.list 返回） */
+type SkillType = 'skill' | 'skillpack' | 'swarm_skill' | 'multimodal_skill';
 
 /** 已安装插件信息（用于判定技能是否已安装） */
 type InstalledPlugin = {
@@ -106,7 +106,9 @@ export function SkillPickerPanel({
         (s) =>
           isSkillInstalled(s) &&
           s.enabled !== false &&
-          (isTeamMode ? s.skill_type === 'swarm_skill' : !s.skill_type || s.skill_type === 'skill'),
+          // 单 agent：普通 skill + skillpack（技能包，可当普通技能选用）；
+          // 集群：swarm_skill。
+          (isTeamMode ? s.skill_type === 'swarm_skill' : !s.skill_type || s.skill_type === 'skill' || s.skill_type === 'skillpack'),
       ),
     [skills, isSkillInstalled, isTeamMode],
   );

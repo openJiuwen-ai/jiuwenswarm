@@ -48,7 +48,10 @@ _resolve_agent_http_base = resolve_agent_http_base
 _resolve_agent_upload_base = resolve_agent_upload_base
 
 if TYPE_CHECKING:
-    from jiuwenswarm.channels.web.share_image_export import ShareImageExportManager
+    from jiuwenswarm.channels.web.share_image_export import (
+        ShareImageExportManager,
+        ShareImageRenderAuth,
+    )
 
 _share_image_export_manager: ShareImageExportManager | None = None
 _share_image_export_manager_lock = threading.Lock()
@@ -1401,12 +1404,25 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
 
         port = int(self.server.server_address[1])
+        # 桌面模式: 长图任务使用独立的 Playwright 无头 BrowserContext, 不共享
+        # 桌面 WebView 的 Cookie, 必须把当前实例的 desktop cookie 名与 token
+        # 交给渲染器注入, 否则 /share-export-runner 返回 403。普通 web 模式
+        # desktop_token 为空, 不构造认证信息, 行为保持不变。
+        render_auth: ShareImageRenderAuth | None = None
+        if self.desktop_token:
+            from jiuwenswarm.channels.web.share_image_export import ShareImageRenderAuth
+
+            render_auth = ShareImageRenderAuth(
+                cookie_name=self.desktop_cookie_name,
+                cookie_value=self.desktop_token,
+            )
         status = _get_share_image_export_manager().create_job(
             session_id=session_id,
             snapshot=snapshot,
             filename=filename,
             locale=normalized_locale,
             base_url=f"http://127.0.0.1:{port}",
+            render_auth=render_auth,
         )
         self._write_json(200 if status.get("reused") else 202, status)
 
@@ -2081,6 +2097,33 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/oauth/hub/callback":
+            from jiuwenswarm.channels.web.hub_oauth import complete
+
+            query = {key: values[0] for key, values in parse_qs(parsed.query, keep_blank_values=True).items()}
+            status, _ = complete(query)
+            self.send_response(303 if status == 200 else status)
+            if status == 200:
+                self.send_header("Location", "/oauth/hub/done")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if parsed.path == "/oauth/hub/done":
+            body = (
+                '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+                '<title>授权已完成</title><script>window.close()</script>'
+                '<p>授权已完成。如果此标签页没有自动关闭，请手动关闭并返回 JiuwenSwarm。</p>'
+                '</html>'
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)
             return
@@ -2096,6 +2139,31 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
+            from jiuwenswarm.channels.web.hub_oauth import result, start
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 4096:
+                    raise ValueError("invalid length")
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict):
+                    raise ValueError("invalid payload")
+            except ValueError:
+                self._write_json(400, {"error": "invalid_request"})
+                return
+            if parsed.path.endswith("/start"):
+                status, response = start(payload.get("provider", ""), self.headers.get("Host", ""))
+            else:
+                status, response = result(payload.get("flow", ""), payload.get("claim", ""))
+            data = json.dumps(response, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self._is_share_api_route():
             self._handle_share_api_post(parsed)
             return
@@ -2146,6 +2214,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def _redact_desktop_token(self, message: str) -> str:
         message = re.sub(r"([?&]dt=)[^&\s\"#]*", r"\1[REDACTED]", message)
+        message = re.sub(r"([?&]oauth_session=)[^&\s\"#]*", r"\1[REDACTED]", message)
         if self.desktop_token:
             message = message.replace(quote(self.desktop_token, safe=""), "[REDACTED]")
             message = message.replace(self.desktop_token, "[REDACTED]")

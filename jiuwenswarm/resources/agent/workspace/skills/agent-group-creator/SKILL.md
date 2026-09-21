@@ -27,10 +27,18 @@ description: 从自然语言创建可被 JiuwenSwarm 加载和安装的专家团
 
 ## 3. 校验
 
-用安装了 JiuwenSwarm 的 Python 执行；`<skill_dir>` 为本技能所在目录，包路径使用绝对路径：
+使用当前 JiuwenSwarm 会话的运行时执行脚本，不判断源码、虚拟环境或 EXE 等启动形态，也不要凭 PATH 猜测 `python3`/`python`。宿主会提供可执行当前脚本的运行时（冻结应用通过 `JIUWENSWARM_EXECUTABLE` 提供；源码运行时使用当前会话已经使用的 Python）。如果运行时支持脚本参数，直接传入脚本路径；不要对冻结应用使用 `-c`。
+
+`<runtime>` 表示当前会话的 JiuwenSwarm 运行时，不是用户机器上随意搜索出来的 Python。`<skill_dir>` 为本技能所在目录，包路径使用绝对路径：
 
 ```bash
-python3 <skill_dir>/scripts/register_group.py /absolute/path/<group-id> --validate-only
+<runtime> <skill_dir>/scripts/register_group.py /absolute/path/<group-id> --validate-only
+```
+
+注册步骤使用完全相同的运行时，只移除 `--validate-only`：
+
+```text
+<runtime> <skill_dir>/scripts/register_group.py /absolute/path/<group-id>
 ```
 
 脚本调用真实专家团加载器，验证每个成员模板、persona、Leader 规则和共享技能。出现 `RESULT: PASS` 后才进入注册。失败时修正具体报错；缺少运行依赖时说明阻塞，不跳过校验或宣称已创建成功。
@@ -40,7 +48,7 @@ python3 <skill_dir>/scripts/register_group.py /absolute/path/<group-id> --valida
 ## 4. 注册
 
 ```bash
-python3 <skill_dir>/scripts/register_group.py /absolute/path/<group-id>
+<runtime> <skill_dir>/scripts/register_group.py /absolute/path/<group-id>
 ```
 
 注册会再次校验，复用产品导入流程复制包并登记为本地、未安装专家团；重名会报错，不覆盖现有资产。只有输出 `REGISTERED:` 才表示注册完成。勿用直接写 marketplace 或跳过错误的方式伪造成功。

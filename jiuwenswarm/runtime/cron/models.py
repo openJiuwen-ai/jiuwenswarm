@@ -610,3 +610,5 @@ class CronRunState:
     # ``run_now`` allocates the single-agent session before the wake event so
     # Web can open the real session immediately; wake must reuse it.
     execution_session_allocated: bool = False
+    # Manual proactive checks report their outcome through a UI notification.
+    manually_triggered: bool = False

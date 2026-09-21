@@ -101,6 +101,7 @@ export type RawAgentGroupDetail = RawAgentGroupListItem & {
 
 export type RawAgentGroupListPayload = {
   agentGroups?: RawAgentGroupListItem[];
+  cache?: import('../catalogCache').CatalogCacheMetadata;
 };
 
 export type RawAgentGroupDetailPayload = {
@@ -120,6 +121,7 @@ export type RawAgentFileEntry = {
   type: 'file' | 'dir';
   visible?: boolean;
   size?: number;
+  previewable?: boolean;
   children?: RawAgentFileEntry[];
 };
 
@@ -129,7 +131,8 @@ export type RawAgentFileListPayload = {
 
 export type RawAgentFileReadPayload = {
   path?: string;
-  content?: string;
+  content?: string | null;
+  download_url?: string | null;
 };
 
 export type RawSkillOption = {

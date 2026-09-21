@@ -69,7 +69,7 @@
 }
 
 .settings-page__nav-button:hover:not(:disabled) {
-  background: var(--color-sidebar-nav-hover);
+  background: var(--color-sidebar-action-hover);
 }
 
 .settings-page__nav-button:focus-visible {
@@ -954,6 +954,12 @@
 .settings-page .ui-switch--checked {
   border-color: var(--color-settings-switch-checked);
   background: var(--color-settings-switch-checked);
+}
+
+.settings-page__module[data-settings-module='agent'] .ui-switch:disabled {
+  border-color: #dbdbdb;
+  background: #dbdbdb;
+  opacity: 1;
 }
 
 .settings-page .ui-dialog {

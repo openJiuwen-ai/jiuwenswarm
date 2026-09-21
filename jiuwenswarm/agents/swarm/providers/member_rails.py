@@ -58,6 +58,7 @@ from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail impor
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
+from jiuwenswarm.common.cron_session import is_cron_execution_session
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
@@ -101,6 +102,20 @@ def _build_heartbeat_rail(
     if service is None or not session_id:
         return None
     metadata = dict(getattr(context, "request_metadata", None) or {})
+    # cron 执行会话不挂心跳工具（判定信号与 swarm.cron_tools / code_rails 的
+    # permission rail 对齐）：心跳任务绑定创建它的会话，从 cron 运行里再派生
+    # 心跳任务与"禁止 cron 派生 cron"同理，且随一次性 cron 会话回收无意义；
+    # 普通会话三个信号都不命中，心跳能力不受影响。
+    if (
+        metadata.get("cron")
+        or str(getattr(context, "channel_id", None) or "").strip() == "__cron__"
+        or is_cron_execution_session(session_id)
+    ):
+        logger.info(
+            "[swarm.heartbeat] skip HeartbeatRail for cron execution session %s",
+            session_id,
+        )
+        return None
     tool_context = SimpleNamespace(
         channel_id=str(getattr(context, "channel_id", None) or "web"),
         session_id=session_id,

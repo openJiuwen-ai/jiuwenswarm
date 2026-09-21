@@ -72,7 +72,6 @@ import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveM
 import { webRequest } from './services/webClient';
 import { getArchiveErrorCode } from './features/workspace/archivedTaskClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
-import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
@@ -403,9 +402,6 @@ function AppContent({
   );
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
-  const kvCacheAffinityEnabled = normalizeConfigBoolean(
-    serverConfig?.kv_cache_affinity_enabled,
-  );
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -453,29 +449,10 @@ function AppContent({
   const [missingSessionId, setMissingSessionId] = useState<string | null>(null);
   const startupUpdateCheckRef = useRef(false);
   const modelSetupGuideEvaluatedRef = useRef(false);
-  /** OAuth 回调恢复导航后标记，防止 fetchConfig 等后续逻辑覆盖 activeNav */
-  const oauthNavRestoredRef = useRef(false);
 
   useEffect(() => {
     tRef.current = t;
   }, [t]);
-
-  // OAuth 回调处理：页面加载时检测 URL 中的 code，自动换 token + 获取用户信息
-  useEffect(() => {
-    processOAuthCallback()
-      .finally(() => {
-        // 备份：OAuth 回调完成后再次确认导航（通常路由 effect 已设置）
-        const nav = sessionStorage.getItem('oauth_redirect_nav');
-        if (nav) {
-          sessionStorage.removeItem('oauth_redirect_nav');
-          oauthNavRestoredRef.current = true;
-          setActiveNav(nav as MainNavKey);
-          if (nav === 'skills') setHasVisitedSkills(true);
-        }
-        // 无论成功或失败都派发事件，SkillPanel 根据有无 oauth_error 决定显示错误或开抽屉
-        window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
-      });
-  }, []);
 
   useEffect(() => {
     if (activeNav === 'chat') {
@@ -541,8 +518,8 @@ function AppContent({
   const sideConversationRef = useRef<SideConversationState | null>(null);
   const sessionIdRef = useRef(sessionId);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const kvcViewIdRef = useRef(generateUuidV4());
-  const kvcPreparedInputSessionRef = useRef<string | null>(null);
+  const sessionViewIdRef = useRef(generateUuidV4());
+  const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
   const historyRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
   const subagentHistoryRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
@@ -584,9 +561,9 @@ function AppContent({
   useEffect(() => {
     sessionIdRef.current = sessionId;
     // A new foreground visit gets one fresh input-intent opportunity. Merely
-    // switching to the Session still does not prefetch; the first real editor
-    // insertion below does.
-    kvcPreparedInputSessionRef.current = null;
+    // switching to the Session does not publish input intent; the first real
+    // editor insertion below does.
+    inputIntentSessionRef.current = null;
     setHistoryLoadingMore(false);
     // Background cursor prefetch does not mutate the published timeline.  Treating
     // it as a visible prepend leaves a revisited Session unable to reveal batches
@@ -599,9 +576,9 @@ function AppContent({
     // Session is used elsewhere. In that case `sessionId` never changes, so
     // the per-visit input latch above would otherwise remain consumed by the
     // Session's initial turn. Re-arm only when this page returns to the
-    // foreground; focus/visibility alone still does not issue a prefetch.
+    // foreground; focus/visibility alone still does not publish input intent.
     const rearmInputIntent = () => {
-      kvcPreparedInputSessionRef.current = null;
+      inputIntentSessionRef.current = null;
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -641,21 +618,13 @@ function AppContent({
   } = useSingleAgentPanelState();
 
   useEffect(() => {
-    const oauthNav = sessionStorage.getItem('oauth_redirect_nav');
-    const targetNav = (oauthNav || 'chat') as MainNavKey;
-    if (oauthNav === 'skills') setHasVisitedSkills(true);
     if (route.kind === 'chat-session') {
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
-      setActiveNav(targetNav);
+      setActiveNav('chat');
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') {
-        if (oauthNav) {
-          // OAuth 重定向：用 replaceState 改 URL 但不触发 route 变化，避免 effect 重跑覆盖 activeNav
-          window.history.replaceState(null, '', '/chat/new');
-        } else {
-          navigate({ kind: 'chat-new' }, { replace: true });
-        }
+        navigate({ kind: 'chat-new' }, { replace: true });
       }
       pendingNewConversationRef.current = true;
       if (preserveSelectedProjectOnChatNewRef.current) {
@@ -665,13 +634,11 @@ function AppContent({
       }
       sessionIdRef.current = 'new';
       setSessionId('new');
-      setActiveNav(targetNav);
-      if (!oauthNav) {
-        setTeamAreaExpanded(false);
-        setSingleAgentPanelExpanded(false);
-      }
+      setActiveNav('chat');
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded, setHasVisitedSkills]);
+  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -1347,6 +1314,7 @@ function AppContent({
             arguments: n.arguments,
             description: n.description,
             formatted_args: n.formatted_args,
+            call_goal: n.call_goal,
             display_name: n.display_name,
             memberName: n.memberName,
             reviewer: n.reviewer,
@@ -1733,7 +1701,7 @@ function AppContent({
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
         modelSetupGuideEvaluatedRef.current = true;
-        if (!oauthNavRestoredRef.current && (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled))) {
+        if (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled)) {
           setActiveNav('chat');
           setModelSetupGuideStep(1);
         }
@@ -2314,6 +2282,7 @@ function AppContent({
                 arguments: n.arguments,
                 description: n.description,
                 formatted_args: n.formatted_args,
+                call_goal: n.call_goal,
                 display_name: n.display_name,
                 memberName: n.memberName,
                 reviewer: n.reviewer,
@@ -2699,24 +2668,20 @@ function AppContent({
     enterNewConversation(targetMode);
   }, [enterNewConversation, setMode]);
 
-  const handleKVCInputIntent = useCallback((targetSessionId: string) => {
-    // OFF must remain the ordinary JiuwenSwarm path: do not emit even the
-    // best-effort prepare control request. AgentServer keeps its own gate as
-    // a fail-closed boundary for stale or non-Web clients.
-    if (!kvCacheAffinityEnabled) return;
+  const handleSessionInputIntent = useCallback((targetSessionId: string) => {
     if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return;
-    if (kvcPreparedInputSessionRef.current === targetSessionId) return;
+    if (inputIntentSessionRef.current === targetSessionId) return;
 
-    // Leading-edge intent: start prefetch on the first real insertion instead
-    // of waiting until the user stops typing. InputArea reports beforeinput,
-    // paste and input as browser-compatible fallbacks; this latch collapses
-    // them into one control request for the current foreground visit.
-    kvcPreparedInputSessionRef.current = targetSessionId;
+    // Publish on the first real insertion instead of waiting until the user
+    // stops typing. InputArea reports beforeinput, paste and input as browser-
+    // compatible fallbacks; this latch collapses them into one lifecycle
+    // notification for the current foreground visit.
+    inputIntentSessionRef.current = targetSessionId;
     const runtime = useSessionStore.getState().getRuntime(targetSessionId);
-    void request<{ scheduled?: boolean; outcome?: string }>('session.kvc.prepare', {
+    void request<{ scheduled?: boolean; outcome?: string }>('session.input.intent', {
       session_id: targetSessionId,
       intent_id: generateUuidV4(),
-      view_id: kvcViewIdRef.current,
+      view_id: sessionViewIdRef.current,
       mode: resolvePlanWireMode(
         runtime?.mode ?? mode,
         usePlanStore.getState().isActive(targetSessionId),
@@ -2724,18 +2689,18 @@ function AppContent({
       ),
     }).then((response) => {
       if (response?.outcome === 'failed'
-          && kvcPreparedInputSessionRef.current === targetSessionId) {
-        kvcPreparedInputSessionRef.current = null;
+          && inputIntentSessionRef.current === targetSessionId) {
+        inputIntentSessionRef.current = null;
       }
     }).catch((error) => {
       // Allow the next editor event to retry when the control request itself
-      // could not reach AgentServer. KVC remains an optional optimization.
-      if (kvcPreparedInputSessionRef.current === targetSessionId) {
-        kvcPreparedInputSessionRef.current = null;
+      // could not reach AgentServer. Lifecycle extensions remain optional.
+      if (inputIntentSessionRef.current === targetSessionId) {
+        inputIntentSessionRef.current = null;
       }
-      console.debug('session.kvc.prepare skipped:', error);
+      console.debug('session.input.intent skipped:', error);
     });
-  }, [kvCacheAffinityEnabled, mode, request]);
+  }, [mode, request]);
 
   const handleUseAgent = useCallback((agentId: string) => {
     enterNewConversation('agent', { forceMode: 'agent' });
@@ -2782,7 +2747,7 @@ function AppContent({
         is_swarm: runtimeSettings.mode === 'team',
         title: createConversationTitle(initialTitle).slice(0, 100),
         work_mode: workContext.work_mode,
-        view_id: kvcViewIdRef.current,
+        view_id: sessionViewIdRef.current,
         persist_session: false,
       };
       const previousSession = newConversationPreviousSessionRef.current;
@@ -2913,7 +2878,7 @@ function AppContent({
           is_swarm: runtimeSettings.mode === 'team',
           title: createConversationTitle(messageContent).slice(0, 100),
           work_mode: workContext.work_mode,
-          view_id: kvcViewIdRef.current,
+          view_id: sessionViewIdRef.current,
           persist_session: runtimeSettings.persistSession,
         };
         const previousSession = newConversationPreviousSessionRef.current;
@@ -3201,7 +3166,7 @@ function AppContent({
             previous_session_id: previousSessionId,
             previous_mode: previousMode,
             mode: resolvedMode,
-            view_id: kvcViewIdRef.current,
+            view_id: sessionViewIdRef.current,
           });
         } catch (error) {
           if (isTeamAgentMode(resolvedMode)) {
@@ -3783,7 +3748,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onStartSideConversation={handleStartSideConversation}
                         continuedFromSessionId={continuedFromSessionId}
                         onOpenContinuedFromSession={handleOpenContinuedFromSession}
-                        onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
+                        onInputIntent={handleSessionInputIntent}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}
                         onInterrupt={handleInterrupt}

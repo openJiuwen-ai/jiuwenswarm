@@ -81,12 +81,13 @@ export interface AgentManagementClient {
 }
 
 export interface AgentGroupListOptions {
-  filter?: 'builtin' | 'local' | 'all';
+  filter?: 'builtin' | 'builtin+hub' | 'local' | 'all';
+  cache_mode?: 'prefer_cache';
 }
 
 export interface AgentGroupManagementClient {
   readonly source: AgentManagementSource;
-  listGroups(options?: AgentGroupListOptions): Promise<AgentGroupCatalogItem[]>;
+  listGroups(options?: AgentGroupListOptions): Promise<CatalogItems<AgentGroupCatalogItem>>;
   getGroup(id: string): Promise<AgentGroupDetail>;
   getGroupFiles(id: string): Promise<DefinitionFileEntry[]>;
   getGroupFile(id: string, relativePath: string): Promise<AgentFileContent>;

@@ -146,7 +146,6 @@
   left: 10px;
   width: 224px;
   padding: 8px;
-  border: 1px solid var(--color-border-default);
   border-radius: 12px;
   background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
@@ -167,8 +166,15 @@
   cursor: pointer;
 }
 
-.conversation-sidebar__mode-menu>button:hover,
+.conversation-sidebar__mode-menu>button:hover {
+  background: var(--color-surface-hover);
+}
+
 .conversation-sidebar__mode-menu>button.is-active {
+  background: transparent;
+}
+
+.conversation-sidebar__mode-menu>button.is-active:hover {
   background: var(--color-surface-hover);
 }
 
@@ -602,6 +608,7 @@
   width: 14px;
   height: 14px;
   flex: 0 0 auto;
+  color: var(--color-text-meta);
   animation: conversation-spin 0.9s linear infinite;
 }
 
@@ -713,9 +720,9 @@
 .conversation-list-item__actions[data-state='open'],
 .conversation-list-item__pin-action:hover,
 .conversation-list-item__pin-action:focus-visible,
-.conversation-entity-row > .conversation-list-item__actions:hover,
-.conversation-entity-row > .conversation-list-item__actions:focus-visible,
-.conversation-entity-row > .conversation-list-item__actions[data-state='open'] {
+.conversation-entity-row>.conversation-list-item__actions:hover,
+.conversation-entity-row>.conversation-list-item__actions:focus-visible,
+.conversation-entity-row>.conversation-list-item__actions[data-state='open'] {
   background: var(--color-icon-btn-hover-surface);
   color: var(--color-text-primary);
 }

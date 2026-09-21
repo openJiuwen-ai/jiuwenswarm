@@ -1,6 +1,7 @@
 """Disk-backed lifecycle scenarios; runtime calls are isolated from LLMs."""
 
 import asyncio
+import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -212,6 +213,105 @@ async def test_moved_directory_recovers_original_timestamp(archive):
     result = await service.session("sess_a", "archive", "web")
     assert result["archived_at"] == operation["archived_at"]
     assert lc.raw_metadata("sess_a")["archived_at"] == operation["archived_at"]
+
+
+@pytest.mark.asyncio
+async def test_listing_skips_unusable_entries_instead_of_failing(archive):
+    service, create, root, _ = archive
+    create()
+    await service.session("sess_a", "archive", "web")
+    # 非法资源 ID（前后空白）：validate_id 拒绝，但目录在两个平台都能创建。
+    stray = root / "sessions_archived/ bad_name"
+    stray.mkdir()
+    lc.atomic_json(stray / "metadata.json", dict(session_id=" bad_name", title="x"))
+    # 损坏的 metadata.json：JSON 解析失败。
+    corrupt = root / "sessions_archived/sess_corrupt"
+    corrupt.mkdir()
+    (corrupt / "metadata.json").write_text("{not json")
+    # 空目录：会话在扫描期间被移走或外部垃圾，不得进入列表。
+    (root / "sessions_archived/sess_gone").mkdir()
+    result = service.list_sessions({})
+    assert result["total"] == 1
+    item = result["sessions"][0]
+    assert item["session_id"] == "sess_a"
+    assert item["archived"] is True
+    assert isinstance(item["archived_at"], float)
+    assert item["execution_blocked"] is True
+    assert item["lifecycle_operation"] is None
+
+
+@pytest.mark.asyncio
+async def test_listing_is_read_only_and_backfill_persists_archive_time(archive):
+    service, create, root, _ = archive
+    directory = create()
+    # 模拟老版本遗留：手动移入归档区，元数据没有 archived_at。
+    destination = root / "sessions_archived/sess_a"
+    destination.parent.mkdir()
+    directory.rename(destination)
+    mtime = destination.stat().st_mtime
+    result = service.list_sessions({})
+    assert result["total"] == 1
+    assert result["sessions"][0]["archived_at"] == pytest.approx(mtime)
+    # 只读：列表请求不得写元数据或生命周期状态。
+    assert "archived_at" not in lc.read_json(destination / "metadata.json")
+    assert lc.state("session", "sess_a") == {}
+    # 启动回填持久化后，列表返回持久化的值。
+    service._backfill_archive_times()
+    persisted = lc.read_json(destination / "metadata.json")["archived_at"]
+    assert persisted == pytest.approx(mtime)
+    assert service.list_sessions({})["sessions"][0]["archived_at"] == persisted
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="directory junctions are Windows-only"
+)
+async def test_listing_skips_junction_escaping_managed_root(archive, tmp_path):
+    import _winapi
+
+    service, create, root, _ = archive
+    create()
+    await service.session("sess_a", "archive", "web")
+    # junction 指向受管存储之外：is_symlink 识别不了，必须由
+    # resolve 后的父目录比对拦下（与 session_paths 守卫同判定）。
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    lc.atomic_json(
+        outside / "metadata.json",
+        dict(session_id="sess_escape", title="escape", project_id="default"),
+    )
+    junction = root / "sessions_archived" / "sess_escape"
+    _winapi.CreateJunction(str(outside), str(junction))
+    result = service.list_sessions({})
+    assert result["total"] == 1
+    assert result["sessions"][0]["session_id"] == "sess_a"
+    # 启动回填同样不得读取或修复越界目标。
+    service._backfill_archive_times()
+    assert "archived_at" not in lc.read_json(outside / "metadata.json")
+
+
+@pytest.mark.asyncio
+async def test_listing_survives_permission_error_on_one_entry(archive, monkeypatch):
+    import pathlib
+
+    service, create, root, _ = archive
+    create()
+    await service.session("sess_a", "archive", "web")
+    locked = root / "sessions_archived" / "sess_locked"
+    locked.mkdir()
+    (locked / "metadata.json").write_text("{}")
+    original = pathlib.Path.is_dir
+
+    def denying_is_dir(self):
+        if self.name == "sess_locked":
+            raise PermissionError("denied")
+        return original(self)
+
+    monkeypatch.setattr(pathlib.Path, "is_dir", denying_is_dir)
+    # 单个条目的权限错误不得让整个列表失败。
+    result = service.list_sessions({})
+    assert result["total"] == 1
+    assert result["sessions"][0]["session_id"] == "sess_a"
 
 
 @pytest.mark.asyncio

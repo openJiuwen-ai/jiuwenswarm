@@ -71,7 +71,9 @@
       "quotaTitle": "免费积分",
       "quotaLoggedOut": "登录后查看",
       "signedIn": "已登录",
-      "loggedInDescription": "限时免费模型已可在对话的模型下拉中选用"
+      "loggedInDescription": "限时免费模型已可在对话的模型下拉中选用",
+      "endedTitle": "活动已结束",
+      "endedDescription": "本期限时免费模型活动已结束，感谢参与"
     },
     "categories": {
       "general": "常规",
@@ -143,10 +145,17 @@
     },
     "general": {
       "preferences": "界面与连接",
-      "language": "界面语言",
+      "language": "Language",
       "languageDescription": "设置应用程序界面的界面显示语言。",
       "chinese": "中文（简体）",
       "english": "English",
+      "closeBehavior": "关闭主窗口时",
+      "closeBehaviorDescription": "选择点击窗口关闭按钮后的行为，可随时修改。",
+      "closeBehaviorOptions": {
+        "ask": "每次询问",
+        "hide": "最小化到托盘",
+        "quit": "退出应用"
+      },
       "connection": "服务连接状态",
       "connectionDescription": "表示当前页面与 WorkSwarm 服务的连接状态。",
       "connectionStatus": {
@@ -341,7 +350,7 @@
     },
     "fields": {
       "preferred_language": {
-        "title": "界面语言",
+        "title": "Language",
         "description": "设置应用程序界面的显示语言。"
       },
       "chrome_path": {
@@ -385,10 +394,6 @@
       "skill_retrieval_enabled": {
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
-      },
-      "skill_retrieval_index_enabled": {
-        "title": "技能索引",
-        "description": "启用已安装技能的树状目录，增强智能体的结构化技能发现能力（*可能消耗额外 Token）"
       },
       "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
       "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
@@ -532,7 +537,7 @@
     "selectMember": "请选择 Team 成员",
     "detailTabs": {
       "members": "成员",
-      "group": "群聊"
+      "group": "子话题"
     },
     "leader": "Team leader",
     "memberSeparator": "、",
@@ -1634,7 +1639,8 @@
       "updated": "任务更新成功",
       "deleted": "任务删除成功",
       "statusUpdated": "任务状态更新成功",
-      "runNow": "任务已触发立即执行"
+      "runNow": "任务已触发立即执行",
+      "proactiveRunNow": "推荐任务已在后台启动，将自动判断是否需要推荐，结果稍后提示。"
     },
     "preview": {
       "loading": "正在加载下次触发时间...",
@@ -1803,7 +1809,13 @@
       "addKnowledge": "来源管理",
       "resultUnit": "项结果",
       "guideDesc": "开启个人上下文，添加内容来源，系统将自动构建知识图谱。",
-      "guideAction": "去完成"
+      "guideAction": "去完成",
+      "expandTree": "展开目录",
+      "collapseTree": "收起目录",
+      "legendRoot": "根节点",
+      "legendFolder": "目录",
+      "legendDoc": "Markdown 文档",
+      "legendEdge": "关系"
     },
     "services": {
       "addContent": "上下文采集",
@@ -1853,9 +1865,9 @@
       "title": "添加内容",
       "editTitle": "编辑采集任务",
       "nameLabel": "采集内容名称",
-      "namePlaceholder": "如 my-task，字母数字开头，仅 . _ -",
+      "namePlaceholder": "",
       "nameRequired": "请填写采集内容名称",
-      "nameFormatError": "名称须以字母或数字开头，仅可包含字母、数字、. _ -（不支持空格和中文）",
+      "nameFormatError": "名称不能超过 500 个字符",
       "providerLabel": "内容采集来源",
       "autoCollectLabel": "自动采集",
       "autoCollectHint": "开启后按频率自动采集",
@@ -1877,7 +1889,7 @@
       "maxItemsLabel": "单次最多采集条数",
       "maxItemsPlaceholder": "留空使用默认",
       "advancedConfig": "高级配置",
-      "maxItemsRangeError": "单次采集条数须在 1~10000 之间，或留空使用默认",
+      "maxItemsRangeError": "单次采集条数须在 1~40 之间，或留空使用默认",
       "previousStep": "上一步",
       "submit": "添加",
       "save": "保存",
@@ -2008,6 +2020,7 @@
     },
     "skillTypes": {
       "skill": "技能包",
+      "skillpack": "技能包",
       "team": "团队技能",
       "multimodal": "多模态"
     },
@@ -2136,10 +2149,7 @@
       "description": "需要登录账号才能发布技能到 SkillHub",
       "gitcodeLogin": "使用 GitCode 登录",
       "githubLogin": "使用 GitHub 登录",
-      "notConfigured": "GitCode OAuth 未配置，请在 .env.local 中设置 VITE_GITCODE_OAUTH_CLIENT_ID 和 VITE_GITCODE_OAUTH_CLIENT_SECRET",
-      "githubNotConfigured": "GitHub OAuth 未配置，请在 .env.local 中设置 VITE_GITHUB_OAUTH_CLIENT_ID",
-      "loading": "登录中...",
-      "callbackHint": "请通过 http://127.0.0.1:5173 访问前端，OAuth 回调地址已设为：http://127.0.0.1:5173/oauth/callback"
+      "loading": "登录中..."
     },
     "uploadSkillModal": {
       "title": "上传技能",
@@ -2162,7 +2172,7 @@
       "linkPlaceholder": "请输入",
       "descLabel": "技能描述（可选）",
       "descPlaceholder": "请输入",
-      "confirm": "确认",
+      "confirm": "确定",
       "cancel": "取消"
     },
     "builtIn": "内置",
@@ -2253,9 +2263,6 @@
       "description": "开启 Skill 发现后，系统按 1% 阈值为新会话选择完整候选快照或实时 skill_index 检索；分类索引是否构建由单独的索引开关控制。已有会话保持创建时冻结的策略。",
       "globalDisabledHint": "全局发现开关已关闭。Agent 使用 JiuwenSwarm 原有 Skill 逻辑；已有分类索引文件会保留但不使用。",
       "indexNotNeeded": "完整候选快照低于 1% 阈值时无需分类索引；即使已保存索引偏好，也不会启动构建。",
-      "indexRecommended": "当前已安装 Skills 较多。您可以构建 Skill 索引，以增强对已安装 Skills 的调用能力。\n\nSkill 索引主要提供以下增强：\n\n- 维护 Skills 的分层目录结构；\n- 探查 Skills 之间的结构性依赖关系；\n- 提供更强的 Skills 运行时渐进式发现、检索与编排能力。*\n\n*构建或刷新 Skill 索引需要调用 LLM 分析已安装 Skills，因此会额外消耗 token。",
-      "recommendationBuild": "立即构建",
-      "recommendationDismiss": "暂不构建",
       "indexDisabled": "分类索引开关已关闭。实时平铺检索仍可用，已有索引文件会保留。",
       "indexBuildRunning": "分类索引正在后台构建。构建期间检索仍可用；构建会消耗模型 token。",
       "indexActive": "分类索引开关已开启，当前分类目录正在使用；刷新会消耗模型 token。",
@@ -2886,6 +2893,7 @@
         "definitionUnavailable": "该专家团定义不完整，暂时无法使用。",
         "membersInvalid": "专家团成员信息无效，请选择唯一的负责人和成员。",
         "memberUnavailable": "所选专家不可用或不兼容团队。",
+        "packageValidationError": "专家团包校验失败：{{reason}}",
         "createSuccess": "专家团包 {{id}} 已创建。",
         "uploadSuccess": "专家团包 {{id}} 已导入，请在我的专家团中查看。",
         "uploadError": "专家团包导入失败，请检查文件后重试。",
@@ -3020,7 +3028,23 @@
       "todoModify": "更新待办",
       "todoList": "查看待办",
       "todoGet": "读取待办",
-      "skill": "查看技能"
+      "skill": "查看技能",
+      "spawnMember": "创建成员",
+      "sendMessage": "发送消息",
+      "buildTeam": "创建团队",
+      "shutdownMember": "关闭成员",
+      "createTask": "创建任务",
+      "updateTask": "更新任务"
+    },
+    "toolDisplay": {
+      "title": "{{category}} · {{action}}",
+      "category": {
+        "file": "文件",
+        "search": "搜索",
+        "code": "代码",
+        "system": "系统",
+        "other": "工具"
+      }
     },
     "toolResult": {
       "success": "完成",
@@ -3036,9 +3060,9 @@
       "truncated": "结果已截断"
     },
     "toolGroup": {
-      "running": "正在{{label}}",
-      "completed": "已完成{{label}}",
-      "failed": "{{label}}执行失败",
+      "running": "执行中：{{label}}",
+      "completed": "已完成：{{label}}",
+      "failed": "执行失败：{{label}}",
       "category": {
         "file": "文件操作",
         "search": "搜索",
@@ -3791,6 +3815,10 @@
       "login": "登录",
       "loggingIn": "登录中…",
       "logout": "退出登录",
+      "switchAccount": "切换账号",
+      "switchSignOutHint": "华为账号在浏览器中仍处于登录状态，请先退出后再回到这里继续登录",
+      "switchContinue": "已退出，继续登录",
+      "switchSameAccount": "仍然是原来的账号。请先在浏览器中退出华为账号，再回来重新切换。",
       "cancel": "取消",
       "close": "关闭",
       "done": "完成",
@@ -4090,9 +4118,8 @@
       "statusInstalled": "已安装",
       "actionConfig": "配置信息",
       "actionDelete": "删除",
-      "actionPause": "暂停",
+      "actionPause": "暂停任务",
       "actionStop": "停止任务",
-      "pauseUnsupported": "当前 Harness 引擎暂不支持运行中暂停",
       "actionUnknownError": "未知错误",
       "actionFailed": "操作失败：{{message}}",
       "actionInstallSuccess": "{{taskName}} - {{snapshotName}} 安装成功！",
@@ -4179,7 +4206,7 @@
     "controlAlreadyPaused": "工作流已暂停",
     "controlUnavailable": "工作流正在运行，控制暂不可用",
     "controlNotFound": "未找到工作流运行",
-    "controlsDisabledHint": "团队未在运行，工作流暂不可直接操作；请在主会话发送消息以恢复或停止",
+    "controlsDisabledHint": "团队已暂停，发送一条消息唤醒团队后即可恢复或停止工作流",
     "sessionBudget": "会话预算（团队共享，不随运行重置）",
     "runBudget": "本次运行预算（META.workflow_token_limit）",
     "sessionBudgetShort": "会话累计",

@@ -6,7 +6,7 @@ import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
  *
  * Skills 管理面板（编排层）：
  * - 类型见 ./types.ts；纯函数工具见 ./skillPanelUtils.ts；小组件见 ./SkillPanelWidgets.tsx
- * - 数据域 hooks：useHubMarketplace / useSkillFilesTab / useSymphonyGraph / useIndexRecommendation /
+ * - 数据域 hooks：useHubMarketplace / useSkillFilesTab / useSymphonyGraph / useRetrievalIndexBuild /
  *   useEvolution / useSkillToasts；发布与登录由公共 AssetPublishHost 承载
  * - 视图：SkillGraphTab / MarketplaceView / SkillDetailView；弹窗：UploadSkillModal / DocToSkillModal /
  */
@@ -41,7 +41,7 @@ import { DocToSkillModal } from './DocToSkillModal';
 import { useSkillToasts } from './useSkillToasts';
 import { useHubMarketplace, type MarketplaceSubView } from './useHubMarketplace';
 import { useSymphonyGraph } from './useSymphonyGraph';
-import { useIndexRecommendation } from './useIndexRecommendation';
+import { useRetrievalIndexBuild } from './useRetrievalIndexBuild';
 import { useEvolution } from './useEvolution';
 import { useSkillFilesTab } from './useSkillFilesTab';
 import type {
@@ -278,13 +278,7 @@ export function SkillPanel({
     updateGraphReading,
   } = useSymphonyGraph({ isConnected, symphonyEnabled, onSymphonyEnabledChange });
 
-  const {
-    indexRecommendationVisible,
-    indexRecommendationBuilding,
-    setIndexRecommendationVisible,
-    startRetrievalIndexBuild,
-    buildRecommendedIndex,
-  } = useIndexRecommendation({ isActive, activeTab, isConnected, withSession, showMessage });
+  const { startRetrievalIndexBuild } = useRetrievalIndexBuild({ isConnected, withSession, showMessage });
 
   const {
     filesLoadState,
@@ -873,7 +867,9 @@ export function SkillPanel({
 
   // 2026-08-25：改用 utils/mySkills.ts 的共享 isSkillInstalled/filterEnabledMySkills，跟"手动创建
   // 插件"的"添加技能"弹窗（CreatePluginPage.tsx）共用同一份"已启用"判定规则，见该文件头注释。
-  const skillPublication = useAssetPublication(activeTab === 'my' ? visibleSkills.map(s => ({ kind: 'skill', local_id: s.name })) : []);
+  const skillPublication = useAssetPublication(
+    activeTab === 'my' ? visibleSkills.map((s) => ({ kind: 'skill', local_id: s.name })) : [],
+  );
   const mySkillsFiltered = useMemo(() => {
     let filtered = visibleSkills;
     switch (mySkillsSubTab) {
@@ -891,16 +887,23 @@ export function SkillPanel({
     }
     // 发布状态筛选
     if (mySkillsPublishFilter === 'published') {
-      filtered = filtered.filter((s) => matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'published'));
+      filtered = filtered.filter((s) =>
+        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'published'),
+      );
     } else if (mySkillsPublishFilter === 'unpublished') {
-      filtered = filtered.filter((s) => matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'unpublished'));
+      filtered = filtered.filter((s) =>
+        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'unpublished'),
+      );
     }
     return filtered;
   }, [visibleSkills, mySkillsSubTab, mySkillsPublishFilter, installedSkillNames, skillPublication]);
 
   // 内置/非内置分组（用于"我的技能"列表分组展示）；技能包单独成组置顶
   const builtinSkills = useMemo(() => mySkillsFiltered.filter((s) => s.source === 'builtin'), [mySkillsFiltered]);
-  const skillPackSkills = useMemo(() => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'), [mySkillsFiltered]);
+  const skillPackSkills = useMemo(
+    () => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'),
+    [mySkillsFiltered],
+  );
   const otherSkills = useMemo(
     () => mySkillsFiltered.filter((s) => s.source !== 'builtin' && s.skill_type !== 'skillpack'),
     [mySkillsFiltered],
@@ -963,10 +966,7 @@ export function SkillPanel({
           success: boolean;
           detail?: string;
           message?: string;
-        }>(
-          'skills.pack_member.install',
-          withSession({ pack: packName, name: memberName }),
-        );
+        }>('skills.pack_member.install', withSession({ pack: packName, name: memberName }));
         if (!result.success) {
           throw new Error(result.detail || result.message || t('skills.errors.installFailed'));
         }
@@ -1112,10 +1112,7 @@ export function SkillPanel({
             tooltip={t('skills.actions.goTry')}
           />
         </div>
-        <span
-          title={isPackBlocked ? t('skills.packBlockedHint') : undefined}
-          className="flex items-center"
-        >
+        <span title={isPackBlocked ? t('skills.packBlockedHint') : undefined} className="flex items-center">
           <Switch
             checked={!isDisabled}
             onChange={() => toggleSkillDisabled(skill.name)}
@@ -1281,7 +1278,6 @@ export function SkillPanel({
                   { value: 'published', label: t('skills.publishFilter.published') },
                   { value: 'unpublished', label: t('skills.publishFilter.unpublished') },
                 ]}
-                style={{ width: mySkillsPublishFilter === 'all' ? '40px' : '55px' }}
                 testId="skill-panel-filter-publish"
               />
               {/* 启用/禁用筛选 */}
@@ -1303,7 +1299,6 @@ export function SkillPanel({
                   { value: 'disabled', label: t('skills.mySkillsTabs.disabled') },
                   { value: 'builtin', label: t('skills.mySkillsTabs.builtin') },
                 ]}
-                style={{ width: '40px' }}
                 testId="skill-panel-filter-enable"
               />
             </>
@@ -1414,10 +1409,6 @@ export function SkillPanel({
   const renderGraphTab = () => (
     <SkillGraphTab
       isConnected={isConnected}
-      indexRecommendationVisible={indexRecommendationVisible}
-      indexRecommendationBuilding={indexRecommendationBuilding}
-      onDismissRecommendation={() => setIndexRecommendationVisible(false)}
-      onBuildRecommendedIndex={() => void buildRecommendedIndex()}
       symphonySaveError={symphonySaveError}
       symphonySaving={symphonySaving}
       symphonyEnabledDraft={symphonyEnabledDraft}
@@ -1455,26 +1446,26 @@ export function SkillPanel({
       />
     ) : (
       <>
-      <CatalogCacheNotice cache={hubCache} />
-      <MarketplaceView
-        marketplaceSubView={marketplaceSubView}
-        teamSkills={teamSkills}
-        featuredSkills={featuredSkills}
-        hubTeamMore={hubTeamMore}
-        hubSkillMore={hubSkillMore}
-        skillPacks={skillPacks}
-        hubSkills={hubSkills}
-        hubLoading={hubLoading}
-        hubMoreLoading={hubMoreLoading}
-        searchKeyword={searchKeyword}
-        marketplaceCategory={marketplaceCategory}
-        onSelectHubSkill={handleSelectHubSkill}
-        renderHubSkillAction={renderHubSkillAction}
-        onOpenAllPacks={openHubAllPacks}
-        onCategoryChange={handleMarketplaceCategoryChange}
-        onOpenMore={openHubMore}
-        onBackFromMore={handleBackToHubDetail}
-      />
+        <CatalogCacheNotice cache={hubCache} />
+        <MarketplaceView
+          marketplaceSubView={marketplaceSubView}
+          teamSkills={teamSkills}
+          featuredSkills={featuredSkills}
+          hubTeamMore={hubTeamMore}
+          hubSkillMore={hubSkillMore}
+          skillPacks={skillPacks}
+          hubSkills={hubSkills}
+          hubLoading={hubLoading}
+          hubMoreLoading={hubMoreLoading}
+          searchKeyword={searchKeyword}
+          marketplaceCategory={marketplaceCategory}
+          onSelectHubSkill={handleSelectHubSkill}
+          renderHubSkillAction={renderHubSkillAction}
+          onOpenAllPacks={openHubAllPacks}
+          onCategoryChange={handleMarketplaceCategoryChange}
+          onOpenMore={openHubMore}
+          onBackFromMore={handleBackToHubDetail}
+        />
       </>
     );
 

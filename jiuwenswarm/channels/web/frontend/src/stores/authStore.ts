@@ -14,17 +14,23 @@ import {
   AUTH_CALLBACK_MESSAGE,
   AuthApiError,
   AuthStatus,
+  CampaignState,
   ModelQuota,
   authorize,
+  cancelLogin as cancelLoginRequest,
   claim,
   fetchQuota,
   logout as logoutRequest,
   openAuthorizeUrl,
+  openExternal,
   status as fetchStatus,
 } from '../services/authClient';
 
 /** 查询登录状态的退避重试间隔，累计约 60 秒，覆盖 gateway 慢启动。 */
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
+
+/** 后端没给时用的华为账号中心地址，与 `account_kit.DEFAULT_ACCOUNT_CENTER_URL` 一致。 */
+const DEFAULT_ACCOUNT_CENTER_URL = 'https://id1.cloud.huawei.com/AMW/portal/userCenter/index.html';
 
 /**
  * - `idle`      未开始 / 已结束
@@ -36,6 +42,17 @@ export type LoginPhase = 'idle' | 'starting' | 'waiting';
 interface AuthState {
   /** 后端是否开启了登录功能（未开启时前端应隐藏登录入口） */
   enabled: boolean;
+  /** 活动状态：界面据此显示登录入口、公告，还是什么都不显示。 */
+  campaignState: CampaignState;
+  /** 华为账号中心地址，换账号时把用户领过去退出。 */
+  accountCenterUrl: string;
+  /**
+   * 换账号走到哪一步：`signout` = 已把用户送去华为账号中心，等他退出后回来点继续。
+   * 华为不认 prompt、也没有登出端点，浏览器里的华为登录态只能由用户自己清掉。
+   */
+  switchStep: 'idle' | 'signout';
+  /** 换账号后又登进了同一个账号：说明浏览器里的华为登录态还在。 */
+  sameAccountAfterSwitch: boolean;
   islogin: boolean;
   userId: string | null;
   userName: string | null;
@@ -55,6 +72,12 @@ interface AuthState {
   refresh: () => Promise<void>;
   refreshQuota: () => Promise<void>;
   startLogin: () => Promise<void>;
+  /** 开始换账号：退出本地会话，并把用户送去华为账号中心退出。 */
+  switchAccount: () => Promise<void>;
+  /** 用户说他已经在浏览器里退出了：继续走授权。 */
+  continueSwitchAccount: () => Promise<void>;
+  /** 放弃换账号。 */
+  cancelSwitchAccount: () => void;
   /** 去认领一次登录结果。等待授权期间由事件触发，也给「我已完成登录」按钮用。 */
   checkLogin: () => Promise<void>;
   cancelLogin: () => void;
@@ -72,6 +95,8 @@ let claimRequestedAgain = false;
 let loginRun = 0;
 /** 正在进行的状态查询。多处 UI 同时发现「还没查过」时共用这一次，不各起一条退避重试。 */
 let refreshInflight: Promise<void> | null = null;
+/** 换账号前的账号 id：登录回来还是它，就说明浏览器里的华为登录态没清掉。 */
+let accountBeforeSwitch: string | null = null;
 
 function stopWaiting(): void {
   loginRun += 1;
@@ -81,8 +106,17 @@ function stopWaiting(): void {
   detachTriggers = null;
 }
 
-/** 挂上三个"授权可能已完成"的触发点（见文件头）。 */
-function attachTriggers(onTrigger: () => void): () => void {
+/** 放弃正在等待的登录：除了本地收尾，还要通知Gateway停止向鉴权服务认领。 */
+function abandonWaiting(): void {
+  if (pendingLogin) void cancelLoginRequest(pendingLogin.state, pendingLogin.claimToken);
+  stopWaiting();
+}
+
+/**
+ * 挂上三个"授权可能已完成"的触发点（见文件头），以及页面关闭：`claimToken` 只在内存里，
+ * 页面一关这次登录就不可能再被认领了。
+ */
+function attachTriggers(onTrigger: () => void, onLeave: () => void): () => void {
   // BroadcastChannel 只在同源页面之间传递，别的网站发不进来；消息不带数据，认领要出示 claimToken
   let channel: BroadcastChannel | null = null;
   try {
@@ -98,16 +132,24 @@ function attachTriggers(onTrigger: () => void): () => void {
   };
   window.addEventListener('focus', onTrigger);
   document.addEventListener('visibilitychange', onVisible);
+  // 进了bfcache（persisted）的页面还会回来，内存里的claimToken也还在，不算离开
+  const onPageHide = (event: PageTransitionEvent) => {
+    if (!event.persisted) onLeave();
+  };
+  window.addEventListener('pagehide', onPageHide);
   return () => {
     channel?.close();
     window.removeEventListener('focus', onTrigger);
     document.removeEventListener('visibilitychange', onVisible);
+    window.removeEventListener('pagehide', onPageHide);
   };
 }
 
 function applyStatus(data: AuthStatus): Partial<AuthState> {
   return {
     enabled: data.enabled !== false,
+    campaignState: data.state ?? (data.enabled !== false ? 'active' : 'off'),
+    accountCenterUrl: data.accountCenterUrl || DEFAULT_ACCOUNT_CENTER_URL,
     islogin: Boolean(data.islogin),
     userId: data.userId ?? null,
     userName: data.userName ?? null,
@@ -123,6 +165,10 @@ function messageOf(error: unknown, fallback: string): string {
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   enabled: false,
+  campaignState: 'off',
+  accountCenterUrl: DEFAULT_ACCOUNT_CENTER_URL,
+  switchStep: 'idle',
+  sameAccountAfterSwitch: false,
   islogin: false,
   userId: null,
   userName: null,
@@ -172,8 +218,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
           }
         }
-        // 静默按「未登录 + 未开启」处理，不打扰用户；标签页重新可见时还会再查一次
-        set({ enabled: false, islogin: false, initialized: true });
+        // Gateway无应答时按"暂时连不上"处理，不说活动结束；
+        // 标签页重新可见时还会再查一次
+        set({ enabled: false, campaignState: 'unavailable', islogin: false, initialized: true });
       })().finally(() => {
         refreshInflight = null;
       });
@@ -195,11 +242,18 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ phase: 'idle', error: messageOf(error, '无法获取授权地址，请稍后重试') });
       return;
     }
-    // 取授权地址期间用户点了取消 / 又发起了一次新登录：这一轮作废，别再替他开浏览器
-    if (run !== loginRun) return;
+    // 取授权地址期间用户点了取消 / 登出：这一轮作废，别再替他开浏览器；
+    // Gateway已经开始替它向鉴权服务认领，也通知它停下
+    if (run !== loginRun) {
+      void cancelLoginRequest(request.state, request.claimToken);
+      return;
+    }
 
     pendingLogin = { state: request.state, claimToken: request.claimToken };
-    detachTriggers = attachTriggers(() => void get().checkLogin());
+    detachTriggers = attachTriggers(
+      () => void get().checkLogin(),
+      () => get().cancelLogin(),
+    );
     const authorizeWindow = openAuthorizeUrl(request.authorizeUrl);
     set({
       phase: 'waiting',
@@ -224,7 +278,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (pendingLogin !== current || outcome.kind === 'pending') return;
       finished = true;
       stopWaiting();
-      set({ ...applyStatus(outcome.status), phase: 'idle', pendingAuthorizeUrl: null, error: null });
+      const sameAccountAfterSwitch =
+        accountBeforeSwitch !== null && outcome.status.userId === accountBeforeSwitch;
+      accountBeforeSwitch = null;
+      set({
+        ...applyStatus(outcome.status),
+        phase: 'idle',
+        pendingAuthorizeUrl: null,
+        error: null,
+        sameAccountAfterSwitch,
+      });
       // 登录送的模型此刻才出现，通知 App 重拉模型列表
       notifyAuthChanged(true);
       void get().refreshQuota();
@@ -240,14 +303,34 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  async switchAccount() {
+    accountBeforeSwitch = get().userId;
+    // 华为的登录态在它自己的域名下，我们删不掉，也没有登出端点：只能把用户送过去自己退。
+    // **先开页面再登出**：await 之后的 window.open 丢了用户手势，会被弹窗拦截器挡下。
+    // 拦截了也不算失败，弹窗里同时给了地址让用户自己点
+    openExternal(get().accountCenterUrl);
+    set({ switchStep: 'signout', sameAccountAfterSwitch: false });
+    await get().logout();
+  },
+
+  async continueSwitchAccount() {
+    set({ switchStep: 'idle' });
+    await get().startLogin();
+  },
+
+  cancelSwitchAccount() {
+    accountBeforeSwitch = null;
+    set({ switchStep: 'idle' });
+  },
+
   cancelLogin() {
-    stopWaiting();
+    abandonWaiting();
     // 连同上一次的报错一起清掉：取消就是重新开始，再打开登录框不该还挂着旧错误
     set({ phase: 'idle', pendingAuthorizeUrl: null, error: null });
   },
 
   async logout() {
-    stopWaiting();
+    abandonWaiting();
     await logoutRequest();
     set({
       islogin: false,

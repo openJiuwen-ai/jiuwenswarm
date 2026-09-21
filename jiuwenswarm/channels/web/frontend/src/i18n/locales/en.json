@@ -71,7 +71,9 @@
       "quotaTitle": "Free credits",
       "quotaLoggedOut": "Sign in to view",
       "signedIn": "Signed in",
-      "loggedInDescription": "Limited-time free models are now available in the chat model dropdown"
+      "loggedInDescription": "Limited-time free models are now available in the chat model dropdown",
+      "endedTitle": "Campaign ended",
+      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part."
     },
     "categories": {
       "general": "General",
@@ -143,10 +145,17 @@
     },
     "general": {
       "preferences": "Interface and connection",
-      "language": "Interface language",
+      "language": "Language",
       "languageDescription": "Set the display language for the application interface.",
       "chinese": "中文（简体）",
       "english": "English",
+      "closeBehavior": "When closing the main window",
+      "closeBehaviorDescription": "Choose what the window close button does. You can change this at any time.",
+      "closeBehaviorOptions": {
+        "ask": "Ask every time",
+        "hide": "Minimize to tray",
+        "quit": "Quit application"
+      },
       "connection": "Service connection",
       "connectionDescription": "Shows the connection status between this page and the WorkSwarm service.",
       "connectionStatus": {
@@ -341,7 +350,7 @@
     },
     "fields": {
       "preferred_language": {
-        "title": "Interface language",
+        "title": "Language",
         "description": "Set the display language for the application interface."
       },
       "chrome_path": {
@@ -388,10 +397,6 @@
       "skill_retrieval_enabled": {
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
-      },
-      "skill_retrieval_index_enabled": {
-        "title": "Skill Index",
-        "description": "Enable a tree-structured catalog of installed Skills to enhance the agent's structured skill discovery capabilities (*may consume additional tokens)."
       },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
@@ -541,7 +546,7 @@
     "selectMember": "Select a team member",
     "detailTabs": {
       "members": "Members",
-      "group": "Group Chat"
+      "group": "Sub-topics"
     },
     "leader": "Team leader",
     "memberSeparator": ", ",
@@ -1643,7 +1648,8 @@
       "updated": "Task updated successfully",
       "deleted": "Task deleted successfully",
       "statusUpdated": "Task status updated successfully",
-      "runNow": "Task triggered successfully"
+      "runNow": "Task triggered successfully",
+      "proactiveRunNow": "Recommendation check started in the background. It will decide whether to recommend anything and notify you of the result."
     },
     "preview": {
       "loading": "Loading next runs...",
@@ -1812,7 +1818,13 @@
       "addKnowledge": "Source Management",
       "resultUnit": " results",
       "guideDesc": "Enable personal context, add content sources, and the system will automatically build a knowledge graph.",
-      "guideAction": "Get Started"
+      "guideAction": "Get Started",
+      "expandTree": "Expand tree",
+      "collapseTree": "Collapse tree",
+      "legendRoot": "Root node",
+      "legendFolder": "Directory",
+      "legendDoc": "Markdown document",
+      "legendEdge": "Relationship"
     },
     "services": {
       "addContent": "Context Collection",
@@ -1862,9 +1874,9 @@
       "title": "Add content",
       "editTitle": "Edit collection task",
       "nameLabel": "Content name",
-      "namePlaceholder": "e.g. my-task: letter/digit start, . _ - only",
+      "namePlaceholder": "",
       "nameRequired": "Enter a name for this fetch task",
-      "nameFormatError": "Name must start with a letter or digit and contain only letters, digits, . _ - (no spaces or Chinese characters)",
+      "nameFormatError": "Name must be 500 characters or fewer",
       "providerLabel": "Content source",
       "autoCollectLabel": "Auto fetch",
       "autoCollectHint": "Fetch automatically at the chosen frequency",
@@ -1886,7 +1898,7 @@
       "maxItemsLabel": "Max items per run",
       "maxItemsPlaceholder": "Leave empty for default",
       "advancedConfig": "Advanced Settings",
-      "maxItemsRangeError": "Max items must be 1-10000, or empty for default",
+      "maxItemsRangeError": "Max items must be 1-40, or empty for default",
       "previousStep": "Previous",
       "submit": "Add",
       "save": "Save",
@@ -2018,6 +2030,7 @@
     },
     "skillTypes": {
       "skill": "Skill Pack",
+      "skillpack": "Skill Pack",
       "team": "Team Skills",
       "multimodal": "Multimodal"
     },
@@ -2146,10 +2159,7 @@
       "description": "You need to login to publish skills to SkillHub",
       "gitcodeLogin": "Login with GitCode",
       "githubLogin": "Login with GitHub",
-      "notConfigured": "GitCode OAuth is not configured. Set VITE_GITCODE_OAUTH_CLIENT_ID and VITE_GITCODE_OAUTH_CLIENT_SECRET in .env.local",
-      "githubNotConfigured": "GitHub OAuth is not configured. Set VITE_GITHUB_OAUTH_CLIENT_ID in .env.local",
-      "loading": "Logging in...",
-      "callbackHint": "Please access the frontend via http://127.0.0.1:5173. The OAuth callback URL is set to: http://127.0.0.1:5173/oauth/callback"
+      "loading": "Logging in..."
     },
     "uploadSkillModal": {
       "title": "Upload Skill",
@@ -2263,9 +2273,6 @@
       "description": "When Skill discovery is enabled, the 1% threshold selects a complete snapshot or live skill_index retrieval for new sessions. Taxonomy construction is controlled independently by the index switch. Existing sessions keep the strategy frozen at creation.",
       "globalDisabledHint": "The global discovery switch is off. Agents use the original JiuwenSwarm Skill logic; any existing taxonomy files remain stored and unused.",
       "indexNotNeeded": "A taxonomy is not needed while the complete candidate snapshot fits below the 1% threshold. No taxonomy build is started, even if the saved index preference is on.",
-      "indexRecommended": "Many Skills are currently installed. You can build a Skill graph index to enhance how installed Skills are used.\n\nThe Skill graph index provides the following enhancements:\n\n- Maintains a hierarchical classification of Skills;\n- Explores structural dependencies between Skills, including inputs, outputs, and prerequisites;\n- Provides stronger runtime progressive discovery, retrieval, and orchestration for Skills.*\n\n*Building or refreshing the Skill graph index calls a model to analyze installed Skills and therefore consumes additional tokens.",
-      "recommendationBuild": "Build now",
-      "recommendationDismiss": "Not now",
       "indexDisabled": "The taxonomy switch is off. Live flat retrieval remains available, and existing taxonomy files are retained.",
       "indexBuildRunning": "The taxonomy is building in the background. Retrieval remains available during the build, which consumes model tokens.",
       "indexActive": "The taxonomy switch is on and the current taxonomy is active. Refreshing it consumes model tokens.",
@@ -2900,6 +2907,7 @@
         "definitionUnavailable": "This Expert Team definition is incomplete and cannot be used.",
         "membersInvalid": "The Expert Team members are invalid. Choose a leader and distinct members.",
         "memberUnavailable": "A selected Expert is unavailable or not Team-compatible.",
+        "packageValidationError": "Expert Team package validation failed: {{reason}}",
         "createSuccess": "Expert Team package {{id}} was created.",
         "uploadSuccess": "Expert Team package {{id}} was imported. Review it in My Expert Teams.",
         "uploadError": "Unable to import the Expert Team package. Check the file and try again.",
@@ -3034,7 +3042,23 @@
       "todoModify": "Update todos",
       "todoList": "List todos",
       "todoGet": "Get todo",
-      "skill": "View skill"
+      "skill": "View skill",
+      "spawnMember": "Create member",
+      "sendMessage": "Send message",
+      "buildTeam": "Create team",
+      "shutdownMember": "Shut down member",
+      "createTask": "Create task",
+      "updateTask": "Update task"
+    },
+    "toolDisplay": {
+      "title": "{{category}} · {{action}}",
+      "category": {
+        "file": "File",
+        "search": "Search",
+        "code": "Code",
+        "system": "System",
+        "other": "Tool"
+      }
     },
     "toolResult": {
       "success": "done",
@@ -3050,9 +3074,9 @@
       "truncated": "result truncated"
     },
     "toolGroup": {
-      "running": "Running {{label}}",
-      "completed": "Completed {{label}}",
-      "failed": "{{label}} failed",
+      "running": "Running: {{label}}",
+      "completed": "Completed: {{label}}",
+      "failed": "Failed: {{label}}",
       "category": {
         "file": "file operations",
         "search": "searches",
@@ -3805,6 +3829,10 @@
       "login": "Sign in",
       "loggingIn": "Signing in…",
       "logout": "Sign out",
+      "switchAccount": "Switch account",
+      "switchSignOutHint": "You are still signed in to your Huawei account in the browser. Sign out there first, then come back and continue.",
+      "switchContinue": "Signed out, continue",
+      "switchSameAccount": "Still the same account. Sign out of your Huawei account in the browser, then switch again.",
       "cancel": "Cancel",
       "close": "Close",
       "done": "Done",
@@ -4106,9 +4134,8 @@
       "statusInstalled": "Installed",
       "actionConfig": "Configuration",
       "actionDelete": "Delete",
-      "actionPause": "Pause",
+      "actionPause": "Pause task",
       "actionStop": "Stop task",
-      "pauseUnsupported": "The current Harness engine does not support pausing while running",
       "actionUnknownError": "Unknown error",
       "actionFailed": "Action failed: {{message}}",
       "actionInstallSuccess": "{{taskName}} - {{snapshotName}} installed successfully!",
@@ -4195,7 +4222,7 @@
     "controlAlreadyPaused": "Workflow already paused",
     "controlUnavailable": "Workflow is running; control unavailable",
     "controlNotFound": "Workflow run not found",
-    "controlsDisabledHint": "Team is not running, so this workflow can't be controlled here. Send a message in the main session to resume or stop it.",
+    "controlsDisabledHint": "The team is paused. Send a message to wake it up, then resume or stop the workflow here.",
     "sessionBudget": "Session budget (team-wide, never resets)",
     "runBudget": "Run budget (META.workflow_token_limit)",
     "sessionBudgetShort": "Session",

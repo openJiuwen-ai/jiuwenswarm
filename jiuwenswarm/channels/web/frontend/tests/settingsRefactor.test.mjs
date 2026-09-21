@@ -1553,6 +1553,21 @@ test('Settings tags use the shared UI Tag component and semantic variants', () =
   assert.match(lightTheme, /--color-tag-neutral-surface:\s*#f5f5f5;/i);
 });
 
+test('desktop close behavior is editable from General settings', () => {
+  const generalSettings = source('src/features/settings/modules/general/GeneralSettings.tsx');
+  const preload = source('../../desktop/electron/preload.cjs');
+
+  assert.match(generalSettings, /get_close_action/);
+  assert.match(generalSettings, /set_close_action/);
+  assert.match(generalSettings, /settingsPanel\.general\.closeBehaviorOptions\.ask/);
+  assert.match(generalSettings, /settingsPanel\.general\.closeBehaviorOptions\.hide/);
+  assert.match(generalSettings, /settingsPanel\.general\.closeBehaviorOptions\.quit/);
+  assert.match(preload, /get_close_action: desktopApi\.getCloseAction/);
+  assert.match(preload, /set_close_action: desktopApi\.setCloseAction/);
+  assert.equal(zh.settingsPanel.general.closeBehaviorOptions.ask, '每次询问');
+  assert.equal(en.settingsPanel.general.closeBehaviorOptions.quit, 'Quit application');
+});
+
 test('Settings high-fidelity visual contract remains wired to exact assets and spacing', () => {
   const settingsPageCss = source('src/features/settings/SettingsPage.css');
   const settingsPageLayout = source('src/features/settings/SettingsPageLayout.tsx');

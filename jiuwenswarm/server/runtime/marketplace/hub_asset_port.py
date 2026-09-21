@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-HubAssetKind = Literal["agent_template", "plugin", "mcp"]
+HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp"]
 
 
 @dataclass(frozen=True, slots=True)

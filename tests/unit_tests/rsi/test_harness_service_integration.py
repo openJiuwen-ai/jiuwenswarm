@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.agents.harness.common.rsi import build_rsi_service_context
+from jiuwenswarm.agents.harness.common.rsi.errors import RsiTaskNotFound
 from jiuwenswarm.agents.harness.common.rsi.harness_adapter import HarnessEngineAdapter
 from jiuwenswarm.agents.harness.common.rsi.mock_harness_provider import MockHarnessProvider
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -134,6 +135,56 @@ async def test_mock_harness_provider_closes_service_loop(harness_context, tmp_pa
     assert event_types.count("rsi.training.status.changed") >= 3
     assert all(item.get("session_id") == session_id for item in pushes)
     await _stop_worker(context)
+
+
+@pytest.mark.asyncio
+async def test_queued_harness_task_can_be_deleted_directly(tmp_path: Path):
+    tasks_root = tmp_path / "tasks"
+    context = build_rsi_service_context(tasks_root)
+    context.register_adapters({
+        "HARNESS": HarnessEngineAdapter(
+            MockHarnessProvider(tasks_root, iteration_delay=0.05)
+        ),
+    })
+    pushes: list[dict] = []
+    handlers = RsiAgentServerHandlers(
+        context,
+        send_push=lambda message: (pushes.append(message), True)[1],
+        harness_refs_provider=lambda: None,
+    )
+    dataset = tmp_path / "dataset.json"
+    dataset.write_text('{"cases": [{"case_id": "a"}]}', encoding="utf-8")
+
+    first = handlers.handle(FakeRequest(
+        ReqMethod.RSI_TASK_CREATE,
+        _create_params(dataset, name="first", max_iterations=3),
+    ))["payload"]["task_id"]
+    second = handlers.handle(FakeRequest(
+        ReqMethod.RSI_TASK_CREATE,
+        _create_params(dataset, name="second", max_iterations=1),
+    ))["payload"]["task_id"]
+
+    try:
+        assert handlers.handle(FakeRequest(ReqMethod.RSI_TRAINING_START, {"task_id": first}))["ok"] is True
+        await _wait_for_status(context, first, "RUNNING")
+        assert handlers.handle(FakeRequest(ReqMethod.RSI_TRAINING_START, {"task_id": second}))["ok"] is True
+        assert context.store.get(second).status == "QUEUED"
+
+        deleted = handlers.handle(FakeRequest(ReqMethod.RSI_TASK_DELETE, {"task_id": second}))
+
+        assert deleted == {"ok": True, "payload": {"ok": True}}
+        with pytest.raises(RsiTaskNotFound):
+            context.store.get(second)
+        assert any(
+            item["payload"].get("task_id") == second
+            and item["payload"].get("old_status") == "QUEUED"
+            and item["payload"].get("new_status") == "TERMINATED"
+            for item in pushes
+        )
+
+        await _wait_for_status(context, first, "COMPLETED")
+    finally:
+        await _stop_worker(context)
 
 
 @pytest.mark.asyncio

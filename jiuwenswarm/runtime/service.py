@@ -49,10 +49,10 @@ from jiuwenswarm.runtime.session_lifecycle import (
     SessionExecutionEvent,
     SessionExecutionFinishedEvent,
     SessionInactiveEvent,
+    SessionInputIntentDisposition,
+    SessionInputIntentEvent,
     SessionKind,
     SessionLifecycleTarget,
-    SessionPrepareDisposition,
-    SessionPrepareEvent,
 )
 from jiuwenswarm.runtime.session.model import SessionExecutionSnapshot
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
@@ -2811,13 +2811,13 @@ class AgentRuntime:
                     exc,
                 )
 
-    async def record_session_prepare(
+    async def record_session_input_intent(
         self,
         request: AgentRequest,
         *,
         view_id: str = "default-view",
     ) -> str:
-        """Publish input intent and retain the established transport outcome."""
+        """Publish a transport-neutral user input intent to participants."""
         participants = self._participant_registry.snapshot_activity()
         if not participants:
             return "disabled"
@@ -2832,7 +2832,7 @@ class AgentRuntime:
             has_history = history_exists(target.descriptor.session_id)
         except Exception:
             has_history = False
-        event = SessionPrepareEvent(
+        event = SessionInputIntentEvent(
             target=target,
             has_history=has_history,
             view_id=view_id,
@@ -2848,11 +2848,11 @@ class AgentRuntime:
         failures = 0
         for participant in participants:
             try:
-                results.append(await participant.session_preparing(event))
+                results.append(await participant.session_input_intent(event))
             except Exception as exc:
                 failures += 1
-                logger.warning("Runtime activity session_preparing failed: %s", exc)
-        if SessionPrepareDisposition.SCHEDULED in results:
+                logger.warning("Runtime activity session_input_intent failed: %s", exc)
+        if SessionInputIntentDisposition.SCHEDULED in results:
             return "scheduled"
         if results:
             return "not_needed"

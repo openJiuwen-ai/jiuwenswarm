@@ -144,6 +144,34 @@ def test_team_heartbeat_provider_mounts_new_job_rail_once() -> None:
 
 
 @pytest.mark.parametrize(
+    "ctx_kwargs",
+    [
+        # 调度器给 cron 请求打的 request_metadata["cron"] 标记（team 流式链路）。
+        {"request_metadata": {"mode": "team", "cron": {"job_id": "j1", "run_id": "r1"}}},
+        # 单 Agent 链路的内部执行渠道（SDK 未透传 metadata 时的兜底信号）。
+        {"channel_id": "__cron__"},
+        # team cron 的隔离执行会话（_resolve_cron_execution_context 生成 cron_*）。
+        {"session_id": "cron_1930_job1"},
+    ],
+)
+def test_team_heartbeat_rail_skipped_for_cron_execution_session(ctx_kwargs: dict) -> None:
+    """cron 执行会话的成员不挂心跳工具（防止 cron 运行再派生心跳任务）。"""
+    base: dict[str, Any] = {
+        "session_id": "session-123",
+        "channel_id": "web",
+        "user_id": "user-1",
+        "request_metadata": {"mode": "team.work.normal"},
+        "mode": "team.work.normal",
+        "member_card_id": "leader-card",
+        "heartbeat_job_service": object(),
+    }
+    base.update(ctx_kwargs)
+    context = SwarmBuildContext(**base)
+
+    assert member_rails._build_heartbeat_rail({}, context) is None
+
+
+@pytest.mark.parametrize(
     "mode",
     [
         "team",
@@ -1541,6 +1569,32 @@ def test_cron_tools_built(monkeypatch: pytest.MonkeyPatch) -> None:
     built = runtime_tools.build_cron_tools({}, ctx)
 
     assert [tool.card.name for tool in built] == ["cron_list_jobs"]
+
+
+@pytest.mark.parametrize(
+    "ctx_kwargs",
+    [
+        # 调度器给 cron 请求打的 request_metadata["cron"] 标记（team 流式链路）。
+        {"request_metadata": {"mode": "team", "cron": {"job_id": "j1", "run_id": "r1"}}},
+        # 单 Agent 链路的内部执行渠道（SDK 未透传 metadata 时的兜底信号）。
+        {"channel_id": "__cron__"},
+        # team cron 的隔离执行会话（_resolve_cron_execution_context 生成 cron_*）。
+        {"session_id": "cron_1930_job1"},
+    ],
+)
+def test_cron_tools_skipped_for_cron_session(
+    monkeypatch: pytest.MonkeyPatch, ctx_kwargs: dict
+) -> None:
+    """cron 执行会话的成员完全不暴露 cron 工具（连只读管理也不下发）。"""
+
+    class _NeverBridge:
+        def build_tools(self, **kwargs):
+            raise AssertionError("cron tools must not be built for cron sessions")
+
+    monkeypatch.setattr(runtime_tools, "CronRuntimeBridge", _NeverBridge)
+    ctx = SwarmBuildContext(member_card_id="m1", **ctx_kwargs)
+
+    assert runtime_tools.build_cron_tools({}, ctx) == []
 
 
 def test_context_processor_returns_none_when_engine_disabled() -> None:

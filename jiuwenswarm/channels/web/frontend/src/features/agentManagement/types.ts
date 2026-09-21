@@ -45,7 +45,7 @@ export type AgentDetail = AgentCatalogItem & {
   pendingConnectors: string[];
 };
 
-export type AgentGroupSource = 'builtin' | 'local';
+export type AgentGroupSource = 'builtin' | 'local' | 'hub';
 
 export type AgentGroupMember = {
   id: string;
@@ -122,7 +122,8 @@ export type DefinitionFileEntry = {
 
 export type AgentFileContent = {
   relativePath: string;
-  content: string;
+  content: string | null;
+  downloadUrl?: string | null;
 };
 
 export type SkillOption = {

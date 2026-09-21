@@ -29,9 +29,18 @@ export interface AuthorizeResponse {
   expiresIn?: number;
 }
 
+/**
+ * 活动状态，决定界面显示什么对应：`campaign_state`：
+ * `active` 正常；`ended` 活动已结束；`unavailable` 拉不到配置；
+ * `off` 本地关掉了，什么都不显示。老版本 Gateway 不返回这个字段。
+ */
+export type CampaignState = 'active' | 'ended' | 'unavailable' | 'off';
+
 export interface AuthStatus {
   islogin: boolean;
   enabled: boolean;
+  state?: CampaignState;
+  accountCenterUrl?: string;
   provider?: string;
   userId?: string | null;
   userName?: string | null;
@@ -144,6 +153,36 @@ export async function claim(state: string, claimToken: string): Promise<ClaimOut
   writeStoredSessionId(headerSession || data.sessionId || '');
   // claim 的响应里没有 enabled 字段——能认领成功，登录当然是开着的
   return { kind: 'done', status: { ...data, enabled: true } };
+}
+
+/**
+ * 放弃这次登录，让Gateway别再替它向鉴权服务认领。发不出去时Gateway也会在state过期后自己停。
+ * `keepalive` 让页面关闭时发起的这次请求也能送达。
+ */
+export async function cancelLogin(state: string, claimToken: string): Promise<void> {
+  try {
+    await fetch(authUrl('/cancel'), {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: stateChangingHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ state, claimToken }),
+    });
+  } catch {
+    /* 见上 */
+  }
+}
+
+export function openExternal(url: string): Window | null {
+  const opened = window.open(url, '_blank');
+  if (opened) {
+    try {
+      opened.opener = null;
+    } catch {
+      /* 个别 WebView 不允许改写 */
+    }
+  }
+  return opened;
 }
 
 /** 查询当前登录状态。后端未开启登录时返回 `enabled: false`。 */

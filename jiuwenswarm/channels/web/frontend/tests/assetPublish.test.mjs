@@ -90,6 +90,27 @@ test('cache metadata stays alongside cards and refresh polling cancels stale que
   context.mock.timers.tick(4000);
   assert.equal(calls, 1);
 });
+test('catalog notice hides normal refreshes and only reports stale or failed data', async () => {
+  const { catalogCacheNotice, formatCatalogCacheUpdatedAt } =
+    await import('../node_modules/.cache/asset-publish/catalogCache.js');
+
+  assert.equal(catalogCacheNotice({ state: 'fresh', refreshing: true, complete: true }), null);
+  assert.equal(catalogCacheNotice({ state: 'miss', refreshing: true, complete: false }), null);
+  assert.equal(catalogCacheNotice({ state: 'fresh', refreshing: false, complete: false }), null);
+  assert.deepEqual(
+    catalogCacheNotice({ state: 'stale', refreshing: true, updated_at: 1789522670.483113 }),
+    { kind: 'stale', updatedAt: 1789522670.483113 },
+  );
+  assert.deepEqual(
+    catalogCacheNotice({ state: 'fresh', refreshing: false, fetched_at: '2026-09-16T01:37:50Z', error: 'refresh_failed' }),
+    { kind: 'error', updatedAt: '2026-09-16T01:37:50Z' },
+  );
+
+  const formatted = formatCatalogCacheUpdatedAt(1789522670.483113, 'zh-CN', 'Asia/Shanghai');
+  assert.match(formatted, /2026/);
+  assert.match(formatted, /09/);
+  assert.doesNotMatch(formatted, /1789522670/);
+});
 test('timestamps support backend Unix seconds and ISO dates', async () => {
   const { publishTimestamp } = await import('../node_modules/.cache/asset-publish/assetPublishState.js');
   assert.equal(publishTimestamp(1700000000), 1700000000000);

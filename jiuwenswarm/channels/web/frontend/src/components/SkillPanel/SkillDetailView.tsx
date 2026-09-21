@@ -283,7 +283,11 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     const isHubPackSkill = hubSkill.skill_type === 'skillpack' || hubSkill.plugin_type === 'skillpack';
     return renderShell(
       {
-        avatar: { name: hubSkill.display_name || hubSkill.name, iconUrl: hubSkill.icon_uri, testId: 'skill-panel-hub-avatar' },
+        avatar: {
+          name: hubSkill.display_name || hubSkill.name,
+          iconUrl: hubSkill.icon_uri,
+          testId: 'skill-panel-hub-avatar',
+        },
         title: hubSkill.display_name || hubSkill.name,
       },
       /* 下载/去试试按钮 */
@@ -429,17 +433,21 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           ? [t('skills.skillTypes.team')]
           : selectedSkill.skill_type === 'multimodal_skill'
             ? [t('skills.skillTypes.multimodal')]
-            : undefined,
+            : selectedSkill.skill_type === 'skillpack'
+              ? [t('skills.skillTypes.skillpack')]
+              : undefined,
     },
     /* 右侧操作按钮 */
-    <div className="flex items-center gap-6 flex-shrink-0">
-      <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="skill-panel-my-detail-publish-btn" onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}>{t('skills.actions.publish')}</button>
+    <div className="flex items-center flex-shrink-0">
       {/* ... 菜单：编辑/卸载 */}
       <div className="relative">
         <button
           type="button"
           onClick={() => setDetailMenuOpen(!detailMenuOpen)}
-          className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-secondary text-text hover:text-text"
+          className={`w-7 h-7 flex items-center justify-center rounded-md text-text hover:text-text hover:bg-secondary ${
+            detailMenuOpen ? 'bg-secondary' : ''
+          }`}
+          aria-expanded={detailMenuOpen}
           data-testid="skill-panel-my-detail-menu"
         >
           <MoreIcon aria-hidden />
@@ -484,7 +492,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
       </div>
       {/* 启用开关 + 文字（技能包被成员缺失阻塞时禁用开关） */}
       <div
-        className="flex items-center gap-2"
+        className="ml-5 flex items-center gap-2"
         title={isPackBlocked ? t('skills.packBlockedHint') : undefined}
       >
         <Switch
@@ -506,11 +514,21 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           selectedSkill.enabled !== false ? () => onGoToChat(selectedSkill.name, selectedSkill.skill_type) : undefined
         }
         disabled={selectedSkill.enabled === false}
-        className="flex items-center justify-center rounded-[16px] text-sm text-control-emphasis bg-card border border-control-emphasis hover:bg-secondary/30 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
-        style={{ height: '32px', padding: '0 24px' }}
+        className="ml-6 flex items-center justify-center rounded-[16px] text-sm text-control-emphasis bg-card border border-control-emphasis hover:bg-secondary/30 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+        style={{ width: '96px', height: '32px' }}
         data-testid={`${tid}-go-try-btn`}
       >
         {t('skills.actions.goTry')}
+      </button>
+      {/* 发布 */}
+      <button
+        type="button"
+        className="ml-2 flex items-center justify-center rounded-[16px] text-sm text-text-inverse bg-control-emphasis hover:opacity-80 whitespace-nowrap"
+        style={{ width: '96px', height: '32px' }}
+        data-testid="skill-panel-my-detail-publish-btn"
+        onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}
+      >
+        {t('skills.actions.publish')}
       </button>
     </div>,
     selectedSkill.description || t('skills.noDescription'),
