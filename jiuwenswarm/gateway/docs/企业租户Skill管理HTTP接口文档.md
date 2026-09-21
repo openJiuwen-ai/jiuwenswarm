@@ -48,7 +48,7 @@ HTTP 适配层先读取路由声明的 Query，再与 JSON Body 合并（同名 
   "request_id": "req-skill-001",
   "ok": true,
   "data": {},
-  "metadata": { "rpc_method": "skills.enterprise.list", "transport": "web-http" }
+  "metadata": { "rpc_method": "skills.list", "transport": "web-http" }
 }
 ```
 
@@ -74,7 +74,7 @@ HTTP 适配层先读取路由声明的 Query，再与 JSON Body 合并（同名 
   "request_id": "req-skill-003",
   "ok": false,
   "error": { "code": "TIMEOUT", "message": "request timed out", "details": {} },
-  "metadata": { "rpc_method": "skills.enterprise.list", "transport": "web-http" }
+  "metadata": { "rpc_method": "skills.list", "transport": "web-http" }
 }
 ```
 
