@@ -156,3 +156,26 @@
   color: var(--color-text-primary);
   background: var(--color-surface-hover);
 }
+
+.ui-input-counter {
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+  user-select: none;
+}
+
+.ui-input-counter-separator {
+  color: var(--color-text-meta);
+}
+
+.ui-input-counter.is-limit {
+  color: var(--color-feedback-warning);
+}
+
+.ui-input--with-counter {
+  padding-right: 50px;
+}

@@ -88,7 +88,8 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
           className={`ui-textarea-counter${isAtLimit ? ' is-at-limit' : ''}`}
           data-testid={counterTestId}
         >
-          {valueLength}/{max}
+          {valueLength}
+          <span className="ui-textarea-counter-separator">/{max}</span>
         </span>
       ) : null}
     </div>

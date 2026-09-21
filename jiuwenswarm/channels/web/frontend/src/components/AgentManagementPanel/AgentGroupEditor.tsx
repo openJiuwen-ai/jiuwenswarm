@@ -191,15 +191,8 @@ export function AgentGroupEditor({
         <form onSubmit={handleSubmit} data-testid="agent-group-editor-form">
           <Section title={t('agentManagement.group.form.basic')}>
             <div className="mb-4">
-              <label className="mb-1.5 flex items-center justify-between text-[13px] font-medium text-text">
-                <span>{t('agentManagement.group.form.nameLabel')}</span>
-                <span
-                  aria-hidden="true"
-                  className={`agent-management-field-counter${draft.name.length >= AGENT_NAME_MAX_LENGTH ? ' is-limit' : ''}`}
-                  data-testid="agent-group-editor-name-counter"
-                >
-                  {t('agentManagement.form.charCount', { count: draft.name.length, max: AGENT_NAME_MAX_LENGTH })}
-                </span>
+              <label className="mb-1.5 block text-[13px] font-medium text-text">
+                {t('agentManagement.group.form.nameLabel')}
               </label>
               <Input
                 value={draft.name}
@@ -208,6 +201,8 @@ export function AgentGroupEditor({
                 invalid={Boolean(touched && errors.name)}
                 data-testid="agent-group-editor-name"
                 maxLength={AGENT_NAME_MAX_LENGTH}
+                showCounter
+                counterTestId="agent-group-editor-name-counter"
               />
               {touched && errors.name ? (
                 <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-group-editor-name-error">
@@ -256,7 +251,7 @@ export function AgentGroupEditor({
             </div>
           </Section>
 
-          <Section title={t('agentManagement.group.form.teamIntro')} collapsible defaultOpen onToggle={() => {}}>
+          <Section title={t('agentManagement.group.form.teamIntro')} defaultOpen>
             <div className="mb-4">
               <Textarea
                 value={draft.persona}

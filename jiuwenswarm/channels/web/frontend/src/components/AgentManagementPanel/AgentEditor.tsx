@@ -223,25 +223,16 @@ export function AgentEditor({
               <label className="mb-1.5 block text-[13px] font-medium text-text">
                 {t('agentManagement.form.nameLabel')}
               </label>
-              <span className="agent-management-name-field">
-                <Input
-                  value={draft.name}
-                  onChange={(value) => update({ name: value })}
-                  placeholder={t('agentManagement.form.namePlaceholder')}
-                  invalid={Boolean(touched && errors.name)}
-                  data-testid="agent-editor-name"
-                  maxLength={AGENT_NAME_MAX_LENGTH}
-                  style={{ paddingRight: 40 }}
-                />
-                <span
-                  aria-hidden="true"
-                  className={`agent-management-field-counter${draft.name.length >= AGENT_NAME_MAX_LENGTH ? ' is-limit' : ''}`}
-                  data-testid="agent-editor-name-counter"
-                >
-                  {draft.name.length}
-                  <span className="agent-management-field-counter-separator">/{AGENT_NAME_MAX_LENGTH}</span>
-                </span>
-              </span>
+              <Input
+                value={draft.name}
+                onChange={(value) => update({ name: value })}
+                placeholder={t('agentManagement.form.namePlaceholder')}
+                invalid={Boolean(touched && errors.name)}
+                data-testid="agent-editor-name"
+                maxLength={AGENT_NAME_MAX_LENGTH}
+                showCounter
+                counterTestId="agent-editor-name-counter"
+              />
               {touched && errors.name ? (
                 <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-editor-name-error">
                   {errors.name}
@@ -253,18 +244,18 @@ export function AgentEditor({
               <label className="mb-1.5 block text-[13px] font-medium text-text">
                 {t('agentManagement.form.descriptionLabel')}
               </label>
-                <Textarea
-                  value={draft.description}
-                  onChange={(value) => update({ description: value })}
-                  placeholder={t('agentManagement.form.descriptionPlaceholder')}
-                  rows={2}
-                  invalid={Boolean(touched && errors.description)}
-                  data-testid="agent-editor-description"
-                  maxLength={AGENT_DESCRIPTION_MAX_LENGTH}
-                  showCounter
-                  counterTestId="agent-editor-description-counter"
-                  scrollable
-                />
+              <Textarea
+                value={draft.description}
+                onChange={(value) => update({ description: value })}
+                placeholder={t('agentManagement.form.descriptionPlaceholder')}
+                rows={2}
+                invalid={Boolean(touched && errors.description)}
+                data-testid="agent-editor-description"
+                maxLength={AGENT_DESCRIPTION_MAX_LENGTH}
+                showCounter
+                counterTestId="agent-editor-description-counter"
+                scrollable
+              />
               {touched && errors.description ? (
                 <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="agent-editor-description-error">
                   {errors.description}
