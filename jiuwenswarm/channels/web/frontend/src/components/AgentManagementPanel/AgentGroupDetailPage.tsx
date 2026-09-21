@@ -1,6 +1,11 @@
 import { useTranslation } from 'react-i18next';
 import { openAssetPublish } from '../../features/assetPublishEvents';
-import type { AgentFileContent, AgentGroupDetail, DefinitionFileEntry, RequestStatus } from '../../features/agentManagement';
+import type {
+  AgentFileContent,
+  AgentGroupDetail,
+  DefinitionFileEntry,
+  RequestStatus,
+} from '../../features/agentManagement';
 import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 import { GroupAvatar } from './GroupCard';
@@ -63,7 +68,11 @@ export function AgentGroupDetailPage({
   const { t } = useTranslation();
   if (detailStatus === 'loading')
     return (
-      <div className="agent-management-detail agent-management-detail--state" data-testid="agent-group-detail">
+      <div
+        className="agent-management-detail agent-management-detail--state"
+        data-testid="agent-group-detail-state"
+        data-variant="loading"
+      >
         <button type="button" className="detail-back" data-testid="agent-group-detail-back" onClick={onBack}>
           <BackIcon aria-hidden="true" />
           {t('agentManagement.actions.back')}
@@ -96,7 +105,8 @@ export function AgentGroupDetailPage({
 
   const canUse = detail.installed && detail.capabilities.canUse;
   const canDelete = detail.source === 'local' && !detail.installed;
-  const canPreviewFiles = detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.source === 'hub' || detail.installed);
+  const canPreviewFiles =
+    detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.source === 'hub' || detail.installed);
   const category = detail.category?.trim() || '';
   const categoryLabel = category ? t(`agentManagement.categories.${category}`, { defaultValue: category }) : null;
   const detailTags = detail.tags;
@@ -127,7 +137,13 @@ export function AgentGroupDetailPage({
                   type="button"
                   className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text"
                   data-testid="agent-management-agent-group-publish"
-                  onClick={() => openAssetPublish({ kind: 'agent_group', local_id: detail.id, avatar_url: detail.avatarUrl || undefined })}
+                  onClick={() =>
+                    openAssetPublish({
+                      kind: 'agent_group',
+                      local_id: detail.id,
+                      avatar_url: detail.avatarUrl || undefined,
+                    })
+                  }
                 >
                   {t('skills.actions.publish')}
                 </button>
