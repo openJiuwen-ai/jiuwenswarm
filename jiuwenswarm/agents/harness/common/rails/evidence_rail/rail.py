@@ -12,7 +12,6 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,7 +21,7 @@ from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from .contracts import ContextDigest, EvidenceItem, RunManifest, ToolReceipt
-from .store import EvidenceRailStore, FileEvidenceRailStore
+from .store import EvidenceRailStore, FileEvidenceRailStore, is_safe_path_component
 
 
 EVIDENCE_ITEMS_KEY = "evidencerail.evidence_items"
@@ -501,13 +500,7 @@ class EvidenceRail(DeepAgentRail):
 
     def _new_id(self, prefix: str) -> str:
         value = self._id_factory()
-        if (
-            not value
-            or value in {".", ".."}
-            or "/" in value
-            or "\\" in value
-            or Path(value).name != value
-        ):
+        if not is_safe_path_component(value):
             raise ValueError("id_factory must return one safe path component")
         return f"{prefix}-{value}"
 
