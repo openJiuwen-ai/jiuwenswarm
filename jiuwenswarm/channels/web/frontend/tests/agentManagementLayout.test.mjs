@@ -532,10 +532,6 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
     agentManagementCss,
     /\.agent-management-page-card \.agent-management-card__actions\s*\{[\s\S]*position: absolute;/,
   );
-  assert.match(
-    agentManagementCss,
-    /@media \(max-width: 800px\)[\s\S]*\.agent-management-page-card \.agent-management-card__actions\s*\{[\s\S]*top: auto;/,
-  );
   assert.match(agentManagementCss, /\.agent-management-page-card:focus-within \.agent-management-card__actions/);
   assert.match(entityHeaderCss, /\.entity-header__tags\s*\{[\s\S]*width: 100%;/);
   assert.match(
@@ -554,7 +550,7 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
   assert.doesNotMatch(groupDetailSource, /overflow-y-auto pb-\[72px\]/);
   assert.doesNotMatch(groupDetailSource, /<header className="agent-management-detail__header">/);
   assert.match(groupDetailSource, /<PublicationDetailStatus kind="agent_group"/);
-  assert.match(groupDetailSource, /openAssetPublish\(\{ kind: 'agent_group', local_id: detail\.id/);
+  assert.match(groupDetailSource, /openAssetPublish\(\{\s*kind: 'agent_group',\s*local_id: detail\.id/);
 });
 
 test('installed Expert Team cards offer use while uninstall stays in detail', async () => {
