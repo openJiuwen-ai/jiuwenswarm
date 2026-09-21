@@ -236,6 +236,35 @@ class TestPrepareWorkspaceAndMarketplace:
 
 
 class TestAgentGroupResolution:
+    def test_list_agent_groups_orders_latest_create_or_install_first(
+        self,
+        extension_workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _seed_valid_agent_group(extension_workspace, "older-group", under="local")
+        _seed_valid_agent_group(extension_workspace, "newer-group", under="local")
+        timestamps = iter((100, 200, 300))
+        monkeypatch.setattr(catalog.time, "time_ns", lambda: next(timestamps))
+
+        catalog.upsert_agent_group_marketplace_entry(
+            "older-group", installed=True, source="local"
+        )
+        catalog.upsert_agent_group_marketplace_entry(
+            "newer-group", installed=True, source="local"
+        )
+        assert [card["name"] for card in catalog.list_agent_groups()] == [
+            "newer-group",
+            "older-group",
+        ]
+
+        catalog.upsert_agent_group_marketplace_entry(
+            "older-group", installed=True, source="local"
+        )
+        assert [card["name"] for card in catalog.list_agent_groups()] == [
+            "older-group",
+            "newer-group",
+        ]
+
     def test_list_agent_groups_returns_only_loadable_selection_cards(
         self,
         extension_workspace: Path,
@@ -650,7 +679,7 @@ class TestAgentGroupLifecycle:
             / "another-delivery-review-team"
         ).exists()
 
-    def test_import_valid_group_writes_local_uninstalled(
+    def test_import_valid_group_installs_local_group(
         self, extension_workspace: Path, tmp_path: Path
     ) -> None:
         source_workspace = tmp_path / "source-home" / "agent" / "workspace"
@@ -669,7 +698,8 @@ class TestAgentGroupLifecycle:
             / "imported-review"
         )
         assert imported.is_dir()
-        assert catalog.is_agent_group_installed("imported-review") is False
+        assert catalog.is_agent_group_installed("imported-review") is True
+        assert catalog.resolve_agent_group_dir("imported-review") == imported.resolve()
 
     def test_resource_group_install_and_uninstall_preserves_shelf_card(
         self,
