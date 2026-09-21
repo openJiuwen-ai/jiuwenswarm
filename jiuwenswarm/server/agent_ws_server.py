@@ -910,21 +910,21 @@ class AgentWebSocketServer:
             # status / TUI 显示的状态跟真实运行的 jiuwenbox 对齐。如果用户上次
             # /sandbox disable 留下了 False, 这里会被覆盖 —— 这是已知的、属于
             # 上面 docstring 提到的 "disable 不跨重启" 语义的一部分。
-            try:
-                update_sandbox_runtime({"enabled": True})
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[AgentWebSocketServer] persist sandbox.enabled=True "
-                    "failed after auto-start: %s",
-                    exc,
-                )
-
-            logger.info(
-                "[AgentWebSocketServer] jiuwenbox auto-started at %s "
-                "(policy=%s)",
-                url,
-                policy_path,
-            )
+            # try:
+            #     update_sandbox_runtime({"enabled": True})
+            # except Exception as exc:  # noqa: BLE001
+            #     logger.warning(
+            #         "[AgentWebSocketServer] persist sandbox.enabled=True "
+            #         "failed after auto-start: %s",
+            #         exc,
+            #     )
+            #
+            # logger.info(
+            #     "[AgentWebSocketServer] jiuwenbox auto-started at %s "
+            #     "(policy=%s)",
+            #     url,
+            #     policy_path,
+            # )
         except Exception:  # noqa: BLE001
             logger.exception(
                 "[AgentWebSocketServer] jiuwenbox auto-start raised an "

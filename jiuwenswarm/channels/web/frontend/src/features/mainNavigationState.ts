@@ -12,7 +12,8 @@ export type MainNavKey =
   | 'configpanel'
   | 'browserpanel'
   | 'updatepanel'
-  | 'a2aingress';
+  | 'a2aingress'
+  | 'diagnosis';
 
 export const MAIN_NAV_STORAGE_KEY = 'jiuwenswarm.active-main-nav';
 
@@ -31,6 +32,7 @@ const MAIN_NAV_KEYS = new Set<MainNavKey>([
   'browserpanel',
   'updatepanel',
   'a2aingress',
+  'diagnosis',
 ]);
 
 export function parseStoredMainNav(raw: string | null, options: { blocked?: readonly MainNavKey[]; updaterEnabled?: boolean } = {}): MainNavKey {

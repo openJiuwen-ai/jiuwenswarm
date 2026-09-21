@@ -436,12 +436,35 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             conn.request(self.command, self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
 
+            # SSE 响应（text/event-stream）特例：升级到 HTTP/1.1 + chunked 编码。
+            # BaseHTTPRequestHandler 默认 HTTP/1.0，无 Content-Length 的响应只能靠
+            # 连接关闭定界，而 fetch API（response.body.getReader()）对这种定界不可靠
+            # （Node fetch 直接卡死，浏览器也读不到流式事件）。HTTP/1.1 + chunked
+            # 让所有 fetch 客户端都能逐块流式读取。非 SSE 响应保持 HTTP/1.0 不变。
+            # 注：HTTP/1.1 状态行由下方 self.protocol_version 决定；浏览器 fetch
+            # 默认发 HTTP/1.1 请求，close_connection 本就为 False，SSE 实时性靠
+            # chunked 增量泵送保证，而非靠「保活」开关。
+            resp_headers = resp.getheaders()
+            is_sse = any(
+                k.lower() == "content-type" and "text/event-stream" in v.lower()
+                for k, v in resp_headers
+            )
+            if is_sse:
+                self.protocol_version = "HTTP/1.1"
+
             self.send_response(resp.status, resp.reason)
-            for key, value in resp.getheaders():
+            for key, value in resp_headers:
                 if key.lower() in self._HOP_BY_HOP_HEADERS:
                     continue
+                # SSE 已由下方统一发 Transfer-Encoding，跳过上游（已被 hop-by-hop
+                # 过滤，此处防御性兜底）
+                if is_sse and key.lower() == "content-length":
+                    continue
                 self.send_header(key, value)
+            if is_sse:
+                self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
+            self._response_started = True
             if self.command == "HEAD":
                 return
             # 流式泵送（read1 + 逐块 flush）：SSE（chat.delta / history.message）的
@@ -450,18 +473,33 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             # 收到，既丢失流式渲染，又让响应头超过前端 15s 请求超时（触发
             # REQUEST_TIMEOUT → 前端自动 interrupt）。
             # 注意必须用 read1：read(65536) 会跨 chunk 凑满 64KB 才返回，SSE 小帧
-            # 永远凑不满，等于仍然整段缓冲。HTTP/1.0 下无 Content-Length 的响应
-            # 由连接关闭定界（SSE 场景）。
+            # 永远凑不满，等于仍然整段缓冲。
             while True:
                 chunk = resp.read1(self._PROXY_STREAM_CHUNK)
                 if not chunk:
                     break
-                self.wfile.write(chunk)
+                if is_sse:
+                    # chunked 编码：{hex_len}\r\n{chunk}\r\n
+                    self.wfile.write(f"{len(chunk):X}\r\n".encode("ascii"))
+                    self.wfile.write(chunk)
+                    self.wfile.write(b"\r\n")
+                else:
+                    self.wfile.write(chunk)
+                self.wfile.flush()
+            if is_sse:
+                # chunked 终止块
+                self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
             try:
-                self.send_error(502, "proxy http error")
+                # 若响应头已发出（SSE chunked 已开帧），不能再 send_error——
+                # 否则会把状态行/HTML 体塞进已开帧的 chunked 流，污染前端解析。
+                # 此时只能断开连接由关闭定界（前端收到流中断）。
+                if getattr(self, "_response_started", False):
+                    self.close_connection = True
+                else:
+                    self.send_error(502, "proxy http error")
             except Exception:  # noqa: BLE001
                 # 响应头已发出（流中断）：无法再回 502，断开连接由关闭定界
                 self.close_connection = True
@@ -707,6 +745,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if path.startswith("/file-api/") or path.startswith("/share-api/"):
             return True
         if path == "/api/sessions" or path.startswith("/api/sessions/"):
+            return True
+        # trajectory / diagnosis read API (traces/revisions/archive/usage/diagnose)
+        # lives on Gateway Web HTTP, not the WebChannel WS port. In dev, these are
+        # covered by the generic `${apiPrefix}/api` catch-all proxy rule in
+        # vite.config.ts (no dedicated /api/trajectory entry needed).
+        if path == "/api/trajectory" or path.startswith("/api/trajectory/"):
             return True
         if path == "/api/v1" or path.startswith("/api/v1/"):
             return True

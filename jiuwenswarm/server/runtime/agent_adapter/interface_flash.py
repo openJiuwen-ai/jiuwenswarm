@@ -593,7 +593,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         ``cron_flash`` 名集合才能正确注册/移除/指纹缓存自己的 cron_flash 卡——
         super(). 走的是 Deep 名集合，后处理无法干净纠正。
         """
-        if session_id is not None and session_id.startswith(("heartbeat", "cron")):
+        if session_id is not None and session_id.startswith(("heartbeat", "cron", "diagnosis")):
             return
         if os.getenv("JIUWENCLAW_DISABLE_CRON_TOOLS") == "1":
             for existing in list(self._instance.ability_manager.list() or []):

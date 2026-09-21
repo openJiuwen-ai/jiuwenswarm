@@ -226,6 +226,31 @@ def test_sink_rejects_subject_session_owned_by_another_chat(tmp_path: Path) -> N
         assert sink.close(timeout=5) is True
 
 
+def test_sink_drops_diagnosis_session_spans(tmp_path: Path) -> None:
+    """diagnosis_ 前缀 session 的 span 直接 drop：诊断 Agent 自身行为不进
+    trace store，避免污染后续诊断的分析对象（自引用）。
+
+    生产链路用的是 TrajectorySessionSinkRouter（runtime._create_sink），
+    drop 判定在 router._consume 入口。
+    """
+    from jiuwenswarm.observability.sink import TrajectorySessionSinkRouter
+
+    sink = TrajectorySessionSinkRouter(_settings(tmp_path / "trajectory.sqlite3"))
+    record = _record()
+    record.session_id = "diagnosis_4d2_074e6c"
+
+    sink.start()
+    try:
+        sink.consume(record)
+        stats = sink.stats()
+        assert stats.accepted == 0
+        assert stats.dropped == 1
+        assert stats.queued == 0
+    finally:
+        assert sink.close(timeout=5) is True
+    test_logger.info("sink router dropped diagnosis session span without queueing")
+
+
 def test_sink_queue_full_drops_without_blocking(tmp_path: Path) -> None:
     store = _BlockingStore()
     sink = TrajectoryRecordSink(

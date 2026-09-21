@@ -50,7 +50,8 @@
     "logs": "Logs",
     "update": "Updates",
     "a2aIngress": "A2A Control Center",
-    "personalContext": "Personal\nContext"
+    "personalContext": "Personal\nContext",
+    "diagnosis": "Diagnose"
   },
   "team": {
     "members": "Team Members",
@@ -1277,6 +1278,7 @@
       "permissions": { "label": "Tool Safety Guardrail", "hint": "Enable or disable permission checks for tool calls" },
       "a2ui": { "label": "A2UI", "hint": "Enable or disable generated UI rendering and A2UI runtime prompts." },
       "trajectoryUi": { "label": "Trajectory UI", "hint": "Show the chat/trajectory switch in single-agent and team modes and enable trajectory observation." },
+      "diagnosis": { "label": "Trajectory Diagnosis", "hint": "When enabled, auto-analyze session issues in \"Diagnose\". Online mode requires Trajectory UI enabled; offline mode only needs uploaded/imported logs." },
       "swarmflow": { "label": "SwarmFlow", "hint": "Enable or disable the SwarmFlow process view and monitoring in Team mode." },
       "symphony": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
       "skillRetrieval": { "label": "Skill Symphony", "hint": "Control Skill Symphony" },
