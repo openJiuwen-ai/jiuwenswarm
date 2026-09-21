@@ -691,7 +691,7 @@ test('manual Expert Team creation requires at least one member', async () => {
       error: null, onChange() {}, onReloadAgents() {}, onReloadSkills() {}, onCancel() {},
       onSave() { saveCount += 1; },
     })));
-    const form = dom.window.document.querySelector('[data-testid="agent-group-editor"]');
+    const form = dom.window.document.querySelector('[data-testid="agent-group-editor-form"]');
     await act(async () => form.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })));
     assert.equal(saveCount, 0);
     assert.match(dom.window.document.body.textContent, /请至少选择一名成员/);
