@@ -1177,7 +1177,13 @@ class SkillManager:
             raise SkillRpcError("SKILL_REBUILD_FAILED", f"rebuild 失败: {exc}") from exc
 
     async def handle_skills_toggle(self, params: dict) -> dict:
-        """切换已安装本地 skill 的 enabled 状态。"""
+        """切换已安装本地 skill 的 enabled 状态。
+
+        支持 ``dry_run=True`` 探测：不落任何状态，仅返回该技能当前
+        关联的技能包列表（parent_skillpacks）。前端在成员技能切换前
+        先探测一次，以服务端实时结果决定是否弹出二次确认，避免依赖
+        页面缓存的列表数据。
+        """
         name = params.get("name", "")
         enabled = params.get("enabled")
         if not name:
@@ -1189,6 +1195,15 @@ class SkillManager:
         except ValueError as exc:
             _log_rejected_name("skills.toggle", "skill", name, exc)
             return {"success": False, "detail": str(exc)}
+
+        # 探测模式：仅报告关联技能包，不修改任何状态
+        if params.get("dry_run"):
+            return {
+                "success": True,
+                "name": name,
+                "enabled": enabled,
+                "parent_skillpacks": referencing_skillpacks(self._skills_dir, name),
+            }
 
         skill_dir = self._resolve_local_skill_dir(name)
         is_pack = is_skillpack(skill_dir)
@@ -1264,6 +1279,9 @@ class SkillManager:
             return None
         names = "、".join(str(item.get("name")) for item in blocked if item.get("name"))
         suffix = f"（{names}）" if names else ""
+        reasons = {str(item.get("reason")) for item in blocked}
+        if reasons <= {"disabled"}:
+            return f"技能包包含已禁用的技能{suffix}，请先在「包含技能」中启用后再启用技能包"
         return f"技能包包含未安装的技能{suffix}，请先在「包含技能」中安装，或重新下载完整技能包后再启用"
 
     @staticmethod
@@ -6096,14 +6114,15 @@ class SkillManager:
 
         容器根下无 SKILL.md，成员为容器 ``skills/`` 子目录内的技能；
         聚合状态语义与标准 SkillPack 对齐：requested_enabled 取容器自身
-        配置，enabled = requested_enabled 且无阻塞成员（disabled 不阻塞）。
+        配置，enabled = requested_enabled 且无阻塞成员（含 disabled 成员，
+        与标准包一致：任一成员禁用则整包禁用）。
         """
         name = child.name
         members = container_pack_members(child, enabled_for=self.get_skill_enabled)
         blocked = [
             member
             for member in members
-            if member.get("blocking_reason") not in (None, "", "disabled")
+            if member.get("blocking_reason") not in (None, "")
         ]
         requested_enabled = self.get_skill_enabled(name)
         meta: dict[str, Any] = {

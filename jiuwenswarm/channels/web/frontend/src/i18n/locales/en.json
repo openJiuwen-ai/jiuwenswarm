@@ -2062,7 +2062,8 @@
     "noEnabledSkills": "No enabled skills",
     "noBuiltinSkills": "No builtin skills",
     "setEnabledError": "Failed to set skill enabled status",
-    "packBlockedHint": "This skill pack contains uninstalled skills. Install them under \"Included Skills\" before enabling.",
+    "packBlockedHint": "This skill pack contains uninstalled or disabled skills. Resolve them under \"Included Skills\" before enabling.",
+    "packMemberToggleConfirm": "This skill belongs to skill pack(s) {{packs}}. Changing its enabled state will affect the availability of the entire pack. Continue?",
     "setEnabledSuccess": "Skill {name} enabled",
     "setDisabledSuccess": "Skill {name} disabled",
     "marketplaceTabs": {

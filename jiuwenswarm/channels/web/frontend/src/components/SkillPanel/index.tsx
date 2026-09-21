@@ -927,8 +927,34 @@ export function SkillPanel({
 
   const toggleSkillDisabled = useCallback(
     async (skillName: string) => {
-      const skill = skills.find((s) => s.name === skillName);
-      const newEnabled = skill?.enabled === false ? true : false;
+      // 当前目标状态：优先取详情页状态（成员技能不在顶层列表中，
+      // 从列表取会恒判为 false，导致禁用后无法再启用）
+      const isSelfDetail = selectedSkill?.name === skillName;
+      const listSkill = skills.find((s) => s.name === skillName);
+      const currentEnabled = isSelfDetail
+        ? selectedSkill?.enabled !== false
+        : listSkill?.enabled !== false;
+      const newEnabled = !currentEnabled;
+
+      // 二次确认以服务端实时探测为准：skills.toggle(dry_run) 返回该技能
+      // 当前关联的技能包列表，不依赖页面缓存的列表数据。
+      // 成员技能启用/禁用都会影响所属技能包的可用性，两个方向都确认
+      let parentPacks: string[] = [];
+      try {
+        const probe = await webRequest<{ success: boolean; parent_skillpacks?: string[] }>(
+          'skills.toggle',
+          withSession({ name: skillName, enabled: newEnabled, dry_run: true }),
+        );
+        if (probe.success) parentPacks = probe.parent_skillpacks ?? [];
+      } catch {
+        // 探测失败不阻塞切换：保持与旧行为一致（直接切换，不弹窗）
+      }
+      if (parentPacks.length > 0) {
+        const confirmed = window.confirm(
+          t('skills.packMemberToggleConfirm', { packs: parentPacks.join('、') }),
+        );
+        if (!confirmed) return;
+      }
 
       const toggleKey = `toggle:${skillName}`;
       setActionTarget(toggleKey);
@@ -950,6 +976,16 @@ export function SkillPanel({
         if (selectedSkill && selectedSkill.name === skillName) {
           setSelectedSkill({ ...selectedSkill, enabled: newEnabled });
         }
+
+        // 仅成员技能影响技能包聚合状态，确认后才刷新列表与技能包详情；
+        // 无技能包关联的技能保持轻量更新，不重新拉取列表
+        if (parentPacks.length > 0) {
+          await fetchSkills();
+          if (selectedSkill && isSkillPackage(selectedSkill) && selectedSkill.name !== skillName) {
+            const data = await webRequest<SkillDetail>('skills.get', withSession({ name: selectedSkill.name }));
+            setSelectedSkill(normalizeSkillItem(data));
+          }
+        }
       } catch (error) {
         console.error('Failed to toggle skill enabled:', error);
         showMessage('error', t('skills.setEnabledError'));
@@ -957,7 +993,7 @@ export function SkillPanel({
         setActionTarget(null);
       }
     },
-    [skills, selectedSkill, withSession, showMessage, t],
+    [skills, selectedSkill, isSkillPackage, fetchSkills, withSession, showMessage, t],
   );
 
   // 技能包成员从包内备份一键安装（恢复已卸载成员）
@@ -1542,7 +1578,7 @@ export function SkillPanel({
             <div className="page-shell mt-4 text-sm text-text-muted">{t(MY_SKILLS_EMPTY_KEY[mySkillsSubTab])}</div>
           ) : null}
           {listState !== 'success' || mySkillsFiltered.length > 0 ? (
-            <div className="page-scroll pt-4 flex-1 min-h-0 overflow-y-auto">
+            <div className="page-scroll mt-0 flex-1 min-h-0 overflow-y-auto">
               {listState === 'loading' && (
                 <div className="text-sm text-text-muted" data-testid="skill-panel-my-list-loading">
                   {t('common.loading')}
