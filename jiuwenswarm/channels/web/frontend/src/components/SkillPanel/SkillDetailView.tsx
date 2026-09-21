@@ -27,6 +27,7 @@ import {
   type FilePreviewTreeNode,
 } from '../ui';
 import { Switch } from '../Switch';
+import { resolveMarketplaceInstalledLocalName } from '../../utils/skillNetUrl';
 import { buildSkillVersionOptions } from './skillVersionOptions';
 import type {
   EvolutionEntry,
@@ -194,6 +195,9 @@ export interface HubSkillDetailViewProps extends SkillDetailCommonProps {
   mode: 'hub';
   hubSkill: MarketplacePluginItem;
   hubDetail: HubSkillDetail | null;
+  /** 本地技能列表：按 origin 判定广场条目是否已安装（SKILL.md name 可能 ≠ slug） */
+  localSkills: Array<{ name: string; origin?: string | null }>;
+  installedSkillNames: ReadonlySet<string>;
   /** 广场详情页签（内容详情 / 包含技能，仅技能包显示"包含技能"） */
   hubDetailTab: 'content' | 'members';
   setHubDetailTab: (tab: 'content' | 'members') => void;
@@ -276,8 +280,19 @@ export function SkillDetailView(props: SkillDetailViewProps) {
   );
 
   if (props.mode === 'hub') {
-    const { hubSkill, hubDetail, installedSkillMap, actionTarget, onInstallHubSkill, onGoToChat, hubDetailTab, setHubDetailTab } = props;
-    const isInstalled = installedSkillMap.has(hubSkill.name);
+    const {
+      hubSkill,
+      hubDetail,
+      localSkills,
+      installedSkillNames,
+      actionTarget,
+      onInstallHubSkill,
+      onGoToChat,
+      hubDetailTab,
+      setHubDetailTab,
+    } = props;
+    const localName = resolveMarketplaceInstalledLocalName(hubSkill, localSkills, installedSkillNames);
+    const isInstalled = Boolean(localName);
     const installing = actionTarget === `install:${hubSkill.identifier || hubSkill.asset_id}`;
     // 当前广场条目是否为技能包（用于显示"包含技能"页签）
     const isHubPackSkill = hubSkill.skill_type === 'skillpack' || hubSkill.plugin_type === 'skillpack';
@@ -292,9 +307,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
       },
       /* 下载/去试试按钮 */
       <div className="flex items-center gap-2 flex-shrink-0">
-        {isInstalled ? (
+        {isInstalled && localName ? (
           <button
-            onClick={() => onGoToChat(hubSkill.name, hubSkill.plugin_type === 'swarmskill' ? 'swarm_skill' : undefined)}
+            onClick={() => onGoToChat(localName, hubSkill.plugin_type === 'swarmskill' ? 'swarm_skill' : undefined)}
             className="flex items-center justify-center rounded-[16px] text-sm text-control-emphasis bg-card border border-control-emphasis hover:bg-secondary/30 whitespace-nowrap"
             style={{ height: '32px', padding: '0 24px' }}
             data-testid={`${tid}-go-try-btn`}
