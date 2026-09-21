@@ -1605,6 +1605,12 @@ function AppContent({
       const session = await request<Session>('session.get_metadata', {
         session_id: targetSessionId,
       });
+      if ((session as unknown as Record<string, unknown>).archived === true) {
+        if (sessionIdRef.current === targetSessionId) {
+          navigate({ kind: 'chat-new' }, { replace: true });
+        }
+        return null;
+      }
       const isSideConversation = Boolean(session.ephemeral && session.side_parent_session_id?.trim());
       if (isSideConversation) {
         useSessionStore.getState().removeSession(targetSessionId);
@@ -1688,7 +1694,7 @@ function AppContent({
       }
       return null;
     }
-  }, [registerSideConversation, request, setProcessing, setThinking, upsertSessionMetadata]);
+  }, [navigate, registerSideConversation, request, setProcessing, setThinking, upsertSessionMetadata]);
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
@@ -2625,7 +2631,10 @@ function AppContent({
     setCurrentSession(null);
     setTeamAreaExpanded(false);
     setSingleAgentPanelExpanded(false);
-    navigate({ kind: 'chat-new' });
+    navigate(
+      { kind: 'chat-new' },
+      options.replaceHistory ? { replace: true } : undefined,
+    );
     setActiveNav('chat');
     requestComposerFocus();
   }, [disposeInFlightHistoryHandles, mode, navigate, requestComposerFocus, setCurrentSession, setSelectedProject, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
