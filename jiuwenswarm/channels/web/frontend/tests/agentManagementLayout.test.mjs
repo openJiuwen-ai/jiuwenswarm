@@ -650,6 +650,48 @@ test('concurrent Expert installs keep every affected card busy', async () => {
   assert.deepEqual(installButtons.map((button) => button.textContent), ['安装中…', '安装中…']);
 });
 
+test('manual Expert Team creation requires at least one member', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { createRoot } = await import('react-dom/client');
+  const { act } = React;
+  const { AgentGroupEditor } = await import(
+    '../node_modules/.cache/agent-management-layout/AgentGroupEditor.mjs'
+  );
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+  let saveCount = 0;
+  const root = createRoot(dom.window.document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(AgentGroupEditor, {
+      draft: {
+        id: '', name: '验收专家团', description: '能力介绍', persona: '专家团介绍', category: '',
+        tagIds: [], customTags: [], leaderId: 'leader', memberIds: [], skillRefs: [], suggestedPrompts: [],
+      },
+      agentOptions: [{
+        id: 'leader', runtimePackageName: 'leader', displayName: '负责人', description: '', source: 'local',
+        installed: true, connectionState: 'connected', tags: [], avatarUrl: null,
+      }],
+      agentsStatus: 'success', agentsError: null, skillOptions: [], skillsStatus: 'success', saving: false,
+      error: null, onChange() {}, onReloadAgents() {}, onReloadSkills() {}, onCancel() {},
+      onSave() { saveCount += 1; },
+    })));
+    const form = dom.window.document.querySelector('[data-testid="agent-group-editor"]');
+    await act(async () => form.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })));
+    assert.equal(saveCount, 0);
+    assert.match(dom.window.document.body.textContent, /请至少选择一名成员/);
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
 test('Expert Team upload error prioritizes the latest local validation and stays below the picker', () => {
   assert.match(groupUploadSource, /\{pickerError \|\| error\}/);
   assert.match(

@@ -77,3 +77,11 @@ await build({
   loader: { '.css': 'empty', '.png': 'dataurl', '.svg': 'dataurl' },
   define: { 'import.meta.env': '{}' }, plugins: [assetStubPlugin],
 });
+
+await build({
+  entryPoints: ['src/components/AgentManagementPanel/AgentGroupEditor.tsx'],
+  bundle: true, packages: 'external', platform: 'node', format: 'esm',
+  outfile: 'node_modules/.cache/agent-management-layout/AgentGroupEditor.mjs',
+  loader: { '.css': 'empty', '.png': 'dataurl', '.svg': 'dataurl' },
+  define: { 'import.meta.env': '{}' }, plugins: [assetStubPlugin],
+});
