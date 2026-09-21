@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
-import { act, createElement } from 'react';
+import { act, createElement, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
@@ -59,22 +59,66 @@ function byId(id, variant) {
   return matches[0];
 }
 const click = async (element) => act(async () => element.click());
+const typeInput = async (value) => act(async () => {
+  const editor = byId('chat-panel-input');
+  editor.textContent = value;
+  editor.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+});
+
+for (const queuePaused of [false]) {
+  test(`busy composer queues by default even when queuePaused=${queuePaused}`, async () => {
+    await mount({}, async ({ props, render, sessionId }) => {
+      const sent = [];
+      props.isProcessing = true;
+      props.onSubmit = (...args) => sent.push(args);
+      props.onInterrupt = () => assert.fail('ordinary busy input must not interrupt');
+      await act(async () => {
+        useChatStore.getState().setProcessing(sessionId, true);
+        useChatStore.getState().setQueuePaused(sessionId, queuePaused);
+      });
+      await render();
+      await typeInput('queued from actual composer');
+      await click(byId('chat-panel-input-send'));
+      assert.deepEqual(sent, []);
+      const queue = useChatStore.getState().getRuntime(sessionId).taskQueue;
+      assert.equal(queue.length, 1);
+      assert.equal(queue[0].content, 'queued from actual composer');
+      assert.equal(queue[0].status, 'queued');
+    });
+  });
+}
+
+test('idle composer still submits normally', async () => {
+  await mount({}, async ({ props, render, sessionId }) => {
+    const sent = [];
+    props.onSubmit = (text) => sent.push(text);
+    await render();
+    await typeInput('ordinary input');
+    await click(byId('chat-panel-input-send'));
+    assert.deepEqual(sent, ['ordinary input']);
+    assert.deepEqual(useChatStore.getState().getRuntime(sessionId).taskQueue, []);
+  });
+});
 
 async function mount({ mode = 'agent', profile = 'default', language = 'en' } = {}, run) {
   const sessionId = 'input-permission-merge';
   useSessionStore.getState().ensureRuntime(sessionId);
   useSessionStore.getState().setMode(sessionId, mode);
+  useChatStore.getState().ensureRuntime(sessionId);
   useChatStore.getState().setActiveSessionId(sessionId);
   const previousWorkspace = useWorkspaceStore.getState();
   useWorkspaceStore.setState({ workMode: 'work', projects: [], selectedProject: null });
   await i18n.changeLanguage(language);
   const saved = [];
   const switched = [];
+  const inputAreaRef = createRef();
   const props = {
     onSubmit() {},
     onInterrupt() {},
     onCancel() {},
-    onPersistMedia: async () => ({}),
+    onPersistMedia: async (_content, mediaItems) => ({
+      media_items: mediaItems.map((item) => ({ ...item, path: `C:/test/${item.filename}` })),
+    }),
     onPersistDocuments: async () => ({}),
     onSwitchMode: (next) => {
       switched.push(next);
@@ -88,10 +132,11 @@ async function mount({ mode = 'agent', profile = 'default', language = 'en' } = 
   };
   const root = createRoot(document.getElementById('root'));
   const render = async () =>
-    act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(InputArea, props))));
+    act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(InputArea, { ...props, ref: inputAreaRef }))));
+  const unmountInputArea = async () => act(async () => root.render(null));
   try {
     await render();
-    await run({ saved, switched, props, render, sessionId });
+    await run({ saved, switched, props, render, unmountInputArea, sessionId, inputAreaRef });
   } finally {
     await act(async () => root.unmount());
     useChatStore.getState().setActiveSessionId(null);
@@ -100,6 +145,38 @@ async function mount({ mode = 'agent', profile = 'default', language = 'en' } = 
     useWorkspaceStore.setState(previousWorkspace, true);
   }
 }
+
+test('pasted image in a historical session restores after InputArea unmounts on the new conversation', async () => {
+  await mount({}, async ({ inputAreaRef, sessionId, render, unmountInputArea }) => {
+    await act(async () => {
+      inputAreaRef.current.appendLocalFilePicks([
+        {
+          kind: 'image',
+          filename: 'clipboard-image.png',
+          mime_type: 'image/png',
+          size: 4,
+          base64: 'dGVzdA==',
+        },
+      ]);
+    });
+    assert.notEqual(document.querySelector('[data-testid="chat-panel-input-attachment-card"]'), null);
+
+    const newConversationId = 'new';
+    useSessionStore.getState().ensureRuntime(newConversationId);
+    useChatStore.getState().ensureRuntime(newConversationId);
+    await act(async () => useChatStore.getState().setActiveSessionId(newConversationId));
+
+    assert.equal(document.querySelector('[data-testid="chat-panel-input-attachment-card"]'), null);
+    await unmountInputArea();
+
+    await act(async () => useChatStore.getState().setActiveSessionId(sessionId));
+    await render();
+    assert.notEqual(document.querySelector('[data-testid="chat-panel-input-attachment-card"]'), null);
+
+    useChatStore.getState().removeRuntime(newConversationId);
+    useSessionStore.getState().removeRuntime(newConversationId);
+  });
+});
 
 for (const language of ['zh', 'en']) {
   test(`${language}: mode tooltip uses option DOMRect and already translated text`, async () => {

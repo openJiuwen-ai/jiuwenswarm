@@ -44,6 +44,7 @@ export {
 export {
   downloadPreviewFile,
   formatJsonContent,
+  getPreviewCopyText,
   getPreviewFileLabel,
   isCodeFileName,
   isJsonFilePath,

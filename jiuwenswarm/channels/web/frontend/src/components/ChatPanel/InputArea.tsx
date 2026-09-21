@@ -470,6 +470,13 @@ interface AttachmentDraft {
   localPath?: string;
 }
 
+// ChatPanel/InputArea is unmounted when navigating between some conversation
+// surfaces (notably an existing session and the new-conversation page). Keep
+// unsent attachment drafts at module scope so that navigation does not discard
+// a session's composer state. The persisted image itself already lives under
+// that session's uploads directory; this map preserves only the pending UI draft.
+const attachmentDraftsBySession = new Map<string, AttachmentDraft[]>();
+
 interface AttachmentAlert {
   id: string;
   message: string;
@@ -693,9 +700,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   },
   ref,
 ) {
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
   const [speechError, setSpeechError] = useState('');
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
-  const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentDraft[]>(() =>
+    activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : [],
+  );
   const [attachmentAlerts, setAttachmentAlerts] = useState<AttachmentAlert[]>([]);
   const attachmentAlertTimersRef = useRef<Map<string, number>>(new Map());
   const [attachmentMenuId, setAttachmentMenuId] = useState<string | null>(null);
@@ -785,7 +795,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const attachmentMenuOpenedByLongPressRef = useRef(false);
   const isComposingRef = useRef(false);
   const { t, i18n } = useTranslation();
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
   const agentGroupUnavailable = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
   );
@@ -1255,7 +1264,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   }, []);
 
   const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {
-    setAttachments((prev) => prev.map((item) => (item.id === id ? { ...item, ...update } : item)));
+    setAttachments((prev) => {
+      if (prev.some((item) => item.id === id)) {
+        return prev.map((item) => (item.id === id ? { ...item, ...update } : item));
+      }
+      for (const [sessionId, drafts] of attachmentDraftsBySession) {
+        if (!drafts.some((item) => item.id === id)) continue;
+        attachmentDraftsBySession.set(
+          sessionId,
+          drafts.map((item) => (item.id === id ? { ...item, ...update } : item)),
+        );
+        break;
+      }
+      return prev;
+    });
   }, []);
 
   const removeAttachment = useCallback((id: string) => {
@@ -1269,6 +1291,23 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     setAttachmentMenuId(null);
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
   }, []);
+
+  const attachmentSessionIdRef = useRef(activeSessionId);
+  useEffect(() => {
+    const sessionId = attachmentSessionIdRef.current;
+    if (sessionId) attachmentDraftsBySession.set(sessionId, attachments);
+  }, [attachments]);
+
+  useEffect(() => {
+    if (attachmentSessionIdRef.current === activeSessionId) return;
+    const previousSessionId = attachmentSessionIdRef.current;
+    if (previousSessionId) attachmentDraftsBySession.set(previousSessionId, attachments);
+    attachmentSessionIdRef.current = activeSessionId;
+    setAttachments(activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : []);
+    setAttachmentAlerts([]);
+    setAttachmentMenuId(null);
+    clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
+  }, [activeSessionId, attachments]);
 
   const stopAttachmentMenuTimer = useCallback(() => {
     if (attachmentMenuTimerRef.current) {

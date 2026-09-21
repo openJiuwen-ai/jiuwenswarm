@@ -415,6 +415,98 @@ class TestWorkerRunLoop:
         with contextlib.suppress(asyncio.CancelledError):
             await runner
 
+    async def test_validation_failure_persists_provider_reason(self, ctx):
+        class InvalidAdapter:
+            def validate_input(self, *args, **kwargs):
+                del args, kwargs
+                return SimpleNamespace(
+                    valid=False,
+                    errors=[
+                        {
+                            "code": "ARTIFACT_NOT_FOUND",
+                            "message": "nothing at /tmp/deleted-program",
+                        }
+                    ],
+                )
+
+        ctx.register_adapters({"HARNESS": InvalidAdapter()})
+        task_id = _create(ctx, "deleted-input")
+        ctx.worker.enqueue(task_id)
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+
+        task = ctx.store.get(task_id)
+        assert task.status == TaskStatus.FAILED.value
+        assert task.status_history[-1]["cause"] == "nothing at /tmp/deleted-program"
+        runner = ctx.worker._run_task  # noqa: SLF001
+        assert runner is not None
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+
+    async def test_provider_failure_result_persists_error_message(self, ctx):
+        class FailedAdapter:
+            def build_request(self, task_view, *, resume: bool = False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                del request, on_event
+                return SimpleNamespace(
+                    status="failed",
+                    error_code="ENGINE_FAILED",
+                    error_message="scorecard.json is invalid: missing script",
+                )
+
+        ctx.register_adapters({"HARNESS": FailedAdapter()})
+        task_id = _create(ctx, "provider-failure")
+        ctx.worker.enqueue(task_id)
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+
+        task = ctx.store.get(task_id)
+        assert task.status == TaskStatus.FAILED.value
+        assert task.status_history[-1]["cause"] == "scorecard.json is invalid: missing script"
+        runner = ctx.worker._run_task  # noqa: SLF001
+        assert runner is not None
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+
+    async def test_provider_failure_uses_durable_snapshot_when_result_is_empty(self, ctx):
+        class SnapshotFailureAdapter:
+            def build_request(self, task_view, *, resume: bool = False):
+                del resume
+                return task_view
+
+            async def run(self, request, *, on_event=None):
+                del request, on_event
+                return SimpleNamespace(
+                    status="failed",
+                    error_code="PAPER_PIPELINE_FAILED",
+                    error_message=None,
+                )
+
+            def read_state(self, task_id: str):
+                del task_id
+                return SimpleNamespace(
+                    status="failed",
+                    error_code="PAPER_PIPELINE_FAILED",
+                    error_message="未生成可用的论文结果。",
+                )
+
+        ctx.register_adapters({"HARNESS": SnapshotFailureAdapter()})
+        task_id = _create(ctx, "paper-snapshot-failure")
+        ctx.worker.enqueue(task_id)
+        await asyncio.wait_for(ctx.worker._queue.join(), timeout=1)  # noqa: SLF001
+
+        task = ctx.store.get(task_id)
+        assert task.status == TaskStatus.FAILED.value
+        assert task.status_history[-1]["cause"] == "未生成可用的论文结果。"
+        runner = ctx.worker._run_task  # noqa: SLF001
+        assert runner is not None
+        runner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runner
+
 
 class TestProviderControl:
     async def test_pause_commits_state_after_provider_returns(self, ctx):
@@ -514,6 +606,30 @@ class TestProviderControl:
             await control
 
         assert ctx.store.get(task_id).status == TaskStatus.RUNNING.value
+
+    async def test_failed_provider_control_persists_error_message(self, ctx):
+        class FailedControlAdapter:
+            supports_pause = True
+
+            async def pause(self, task_id: str):
+                del task_id
+                return SimpleNamespace(
+                    status="FAILED",
+                    error_code="PAUSE_FAILED",
+                    error_message="provider could not checkpoint the current run",
+                )
+
+        adapter = FailedControlAdapter()
+        ctx.register_adapters({"HARNESS": adapter})
+        task_id = _create(ctx)
+        _mark_running(ctx, task_id)
+
+        assert ctx.worker.cancel(task_id, "pause") == TaskStatus.RUNNING.value
+        await ctx.worker._control_tasks[task_id]  # noqa: SLF001 - wait for control result
+
+        task = ctx.store.get(task_id)
+        assert task.status == TaskStatus.FAILED.value
+        assert task.status_history[-1]["cause"] == "provider could not checkpoint the current run"
 
     async def test_controls_are_serialized_instead_of_dropped(self, ctx):
         adapter = _ControlAdapter()
