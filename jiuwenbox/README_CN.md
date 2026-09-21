@@ -170,6 +170,8 @@ UDS 相关环境变量：
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `JIUWENBOX_LISTEN` | `http://0.0.0.0:8321` | 管理 API 监听 URI；接受 `http://host:port` 或 `unix:///abs/socket/path`。 |
+| `JIUWENBOX_ETCD_ENDPOINTS` | _未设置_ | 数据面策略同步的 etcd client URL，逗号分隔。为空则不启动 watcher。 |
+| `JIUWENBOX_ETCD_CONFIG_KEY` | `/agentos/config/data-plane` | 与管理面、gateway 共用的 etcd key。 |
 | `JIUWENBOX_UDS_MODE` | `0666` | UDS socket 文件权限 (八进制字符串)。Docker 场景下宿主与容器内 uvicorn uid 通常不同，默认放开；多租户 / 强隔离场景建议显式 `JIUWENBOX_UDS_MODE=0660` 并 `docker run --user $(id -u):$(id -g)` 收紧。 |
 | `JIUWENBOX_UDS_HOST_DIR` | `/tmp/jiuwenbox-sock` | `run_docker.sh` 把宿主 socket 目录挂载到容器内的位置。 |
 | `JIUWENBOX_UDS_CONTAINER_DIR` | `/run/jiuwenbox` | 容器内挂载点，必须与 `JIUWENBOX_LISTEN` 里 socket 路径所在的目录一致。 |
@@ -274,8 +276,58 @@ ls /tmp/jiuwenbox-logs
 
 服务启动时若存在 `~/.jiuwenbox/update_policy.yaml`，则以其作为默认策略；
 否则从 `JIUWENBOX_POLICY_PATH`（或包内 `default-policy.yaml`）加载。
-`PUT /api/v1/policies` 在 `update_default_policy: true` 时会把请求合并进
-内存默认策略，并用合并后的完整结果覆盖写入该文件（只保留一份）。
+`PUT /api/v1/policies` 在 `update_default_policy: true` 时（以及 etcd 数据面
+watcher，走同一方法）会把请求合并进内存默认策略，并用合并后的完整结果覆盖
+写入该文件（只保留一份）。该文件一旦存在，下次启动会**整份替换**基线 YAML，
+不会与 `JIUWENBOX_POLICY_PATH` 再合并。要回到 base YAML，删除该文件后重启。
+
+`network.egress` / `network.ingress` 等片段里拼错的字段名会被 Pydantic 静默丢弃
+（`NetworkRulePolicy` 未设 `extra="forbid"`），与 HTTP 接口行为一致。
+
+### etcd 数据面策略同步
+
+jiuwenbox 可 watch AgentOS 数据面 key，把 `jiuwenbox` 段交给与
+`PUT /api/v1/policies` 相同的 `update_all_policies`
+（`policy_mode=override`、`update_default_policy=true`、
+`update_existing_sandboxes=true`）。该 key 是管理面、gateway、jiuwenbox
+的三方契约，改动需三方一起。
+
+- Key：`/agentos/config/data-plane`（可用 `JIUWENBOX_ETCD_CONFIG_KEY` 覆盖）
+- `JIUWENBOX_ETCD_ENDPOINTS`：逗号分隔的 `http://host:port`。为空则不启动 watcher
+- 只应用顶层 `jiuwenbox:` 映射；兄弟段 `gateway:` 忽略；`_` 前缀键为元数据
+- `jiuwenbox` 段即 HTTP `policy` 体。运行中沙箱仅热更新 `network` /
+  `conch.network` 的 egress/ingress；其余字段只影响之后创建的沙箱
+- 无端点或 setup 失败不阻塞服务启动
+
+本地冒烟（不需要 AgentOS）。镜像优先 `quay.io/coreos/etcd` 或本机 `etcd`
+二进制；`gcr.io` 在内网通常拉不动：
+
+```bash
+docker run -d --name jbx-etcd -p 2379:2379 \
+  quay.io/coreos/etcd:v3.5.16 \
+  /usr/local/bin/etcd \
+  --advertise-client-urls http://0.0.0.0:2379 \
+  --listen-client-urls http://0.0.0.0:2379
+
+docker exec -i jbx-etcd etcdctl put /agentos/config/data-plane <<'EOF'
+_version: 1
+jiuwenbox:
+  network:
+    egress:
+      default: deny
+      allowed_domains: ["example.com"]
+    ingress:
+      default: deny
+EOF
+
+rm -f ~/.jiuwenbox/update_policy.yaml
+JIUWENBOX_ETCD_ENDPOINTS=http://127.0.0.1:2379 jiuwenbox-server
+# 另开终端：
+curl -s http://127.0.0.1:8321/api/v1/policies | jq .network.egress
+```
+
+再 `etcdctl put` 改 `allowed_domains`，数秒内 `GET /policies` 应变。反复冒烟前
+删掉 `~/.jiuwenbox/update_policy.yaml`，否则上一轮结果会成为下一轮基线。
 
 ### 字段说明
 

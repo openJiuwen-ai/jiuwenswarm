@@ -31,6 +31,7 @@ from jiuwenbox.server.runtime.errors import (
 from jiuwenbox.server.sandbox_manager import SandboxManager
 from jiuwenbox.server.policy_reader import PolicyReader
 from jiuwenbox.server.proxy_manager import ProxyManager
+from jiuwenbox.server.etcd_sync.service import PolicySyncService
 from jiuwenbox.server.runtime.process import enable_child_subreaper
 from jiuwenbox.supervisor.network import cleanup_orphaned_uplinks
 
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 _sandbox_manager: SandboxManager | None = None
 _proxy_manager: ProxyManager | None = None
+_policy_sync_service: PolicySyncService | None = None
 # Set during lifespan startup when the policy file only configures
 # ``inference_privacy_proxies``. In that mode we intentionally skip
 # building a ``SandboxManager``; ``get_sandbox_manager`` consults this
@@ -257,7 +259,7 @@ def _chmod_uds_socket_if_any() -> None:
 
 @asynccontextmanager
 async def lifespan(_application: FastAPI):
-    global _sandbox_manager, _proxy_manager, _proxy_only_mode
+    global _sandbox_manager, _proxy_manager, _proxy_only_mode, _policy_sync_service
     # Both of these have to run after uvicorn has spun up its event loop -
     # ``set_default_executor`` requires a running loop, and raising NOFILE is
     # only effective within the live process. They are also independent of
@@ -316,6 +318,18 @@ async def lifespan(_application: FastAPI):
                 "start_idle_reaper failed during lifespan startup; idle sandboxes "
                 "will not be auto-reaped",
             )
+        # Data-plane policy sync: watch the AgentOS etcd key and feed the
+        # jiuwenbox section into update_all_policies. No endpoints / setup
+        # failure must not block startup (same as gateway ConfigSyncService).
+        try:
+            _policy_sync_service = PolicySyncService.from_env(_sandbox_manager)
+            await _policy_sync_service.start()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "policy sync setup failed during lifespan startup; "
+                "etcd policy updates will not be applied",
+            )
+            _policy_sync_service = None
     _proxy_manager = ProxyManager(policy_reader=policy_reader)
     logger.info("box-server started (version %s)", __version__)
     if get_configured_token() is not None:
@@ -334,6 +348,12 @@ async def lifespan(_application: FastAPI):
     try:
         yield
     finally:
+        try:
+            if _policy_sync_service is not None:
+                await _policy_sync_service.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("policy sync stop failed during lifespan shutdown")
+        _policy_sync_service = None
         # Drop host veths first (milliseconds). Waiting on daemon SIGTERM can
         # exceed systemd TimeoutStopSec; if SIGKILL then arrives, NICs would
         # leak. Tear the uplinks down before that wait.

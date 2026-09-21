@@ -856,6 +856,17 @@ print(resp.json())
 
 ## Policy 接口
 
+etcd 数据面热更新与下面的批量 `PUT /api/v1/policies` **走同一方法、同一套语义**。
+watcher 抽取 etcd 文档的 `jiuwenbox` 段（即本接口的 `policy` 体），以
+`policy_mode=override`、`update_default_policy=true`、
+`update_existing_sandboxes=true` 调用 `SandboxManager.update_all_policies`。
+契约 key 为 `/agentos/config/data-plane`（可用 `JIUWENBOX_ETCD_CONFIG_KEY` 覆盖）；
+`JIUWENBOX_ETCD_ENDPOINTS` 为空则不启动 watcher。兄弟段 `gateway:` 被忽略。
+只有 `network` / `conch.network` 的 egress/ingress 会对运行中沙箱热生效；
+其余字段只影响之后创建的沙箱。`update_policy.yaml` 一旦存在会在下次启动
+整份替换 `JIUWENBOX_POLICY_PATH` 基线（既有行为）。`NetworkRulePolicy` 等模型
+未设 `extra="forbid"`，拼错字段名会被静默丢弃。
+
 ### 查询默认沙箱策略
 
 接口：`GET /api/v1/policies`

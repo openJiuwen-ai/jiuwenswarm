@@ -78,7 +78,12 @@ class PolicyUpdateStore:
         stored = self.load()
         if stored is None:
             return base_policy
-        logger.info("Loaded merged default policy from %s", self.path)
+        logger.info(
+            "Loaded merged default policy from %s "
+            "(replaces JIUWENBOX_POLICY_PATH / bundled YAML wholesale; "
+            "delete this file and restart to revert to the base policy)",
+            self.path,
+        )
         return stored
 
     def _atomic_write(self, document: Mapping[str, Any]) -> None:

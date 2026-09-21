@@ -264,6 +264,8 @@ UDS-related env vars:
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `JIUWENBOX_LISTEN` | `http://0.0.0.0:8321` | Management API listen URI; accepts `http://host:port` or `unix:///abs/socket/path`. |
+| `JIUWENBOX_ETCD_ENDPOINTS` | _unset_ | Comma-separated etcd client URLs for data-plane policy sync. Empty disables the watcher. |
+| `JIUWENBOX_ETCD_CONFIG_KEY` | `/agentos/config/data-plane` | etcd key shared with the management plane and gateway. |
 | `JIUWENBOX_UDS_MODE` | `0666` | UDS socket file permissions (octal string). The Docker default is permissive so a non-root host user can connect; for multi-tenant / hardened deployments set `0660` and pass `docker run --user $(id -u):$(id -g)`. |
 | `JIUWENBOX_UDS_HOST_DIR` | `/tmp/jiuwenbox-sock` | Host directory bind-mounted by `run_docker.sh` to expose the socket. |
 | `JIUWENBOX_UDS_CONTAINER_DIR` | `/run/jiuwenbox` | Container-side mount point; must match the directory in `JIUWENBOX_LISTEN`'s socket path. |
@@ -381,8 +383,64 @@ ls /tmp/jiuwenbox-logs
 The server loads `~/.jiuwenbox/update_policy.yaml` as the default policy when
 that file exists; otherwise it loads `JIUWENBOX_POLICY_PATH` (or the bundled
 `default-policy.yaml`). `PUT /api/v1/policies` with `update_default_policy: true`
-merges the request into the in-memory default and overwrites
-`update_policy.yaml` with the full merged result.
+(and the etcd data-plane watcher, which calls the same method) merges the
+request into the in-memory default and overwrites `update_policy.yaml` with the
+full merged result. Once that file exists it **replaces** the startup YAML
+wholesale on the next boot — it is not merged with `JIUWENBOX_POLICY_PATH`.
+Delete the file and restart to go back to the base YAML.
+
+Misspelled keys inside `network.egress` / `network.ingress` (and similar
+fragments) are dropped silently: `NetworkRulePolicy` does not set
+`extra="forbid"`. Same behaviour as the HTTP API.
+
+### etcd data-plane policy sync
+
+jiuwenbox can watch the AgentOS data-plane key and apply the `jiuwenbox`
+section through the same path as `PUT /api/v1/policies`
+(`update_all_policies` with `policy_mode=override`,
+`update_default_policy=true`, `update_existing_sandboxes=true`). The
+document is a three-party contract with the management plane and gateway;
+do not change the key without coordinating all three.
+
+- Key: `/agentos/config/data-plane` (override with `JIUWENBOX_ETCD_CONFIG_KEY`)
+- `JIUWENBOX_ETCD_ENDPOINTS`: comma-separated `http://host:port`. Empty
+  disables the watcher.
+- Only the top-level `jiuwenbox:` mapping is applied. The sibling `gateway:`
+  section is ignored. Top-level keys starting with `_` are metadata.
+- The `jiuwenbox` mapping is the same fragment as the HTTP `policy` body.
+  Live sandboxes only hot-apply `network` / `conch.network` egress/ingress;
+  other fields affect sandboxes created afterwards.
+- Setup failures and a missing endpoint list do not block server startup.
+
+Local smoke test (no AgentOS). Prefer `quay.io/coreos/etcd` (or a local
+`etcd` binary); `gcr.io` is often unreachable:
+
+```bash
+docker run -d --name jbx-etcd -p 2379:2379 \
+  quay.io/coreos/etcd:v3.5.16 \
+  /usr/local/bin/etcd \
+  --advertise-client-urls http://0.0.0.0:2379 \
+  --listen-client-urls http://0.0.0.0:2379
+
+docker exec -i jbx-etcd etcdctl put /agentos/config/data-plane <<'EOF'
+_version: 1
+jiuwenbox:
+  network:
+    egress:
+      default: deny
+      allowed_domains: ["example.com"]
+    ingress:
+      default: deny
+EOF
+
+rm -f ~/.jiuwenbox/update_policy.yaml
+JIUWENBOX_ETCD_ENDPOINTS=http://127.0.0.1:2379 jiuwenbox-server
+# other terminal:
+curl -s http://127.0.0.1:8321/api/v1/policies | jq .network.egress
+```
+
+Re-put the key with a different `allowed_domains` list; `GET /policies`
+should change within a few seconds.
 
 ### Field Reference
 
