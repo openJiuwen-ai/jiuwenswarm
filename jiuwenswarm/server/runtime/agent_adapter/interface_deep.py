@@ -3022,28 +3022,17 @@ class JiuWenSwarmDeepAdapter:
     ) -> bool:
         """Return True when a session still has live subagent slots in use.
 
-        A missing control is idle. If the controls mapping is missing or
-        ``capacity()`` raises, treat the session as occupied so TTL cannot
-        evict an Adapter that may still hold children.
+        A missing control is idle: dest-stable SDK and never-spawned parents
+        have no ``_subagent_controls``. If ``capacity()`` raises, treat the
+        session as occupied so TTL cannot evict an Adapter that may still
+        hold children.
         """
         deep_agent = getattr(adapter, "_instance", None)
         if deep_agent is None:
             return False
-        if not hasattr(deep_agent, "_subagent_controls"):
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] subagent occupancy probe failed; "
-                "treating session as occupied: session_id=%s",
-                session_id,
-            )
-            return True
-        controls = deep_agent._subagent_controls
+        controls = getattr(deep_agent, "_subagent_controls", None) or {}
         if not isinstance(controls, dict):
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] subagent occupancy probe failed; "
-                "treating session as occupied: session_id=%s",
-                session_id,
-            )
-            return True
+            controls = {}
         control = controls.get(session_id)
         if control is None:
             return False

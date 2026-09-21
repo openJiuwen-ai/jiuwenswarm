@@ -102,15 +102,16 @@ def test_session_has_live_subagent_runtime_fail_closed_when_capacity_raises() ->
     ) is True
 
 
-def test_session_has_live_subagent_runtime_fail_closed_when_controls_missing() -> None:
+def test_session_has_live_subagent_runtime_missing_controls_is_idle() -> None:
+    """dest-stable SDK and never-spawned parents have no control map."""
     missing = SimpleNamespace(_instance=SimpleNamespace())
     invalid = SimpleNamespace(_instance=SimpleNamespace(_subagent_controls="bad"))
     assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
         missing, "sess-1"
-    ) is True
+    ) is False
     assert JiuWenSwarmDeepAdapter._session_has_live_subagent_runtime(
         invalid, "sess-1"
-    ) is True
+    ) is False
 
 
 def test_release_subagent_runtime_clears_progress_batch() -> None:
