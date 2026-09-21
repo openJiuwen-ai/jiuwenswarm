@@ -118,6 +118,7 @@ import {
 import {
   buildAgentGroupSelectionPayloadForMode,
   buildDefinitionSelectionPayloadForMode,
+  resolveSelectedSkillsForRequest,
 } from '../features/agentManagement/port';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
@@ -1713,7 +1714,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         sessionRuntime?.agentGroupBinding,
         sessionId === NEW_CONVERSATION_ID || Boolean(sessionRuntime?.agentGroupBindingPending),
       );
-      const selectedSkillsForRequest = Object.keys(agentGroupSelectionPayload).length > 0 ? [] : selectedSkills;
+      const selectedSkillsForRequest = resolveSelectedSkillsForRequest(
+        currentMode,
+        selectedSkills,
+        agentGroupSelectionIntent,
+        sessionRuntime?.agentGroupBinding,
+        sessionRuntime?.agentGroupBindingPending,
+      );
       if (agentGroupSelectionPayload.agent_group_name) {
         markPendingAgentGroupBinding(sessionId, agentGroupSelectionPayload.agent_group_name);
       }

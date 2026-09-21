@@ -157,6 +157,7 @@ import {
   createAgentManagementClient,
   createAgentGroupManagementClient,
   getAgentAvatarUrl,
+  isAgentGroupSelected,
   type AgentCatalogItem,
   type AgentGroupCatalogItem,
   type AgentGroupIdentity,
@@ -956,6 +957,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     isTeamMode && activeSessionId !== NEW_CONVERSATION_ID && !agentGroupBinding && !agentGroupBindingPending,
   );
   const agentGroupPickerLocked = agentGroupLocked || existingTeamGroupSelectionDisabled;
+  const teamGroupSelectionActive = isTeamMode && Boolean(selectedGroupId);
   const teamSkillSelectionActive = isTeamMode && selectedSkills.length > 0;
   const agentSelectionDisabled = isTeamMode;
   const agentGroupSelectionDisabled = isAgentMode || agentGroupPickerLocked || teamSkillSelectionActive;
@@ -1037,9 +1039,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       isTeamMode,
     );
     return items.map((item) =>
-      item.itemKind === 'command' && isSlashCommandDisabledByGoal(item.id, hasUnfinishedGoal)
-        ? { ...item, disabled: true, disabledReason: t('plan.toolbarUnavailableGoal') }
-        : item,
+      item.itemKind === 'skill' && teamGroupSelectionActive
+        ? { ...item, disabled: true, disabledReason: t('chat.teamSkillsGroupLocked') }
+        : item.itemKind === 'command' && isSlashCommandDisabledByGoal(item.id, hasUnfinishedGoal)
+          ? { ...item, disabled: true, disabledReason: t('plan.toolbarUnavailableGoal') }
+          : item,
     );
   }, [
     commandDescriptionLanguage,
@@ -1050,6 +1054,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     mode,
     slashCommands,
     slashSkills,
+    teamGroupSelectionActive,
     t,
   ]);
 
@@ -2268,6 +2273,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       // slash 选中
       if (kind === 'slash') {
         if (slashItemKind === 'skill') {
+          const slashSid = useChatStore.getState().activeSessionId;
+          const slashRuntime = slashSid ? useSessionStore.getState().getRuntime(slashSid) : undefined;
+          if (
+            slashSid &&
+            isAgentGroupSelected(
+              slashRuntime?.mode,
+              slashRuntime?.agentGroupSelectionIntent,
+              slashRuntime?.agentGroupBinding,
+              slashRuntime?.agentGroupBindingPending,
+            )
+          ) {
+            setComposerSuggestion(null);
+            return;
+          }
           const trigger = getCurrentComposerTrigger();
           if (trigger) {
             const beforeRange = range.cloneRange();
@@ -2279,7 +2298,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             range.deleteContents();
           }
           savedRangeRef.current = range.cloneRange();
-          const slashSid = useChatStore.getState().activeSessionId;
           if (slashSid) useSessionStore.getState().addSelectedSkill(slashSid, value);
           insertSkillChipRef.current(value);
           setComposerSuggestion(null);
@@ -2470,6 +2488,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       executeSlashCommand,
       extractPlainText,
       getCurrentComposerTrigger,
+      isAgentGroupSelected,
       mode,
       onNewSession,
       onForkSession,
@@ -2867,6 +2886,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       };
       const sid = useChatStore.getState().activeSessionId;
       if (!sid || !inputRef.current) return;
+      const runtime = useSessionStore.getState().getRuntime(sid);
+      if (
+        isAgentGroupSelected(
+          runtime?.mode,
+          runtime?.agentGroupSelectionIntent,
+          runtime?.agentGroupBinding,
+          runtime?.agentGroupBindingPending,
+        )
+      ) return;
 
       // 清空输入框并插入前缀文本（如"帮我修改这个技能"）
       inputRef.current.textContent = detail.prefixText || '';
@@ -2907,7 +2935,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     };
     window.addEventListener('chat-input-insert-skill', handler);
     return () => window.removeEventListener('chat-input-insert-skill', handler);
-  }, [insertSkillChip, extractPlainText]);
+  }, [extractPlainText, insertSkillChip, isAgentGroupSelected]);
   // 外部进入新会话时可以预选技能。把 canonical session state 同步成输入框
   // 中的 chip，避免用户开始编辑后被 handleEditorInput 误判为手动移除。
   useEffect(() => {

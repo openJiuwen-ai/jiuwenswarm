@@ -24,6 +24,8 @@ test('keeps Hub Expert Teams distinct from local groups', () => {
 import {
   buildDefinitionSelectionPayload,
   buildDefinitionSelectionPayloadForMode,
+  isAgentGroupSelected,
+  resolveSelectedSkillsForRequest,
 } from '../node_modules/.cache/agent-management/port.js';
 import { isAgentUploadFilename } from '../node_modules/.cache/agent-management/upload.js';
 import {
@@ -400,6 +402,23 @@ test('selection payload preserves keep, clear and select semantics', () => {
   assert.deepEqual(buildDefinitionSelectionPayload({ kind: 'select', id: 'content-creator' }), {
     agent_template_name: 'content-creator',
   });
+});
+
+test('Agent Group selection owns the Team skill slot across selection states', () => {
+  assert.equal(isAgentGroupSelected('agent', { kind: 'select', id: 'group-1' }), false);
+  assert.equal(isAgentGroupSelected('team', { kind: 'keep' }), false);
+  assert.equal(isAgentGroupSelected('team', { kind: 'select', id: 'group-1' }), true);
+  assert.equal(isAgentGroupSelected('team', { kind: 'keep' }, 'group-1'), true);
+  assert.equal(isAgentGroupSelected('team', { kind: 'keep' }, null, 'group-1'), true);
+  assert.equal(isAgentGroupSelected('team', { kind: 'select', id: '  ' }), false);
+  assert.deepEqual(
+    resolveSelectedSkillsForRequest('team', ['team-skill'], { kind: 'keep' }, 'group-1'),
+    [],
+  );
+  assert.deepEqual(
+    resolveSelectedSkillsForRequest('team', ['team-skill'], { kind: 'keep' }),
+    ['team-skill'],
+  );
 });
 
 test('Agent upload accepts only zip and tar archives', () => {

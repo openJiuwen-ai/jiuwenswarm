@@ -147,6 +147,28 @@ export function isAgentGroupAgentSelectable(
     : agent.teamCompatible?.member !== false;
 }
 
+/** A selected/pending/bound Expert Team owns the Team skill slot for the session. */
+export function isAgentGroupSelected(
+  mode: string | undefined,
+  intent: AgentGroupSelectionIntent | undefined,
+  boundGroupId?: string | null,
+  pendingGroupId?: string | null,
+): boolean {
+  if (mode !== 'team') return false;
+  if (boundGroupId?.trim() || pendingGroupId?.trim()) return true;
+  return intent?.kind === 'select' && Boolean(intent.id.trim());
+}
+
+export function resolveSelectedSkillsForRequest(
+  mode: string | undefined,
+  selectedSkills: string[],
+  intent: AgentGroupSelectionIntent | undefined,
+  boundGroupId?: string | null,
+  pendingGroupId?: string | null,
+): string[] {
+  return isAgentGroupSelected(mode, intent, boundGroupId, pendingGroupId) ? [] : selectedSkills;
+}
+
 export function buildAgentGroupSelectionPayloadForMode(
   mode: string | undefined,
   intent: AgentGroupSelectionIntent,
