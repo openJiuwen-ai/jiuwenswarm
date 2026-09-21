@@ -206,8 +206,9 @@ export function PersonalContextServicesPanel({
   const categoryServices = services.filter((s) => s.provider === selectedProvider);
 
   useEffect(() => {
-    if (notice?.kind !== 'success') return;
-    const timer = window.setTimeout(() => setNotice(null), 5000);
+    if (!notice) return;
+    // 成功提示 2s 自动消失；错误提示 3s 自动消失（仍可手动关闭），避免占住面板
+    const timer = window.setTimeout(() => setNotice(null), notice.kind === 'success' ? 2000 : 3000);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
