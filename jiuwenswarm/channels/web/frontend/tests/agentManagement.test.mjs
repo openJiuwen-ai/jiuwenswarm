@@ -47,6 +47,37 @@ import {
   findFirstPreviewableFile,
   mergeAgentDetailWithCatalog,
 } from '../node_modules/.cache/agent-management/viewModel.js';
+import {
+  advancePendingInstallQueue,
+  createPendingInstallQueue,
+  enqueuePendingInstall,
+} from '../node_modules/.cache/agent-management/pendingInstallQueue.js';
+
+test('pending Expert installs keep target identity while connector flows run serially', () => {
+  const first = {
+    id: 'expert-a', mode: 'catalog', pendingConnectors: ['connector-a'],
+  };
+  const second = {
+    id: 'expert-b', mode: 'group-picker', pendingConnectors: ['connector-b'],
+  };
+  const queued = enqueuePendingInstall(
+    enqueuePendingInstall(createPendingInstallQueue(), first),
+    second,
+  );
+
+  assert.deepEqual(queued.active, first);
+  assert.deepEqual(queued.waiting, [second]);
+
+  const afterFirst = advancePendingInstallQueue(queued);
+  assert.deepEqual(afterFirst.finished, first);
+  assert.deepEqual(afterFirst.queue.active, second);
+  assert.deepEqual(afterFirst.queue.waiting, []);
+
+  const afterSecond = advancePendingInstallQueue(afterFirst.queue);
+  assert.deepEqual(afterSecond.finished, second);
+  assert.equal(afterSecond.queue.active, null);
+  assert.deepEqual(afterSecond.queue.waiting, []);
+});
 
 test('selection pickers share installed-first and label sorting', () => {
   const items = [
