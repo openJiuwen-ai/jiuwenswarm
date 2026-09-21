@@ -33,13 +33,17 @@ class FakeStreamingResponse:
             yield chunk
 
 
+_ZIP_FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+
+
 def _zip_bytes(entries: dict[str, bytes], *, symlink: str | None = None) -> bytes:
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
         for name, body in entries.items():
-            archive.writestr(name, body)
+            info = zipfile.ZipInfo(name, date_time=_ZIP_FIXED_TIMESTAMP)
+            archive.writestr(info, body)
         if symlink is not None:
-            info = zipfile.ZipInfo(symlink)
+            info = zipfile.ZipInfo(symlink, date_time=_ZIP_FIXED_TIMESTAMP)
             info.create_system = 3
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
             archive.writestr(info, "target")
