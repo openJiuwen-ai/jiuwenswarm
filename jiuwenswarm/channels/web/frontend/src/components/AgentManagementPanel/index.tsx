@@ -1058,7 +1058,9 @@ export function AgentManagementPanel({
       if (editingId) {
         await client.updateAgent({ ...draft, id: editingId });
       } else {
-        await client.createAgent({ ...draft, id: draft.id || deriveAgentId(draft.name) });
+        const id = draft.id || deriveAgentId(draft.name);
+        await client.createAgent({ ...draft, id });
+        await handleInstall(id);
       }
       await loadCatalog();
       setEditingId(null);
@@ -1155,6 +1157,7 @@ export function AgentManagementPanel({
         setGroupMineQuery('');
         setGroupMinePage(1);
       } else {
+        await handleInstall(result.id);
         await loadCatalog();
         setMineKind('agent');
         setMineQuery('');
