@@ -104,6 +104,31 @@ export function RsiDetailHeader({
     };
   }, []);
 
+  const [failureReasonOpen, setFailureReasonOpen] = useState(false);
+  const failureReasonAnchorRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!failureReasonOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!failureReasonAnchorRef.current?.contains(event.target as Node)) {
+        setFailureReasonOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFailureReasonOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [failureReasonOpen]);
+
+  useEffect(() => {
+    setFailureReasonOpen(false);
+  }, [task.task_id, task.failure_reason]);
+
   const runAction = useCallback(
     async (action: RsiActionKind) => {
       if (action === 'config') {
@@ -232,7 +257,34 @@ export function RsiDetailHeader({
         <div className="rsi-detail__tags">
           {badge.kind ? (
             <span className="rsi-detail__tag rsi-detail__tag--status">
-              <StatusIcon kind={badge.kind} title={failureReason ?? undefined} />
+              {failureReason ? (
+                <span className="rsi-detail__failure-anchor" ref={failureReasonAnchorRef}>
+                  <button
+                    type="button"
+                    className="rsi-detail__failure-trigger"
+                    onClick={() => setFailureReasonOpen((open) => !open)}
+                    aria-label={t('rsi.detail.failureReason', { defaultValue: '失败原因' })}
+                    aria-expanded={failureReasonOpen}
+                    aria-controls="rsi-failure-reason-popover"
+                    data-testid="rsi-failure-reason-trigger"
+                  >
+                    <StatusIcon kind={badge.kind} title={failureReason} />
+                  </button>
+                  {failureReasonOpen && (
+                    <div
+                      id="rsi-failure-reason-popover"
+                      className="rsi-detail__failure-popover"
+                      role="dialog"
+                      aria-label={t('rsi.detail.failureReason', { defaultValue: '失败原因' })}
+                      data-testid="rsi-failure-reason-popover"
+                    >
+                      {failureReason}
+                    </div>
+                  )}
+                </span>
+              ) : (
+                <StatusIcon kind={badge.kind} />
+              )}
               {t('rsi.detail.' + badge.labelKey)}
             </span>
           ) : (
