@@ -974,7 +974,7 @@
 
 /* 定时任务触发会话：文字与定时任务名对齐（缩进 icon+gap = 20px） */
 .conversation-sidebar__cron-sessions .conversation-list-item__main {
-  padding-left: 20px;
+  padding-left: 30px;
 }
 
 /* cron 状态标签 */
