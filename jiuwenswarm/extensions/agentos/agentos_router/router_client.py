@@ -1943,6 +1943,27 @@ class AgentOSRouterClient(AgentServerClient):
                     session_id=session_id,
                     agent_type=normalized,
                 )
+            except YuanrongAgentApiError as exc:
+                # wait_until_running 确认实例不存在/停止：强制清残留 runtime，
+                # 下次 switch 才能重建。sshd 未就绪仍走下面保守分支。
+                log_agentos(
+                    logger,
+                    logging.WARNING,
+                    "ssh.south.not_ready",
+                    user_id=uid,
+                    session_id=session_id,
+                    sandbox_id=instance_id,
+                    instance=instance_id,
+                    error=type(exc).__name__,
+                    unreachable="true",
+                )
+                await self._cleanup_agent_on_instance_unavailable(runtime, exc=exc)
+                return {
+                    "ok": False,
+                    "error": f"sandbox sshd not ready: {exc}",
+                    "code": "SSH_NOT_READY",
+                }
+            try:
                 await ssh_relay.wait_until_ready(instance_id, user_id=uid)
             except Exception as exc:
                 log_agentos(
@@ -2168,7 +2189,9 @@ class AgentOSRouterClient(AgentServerClient):
                     channel="ssh",
                 )
         finally:
-            await self._agent_manager.release(runtime.key)
+            # shield：北向 cancel 已注入时，release 仍须执行，否则 task_count 残留。
+            # CancelledError 由 shield 在内层完成后自行向外传播，不必再捕获重抛。
+            await asyncio.shield(self._agent_manager.release(runtime.key))
 
     def _apply_current_agent_type_for_ssh(self, envelope: E2AEnvelope) -> None:
         """SSH 接入跟随用户当前 agent_type（由 3rdagent.switch 记录）。
@@ -2556,6 +2579,10 @@ class AgentOSRouterClient(AgentServerClient):
         :meth:`delete_agent` 的强制删除路径（不检查 task_count / idle）：
         关闭 WS 直连 → 删除 YuanRong 沙箱 → 移除内存 runtime → 注销注册中心
         instance 条目。后续请求会触发重新建沙箱，避免死沙箱与僵尸注册条目。
+
+        清理在独立后台任务中执行，并用 :func:`asyncio.shield` 与调用方取消
+        解耦：北向 SSH 会话关闭会 cancel relay 任务，但不能打断删沙箱 /
+        去 runtime / 注销，否则下次 switch 会复用死 runtime 导致自愈失败。
         """
         info = runtime.info
         session_id = str(info.metadata.get("session_id") or "")
@@ -2569,6 +2596,32 @@ class AgentOSRouterClient(AgentServerClient):
             info.agent_type,
             reason,
         )
+        task = asyncio.create_task(
+            self._run_network_failure_delete(runtime),
+            name=f"agentos-netfail-cleanup-{info.user_id[:24]}",
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            log_agentos(
+                logger,
+                logging.INFO,
+                "sandbox.cleanup.detached",
+                user_id=info.user_id,
+                session_id=session_id,
+                sandbox_id=sandbox_id,
+                agent_type=info.agent_type,
+                instance=sandbox_id,
+                reason=reason,
+            )
+            raise
+
+    async def _run_network_failure_delete(self, runtime: AgentRuntime) -> None:
+        """Force-delete the agent; isolated so relay cancel cannot abort it."""
+        info = runtime.info
+        session_id = str(info.metadata.get("session_id") or "")
         key_values: dict[str, Any] | None = None
         if "session_id" in self._agent_manager.key_fields and session_id:
             key_values = {"session_id": session_id}
@@ -2584,7 +2637,7 @@ class AgentOSRouterClient(AgentServerClient):
                 "user_id=%s agent_type=%s sandbox_id=%s",
                 info.user_id,
                 info.agent_type,
-                sandbox_id,
+                str(info.sandbox_id or ""),
             )
 
     async def _cleanup_agent_on_instance_unavailable(
