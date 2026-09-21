@@ -15895,6 +15895,12 @@ class JiuWenSwarmDeepAdapter:
             event_type = payload.get("event_type")
             if event_type in ("chat.delta", "chat.reasoning", "chat.final"):
                 had_assistant_output = True
+            if event_type == "chat.delta" or (
+                event_type == "chat.final" and bool(payload.get("content"))
+            ):
+                guard = self._session_input_guard
+                if guard is not None and guard.consume_generation_boundary():
+                    payload["steering_generation_start"] = True
             if event_type == "chat.delta":
                 # Single choke point for forwarded text: memo it so a demoted
                 # goal attempt final can skip text the bubble already shows.

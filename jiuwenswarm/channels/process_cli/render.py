@@ -46,6 +46,7 @@ class EventRenderer:
         self.show_tools = show_tools
         self.events: list[dict[str, Any]] = []
         self._wrote_delta = False
+        self._pending_output_break = False
         self.failed = False
         self._human_ui = HumanRunUI(self.stdout, self.stderr)
 
@@ -65,6 +66,14 @@ class EventRenderer:
         """Clear transient status before the Runtime asks the user a question."""
         if self.output_format == "human":
             self._human_ui.clear_status()
+
+    def live_input_ready(self, request_text: str) -> None:
+        if self.output_format == "human":
+            self._human_ui.live_input_ready(request_text)
+
+    def live_input_receipt(self, *, status: str, message: str) -> None:
+        if self.output_format == "human":
+            self._human_ui.live_input_receipt(status=status, message=message)
 
     def render(self, event: RuntimeEvent, *, view: str | None = None) -> None:
         data = event.to_dict()
@@ -119,7 +128,12 @@ class EventRenderer:
         event_type = event.event_type
         payload = event.payload or {}
         text = _event_text(payload)
+        if payload.get("steering_generation_start") and self._wrote_delta:
+            self._pending_output_break = True
         if event_type == "chat.delta":
+            if self._pending_output_break:
+                self.stdout.write("\n\n")
+                self._pending_output_break = False
             self._human_ui.begin_assistant()
             self.stdout.write(text)
             self.stdout.flush()
@@ -128,13 +142,22 @@ class EventRenderer:
             if text and not self._wrote_delta:
                 self._human_ui.begin_assistant()
                 self.stdout.write(text)
-        elif event_type == "chat.reasoning" and self.show_reasoning and text:
-            self._human_ui.begin_assistant()
-            self._human_ui.reasoning(text)
-        elif event_type in {"chat.tool_call", "chat.tool_result"} and self.show_tools:
-            self._human_ui.begin_assistant()
-            label = "工具" if event_type == "chat.tool_call" else "工具结果"
-            self._human_ui.tool(label, text or str(payload))
+                self._wrote_delta = True
+            if self._wrote_delta:
+                self._pending_output_break = True
+        elif event_type == "chat.reasoning":
+            if self._wrote_delta:
+                self._pending_output_break = True
+            if self.show_reasoning and text:
+                self._human_ui.begin_assistant()
+                self._human_ui.reasoning(text)
+        elif event_type in {"chat.tool_call", "chat.tool_result"}:
+            if self._wrote_delta:
+                self._pending_output_break = True
+            if self.show_tools:
+                self._human_ui.begin_assistant()
+                label = "工具" if event_type == "chat.tool_call" else "工具结果"
+                self._human_ui.tool(label, text or str(payload))
         elif not event.ok or event_type in {
             "chat.error",
             "runtime.error",
