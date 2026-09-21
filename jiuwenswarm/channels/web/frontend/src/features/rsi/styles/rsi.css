@@ -158,6 +158,44 @@
 .rsi-detail__tag--meta {
   color: var(--color-text-placeholder);
 }
+.rsi-detail__failure-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.rsi-detail__failure-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+.rsi-detail__failure-trigger:hover,
+.rsi-detail__failure-trigger:focus-visible {
+  outline: 2px solid rgb(239, 68, 68, 0.35);
+  outline-offset: 2px;
+}
+.rsi-detail__failure-popover {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  left: 0;
+  width: min(420px, calc(100vw - 48px));
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #f3b4ae;
+  border-radius: 8px;
+  background: #fff8f7;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 14%);
+  color: #a1261c;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .rsi-detail__tag svg {
   flex-shrink: 0;
 }

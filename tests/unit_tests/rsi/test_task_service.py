@@ -197,6 +197,27 @@ class TestTaskGet:
         assert "search_width" not in data["config"]
         assert data["progress"]["iteration"] == 0
 
+    def test_failed_projection_prefers_detailed_result_over_generic_history(self, ctx):
+        task_id = ctx.task_service.create(_harness_create_params())[
+            "task_id"
+        ]
+        ctx.store.update_status(task_id, ["CREATED"], "QUEUED", cause="start")
+        ctx.store.update_status(task_id, ["QUEUED"], "RUNNING", cause="start")
+        ctx.store.update_status(task_id, ["RUNNING"], "FAILED", cause="provider.failed")
+        ctx.store.merge_results(
+            task_id,
+            {"error_code": "ENGINE_FAILED", "error_message": "评测脚本缺少入口函数"},
+        )
+
+        data = ctx.task_service.get(
+            {"task_id": task_id},
+            projector=ctx.projector,
+            usage_recorder=ctx.usage_recorder,
+            artifact_service=ctx.artifact_service,
+        )
+
+        assert data["failure_reason"] == "评测脚本缺少入口函数"
+
     def test_artifact_config_projection(self, ctx, tmp_path: Path):
         program_path = tmp_path / "program"
         program_path.mkdir()

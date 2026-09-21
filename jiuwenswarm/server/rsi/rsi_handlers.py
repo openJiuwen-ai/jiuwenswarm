@@ -234,15 +234,20 @@ class RsiAgentServerHandlers:
 
     def _bind_status_push(self) -> None:
         def _on_status_changed(task_id: str, old: str, new: str) -> None:
-            self._push(
-                RSI_PUSH_STATUS_CHANGED,
-                {
-                    "task_id": task_id,
-                    "old_status": old,
-                    "new_status": new,
-                    "status": new,
-                },
-            )
+            payload: dict[str, Any] = {
+                "task_id": task_id,
+                "old_status": old,
+                "new_status": new,
+                "status": new,
+            }
+            if new == "FAILED":
+                try:
+                    reason = self.context.store.get(task_id).failure_reason_text()
+                except Exception:  # noqa: BLE001 - status push is best effort
+                    reason = None
+                if reason:
+                    payload["failure_reason"] = reason
+            self._push(RSI_PUSH_STATUS_CHANGED, payload)
 
         self.context.store.set_status_changed_callback(_on_status_changed)
 
