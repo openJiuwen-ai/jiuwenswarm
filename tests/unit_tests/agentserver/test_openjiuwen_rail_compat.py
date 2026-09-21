@@ -2,8 +2,11 @@
 
 """Compatibility for older openjiuwen evolution-rail constructors."""
 
+import asyncio
+
 from jiuwenswarm.common.openjiuwen_rail_compat import (
     _wrap_init_for_extra_kwargs,
+    call_attach_output,
     filter_unsupported_kwargs,
     install_evolution_rail_kwargs_compat,
 )
@@ -57,6 +60,28 @@ def test_wrapped_rail_init_ignores_unknown_kwargs():
     _wrap_init_for_extra_kwargs(DummyRail)
     rail = DummyRail(review_trigger=False, signal_trigger=True)
     assert rail.review_trigger is False
+
+
+def test_call_attach_output_drops_steal_on_legacy_sdk():
+    class Legacy:
+        async def attach_output(self):
+            return "ok"
+
+    assert asyncio.run(call_attach_output(Legacy(), steal=True)) == "ok"
+
+
+def test_call_attach_output_passes_steal_when_supported():
+    class Newer:
+        def __init__(self):
+            self.seen = None
+
+        async def attach_output(self, *, steal=False):
+            self.seen = steal
+            return "ok"
+
+    inst = Newer()
+    assert asyncio.run(call_attach_output(inst, steal=True)) == "ok"
+    assert inst.seen is True
 
 
 def test_install_evolution_rail_kwargs_compat_is_idempotent():

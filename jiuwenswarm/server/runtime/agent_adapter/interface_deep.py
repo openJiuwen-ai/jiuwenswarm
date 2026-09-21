@@ -274,6 +274,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     install_todo_modify_compat_patch,
 )
 from jiuwenswarm.common.openjiuwen_rail_compat import (
+    call_attach_output,
     filter_unsupported_kwargs,
     install_evolution_rail_kwargs_compat,
 )
@@ -18365,10 +18366,9 @@ class JiuWenSwarmDeepAdapter:
                 steal_output = self._should_steal_output_lease(
                     request.params, req_method=request.req_method
                 )
-                if steal_output:
-                    interaction_stream = await self._instance.attach_output(steal=True)
-                else:
-                    interaction_stream = await self._instance.attach_output()
+                interaction_stream = await call_attach_output(
+                    self._instance, steal=steal_output
+                )
                 if interaction_stream is not None:
                     await self._instance.send_input(
                         SendInputRequest(
@@ -19663,10 +19663,9 @@ class JiuWenSwarmDeepAdapter:
                 steal_output = self._should_steal_output_lease(
                     request.params, req_method=request.req_method
                 )
-                if steal_output:
-                    interaction_stream = await self._instance.attach_output(steal=True)
-                else:
-                    interaction_stream = await self._instance.attach_output()
+                interaction_stream = await call_attach_output(
+                    self._instance, steal=steal_output
+                )
                 if interaction_stream is None:
                     async for chunk in _yield_runtime_accepted():
                         yield chunk

@@ -28,6 +28,17 @@ def filter_unsupported_kwargs(func: Callable[..., Any], kwargs: dict[str, Any]) 
     return {key: value for key, value in kwargs.items() if key in allowed}
 
 
+async def call_attach_output(instance: Any, *, steal: bool = False) -> Any:
+    """Call ``attach_output``, dropping ``steal`` on dest-stable SDK builds.
+
+    Official dest-stable ``DeepAgent.attach_output`` has no ``steal`` keyword;
+    dest-stable jiuwenswarm still requests it for replica chat.send takeover.
+    """
+    attach = instance.attach_output
+    kwargs = filter_unsupported_kwargs(attach, {"steal": True} if steal else {})
+    return await attach(**kwargs)
+
+
 def _wrap_init_for_extra_kwargs(cls: type) -> None:
     """Allow newer trajectory/signal kwargs against older rail constructors."""
     original = cls.__init__
