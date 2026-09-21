@@ -57,12 +57,21 @@ function secretPlaceholder(length?: number): string {
   return Number.isSafeInteger(length) && Number(length) > 0 ? '*'.repeat(Number(length)) : '';
 }
 
+export interface VideoDuplexSettingsProps extends Partial<ApplicationPluginSettingsProps> {
+  /** Render the configuration directly inside Settings > Experimental. */
+  embedded?: boolean;
+  /** The plugin tab no longer owns the enable switch when embedded. */
+  showEnableControl?: boolean;
+}
+
 export function VideoDuplexSettings({
   contribution,
   onManifestChanged,
-}: ApplicationPluginSettingsProps) {
-  const [enabled, setEnabled] = useState(contribution.enabled !== false);
-  const [expanded, setExpanded] = useState(false);
+  embedded = false,
+  showEnableControl = !embedded,
+}: VideoDuplexSettingsProps) {
+  const [enabled, setEnabled] = useState(contribution?.enabled !== false);
+  const [expanded, setExpanded] = useState(embedded);
   const [values, setValues] = useState<SettingsValues>(EMPTY_SETTINGS);
   const [secretLengths, setSecretLengths] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -110,7 +119,7 @@ export function VideoDuplexSettings({
       );
       applyPayload(payload);
       setNotice(payload.enabled ? '全双工已启用' : '全双工已禁用');
-      onManifestChanged();
+      onManifestChanged?.();
     } catch (toggleError) {
       setError(toggleError instanceof Error ? toggleError.message : '无法更新插件状态');
     } finally {
@@ -168,14 +177,18 @@ export function VideoDuplexSettings({
           {notice && <small className="is-success">{notice}</small>}
         </div>
         <div className="video-duplex-settings__actions">
-          <button type="button" className={enabled ? 'is-danger' : ''} disabled={loading || saving} onClick={() => void toggleEnabled()}>
-            {loading || saving ? <LoaderCircle className="is-spinning" aria-hidden /> : <Power aria-hidden />}
-            {enabled ? '禁用' : '启用'}
-          </button>
-          <button type="button" disabled={loading || saving} onClick={() => setExpanded(current => !current)}>
-            <Settings2 aria-hidden />
-            {expanded ? '收起' : '设置'}
-          </button>
+          {showEnableControl && (
+            <button type="button" className={enabled ? 'is-danger' : ''} disabled={loading || saving} onClick={() => void toggleEnabled()}>
+              {loading || saving ? <LoaderCircle className="is-spinning" aria-hidden /> : <Power aria-hidden />}
+              {enabled ? '禁用' : '启用'}
+            </button>
+          )}
+          {!embedded && (
+            <button type="button" disabled={loading || saving} onClick={() => setExpanded(current => !current)}>
+              <Settings2 aria-hidden />
+              {expanded ? '收起' : '设置'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -196,7 +209,7 @@ export function VideoDuplexSettings({
               {field('joyai_api_key', 'JoyAI API Key', { secret: true })}
               {field('joyai_model', 'JoyAI 模型')}
 
-              <h3>ASR 与 TTS</h3>
+              <h3>语音转写与语音播报</h3>
               <label className="video-duplex-settings__field">
                 <span>语音通道</span>
                 <select value={values.voice_protocol} onChange={event => updateValue('voice_protocol', event.target.value as VoiceProtocol)}>
@@ -204,14 +217,14 @@ export function VideoDuplexSettings({
                   <option value="openai_http">OpenAI HTTP</option>
                 </select>
               </label>
-              {field('voice_asr_endpoint', 'ASR 完整接口')}
-              {field('voice_tts_endpoint', 'TTS 完整接口')}
+              {field('voice_asr_endpoint', '语音转写完整接口')}
+              {field('voice_tts_endpoint', '语音播报完整接口')}
               {values.voice_protocol === 'openai_http' && (
                 <>
                   {field('voice_api_key', '语音 API Key', { secret: true })}
-                  {field('voice_asr_model', 'ASR 模型')}
-                  {field('voice_tts_model', 'TTS 模型')}
-                  {field('voice_tts_voice', 'TTS 音色')}
+                  {field('voice_asr_model', '语音转写模型')}
+                  {field('voice_tts_model', '语音播报模型')}
+                  {field('voice_tts_voice', '语音播报音色')}
                 </>
               )}
             </>

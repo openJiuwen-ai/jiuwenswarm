@@ -110,6 +110,7 @@ import { createAgentManagementClient, getAgentAvatarUrl, type AgentCatalogItem }
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
 import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
+import { useTaskAsrEnabled } from '../../features/taskAsr/featureFlag';
 import { ApplicationPluginTaskInputActions } from '../../applicationPlugins/ApplicationPluginOutlet';
 
 /** 输入栏下拉所需的最小技能数据结构（与 SkillPanel 中的 SkillItem 保持一致） */
@@ -992,6 +993,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onTranscript: appendTaskAsrTranscript,
     onError: setSpeechError,
   });
+  const taskAsrEnabled = useTaskAsrEnabled();
 
   const imageInputDisabled = isImageInputDisabled({
     isListening: isListening || isTranscribing,
@@ -3583,7 +3585,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             disabled={isProcessing || composerDisabled || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)}
           />
 
-          <button
+          {taskAsrEnabled && <button
             type="button"
             onClick={toggleRecording}
             disabled={composerDisabled || isTranscribing || !taskAsrSupported}
@@ -3610,7 +3612,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             ) : (
               <Mic className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
             )}
-          </button>
+          </button>}
 
           <ApplicationPluginTaskInputActions
             eligible={fullDuplexActionEligible}

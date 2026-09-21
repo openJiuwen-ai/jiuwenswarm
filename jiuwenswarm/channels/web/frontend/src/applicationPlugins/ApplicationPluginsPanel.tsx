@@ -19,8 +19,9 @@ export function ApplicationPluginsPanel({
   onBack?: () => void;
 }) {
   const { t } = useTranslation();
-  const uniquePlugins = plugins.filter(
-    (plugin, index) => plugins.findIndex(candidate => candidate.plugin_id === plugin.plugin_id) === index,
+  const visiblePlugins = plugins.filter(plugin => plugin.render_mode !== 'none');
+  const uniquePlugins = visiblePlugins.filter(
+    (plugin, index) => visiblePlugins.findIndex(candidate => candidate.plugin_id === plugin.plugin_id) === index,
   );
 
   return (

@@ -135,7 +135,10 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
                 id="video-live",
                 nav_key="app:video-duplex",
                 title="Full-duplex",
-                render_mode="bundled",
+                # The runtime remains bundled for task-chat integration, but
+                # the standalone plugin tab is intentionally hidden. Its
+                # configuration now lives under Settings > Experimental.
+                render_mode="none",
                 component="video-duplex",
                 position=75,
             ),
