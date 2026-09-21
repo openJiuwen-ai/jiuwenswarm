@@ -125,7 +125,7 @@ def test_model_resolver_uses_models_list_global_origin_index(tmp_path: Path, rol
 
 @pytest.mark.parametrize("window, expected", [(None, 1048576), (262144, 262144), (131072, 131072)])
 @pytest.mark.parametrize("role", ["evaluation", "analysis", "member_optimization", "judge"])
-def test_rsi_optimizer_capacity_overrides_generic_limits_only_for_optimizer_roles(tmp_path, window, expected, role):
+def test_rsi_capacity_preserves_explicit_gateway_limits(tmp_path, window, expected, role):
     entry = _entry("deepseek-v4-pro")
     entry["model_config_obj"]["context_window"] = window
     resolver = RsiModelConfigResolver(
@@ -139,9 +139,7 @@ def test_rsi_optimizer_capacity_overrides_generic_limits_only_for_optimizer_role
     )
     resolver.resolve_to_file("deepseek-v4-pro", role, tmp_path)
     payload = yaml.safe_load((tmp_path / f"{role}.yaml").read_text(encoding="utf-8"))
-    assert payload["model_request_config"]["context_window"] == (
-        expected if role == "evaluation" else 1048576
-    )
+    assert payload["model_request_config"]["context_window"] == expected
     assert entry["model_config_obj"]["context_window"] == window
 
 
@@ -162,9 +160,8 @@ def test_optimizer_defaults_are_scoped_and_preserve_connection(tmp_path, name, r
     )
     resolver.resolve_to_file(name, role, tmp_path)
     payload = yaml.safe_load((tmp_path / f"{role}.yaml").read_text(encoding="utf-8"))
-    overridden = name == "deepseek-v4-pro" and role in {"analysis", "member_optimization", "judge"}
-    assert payload["model_request_config"]["context_window"] == (1048576 if overridden else 262144)
-    assert payload["model_client_config"]["timeout"] == (900 if overridden else 360)
+    assert payload["model_request_config"]["context_window"] == 262144
+    assert payload["model_client_config"]["timeout"] == 360
     assert payload["model_client_config"]["api_key"] == entry["model_client_config"]["api_key"]
     assert payload["model_client_config"]["api_base"] == entry["model_client_config"]["api_base"]
     assert payload["model_request_config"]["model"] == name
@@ -172,13 +169,15 @@ def test_optimizer_defaults_are_scoped_and_preserve_connection(tmp_path, name, r
     assert entry["model_client_config"]["timeout"] == 360
 
 
-def test_shared_rsi_model_template_matches_materialized_capacity(tmp_path):
+@pytest.mark.parametrize("name", ["deepseek-v4-pro", "qwen-plus", "custom-gateway-model"])
+def test_shared_rsi_policy_has_no_model_selection_and_preserves_output(tmp_path, name):
     from importlib.resources import files
 
-    path = files("jiuwenswarm.resources").joinpath("rsi").joinpath("deepseek-v4-pro.yaml")
-    entry = yaml.safe_load(path.read_text(encoding="utf-8"))["models"]["defaults"][0]
-    assert entry["model_client_config"]["api_key"] == "${RSI_OPTIMIZER_API_KEY}"
-    assert entry["model_client_config"]["api_base"] == "${RSI_OPTIMIZER_API_BASE}"
+    path = files("jiuwenswarm.resources").joinpath("rsi").joinpath("runtime_defaults.yaml")
+    policy = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert set(policy) == {"rsi_optimizer_roles", "timeout"}
+    entry = _entry(name)
+    entry["model_config_obj"].update(context_window=131072, max_tokens=32768)
     resolver = RsiModelConfigResolver(
         config_loader=lambda: {},
         defaults_loader=lambda _: [entry],
@@ -188,10 +187,13 @@ def test_shared_rsi_model_template_matches_materialized_capacity(tmp_path):
             model_config=_FakeModelConfig({"model_name": mcc["model_name"], **mco}),
         ),
     )
-    resolver.resolve_to_file("rsi-optimizer", "analysis", tmp_path)
+    resolver.resolve_to_file(name, "analysis", tmp_path)
     request = yaml.safe_load((tmp_path / "analysis.yaml").read_text(encoding="utf-8"))["model_request_config"]
-    assert request["context_window"] == 1048576
-    assert request["max_tokens"] == 393216
+    assert request["model"] == name
+    assert request["context_window"] == 131072
+    assert request["max_tokens"] == 32768
+    payload = yaml.safe_load((tmp_path / "analysis.yaml").read_text(encoding="utf-8"))
+    assert payload["model_client_config"]["timeout"] == 900
 
 
 def test_model_resolver_rejects_unknown_reference_without_default_fallback(

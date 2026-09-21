@@ -1,0 +1,5 @@
+# RSI-only defaults. Model identity and credentials come from the user's selection.
+# Explicit gateway context/output limits and timeouts are preserved.
+# Missing capacities use Core's model metadata; unknown output limits stay unset.
+rsi_optimizer_roles: [analysis, member_optimization, judge]
+timeout: 900

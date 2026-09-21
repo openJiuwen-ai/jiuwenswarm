@@ -22,7 +22,6 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiModelNotFound,
 )
 
-# One RSI output budget, shared by every materialized model role.
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,24 +275,20 @@ def _apply_rsi_optimizer_defaults(
     model_name: str, role: str, client_data: dict[str, Any], request_data: dict[str, Any],
 ) -> None:
     """Apply packaged RSI policy to copied configs, never to the shared model registry."""
-    resource = files("jiuwenswarm.resources").joinpath("rsi").joinpath("deepseek-v4-pro.yaml")
+    resource = files("jiuwenswarm.resources").joinpath("rsi").joinpath("runtime_defaults.yaml")
     policy = yaml.safe_load(resource.read_text(encoding="utf-8"))
     if role not in policy["rsi_optimizer_roles"]:
         return
-    for entry in policy["models"]["defaults"]:
-        if _model_name(entry) != model_name:
-            continue
-        # Never import the template's endpoint/key or switch the user's selected model.
-        for target, source, keys in (
-            (request_data, entry["model_config_obj"], ("context_window", "max_tokens")),
-            (client_data, entry["model_client_config"], ("timeout",)),
-        ):
-            for key in keys:
-                value = source[key]
-                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                    raise RsiModelConfigInvalid(f"RSI optimizer default {key} must be a positive integer")
-                target[key] = value
-        return
+    from openjiuwen.rsi.harness_rsi.member_optimizer.model_config import with_rsi_output_budget
+
+    # Capacity lookup never selects a model or changes connection credentials.
+    adjusted = with_rsi_output_budget({"model_request_config": {**request_data, "model": model_name}})
+    request_data.update(adjusted["model_request_config"])
+    if client_data.get("timeout") is None:
+        value = policy["timeout"]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise RsiModelConfigInvalid("RSI timeout default must be a positive integer")
+        client_data["timeout"] = value
 
 
 def _dump_model_part(value: Any) -> Any:
