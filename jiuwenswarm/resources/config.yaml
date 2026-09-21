@@ -726,7 +726,7 @@ react:
     round_level_compressor_config:
       trigger_context_ratio: 0.8      # 上下文占用达到该比例时触发压缩
       min_target_context_ratio: 0.1   # 压缩目标下限（占窗口比例）
-      keep_recent_messages: 4         # 保留最近消息数
+      keep_recent_messages: 0         # 保留最近消息数
   # Skills 在线自演进配置
   evolution:
     skill_evolution: false     # true = 启用技能演进与创建（自动及手动）

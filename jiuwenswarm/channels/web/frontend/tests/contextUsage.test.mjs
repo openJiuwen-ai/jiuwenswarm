@@ -24,6 +24,11 @@ test('consumes the canonical v1 fields and all four returned categories', () => 
   assert.equal(result.session_kv_cache_hit_rate, 0.6);
 });
 
+test('accepts a manual compact snapshot without treating it as a provider call', () => {
+  const result = parseContextUsageSnapshot(snapshot({ phase: 'post_compact' }));
+  assert.equal(result.phase, 'post_compact');
+});
+
 test('uses only the top-level session KV rate without per-call or nested-session fallbacks', () => {
   const payload = snapshot({ session_kv_cache_hit_rate: 0.8829792874980116 });
   payload.kv_cache.request.hit_rate = 0.9976856905811974;
