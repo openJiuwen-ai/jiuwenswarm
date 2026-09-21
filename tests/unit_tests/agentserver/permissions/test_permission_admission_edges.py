@@ -20,7 +20,7 @@ from tests.unit_tests.agentserver.permissions.test_permission_cold_build import 
 
 
 @pytest.fixture
-async def built_edges(tmp_path, monkeypatch):
+async def built_edges(tmp_path, monkeypatch, internal_auto_mode):
     """Reuse cold construction providers, including real configure and cleanup.
 
     Multiple independent generations let parent reconstruction run the actual
@@ -31,7 +31,7 @@ async def built_edges(tmp_path, monkeypatch):
     async def create(name):
         root = tmp_path / name
         root.mkdir(exist_ok=True)
-        generator = cold.__wrapped__(root, monkeypatch)
+        generator = cold.__wrapped__(root, monkeypatch, internal_auto_mode)
         h = await anext(generator)
         generations.append(generator)
         return h

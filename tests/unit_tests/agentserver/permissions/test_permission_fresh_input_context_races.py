@@ -132,6 +132,7 @@ async def test_permission_resume_reuses_exact_session_adapter(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel_id", ["web", "tui", "cli"])
+@pytest.mark.usefixtures("internal_auto_mode")
 async def test_permission_resume_without_original_adapter_fails_closed(
     channel_id: str,
 ) -> None:
@@ -179,6 +180,7 @@ async def test_three_reloads_install_only_latest_config() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("internal_auto_mode")
 async def test_targeted_permission_reload_advances_one_global_lazy_version() -> None:
     root = _root()
     root._session_adapters = {
@@ -203,6 +205,7 @@ async def test_targeted_permission_reload_advances_one_global_lazy_version() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("internal_auto_mode")
 async def test_nonfresh_lookup_never_installs_pending_permission_config() -> None:
     root = _root()
     child = _child()
@@ -310,6 +313,7 @@ def test_host_permission_update_input_contract(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("internal_auto_mode")
 async def test_reload_registered_during_cutover_waits_until_enqueue() -> None:
     manager, root, child = _host()
     manager._reload_lock = _ObservedLock()
@@ -356,6 +360,7 @@ async def test_reload_registered_during_cutover_waits_until_enqueue() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("internal_auto_mode")
 async def test_partial_reload_failure_enqueues_nothing() -> None:
     manager, root, child = _host()
     installs = 0

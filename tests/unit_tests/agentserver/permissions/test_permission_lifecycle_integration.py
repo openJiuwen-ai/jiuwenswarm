@@ -76,7 +76,7 @@ class _Lifecycle:
 
 
 @pytest.fixture
-async def lifecycle(tmp_path, monkeypatch):
+async def lifecycle(tmp_path, monkeypatch, internal_auto_mode):
     adapter = interface_deep.JiuWenSwarmDeepAdapter()
     adapter.mark_as_session_scoped("lifecycle")
     adapter._session_instance_mode = "agent"

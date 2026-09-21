@@ -178,22 +178,37 @@ class RsiWorker:
         self._conflict(task_id, f"未知 mode: {mode}")
 
     def resume(self, task_id: str, fingerprint_check: bool = True) -> str:
-        """``resume``：校验 + 入队，材料与引擎 fingerprint 由执行路径确认。"""
+        """``resume``：校验 + 入队，材料与引擎 fingerprint 由执行路径确认。
+
+        暂停来源决定恢复后的执行方式（``run`` vs Provider ``resume``）：
+        - 运行中被 pause（Provider 已暂停真实执行）→ 恢复走 ``adapter.resume()``
+          续跑；产物 Provider 不支持 resume 时直接报错，避免静默回到 PAUSED。
+        - 排队中被 pause（从未真实执行，含服务重启丢队列）→ 恢复只是重新入队，
+          执行走 ``adapter.run()`` 全新开始，不需要 Provider 的断点恢复。
+        """
         task = self.store.get(task_id)
         if task.status != TaskStatus.PAUSED.value:
             self._conflict(task_id, "仅 PAUSED 可 resume")
+
         adapter = self._adapter_for(task.scenario, task.artifact_type)
-        if task.scenario == "ARTIFACT" and (
-            adapter is None or not bool(getattr(adapter, "supports_resume", False))
-        ):
-            raise RsiScenarioNotSupported("当前产物场景不支持 resume")
+        resume_supported = task.scenario != "ARTIFACT" or bool(
+            getattr(adapter, "supports_resume", False)
+        )
+        resumed_from_run = _paused_from_run(task)
+        if resumed_from_run and not resume_supported:
+            raise RsiScenarioNotSupported("当前产物场景不支持运行中暂停后的 resume")
+
         if fingerprint_check:
             # HarnessProvider.resume 在真正调用引擎前校验任务材料；
             # openjiuwen 再按其持久化状态校验 engine fingerprint。
             # worker 只负责入队，避免在此处重复读取或伪造校验结果。
             logger.debug("[RSI] resume fingerprint 将由 Provider/引擎执行路径校验: task=%s", task_id)
         self.store.update_status(task_id, [TaskStatus.PAUSED.value], TaskStatus.QUEUED.value, cause="resume")
-        self._resume_task_ids.add(task_id)
+        if resumed_from_run or resume_supported:
+            # 运行中暂停（或 Provider 支持 resume）→ 执行时走 adapter.resume() 续跑。
+            self._resume_task_ids.add(task_id)
+        # 排队暂停且 Provider 不支持 resume（如 paper 桩实现）→ 不标记 resume，
+        # 执行路径按全新 run() 处理，避免卡在 Provider.resume() 上。
         self._last_enqueued = task_id
         self._queue.put_nowait(task_id)
         self._ensure_runner()
@@ -842,6 +857,18 @@ def _sink(queue: asyncio.Queue[EngineEvent | None]):
         queue.put_nowait(event)
 
     return _put
+
+
+def _paused_from_run(task: Any) -> bool:
+    """最近一次进入 PAUSED 的来源是否为 RUNNING（真实暂停）。
+
+    排队中 pause（QUEUED→PAUSED）或服务重启丢队列（QUEUED→PAUSED）的任务
+    从未真正执行，恢复时应全新 run 而不是走 Provider.resume()。
+    """
+    for item in reversed(task.status_history or []):
+        if item.get("to") == TaskStatus.PAUSED.value:
+            return item.get("from") == TaskStatus.RUNNING.value
+    return False
 
 
 def _provider_status(value: Any, *, default: str = "") -> str:

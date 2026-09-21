@@ -46,6 +46,11 @@ export function PersonalContextSettingsPanel({
     authByProvider,
   } = usePersonalContextStore();
   const availableModels = useSessionStore((s) => s.availableModels);
+  // 上下文整理模型只允许选择已配置模型，登录/免费模型由网关按会话注入凭据，
+  // 无法被 personal_context 持久化保存，选中会触发后端下标越界，这里直接过滤掉。
+  const visibleModels = availableModels.filter((m) => m.is_free !== true);
+  const currentModelName =
+    config.model_index != null ? availableModels[config.model_index]?.model_name ?? null : null;
 
   // 总开关为派生状态：任一子开关开启即视为开启。
   const masterEnabled = config.collection_enabled || config.agent_use_enabled;
@@ -218,12 +223,13 @@ export function PersonalContextSettingsPanel({
             >
               <ModelPicker
                 testIdPrefix="personal-context-model"
-                value={config.model_index != null ? availableModels[config.model_index]?.model_name ?? null : null}
+                excludeFreeModels
+                value={currentModelName}
                 onChange={(modelName) => {
                   const idx = availableModels.findIndex((m) => m.model_name === modelName);
                   if (idx >= 0) handleModel(idx);
                 }}
-                disabled={!isConnected || !!pendingWrites.model_index || availableModels.length === 0}
+                disabled={!isConnected || !!pendingWrites.model_index || visibleModels.length === 0}
               />
             </SettingRow>
 
