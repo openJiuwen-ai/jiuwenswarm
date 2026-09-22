@@ -17,6 +17,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response, Streami
 from pydantic import BaseModel, ConfigDict, Field
 
 from jiuwenswarm.extensions.agentos.auth.common import headers_to_dict
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
+    lookup_user_name,
+    resolve_user_name,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     AgentOSFileTransferError,
     AgentOSRouterClient,
@@ -228,7 +232,7 @@ def _bind_file_api_session(request: Request, session_id: str) -> None:
         request.state.agentos_session_id = sid
 
 
-def _file_api_ids(request: Request) -> tuple[str, str]:
+def _file_api_ids(request: Request) -> tuple[str, str, str]:
     uid = str(getattr(request.state, "agentos_user_id", "") or "").strip()
     if not uid:
         uid = str(request.query_params.get("user_id") or "").strip()
@@ -237,11 +241,15 @@ def _file_api_ids(request: Request) -> tuple[str, str]:
     sid = str(getattr(request.state, "agentos_session_id", "") or "").strip()
     if not sid:
         sid = str(request.query_params.get("session_id") or "").strip()
-    return uid, sid
+    user_name = str(getattr(request.state, "agentos_username", "") or "").strip()
+    if not user_name:
+        user_name = lookup_user_name(uid)
+    return uid, sid, user_name
 
 
 _FILE_API_DONE_KEYS = (
     "user_id",
+    "user_name",
     "session_id",
     "channel",
     "method",
@@ -272,9 +280,10 @@ def _log_file_api_done(
     latency_ms: int,
     error: str = "",
 ) -> None:
-    uid, sid = _file_api_ids(request)
+    uid, sid, user_name = _file_api_ids(request)
     fields: dict[str, Any] = {
         "user_id": uid,
+        "user_name": user_name,
         "session_id": sid,
         "channel": "file-api",
         "method": request.method,
@@ -479,9 +488,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             iam_uid = str(result.user_id or "").strip()
             if iam_uid:
                 request.state.agentos_iam_user_id = iam_uid
-            username = ""
-            if isinstance(result.extensions, dict):
-                username = str(result.extensions.get("username") or "").strip()
+            username = resolve_user_name(result)
             if username:
                 request.state.agentos_username = username
             return _user_id_mismatch_against_token(request)

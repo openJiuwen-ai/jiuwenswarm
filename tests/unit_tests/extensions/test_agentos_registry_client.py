@@ -18,6 +18,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryNotFoundError,
     cmd_for_access_mode,
     compute_backoff_delay,
+    http_web_port_from_access_mode,
     instance_service_id,
     parse_access_mode,
     resolve_instance_kind,
@@ -78,6 +79,23 @@ def test_parse_access_mode_and_tui_cmd() -> None:
     assert cmd_for_access_mode(modes, "") == ""
     assert cmd_for_access_mode(None, "tui") == ""
     assert parse_access_mode(None) == []
+    assert http_web_port_from_access_mode(modes) == 8080
+    assert http_web_port_from_access_mode(
+        [{"name": "web", "port": "18789", "protocol": "http"}]
+    ) == 18789
+    assert (
+        http_web_port_from_access_mode(
+            [{"name": "web", "port": "9000", "protocol": "ws"}]
+        )
+        is None
+    )
+    assert http_web_port_from_access_mode([{"name": "tui", "port": "2222"}]) is None
+    assert http_web_port_from_access_mode(
+        [{"name": "web", "port": "18979", "cmd": "openclaw gateway"}]
+    ) == 18979
+    assert http_web_port_from_access_mode(None) is None
+    assert http_web_port_from_access_mode([{"name": "web", "port": "0"}]) is None
+    assert http_web_port_from_access_mode([{"name": "web", "port": "bad"}]) is None
 
     entry = ImageEntry.from_dict(
         {
