@@ -5401,6 +5401,16 @@ class JiuWenSwarmDeepAdapter:
             self._memory_reindex_task.cancel()
         self._memory_reindex_task = None
         await self._close_a2x_client()
+        # 释放本实例在全局 RailManager 中的 per-agent 注册状态，避免会话
+        # adapter 销毁后状态泄漏（issue #3711）。
+        if self._instance is not None:
+            try:
+                get_rail_manager().release_agent_state(self._instance)
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] release rail manager state failed",
+                    exc_info=True,
+                )
 
     def _collect_registered_ability_names(self) -> set[str]:
         ability_names: set[str] = set()
