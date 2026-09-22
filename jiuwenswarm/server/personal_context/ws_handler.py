@@ -36,6 +36,7 @@ PERSONAL_CONTEXT_REQUEST_METHODS = frozenset(
         ReqMethod.PERSONAL_CONTEXT_RUNTIME_STOP_COLLECTION,
         ReqMethod.PERSONAL_CONTEXT_RUNTIME_START_AGENT_USE,
         ReqMethod.PERSONAL_CONTEXT_RUNTIME_STOP_AGENT_USE,
+        ReqMethod.PERSONAL_CONTEXT_RUNTIME_SET_MASTER_ENABLED,
         ReqMethod.PERSONAL_CONTEXT_RUNTIME_GET_CONFIG,
         ReqMethod.PERSONAL_CONTEXT_RUNTIME_PATCH_CONFIG,
         ReqMethod.PERSONAL_CONTEXT_RUNTIME_SELECT_MODEL,
@@ -243,6 +244,13 @@ async def _execute(
     if method == ReqMethod.PERSONAL_CONTEXT_RUNTIME_STOP_AGENT_USE:
         result = await host.set_agent_use_enabled(False)
         await _notify_runtime_enabled(runtime_enabled_changed, False)
+        return _payload(result)
+    if method == ReqMethod.PERSONAL_CONTEXT_RUNTIME_SET_MASTER_ENABLED:
+        enabled = params.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        result = await host.set_master_enabled(enabled)
+        await _notify_runtime_enabled(runtime_enabled_changed, enabled)
         return _payload(result)
     if method == ReqMethod.PERSONAL_CONTEXT_RUNTIME_GET_CONFIG:
         return await host.get_runtime_config()

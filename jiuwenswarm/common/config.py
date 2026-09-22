@@ -2209,9 +2209,12 @@ def get_mcp_servers() -> list[dict[str, Any]]:
             list_connected_mcps,
             record_to_mcp_entry,
         )
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            is_stale_marketplace_record,
+        )
         for rec in list_connected_mcps():
             name = rec.get("name", "")
-            if not name:
+            if not name or is_stale_marketplace_record(name, rec):
                 continue
             entry = record_to_mcp_entry(name, rec)
             # skill-only MCPs return None

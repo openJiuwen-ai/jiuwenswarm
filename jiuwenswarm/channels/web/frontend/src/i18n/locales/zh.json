@@ -50,7 +50,7 @@
     "settings": "设置",
     "logs": "日志",
     "update": "更新",
-    "personalContext": "上下文"
+    "personalContext": "知识"
   },
   "applicationPlugins": {
     "title": "应用插件",
@@ -83,7 +83,7 @@
       "agent": "智能体",
       "browser": "浏览器",
       "channels": "频道",
-      "personalContext": "上下文",
+      "personalContext": "知识",
       "archivedTasks": "已归档的任务",
       "experimental": "实验功能"
     },
@@ -1736,7 +1736,7 @@
     },
     "settings": {
       "subtitle": "选择个人上下文采用哪种方式采集、整理和生成。",
-      "masterEnable": "启用个人上下文",
+      "masterEnable": "启用个人上下文知识",
       "masterEnableHint": "总开关，控制个人上下文采集与 agent 加载上下文。",
       "enable": "采集个人上下文内容",
       "enableHint": "支持自动周期性采集上下文内容并自动构建图谱。",
@@ -1821,8 +1821,8 @@
       "sourceType": "来源类型",
       "sourceLocator": "原始链接",
       "sourceFirstSeen": "采集时间",
-      "graphTitle": "你的专属上下文",
-      "graphSubtitle": "把零散的本地文档、网络来源等碎片信息，一键转化为清晰可视的结构化个人上下文",
+      "graphTitle": "你的专属上下文知识",
+      "graphSubtitle": "把零散的本地文档、网络来源等碎片信息，一键转化为清晰可视的结构化个人上下文知识",
       "tabNodes": "上下文节点",
       "tabEdges": "连线",
       "addKnowledge": "来源管理",
@@ -1872,7 +1872,7 @@
       "startedAt": "开始",
       "finishedAt": "结束",
       "backToGraph": "返回图谱",
-      "addKnowledge": "添加上下文",
+      "addKnowledge": "添加上下文知识",
       "collectAll": "全部开始采集",
       "statSources": "来源",
       "statKnowledge": "上下文节点数",
@@ -3773,7 +3773,8 @@
       "stepDone": "已完成，请继续下一步",
       "error": "连接失败，请重试",
       "retry": "重试",
-      "timeout": "等待授权超时，请重新打开授权页面重试"
+      "timeout": "等待授权超时，请重新打开授权页面重试",
+      "cancelConnect": "取消连接"
     },
     "registerMcp": {
       "title": "配置连接器",

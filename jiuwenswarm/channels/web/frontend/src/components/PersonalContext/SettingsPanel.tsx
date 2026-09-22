@@ -19,9 +19,9 @@ import { usePersonalContextStore } from '../../stores';
 import { useSessionStore } from '../../stores';
 import {
   STRATEGY_OPTIONS,
+  hasRunningFetchTask,
   isFetchTaskRunningError,
   pcApi,
-  type PersonalContextStatus,
 } from '../../services/personalContextApi';
 import { toast } from '../../components/ui/Toast/toastStore';
 import './SettingsPanel.css';
@@ -30,14 +30,6 @@ import githubLogo from '../../assets/settings/channels/GitHub.svg';
 import gitcodeLogo from '../../assets/settings/channels/gitcode.png';
 interface PersonalContextSettingsPanelProps {
   isConnected: boolean;
-}
-
-/** 是否存在尚未停完的采集任务（采集进度里 running/stopping）。 */
-function hasRunningFetchTask(status: PersonalContextStatus | null | undefined): boolean {
-  if (!status) return false;
-  return Object.values(status.fetch_run_progress ?? {}).some(
-    (item) => item.run_state === 'running' || item.run_state === 'stopping',
-  );
 }
 
 /** webClient 请求超时错误（code=REQUEST_TIMEOUT）。 */
@@ -77,8 +69,8 @@ export function PersonalContextSettingsPanel({
   const currentModelName =
     config.model_index != null ? availableModels[config.model_index]?.model_name ?? null : null;
 
-  // 总开关为派生状态：任一子开关开启即视为开启。
-  const masterEnabled = config.collection_enabled || config.agent_use_enabled;
+  // 总开关为独立持久化状态；兼容旧配置缺失时按子开关派生兜底。
+  const masterEnabled = config.master_enabled ?? (config.collection_enabled || config.agent_use_enabled);
 
   const [error, setError] = useState<string | null>(null);
   const [githubModalOpen, setGithubModalOpen] = useState(false);

@@ -2500,6 +2500,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.MCP_WAIT_AUTH:
                 await self._handle_mcp_wait_auth(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.MCP_CANCEL_CONNECT:
+                await self._handle_mcp_cancel_connect(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.MCP_DISCONNECT:
                 await self._handle_mcp_disconnect(ws, request, send_lock)
                 return
@@ -8441,9 +8444,18 @@ class AgentWebSocketServer:
         self, name: str, *, rollback_on_probe_failure: bool = True
     ) -> dict[str, Any]:
         """Run the shared connect flow and return a frontend payload."""
-        from jiuwenswarm.server.runtime.mcp.registry import connect_mcp
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            connect_mcp,
+            was_connect_cancelled,
+        )
 
         item = await asyncio.to_thread(connect_mcp, name)
+        if was_connect_cancelled(name):
+            # User cancelled while connect_mcp was still running (slow CLI
+            # install / auth step); cancel_connect already killed the pending
+            # auth proc and rolled back any connecting record.
+            logger.info("[mcp] connect '%s' cancelled by user", name)
+            return {"type": "cancelled", "name": name}
         if isinstance(item, dict) and item.get("auth_required"):
             return {"type": "auth_required", **self._mask_sensitive_fields(item)}
         if isinstance(item, dict) and item.get("credentials_required"):
@@ -8546,6 +8558,52 @@ class AgentWebSocketServer:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] mcp.connect failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_mcp_cancel_connect(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Handle ``mcp.cancel_connect``: abort an in-flight connect/auth flow.
+
+        The user may mis-click or want to redo OAuth while a CLI MCP's
+        ``mcp.wait_auth`` (or a slow ``mcp.connect``) is still holding the RPC
+        open (up to 10 min). This marks the name cancelled so the poller /
+        connect flow unwinds with a ``cancelled`` result, kills any pending
+        authWaitForExit CLI proc, and rolls back the connecting state.json
+        record. Idempotent — safe even when nothing is in flight. Because each
+        incoming RPC is dispatched in its own task (the ws receive loop uses
+        create_task), this runs concurrently with the hold-open wait_auth.
+        """
+        from jiuwenswarm.server.runtime.mcp.registry import cancel_connect
+        try:
+            params = request.params or {}
+            name = str(params.get("name", "")).strip()
+            if not name:
+                raise ValueError("mcp name is required")
+            payload = await asyncio.to_thread(cancel_connect, name)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=payload,
+            )
+        except ValueError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "bad_request", "error": str(exc), "code": "MCP_BAD_REQUEST"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] mcp.cancel_connect failed: %s", exc)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -8782,12 +8840,21 @@ class AgentWebSocketServer:
         from jiuwenswarm.server.runtime.mcp.registry import (
             CliConnectError,
             complete_cli_auth,
+            was_connect_cancelled,
         )
 
         cur_step = max(0, int(step_index))
         last_output = ""
         try:
             for attempt in range(max_attempts):
+                if was_connect_cancelled(name):
+                    # User clicked cancel on the auth modal: unwind the
+                    # hold-open RPC with a cancelled result instead of polling
+                    # until the 10-min timeout. cancel_connect already killed
+                    # the pending auth proc and rolled back any connecting
+                    # record.
+                    logger.info("[mcp] _await_cli_auth '%s' cancelled by user", name)
+                    return {"type": "cancelled", "name": name}
                 item = await asyncio.to_thread(complete_cli_auth, name, cur_step)
                 if not isinstance(item, dict):
                     raise ValueError(f"complete_cli_auth returned non-dict: {item!r}")
@@ -8806,7 +8873,15 @@ class AgentWebSocketServer:
                     )
                     await asyncio.sleep(delay)
                     continue
-                # Authenticated — finalize and return the connected payload.
+                # Authenticated — re-check the cancel flag: the user may have
+                # cancelled between this poll and the auth completing, or the
+                # auth proc finished at the same moment the cancel landed.
+                if was_connect_cancelled(name):
+                    logger.info(
+                        "[mcp] _await_cli_auth '%s' cancelled after auth completed", name,
+                    )
+                    return {"type": "cancelled", "name": name}
+                # Finalize and return the connected payload.
                 return await self._finalize_cli_auth(name, item)
             # Exhausted retries (~10 min) — return a failure so the handler can
             # surface it. Include the last status output so a misaligned

@@ -50,7 +50,7 @@
     "settings": "Settings",
     "logs": "Logs",
     "update": "Updates",
-    "personalContext": "Context"
+    "personalContext": "Knowledge"
   },
   "applicationPlugins": {
     "title": "Application plugins",
@@ -83,7 +83,7 @@
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
-      "personalContext": "Context",
+      "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
@@ -3787,7 +3787,8 @@
       "stepDone": "Done, continue to the next step",
       "error": "Connection failed, please retry",
       "retry": "Retry",
-      "timeout": "Authorization timed out, please reopen the page and retry"
+      "timeout": "Authorization timed out, please reopen the page and retry",
+      "cancelConnect": "Cancel connection"
     },
     "registerMcp": {
       "title": "Configure connector",
