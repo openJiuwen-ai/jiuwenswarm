@@ -123,7 +123,8 @@ for (const queuePaused of [false]) {
       const queue = useChatStore.getState().getRuntime(sessionId).taskQueue;
       assert.equal(queue.length, 1);
       assert.equal(queue[0].content, 'queued from actual composer');
-      assert.equal(queue[0].status, 'queued');
+      // The 0.2.7 task-queue model represents queued state by membership; it does not
+      // carry the status field used by the older develop-line queue model.
     });
   });
 }
