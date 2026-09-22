@@ -109,9 +109,14 @@ export function DesktopTextEditContextMenu() {
       closeMenu();
       // Restore focus before mutating selection / clipboard.
       target.focus();
-      await runTextEditAction(target, action);
+      try {
+        await runTextEditAction(target, action);
+      } catch (error) {
+        console.error('[desktop] text edit action failed', action, error);
+        window.alert(t('common.editMenu.actionFailed'));
+      }
     },
-    [closeMenu, menu],
+    [closeMenu, menu, t],
   );
 
   if (!menu) return null;

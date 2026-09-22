@@ -88,6 +88,7 @@ import {
   shouldAlertImagePasteDisabled,
   type DesktopClipboardImagesEventDetail,
 } from './clipboardImagePaste';
+import { insertPlainText } from '../../utils/textEditCommands';
 import AgentPickerIcon from '../../assets/agent-management/智能体选择.svg?react';
 import AttachmentIcon from '../../assets/agent-management/attachment.svg?react';
 import GoalIcon from '../../assets/agent-management/goal.svg?react';
@@ -2403,7 +2404,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLDivElement>) => {
-      const hasText = Boolean(event.clipboardData.getData('text/plain').trim());
+      const text = event.clipboardData.getData('text/plain');
+      const hasText = text.length > 0;
       if (hasText) {
         notifyKVCInputIntent();
       }
@@ -2426,6 +2428,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
       if (clipboardHasFileItems(event.clipboardData) && !hasText) {
         event.preventDefault();
+        return;
+      }
+      if (hasText) {
+        event.preventDefault();
+        insertPlainText(event.currentTarget, text);
       }
     },
     [appendAttachmentFiles, handleDesktopFilePaste, imageInputDisabled, notifyKVCInputIntent, pushAttachmentAlert, t],
@@ -3013,6 +3020,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       <div
         ref={inputRef}
         contentEditable={!composerDisabled}
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
         aria-disabled={composerDisabled}
         suppressContentEditableWarning
         onBeforeInput={handleEditorBeforeInput}
