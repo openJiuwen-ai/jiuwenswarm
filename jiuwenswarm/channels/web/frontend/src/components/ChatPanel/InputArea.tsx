@@ -102,6 +102,7 @@ import GoalIcon from '../../assets/agent-management/goal.svg?react';
 import PlanIcon from '../../assets/agent-management/planned-events.svg?react';
 import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import closeSvg from '../../assets/work-mode/close.svg?raw';
+import { insertPlainText } from '../../utils/textEditCommands';
 
 // 个人上下文图标——文档/知识库隐喻，与 SessionSidebar 的 personalContextNavIcon 同源内联 SVG。
 function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
@@ -2658,7 +2659,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLDivElement>) => {
-      const hasText = Boolean(event.clipboardData.getData('text/plain').trim());
+      const text = event.clipboardData.getData('text/plain');
+      const hasText = text.length > 0;
       if (hasText) {
         notifyKVCInputIntent();
       }
@@ -2681,6 +2683,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
       if (clipboardHasFileItems(event.clipboardData) && !hasText) {
         event.preventDefault();
+        return;
+      }
+      if (hasText) {
+        event.preventDefault();
+        insertPlainText(event.currentTarget, text);
       }
     },
     [appendAttachmentFiles, handleDesktopFilePaste, imageInputDisabled, notifyKVCInputIntent, pushAttachmentAlert, t],
@@ -3305,6 +3312,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             <div
               ref={inputRef}
               contentEditable={!composerDisabled}
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               aria-disabled={composerDisabled}
               suppressContentEditableWarning
               onBeforeInput={handleEditorBeforeInput}

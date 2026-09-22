@@ -24,6 +24,7 @@
     "processing": "处理中…",
     "retry": "重试",
     "editMenu": {
+      "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
       "copy": "复制",
       "paste": "粘贴",

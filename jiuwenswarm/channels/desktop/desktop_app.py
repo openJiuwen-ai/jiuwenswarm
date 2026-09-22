@@ -22,6 +22,7 @@ import uuid
 import webbrowser
 import weakref
 from contextlib import contextmanager
+from concurrent.futures import Future
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -713,6 +714,9 @@ def _launch_windows_installer_helper(
 class _WindowApi:
     def __init__(self, runtime: "DesktopRuntime") -> None:
         self._runtime = runtime
+        if sys.platform == "darwin":
+            # Expose only where the host implements the native paste command.
+            self.paste_clipboard = runtime.paste_clipboard
 
     def minimize_window(self) -> bool:
         return self._runtime.minimize_window()
@@ -1571,6 +1575,28 @@ class DesktopRuntime:
 
         threading.Thread(target=_delayed_destroy, daemon=True).start()
         return True
+
+    def paste_clipboard(self) -> None:
+        """Send the same Cocoa paste action as Cmd+V, on the UI thread."""
+        from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+
+        result: Future[None] = Future()
+
+        def _paste() -> None:
+            try:
+                if self.window is None or self.window.native is None:
+                    raise RuntimeError("Desktop window is unavailable")
+                responder = self.window.native.firstResponder()
+                if responder is None or not responder.respondsToSelector_("paste:"):
+                    raise RuntimeError("Focused view does not support paste")
+                responder.paste_(None)
+                result.set_result(None)
+            except Exception as exc:
+                result.set_exception(exc)
+
+        # Exposed pywebview API methods run on a worker thread.
+        AppHelper.callAfter(_paste)
+        result.result()
 
     def _configure_macos_window_lifecycle(self) -> None:
         """Keep the macOS app alive when its main window is closed."""

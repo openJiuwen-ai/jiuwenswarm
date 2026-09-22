@@ -24,6 +24,7 @@
     "processing": "Processing…",
     "retry": "Retry",
     "editMenu": {
+      "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
       "copy": "Copy",
       "paste": "Paste",
