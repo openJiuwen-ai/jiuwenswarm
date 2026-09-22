@@ -427,15 +427,15 @@ def apply_openai_response_assembly_patch() -> None:
     if _RESPONSE_ASSEMBLY_PATCH_APPLIED:
         return
 
-    OpenAIModelClient = _import_openai_model_client()
-    if OpenAIModelClient is None:
+    client_cls = _import_openai_model_client()
+    if client_cls is None:
         return
 
-    if getattr(OpenAIModelClient, "_response_assembly_patch_applied", False):
+    if getattr(client_cls, "_response_assembly_patch_applied", False):
         _RESPONSE_ASSEMBLY_PATCH_APPLIED = True
         return
 
-    _orig_parse_response = OpenAIModelClient._parse_response  # pylint: disable=protected-access
+    _orig_parse_response = client_cls._parse_response  # pylint: disable=protected-access
 
     async def _parse_response_with_sse_guard(
         self: Any,
@@ -446,8 +446,8 @@ def apply_openai_response_assembly_patch() -> None:
             response = assemble_openai_response(response)
         return await _orig_parse_response(self, response, parser)
 
-    OpenAIModelClient._parse_response = _parse_response_with_sse_guard  # pylint: disable=protected-access
-    OpenAIModelClient._response_assembly_patch_applied = True  # pylint: disable=protected-access
+    client_cls._parse_response = _parse_response_with_sse_guard  # pylint: disable=protected-access
+    client_cls._response_assembly_patch_applied = True  # pylint: disable=protected-access
     _RESPONSE_ASSEMBLY_PATCH_APPLIED = True
     logger.info("[llm_sse_patch] OpenAIModelClient SSE 响应组装补丁已应用")
 
@@ -463,15 +463,15 @@ def apply_glm_tool_xml_sanitize_patch() -> None:
     if _GLM_XML_SANITIZE_PATCH_APPLIED:
         return
 
-    OpenAIModelClient = _import_openai_model_client()
-    if OpenAIModelClient is None:
+    client_cls = _import_openai_model_client()
+    if client_cls is None:
         return
 
-    if getattr(OpenAIModelClient, "_glm_xml_sanitize_patch_applied", False):
+    if getattr(client_cls, "_glm_xml_sanitize_patch_applied", False):
         _GLM_XML_SANITIZE_PATCH_APPLIED = True
         return
 
-    _orig_parse_stream_chunk = OpenAIModelClient._parse_stream_chunk  # pylint: disable=protected-access
+    _orig_parse_stream_chunk = client_cls._parse_stream_chunk  # pylint: disable=protected-access
 
     def _parse_stream_chunk_with_sanitize(self: Any, chunk: Any):
         result = _orig_parse_stream_chunk(self, chunk)
@@ -487,8 +487,8 @@ def apply_glm_tool_xml_sanitize_patch() -> None:
                             pass
         return result
 
-    OpenAIModelClient._parse_stream_chunk = _parse_stream_chunk_with_sanitize  # pylint: disable=protected-access
-    OpenAIModelClient._glm_xml_sanitize_patch_applied = True  # pylint: disable=protected-access
+    client_cls._parse_stream_chunk = _parse_stream_chunk_with_sanitize  # pylint: disable=protected-access
+    client_cls._glm_xml_sanitize_patch_applied = True  # pylint: disable=protected-access
     _GLM_XML_SANITIZE_PATCH_APPLIED = True
     logger.info("[llm_sse_patch] OpenAIModelClient GLM XML 标签清洗补丁已应用")
 
@@ -509,16 +509,16 @@ def apply_huawei_maas_span_id_patch() -> None:
     if _MAAS_SPAN_ID_PATCH_APPLIED:
         return
 
-    OpenAIModelClient = _import_openai_model_client()
-    if OpenAIModelClient is None:
+    client_cls = _import_openai_model_client()
+    if client_cls is None:
         return
 
-    if getattr(OpenAIModelClient, "_maas_span_id_patch_applied", False):
+    if getattr(client_cls, "_maas_span_id_patch_applied", False):
         _MAAS_SPAN_ID_PATCH_APPLIED = True
         return
 
-    _orig_invoke = OpenAIModelClient.invoke
-    _orig_stream = OpenAIModelClient.stream
+    _orig_invoke = client_cls.invoke
+    _orig_stream = client_cls.stream
 
     def _maybe_inject_maas_span_id(self: Any, kwargs: dict) -> None:
         """当 self 指向华为 MaaS 端点时，向 kwargs 注入 x-span-id 到 custom_headers。"""
@@ -540,10 +540,10 @@ def apply_huawei_maas_span_id_patch() -> None:
         async for chunk in _orig_stream(self, *args, **kwargs):
             yield chunk
 
-    OpenAIModelClient.invoke = _invoke_with_maas_span
-    OpenAIModelClient.stream = _stream_with_maas_span
+    client_cls.invoke = _invoke_with_maas_span
+    client_cls.stream = _stream_with_maas_span
 
-    OpenAIModelClient._maas_span_id_patch_applied = True  # pylint: disable=protected-access
+    client_cls._maas_span_id_patch_applied = True  # pylint: disable=protected-access
     _MAAS_SPAN_ID_PATCH_APPLIED = True
     logger.info("[llm_sse_patch] OpenAIModelClient 华为 MaaS x-span-id 注入补丁已应用")
 
