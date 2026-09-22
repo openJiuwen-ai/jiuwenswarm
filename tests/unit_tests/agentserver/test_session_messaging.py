@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
@@ -35,11 +36,19 @@ from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageIdempotencyConflict,
     SessionMessageStore,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.request import sync_chat_request_metadata
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.service import AgentRuntime
+from jiuwenswarm.runtime.plan import PlanStateResult
+from jiuwenswarm.runtime.session import (
+    RuntimeSessionCoordinator,
+    SessionPersistencePolicy,
+    SessionWorkKind,
+)
+from jiuwenswarm.runtime.session.model import SessionExecutionState
+from jiuwenswarm.runtime.session.execution_registry import SessionExecutionRegistry
 from jiuwenswarm.runtime.context import reset_runtime_context, set_runtime_context
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import (
@@ -52,7 +61,184 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
 )
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_INTERNAL_KEY,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt"])
+@pytest.mark.parametrize("cancel_stream", [False, True])
+@pytest.mark.parametrize("valid_correlation", [False, True])
+async def test_cross_session_question_can_be_answered(
+    source: str, cancel_stream: bool, valid_correlation: bool
+) -> None:
+    """Keep valid questions answerable and release abandoned interactions."""
+
+    class _Agent:
+        async def process_message_stream(self, request):
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "chat.ask_user_question",
+                    "request_id": "permission-1" if valid_correlation else "",
+                    "source": source,
+                    "questions": [{"question": "Allow deletion?"}],
+                },
+                is_complete=True,
+            )
+            if cancel_stream:
+                await asyncio.Event().wait()
+
+        async def deliver_control_input(self, request):
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "chat.final", "content": "answered"},
+                is_complete=True,
+            )
+
+    agent = _Agent()
+    manager = SimpleNamespace(
+        get_agent_for_session_nowait=Mock(return_value=agent),
+        cleanup=AsyncMock(),
+        cancel_all_inflight_work=AsyncMock(),
+        cleanup_session_runtime=AsyncMock(return_value=True),
+    )
+    plan = SimpleNamespace(
+        ensure_state=AsyncMock(return_value=PlanStateResult()),
+        check_post_process_exit=AsyncMock(return_value=[]),
+        reset_session=Mock(),
+    )
+    coordinator = RuntimeSessionCoordinator()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=plan,
+        session_coordinator=coordinator,
+        admission_controller=SessionRunAdmission(),
+    )
+
+    async def prepare(request, channel_id, **kwargs):
+        return "agent", "normal", agent
+
+    runtime._prepare_chat_turn = prepare
+    await runtime.start()
+    await coordinator.register_session(
+        "target-1", "web", SessionPersistencePolicy.PERSISTENT
+    )
+    try:
+        incoming = AgentRequest(
+            request_id="session-message-1",
+            channel_id="web",
+            session_id="target-1",
+            req_method=ReqMethod.CHAT_SEND,
+            is_stream=True,
+            params={
+                "query": "delete a file",
+                "mode": "agent.work.normal",
+                SESSION_MESSAGE_INTERNAL_KEY: {"message_id": "sm-1"},
+            },
+        )
+        stream = runtime.stream(incoming, background=True, trigger_hook=False)
+        if cancel_stream:
+            events = [await anext(stream)]
+            await stream.aclose()
+            assert [event.event_type for event in events] == ["chat.ask_user_question"]
+            assert not runtime._admission_controller.has_pending_interaction("target-1")
+            return
+        events = [event async for event in stream]
+        assert [event.event_type for event in events] == ["chat.ask_user_question"]
+        if not valid_correlation:
+            assert not runtime._admission_controller.has_pending_interaction("target-1")
+            return
+        execution = coordinator.snapshot_session("target-1").executions[-1]
+        assert execution.work_kind is SessionWorkKind.SESSION_MESSAGE
+        assert execution.state is SessionExecutionState.WAITING_FOR_CONTROL
+        assert execution.waiting_control_id == "permission-1"
+
+        answer = AgentRequest(
+            request_id="answer-1",
+            channel_id="web",
+            session_id="target-1",
+            req_method=ReqMethod.CHAT_SEND,
+            is_stream=True,
+            params={
+                "query": "",
+                "mode": "agent.work.normal",
+                "request_id": "permission-1",
+                "source": source,
+                "answers": [{"selected_options": ["approve"]}],
+            },
+        )
+        resumed = [event async for event in runtime.stream(answer)]
+        assert [event.event_type for event in resumed] == ["chat.final"]
+        assert (
+            coordinator.get_execution(execution.execution_id).state
+            is SessionExecutionState.SUCCEEDED
+        )
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("follow_up, history_evicted", [(False, False), (True, False), (True, True)])
+async def test_plain_user_turn_releases_superseded_session_question(
+    follow_up: bool, history_evicted: bool,
+) -> None:
+    coordinator = RuntimeSessionCoordinator(
+        registry=SessionExecutionRegistry(terminal_capacity=0) if history_evicted else None
+    )
+    await coordinator.register_session(
+        "target-1", "web", SessionPersistencePolicy.PERSISTENT
+    )
+    admission = SessionRunAdmission()
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime._session_coordinator = coordinator
+    runtime._admission_controller = admission
+    runtime._session_message_service = SimpleNamespace(
+        supersede_waiting_for_target=AsyncMock(return_value=1)
+    )
+    try:
+        await coordinator.run_unary(
+            "target-1", "session-message-1", SessionWorkKind.SESSION_MESSAGE,
+            lambda: asyncio.sleep(0),
+            suspension_key=lambda _: "permission-1",
+        )
+        waiting = coordinator.snapshot_session("target-1").executions[-1]
+        assert waiting.state is SessionExecutionState.WAITING_FOR_CONTROL
+        await admission.mark_interaction_pending("target-1", "permission-1")
+        if follow_up:
+            await coordinator.deliver_control(
+                "target-1", "permission-1",
+                lambda: asyncio.sleep(0),
+                suspension_key=lambda _: "permission-2",
+            )
+            await admission.clear_interaction_pending("target-1", "permission-1")
+            await admission.mark_interaction_pending("target-1", "permission-2")
+            waiting = coordinator.snapshot_session("target-1").executions[-1]
+            assert waiting.state is SessionExecutionState.WAITING_FOR_CONTROL
+            if history_evicted:
+                assert coordinator.get_execution(waiting.parent_execution_id) is None
+
+        await runtime._supersede_bypassed_session_messages(AgentRequest(
+            request_id="user-1",
+            channel_id="web",
+            session_id="target-1",
+            req_method=ReqMethod.CHAT_SEND,
+            params={"query": "do something else"},
+        ))
+
+        cancelled = coordinator.get_execution(waiting.execution_id)
+        if history_evicted:
+            assert cancelled is None
+        else:
+            assert cancelled.state is SessionExecutionState.CANCELLED
+        assert not admission.has_pending_interaction("target-1")
+    finally:
+        await coordinator.close()
 
 
 @pytest.mark.asyncio
@@ -1566,6 +1752,78 @@ async def test_agentserver_persists_question_correlation_before_push(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("history_failure", [False, True])
+async def test_failed_session_question_releases_runtime_wait(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, history_failure: bool
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="question-failed")
+    record = store.claim(queued.message_id, "execution-1", "run-1")
+
+    class _Runtime:
+        agent_manager = object()
+        release_session_message_interactions = AsyncMock()
+
+        def stream(self, request, **kwargs):
+            async def events():
+                yield RuntimeEvent(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    session_id=request.session_id,
+                    payload={
+                        "event_type": "chat.ask_user_question",
+                        "request_id": "permission-1",
+                        "source": "permission_interrupt",
+                    },
+                    is_complete=True,
+                )
+            return events()
+
+    runtime = _Runtime()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._runtime = runtime
+    server._agent_manager = runtime.agent_manager
+    server._session_message_service = SimpleNamespace(
+        mark_waiting=AsyncMock(return_value=history_failure)
+    )
+    server.send_push = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        agent_ws_server_module, "get_session_metadata",
+        lambda *a, **k: _metadata("target-1"),
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module, "build_server_push_message",
+        lambda **kwargs: dict(kwargs),
+    )
+    def complete_history(*args, **kwargs):
+        if history_failure:
+            raise TimeoutError("history writer timed out")
+        return None
+
+    monkeypatch.setattr(
+        agent_ws_server_module, "enqueue_history_request_completion", complete_history
+    )
+
+    if history_failure:
+        with pytest.raises(TimeoutError, match="history writer timed out"):
+            await server.execute_internal_session_message(record)
+    else:
+        result = await server.execute_internal_session_message(record)
+        assert result.status == "failed"
+    assert [
+        call.args[0]["payload"]["event_type"]
+        for call in server.send_push.await_args_list
+    ] == [
+        "chat.processing_status",
+        "chat.ask_user_question" if history_failure else "chat.error",
+        "chat.processing_status",
+    ]
+    runtime.release_session_message_interactions.assert_awaited_once_with(
+        "target-1", request_id="execution-1"
+    )
+
+
+@pytest.mark.asyncio
 async def test_agentserver_failure_after_repeated_question_closes_message(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1879,6 +2137,8 @@ async def test_history_barrier_timeout_marks_resumed_message_unknown(
     )
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
+    runtime = SimpleNamespace(release_session_message_interactions=AsyncMock())
+    server._execution_runtime = lambda: runtime
     state = await server._open_session_message_resume(request)
     assert state is not None
 
@@ -1906,6 +2166,9 @@ async def test_history_barrier_timeout_marks_resumed_message_unknown(
     timed_out = store.get(waiting.message_id)
     assert timed_out.status == "unknown"
     assert timed_out.last_error_code == "HISTORY_PERSISTENCE_UNCONFIRMED"
+    runtime.release_session_message_interactions.assert_awaited_once_with(
+        "target-1", request_id=f"session-message-{waiting.message_id}"
+    )
     await service.stop()
 
 
@@ -2350,6 +2613,7 @@ async def test_execution_watchdog_moves_wedged_execution_to_unknown(
     """A wedged execute callback must not hold the target's admission forever."""
     store = SessionMessageStore(tmp_path / "messages.sqlite3")
     release = asyncio.Event()
+    release_wait = AsyncMock()
 
     async def wedged(record):
         await release.wait()
@@ -2359,6 +2623,7 @@ async def test_execution_watchdog_moves_wedged_execution_to_unknown(
         store=store,
         admission=_RecordingAdmission(),
         execute=wedged,
+        on_abandoned_wait=release_wait,
         execution_watchdog_timeout=0.05,
         available=True,
     )
@@ -2373,10 +2638,94 @@ async def test_execution_watchdog_moves_wedged_execution_to_unknown(
         assert record is not None
         assert record.status == "unknown"
         assert record.last_error_code == "EXECUTION_WATCHDOG_TIMEOUT"
+        release_wait.assert_awaited_once()
+        assert release_wait.await_args.args[0].message_id == sent["message_id"]
         admission = service._admission
         assert "target-1" not in admission.active
     finally:
         release.set()
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_store_failure_after_question_releases_runtime_wait(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    release_wait = AsyncMock()
+
+    async def execute(record):
+        assert await service.mark_waiting(
+            record.message_id,
+            interrupt_request_id="permission-1",
+            interrupt_source="permission_interrupt",
+        )
+        return SessionMessageExecutionResult(status="waiting_user")
+
+    service = SessionMessageService(
+        store=store,
+        admission=_RecordingAdmission(),
+        execute=execute,
+        on_abandoned_wait=release_wait,
+        available=True,
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    original_store_call = service._store_call
+
+    async def fail_waiting_read(operation, *args, **kwargs):
+        if operation == store.get:
+            raise sqlite3.OperationalError("database is locked")
+        return await original_store_call(operation, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_store_call", fail_waiting_read)
+    try:
+        sent = await service.send_message(
+            _source("failed-waiting-read"),
+            target_session_id="target-1",
+            message="ask",
+        )
+        await _wait_for_status(store, sent["message_id"], "unknown")
+        release_wait.assert_awaited_once()
+        assert release_wait.await_args.args[0].message_id == sent["message_id"]
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_worker_preserves_confirmed_waiting_question(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    release_wait = AsyncMock()
+
+    async def execute(record):
+        assert await service.mark_waiting(
+            record.message_id,
+            interrupt_request_id="permission-1",
+            interrupt_source="permission_interrupt",
+        )
+        return SessionMessageExecutionResult(status="waiting_user")
+
+    service = SessionMessageService(
+        store=store,
+        admission=_RecordingAdmission(),
+        execute=execute,
+        on_abandoned_wait=release_wait,
+        available=True,
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    try:
+        sent = await service.send_message(
+            _source("confirmed-waiting"),
+            target_session_id="target-1",
+            message="ask",
+        )
+        await _wait_for_status(store, sent["message_id"], "waiting_user")
+        worker = service._workers.get("target-1")
+        if worker is not None:
+            await asyncio.wait_for(worker, timeout=1)
+        release_wait.assert_not_awaited()
+    finally:
         await service.stop()
 
 

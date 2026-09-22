@@ -12571,7 +12571,7 @@ class JiuWenSwarmDeepAdapter:
     def _goal_record_is_active(self) -> bool:
         """Whether GoalRecord is ACTIVE (persistent objective still running).
 
-        Unlike ``_has_active_goal_interaction``, this ignores an in-flight goal
+        Unlike ``has_active_goal_interaction``, this ignores an in-flight goal
         round.  Used when deciding whether to demote ``chat.final``: after user
         cancel/pause the record is no longer ACTIVE, so a terminal final must
         reach the frontend even while the aborted round is still unwinding.
@@ -12603,9 +12603,9 @@ class JiuWenSwarmDeepAdapter:
             self if self._is_session_scoped_adapter
             else self._get_cached_session_adapter(session_id)
         )
-        return bool(adapter and adapter._has_active_goal_interaction())
+        return bool(adapter and adapter.has_active_goal_interaction())
 
-    def _has_active_goal_interaction(self) -> bool:
+    def has_active_goal_interaction(self) -> bool:
         """Whether the shared DeepAgent still owns an active goal interaction."""
         if self._has_active_goal_round():
             return True

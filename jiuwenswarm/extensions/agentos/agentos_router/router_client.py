@@ -682,13 +682,15 @@ class AgentOSRouterClient(AgentServerClient):
             remote=remote,
             channel=channel,
         )
-        if self.auth_enabled and channel == "web" and result.success and not str(result.user_id or "").strip():
-            return AuthResult(success=False, error="authenticated user identity is missing")
-        if not self.auth_enabled and channel == "web" and result.success:
-            query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
-            query_user_id = str((query.get("user_id") or [""])[0] or "").strip()
-            if query_user_id:
-                result.user_id = query_user_id
+        if channel == "web" and result.success:
+            if self.auth_enabled:
+                if not str(result.user_id or "").strip():
+                    return AuthResult(success=False, error="authenticated user identity is missing")
+            else:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+                query_user_id = str((query.get("user_id") or [""])[0] or "").strip()
+                if query_user_id:
+                    result.user_id = query_user_id
         return result
 
     def set_key_issuer(

@@ -1196,10 +1196,19 @@ class AgentWebSocketServer:
             admission=self._heartbeat_runtime.admission,
             execute=self.execute_internal_session_message,
             status_callback=self._push_session_message_status,
+            on_abandoned_wait=self._release_abandoned_session_message_wait,
             available=self._current_ws is not None,
         )
         self._session_message_service = service
         self._runtime.set_session_message_service(service)
+
+    async def _release_abandoned_session_message_wait(
+        self, record: SessionMessageRecord
+    ) -> None:
+        await self._execution_runtime().release_session_message_interactions(
+            record.target_session_id,
+            request_id=record.execution_request_id,
+        )
 
     def set_proactive_engine(self, engine: Any) -> None:
         """Store the proactive engine instance for debug trigger interface."""
@@ -2220,10 +2229,9 @@ class AgentWebSocketServer:
             request.req_method == ReqMethod.SESSION_GET_METADATA
             and request.channel_id == "web"
             and response.ok
-            and isinstance(response.payload, dict)
         ):
             service = getattr(self, "_session_message_service", None)
-            if service is not None:
+            if service is not None and isinstance(response.payload, dict):
                 try:
                     params = request.params if isinstance(request.params, dict) else {}
                     session_id = str(params.get("session_id") or "")
@@ -3851,6 +3859,7 @@ class AgentWebSocketServer:
             trigger_hook=False,
             background=not supplemental_delivery,
         )
+        stream_completed = False
         try:
             async for event in runtime_stream:
                 payload = (
@@ -3912,6 +3921,11 @@ class AgentWebSocketServer:
                         outcome_tracker.fail(
                             "Failed to persist user-question correlation"
                         )
+                    if outcome_tracker.saw_error:
+                        payload = {
+                            "event_type": "chat.error",
+                            "error": outcome_tracker.error,
+                        }
                 if isinstance(payload, dict):
                     payload = _with_cross_session_marker(
                         payload,
@@ -3932,27 +3946,40 @@ class AgentWebSocketServer:
                 )
                 push["is_complete"] = event.is_complete
                 await self.send_push(push)
+            stream_completed = True
         finally:
             try:
                 await runtime_stream.aclose()
             finally:
-                if not supplemental_delivery and not processing_finished:
-                    await self.send_push(
-                        build_server_push_message(
-                            session_id=record.target_session_id,
-                            request_id=request.request_id,
-                            payload=_with_cross_session_marker(
-                                {
-                                    "event_type": "chat.processing_status",
-                                    "session_id": record.target_session_id,
-                                    "is_processing": False,
-                                    "is_complete": True,
-                                },
+                try:
+                    if not supplemental_delivery and not processing_finished:
+                        await self.send_push(
+                            build_server_push_message(
+                                session_id=record.target_session_id,
                                 request_id=request.request_id,
-                            ),
-                            fallback_channel_id=channel_id,
+                                payload=_with_cross_session_marker(
+                                    {
+                                        "event_type": "chat.processing_status",
+                                        "session_id": record.target_session_id,
+                                        "is_processing": False,
+                                        "is_complete": True,
+                                    },
+                                    request_id=request.request_id,
+                                ),
+                                fallback_channel_id=channel_id,
+                            )
                         )
-                    )
+                finally:
+                    if not stream_completed or outcome_tracker.outcome() in {
+                        "failed", "unknown"
+                    }:
+                        release = getattr(
+                            runtime, "release_session_message_interactions", None
+                        )
+                        if callable(release):
+                            await release(
+                                record.target_session_id, request_id=request.request_id
+                            )
 
         if supplemental_delivery:
             if outcome_tracker.outcome() == "failed":
@@ -3975,13 +4002,22 @@ class AgentWebSocketServer:
             "waiting_user": "waiting_user",
             "unknown": "unknown",
         }[outcome]
-        receipt = enqueue_history_request_completion(
-            record.target_session_id,
-            request.request_id,
-            terminal_status=terminal_status,
-        )
-        if receipt is not None:
-            await wait_for_history_receipt(receipt, timeout=5.0)
+        try:
+            receipt = enqueue_history_request_completion(
+                record.target_session_id,
+                request.request_id,
+                terminal_status=terminal_status,
+            )
+            if receipt is not None:
+                await wait_for_history_receipt(receipt, timeout=5.0)
+        except BaseException:
+            if outcome == "waiting_user":
+                release = getattr(runtime, "release_session_message_interactions", None)
+                if callable(release):
+                    await release(
+                        record.target_session_id, request_id=request.request_id
+                    )
+            raise
 
         if outcome == "failed":
             return SessionMessageExecutionResult(
@@ -4260,6 +4296,15 @@ class AgentWebSocketServer:
             error_code=error_code,
             error=error,
         )
+        if outcome in {"failed", "unknown"}:
+            release = getattr(
+                self._execution_runtime(), "release_session_message_interactions", None
+            )
+            if callable(release):
+                await release(
+                    resume_state.target_session_id,
+                    request_id=f"session-message-{resume_state.message_id}",
+                )
 
     async def _complete_waiting_session_message_after_external_turn(
         self,

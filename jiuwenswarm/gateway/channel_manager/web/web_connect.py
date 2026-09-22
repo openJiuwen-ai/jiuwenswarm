@@ -1003,17 +1003,9 @@ class WebChannel(BaseWsChannel):
             anonymous_owner = metadata.get(SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY)
             if owner_scope_id == "local" and not isinstance(anonymous_owner, bool):
                 return
-            clients = {
-                ws
-                for rk, ws_list in self._clients_by_key.items()
-                if rk.session_id == msg.session_id
-                for ws in ws_list
-                if not getattr(ws, "closed", False)
-                and (
-                    self.connection_user_id(ws) is None if anonymous_owner
-                    else self.connection_user_id(ws) == owner_scope_id
-                )
-            }
+            clients = self._session_message_target_clients(
+                msg.session_id, owner_scope_id, anonymous_owner
+            )
             await self._broadcast_to(self._serialize_frame(msg), clients)
             return
 
@@ -1196,6 +1188,33 @@ class WebChannel(BaseWsChannel):
                 "event": "chat.processing_status",
                 "payload": {"session_id": msg.session_id, "is_processing": is_processing},
             }, all_clients)
+
+    def _session_message_target_clients(
+        self,
+        session_id: str,
+        owner_scope_id: str,
+        anonymous_owner: Any,
+    ) -> set[Any]:
+        """收集绑定到指定 session 且匹配 owner 归属的活跃 websocket。
+
+        anonymous_owner 为真时无主连接（user_id 为 None）可见，
+        否则仅 user_id 等于 owner_scope_id 的连接可见。
+        """
+        clients: set[Any] = set()
+        for rk, ws_list in self._clients_by_key.items():
+            if rk.session_id != session_id:
+                continue
+            for ws in ws_list:
+                if getattr(ws, "closed", False):
+                    continue
+                ws_user_id = self.connection_user_id(ws)
+                owner_matched = (
+                    ws_user_id is None if anonymous_owner
+                    else ws_user_id == owner_scope_id
+                )
+                if owner_matched:
+                    clients.add(ws)
+        return clients
 
     def _track_session_busy(self, msg: Message) -> None:
         """在所有路由分支之前维护 session busy 映射(供 /ws/git 写操作查询)。

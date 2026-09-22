@@ -80,6 +80,7 @@ class SessionMessageService:
         admission: Any,
         execute: ExecuteSessionMessage,
         status_callback: StatusCallback | None = None,
+        on_abandoned_wait: StatusCallback | None = None,
         available: bool = True,
         execution_watchdog_timeout: float = EXECUTION_WATCHDOG_TIMEOUT_SECONDS,
     ) -> None:
@@ -87,6 +88,7 @@ class SessionMessageService:
         self._admission = admission
         self._execute = execute
         self._status_callback = status_callback
+        self._on_abandoned_wait = on_abandoned_wait
         self._execution_watchdog_timeout = execution_watchdog_timeout
         self._available = asyncio.Event()
         if available:
@@ -829,6 +831,7 @@ class SessionMessageService:
             run_id = f"smrun_{uuid.uuid4().hex}"
             acquired = False
             claimed: SessionMessageRecord | None = None
+            waiting_confirmed = False
             try:
                 if input_mode != "steer":
                     await self._admission.begin_session_message(target_session_id, run_id)
@@ -905,6 +908,9 @@ class SessionMessageService:
                             error_code=result.error_code,
                             error=result.error,
                         )
+                    )
+                    waiting_confirmed = (
+                        updated is not None and updated.status == "waiting_user"
                     )
                 else:
                     updated = await self._store_call(
@@ -989,8 +995,16 @@ class SessionMessageService:
             finally:
                 if claimed is not None:
                     self._executing_workers.pop(claimed.message_id, None)
-                if acquired:
-                    await self._admission.end_session_message(target_session_id, run_id)
+                try:
+                    if (
+                        claimed is not None
+                        and not waiting_confirmed
+                        and self._on_abandoned_wait is not None
+                    ):
+                        await self._on_abandoned_wait(claimed)
+                finally:
+                    if acquired:
+                        await self._admission.end_session_message(target_session_id, run_id)
             if self._workers.get((target_session_id, input_mode)) is not asyncio.current_task():
                 return
 

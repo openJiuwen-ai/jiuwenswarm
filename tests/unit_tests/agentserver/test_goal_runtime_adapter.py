@@ -654,7 +654,7 @@ def test_paused_goal_keeps_chat_final_terminal_even_if_round_still_unwinding() -
         "event_type": "chat.final",
         "content": "cancelled output",
     }
-    assert adapter._has_active_goal_interaction() is True
+    assert adapter.has_active_goal_interaction() is True
     assert adapter._goal_record_is_active() is False
 
 
