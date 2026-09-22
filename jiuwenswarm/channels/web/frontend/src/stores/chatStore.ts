@@ -24,6 +24,7 @@ import {
   MediaItem,
 } from '../types';
 import { useTodoStore } from './todoStore';
+import { findActiveTeamLeaderMessage } from '../features/teamLeaderMessages';
 import {
   mergeReviewerProgress,
   mergeToolResultProgress,
@@ -249,7 +250,7 @@ interface ChatState {
   startStreaming: (sessionId: string, messageId: string, streamKey?: string) => void;
   stopStreaming: (sessionId: string, streamKey?: string) => void;
   finalizeStreamSegment: (sessionId: string, streamKey?: string) => void;
-  finalizeTeamLeaderSegment: (sessionId: string) => void;
+  finalizeTeamLeaderSegment: (sessionId: string, requestId?: string) => void;
   clearStreamSplit: (sessionId: string) => void;
   collapseTurnFinal: (
     sessionId: string,
@@ -666,26 +667,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  finalizeTeamLeaderSegment: (sessionId) => {
+  finalizeTeamLeaderSegment: (sessionId, requestId) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      let latestUserIndex = -1;
-      for (let i = runtime.messages.length - 1; i >= 0; i -= 1) {
-        if (runtime.messages[i].role === 'user') {
-          latestUserIndex = i;
-          break;
-        }
-      }
-      let target: Message | undefined;
-      for (let i = runtime.messages.length - 1; i > latestUserIndex; i -= 1) {
-        const msg = runtime.messages[i];
-        if (msg.id.startsWith('team-leader-') && msg.isStreaming) {
-          target = msg;
-          break;
-        }
-      }
-      if (!target || !target.content?.trim()) return state;
+      const target = findActiveTeamLeaderMessage(runtime.messages, requestId);
+      if (!target) return state;
       const targetId = target.id;
       return {
         runtimes: {
@@ -693,7 +680,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             messages: runtime.messages.map((msg) =>
-              msg.id === targetId ? { ...msg, isStreaming: false } : msg
+              msg.id === targetId ? { ...msg, isStreaming: false, teamStream: undefined } : msg
             ),
             assistantStreamSplit: true,
           },

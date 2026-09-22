@@ -1226,9 +1226,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     [clearPendingAgentGroupBinding, reconcileAgentGroupBinding],
   );
 
-  const findActiveTeamLeaderMessage = useCallback((sessionId: string) => {
+  const findActiveTeamLeaderMessage = useCallback((sessionId: string, requestId?: string) => {
     const messages = useChatStore.getState().getRuntime(sessionId)?.messages ?? [];
-    return findActiveTeamLeaderMessageInTurn(messages);
+    return findActiveTeamLeaderMessageInTurn(messages, requestId);
   }, []);
 
   const closeActiveTeamLeaderMessages = useCallback((sessionId: string) => {
@@ -2700,7 +2700,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               });
             }
           }
-          const existingMsg = findActiveTeamLeaderMessage(sessionId);
+          const existingMsg = findActiveTeamLeaderMessage(sessionId, getPayloadRequestId(payload));
 
           if (existingMsg) {
             const existingContent = existingMsg.content || '';
@@ -2711,12 +2711,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
             useChatStore.getState().updateMessage(sessionId, existingMsg.id, updatePayload);
           } else {
-            // 点击"停止"（team 模式走 pause）之后，本轮 LLM 生成往往不会被后端立即掐断，
-            // 还会有若干个迟到的 chat.delta 补投过来。此时 currentStreamId/team-leader
-            // 收尾逻辑已经跑过一轮（见 chat.interrupt_result 的 pause 分支），这些迟到内容
-            // 找不到 existingMsg，会重新起一条新气泡；如果还标 isStreaming:true，光标会
-            // 因为再也等不到后续 chat.final 收尾而永久闪烁（bug001）。paused 状态下新起的
-            // 气泡直接落地为非 streaming，內容仍然展示，只是不再挂一个不会消失的光标。
+            // 暂停后仍按请求保留输出段关联，迟到 delta 继续拼接，但不重启光标。
             const isPaused = Boolean(useChatStore.getState().getRuntime(sessionId)?.isPaused);
             const msgId = prefixedMessageId('team-leader-');
             useChatStore.getState().addMessage(sessionId, {
@@ -2725,6 +2720,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               content: content,
               timestamp: new Date().toISOString(),
               isStreaming: !isPaused,
+              teamStream: { requestId: getPayloadRequestId(payload) },
             });
           }
           return;
@@ -3069,9 +3065,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         const teamLeaderMessageToFinalize =
-          currentMode === 'team' && content
-            ? findActiveTeamLeaderMessage(sessionId)
+          currentMode === 'team'
+            ? findActiveTeamLeaderMessage(sessionId, getPayloadRequestId(payload))
             : undefined;
+        if (teamLeaderMessageToFinalize) {
+          // final（包括空正文）结束输出段；pause 不承担这个协议边界。
+          useChatStore.getState().updateMessage(sessionId, teamLeaderMessageToFinalize.id, {
+            isStreaming: false,
+            teamStream: undefined,
+          });
+        }
         // Defensive: chat.final is the definitive end-of-response marker.
         // The primary state change is driven by chat.processing_status
         // (is_processing=false), but if that frame is lost the UI would be stuck
@@ -3557,7 +3560,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return;
         }
         if (currentMode === 'team') {
-          const target = findActiveTeamLeaderMessage(sessionId);
+          const target = findActiveTeamLeaderMessage(sessionId, getPayloadRequestId(payload));
           if (target) {
             useChatStore.getState().updateMessage(sessionId, target.id, {
               fileItems: mergeFileDownloadItems(target.fileItems, files),
@@ -3568,7 +3571,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               role: 'system',
               content: '',
               timestamp: new Date().toISOString(),
-              isStreaming: true,
+              isStreaming: !useChatStore.getState().getRuntime(sessionId)?.isPaused,
+              teamStream: { requestId: getPayloadRequestId(payload) },
               fileItems: files,
             });
           }
@@ -3663,7 +3667,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // agent 模式走 currentStreamId；团队模式的 team-leader 气泡有独立生命周期，
         // 需单独收尾，否则本轮 leader 文字会全部堆进同一条气泡，与刷新后的历史（按段拆分）不一致。
         if (currentMode === 'team') {
-          useChatStore.getState().finalizeTeamLeaderSegment(sessionId);
+          useChatStore.getState().finalizeTeamLeaderSegment(sessionId, getPayloadRequestId(payload));
         } else if (currentStreamId) {
           useChatStore.getState().finalizeStreamSegment(sessionId);
         }
