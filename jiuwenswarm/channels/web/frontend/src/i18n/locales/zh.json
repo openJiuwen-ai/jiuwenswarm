@@ -2701,5 +2701,46 @@
     "errors": {
       "actionFailed": "操作失败"
     }
+  },
+  "subagent": {
+    "title": "子智能体",
+    "compactTitle": "子智能体（{{count}}）",
+    "activeListTitle": "当前活跃 {{count}}",
+    "expand": "展开子智能体",
+    "selectWithStatus": "选择 {{name}}，状态：{{status}}",
+    "running": "运行中",
+    "idle": "待机中",
+    "closed": "已关闭",
+    "failed": "异常",
+    "cancelled": "已取消",
+    "activityTitle": "活动",
+    "activityEmpty": "暂无活动",
+    "historyLoading": "正在恢复历史…",
+    "empty": "暂无子智能体",
+    "activity": {
+      "thinking": "思考",
+      "toolCall": "工具调用",
+      "toolResult": "工具结果",
+      "expand": "展开活动详情",
+      "collapse": "收起活动详情",
+      "ok": "完成",
+      "error": "异常",
+      "truncated": "活动已折叠",
+      "fields": {
+        "type": "类型",
+        "time": "时间",
+        "tool": "工具",
+        "call": "调用",
+        "result": "结果",
+        "content": "内容",
+        "status": "状态",
+        "dropped": "丢弃数量"
+      },
+      "tools": {
+        "search": "搜索网页",
+        "terminal": "运行终端",
+        "todo": "待办清单"
+      }
+    }
   }
 }

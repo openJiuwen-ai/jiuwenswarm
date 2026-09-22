@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Drop newer evolution-rail kwargs when the installed openjiuwen SDK is older."""
+"""Drop newer SDK kwargs when the installed openjiuwen package is older."""
 
 from __future__ import annotations
 
@@ -26,6 +26,17 @@ def filter_unsupported_kwargs(func: Callable[..., Any], kwargs: dict[str, Any]) 
         return kwargs
     allowed = set(signature.parameters)
     return {key: value for key, value in kwargs.items() if key in allowed}
+
+
+async def call_attach_output(instance: Any, *, steal: bool = False) -> Any:
+    """Call ``attach_output``, dropping ``steal`` on dest-stable SDK builds.
+
+    Official dest-stable ``DeepAgent.attach_output`` has no ``steal`` keyword;
+    dest-stable jiuwenswarm still requests it for replica chat.send takeover.
+    """
+    attach = instance.attach_output
+    kwargs = filter_unsupported_kwargs(attach, {"steal": True} if steal else {})
+    return await attach(**kwargs)
 
 
 def _wrap_init_for_extra_kwargs(cls: type) -> None:

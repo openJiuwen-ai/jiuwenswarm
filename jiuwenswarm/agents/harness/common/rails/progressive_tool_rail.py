@@ -100,6 +100,16 @@ class ProgressiveToolRail(DeepAgentRail):
     """
 
     priority = 80
+    # Do NOT inherit this rail into a general-purpose subagent. init() /
+    # before_invoke bind ``_deep_agent`` / ``_runtime_agent`` and refresh the
+    # deferred-tool cache from that agent's ability_manager. Factory injects
+    # parent rails by reference; the child's init then rebinds the shared
+    # instance and overwrites the cache with the child's smaller tool set.
+    # Parent tools_search / invoke_tool for deferred names such as
+    # subagent_wait then miss (「未注册或不在按需可见工具列表中」) while the
+    # child is still running. react.tool_lazy_load.subagents.enabled is
+    # already false — this flag makes factory honor that.
+    inherit_to_subagents = False
 
     def __init__(
         self,

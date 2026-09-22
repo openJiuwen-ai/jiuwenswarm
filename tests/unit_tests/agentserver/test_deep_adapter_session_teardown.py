@@ -20,6 +20,8 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
 class _IdleChildAdapter:
     def __init__(self) -> None:
         self.cleaned = False
+        self.released: list[tuple[str, str]] = []
+        self._instance = None
 
     @staticmethod
     def is_session_active(_session_id: str) -> bool:
@@ -28,6 +30,17 @@ class _IdleChildAdapter:
     @staticmethod
     def is_deep_agent_executing_for_session(_session_id: str) -> bool:
         return False
+
+    async def stop_interaction(self) -> None:
+        return None
+
+    async def release_subagent_runtime_for_session(
+        self,
+        session_id: str,
+        *,
+        reason: str = "",
+    ) -> None:
+        self.released.append((session_id, reason))
 
     async def cleanup(self) -> None:
         self.cleaned = True

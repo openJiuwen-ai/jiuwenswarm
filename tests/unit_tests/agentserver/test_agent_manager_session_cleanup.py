@@ -313,6 +313,56 @@ async def test_cleanup_session_runtime_rejects_retained_session_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_release_subagent_runtime_uses_existing_agent_adapter() -> None:
+    """Ported from develop e3ee2dec test_agent_manager_session_cleanup.py.
+
+    Origin: 移植. Dest AgentManager already exposes this facade; the
+    develop tests were missed when Commit 5 landed.
+    """
+    calls: list[tuple[str, str]] = []
+
+    class Adapter:
+        async def release_subagent_runtime_for_session(
+            self,
+            session_id: str,
+            *,
+            reason: str,
+        ) -> None:
+            calls.append((session_id, reason))
+
+        async def apply_sandbox_runtime_patch(self) -> None:
+            return None
+
+    class Agent:
+        def __init__(self) -> None:
+            self._adapter = Adapter()
+
+    manager = AgentManager()
+    manager.agents["web"] = {"agent::": Agent()}
+    released = await manager.release_subagent_runtime_for_session(
+        channel_id="web",
+        session_id="delete-session",
+        reason="session_deleted",
+    )
+    assert released is True
+    assert calls == [("delete-session", "session_deleted")]
+
+
+@pytest.mark.asyncio
+async def test_release_subagent_runtime_is_noop_without_existing_adapter() -> None:
+    """Ported from develop e3ee2dec test_agent_manager_session_cleanup.py.
+
+    Origin: 移植.
+    """
+    manager = AgentManager()
+    released = await manager.release_subagent_runtime_for_session(
+        channel_id="web",
+        session_id="missing-session",
+    )
+    assert released is False
+
+
+@pytest.mark.asyncio
 async def test_create_session_cron_channel_uses_path_safe_prefix() -> None:
     from jiuwenswarm.server.runtime.prompt_attachment_loader import sanitize_session_id
     from jiuwenswarm.server.runtime.session.session_metadata import resolve_session_subdir

@@ -4049,8 +4049,19 @@ class JiuWenSwarm:
 
     async def cleanup_session_runtime(self, session_id: str) -> bool:
         """Release in-memory runtime owned by one session while keeping persisted history."""
-        processor_cleaned = await self._session_manager.close_session(session_id)
         adapter = self._adapter
+        if adapter is not None:
+            release_fn = getattr(adapter, "release_subagent_runtime_for_session", None)
+            if callable(release_fn):
+                try:
+                    await release_fn(session_id, reason="session_deleted")
+                except Exception:
+                    logger.warning(
+                        "[JiuWenSwarm] release_subagent_runtime failed: session_id=%s",
+                        session_id,
+                        exc_info=True,
+                    )
+        processor_cleaned = await self._session_manager.close_session(session_id)
         if adapter is None:
             return processor_cleaned
         cleanup_fn = getattr(adapter, "cleanup_session_adapter", None)

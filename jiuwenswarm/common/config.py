@@ -533,6 +533,18 @@ def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
 
 
+def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
+    """Return ``react.subagent_runtime.enabled`` for persistent subagent tools.
+
+    Missing or non-dict ``react.subagent_runtime`` is False. The shipped
+    template defaults to true; partial overrides without this key stay off.
+    """
+    cfg = config if config is not None else get_config()
+    react = cfg.get("react") if isinstance(cfg, dict) else None
+    runtime_cfg = react.get("subagent_runtime") if isinstance(react, dict) else None
+    return bool(runtime_cfg.get("enabled")) if isinstance(runtime_cfg, dict) else False
+
+
 def get_ttse_embedding_config(config: dict[str, Any] | None) -> dict[str, str]:
     """Return normalized ``react.ttse.embedding`` fields for TTSE retrieval.
 

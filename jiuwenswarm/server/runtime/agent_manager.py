@@ -759,6 +759,22 @@ class AgentManager:
             )
         return cleaned
 
+    async def release_subagent_runtime_for_session(
+        self,
+        *,
+        channel_id: str | None,
+        session_id: str,
+        reason: str = "session_deleted",
+    ) -> bool:
+        """Release subagent control owned by the channel's existing Agent."""
+        agent = self.get_agent_nowait(channel_id=channel_id or "")
+        adapter = getattr(agent, "_adapter", None) if agent is not None else None
+        release_runtime = getattr(adapter, "release_subagent_runtime_for_session", None)
+        if not callable(release_runtime):
+            return False
+        await release_runtime(session_id, reason=reason)
+        return True
+
     def get_client_capabilities(self, channel_id: str = "") -> dict[str, Any]:
         channel_key = str(channel_id or "").strip()
         caps = self._client_capabilities_by_channel.get(channel_key)

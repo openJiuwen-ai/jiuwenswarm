@@ -8,6 +8,8 @@ export { useGoalStore } from './goalStore';
 export { useSessionStore, resolveEffectiveModel } from './sessionStore';
 export { PROJECT_SESSION_PAGE_SIZE, useWorkspaceStore } from './workspaceStore';
 export { useHarnessStore } from './harnessStore';
+export { useSubagentStore } from './subagentStore';
+export type { SubagentRuntime } from './subagentStore';
 export { ensureSessionRuntimes } from './ensureSessionRuntimes';
 export { useCronStore, filterJobsForProject, isDefaultProjectId, isWebChannelJob } from './cronStore';
 export type { SidebarCronJob } from './cronStore';

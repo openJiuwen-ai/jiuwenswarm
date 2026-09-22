@@ -118,6 +118,14 @@ from openjiuwen.harness.schema.interaction import (
 )
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
+from jiuwenswarm.agents.harness.common.browser_defaults import (
+    DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+)
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    STATUSLINE_SETUP_AGENT_TYPE,
+    build_statusline_setup_agent_config,
+)
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch import (
     get_deepresearch_tools,
@@ -265,9 +273,17 @@ from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
 )
-from jiuwenswarm.common.openjiuwen_rail_compat import install_evolution_rail_kwargs_compat
+from jiuwenswarm.common.openjiuwen_rail_compat import (
+    call_attach_output,
+    filter_unsupported_kwargs,
+    install_evolution_rail_kwargs_compat,
+)
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import build_agent_identity_prompt
 from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
+from jiuwenswarm.agents.harness.common.rails.execution_guard import (
+    CircuitBreakerConfig,
+    CircuitBreakerRail,
+)
 from jiuwenswarm.agents.harness.common.rails import (
     DeepResearchExecutionRail,
     JiuSwarmStreamEventRail,
@@ -387,6 +403,10 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_slash import (
     handle_evolution_slash_command,
 )
 from jiuwenswarm.server.runtime.agent_adapter import evolution_version as evolution_version_ctl
+from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
+    clear_subagent_progress_batch,
+    try_handle_subagent_chunk,
+)
 from jiuwenswarm.server.utils.stream_utils import (
     build_tool_result_payload,
     parse_ask_user_question_payload,
@@ -495,6 +515,7 @@ from jiuwenswarm.common.config import (
     _get_ttse_config,
     get_ttse_embedding_config,
     get_ttse_enabled,
+    is_subagent_runtime_enabled,
     resolve_env_vars,
     resolve_string_or_list_config,
 )
@@ -2264,6 +2285,22 @@ class _RuntimeCronToolContext:
         return self._tool_scope
 
 
+def _optional_enable_subagent_runtime(enabled: bool) -> dict[str, bool]:
+    """Pass ``enable_subagent_runtime`` only when ``DeepAgentConfig`` accepts it.
+
+    Official ``dev-stable`` openjiuwen 0.1.16 is a dataclass without this
+    field; constructing it with the keyword raises TypeError. Do not filter
+    against ``create_deep_agent``: that factory still has ``**config_kwargs``,
+    so signature filtering would keep the keyword and only warn, or the
+    hot-reload path would still TypeError because it builds ``DeepAgentConfig``
+    directly. Fork overlay and a future official 3A merge keep the field.
+    """
+    return filter_unsupported_kwargs(
+        DeepAgentConfig.__init__,
+        {"enable_subagent_runtime": enabled},
+    )
+
+
 def _agent_ras_kwargs_from_config(config_base: dict[str, Any] | None) -> dict[str, Any]:
     """Thin YAML gate for create_deep_agent ``agent_ras``.
 
@@ -2439,6 +2476,7 @@ class JiuWenSwarmDeepAdapter:
         # 延时重索引任务（debounce）：连续改多次 embedding 只在最后一次后跑一次。
         self._memory_reindex_task: asyncio.Task | None = None
         self._llm_retry_rail: LLMRetryRail | None = None
+        self._circuit_breaker_rail: CircuitBreakerRail | None = None
         self._heartbeat_rail: HeartbeatRail | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
@@ -2908,6 +2946,13 @@ class JiuWenSwarmDeepAdapter:
                 lock.locked() or self._session_adapter_lock_has_waiters(lock)
             ):
                 continue
+            # Persistent subagents stay until an explicit close. Idle TTL must
+            # not cancel_all them. Session delete / hot-reload / process exit
+            # still use cleanup_session_adapter.
+            if adapter is not None and self._session_has_live_subagent_runtime(
+                adapter, sid
+            ):
+                continue
             if await self.cleanup_session_adapter(sid):
                 evicted += 1
 
@@ -2919,6 +2964,10 @@ class JiuWenSwarmDeepAdapter:
                 return False
             if self.is_session_active(sid) or self.is_deep_agent_executing_for_session(sid):
                 return False
+            await self.release_subagent_runtime_for_session(
+                sid,
+                reason="session_adapter_cleanup",
+            )
             await self.cleanup()
             return True
 
@@ -2945,6 +2994,14 @@ class JiuWenSwarmDeepAdapter:
                 if adapter.is_session_active(sid) or adapter.is_deep_agent_executing_for_session(sid):
                     return False
                 try:
+                    release_fn = getattr(
+                        adapter, "release_subagent_runtime_for_session", None
+                    )
+                    if callable(release_fn):
+                        await release_fn(
+                            sid,
+                            reason="session_adapter_cleanup",
+                        )
                     await adapter.cleanup()
                 except Exception as exc:
                     logger.warning(
@@ -2961,6 +3018,68 @@ class JiuWenSwarmDeepAdapter:
         if cleaned:
             logger.info("[JiuWenSwarmDeepAdapter] session scoped DeepAgent removed: session_id=%s", sid)
         return cleaned
+
+    @staticmethod
+    def _session_has_live_subagent_runtime(
+        adapter: "JiuWenSwarmDeepAdapter",
+        session_id: str,
+    ) -> bool:
+        """Return True when a session still has live subagent slots in use.
+
+        A missing control is idle: dest-stable SDK and never-spawned parents
+        have no ``_subagent_controls``. If ``capacity()`` raises, treat the
+        session as occupied so TTL cannot evict an Adapter that may still
+        hold children.
+        """
+        deep_agent = getattr(adapter, "_instance", None)
+        if deep_agent is None:
+            return False
+        controls = getattr(deep_agent, "_subagent_controls", None) or {}
+        if not isinstance(controls, dict):
+            controls = {}
+        control = controls.get(session_id)
+        if control is None:
+            return False
+        try:
+            return int(control.capacity().get("used", 0)) > 0
+        except Exception:
+            # Occupancy unknown: skip TTL eviction rather than drop live children.
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent capacity probe failed; "
+                "treating session as occupied: session_id=%s",
+                session_id,
+            )
+            return True
+
+    async def release_subagent_runtime_for_session(
+        self,
+        session_id: str | None,
+        *,
+        reason: str = "session_deleted",
+    ) -> None:
+        """Cancel cached subagents and flush persistence for one parent session."""
+        sid = self._session_adapter_key(session_id)
+        if not sid:
+            return
+        clear_subagent_progress_batch(sid)
+        if not self._is_session_scoped_adapter:
+            child = self._session_adapters.get(sid)
+            if child is not None and child is not self:
+                await child.release_subagent_runtime_for_session(sid, reason=reason)
+                return
+        deep_agent = self._instance
+        if deep_agent is None:
+            return
+        try:
+            from openjiuwen.harness.tools.subagent import release_subagent_control
+
+            await release_subagent_control(deep_agent, sid, reason=reason)
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] release_subagent_runtime failed: session_id=%s error=%s",
+                sid,
+                exc,
+            )
 
     def _is_session_lock_idle(self, sid: str, lock: asyncio.Lock) -> bool:
         """Check whether the session lock is the current one and has no active holders or waiters."""
@@ -3108,6 +3227,17 @@ class JiuWenSwarmDeepAdapter:
                         "[JiuWenSwarmDeepAdapter] cleanup_session(%s) failed: %s",
                         sid, exc,
                     )
+            if cleanup_rail:
+                circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
+                if circuit_breaker_rail is not None:
+                    try:
+                        circuit_breaker_rail.cleanup_session(sid)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] circuit_breaker cleanup_session(%s) failed: %s",
+                            sid,
+                            exc,
+                        )
         else:
             self._active_session_ids[sid] = count - 1
 
@@ -4119,8 +4249,31 @@ class JiuWenSwarmDeepAdapter:
 
         resolved_language = self._resolve_runtime_language()
         workspace = self._workspace_dir or "./"
+        sys_operation = self._sys_operation
         subagents: list[Any] = []
         should_add_general_purpose = False
+
+        statusline_setup_cfg = (
+            subagents_cfg.get(STATUSLINE_SETUP_AGENT_TYPE)
+            if isinstance(subagents_cfg, dict)
+            else None
+        )
+        if self._is_subagent_default_enabled(statusline_setup_cfg):
+            statusline_setup_options = (
+                statusline_setup_cfg if isinstance(statusline_setup_cfg, dict) else {}
+            )
+            subagents.append(
+                build_statusline_setup_agent_config(
+                    model,
+                    workspace=workspace,
+                    sys_operation=sys_operation,
+                    language=resolved_language,
+                    max_iterations=parse_int(
+                        statusline_setup_options.get("max_iterations"),
+                        DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+                    ),
+                )
+            )
 
         # Build progressive tool rail for subagents if enabled.
         subagent_rails: list[Any] | None = None
@@ -4150,6 +4303,7 @@ class JiuWenSwarmDeepAdapter:
                     build_research_agent_config(
                         model,
                         workspace=workspace,
+                        sys_operation=sys_operation,
                         language=resolved_language,
                         max_iterations=parse_int(
                             research_agent_cfg.get("max_iterations"),
@@ -4182,18 +4336,18 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] browser subagent enabled without BROWSER_DRIVER; "
                     "defaulting to managed mode"
                 )
+            browser_max_iterations = None
+            if isinstance(browser_agent_cfg, dict):
+                browser_max_iterations = browser_agent_cfg.get("max_iterations")
             subagents.append(
                 build_browser_agent_config(
                     model,
                     workspace=workspace,
+                    sys_operation=sys_operation,
                     language=resolved_language,
                     max_iterations=parse_int(
-                        (
-                            browser_agent_cfg.get("max_iterations")
-                            if isinstance(browser_agent_cfg, dict)
-                            else None
-                        ),
-                        react_cfg.get("max_iterations", 15),
+                        browser_max_iterations,
+                        DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
                     rails=subagent_rails,
                 )
@@ -4214,6 +4368,7 @@ class JiuWenSwarmDeepAdapter:
                 _load_custom_subagents(
                     self._workspace_dir, subagents_cfg, model, workspace,
                     __name__, model_cache=self._model_cache,
+                    sys_operation=sys_operation,
                 )
             )
         except Exception:
@@ -8750,12 +8905,42 @@ class JiuWenSwarmDeepAdapter:
             task_planning_rail = None
         return task_planning_rail
 
-    @staticmethod
-    def _build_subagent_rail() -> SubagentRail | None:
-        """Build SubagentRail for subagent delegation."""
+    def _build_subagent_rail(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> SubagentRail | None:
+        """Build SubagentRail for subagent delegation.
+
+        The adapter supplies this rail so ``create_deep_agent()`` skips its
+        own default SubagentRail. That is the only place
+        ``react.subagent_runtime.enabled`` can reach the rail.
+        """
+        from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
+            BrowserTaskPromptRail,
+        )
+
+        enable_runtime = self._resolve_enable_subagent_runtime(config_base)
         try:
-            subagent_rail = SubagentRail()
-            logger.info("[JiuWenSwarmDeepAdapter] SubagentRail create success")
+            from jiuwenswarm.agents.harness.common.tools.subagent_compat import (
+                install_subagent_control_compat_patch,
+            )
+
+            install_subagent_control_compat_patch()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] subagent control compat skipped: %s",
+                exc,
+            )
+            enable_runtime = False
+        try:
+            subagent_rail = BrowserTaskPromptRail(
+                enable_subagent_runtime=enable_runtime,
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] SubagentRail create success "
+                "(load-aware browser policy, subagent_runtime=%s)",
+                enable_runtime,
+            )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] SubagentRail create failed: %s", exc)
             subagent_rail = None
@@ -8975,6 +9160,72 @@ class JiuWenSwarmDeepAdapter:
             return rail
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] LLMRetryRail create failed: %s", exc)
+            return None
+
+    @staticmethod
+    def _coerce_circuit_breaker_threshold(value: object, default: int) -> int:
+        try:
+            parsed = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+        if parsed <= 0:
+            return default
+        return parsed
+
+    @staticmethod
+    def _circuit_breaker_config_from_mapping(
+        cb_cfg: dict,
+        defaults: CircuitBreakerConfig,
+    ) -> CircuitBreakerConfig | None:
+        warning = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("warning_threshold", defaults.warning_threshold),
+            defaults.warning_threshold,
+        )
+        critical = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("critical_threshold", defaults.critical_threshold),
+            defaults.critical_threshold,
+        )
+        global_breaker = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("global_breaker_threshold", defaults.global_breaker_threshold),
+            defaults.global_breaker_threshold,
+        )
+        unknown = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("unknown_tool_threshold", defaults.unknown_tool_threshold),
+            defaults.unknown_tool_threshold,
+        )
+        if warning > critical:
+            return None
+        if critical > global_breaker:
+            return None
+        return CircuitBreakerConfig(
+            warning_threshold=warning,
+            critical_threshold=critical,
+            global_breaker_threshold=global_breaker,
+            unknown_tool_threshold=unknown,
+        )
+
+    def _build_circuit_breaker_rail(self) -> CircuitBreakerRail | None:
+        """Build develop's loop-detection rail. Default off; dest-stable RAS stays on."""
+        try:
+            guard_cfg = (get_config() or {}).get("execution_guard") or {}
+            cb_cfg = guard_cfg.get("circuit_breaker") if isinstance(guard_cfg, dict) else {}
+            if not isinstance(cb_cfg, dict):
+                cb_cfg = {}
+            if cb_cfg.get("enabled", False) is not True:
+                logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail disabled by config")
+                return None
+            defaults = CircuitBreakerConfig()
+            config = self._circuit_breaker_config_from_mapping(cb_cfg, defaults)
+            if config is None:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] CircuitBreakerRail invalid thresholds"
+                )
+                return None
+            rail = CircuitBreakerRail(config, language=self._resolve_runtime_language())
+            logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
             return None
 
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
@@ -9316,8 +9567,13 @@ class JiuWenSwarmDeepAdapter:
                 self._build_llm_retry_rail,
                 {"config_base": config_base},
             ),
+            _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
-            _RailBuildInfo("_subagent_rail", self._build_subagent_rail),
+            _RailBuildInfo(
+                "_subagent_rail",
+                self._build_subagent_rail,
+                {"config_base": config_base},
+            ),
             _RailBuildInfo(
                 "_permission_rail",
                 self._build_permission_rail_for_agent,
@@ -9488,6 +9744,15 @@ class JiuWenSwarmDeepAdapter:
             return True
         return configured_value
 
+    @staticmethod
+    def _resolve_enable_subagent_runtime(
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return whether persistent subagent runtime tools should be enabled."""
+        return is_subagent_runtime_enabled(
+            config_base if config_base is not None else get_config()
+        )
+
     def _make_deep_agent_config(
         self,
         *,
@@ -9550,6 +9815,9 @@ class JiuWenSwarmDeepAdapter:
             audio_model_config=self._audio_model_config,
             enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
             completion_timeout=config.get("completion_timeout", 21600.0),
+            **_optional_enable_subagent_runtime(
+                self._resolve_enable_subagent_runtime(config_base),
+            ),
         )
 
     def _update_permission_rail(
@@ -10464,6 +10732,11 @@ class JiuWenSwarmDeepAdapter:
 
                 # agent_ras YAML passthrough (Agent RAS owns loop detection / recovery).
                 common_kwargs.update(_agent_ras_kwargs_from_config(config_base))
+                common_kwargs.update(
+                    _optional_enable_subagent_runtime(
+                        self._resolve_enable_subagent_runtime(config_base),
+                    )
+                )
 
                 self._instance = create_deep_agent(
                     **common_kwargs,
@@ -11900,6 +12173,9 @@ class JiuWenSwarmDeepAdapter:
         )
         stage_timer.mark("cwd_seed")
 
+        circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
+        if circuit_breaker_rail is not None:
+            circuit_breaker_rail.set_language(resolved_language)
         if self._runtime_prompt_rail:
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
@@ -18234,10 +18510,9 @@ class JiuWenSwarmDeepAdapter:
                 steal_output = self._should_steal_output_lease(
                     request.params, req_method=request.req_method
                 )
-                if steal_output:
-                    interaction_stream = await self._instance.attach_output(steal=True)
-                else:
-                    interaction_stream = await self._instance.attach_output()
+                interaction_stream = await call_attach_output(
+                    self._instance, steal=steal_output
+                )
                 if interaction_stream is not None:
                     await self._instance.send_input(
                         SendInputRequest(
@@ -18269,7 +18544,10 @@ class JiuWenSwarmDeepAdapter:
                                 mark_request_first_byte()
                     else:
                         # check for error in other typed chunks (e.g. controller_output.task_failed)
-                        parsed = self._parse_stream_chunk(chunk)
+                        parsed = self._parse_stream_chunk(
+                            chunk,
+                            _parent_session_id=session_id,
+                        )
                         if parsed is not None:
                             event_type = str(parsed.get("event_type") or "").strip()
                             if event_type in ("chat.error", "error"):
@@ -19530,10 +19808,9 @@ class JiuWenSwarmDeepAdapter:
                 steal_output = self._should_steal_output_lease(
                     request.params, req_method=request.req_method
                 )
-                if steal_output:
-                    interaction_stream = await self._instance.attach_output(steal=True)
-                else:
-                    interaction_stream = await self._instance.attach_output()
+                interaction_stream = await call_attach_output(
+                    self._instance, steal=steal_output
+                )
                 if interaction_stream is None:
                     async for chunk in _yield_runtime_accepted():
                         yield chunk
@@ -19908,6 +20185,7 @@ class JiuWenSwarmDeepAdapter:
                 parsed = self._parse_stream_chunk(
                     chunk,
                     _streamed_text=segment_streamed_text,
+                    _parent_session_id=session_id,
                 )
                 parsed = self._adapt_goal_intermediate_final(parsed)
                 if parsed is not None:
@@ -20485,6 +20763,7 @@ class JiuWenSwarmDeepAdapter:
         _stage: str = "",
         _streamed_text: str = "",
         _protocol_buffer: Any = None,
+        _parent_session_id: str | None = None,
     ) -> dict | None:
         """将 SDK OutputSchema 转为前端可消费的 payload dict.
 
@@ -20495,6 +20774,7 @@ class JiuWenSwarmDeepAdapter:
             _streamed_text: 本段已通过 chat.delta 发出的可见正文（用于空 final / drain）
             _protocol_buffer: 调用方持有的 StreamProtocolBuffer；跨 chunk 缓冲在 call site
                 feed/flush，此处仅吸收关键字以免 TypeError
+            _parent_session_id: parent session fallback for native subagent persist
 
         Returns:
             dict  – 含 event_type 的 payload，或 None（需跳过的帧）。
@@ -20793,6 +21073,14 @@ class JiuWenSwarmDeepAdapter:
                             "timestamp": payload.get("timestamp"),
                         }
                     return None
+
+                handled, parsed = try_handle_subagent_chunk(
+                    chunk_type,
+                    payload,
+                    parent_session_id=_parent_session_id,
+                )
+                if handled:
+                    return parsed
 
                 if chunk_type == "context.usage":
                     if isinstance(payload, dict):
@@ -22234,6 +22522,7 @@ def _agent_def_to_subagent_config(
     model: Any,
     workspace: str,
     model_cache: dict[str, Any] | None = None,
+    sys_operation: SysOperation | None = None,
 ) -> SubAgentConfig:
     """将 AgentDefinition 转换为 SubAgentConfig，用于 SubagentRail 注册。
 
@@ -22242,6 +22531,10 @@ def _agent_def_to_subagent_config(
         model: 父 agent 的 Model 实例（作为默认模型）
         workspace: 工作空间路径
         model_cache: 模型缓存字典（用于按名称查找指定模型）
+        sys_operation: 父 agent 的 SysOperation。子 agent 必须复用同一文件系统
+            边界。``DeepAgent.create_subagent`` 只在 ``spec.workspace`` 同时非空时
+            才采用 ``spec.sys_operation``，因此 workspace 也要一并写入 spec，否则
+            会落到一套带 ``restrict_to_sandbox`` 约束的新 LOCAL SysOperation。
     """
     from openjiuwen.harness.schema.config import SubAgentConfig
 
@@ -22289,6 +22582,8 @@ def _agent_def_to_subagent_config(
         system_prompt=agent_def.prompt,
         tools=tools,
         model=resolved_model,
+        workspace=workspace,
+        sys_operation=sys_operation,
         skills=agent_def.skills,
         max_iterations=agent_def.max_iterations,
         enable_task_loop=True,
@@ -22314,13 +22609,14 @@ def _load_custom_subagents(
         model: 模型配置
         workspace: 工作空间路径
         logger_name: 日志记录器名称
-        **kwargs: 额外参数，支持 model_cache 等
+        **kwargs: 额外参数，支持 model_cache、sys_operation 等
     """
     from jiuwenswarm.server.runtime.agent_config_service import AgentConfigService
 
     _logger = logging.getLogger(logger_name)
     agent_service = AgentConfigService(workspace_dir)
     model_cache: dict | None = kwargs.get("model_cache")
+    sys_operation = kwargs.get("sys_operation")
     result: list[Any] = []
     for agent_def in agent_service.list_agents():
         if agent_def.source == "builtin":
@@ -22329,7 +22625,9 @@ def _load_custom_subagents(
         # 只有显式 enabled: true 才加载
         if not (isinstance(subagent_cfg, dict) and bool(subagent_cfg.get("enabled", False))):
             continue
-        custom_spec = _agent_def_to_subagent_config(agent_def, model, workspace, model_cache)
+        custom_spec = _agent_def_to_subagent_config(
+            agent_def, model, workspace, model_cache, sys_operation,
+        )
         custom_spec.factory_kwargs = {"auto_create_workspace": False}
         result.append(custom_spec)
         _logger.info("loaded custom agent '%s' from %s", agent_def.name, agent_def.source)

@@ -564,6 +564,10 @@ react:
   task_planning:
     enable_progress_repeat: ${TODO_PROGRESS_REPEAT:-true}
     list_tool_call_interval: 20
+  # 常驻 subagent 运行时。开启后 task_tool 由 subagent_spawn/wait/list/
+  # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
+  subagent_runtime:
+    enabled: true
   # ProgressiveToolRail: 工具延迟加载，固定 eager_tools schema，deferred 工具通过
   # tools_search → invoke_tool 间接调用，最大化 prefix cache 命中率。
   tool_lazy_load:
@@ -616,6 +620,9 @@ react:
       enabled: false
       # max_iterations: 15
     browser_agent:
+      enabled: true
+      # max_iterations: 100
+    statusline-setup:
       enabled: true
       # max_iterations: 15
   # ============ SkillTurbo 配置 ============
@@ -907,6 +914,15 @@ execution_guard:
     repeat_window_chars: 1024
     # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
     single_char_repeat_count: 90
+  # develop 防死循环 rail：重复调用 / ping-pong / 未知工具打断（force-finish）。
+  # 默认关闭，避免和 dest-stable 已开启的 agent_ras.repeat_tool 双挂。
+  # 不是 issue 的 OPEN/HALF_OPEN 恢复型熔断。
+  circuit_breaker:
+    enabled: false
+    warning_threshold: 10
+    critical_threshold: 20
+    global_breaker_threshold: 30
+    unknown_tool_threshold: 10
 
 # Agent RAS 整体配置
 agent_ras:

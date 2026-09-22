@@ -2711,5 +2711,46 @@
     "errors": {
       "actionFailed": "Action failed"
     }
+  },
+  "subagent": {
+    "title": "Subagents",
+    "compactTitle": "Subagents ({{count}})",
+    "activeListTitle": "Active now {{count}}",
+    "expand": "Expand Subagents",
+    "selectWithStatus": "Select {{name}}, status: {{status}}",
+    "running": "Running",
+    "idle": "Waiting",
+    "closed": "Closed",
+    "failed": "Error",
+    "cancelled": "Cancelled",
+    "activityTitle": "Activity",
+    "activityEmpty": "No activity yet",
+    "historyLoading": "Restoring history…",
+    "empty": "No subagents",
+    "activity": {
+      "thinking": "Thinking",
+      "toolCall": "Tool call",
+      "toolResult": "Tool result",
+      "expand": "Expand activity details",
+      "collapse": "Collapse activity details",
+      "ok": "OK",
+      "error": "Error",
+      "truncated": "Activity condensed",
+      "fields": {
+        "type": "Type",
+        "time": "Time",
+        "tool": "Tool",
+        "call": "Call",
+        "result": "Result",
+        "content": "Content",
+        "status": "Status",
+        "dropped": "Dropped"
+      },
+      "tools": {
+        "search": "Web search",
+        "terminal": "Terminal",
+        "todo": "Task list"
+      }
+    }
   }
 }

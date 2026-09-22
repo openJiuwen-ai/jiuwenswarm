@@ -298,6 +298,7 @@ class EventType(Enum):
     CHAT_EVOLUTION_GENERATED = "chat.evolution_generated"
     CHAT_EVOLUTION_PUBLISHED = "chat.evolution_published"
     CHAT_SUBTASK_UPDATE = "chat.subtask_update"
+    CHAT_SUBAGENT_ACTIVITY = "chat.subagent_activity"
     CHAT_ASK_USER_QUESTION = "chat.ask_user_question"
     PLAN_APPROVAL_REQUIRED = "plan.approval_required"
     CHAT_SESSION_RESULT = "chat.session_result"

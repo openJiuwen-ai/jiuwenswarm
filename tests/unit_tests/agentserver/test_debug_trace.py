@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from jiuwenswarm.server.runtime.debug_trace import (
     DebugTraceLogger,
     resolve_debug_trace_settings,
@@ -799,6 +801,41 @@ class TestSubagentCapture:
         lg.end_run(status="ok")
         lg.flush()
 
+    def test_invoke_subagent_with_trace_uses_session_id_fallback(self, tmp_path):
+        from jiuwenswarm.server.runtime.debug_trace import invoke_subagent_with_trace
+        from jiuwenswarm.server.runtime.debug_trace.context import (
+            register_debug_trace_logger,
+            unregister_debug_trace_logger,
+        )
+
+        lg = _logger(tmp_path, session_id="sid-parent")
+        lg.start_run()
+        register_debug_trace_logger("sid-parent", lg)
+        try:
+            captured: dict[str, Any] = {}
+
+            class FakeSub:
+                async def invoke(self, inputs, session=None):  # pragma: no cover
+                    return {"output": "x"}
+
+                async def stream(self, inputs, session=None):
+                    captured["session"] = session
+                    yield _chunk("llm_output", {"content": "hi"})
+
+            asyncio.run(invoke_subagent_with_trace(
+                FakeSub(),
+                inputs={"query": "q"},
+                session=None,
+                session_id="sid-parent",
+                source_label="subagent:builtin:explore_agent",
+            ))
+        finally:
+            unregister_debug_trace_logger("sid-parent")
+            lg.end_run(status="ok")
+            lg.flush()
+        assert captured.get("session") is None
+        assert "subagent start" in _read(lg)
+
     def test_invoke_subagent_with_trace_flag_off_falls_back_to_invoke(self, tmp_path):
         from jiuwenswarm.server.runtime.debug_trace import (
             invoke_subagent_with_trace,
@@ -871,3 +908,178 @@ class TestSubagentCapture:
         apply_task_tool_debug_patch()
         apply_task_tool_debug_patch()  # second call must be a no-op
         assert getattr(TaskTool, "debug_trace_patch_applied", False) is True
+        mode = getattr(TaskTool, "debug_trace_patch_mode", None)
+        assert mode in {"dispatch_only", "unsupported_sdk"}
+
+    def test_task_tool_source_label_prefers_card_name(self):
+        from types import SimpleNamespace
+
+        from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+            _subagent_source_label,
+        )
+
+        named = SimpleNamespace(card=SimpleNamespace(name="explore_agent", id="card-id"))
+        assert _subagent_source_label(named) == "subagent:builtin:explore_agent"
+        id_only = SimpleNamespace(card=SimpleNamespace(id="browser_agent"))
+        assert _subagent_source_label(id_only) == "subagent:builtin:browser_agent"
+        assert _subagent_source_label(SimpleNamespace()) == "subagent:builtin:unknown"
+
+    def test_task_tool_patch_forwards_sdk_session(self, monkeypatch):
+        from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+            _wrap_invoke_subagent,
+        )
+
+        forwarded: dict[str, Any] = {}
+        captured: dict[str, Any] = {}
+
+        async def original_dispatch(
+            self, subagent, inputs, *, parent_session_id, session=None,
+        ):
+            forwarded["sdk"] = {
+                "parent_session_id": parent_session_id,
+                "session": session,
+                "inputs": inputs,
+            }
+            return "from-sdk"
+
+        async def fake_capture(
+            subagent, *, inputs, session, source_label, session_id=None,
+        ):
+            captured["trace"] = {
+                "session": session,
+                "session_id": session_id,
+                "source_label": source_label,
+                "inputs": inputs,
+            }
+            return {"output": "from-trace"}
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.debug_trace.invoke_subagent_with_trace",
+            fake_capture,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.debug_trace.get_debug_trace_logger",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.debug_trace.context.get_debug_trace_logger_for_session",
+            lambda _sid: None,
+        )
+
+        parent = SimpleNamespace(name="parent-session")
+        wrapped = _wrap_invoke_subagent(original_dispatch)
+        result = asyncio.run(wrapped(
+            None,
+            SimpleNamespace(card=SimpleNamespace(name="explore_agent")),
+            {"query": "q"},
+            parent_session_id="sid-parent",
+            session=parent,
+        ))
+        assert result == "from-sdk"
+        assert forwarded["sdk"]["session"] is parent
+        assert forwarded["sdk"]["parent_session_id"] == "sid-parent"
+
+        class _CaptureOn:
+            def captures_subagent_flow(self):
+                return True
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.debug_trace.get_debug_trace_logger",
+            lambda: _CaptureOn(),
+        )
+        result = asyncio.run(wrapped(
+            None,
+            SimpleNamespace(card=SimpleNamespace(name="explore_agent")),
+            {"query": "q"},
+            parent_session_id="sid-parent",
+            session=parent,
+        ))
+        assert result == {"output": "from-trace"}
+        assert captured["trace"]["session"] is parent
+        assert captured["trace"]["session_id"] == "sid-parent"
+        assert captured["trace"]["source_label"] == "subagent:builtin:explore_agent"
+
+    def test_task_tool_dump_file_golden_matches_dispatch_sections(self, tmp_path):
+        """Origin: 自拟 §6.I. Dump-file golden after a real TaskTool.invoke.
+
+        Not a projection-payload check. The dest debug logger writes the
+        same section order the UI dump file uses.
+        """
+        from openjiuwen.core.foundation.tool import ToolCard
+        from openjiuwen.core.session.agent import Session
+        from openjiuwen.harness.tools.subagent.task_tool import TaskTool
+
+        from jiuwenswarm.server.runtime.debug_trace import (
+            reset_debug_trace_logger,
+            set_debug_trace_logger,
+        )
+        from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+            apply_task_tool_debug_patch,
+        )
+
+        apply_task_tool_debug_patch()
+        if getattr(TaskTool, "debug_trace_patch_mode", None) == "unsupported_sdk":
+            pytest.skip("current SDK has no _invoke_subagent hook")
+
+        lg = _logger(tmp_path, session_id="dump-parent")
+        lg.start_run(input_text="explore the repo")
+        token = set_debug_trace_logger(lg)
+
+        class FakeSub:
+            card = SimpleNamespace(name="explore_agent", id="explore")
+
+            async def invoke(self, inputs, session=None):
+                del inputs, session
+                return {"output": "should-not-happen"}
+
+            async def stream(self, inputs, session=None):
+                del inputs, session
+                yield _chunk("llm_output", {"content": "hello "})
+                yield _chunk("llm_output", {"content": "world"})
+                yield _chunk("answer", {"output": "hello world", "result_type": "answer"})
+
+        tool = TaskTool(
+            card=ToolCard(id="task_tool", name="task_tool", description="task"),
+            parent_agent=SimpleNamespace(create_subagent=lambda *_a, **_k: FakeSub()),
+        )
+        try:
+            result = asyncio.run(
+                tool.invoke(
+                    {
+                        "subagent_type": "explore_agent",
+                        "task_description": "explore the repo",
+                    },
+                    session=Session(session_id="dump-parent"),
+                )
+            )
+        finally:
+            reset_debug_trace_logger(token)
+        assert result.success is True
+        assert result.data["output"] == "hello world"
+        lg.end_run(status="ok")
+        out = _read(lg)
+        assert lg._path.name == "dump-code-dump-parent.txt"
+        assert [line for line in out.splitlines() if line.startswith("==========")] == [
+            "========== run start ==========",
+            "========== subagent start ==========",
+            "========== subagent end ==========",
+            "========== run end ==========",
+        ]
+        assert "source=subagent:builtin:explore_agent" in out
+        assert "prompt=explore the repo" in out
+        assert "hello world" in out
+        assert "should-not-happen" not in out
+
+    def test_task_tool_patch_marks_unsupported_sdk_without_behavior_change(self):
+        from openjiuwen.harness.tools.subagent.task_tool import TaskTool
+
+        from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+            apply_task_tool_debug_patch,
+        )
+
+        apply_task_tool_debug_patch()
+        mode = getattr(TaskTool, "debug_trace_patch_mode", None)
+        if mode != "unsupported_sdk":
+            pytest.skip("current SDK already exposes _invoke_subagent")
+        assert TaskTool.invoke.__module__ == "openjiuwen.harness.tools.subagent.task_tool"
+        assert getattr(TaskTool, "_invoke_subagent", None) is None
