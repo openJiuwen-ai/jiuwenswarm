@@ -95,7 +95,12 @@ def _sanitize_glm_tool_xml_tags(raw: str) -> str:
     return result
 
 _PATCH_APPLIED = False
+# 每个补丁拥有独立的幂等标志：补丁之间互不短路，可以按渠道分别开启
+# （例如仅 SSE 响应组装补丁需要按渠道门控）。
 _AUTH_HEADER_PATCH_APPLIED = False
+_RESPONSE_ASSEMBLY_PATCH_APPLIED = False
+_GLM_XML_SANITIZE_PATCH_APPLIED = False
+_MAAS_SPAN_ID_PATCH_APPLIED = False
 _HUAWEI_MAAS_PLACEHOLDER_API_KEY = "huawei-maas-session"
 
 
@@ -397,36 +402,39 @@ def assemble_openai_response(response: str) -> Any:
     )
 
 
-def apply_openai_sse_invoke_patch() -> None:
-    """给 ``OpenAIModelClient`` 打补丁：
-
-    1. SSE-only 网关兼容：非流式调用下返回 str 时，先组装成标准 ChatCompletion。
-    2. GLM XML 标签清洗：流式 chunk 中 tool_call.arguments 的 XML 标签剥离。
-    3. 保留 tip ``default_headers`` 中的 ``Authorization``（Huawei MaaS Basic）。
-    4. 华为 MaaS x-span-id 注入：调用华为云 ModelArts MaaS 时，在请求头注入
-       ``x-span-id`` 便于 MaaS 侧链路追踪。
-
-    幂等：重复调用只生效一次。在服务启动早期调用即可覆盖 subagent / 心跳等
-    所有走 ``invoke()`` / ``stream()`` 的 LLM 调用。
-    """
-    global _PATCH_APPLIED
-    apply_openai_auth_header_patch()
-    if _PATCH_APPLIED:
-        return
-
+def _import_openai_model_client() -> Any | None:
+    """导入 ``OpenAIModelClient``；openjiuwen 不可用时返回 ``None``。"""
     try:
         from openjiuwen.core.foundation.llm.model_clients.openai_model_client import (
             OpenAIModelClient,
         )
     except Exception as exc:  # pragma: no cover - openjiuwen 不可用时静默跳过
         logger.warning("[llm_sse_patch] 未能导入 OpenAIModelClient，跳过补丁: %s", exc)
+        return None
+    return OpenAIModelClient
+
+
+def apply_openai_response_assembly_patch() -> None:
+    """Patch 1: SSE-only 网关兼容 —— 非流式调用返回 ``str`` 时组装成标准 ``ChatCompletion``。
+
+    该补丁只对「以 ``text/event-stream`` 返回非流式响应」的网关有意义，因此是
+    唯一需要按渠道门控的补丁（见 ``app_agentserver._should_apply_sse_invoke_patch``）；
+    其余补丁（GLM 清洗 / Authorization / MaaS x-span-id）对所有渠道无条件生效。
+
+    幂等：使用独立的 ``_RESPONSE_ASSEMBLY_PATCH_APPLIED`` 标志，不受其他补丁影响。
+    """
+    global _RESPONSE_ASSEMBLY_PATCH_APPLIED
+    if _RESPONSE_ASSEMBLY_PATCH_APPLIED:
         return
 
-    if getattr(OpenAIModelClient, "_sse_invoke_patch_applied", False):
-        _PATCH_APPLIED = True
+    OpenAIModelClient = _import_openai_model_client()
+    if OpenAIModelClient is None:
         return
 
-    # --- Patch 1: _parse_response (SSE-only 网关兼容) ---
+    if getattr(OpenAIModelClient, "_response_assembly_patch_applied", False):
+        _RESPONSE_ASSEMBLY_PATCH_APPLIED = True
+        return
+
     _orig_parse_response = OpenAIModelClient._parse_response  # pylint: disable=protected-access
 
     async def _parse_response_with_sse_guard(
@@ -439,8 +447,30 @@ def apply_openai_sse_invoke_patch() -> None:
         return await _orig_parse_response(self, response, parser)
 
     OpenAIModelClient._parse_response = _parse_response_with_sse_guard  # pylint: disable=protected-access
+    OpenAIModelClient._response_assembly_patch_applied = True  # pylint: disable=protected-access
+    _RESPONSE_ASSEMBLY_PATCH_APPLIED = True
+    logger.info("[llm_sse_patch] OpenAIModelClient SSE 响应组装补丁已应用")
 
-    # --- Patch 2: _parse_stream_chunk (GLM XML 标签清洗) ---
+
+def apply_glm_tool_xml_sanitize_patch() -> None:
+    """Patch 2: GLM XML 标签清洗 —— 剥离流式 chunk 中 tool_call.arguments 的原生 XML 标签。
+
+    生产使用 GLM 模型（含 glm-5.2）时必需，与渠道类型无关，必须无条件应用。
+
+    幂等：使用独立的 ``_GLM_XML_SANITIZE_PATCH_APPLIED`` 标志。
+    """
+    global _GLM_XML_SANITIZE_PATCH_APPLIED
+    if _GLM_XML_SANITIZE_PATCH_APPLIED:
+        return
+
+    OpenAIModelClient = _import_openai_model_client()
+    if OpenAIModelClient is None:
+        return
+
+    if getattr(OpenAIModelClient, "_glm_xml_sanitize_patch_applied", False):
+        _GLM_XML_SANITIZE_PATCH_APPLIED = True
+        return
+
     _orig_parse_stream_chunk = OpenAIModelClient._parse_stream_chunk  # pylint: disable=protected-access
 
     def _parse_stream_chunk_with_sanitize(self: Any, chunk: Any):
@@ -458,12 +488,35 @@ def apply_openai_sse_invoke_patch() -> None:
         return result
 
     OpenAIModelClient._parse_stream_chunk = _parse_stream_chunk_with_sanitize  # pylint: disable=protected-access
+    OpenAIModelClient._glm_xml_sanitize_patch_applied = True  # pylint: disable=protected-access
+    _GLM_XML_SANITIZE_PATCH_APPLIED = True
+    logger.info("[llm_sse_patch] OpenAIModelClient GLM XML 标签清洗补丁已应用")
 
-    # --- Patch 3: invoke / stream 注入华为 MaaS x-span-id ---
-    # 调用华为云 ModelArts MaaS 时，在请求头注入 x-span-id（uuid4 hex）便于
-    # MaaS 侧链路追踪。通过包装 invoke / stream 出口，复用原 custom_headers
-    # 合并链路（_build_request_headers），非 MaaS 端点零开销透传。
-    # 每次 invoke / stream 调用（含重试触发的重新调用）都会生成独立 span_id。
+
+def apply_huawei_maas_span_id_patch() -> None:
+    """Patch 4: 华为 MaaS x-span-id 注入。
+
+    调用华为云 ModelArts MaaS 时，在请求头注入 ``x-span-id``（uuid4 hex）便于
+    MaaS 侧链路追踪。通过包装 ``invoke`` / ``stream`` 出口，复用原 custom_headers
+    合并链路（``_build_request_headers``），非 MaaS 端点零开销透传。
+    每次 ``invoke`` / ``stream`` 调用（含重试触发的重新调用）都会生成独立 span_id。
+
+    生产 OfficeClaw + Huawei MaaS 链路依赖该补丁，与渠道类型无关，必须无条件应用。
+
+    幂等：使用独立的 ``_MAAS_SPAN_ID_PATCH_APPLIED`` 标志。
+    """
+    global _MAAS_SPAN_ID_PATCH_APPLIED
+    if _MAAS_SPAN_ID_PATCH_APPLIED:
+        return
+
+    OpenAIModelClient = _import_openai_model_client()
+    if OpenAIModelClient is None:
+        return
+
+    if getattr(OpenAIModelClient, "_maas_span_id_patch_applied", False):
+        _MAAS_SPAN_ID_PATCH_APPLIED = True
+        return
+
     _orig_invoke = OpenAIModelClient.invoke
     _orig_stream = OpenAIModelClient.stream
 
@@ -490,9 +543,25 @@ def apply_openai_sse_invoke_patch() -> None:
     OpenAIModelClient.invoke = _invoke_with_maas_span
     OpenAIModelClient.stream = _stream_with_maas_span
 
-    OpenAIModelClient._sse_invoke_patch_applied = True  # pylint: disable=protected-access
+    OpenAIModelClient._maas_span_id_patch_applied = True  # pylint: disable=protected-access
+    _MAAS_SPAN_ID_PATCH_APPLIED = True
+    logger.info("[llm_sse_patch] OpenAIModelClient 华为 MaaS x-span-id 注入补丁已应用")
+
+
+def apply_openai_sse_invoke_patch() -> None:
+    """聚合入口：一次性应用全部 4 个补丁（保留以兼容既有调用方）。
+
+    ⚠️ 服务启动路径**不要**直接调用本函数：它会把「仅对 SSE-only 网关有意义」的
+    :func:`apply_openai_response_assembly_patch` 一并打开。启动时应分别调用
+    :func:`apply_openai_auth_header_patch` / :func:`apply_glm_tool_xml_sanitize_patch`
+    / :func:`apply_huawei_maas_span_id_patch`（无条件），再按渠道门控决定是否调用
+    :func:`apply_openai_response_assembly_patch`。
+
+    幂等：4 个子补丁各自幂等，重复调用只生效一次。
+    """
+    global _PATCH_APPLIED
+    apply_openai_auth_header_patch()
+    apply_glm_tool_xml_sanitize_patch()
+    apply_huawei_maas_span_id_patch()
+    apply_openai_response_assembly_patch()
     _PATCH_APPLIED = True
-    logger.info(
-        "[llm_sse_patch] OpenAIModelClient SSE 兼容 + GLM XML 清洗 + Authorization 保留"
-        " + 华为 MaaS x-span-id 注入补丁已应用"
-    )
