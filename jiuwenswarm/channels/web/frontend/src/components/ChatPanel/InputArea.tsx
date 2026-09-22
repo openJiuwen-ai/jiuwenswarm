@@ -43,6 +43,7 @@ import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig'
 import { effectivePermissionProfile, permissionOptionsForMode } from '../../config/permissionProfiles';
 import clsx from 'clsx';
 import { PermissionWarningDialog } from './PermissionWarningDialog';
+import { GoalOverwriteConfirmModal } from '../GoalBar/GoalOverwriteConfirmModal';
 import ChatModelSelector from './ChatModelSelector';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
@@ -220,6 +221,13 @@ type WorkIconName = 'add' | 'arrow' | 'check' | 'close' | 'collapse' | 'expand' 
 type ComposerSuggestionState = {
   kind: ComposerSuggestionKind;
   query: string;
+};
+
+/** 目标覆盖确认弹窗的 pending 态：slash /goal set 流程 await 这个 Promise 拿用户的确认结果。 */
+type GoalOverwritePrompt = {
+  currentObjective: string;
+  requestedObjective: string;
+  resolve: (confirmed: boolean) => void;
 };
 
 type ComposerSuggestionItem = {
@@ -765,6 +773,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [slashSkills, setSlashSkills] = useState<InputAreaSkillItem[]>([]);
   const [slashCatalogLoading, setSlashCatalogLoading] = useState(false);
   const [slashCatalogLoaded, setSlashCatalogLoaded] = useState(false);
+  // 已有未完成目标时再次 set 的覆盖确认（取代 window.confirm 原生对话框，见
+  // GoalOverwriteConfirmModal）；slash 命令流程 await 这个 Promise 决定是否继续。
+  const [goalOverwritePrompt, setGoalOverwritePrompt] = useState<GoalOverwritePrompt | null>(null);
+  const goalOverwritePromptRef = useRef<GoalOverwritePrompt | null>(null);
   const [modeMenuAnchor, setModeMenuAnchor] = useState<DOMRect | null>(null);
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [attachMenuAnchor, setAttachMenuAnchor] = useState<DOMRect | null>(null);
@@ -973,10 +985,17 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const showWorkContextRow = activeSessionId === NEW_CONVERSATION_ID;
   /** Goal 入口是否适用于当前上下文（agent 模式 + 已接入 onSetGoal，如欢迎页新会话就不适用） */
   const canUseGoalMenu = isAgentMode && Boolean(onSetGoal);
-  // 只跟 armed 挂钩：这个 tag 是"下一条消息将用于设置目标"的过渡态指示，发送后 armed 变 false
-  // 就该跟着消失，不能靠"目标是否存在"续命——目标存在与否、当前状态、编辑/暂停/删除，已经由
-  // 输入框上方常驻的 GoalBar 完整覆盖，工具栏这里再挂一份重复的常驻入口只会显得"选择没解除"。
-  const goalTagVisible = canUseGoalMenu && goalArmed;
+  // 只跟 armed / 输入框里的 /goal 前缀挂钩：这个 tag 是"下一条消息将用于设置目标"的过渡态指示，
+  // 发送后 armed 变 false 就该跟着消失，不能靠"目标是否存在"续命——目标存在与否、当前状态、
+  // 编辑/暂停/删除，已经由输入框上方常驻的 GoalBar 完整覆盖，工具栏这里再挂一份重复的常驻入口
+  // 只会显得"选择没解除"。
+  // 在对话里输入 /goal（手工输入或从面板选中 chip）时同样展示这个 tag，否则用户进入设目标流程
+  // 没有任何视觉提示（issue #4682：输入 /goal 没有显示"目标"标签）。
+  // 只订阅布尔结果：inputValue 每次击键都变，订阅整串会让这个巨型组件每键重渲染一次。
+  const composingGoalSlash = useChatStore((s) =>
+    /^\/goal(?=\s|$)/i.test((s.runtimes[activeSessionId ?? '']?.inputValue ?? '').trim()),
+  );
+  const goalTagVisible = canUseGoalMenu && (goalArmed || composingGoalSlash);
   // Plan 是持续开关（不是 Goal 那种"下一条消息生效"的过渡态）：打开后一直用
   // agent.plan 发送，直到用户点叉或后端推 plan.mode_exited。
   // 和 Goal 一样只对单 agent 开放，集群模式不提供 Plan 入口。
@@ -2029,6 +2048,69 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     [activeSessionId, planActive, pushAttachmentAlert, t],
   );
 
+  /** 覆盖确认走样式化弹窗（issue #4682：window.confirm 原生对话框与产品视觉脱节）。 */
+  const confirmGoalOverwrite = useCallback(
+    (currentObjective: string, requestedObjective: string) =>
+      new Promise<boolean>((resolve) => {
+        const prompt: GoalOverwritePrompt = { currentObjective, requestedObjective, resolve };
+        goalOverwritePromptRef.current = prompt;
+        setGoalOverwritePrompt(prompt);
+      }),
+    [],
+  );
+
+  const settleGoalOverwritePrompt = useCallback((confirmed: boolean) => {
+    const prompt = goalOverwritePromptRef.current;
+    goalOverwritePromptRef.current = null;
+    setGoalOverwritePrompt(null);
+    prompt?.resolve(confirmed);
+  }, []);
+
+  // 等待确认期间组件被卸载（如切换会话重建输入区）时按取消收口，避免 slash 命令的 await 永久挂起。
+  useEffect(
+    () => () => {
+      goalOverwritePromptRef.current?.resolve(false);
+      goalOverwritePromptRef.current = null;
+    },
+    [],
+  );
+
+  // 「目标」tag 因输入框里的 /goal 前缀出现时，× 要把这个前缀一起移除（面板选中的原子 chip
+  // 或手工输入的命令词），否则关掉 tag 后输入仍匹配 /goal，tag 会立刻复活。
+  const removeLeadingGoalSlashToken = useCallback(() => {
+    const el = inputRef.current;
+    const sid = useChatStore.getState().activeSessionId;
+    if (!el || !sid) return;
+    // 跳过开头的占位空文本节点（contenteditable 常残留 ​），找第一个有内容的节点
+    let first: ChildNode | null = el.firstChild;
+    while (
+      first &&
+      first.nodeType === Node.TEXT_NODE &&
+      !(first.textContent || '').replace(/​/g, '')
+    ) {
+      first = first.nextSibling;
+    }
+    if (!first) return;
+    if (
+      first instanceof HTMLElement &&
+      first.getAttribute('contenteditable') === 'false' &&
+      first.dataset.slashCommand === 'goal'
+    ) {
+      const next = first.nextSibling;
+      first.remove();
+      if (next && next.nodeType === Node.TEXT_NODE && (next.textContent || '').startsWith(' ')) {
+        next.textContent = (next.textContent || '').slice(1);
+      }
+    } else if (first.nodeType === Node.TEXT_NODE) {
+      const text = first.textContent || '';
+      const matched = text.match(/^\/goal(\s|$)/i);
+      if (matched) {
+        first.textContent = text.slice(matched[0].length);
+      }
+    }
+    useChatStore.getState().setInputValue(sid, extractPlainText());
+  }, [extractPlainText]);
+
   const handleSubmit = useCallback(() => {
     if (composerDisabled) return;
 
@@ -2067,8 +2149,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               forkConversation: onForkSession,
               startSideConversation: onStartSideConversation,
               runGoalAction: runGoalSlashAction,
-              confirmGoalOverwrite: (currentObjective, requestedObjective) =>
-                window.confirm(t('goal.overwriteConfirm', { currentObjective, requestedObjective })),
+              confirmGoalOverwrite,
             },
             args,
           );
@@ -2347,8 +2428,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 forkConversation: onForkSession,
                 startSideConversation: onStartSideConversation,
                 runGoalAction: runGoalSlashAction,
-                confirmGoalOverwrite: (currentObjective, requestedObjective) =>
-                  window.confirm(t('goal.overwriteConfirm', { currentObjective, requestedObjective })),
+                confirmGoalOverwrite,
               },
               '',
             );
@@ -4223,6 +4303,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           onClearGoal?.(activeSessionId);
                         }
                         useGoalStore.getState().setArmed(activeSessionId, false);
+                        removeLeadingGoalSlashToken();
                       }}
                     >
                       <WorkIcon name="close" />
@@ -4833,6 +4914,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             })()}
         </div>
       </div>
+
+      {goalOverwritePrompt && (
+        <GoalOverwriteConfirmModal
+          currentObjective={goalOverwritePrompt.currentObjective}
+          requestedObjective={goalOverwritePrompt.requestedObjective}
+          onCancel={() => settleGoalOverwritePrompt(false)}
+          onConfirm={() => settleGoalOverwritePrompt(true)}
+        />
+      )}
     </>
   );
 });
