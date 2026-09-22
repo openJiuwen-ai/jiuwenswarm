@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -24,7 +25,7 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
 )
 
 DEFAULT_AGENT_WORKSPACE_ROOT = "/home/agentos/users"
-# Env override for gateway.agentos.sandbox_idle_timeout_seconds (vibeskill-aligned).
+# Env fallback for gateway.agentos.sandbox_idle_timeout_seconds.
 SANDBOX_IDLE_TIMEOUT_ENV = "SANDBOX_IDLE_TIMEOUT_SECONDS"
 # Env override for gateway.agentos.disconnect_cleanup_timeout_seconds.
 DISCONNECT_CLEANUP_TIMEOUT_ENV = "DISCONNECT_CLEANUP_TIMEOUT_SECONDS"
@@ -84,12 +85,7 @@ class RouterConfig:
 
 
 def agentos_router_selected(config: dict[str, Any]) -> bool:
-    gateway = config.get("gateway") if isinstance(config, dict) else {}
-    if not isinstance(gateway, dict):
-        return False
-    agent_client = gateway.get("agent_client")
-    if not isinstance(agent_client, dict):
-        agent_client = {}
+    agent_client = read_mapping_path(config, "gateway", "agent_client")
     return (
         str(agent_client.get("type") or "websocket").strip().lower()
         == "agentos_router"
@@ -119,12 +115,29 @@ def load_ssh_channel_endpoint(config: dict[str, Any]) -> SshChannelEndpoint | No
     return SshChannelEndpoint(ip=ip, port=port)
 
 
-def _read_float(section: dict[str, Any], key: str, default: float) -> float:
-    """Read a float honoring explicit ``0`` (``or default`` would swallow it)."""
-    raw = section.get(key)
+def read_mapping_path(config: Any, *path: str) -> Mapping[str, Any]:
+    """Return a nested mapping, or an empty mapping when the path is invalid."""
+    current = config
+    for key in path:
+        if not isinstance(current, Mapping):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, Mapping) else {}
+
+
+def read_optional_float(section: Any, key: str) -> float | None:
+    """Read an optional float from a mapping; missing or blank returns None."""
+    mapping = section if isinstance(section, Mapping) else {}
+    raw = mapping.get(key)
     if raw is None or (isinstance(raw, str) and not raw.strip()):
-        return default
+        return None
     return float(raw)
+
+
+def _read_float(section: Mapping[str, Any], key: str, default: float) -> float:
+    """Read a float honoring explicit ``0`` (``or default`` would swallow it)."""
+    value = read_optional_float(section, key)
+    return default if value is None else value
 
 
 def _read_float_env(name: str) -> float | None:
@@ -138,7 +151,21 @@ def _read_float_env(name: str) -> float | None:
     return float(text)
 
 
-def _read_bool(section: dict[str, Any], key: str, default: bool) -> bool:
+def resolve_float_setting(
+    section: Mapping[str, Any],
+    key: str,
+    env_name: str,
+    default: float,
+) -> float:
+    """Resolve a float setting with YAML > env > default precedence."""
+    configured = read_optional_float(section, key)
+    if configured is not None:
+        return configured
+    environment = _read_float_env(env_name)
+    return environment if environment is not None else default
+
+
+def _read_bool(section: Mapping[str, Any], key: str, default: bool) -> bool:
     """Read a bool; missing / blank keeps *default*; explicit false/0/no/off disables."""
     raw = section.get(key)
     if raw is None or (isinstance(raw, str) and not str(raw).strip()):
@@ -148,7 +175,7 @@ def _read_bool(section: dict[str, Any], key: str, default: bool) -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
-def _read_int(section: dict[str, Any], key: str, default: int) -> int:
+def _read_int(section: Mapping[str, Any], key: str, default: int) -> int:
     """Read an int honoring explicit ``0`` (``or default`` would swallow it)."""
     raw = section.get(key)
     if raw is None or (isinstance(raw, str) and not raw.strip()):
@@ -182,17 +209,17 @@ def _require_positive(value: int | float, *, name: str) -> None:
         raise ValueError(f"{name} must be > 0, got {value}")
 
 
-def _load_probe_settings(agentos: dict[str, Any]) -> RuntimeProbeSettings:
+def _load_probe_settings(agentos: Mapping[str, Any]) -> RuntimeProbeSettings:
     """Load ``gateway.agentos.probes``; env wins over yaml."""
     defaults = DEFAULT_RUNTIME_PROBE_SETTINGS
     probes = agentos.get("probes")
-    if not isinstance(probes, dict):
+    if not isinstance(probes, Mapping):
         probes = {}
     startup = probes.get("startup")
-    if not isinstance(startup, dict):
+    if not isinstance(startup, Mapping):
         startup = {}
     liveness = probes.get("liveness")
-    if not isinstance(liveness, dict):
+    if not isinstance(liveness, Mapping):
         liveness = {}
 
     wait_running_env = _read_float_env(WAIT_RUNNING_TIMEOUT_ENV)
@@ -314,18 +341,9 @@ def _load_probe_settings(agentos: dict[str, Any]) -> RuntimeProbeSettings:
 
 
 def load_router_config(config: dict[str, Any]) -> RouterConfig:
-    gateway = config.get("gateway") if isinstance(config, dict) else {}
-    if not isinstance(gateway, dict):
-        gateway = {}
-    agent_client = gateway.get("agent_client")
-    if not isinstance(agent_client, dict):
-        agent_client = {}
-    agentos = gateway.get("agentos")
-    if not isinstance(agentos, dict):
-        agentos = {}
-    registry = agentos.get("registry")
-    if not isinstance(registry, dict):
-        registry = {}
+    agent_client = read_mapping_path(config, "gateway", "agent_client")
+    agentos = read_mapping_path(config, "gateway", "agentos")
+    registry = read_mapping_path(config, "gateway", "agentos", "registry")
 
     frontend_endpoint = str(agent_client.get("frontend_endpoint") or "").strip()
     function_version_urn = str(
@@ -341,12 +359,12 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
     timeout = float(agentos.get("timeout") or 10)
     auth_enabled = str(agentos.get("auth_enabled", "false")).strip().lower() in ("true", "1", "yes")
 
-    # Env wins over yaml (incl. explicit 0 to disable), same as vibeskill.
-    idle_timeout_env = _read_float_env(SANDBOX_IDLE_TIMEOUT_ENV)
-    sandbox_idle_timeout_seconds = (
-        idle_timeout_env
-        if idle_timeout_env is not None
-        else _read_float(agentos, "sandbox_idle_timeout_seconds", 600.0)
+    # Persisted management-plane config wins; env is a startup fallback only.
+    sandbox_idle_timeout_seconds = resolve_float_setting(
+        agentos,
+        "sandbox_idle_timeout_seconds",
+        SANDBOX_IDLE_TIMEOUT_ENV,
+        600.0,
     )
 
     disconnect_cleanup_env = _read_float_env(DISCONNECT_CLEANUP_TIMEOUT_ENV)

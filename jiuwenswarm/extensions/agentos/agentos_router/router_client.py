@@ -35,6 +35,8 @@ from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthCon
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
     SshChannelEndpoint,
+    read_mapping_path,
+    read_optional_float,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import (
     agentos_extra,
@@ -2218,6 +2220,61 @@ class AgentOSRouterClient(AgentServerClient):
         )
 
     # ---------- idle sandbox reclamation ----------
+
+    def apply_remote_overrides(self, overrides: Mapping[str, Any]) -> None:
+        """Apply remotely-managed fields to the running process.
+
+        Narrow interface, no reconnect. Handles
+        ``gateway.agentos.sandbox_idle_timeout_seconds``, which is otherwise
+        frozen at construction -- this is its only runtime update path.
+
+        The management plane outranks env here: the remote value wins even when
+        ``SANDBOX_IDLE_TIMEOUT_SECONDS`` is set (env is only a startup fallback).
+        A remote document that omits the field leaves the current value untouched
+        -- it must not fall back to env/yaml, so deleting the field does not roll
+        anything back.
+
+        Starts/stops the reaper in both directions (0 disables reclamation).
+        """
+        agentos_section = read_mapping_path(overrides, "gateway", "agentos")
+        new_timeout = read_optional_float(
+            agentos_section,
+            "sandbox_idle_timeout_seconds",
+        )
+        if new_timeout is None:
+            # Field not pushed (or deleted): keep the current value.
+            return
+
+        previous = self._sandbox_idle_timeout_seconds
+        if new_timeout == previous:
+            return
+
+        self._sandbox_idle_timeout_seconds = new_timeout
+        log_agentos(
+            logger,
+            logging.INFO,
+            "config.sandbox_idle_timeout.update",
+            previous=previous,
+            current=new_timeout,
+        )
+
+        if new_timeout <= 0:
+            self._cancel_idle_reaper()
+        elif previous <= 0:
+            # Was disabled, now enabled: start the reaper. When both are
+            # positive the running loop already reads the new value, and
+            # ``create_task`` would need a running event loop we may not have.
+            self._ensure_idle_reaper_task()
+
+    def _cancel_idle_reaper(self) -> None:
+        """Cancel the reaper from a sync context (does not join the task).
+
+        Clears the handle first so a following enable can start a fresh task.
+        """
+        task = self._idle_reaper_task
+        self._idle_reaper_task = None
+        if task is not None and not task.done():
+            task.cancel()
 
     def _idle_reaper_enabled(self) -> bool:
         return self._sandbox_idle_timeout_seconds > 0

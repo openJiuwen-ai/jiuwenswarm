@@ -21,6 +21,9 @@ from jiuwenswarm.extensions.agentos.agentos_router.config import (
     SshChannelEndpoint,
     agentos_router_selected,
     load_router_config,
+    read_mapping_path,
+    read_optional_float,
+    resolve_float_setting,
 )
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
@@ -2522,7 +2525,7 @@ def test_load_router_config_sandbox_idle_knobs(monkeypatch) -> None:
     assert loaded.sandbox_idle_timeout_seconds == 0.0
     assert loaded.sandbox_idle_check_interval_seconds == 5.0
 
-    # Env overrides yaml (including yaml=0).
+    # Persisted config (including management-plane values) overrides env.
     monkeypatch.setenv("SANDBOX_IDLE_TIMEOUT_SECONDS", "120")
     env_loaded = load_router_config(
         {
@@ -2532,9 +2535,19 @@ def test_load_router_config_sandbox_idle_knobs(monkeypatch) -> None:
             }
         }
     )
-    assert env_loaded.sandbox_idle_timeout_seconds == 120.0
+    assert env_loaded.sandbox_idle_timeout_seconds == 0.0
 
-    # Env explicit 0 also disables.
+    negative_loaded = load_router_config(
+        {
+            "gateway": {
+                "agent_client": base_agent_client,
+                "agentos": {"sandbox_idle_timeout_seconds": -1},
+            }
+        }
+    )
+    assert negative_loaded.sandbox_idle_timeout_seconds == -1.0
+
+    # Env remains the fallback when the persisted field is absent.
     monkeypatch.setenv("SANDBOX_IDLE_TIMEOUT_SECONDS", "0")
     assert (
         load_router_config(
@@ -2542,6 +2555,45 @@ def test_load_router_config_sandbox_idle_knobs(monkeypatch) -> None:
         ).sandbox_idle_timeout_seconds
         == 0.0
     )
+
+
+def test_read_optional_float() -> None:
+    assert read_optional_float({"timeout": 12}, "timeout") == 12.0
+    assert read_optional_float({"timeout": "2.5"}, "timeout") == 2.5
+    assert read_optional_float({"timeout": 0}, "timeout") == 0.0
+    assert read_optional_float({"timeout": "  "}, "timeout") is None
+    assert read_optional_float({}, "timeout") is None
+    assert read_optional_float(None, "timeout") is None
+
+
+def test_resolve_float_setting_yaml_env_default(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_FLOAT_SETTING", "200")
+    assert resolve_float_setting({"timeout": 100}, "timeout", "TEST_FLOAT_SETTING", 300) == 100
+    assert resolve_float_setting({}, "timeout", "TEST_FLOAT_SETTING", 300) == 200
+    monkeypatch.delenv("TEST_FLOAT_SETTING")
+    assert resolve_float_setting({}, "timeout", "TEST_FLOAT_SETTING", 300) == 300
+
+
+@pytest.mark.parametrize(
+    ("config", "path", "expected"),
+    [
+        (
+            {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}},
+            ("gateway", "agentos"),
+            {"sandbox_idle_timeout_seconds": 120},
+        ),
+        (
+            {"gateway": {"agentos": {"registry": {"endpoint": "test"}}}},
+            ("gateway", "agentos", "registry"),
+            {"endpoint": "test"},
+        ),
+        ({"gateway": {"agentos": None}}, ("gateway", "agentos"), {}),
+        ({"gateway": "invalid"}, ("gateway", "agentos"), {}),
+        (None, ("gateway",), {}),
+    ],
+)
+def test_read_mapping_path(config, path, expected) -> None:
+    assert dict(read_mapping_path(config, *path)) == expected
 
 
 def test_load_router_config_probe_knobs(monkeypatch) -> None:
@@ -3008,3 +3060,108 @@ async def test_register_agent_skips_when_runtime_already_cleaned() -> None:
         assert len(registry.registered) == 1  # 无新增
     finally:
         await client.shutdown()
+
+
+# --------------------------------------------------------------------------
+# apply_remote_overrides (data-plane config sync)
+# --------------------------------------------------------------------------
+
+def test_apply_remote_overrides_updates_idle_timeout() -> None:
+    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+
+    client.apply_remote_overrides(
+        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
+    )
+
+    assert client._sandbox_idle_timeout_seconds == 120.0
+
+
+def test_apply_remote_overrides_ignores_unrelated_sections() -> None:
+    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+
+    client.apply_remote_overrides({"sandbox": {"cpu": 2000, "memory": 4096}})
+
+    assert client._sandbox_idle_timeout_seconds == 600.0
+
+
+def test_apply_remote_overrides_tolerates_missing_path() -> None:
+    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+
+    client.apply_remote_overrides({})
+    client.apply_remote_overrides({"gateway": {}})
+
+    assert client._sandbox_idle_timeout_seconds == 600.0
+
+
+def test_apply_remote_overrides_env_does_not_win_over_remote(monkeypatch) -> None:
+    # Management plane outranks env at runtime: env only seeds the startup value.
+    monkeypatch.setenv("SANDBOX_IDLE_TIMEOUT_SECONDS", "45")
+    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+
+    client.apply_remote_overrides(
+        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
+    )
+
+    assert client._sandbox_idle_timeout_seconds == 120.0
+
+
+def test_apply_remote_overrides_absent_field_does_not_roll_back() -> None:
+    # Deleting the field from the remote doc must not reset to the default:
+    # the last pushed value stays (last-known-good), it is not treated as a
+    # signal to fall back to env/yaml.
+    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+    client.apply_remote_overrides(
+        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
+    )
+    assert client._sandbox_idle_timeout_seconds == 120.0
+
+    client.apply_remote_overrides({"gateway": {"agentos": {}}})
+
+    assert client._sandbox_idle_timeout_seconds == 120.0
+
+
+@pytest.mark.asyncio
+async def test_apply_remote_overrides_stops_reaper_when_disabled() -> None:
+    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+    client._closed = False
+    client._ensure_idle_reaper_task()
+    assert client._idle_reaper_task is not None
+
+    client.apply_remote_overrides(
+        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 0}}}
+    )
+    await asyncio.sleep(0)  # let the scheduled stop task run
+
+    assert client._sandbox_idle_timeout_seconds == 0.0
+    assert client._idle_reaper_task is None
+
+
+@pytest.mark.asyncio
+async def test_apply_remote_overrides_starts_reaper_when_enabled() -> None:
+    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=0)
+    client._closed = False
+    assert client._idle_reaper_task is None
+
+    client.apply_remote_overrides(
+        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 300}}}
+    )
+
+    assert client._sandbox_idle_timeout_seconds == 300.0
+    assert client._idle_reaper_task is not None
+    await client._stop_idle_reaper_task()
+
+
+@pytest.mark.asyncio
+async def test_apply_remote_overrides_keeps_reaper_running_on_value_change() -> None:
+    client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
+    client._closed = False
+    client._ensure_idle_reaper_task()
+    existing = client._idle_reaper_task
+
+    client.apply_remote_overrides(
+        {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
+    )
+
+    assert client._sandbox_idle_timeout_seconds == 120.0
+    assert client._idle_reaper_task is existing  # same task, not restarted
+    await client._stop_idle_reaper_task()
