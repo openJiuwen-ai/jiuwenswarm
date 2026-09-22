@@ -64,6 +64,7 @@ import {
   shouldExecuteRegisteredSlashCommand,
 } from './slashCommands/semantics';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
+import { planUnsentImageDiscard, type UnsentImageDraft } from './unsentImageDiscard';
 import { ExtensionPickerPanel } from './ExtensionPickerPanel';
 import { SkillPickerPanel } from './SkillPickerPanel';
 import { PickerPanel } from './PickerPanel';
@@ -303,6 +304,8 @@ interface InputAreaProps {
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
+  /** Delete an unsent image copy under the session uploads directory. */
+  onDiscardMedia?: (sessionId: string, path: string) => Promise<unknown>;
   onInterrupt: (newInput?: string) => void;
   onCancel: () => void;
   onSwitchMode: (mode: AgentMode) => void;
@@ -515,6 +518,15 @@ function attachmentToMediaItem(attachment: AttachmentDraft): MediaItem {
   };
 }
 
+function toUnsentImageDraft(draft: AttachmentDraft): UnsentImageDraft {
+  return {
+    id: draft.id,
+    kind: draft.kind,
+    status: draft.status,
+    persistedPath: pickString(draft.persistedMediaItem?.path),
+  };
+}
+
 function buildUploadMediaItem(attachment: AttachmentDraft, payload: Pick<AttachmentDraft, 'base64Data'>): MediaItem {
   return {
     type: attachment.kind,
@@ -673,6 +685,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onInputIntent,
     onPersistMedia,
     onPersistDocuments,
+    onDiscardMedia,
     onInterrupt,
     onCancel,
     onSwitchMode,
@@ -1252,21 +1265,63 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     setAttachmentAlerts((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
-  const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {
-    setAttachments((prev) => prev.map((item) => (item.id === id ? { ...item, ...update } : item)));
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  const discardedImageUploadsRef = useRef(new Map<string, string>());
+  const onDiscardMediaRef = useRef(onDiscardMedia);
+  onDiscardMediaRef.current = onDiscardMedia;
+
+  const requestImageDiscard = useCallback((sessionId: string, path: string) => {
+    const discard = onDiscardMediaRef.current;
+    if (!discard || !sessionId || sessionId === NEW_CONVERSATION_ID || !path) return;
+    void discard(sessionId, path).catch((error) => {
+      console.error('Failed to discard unsent image:', error);
+    });
   }, []);
+
+  const releaseUnsentUploads = useCallback((drafts: AttachmentDraft[]) => {
+    const removingIds = new Set(drafts.map((draft) => draft.id));
+    const remaining = attachmentsRef.current.filter((draft) => !removingIds.has(draft.id));
+    const plan = planUnsentImageDiscard(
+      drafts.map(toUnsentImageDraft),
+      remaining.map(toUnsentImageDraft),
+    );
+    const sessionId = activeSessionId || '';
+    for (const id of plan.pendingIds) {
+      discardedImageUploadsRef.current.set(id, sessionId);
+    }
+    for (const path of plan.paths) {
+      requestImageDiscard(sessionId, path);
+    }
+  }, [activeSessionId, requestImageDiscard]);
+
+  const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {
+    if (discardedImageUploadsRef.current.has(id)) {
+      const persistedPath = pickString(update.persistedMediaItem?.path);
+      const terminal = Boolean(persistedPath) || update.status === 'error' || update.status === 'ready';
+      if (!terminal) return;
+      const uploadSessionId = discardedImageUploadsRef.current.get(id) ?? '';
+      discardedImageUploadsRef.current.delete(id);
+      if (persistedPath) requestImageDiscard(uploadSessionId, persistedPath);
+      return;
+    }
+    setAttachments((prev) => prev.map((item) => (item.id === id ? { ...item, ...update } : item)));
+  }, [requestImageDiscard]);
 
   const removeAttachment = useCallback((id: string) => {
+    const target = attachmentsRef.current.find((item) => item.id === id);
+    if (target) releaseUnsentUploads([target]);
     setAttachments((prev) => prev.filter((item) => item.id !== id));
     setAttachmentMenuId((current) => (current === id ? null : current));
-  }, []);
+  }, [releaseUnsentUploads]);
 
   const clearAttachments = useCallback(() => {
+    releaseUnsentUploads(attachmentsRef.current);
     setAttachments([]);
     setAttachmentAlerts([]);
     setAttachmentMenuId(null);
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
-  }, []);
+  }, [releaseUnsentUploads]);
 
   const stopAttachmentMenuTimer = useCallback(() => {
     if (attachmentMenuTimerRef.current) {
@@ -1991,6 +2046,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           return;
         }
         if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
+        releaseUnsentUploads(attachmentsRef.current);
         setAttachments([]);
         setAttachmentAlerts([]);
         if (inputRef.current) inputRef.current.innerHTML = '';
@@ -2117,6 +2173,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onSetGoal,
     onDrainTaskQueueIfIdle,
     pushAttachmentAlert,
+    releaseUnsentUploads,
     t,
   ]);
 
@@ -2267,6 +2324,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           }
           if (slashCmd.name === 'new') {
             if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
+            releaseUnsentUploads(attachmentsRef.current);
             setAttachments([]);
             setAttachmentAlerts([]);
             el.innerHTML = '';
@@ -2430,6 +2488,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       executeSlashCommand,
       extractPlainText,
       getCurrentComposerTrigger,
+      releaseUnsentUploads,
       mode,
       onNewSession,
       onForkSession,

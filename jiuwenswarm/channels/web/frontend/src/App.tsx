@@ -1006,6 +1006,7 @@ function AppContent({
     request,
     persistMedia,
     persistDocuments,
+    discardMedia,
     sendMessage,
     sendStructuredChatContent,
     pause,
@@ -3041,6 +3042,13 @@ function AppContent({
     return persistMedia(content, currentSessionId, mediaItems);
   }, [persistMedia]);
 
+  const handleDiscardMedia = useCallback((sessionId: string, path: string) => {
+    if (!sessionId || sessionId === NEW_CONVERSATION_ID || !path) {
+      return Promise.resolve();
+    }
+    return discardMedia(sessionId, path);
+  }, [discardMedia]);
+
   const handlePersistDocuments = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
@@ -3771,6 +3779,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}
+                        onDiscardMedia={handleDiscardMedia}
                         onInterrupt={handleInterrupt}
                         onCancel={handleCancel}
                         onSwitchMode={handleSwitchMode}

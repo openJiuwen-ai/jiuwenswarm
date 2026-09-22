@@ -124,6 +124,7 @@ interface ChatPanelProps {
     media_items?: Record<string, unknown>[];
     files?: Record<string, unknown>;
   }>;
+  onDiscardMedia?: (sessionId: string, path: string) => Promise<unknown>;
   onInterrupt: (newInput?: string) => void;
   onCancel: () => void;
   onSwitchMode: (mode: AgentMode) => void;
@@ -966,6 +967,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onInputIntent,
   onPersistMedia,
   onPersistDocuments,
+  onDiscardMedia,
   onInterrupt,
   onCancel,
   onSwitchMode,
@@ -1901,6 +1903,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onInputIntent={onInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
+                  onDiscardMedia={onDiscardMedia}
                   onInterrupt={onInterrupt}
                   onCancel={onCancel}
                   onSwitchMode={onSwitchMode}
@@ -1977,6 +1980,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onInputIntent={onInputIntent}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}
+            onDiscardMedia={onDiscardMedia}
             onInterrupt={onInterrupt}
             onCancel={onCancel}
             onSwitchMode={onSwitchMode}
