@@ -50,21 +50,20 @@ Scoping: :func:`apply_cjk_friendly_rules` swaps the rules on one parser
 instance only. Every other ``MarkdownIt`` in the process — including
 ``document_rewrite._INLINE_PARSER`` and any instance a future module or
 third-party library creates — keeps stock CommonMark flanking, so the
-parsing difference cannot leak across modules. The rule bodies are verbatim
-copies of ``markdown_it.rules_inline.emphasis.tokenize`` and
-``markdown_it.rules_inline.strikethrough.tokenize`` (markdown-it-py 4.0.0,
-only the ``scanDelims`` call swapped); a markdown-it-py upgrade that touches
-those rules must refresh the copies. Their ``postProcess`` halves and the
-pairing algorithm stay stock and are not copied.
+parsing difference cannot leak across modules. The swapped rules delegate to
+the stock ``markdown_it.rules_inline`` tokenize functions with
+``scanDelims`` shadowed on that single parse's ``StateInline`` (restored
+immediately after the rule returns; no class-level or process-global state
+is modified), so no markdown-it-py code is duplicated here and the rules
+automatically follow the installed package version.
 """
 from __future__ import annotations
 
+from types import MethodType
+
 from markdown_it import MarkdownIt
-from markdown_it.rules_inline.state_inline import (
-    Delimiter,
-    Scanned,
-    StateInline,
-)
+from markdown_it.rules_inline import emphasis, strikethrough
+from markdown_it.rules_inline.state_inline import Scanned, StateInline
 
 from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.cjk_unicode_tables import (
     CJK,
@@ -246,89 +245,30 @@ def _cjk_scan_delims(state: StateInline, start: int, can_split_word: bool) -> Sc
 
 
 def _cjk_emphasis_tokenize(state: StateInline, silent: bool) -> bool:
-    """markdown-it-py ``emphasis.tokenize`` with CJK-friendly scanning.
+    """Stock ``emphasis.tokenize`` with this parse's ``scanDelims`` CJK-friendly.
 
-    Verbatim copy of ``markdown_it.rules_inline.emphasis.tokenize``
-    (markdown-it-py 4.0.0) with only the ``state.scanDelims`` call swapped
-    for ``_cjk_scan_delims``; the rule's ``postProcess`` half stays stock.
+    Shadows ``scanDelims`` on the state object for the duration of the stock
+    rule only — per-parse and per-thread; the class and the process are
+    never modified — so the markdown-it-py rule body is reused as installed
+    instead of being copied into this repository.
     """
-    start = state.pos
-    marker = state.src[start]
-
-    if silent:
-        return False
-
-    if marker not in ("_", "*"):
-        return False
-
-    scanned = _cjk_scan_delims(state, state.pos, marker == "*")
-
-    for _ in range(scanned.length):
-        token = state.push("text", "", 0)
-        token.content = marker
-        state.delimiters.append(
-            Delimiter(
-                marker=ord(marker),
-                length=scanned.length,
-                token=len(state.tokens) - 1,
-                end=-1,
-                open=scanned.can_open,
-                close=scanned.can_close,
-            )
-        )
-
-    state.pos += scanned.length
-
-    return True
+    state.scanDelims = MethodType(_cjk_scan_delims, state)
+    try:
+        return emphasis.tokenize(state, silent)
+    finally:
+        del state.scanDelims
 
 
 def _cjk_strikethrough_tokenize(state: StateInline, silent: bool) -> bool:
-    """markdown-it-py ``strikethrough.tokenize`` with CJK-friendly scanning.
+    """Stock ``strikethrough.tokenize`` with this parse's ``scanDelims`` CJK-friendly.
 
-    Verbatim copy of ``markdown_it.rules_inline.strikethrough.tokenize``
-    (markdown-it-py 4.0.0) with only the ``state.scanDelims`` call swapped
-    for ``_cjk_scan_delims``; the rule's ``postProcess`` half stays stock.
+    Same per-parse shadowing as :func:`_cjk_emphasis_tokenize`.
     """
-    start = state.pos
-    ch = state.src[start]
-
-    if silent:
-        return False
-
-    if ch != "~":
-        return False
-
-    scanned = _cjk_scan_delims(state, state.pos, True)
-    length = scanned.length
-
-    if length < 2:
-        return False
-
-    if length % 2:
-        token = state.push("text", "", 0)
-        token.content = ch
-        length -= 1
-
-    i = 0
-    while i < length:
-        token = state.push("text", "", 0)
-        token.content = ch + ch
-        state.delimiters.append(
-            Delimiter(
-                marker=ord(ch),
-                length=0,  # disable "rule of 3" length checks meant for emphasis
-                token=len(state.tokens) - 1,
-                end=-1,
-                open=scanned.can_open,
-                close=scanned.can_close,
-            )
-        )
-
-        i += 2
-
-    state.pos += scanned.length
-
-    return True
+    state.scanDelims = MethodType(_cjk_scan_delims, state)
+    try:
+        return strikethrough.tokenize(state, silent)
+    finally:
+        del state.scanDelims
 
 
 def apply_cjk_friendly_rules(parser: MarkdownIt) -> MarkdownIt:
