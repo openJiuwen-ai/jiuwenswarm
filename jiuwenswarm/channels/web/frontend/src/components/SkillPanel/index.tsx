@@ -169,6 +169,8 @@ export function SkillPanel({
   const [selectedSkill, setSelectedSkill] = useState<SkillDetail | null>(null);
   const [listState, setListState] = useState<LoadState>('idle');
   const [detailState, setDetailState] = useState<LoadState>('idle');
+  // 详情页导航栈：从技能包进入成员时记录包名，返回时逐层回退
+  const [detailNavStack, setDetailNavStack] = useState<string[]>([]);
   const [skillVersions, setSkillVersions] = useState<SkillVersion[]>([]);
   const [skillVersionsDefault, setSkillVersionsDefault] = useState<string | null>(null);
   const [versionsLoadState, setVersionsLoadState] = useState<LoadState>('idle');
@@ -544,12 +546,39 @@ export function SkillPanel({
 
   const handleOpenSkill = useCallback(
     (skillName: string) => {
+      // 从列表/其他入口打开详情：清空导航栈，回到根层级
+      setDetailNavStack([]);
       fetchSkillDetail(skillName);
     },
     [fetchSkillDetail],
   );
 
+  // 技能包详情内打开成员：记录当前包名，供返回上一层使用
+  const handleOpenPackMember = useCallback(
+    (memberName: string) => {
+      setDetailNavStack((stack) =>
+        selectedSkill && selectedSkill.name !== memberName ? [...stack, selectedSkill.name] : stack,
+      );
+      fetchSkillDetail(memberName);
+    },
+    [selectedSkill, fetchSkillDetail],
+  );
+
+  // 返回上一层：成员详情 → 所属技能包详情；无上级时回到列表
+  const handleBackOneLevel = useCallback(() => {
+    const parent = detailNavStack[detailNavStack.length - 1];
+    if (parent) {
+      setDetailNavStack((stack) => stack.slice(0, -1));
+      fetchSkillDetail(parent);
+      return;
+    }
+    setSelectedSkill(null);
+    setDetailState('idle');
+  }, [detailNavStack, fetchSkillDetail]);
+
+  // 直接回到列表（卸载等场景）：同时清空导航栈
   const handleBackToList = useCallback(() => {
+    setDetailNavStack([]);
     setSelectedSkill(null);
     setDetailState('idle');
   }, []);
@@ -995,49 +1024,6 @@ export function SkillPanel({
       }
     },
     [skills, selectedSkill, isSkillPackage, fetchSkills, withSession, showMessage, t],
-  );
-
-  // 技能包成员从包内备份一键安装（恢复已卸载成员）
-  const installPackMember = useCallback(
-    async (packName: string, memberName: string) => {
-      const actionKey = `pack-member-install:${memberName}`;
-      setActionTarget(actionKey);
-      setMessage(null);
-      setMessageType(null);
-      try {
-        const result = await webRequest<{
-          success: boolean;
-          detail?: string;
-          message?: string;
-        }>('skills.pack_member.install', withSession({ pack: packName, name: memberName }));
-        if (!result.success) {
-          throw new Error(result.detail || result.message || t('skills.errors.installFailed'));
-        }
-        showMessage('success', t('skills.messages.installed', { name: memberName }));
-        // 重拉列表 + 当前包详情，成员卡片从"已卸载"恢复为常规态
-        await fetchSkills();
-        if (selectedSkill && selectedSkill.name === packName) {
-          const data = await webRequest<SkillDetail>('skills.get', withSession({ name: packName }));
-          setSelectedSkill(normalizeSkillItem(data));
-        }
-      } catch (error) {
-        console.error(error);
-        showErrorToast(error, 'skills.errors.installFailedHint');
-      } finally {
-        setActionTarget(null);
-      }
-    },
-    [selectedSkill, fetchSkills, withSession, showMessage, setMessage, setMessageType, showErrorToast, t],
-  );
-
-  /** 详情页成员「安装」：固定针对当前选中的技能包 */
-  const installPackMemberForSelected = useCallback(
-    (memberName: string) => {
-      if (selectedSkill) {
-        void installPackMember(selectedSkill.name, memberName);
-      }
-    },
-    [installPackMember, selectedSkill],
   );
 
   const renderMySkillCard = (skill: SkillItem) => {
@@ -1564,16 +1550,12 @@ export function SkillPanel({
           rebuildLoading={rebuildLoading}
           onRebuild={handleRebuild}
           setSynthesizeTooltip={setSynthesizeTooltip}
-          onBackToList={handleBackToList}
+          onBack={handleBackOneLevel}
           onEditSkill={handleEditSkill}
           onUninstall={handleUninstall}
           onToggleSkillDisabled={toggleSkillDisabled}
           onGoToChat={handleGoToChat}
-          onOpenPackMember={handleOpenSkill}
-          onInstallPackMember={installPackMemberForSelected}
-          installingPackMemberName={
-            actionTarget?.startsWith('pack-member-install:') ? actionTarget.slice('pack-member-install:'.length) : null
-          }
+          onOpenPackMember={handleOpenPackMember}
         />
       ) : (
         <>

@@ -2072,7 +2072,7 @@
     "noEnabledSkills": "暂无启用的技能",
     "noBuiltinSkills": "暂无内置技能",
     "setEnabledError": "设置技能启用状态失败",
-    "packBlockedHint": "技能包包含未安装或已禁用的技能，请先在「包含技能」中处理后再启用",
+    "packBlockedHint": "技能包包含未安装或已禁用的技能",
     "packMemberToggleConfirm": "该技能属于技能包 {{packs}}，切换启用状态将影响整个技能包的可用性。确认继续？",
     "setEnabledSuccess": "已启用技能 {name}",
     "setDisabledSuccess": "已禁用技能 {name}",
