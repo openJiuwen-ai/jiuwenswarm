@@ -554,11 +554,11 @@ export function SkillPanel({
     setDetailState('idle');
   }, []);
 
-  // 新建会话并将技能选中到输入框
+  // 新建会话并将技能选中到输入框：只有集群技能进集群模式，其余（普通技能、技能包等）固定单 agent
   const handleGoToChat = useCallback((skillName: string, skillType?: string) => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
-        detail: { skillName, ...(skillType === 'swarm_skill' ? { mode: 'team' as const } : {}) },
+        detail: { skillName, mode: skillType === 'swarm_skill' ? ('team' as const) : ('agent' as const) },
       }),
     );
   }, []);
