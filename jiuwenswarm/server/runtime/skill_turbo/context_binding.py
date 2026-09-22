@@ -63,15 +63,18 @@ def bind_skill_turbo_context(
 
         # workspace / interactive_ask 与 metadata 同源、同条件（metadata 是 dict 才有）
         if isinstance(request_metadata, dict):
+            from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
+                extract_effective_project_dir,
+            )
             from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
                 set_effective_request_workspace_dir,
                 set_interactive_ask,
             )
 
-            epd = request_metadata.get("effective_project_dir")
-            if isinstance(epd, str) and epd.strip():
-                # 与 extract_effective_project_dir 同一语义：strip 后非空才绑定
-                tokens["workspace"] = set_effective_request_workspace_dir(epd.strip())
+            # 复用权威实现（单一词源，含 strip 与边界测试守护）
+            epd = extract_effective_project_dir(request_metadata)
+            if epd is not None:
+                tokens["workspace"] = set_effective_request_workspace_dir(epd)
             interactive_ask = request_metadata.get("interactive_ask")
             if interactive_ask is not None:
                 tokens["interactive_ask"] = set_interactive_ask(bool(interactive_ask))

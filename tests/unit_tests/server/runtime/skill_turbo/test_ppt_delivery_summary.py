@@ -114,6 +114,27 @@ def test_wrap_skill_turbo_result_keeps_generic_hint_without_ppt_summary() -> Non
     assert take_pending_ppt_delivery_summary() == ""
 
 
+def test_stop_hint_language_follows_request_metadata_language() -> None:
+    """注入 language=en 的 request metadata 后停止提示切换为英文。"""
+    from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+        reset_current_request_metadata,
+        set_current_request_metadata,
+    )
+
+    clear_pending_ppt_delivery_summary()
+    token = set_current_request_metadata({"language": "en"})
+    try:
+        wrapped = _wrap_skill_turbo_result({"success": True, "result": "done"}, {})
+        assert "done" in wrapped["result"]
+        # 英文停止提示（Q5 en 分支）
+        assert "You should now summarize" in wrapped["result"]
+        assert "did NOT confirm" in wrapped["result"]
+        assert "如实向用户总结" not in wrapped["result"]
+    finally:
+        reset_current_request_metadata(token)
+    clear_pending_ppt_delivery_summary()
+
+
 def test_ppt_delivery_failed_error_detects_p10_failed() -> None:
     from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
         _ppt_delivery_failed_error,
@@ -350,12 +371,25 @@ async def test_resume_stream_emits_skeleton_not_artifact_dump(monkeypatch: pytes
     async def _async_none(*_args: Any, **_kwargs: Any) -> None:
         return None
 
+    async def _async_false(*_args: Any, **_kwargs: Any) -> bool:
+        return False
+
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.skill_turbo.agent.SkillTurbo",
         _FakeTurbo,
     )
+    # resume 完成后的清理链走 adapter 方法（_clear_pending_skill_turbo_hitl /
+    # _clear_skill_turbo_resume_ctx_via_isolated_session），mock 为 no-op
+    # 防止走真实 checkpointer I/O（原 patch 的 _skill_turbo_clear_resume_ctx
+    # 别名已无调用点）。
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep._skill_turbo_clear_resume_ctx",
+        JiuWenSwarmDeepAdapter,
+        "_clear_pending_skill_turbo_hitl",
+        _async_false,
+    )
+    monkeypatch.setattr(
+        JiuWenSwarmDeepAdapter,
+        "_clear_skill_turbo_resume_ctx_via_isolated_session",
         _async_none,
     )
     monkeypatch.setattr(

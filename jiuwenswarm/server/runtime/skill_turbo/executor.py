@@ -1729,7 +1729,7 @@ class SkillTurboExecutor:
             # rail approve（含 resume approve）：清掉断点 ctx，正常执行
             if resume_input is not None:
                 try:
-                    clear_resume_ctx(session)
+                    await clear_resume_ctx(session)
                 except Exception:
                     logger.debug(
                         "[SkillTurboExecutor] clear_resume_ctx after approve failed", exc_info=True

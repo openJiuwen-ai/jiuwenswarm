@@ -179,31 +179,15 @@ def build_interaction_output_from_abort(
     )
 
 
-def _get_sid(session: Any) -> str:
-    """获取 session ID，兼容 session_id 属性和 get_session_id() 方法。"""
-    sid = getattr(session, "session_id", None)
-    if sid is None:
-        getter = getattr(session, "get_session_id", None)
-        if callable(getter):
-            try:
-                sid = getter()
-            except Exception:
-                sid = "?"
-                logger.debug("[SkillTurboResume] get_session_id failed", exc_info=True)
-        else:
-            sid = "?"
-    return str(sid) if sid else "?"
-
-
-# ──────────────────────── Resume Context ────────────────────────
-# resume_ctx 走 session state + checkpointer 持久化，保证多 worker/多实例
-# 部署的 HITL 恢复可靠（同一 session_id 在任何进程都能从 checkpointer 读到）。
-#
-# save: session.update_state() + post_run 落盘。
-# load: session.pre_run() + get_state() 从 checkpointer 恢复。
-# clear: session.update_state(key=None)。
-#
-# 与 node_artifacts 共享同一持久化语义，避免「产物在、断点不在」的半恢复状态。
+# ──────────────────────── Resume Context（薄委托层） ────────────────────────
+# 实现已收口至 resume_context.py（ResumeContextManager，单一 owner）。
+# 生命周期持久化语义（详见 resume_context 模块）：
+#   save:  session.update_state() + post_run 落盘
+#   load:  session.pre_run() + get_state() 从 checkpointer 恢复
+#   clear: ResumeContextManager.clear 走 {card.id}__skill_turbo 隔离键通道
+#          强制落盘（isolated session pre_run+clear+post_run），并同步清
+#          调用方内存快照防 post_run 复活。
+# 以下函数保留原签名薄委托，供既有调用方与测试 mock 使用。
 
 
 async def save_resume_ctx(

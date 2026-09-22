@@ -564,7 +564,6 @@ from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_mana
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
     build_interaction_output_from_abort as _skill_turbo_build_interaction_output,
-    clear_resume_ctx as _skill_turbo_clear_resume_ctx,
     clear_resume_in_flight as _skill_turbo_clear_resume_in_flight,
     extract_tool_interrupt as _skill_turbo_extract_tool_interrupt,
     load_resume_ctx as _skill_turbo_load_resume_ctx,
@@ -12024,6 +12023,10 @@ class JiuWenSwarmDeepAdapter:
                 meta.setdefault("request_id", runtime_config.request_id or "")
                 meta.setdefault("channel_id", runtime_config.channel_id or "")
                 meta.setdefault("session_id", runtime_config.session_id)
+                # language：skill_turbo 停止提示按语言切换的词源（与
+                # _resolve_prompt_language 同一配置，归一化 cn/en）。
+                # wire metadata 不携带该键，须显式补齐。
+                meta.setdefault("language", self._resolve_runtime_language())
                 # effective_project_dir：优先 metadata 的 effective_project_dir，回退 task_workspace。
                 # 与 effective_request_workspace_dir ContextVar 对齐，随 metadata 副本转绑到工具执行上下文。
                 md_epd = (
