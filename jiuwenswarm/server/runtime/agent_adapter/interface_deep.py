@@ -16078,6 +16078,12 @@ class JiuWenSwarmDeepAdapter:
                     payload["output_suppressed"] = True
             if event_type in ("chat.delta", "chat.reasoning", "chat.final"):
                 had_assistant_output = True
+            if event_type == "chat.delta" or (
+                event_type == "chat.final" and bool(payload.get("content"))
+            ):
+                guard = self._session_input_guard
+                if guard is not None and guard.consume_generation_boundary():
+                    payload["steering_generation_start"] = True
             if event_type in ("chat.tool_call", "chat.tool_update", "chat.tool_result"):
                 had_tool_output = True
             if event_type == "chat.delta":

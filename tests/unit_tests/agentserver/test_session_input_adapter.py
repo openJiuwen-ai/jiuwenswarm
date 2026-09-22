@@ -17,6 +17,18 @@ from jiuwenswarm.runtime.session.model import SessionExecutionState
 
 
 @pytest.mark.asyncio
+async def test_session_input_guard_marks_one_visible_generation_boundary():
+    guard = SessionInputGuard(SimpleNamespace())
+
+    await guard.before_steering_drain(
+        SimpleNamespace(inputs=SimpleNamespace(pending=1))
+    )
+
+    assert guard.consume_generation_boundary() is True
+    assert guard.consume_generation_boundary() is False
+
+
+@pytest.mark.asyncio
 async def test_accepted_steer_persists_supplemental_user_history(monkeypatch):
     async def deliver(_request, _inputs):
         yield SimpleNamespace(payload={
