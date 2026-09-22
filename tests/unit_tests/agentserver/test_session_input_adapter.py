@@ -79,3 +79,37 @@ async def test_guard_install_failure_is_retryable_and_reload_replaces_registrati
     await adapter.install_session_input_guard(reload=True)
     instance.unregister_rail.assert_awaited_once_with(guard)
     assert instance.register_rail.await_count == 3
+
+
+def _steer_ctx(max_iterations: int | None, iteration: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        agent=SimpleNamespace(config=SimpleNamespace(max_iterations=max_iterations)),
+        inputs=SimpleNamespace(react_iteration=iteration),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("iteration", [0, 1, 99])
+async def test_unconfigured_max_iterations_always_allows_steer(iteration: int) -> None:
+    guard = SessionInputGuard(object())
+
+    await guard.before_model_call(_steer_ctx(None, iteration))
+
+    assert guard._model_allows_steer is True
+    assert guard.accepting is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("iteration", "allowed"),
+    [(0, False), (1, True), (2, True), (3, False)],
+)
+async def test_configured_max_iterations_keeps_original_steer_window(
+    iteration: int, allowed: bool
+) -> None:
+    guard = SessionInputGuard(object())
+
+    await guard.before_model_call(_steer_ctx(3, iteration))
+
+    assert guard._model_allows_steer is allowed
+    assert guard.accepting is allowed
