@@ -347,6 +347,8 @@ def _is_subplan_business_failure(result: Any) -> bool:
         return False
     if result.get("export_status") == "failed":
         return True
+    if result.get("delivery_status") == "failed":
+        return True
     if result.get("status") == "error":
         return True
     return False
@@ -3340,16 +3342,22 @@ class SkillTurboExecutor:
         """节点产物收集。
 
         成功路径：仅当节点声明了 __artifact__ 时记录。
-        异常路径：仍需节点在异常对象上挂 _partial_artifact 才记录。
+        异常路径：优先读异常对象上的 _partial_artifact；业务失败的 dict
+        结果仍可能带 __artifact__，同样收集，避免外层误判加速成功。
         此处只更新内存 holder，落盘由流末 finally 统一完成。
         读完立即从 result 中清除（pop）。
         """
         if is_error:
-            # 异常路径：仅记录带 partial artifact 的中断
+            # 异常路径：优先记录异常对象上的 partial artifact。
+            # 业务失败（status=error / delivery_status=failed）走的是 dict 结果，
+            # 仍带 __artifact__；若不收集，外层 wrap 会误当成加速成功。
             artifact = getattr(result_or_error, "_partial_artifact", None)
+            node_status = "interrupted"
+            if not isinstance(artifact, dict) and isinstance(result_or_error, dict):
+                artifact = result_or_error.pop("__artifact__", None)
+                node_status = "failed"
             if not isinstance(artifact, dict):
                 return
-            node_status = "interrupted"
             info = artifact.get("info") if isinstance(artifact.get("info"), dict) else {}
             files = artifact.get("files") if isinstance(artifact.get("files"), list) else []
         else:

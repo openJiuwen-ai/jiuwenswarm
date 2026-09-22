@@ -93,6 +93,10 @@ class DeliveryNode(PlanNode):
                 "artifact_tag": "",
                 "send_file_status": "skipped",
                 "summary": "交付失败：pages_dir 为空",
+                "__artifact__": {
+                    "info": {"delivery_status": "failed", "task_completed": False},
+                    "files": [],
+                },
             }
 
         pptx_ok = bool(pptx_path) and export_status != "failed" and Path(pptx_path).is_file()
