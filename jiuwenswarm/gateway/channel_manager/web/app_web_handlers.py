@@ -5598,6 +5598,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="media.persist",
         )
 
+    async def _media_discard(ws, req_id, params, session_id, user_id=None):
+        """删除尚未发送的会话 uploads 副本（E2A 转发，路径边界在 AgentServer）。"""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params,
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.MEDIA_DISCARD,
+            label="media.discard",
+        )
+
     async def _document_persist(ws, req_id, params, session_id, user_id=None):
         """文档附件落盘（E2A 转发；base64 小文档由 AgentServer 注入目录落盘，
         大文档在 Gateway 侧解码后经受认证 HTTP bridge 上传，避免超内部 WS 帧限制）。"""
@@ -6986,6 +7003,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     channel.register_method("chat.send", _chat_send)
     channel.register_method("media.persist", _media_persist)
+    channel.register_method("media.discard", _media_discard)
     channel.register_method("document.persist", _document_persist)
     channel.register_method("document.formats", _document_formats)
     channel.register_method("chat.resume", _chat_resume)

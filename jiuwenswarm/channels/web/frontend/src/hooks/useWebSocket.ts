@@ -701,6 +701,7 @@ interface UseWebSocketReturn {
   ) => Promise<T>;
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
+  discardMedia: (sessionId: string, path: string) => Promise<{ deleted?: boolean }>;
   sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => Promise<boolean>;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
@@ -1477,6 +1478,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // Multiple base64 images can exceed the 15s default timeout
         { timeoutMs: 60_000 },
       );
+    },
+    [request],
+  );
+
+  const discardMedia = useCallback(
+    async (sessionId: string, path: string) => {
+      return request<{ deleted?: boolean }>('media.discard', {
+        session_id: sessionId,
+        path,
+      });
     },
     [request],
   );
@@ -5196,6 +5207,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     request,
     persistMedia,
     persistDocuments,
+    discardMedia,
     sendMessage,
     sendStructuredChatContent,
     interrupt,
