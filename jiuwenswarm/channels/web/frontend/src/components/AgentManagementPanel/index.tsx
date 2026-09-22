@@ -1097,7 +1097,7 @@ export function AgentManagementPanel({
     setActionError(null);
     setActionNotice(null);
     try {
-      const existingGroups = await groupClient.listGroups();
+      const existingGroups = await groupClient.listGroups({ filter: 'local' });
       const normalizedName = groupDraft.name.trim().toLocaleLowerCase();
       if (existingGroups.some(group => group.displayName.trim().toLocaleLowerCase() === normalizedName)) {
         setGroupCreateError(t('agentManagement.group.states.duplicateName'));
