@@ -150,7 +150,7 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
     </tr>
     <tr>
       <td width="22%"><strong>Agent Team</strong></td>
-      <td width="28%"><a href="en/AgentTeam.md">Agent Teams</a> / <a href="en/SwarmSkills.md">Swarm Skills</a> / <a href="en/DistributedTeam.md">Distributed Team</a></td>
+      <td width="28%"><a href="en/AgentTeam.md">Agent Teams</a> / <a href="en/TeamOrganization.md">Team Organization</a> / <a href="en/SwarmSkills.md">Swarm Skills</a> / <a href="en/DistributedTeam.md">Distributed Team</a></td>
       <td width="50%">Supports multi-agent team collaboration, team-level skill orchestration and reuse, and multi-process distributed Team runtime mode.</td>
     </tr>
     <tr>
