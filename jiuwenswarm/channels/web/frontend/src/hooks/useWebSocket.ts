@@ -2623,12 +2623,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
     // 归档事件去抖句柄：同一时间窗内成串到达的事件只触发一次工作区刷新
     let archiveRefreshTimer: number | null = null;
+    let archiveRefreshCron = false;
     const scheduleArchiveWorkspaceRefresh = (includeCron: boolean) => {
+      archiveRefreshCron ||= includeCron;
       if (archiveRefreshTimer !== null) window.clearTimeout(archiveRefreshTimer);
       archiveRefreshTimer = window.setTimeout(() => {
         archiveRefreshTimer = null;
         void useWorkspaceStore.getState().refreshWorkspaceData();
-        if (includeCron) void useCronStore.getState().loadJobs();
+        if (archiveRefreshCron) void useCronStore.getState().loadJobs();
+        archiveRefreshCron = false;
       }, ARCHIVE_EVENT_REFRESH_DEBOUNCE_MS);
     };
 
@@ -3976,19 +3979,24 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       // 归档相关事件：集中在此分发，刷新活跃工作区数据（项目/会话/置顶）；
-      // project.deleted 还会级联删除会话与 cron，因此同步 cron 列表。
       // 归档管理页自行订阅同名事件刷新归档列表。项目归档事件已随协议移除。
       // 事件可能早于响应到达，去抖合并后按当前状态幂等刷新。
       webClient.on<ArchiveResourceEventPayload>('session.archived', () => {
         scheduleArchiveWorkspaceRefresh(false);
       }),
       webClient.on<ArchiveResourceEventPayload>('session.unarchived', () => {
-        scheduleArchiveWorkspaceRefresh(false);
+        scheduleArchiveWorkspaceRefresh(true);
       }),
       webClient.on<ArchiveResourceEventPayload>('session.deleted', () => {
         scheduleArchiveWorkspaceRefresh(false);
       }),
-      webClient.on<ArchiveResourceEventPayload>('project.deleted', () => {
+      // 项目移除/恢复会连带改变其会话与定时任务的可见性:隐藏时任务被停用并
+      // 从 cron 列表剔除,恢复后重新可见(默认停用),两者都要刷新 cron。
+      webClient.on<ArchiveResourceEventPayload>('project.removed', ({ payload }) => {
+        if (payload.project_id) useWorkspaceStore.getState().hideProjectLocally(payload.project_id);
+        scheduleArchiveWorkspaceRefresh(true);
+      }),
+      webClient.on<ArchiveResourceEventPayload>('project.restored', () => {
         scheduleArchiveWorkspaceRefresh(true);
       }),
       // 用户点"执行"后，后端在 exit_plan_mode 内部已恢复普通模式。这里同步关掉

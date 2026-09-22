@@ -138,12 +138,14 @@
       "deleteArchivedSessionsRecord": "永久删除项目“{{projectName}}”下全部已归档对话，此操作不可恢复。",
       "archivedSessionsDeleted": "已删除 {{count}} 个已归档对话",
       "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。",
+      "removedProjectNote": "该项目已移除，其对话暂不显示在工作区。恢复任一对话会一并恢复该项目。",
       "errors": {
         "forbidden": "该资源不支持此操作",
         "notFound": "资源不存在或已发生变化，请刷新后重试",
         "sessionGone": "该会话已不存在，无法恢复",
         "requestFailed": "操作失败，请稍后重试",
-        "sessionRestoreFailed": "对话恢复失败，请刷新后重试"
+        "sessionRestoreFailed": "对话恢复失败，请刷新后重试",
+        "projectNameConflict": "已有同名项目占用了该名称，无法一并恢复项目。请先重命名同名项目。"
       }
     },
     "dialog": {
@@ -3513,11 +3515,10 @@
       "conversationArchived": "已归档任务会话",
       "archiveView": "查看",
       "archiveUndo": "撤销",
-      "deleteProject": "删除项目",
-      "deleteProjectDescription": "删除“<name>{{projectName}}</name>”下的定时任务和非运行中会话。若有普通会话正在运行，将跳过这些会话并保留项目；可停止后重试。不删除工作目录。已删除内容不可恢复。",
-      "projectDeletedSummary": "项目已删除：{{sessions}} 个对话、{{crons}} 个定时任务",
-      "deleteFailedSummary": "项目删除未完成：已删除 {{sessions}} 个对话、{{crons}} 个定时任务。",
-      "deleteSkippedRunning": "已删除 {{sessions}} 个对话、{{crons}} 个定时任务；{{count}} 个对话仍在运行，已跳过并保留项目。请先手动停止这些对话，再重试删除。",
+      "removeProject": "移除项目",
+      "removeProjectConfirm": "移除",
+      "removeProjectDescription": "从列表中移除“<name>{{projectName}}</name>”并隐藏其对话；已归档的对话仍可在归档页查看。其下的定时任务将停止并保留（恢复项目后默认保持停止，需手动重新启用），工作目录不受影响。可撤销，或通过同一目录重新创建项目恢复。",
+      "projectRemovedSummary": "项目已移除，其定时任务已停止",
       "archiveSessions": "归档全部会话",
       "archiveConfirmTitle": "归档（{{count}}）个聊天",
       "archiveConfirmTitleFallback": "归档所有聊天",
@@ -3537,7 +3538,9 @@
         "deleteSessionBusy": "对话正在运行，无法删除。请先手动停止，再重试删除。",
         "archiveForbidden": "该任务不支持归档",
         "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
-        "archiveFailed": "归档操作失败，请稍后重试"
+        "archiveFailed": "归档操作失败，请稍后重试",
+        "projectNameConflict": "已有同名项目占用了该名称，无法恢复项目。请先重命名同名项目。",
+        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。"
       },
       "cancel": "取消",
       "confirm": "确定"

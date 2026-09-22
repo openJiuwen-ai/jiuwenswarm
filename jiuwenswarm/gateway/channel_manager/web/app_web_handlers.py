@@ -125,7 +125,6 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
-    DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
     SUPPORTED_WORK_MODES,
@@ -2593,34 +2592,6 @@ def _supports_container_file_api(client: Any) -> bool:
     return all(callable(getattr(client, name, None)) for name in _CONTAINER_FILE_API_METHODS)
 
 
-def _attribute_session_project(
-    meta: dict[str, Any],
-    visible_by_id: set[str],
-) -> str:
-    """返回会话归属的 project_id(或按 work_mode 分桶的默认项目 ID)。
-
-    仅按 ``session.project_id`` 匹配可见项目;不命中(含无 project_id 的存量会话)
-    按会话自身的 ``work_mode`` 归入对应默认项目:
-      - ``work_mode == "code"`` → ``"default_code"``
-      - 其他(含 ``"work"`` / 空 / 非法) → ``"default"``
-
-    存量会话的 project_dir → project_id 解析由启动迁移完成。
-
-    Args:
-        meta: 会话元数据
-        visible_by_id: 可见(非隐藏)项目的 ``project_id`` 集合
-    """
-    sp_id = str(meta.get("project_id") or "")
-    if sp_id and sp_id in visible_by_id:
-        return sp_id
-    # 按会话 work_mode 分桶默认项目,使 code 模式孤立会话归 default_code,
-    # work 模式孤立会话归 default,与 project.list 默认项目拆分一致
-    s_work_mode = str(meta.get("work_mode") or "")
-    if s_work_mode == "code":
-        return DEFAULT_PROJECT_ID_CODE
-    return DEFAULT_PROJECT_ID_WORK
-
-
 def _project_info_payload(
     proj: Any | None,
     *,
@@ -5029,6 +5000,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
 
+        async def after_create(ok, payload):
+            if ok:
+                _schedule_agent_prewarm_sync("project.create")
+                if payload.get("restored"):
+                    await _broadcast_project_event("project.restored", payload["project_id"], user_id)
+
         await proxy_unary_request(
             channel=channel,
             agent_client=_resolve(agent_client),
@@ -5041,9 +5018,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="project.create",
             # 保留 AgentServer 返回的结构化错误明细。
             preserve_error_payload=True,
-            on_done=lambda ok, _payload: (
-                _schedule_agent_prewarm_sync("project.create") if ok else None
-            ),
+            on_done=after_create,
         )
 
     async def _project_rename(ws, req_id, params, session_id, user_id=None):
@@ -5086,6 +5061,99 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_PIN,
             label="project.pin",
+        )
+
+    async def _broadcast_project_event(event: str, project_id: str, user_id) -> None:
+        """Notify every connection of ``user_id`` that a project was hidden/restored.
+
+        The project's conversations and cron jobs change visibility with it, so
+        other tabs (and the archive page) must refresh; a response to the
+        originating socket alone would leave them stale.  Broadcast is scoped
+        to the owner's connections to avoid making unrelated users refetch.
+        """
+        if not project_id:
+            return
+        payload = {"project_id": project_id}
+        for client_ws in list(getattr(channel, "clients", ()) or ()):
+            try:
+                if str(channel.connection_user_id(client_ws) or "") != str(user_id or ""):
+                    continue
+                await channel.send_event(client_ws, event, payload)
+            except Exception:  # noqa: BLE001 - 单条连接异常不得影响其他连接
+                logger.debug("project event broadcast failed: %s", event, exc_info=True)
+
+    async def _project_remove(ws, req_id, params, session_id, user_id=None):
+        """Forward project soft-deletion; stop its cron jobs, clean Git watchers."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        project_id = str((params or {}).get("project_id") or "").strip()
+
+        if not project_id or project_id in {"default", "default_code"}:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="project_id is required" if not project_id else "default project cannot be removed",
+                code="BAD_REQUEST" if not project_id else "FORBIDDEN",
+            )
+            return
+
+        async def _after_remove(ok: bool, _payload: object) -> None:
+            if not ok:
+                return
+            registry = getattr(channel, "git_watcher_registry", None)
+            if registry is not None and project_id:
+                registry.cleanup_project(project_id)
+            _schedule_agent_prewarm_sync("project.remove")
+            await _broadcast_project_event("project.removed", project_id, user_id)
+
+        async def commit():
+            await proxy_unary_request(
+                channel=channel,
+                agent_client=_resolve(agent_client),
+                ws=ws,
+                req_id=req_id,
+                params=params if isinstance(params, dict) else {},
+                session_id=session_id,
+                user_id=user_id,
+                req_method=ReqMethod.PROJECT_REMOVE,
+                label="project.remove",
+                on_done=_after_remove,
+            )
+
+        cc = _get_cron()
+        if cc is None:
+            await channel.send_response(ws, req_id, ok=False, error="cron service unavailable", code="CRON_STOP_FAILED")
+            return
+        try:
+            await cc.hide_project_jobs(project_id, commit=commit)
+        except Exception as exc:
+            logger.warning("project remove failed: %s", exc, exc_info=True)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CRON_STOP_FAILED")
+
+    async def _project_restore(ws, req_id, params, session_id, user_id=None):
+        """Forward project restoration to the target AgentServer."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        project_id = str((params or {}).get("project_id") or "").strip()
+
+        async def _after_restore(ok: bool, _payload: object) -> None:
+            if not ok:
+                return
+            _schedule_agent_prewarm_sync("project.restore")
+            await _broadcast_project_event("project.restored", project_id, user_id)
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.PROJECT_RESTORE,
+            label="project.restore",
+            on_done=_after_restore,
         )
 
     async def _project_info(ws, req_id, params, session_id, user_id=None):
@@ -6974,6 +7042,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("project.create", _project_create)
     channel.register_method("project.rename", _project_rename)
     channel.register_method("project.pin", _project_pin)
+    channel.register_method("project.remove", _project_remove)
+    channel.register_method("project.restore", _project_restore)
     from jiuwenswarm.gateway.channel_manager.web.lifecycle_handlers import register_lifecycle_handlers
     register_lifecycle_handlers(channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller))
     channel.register_method("project.pinned_sessions", _project_pinned_sessions)

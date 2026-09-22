@@ -117,6 +117,7 @@ class Project:
     project_dir: str
     pinned: bool = False
     pin_order: int = 0
+    hidden: bool = False
     created_at: float = 0.0
     updated_at: float = 0.0
     # 工作模式："code" 或 "work"；旧数据兜底为 "work"
@@ -141,6 +142,7 @@ class Project:
             project_dir=str(d.get("project_dir", "")),
             pinned=bool(d.get("pinned", False)),
             pin_order=int(d.get("pin_order", 0)),
+            hidden=bool(d.get("hidden", False)),
             created_at=float(d.get("created_at", 0.0)),
             updated_at=float(d.get("updated_at", 0.0)),
             work_mode=work_mode,
@@ -156,6 +158,7 @@ class CronProjectBinding:
     work_mode: str
     error: str | None = None
     code: str | None = None
+    hidden: bool = False
 
 
 # ── 内部读写(均在已持有文件锁时调用) ─────────────────────────────────────────
@@ -226,7 +229,7 @@ def _write_disk_locked(path: Path, projects: list[dict[str, Any]]) -> None:
 _T = TypeVar("_T")
 
 
-def _mutate(fn: Callable[[list[dict[str, Any]]], _T]) -> _T:
+def _mutate(fn: Callable[[list[dict[str, Any]]], _T], *, skip_unchanged: bool = False) -> _T:
     """在文件锁保护下: 重读磁盘 → 应用变更 → 原子写回 → 刷新缓存。
 
     重读磁盘确保拿到其他进程的最新写入,避免基于陈旧缓存做变更而丢失更新。
@@ -235,8 +238,10 @@ def _mutate(fn: Callable[[list[dict[str, Any]]], _T]) -> _T:
     path = _projects_file()
     with file_lock(path):
         projects = _read_disk_locked(path)
+        before = json.dumps(projects, sort_keys=True) if skip_unchanged else None
         result = fn(projects)
-        _write_disk_locked(path, projects)
+        if not skip_unchanged or json.dumps(projects, sort_keys=True) != before:
+            _write_disk_locked(path, projects)
         with _CACHE_LOCK:
             _CACHE = [dict(p) for p in projects]
         return result
@@ -436,7 +441,7 @@ def resolve_session_project_binding(
 
     # project_id 非 default:必须对应存在且可见的项目
     proj = get_project_by_id(project_id, cache_bust=True)
-    if proj is None:
+    if proj is None or proj.hidden:
         return "", "", "project not found", "NOT_FOUND"
 
     expected_dir = proj.project_dir or ""
@@ -460,9 +465,11 @@ def resolve_session_project_binding(
 def list_projects(
     *, include_hidden: bool = False, cache_bust: bool = False
 ) -> list[Project]:
-    """列出所有项目。include_hidden 仅兼容旧内部调用，不再改变结果。"""
+    """列出项目。``include_hidden=False``(默认)时排除已软删除项目。"""
     result: list[Project] = []
     for p in _load_cache(cache_bust):
+        if not include_hidden and p.get("hidden"):
+            continue
         result.append(Project.from_dict(p))
     return result
 
@@ -502,6 +509,7 @@ def resolve_cron_project_id(
         if (
             p.work_mode == mode
             and _normalize_path_for_match(pdir) == norm
+            and not p.hidden
         ):
             return p.project_id
     return ""
@@ -546,6 +554,14 @@ def resolve_cron_project_binding(
                 work_mode=input_mode,
                 error=f"project not found: {raw_project_id!r}",
                 code="NOT_FOUND",
+            )
+        if proj.hidden:
+            return CronProjectBinding(
+                project_id="",
+                work_mode=input_mode,
+                error=f"project is hidden: {raw_project_id!r}",
+                code="NOT_FOUND",
+                hidden=True,
             )
         return CronProjectBinding(
             project_id=raw_project_id,
@@ -808,7 +824,7 @@ def create_project_checked(
     project_dir: str,
     work_mode: str = DEFAULT_WEB_WORK_MODE,
 ) -> tuple[Project, bool]:
-    """原子创建项目，同一 work_mode 内检查目录和名称冲突。
+    """原子创建或恢复项目，同一 work_mode 内检查目录和名称冲突。
 
     冲突检测按 ``work_mode`` 隔离:同一 ``(work_mode, project_dir)`` /
     ``(work_mode, name)`` 在同模式内才视为冲突;不同 ``work_mode`` 的同目录/同名
@@ -816,6 +832,7 @@ def create_project_checked(
 
     - ``project_dir`` 为空时:跳过路径匹配/恢复/冲突,直接新建(允许多个空路径
       项目,靠 ``project_id`` + ``name`` + ``work_mode`` 区分,会话按 ``project_id`` 归属);
+    - ``project_dir`` 非空且命中同 work_mode 的隐藏项目 → 恢复原项目;
     - ``project_dir`` 非空且命中**同 work_mode 的可见项目** → 抛 :class:`ProjectDirConflict`;
     - ``name`` 与**同 work_mode 的其他项目**重复 →
       抛 :class:`ProjectNameConflict`;
@@ -863,6 +880,11 @@ def create_project_checked(
                 raise ProjectNameConflict(name)
 
         if path_match is not None:
+            if path_match.get("hidden"):
+                path_match["hidden"] = False
+                path_match["name"] = name
+                path_match["updated_at"] = _now()
+                return Project.from_dict(path_match), True
             # 命中同 work_mode 的可见项目 → 冲突
             raise ProjectDirConflict(project_dir)
         # 无匹配 → 新建
@@ -936,17 +958,67 @@ def rename_project(project_id: str, name: str) -> Project | None:
     return _mutate(_do)
 
 
-def delete_project(project_id: str) -> None:
-    """Remove only the registry record, never the user's working directory."""
-    if is_default_project_id(project_id):
-        raise ValueError("default project cannot be deleted")
+def restore_project(project_id: str) -> Project | None:
+    """原子地恢复已软删除项目(锁内完成名称冲突检测与恢复,关闭 TOCTOU 窗口)。
 
-    def _do(projects: list[dict[str, Any]]) -> None:
-        target = next((p for p in projects if p.get("project_id") == project_id), None)
-        if target is not None:
-            projects.remove(target)
+    冲突检测按 target 的 ``work_mode`` 隔离:仅与**同 work_mode 的其他项目**
+    (含隐藏项目、非自身)的 ``name`` 重复时抛 :class:`ProjectNameConflict`。
+    不同 ``work_mode`` 的同名项目视为独立,不视为冲突。
+    项目不存在或已是可见时返回 ``None``(调用方通常已预检存在性与隐藏状态)。
+    """
+    def _do(projects: list[dict[str, Any]]) -> Project | None:
+        target = None
+        for p in projects:
+            if p.get("project_id") == project_id:
+                target = p
+                break
+        if target is None:
+            return None
+        if not target.get("hidden"):
+            return None
+        # 名称唯一性: 仅与同 work_mode 的其他项目(含隐藏项目、非自身)的
+        # name 重复时冲突。不同 work_mode 的同名项目视为独立。
+        target_mode = _wm(target)
+        target_name = target.get("name")
+        for p in projects:
+            if p is target:
+                continue
+            if _wm(p) != target_mode:
+                continue
+            if p.get("name") == target_name:
+                raise ProjectNameConflict(str(target_name or ""))
+        target["hidden"] = False
+        target["updated_at"] = _now()
+        return Project.from_dict(target)
 
-    _mutate(_do)
+    return _mutate(_do, skip_unchanged=True)
+
+
+def hide_project(project_id: str) -> Project | None:
+    """原子地隐藏(软删除)项目(锁内完成 hidden 翻转与置顶取消,关闭 TOCTOU 窗口)。
+
+    项目不存在或已是隐藏时返回 ``None``(调用方通常已预检存在性与可见状态)。
+    隐藏时自动取消置顶(``pinned=False``, ``pin_order=0``)。
+    """
+    def _do(projects: list[dict[str, Any]]) -> Project | None:
+        target = None
+        for p in projects:
+            if p.get("project_id") == project_id:
+                target = p
+                break
+        if target is None:
+            return None
+        if target.get("hidden"):
+            return None
+        target["hidden"] = True
+        # 隐藏项目自动取消置顶: 隐藏项目不应出现在置顶区
+        if target.get("pinned"):
+            target["pinned"] = False
+            target["pin_order"] = 0
+        target["updated_at"] = _now()
+        return Project.from_dict(target)
+
+    return _mutate(_do)
 
 
 def reindex_project_pin_orders() -> None:
@@ -1039,23 +1111,3 @@ def find_or_create_code_project_for_tui_params(params: dict[str, Any]) -> Projec
     if not candidate_dir:
         return None
     return find_or_create_code_project_for_dir(candidate_dir)
-
-
-def migrate_archived_projects() -> None:
-    """Remove retired fields, preserving IDs, directories and active names."""
-    def migrate(projects):
-        used = {(_wm(p), p.get("name")) for p in projects if not p.get("hidden")}
-        for p in sorted(projects, key=lambda p: p.get("project_id", "")):
-            if p.get("hidden"):
-                original = p.get("name") or "Project"
-                name = original
-                suffix = 1
-                while (_wm(p), name) in used:
-                    name = f"{original} ({suffix})"
-                    suffix += 1
-                p["name"] = name
-                used.add((_wm(p), name))
-            p.pop("hidden", None)
-            p.pop("archived_at", None)
-        return None
-    _mutate(migrate)

@@ -138,12 +138,14 @@
       "deleteArchivedSessionsRecord": "Permanently delete all archived conversations in the project \"{{projectName}}\". This cannot be undone.",
       "archivedSessionsDeleted": "Deleted {{count}} archived conversations",
       "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed.",
+      "removedProjectNote": "This project was removed, so its conversations stay hidden from the workspace. Restoring any conversation restores the project too.",
       "errors": {
         "forbidden": "This operation is not supported for this resource",
         "notFound": "The resource no longer exists or has changed. Refresh and try again.",
         "sessionGone": "This conversation no longer exists and cannot be restored.",
         "requestFailed": "The operation failed. Please try again later.",
-        "sessionRestoreFailed": "Failed to restore the conversation. Refresh and try again."
+        "sessionRestoreFailed": "Failed to restore the conversation. Refresh and try again.",
+        "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first."
       }
     },
     "dialog": {
@@ -3527,11 +3529,10 @@
       "conversationArchived": "Task session archived",
       "archiveView": "View",
       "archiveUndo": "Undo",
-      "deleteProject": "Delete project",
-      "deleteProjectDescription": "Delete the cron jobs and idle conversations in “<name>{{projectName}}</name>”. Running ordinary conversations will be skipped and the project kept until you stop them and retry. The working directory stays. Deleted content cannot be recovered.",
-      "projectDeletedSummary": "Project deleted: {{sessions}} conversation(s), {{crons}} cron job(s)",
-      "deleteFailedSummary": "Project deletion incomplete: deleted {{sessions}} conversation(s) and {{crons}} cron job(s).",
-      "deleteSkippedRunning": "Deleted {{sessions}} conversation(s) and {{crons}} cron job(s). Skipped {{count}} running conversation(s) and kept the project. Stop them manually, then retry deletion.",
+      "removeProject": "Remove project",
+      "removeProjectConfirm": "Remove",
+      "removeProjectDescription": "Remove “<name>{{projectName}}</name>” from the list and hide its conversations. Archived conversations stay available in the archive page. Its cron jobs are stopped and kept (they stay stopped after the project is restored and must be re-enabled manually); the working directory is unaffected. Undo, or create a project with the same directory to restore it.",
+      "projectRemovedSummary": "Project removed; its cron jobs were stopped",
       "archiveSessions": "Archive all conversations",
       "archiveConfirmTitle": "Archive ({{count}}) conversations",
       "archiveConfirmTitleFallback": "Archive all conversations",
@@ -3551,7 +3552,9 @@
         "deleteSessionBusy": "This conversation is running and cannot be deleted. Stop it manually, then try again.",
         "archiveForbidden": "This task does not support archiving.",
         "archiveNotFound": "The resource no longer exists or has changed. Refresh and try again.",
-        "archiveFailed": "The archive operation failed. Please try again later."
+        "archiveFailed": "The archive operation failed. Please try again later.",
+        "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
+        "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"

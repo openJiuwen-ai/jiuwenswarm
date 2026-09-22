@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
 import { webClient } from '../../services/webClient';
-import { getArchiveErrorCode, archivedTaskClient, findBatchSessionResult, parseProjectOperationFailure } from '../../features/workspace/archivedTaskClient';
+import { getArchiveErrorCode, archivedTaskClient, findBatchSessionResult } from '../../features/workspace/archivedTaskClient';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import { DeleteDialog } from '../dialogs/Dialogs';
 import { ProjectArchiveDialog, resolveProjectArchiveSessionCount } from './ProjectArchiveDialog';
@@ -783,9 +783,9 @@ function ProjectDeleteDialog({
   return (
     <DeleteDialog
       title={project.name}
-      dialogTitle={t('multiSession.project.deleteProject')}
-      confirmLabel={t('common.delete')}
-      descriptionKey="multiSession.project.deleteProjectDescription"
+      dialogTitle={t('multiSession.project.removeProject')}
+      confirmLabel={t('multiSession.project.removeProjectConfirm')}
+      descriptionKey="multiSession.project.removeProjectDescription"
       descriptionValues={{ projectName: project.name }}
       deleting={deleting}
       error={error ?? null}
@@ -875,12 +875,12 @@ export function ConversationSidebar({
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
   const [pinError, setPinError] = useState<string | null>(null);
-  // 既有「删除项目」流程状态：与归档并存，互不影响
+  // 既有「移除项目」流程状态：与归档并存，互不影响
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<ProjectInfo | null>(null);
   const [projectAction, setProjectAction] = useState<'delete' | 'archive'>('delete');
   const [deleteProjectBusy, setDeleteProjectBusy] = useState(false);
   const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
-  // 运行中会话被略过时的提示：展示后点确定仅关闭对话框，不再重试归档
+  // 归档时运行中会话被略过时的提示：展示后点确定仅关闭对话框，不再重试归档
   const [deleteProjectNotice, setDeleteProjectNotice] = useState<string | null>(null);
   /** 打开归档确认框时快照会话数，避免提交过程中标题随列表刷新变化 */
   const [archiveDialogSessionCount, setArchiveDialogSessionCount] = useState<number | null>(null);
@@ -1186,6 +1186,18 @@ export function ConversationSidebar({
     return <Archive aria-hidden size={16} strokeWidth={1.8} />;
   }
 
+  // 移除/恢复项目失败时的可翻译文案；重名冲突与定时任务停止失败都给出可操作提示。
+  function projectActionErrorText(error: unknown): string {
+    const code = getArchiveErrorCode(error);
+    if (code === 'PROJECT_NAME_CONFLICT') {
+      return t('multiSession.project.errors.projectNameConflict');
+    }
+    if (code === 'CRON_STOP_FAILED') {
+      return t('multiSession.project.errors.cronStopFailed');
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
+
   function openArchiveSuccessToast(options: {
     content: string;
     onUndo: () => Promise<void>;
@@ -1248,7 +1260,7 @@ export function ConversationSidebar({
               Object.assign(error, { code: entry?.code });
               throw error;
             }
-            await useWorkspaceStore.getState().refreshWorkspaceData();
+            await useWorkspaceStore.getState().refreshWorkspaceAndCron();
           },
         });
         if (activeSessionId === session.session_id) {
@@ -1277,20 +1289,19 @@ export function ConversationSidebar({
     try {
       const projectId = deleteProjectTarget.project_id;
       if (projectAction === 'delete') {
-        const result = await removeProject(projectId);
-        await loadCronJobs();
-        if (!result.deleted && result.skipped_running_session_ids?.length) {
-          setDeleteProjectNotice(t('multiSession.project.deleteSkippedRunning', {
-            count: result.skipped_running_session_ids.length,
-            sessions: result.deleted_conversation_sessions,
-            crons: result.deleted_cron_jobs,
-          }));
-          return;
-        }
-        toast.open({ content: t('multiSession.project.projectDeletedSummary', {
-          sessions: result.deleted_conversation_sessions,
-          crons: result.deleted_cron_jobs,
-        }), variant: 'success' });
+        await removeProject(projectId);
+        toast.open({
+          content: t('multiSession.project.projectRemovedSummary'),
+          variant: 'success',
+          actions: [{
+            label: t('multiSession.project.archiveUndo'),
+            onClick: () => {
+              void useWorkspaceStore.getState().restoreProject(projectId).catch((error) => {
+                toast.open({ content: projectActionErrorText(error), variant: 'error' });
+              });
+            },
+          }],
+        });
       } else {
         const result = await projectRegistryClient.archiveSessions(projectId);
         const succeededIds = result.results.filter((item) => item.ok).map((item) => item.session_id);
@@ -1315,7 +1326,9 @@ export function ConversationSidebar({
                 Object.assign(error, { code: failed[0]?.code });
                 throw error;
               }
-              await useWorkspaceStore.getState().refreshWorkspaceData();
+              // 撤销归档若命中"项目已移除"的会话，会连带恢复项目，其定时任务
+              // 重新可见（默认停用），cron 列表要一起刷新。
+              await useWorkspaceStore.getState().refreshWorkspaceAndCron();
             },
           });
         }
@@ -1336,14 +1349,7 @@ export function ConversationSidebar({
         openArchiveFailureToast(t(archiveErrorKey(error)));
         return;
       }
-      // project.delete 的部分失败 payload 带有首个失败项的可读错误，优先展示
-      const partial = parseProjectOperationFailure(error);
-      setDeleteProjectError(partial
-        ? `${t('multiSession.project.deleteFailedSummary', {
-            sessions: partial.deletedConversations,
-            crons: partial.deletedCronJobs,
-          })}${partial.detail ? ` ${partial.detail}` : ''}`
-        : (error instanceof Error ? error.message : String(error)));
+      setDeleteProjectError(projectActionErrorText(error));
     } finally {
       setDeleteProjectBusy(false);
     }

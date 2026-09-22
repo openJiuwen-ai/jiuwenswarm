@@ -253,7 +253,8 @@ class CronSchedulerService:
         self._events: list[tuple[float, int, _Event]] = []
         self._seq = 0
         self._lifecycle_mutation_lock = asyncio.Lock()
-        self._lifecycle_last_reconcile = 0.0
+        self._hiding_projects: set[str] = set()
+        self._project_admission_revisions: dict[str, int] = {}
         self._lifecycle_owners: set[str] = {""}
         from jiuwenswarm.gateway.cron.lifecycle_owners import LifecycleOwners
         # Lifecycle ownership 是 Gateway 侧路由元数据，原本与 cron_jobs.json 同目录。
@@ -333,8 +334,15 @@ class CronSchedulerService:
         state: CronRunState,
         *,
         reason: str = "ghost",
-    ) -> None:
-        """Fire-and-forget: 向 AgentServer 发送 CHAT_CANCEL 中断请求。
+        strict: bool = False,
+    ) -> bool:
+        """向 AgentServer 发送 CHAT_CANCEL 中断请求，返回中断是否成功送达。
+
+        默认 fire-and-forget：网络断开、连接超时或 AgentServer 不可达都不
+        影响主流程，只是最佳努力的中断。``strict=True`` 时错误直接抛出，供
+        "必须确认已停才能继续"的调用方（项目隐藏）使用。
+
+        strict 模式等待后端确认完成停止，失败响应与传输失败都会中止隐藏。
 
         触发场景:
         - ``reason="ghost"``: cron_jobs.json 被删除或 job 被移除后，gateway
@@ -384,6 +392,8 @@ class CronSchedulerService:
             "session_id": target_session_id,
             "cron": {"job_id": state.job_id, "run_id": state.run_id},
         }
+        if strict:
+            cancel_params["wait_for_stop"] = True
         if project_id:
             cancel_params["project_id"] = project_id
         if project_dir:
@@ -399,7 +409,14 @@ class CronSchedulerService:
                 timestamp=self._now_fn(),
                 user_id=user_id or None,
             )
-            await self._agent_client.send_request(interrupt_env)
+            response = (
+                await self._agent_client.send_request(interrupt_env, timeout=30)
+                if strict else await self._agent_client.send_request(interrupt_env)
+            )
+            if strict:
+                payload = response.payload if isinstance(response.payload, dict) else {}
+                if not response.ok or payload.get("success") is not True:
+                    raise RuntimeError(payload.get("error") or payload.get("message") or "cron stop was not confirmed")
             logger.info(
                 "[Cron] AgentServer interrupt sent (%s): "
                 "job_id=%s run_id=%s session_id=%s",
@@ -408,7 +425,11 @@ class CronSchedulerService:
                 state.run_id,
                 target_session_id,
             )
+            return True
         except (OSError, RuntimeError) as exc:
+            if strict:
+                # 中断送不出去 ⇒ 无法保证任务停止,交由调用方决定是否中止。
+                raise
             # Fire-and-forget: 网络断开、连接超时或 AgentServer 不可达
             # 都不影响主流程，只是最佳努力的中断
             logger.warning(
@@ -420,6 +441,7 @@ class CronSchedulerService:
                 target_session_id,
                 exc,
             )
+            return False
 
     async def start(self) -> None:
         if self._running:
@@ -644,116 +666,101 @@ class CronSchedulerService:
         await self._sync_store_revision()
         self._reload_event.set()
 
-    async def reconcile_project_lifecycles(self) -> None:
-        """Resume interrupted Gateway stages before admitting new cron work."""
-        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
-        jobs = await self._store.list_jobs()
-        owners = self._lifecycle_owners | self._lifecycle_owner_store.read() | {str(job.user_id or "") for job in jobs}
-        for owner in owners:
-            self.remember_lifecycle_owner(owner)
-        for owner in owners:
-            async def call(method, params, *, owner=owner):
-                return await fetch_agent_unary(
-                    agent_client=self._agent_client,
-                    req_method=ReqMethod(method),
-                    params=params,
-                    session_id=None,
-                    user_id=owner or None,
-                    channel_id="__cron__",
-                    timeout_seconds=120,
-                )
-            ok, inventory = await call("project.lifecycle", {"inventory": True})
-            if not ok:
-                continue
-            for project in inventory.get("projects", []):
-                operation = project.get("operation") or {}
-                pending = operation and operation.get("status") != "completed"
-                if not pending or operation.get("kind") != "delete":
-                    continue
-                if pending and not operation.get("retryable", True):
-                    continue
-                project_id = project["project_id"]
-                try:
-                    ok, token = await call(
-                        "project.delete",
-                        {"project_id": project_id, "_lifecycle_stage": "prepare"},
-                    )
-                    if not ok or "operation_id" not in token:
-                        continue
-                    all_jobs = await self._store.list_jobs()
-                    matching = [
-                        job
-                        for job in all_jobs
-                        if job.project_id == project_id and str(job.user_id or "") == owner
-                    ]
-                    planned = list(
-                        dict.fromkeys(
-                            [*operation.get("planned_cron_job_ids", []), *(job.id for job in matching)]
-                        )
-                    )
-                    saved, _ = await call("project.lifecycle", {**token, "planned_cron_job_ids": planned})
-                    if not saved:
-                        continue
-                    for job in matching:
-                        if job.enabled:
-                            await self._store.update_job(job.id, {"enabled": False})
-                    await self.reload()
-                    await self.stop_project_runs(project_id, owner)
-                    completed = list(operation.get("completed_items", {}).get("cron", []))
-                    for job in matching:
-                        await self._store.delete_job(job.id)
-                        if job.id not in completed:
-                            completed.append(job.id)
-                        saved, failure = await call("project.lifecycle", {**token, "completed_cron_job_ids": completed})
-                        if not saved:
-                            raise RuntimeError(failure.get("error", "checkpoint failed"))
-                    await self.reload()
-                    await call(
-                        "project.delete",
-                        {
-                            **token,
-                            "_lifecycle_stage": "finish",
-                            "deleted_cron_jobs": len(planned),
-                            "completed_cron_job_ids": completed,
-                        },
-                    )
-                except Exception as exc:
-                    logger.warning("project lifecycle recovery deferred: %s: %s", project_id, exc)
-                    if "token" in locals() and token.get("operation_id"):
-                        await call("project.lifecycle", {**token, "failed": True, "error": str(exc),
-                                                         "phase": "delete_cron"})
-
     def remember_lifecycle_owner(self, user_id: str | None) -> None:
         owner = str(user_id or "")
         self._lifecycle_owner_store.remember(owner)
         self._lifecycle_owners.add(owner)
 
+    def close_project_admission(self, project_id: str) -> None:
+        """Stop admitting a project's jobs until ``reopen_project_admission``.
+
+        Bumping the revision invalidates the verdict of gate queries already in
+        flight: they answer for the pre-hide state and must not let a job run.
+        """
+        self._hiding_projects.add(project_id)
+        self._project_admission_revisions[project_id] = (
+            self._project_admission_revisions.get(project_id, 0) + 1
+        )
+
+    def reopen_project_admission(self, project_id: str) -> None:
+        """Release the admission fence; verdicts taken while it was held are void."""
+        self._project_admission_revisions[project_id] = (
+            self._project_admission_revisions.get(project_id, 0) + 1
+        )
+        self._hiding_projects.discard(project_id)
+
     async def project_execution_allowed(self, project_id: str | None, user_id: str | None = None) -> bool:
         self.remember_lifecycle_owner(user_id)
+        if project_id in self._hiding_projects:
+            return False
         if not project_id or project_id in {"default", "default_code"}:
             return True
         from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+        revision = self._project_admission_revisions.get(project_id, 0)
         ok, payload = await fetch_agent_unary(
             agent_client=self._agent_client, req_method=ReqMethod.PROJECT_LIFECYCLE,
             params={"project_id": project_id}, session_id=None, user_id=user_id,
             channel_id="__cron__", timeout_seconds=10,
         )
-        return bool(ok and payload.get("exists") and not payload.get("execution_blocked", True))
+        # 隐藏(移除)项目的定时任务一律不放行:不到点触发、不进任务列表、
+        # 不可手动启用/立即执行。enabled 标志在项目移除时已被停用,这里是
+        # 防止任何路径(如历史数据)让隐藏项目的任务继续跑的执行层闸门。
+        return bool(
+            ok
+            and revision == self._project_admission_revisions.get(project_id, 0)
+            and project_id not in self._hiding_projects
+            and payload.get("exists")
+            and not payload.get("hidden")
+            and not payload.get("execution_blocked", True)
+        )
 
-    async def stop_project_runs(self, project_id: str, user_id: str | None = None) -> None:
-        matching = [state for state in list(self._runs.values())
-                    if state.exec_project_id == project_id and str(state.exec_user_id or "") == str(user_id or "")]
+    async def stop_project_runs(self, project_id: str) -> None:
+        """Cancel every in-flight run of a project, regardless of owning user.
+
+        Hiding a project must leave nothing running and nothing left to push:
+        the interrupt is sent in ``strict`` mode so a transport failure raises
+        (the caller aborts the hide instead of hiding a project whose jobs may
+        still be executing), and the cancelled runs' queued ``push`` /
+        ``push_update`` events are dropped.  Without the latter the results
+        would still be delivered after the project is gone from the UI, since
+        ``reload`` only prunes events of jobs that left the store entirely.
+        """
+        matching = []
+        for state in list(self._runs.values()):
+            job = self._jobs.get(state.job_id)
+            if state.exec_project_id == project_id or getattr(job, "project_id", None) == project_id:
+                matching.append(state)
         tasks = []
         for state in matching:
-            await self._cancel_agent_session(state, reason="project_archive")
             task = self._run_tasks.get(state.run_id)
             if task is not None and not task.done():
                 task.cancel()
                 tasks.append(task)
+        self._drop_run_events({state.run_id for state in matching})
         if tasks:
             _, pending = await asyncio.wait(tasks, timeout=10)
             if pending:
                 raise RuntimeError("cron runs are still stopping")
+        for state in matching:
+            if state.exec_session_id:
+                await self._cancel_agent_session(state, reason="project_archive", strict=True)
+        self._drop_run_events({state.run_id for state in matching})
+
+    def _drop_run_events(self, run_ids: set[str]) -> int:
+        """Remove queued events of the given runs (wake/push/push_update).
+
+        Returns the number of dropped events.  ``self._events`` is a heap of
+        ``(at_ts, seq, _Event)``, so after filtering it must be re-heapified.
+        """
+        if not run_ids:
+            return 0
+        kept = [item for item in self._events if item[2].run_id not in run_ids]
+        dropped = len(self._events) - len(kept)
+        if dropped:
+            self._events = kept
+            heapq.heapify(self._events)
+            logger.info("[Cron] dropped %d queued event(s) of stopped runs", dropped)
+        return dropped
 
     async def stop_job_runs(self, job_id: str) -> None:
         matching = [state for state in list(self._runs.values()) if state.job_id == job_id]
@@ -982,10 +989,6 @@ class CronSchedulerService:
     async def _loop(self) -> None:
         while self._running:
             try:
-                if self._now_fn() - self._lifecycle_last_reconcile >= 10:
-                    self._lifecycle_last_reconcile = self._now_fn()
-                    async with self._lifecycle_mutation_lock:
-                        await self.reconcile_project_lifecycles()
                 if not self._events:
                     self._reload_event.clear()
                     try:
@@ -1030,7 +1033,6 @@ class CronSchedulerService:
         job = self._jobs.get(ev.job_id)
         if (
             job is not None
-            and ev.kind == "wake"
             and not await self.project_execution_allowed(job.project_id, job.user_id)
         ):
             return
@@ -1304,6 +1306,7 @@ class CronSchedulerService:
             )
             return
         state.exec_mode = mode
+        state.exec_project_id = job.project_id or None
         state.exec_user_id = str(job.user_id or "").strip() or None
 
         async def _run_agent() -> None:
