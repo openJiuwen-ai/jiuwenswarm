@@ -115,7 +115,7 @@ export function VideoDuplexModelSettings() {
         if (active) applyPayload(payload);
       })
       .catch((loadError: unknown) => {
-        if (active) setError(loadError instanceof Error ? loadError.message : '无法读取全双工模型配置');
+        if (active) setError(loadError instanceof Error ? loadError.message : t('settingsPanel.videoDuplex.loadError'));
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -154,7 +154,7 @@ export function VideoDuplexModelSettings() {
       applyPayload(payload);
       setDraft(null);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : '无法保存全双工模型配置');
+      setError(saveError instanceof Error ? saveError.message : t('settingsPanel.videoDuplex.saveError'));
     } finally {
       setSaving(false);
     }
@@ -181,7 +181,7 @@ export function VideoDuplexModelSettings() {
   };
 
   if (loading) {
-    return <div className="video-duplex-model-settings__status">正在读取全双工模型配置…</div>;
+    return <div className="video-duplex-model-settings__status">{t('settingsPanel.videoDuplex.loading')}</div>;
   }
 
   return (
@@ -221,9 +221,9 @@ export function VideoDuplexModelSettings() {
         </div>
       ) : (
         <div className="settings-agent-media__model-card">
-          <span className="settings-agent-media__model-name">尚未配置全双工模型</span>
+          <span className="settings-agent-media__model-name">{t('settingsPanel.videoDuplex.notConfigured')}</span>
           <Button size="sm" variant="primary" disabled={saving || deleting} onClick={openEditor}>
-            配置模型
+            {t('settingsPanel.common.configure')}
           </Button>
         </div>
       )}
@@ -231,7 +231,7 @@ export function VideoDuplexModelSettings() {
       {draft ? (
         <FormDialog
           open
-          title="配置全双工模型"
+          title={t('settingsPanel.videoDuplex.dialogTitle')}
           submitting={saving}
           confirmLabel={t('common.save')}
           cancelLabel={t('common.cancel')}
@@ -244,7 +244,7 @@ export function VideoDuplexModelSettings() {
         >
           <div className="video-duplex-model-settings__dialog-fields">
             <label className="video-duplex-model-settings__field">
-              <span>模型通道</span>
+              <span>{t('settingsPanel.videoDuplex.providerLabel')}</span>
               <select
                 value={draft.video_live_provider}
                 onChange={(event) => updateDraft('video_live_provider', event.target.value as Provider)}
@@ -257,23 +257,23 @@ export function VideoDuplexModelSettings() {
               <>
                 <ConfigField value={draft.joyai_api_base} label="JoyAI API Base" placeholder="http://127.0.0.1:8070/v1" onChange={(value) => updateDraft('joyai_api_base', value)} />
                 <ConfigField value={draft.joyai_api_key} label="JoyAI API Key" secret placeholder={secretPlaceholder(secretLengths.joyai_api_key)} onChange={(value) => updateDraft('joyai_api_key', value)} />
-                <ConfigField value={draft.joyai_model} label="JoyAI 模型" onChange={(value) => updateDraft('joyai_model', value)} />
-                <h3>语音转写与语音播报</h3>
+                <ConfigField value={draft.joyai_model} label={t('settingsPanel.videoDuplex.joyaiModelLabel')} onChange={(value) => updateDraft('joyai_model', value)} />
+                <h3>{t('settingsPanel.videoDuplex.voiceSectionTitle')}</h3>
                 <label className="video-duplex-model-settings__field">
-                  <span>语音通道</span>
+                  <span>{t('settingsPanel.videoDuplex.voiceProtocolLabel')}</span>
                   <select value={draft.voice_protocol} onChange={(event) => updateDraft('voice_protocol', event.target.value as VoiceProtocol)}>
                     <option value="native_ws">JoyAI WebSocket</option>
                     <option value="openai_http">OpenAI HTTP</option>
                   </select>
                 </label>
-                <ConfigField value={draft.voice_asr_endpoint} label="语音转写完整接口" onChange={(value) => updateDraft('voice_asr_endpoint', value)} />
-                <ConfigField value={draft.voice_tts_endpoint} label="语音播报完整接口" onChange={(value) => updateDraft('voice_tts_endpoint', value)} />
+                <ConfigField value={draft.voice_asr_endpoint} label={t('settingsPanel.videoDuplex.asrEndpointLabel')} onChange={(value) => updateDraft('voice_asr_endpoint', value)} />
+                <ConfigField value={draft.voice_tts_endpoint} label={t('settingsPanel.videoDuplex.ttsEndpointLabel')} onChange={(value) => updateDraft('voice_tts_endpoint', value)} />
                 {draft.voice_protocol === 'openai_http' ? (
                   <>
-                    <ConfigField value={draft.voice_api_key} label="语音 API Key" secret placeholder={secretPlaceholder(secretLengths.voice_api_key)} onChange={(value) => updateDraft('voice_api_key', value)} />
-                    <ConfigField value={draft.voice_asr_model} label="语音转写模型" onChange={(value) => updateDraft('voice_asr_model', value)} />
-                    <ConfigField value={draft.voice_tts_model} label="语音播报模型" onChange={(value) => updateDraft('voice_tts_model', value)} />
-                    <ConfigField value={draft.voice_tts_voice} label="语音播报音色" onChange={(value) => updateDraft('voice_tts_voice', value)} />
+                    <ConfigField value={draft.voice_api_key} label={t('settingsPanel.videoDuplex.voiceApiKeyLabel')} secret placeholder={secretPlaceholder(secretLengths.voice_api_key)} onChange={(value) => updateDraft('voice_api_key', value)} />
+                    <ConfigField value={draft.voice_asr_model} label={t('settingsPanel.videoDuplex.asrModelLabel')} onChange={(value) => updateDraft('voice_asr_model', value)} />
+                    <ConfigField value={draft.voice_tts_model} label={t('settingsPanel.videoDuplex.ttsModelLabel')} onChange={(value) => updateDraft('voice_tts_model', value)} />
+                    <ConfigField value={draft.voice_tts_voice} label={t('settingsPanel.videoDuplex.ttsVoiceLabel')} onChange={(value) => updateDraft('voice_tts_voice', value)} />
                   </>
                 ) : null}
               </>
@@ -281,8 +281,8 @@ export function VideoDuplexModelSettings() {
               <>
                 <ConfigField value={draft.qwen_omni_realtime_url} label="Qwen Realtime WebSocket" onChange={(value) => updateDraft('qwen_omni_realtime_url', value)} />
                 <ConfigField value={draft.qwen_omni_api_key} label="Qwen API Key" secret placeholder={secretPlaceholder(secretLengths.qwen_omni_api_key)} onChange={(value) => updateDraft('qwen_omni_api_key', value)} />
-                <ConfigField value={draft.qwen_omni_model} label="Qwen 模型" onChange={(value) => updateDraft('qwen_omni_model', value)} />
-                <ConfigField value={draft.qwen_omni_voice} label="Qwen 音色" onChange={(value) => updateDraft('qwen_omni_voice', value)} />
+                <ConfigField value={draft.qwen_omni_model} label={t('settingsPanel.videoDuplex.qwenModelLabel')} onChange={(value) => updateDraft('qwen_omni_model', value)} />
+                <ConfigField value={draft.qwen_omni_voice} label={t('settingsPanel.videoDuplex.qwenVoiceLabel')} onChange={(value) => updateDraft('qwen_omni_voice', value)} />
               </>
             )}
           </div>
@@ -291,8 +291,8 @@ export function VideoDuplexModelSettings() {
       ) : null}
       <SettingsConfirmDialog
         open={deleteOpen}
-        title="删除全双工模型配置"
-        message="删除后将清除已保存的全双工模型地址、模型和密钥。"
+        title={t('settingsPanel.videoDuplex.deleteTitle')}
+        message={t('settingsPanel.videoDuplex.deleteConfirm')}
         confirming={deleting}
         error={deleteError}
         onConfirm={() => void clearConfig()}

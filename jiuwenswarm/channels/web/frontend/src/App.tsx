@@ -4027,10 +4027,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-page-body">
             <div className="page-content">
               <ConnectorMarketPanel
-                applicationPlugins={applicationPlugins}
-                applicationPluginsLoading={applicationPluginState.loading}
-                applicationPluginsError={applicationPluginState.error}
-                onRefreshApplicationPlugins={applicationPluginState.refresh}
                 onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                   detail: {
                     skillName: 'plugin-creator',
