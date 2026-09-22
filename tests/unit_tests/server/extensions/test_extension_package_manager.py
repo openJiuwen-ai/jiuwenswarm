@@ -29,6 +29,12 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
+def test_packaged_agent_group_resources_exclude_sample_group():
+    resources = catalog.get_equipment_resources_agent_groups_dir()
+
+    assert resources is None or not (resources / "sample-expert-group").exists()
+
+
 @pytest.mark.asyncio
 async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
     from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetSummary, HubSearchPage
