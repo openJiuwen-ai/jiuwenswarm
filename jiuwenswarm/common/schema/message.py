@@ -199,6 +199,7 @@ class ReqMethod(Enum):
     MCP_UNINSTALL = "mcp.uninstall"
     MCP_CONNECT = "mcp.connect"
     MCP_WAIT_AUTH = "mcp.wait_auth"
+    MCP_CANCEL_CONNECT = "mcp.cancel_connect"
     MCP_DISCONNECT = "mcp.disconnect"
     MCP_REGISTER_CUSTOM = "mcp.register_custom"
     MCP_DELETE_CUSTOM = "mcp.delete_custom"
@@ -277,6 +278,9 @@ class ReqMethod(Enum):
         "personal_context.runtime.start_agent_use"
     )
     PERSONAL_CONTEXT_RUNTIME_STOP_AGENT_USE = "personal_context.runtime.stop_agent_use"
+    PERSONAL_CONTEXT_RUNTIME_SET_MASTER_ENABLED = (
+        "personal_context.runtime.set_master_enabled"
+    )
     PERSONAL_CONTEXT_RUNTIME_GET_CONFIG = "personal_context.runtime.get_config"
     PERSONAL_CONTEXT_RUNTIME_PATCH_CONFIG = "personal_context.runtime.patch_config"
     PERSONAL_CONTEXT_RUNTIME_SELECT_MODEL = "personal_context.runtime.select_model"

@@ -593,6 +593,10 @@
 .rsi-canvas--dragging {
   cursor: grabbing;
 }
+.rsi-canvas--dragging .rsi-canvas__inner {
+  /* 拖拽时提升为合成层，避免高频 transform 更新引发整块重绘 */
+  will-change: transform;
+}
 .rsi-canvas__inner {
   position: relative;
   transform-origin: 0 0;

@@ -168,7 +168,21 @@ export function RsiDetailHeader({
             const outcome = await executeDesktopSave(() => pywebviewApi.download_file!(downloadUrl, artifact.filename));
             if (outcome === 'failed') window.alert(t('artifacts.downloadFailed', { name: artifact.filename }));
           } else {
-            window.open(downloadUrl, '_blank', 'noopener,noreferrer');
+            // 同源时用隐藏 <a download> 触发下载：桌面 WebView 中 window.open 到后端
+            // HTTP URL 会直接导航覆盖应用页面，<a download> 则保持下载不导航；
+            // 跨源时 download 属性会被浏览器忽略，仍保留 window.open 的网页版行为。
+            const sameOrigin =
+              new URL(downloadUrl, window.location.href).origin === window.location.origin;
+            if (sameOrigin) {
+              const link = document.createElement('a');
+              link.href = downloadUrl;
+              link.download = artifact.filename;
+              document.body.appendChild(link);
+              link.click();
+              link.remove();
+            } else {
+              window.open(downloadUrl, '_blank', 'noopener,noreferrer');
+            }
           }
         } else if (action === 'install') {
           // Harness artifacts are refs, not archives; the RSI installer resolves and registers the package.
