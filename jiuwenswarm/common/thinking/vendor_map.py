@@ -3,22 +3,24 @@
 """Vendor match table for thinking control (no skill/role knowledge).
 
 Only explicitly allowlisted model families participate in thinking toggle.
-Currently: GLM-5 / GLM-5.1 / GLM-5.2 / DeepSeek-V3.2.
+Currently: GLM-5 / GLM-5.1 / GLM-5.2 / DeepSeek (keyword match, all versions).
 """
 
 from __future__ import annotations
 
 import re
 
-# Ordered: first match wins. Patterns are intentionally narrow to avoid
-# false positives (e.g. glm-4, glm-50, deepseek-chat, deepseek-v3.1).
+# Ordered: first match wins. GLM pattern is intentionally narrow to avoid
+# false positives (e.g. glm-4, glm-50, glm-5.3); DeepSeek is matched by
+# keyword across versions (v3.x / v4 / chat) — non-thinking variants rely
+# on the executor's bare-retry fallback for rejected thinking params.
 _VENDOR_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"(?:^|[^a-z0-9])glm[-_]?5(?:\.(?:1|2))?(?:$|[^0-9.])", re.IGNORECASE),
         "extra_body_thinking_type",
     ),
     (
-        re.compile(r"(?:^|[^a-z0-9])deepseek[-_]?v?3\.2(?:$|[^0-9])", re.IGNORECASE),
+        re.compile(r"(?:^|[^a-z0-9])deepseek", re.IGNORECASE),
         "extra_body_thinking_type",
     ),
 )

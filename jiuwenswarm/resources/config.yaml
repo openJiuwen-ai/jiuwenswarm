@@ -597,6 +597,7 @@ react:
       - edit_memory
     enable_for_models:             # 模型白名单（空=全部启用）
       - glm
+      - deepseek
     subagents:                      # 子 agent 延迟加载配置
       enabled: false                # 子 agent 总开关，默认关闭
       inherit_parent_eager_tools: true  # 继承父 agent 的 eager 列表

@@ -34,19 +34,23 @@ class TestVendorMap:
         assert match_vendor_style("glm-5.2") == "extra_body_thinking_type"
         assert match_vendor_style("provider/glm_5.1") == "extra_body_thinking_type"
 
-    def test_match_deepseek_v32(self):
+    def test_match_deepseek_family(self):
         assert match_vendor_style("DeepSeek-V3.2") == "extra_body_thinking_type"
         assert match_vendor_style("deepseek-v3.2") == "extra_body_thinking_type"
         assert match_vendor_style("deepseek_v3.2") == "extra_body_thinking_type"
+        assert match_vendor_style("deepseek-v4-flash-0731") == "extra_body_thinking_type"
+        assert match_vendor_style("deepseek-v4-pro") == "extra_body_thinking_type"
+        assert match_vendor_style("deepseek-chat") == "extra_body_thinking_type"
+        assert match_vendor_style("provider/deepseek-v3.1") == "extra_body_thinking_type"
 
     def test_unsupported(self):
         assert match_vendor_style("doubao-pro") is None
         assert match_vendor_style("qwen3-max") is None
-        assert match_vendor_style("deepseek-chat") is None
-        assert match_vendor_style("deepseek-v3.1") is None
         assert match_vendor_style("glm-4") is None
         assert match_vendor_style("glm-50") is None
         assert match_vendor_style("glm-5.3") is None
+        # 词边界：无分隔的前缀拼名不命中
+        assert match_vendor_style("somedeepseek") is None
         assert match_vendor_style("") is None
 
     def test_style_kwargs(self):
@@ -74,6 +78,12 @@ class TestAdaptThinking:
         profile = adapt_thinking("on", model_name="DeepSeek-V3.2")
         assert profile.injected is True
         assert profile.llm_call_kwargs["extra_body"]["thinking"]["type"] == "enabled"
+
+    def test_off_deepseek_v4_flash(self):
+        profile = adapt_thinking("off", model_name="deepseek-v4-flash-0731")
+        assert profile.injected is True
+        assert profile.degraded is False
+        assert profile.llm_call_kwargs["extra_body"]["thinking"]["type"] == "disabled"
 
     def test_unsupported_degraded(self):
         profile = adapt_thinking("off", model_name="qwen3-plus")
