@@ -27,7 +27,7 @@ def get_session_coordinator(
     """
     key = (str(root.resolve()), session_id)
     coordinator = _COORDINATORS.get(key)
-    if coordinator is None or coordinator._closed:
+    if coordinator is None or coordinator.closed:
         coordinator = SessionCoordinator(root, session_id, model_supplier)
         _COORDINATORS[key] = coordinator
     else:

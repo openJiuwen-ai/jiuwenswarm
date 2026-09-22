@@ -1178,6 +1178,15 @@ def test_registry_reuses_coordinator_for_recreated_adapter(tmp_path: Path) -> No
     assert second is first
 
 
+@pytest.mark.asyncio
+async def test_registry_replaces_closed_coordinator(tmp_path: Path) -> None:
+    first = get_session_coordinator(tmp_path, "session-a", lambda: _FakeModel())
+    await first.close()
+    second = get_session_coordinator(tmp_path, "session-a", lambda: _FakeModel())
+    assert second is not first
+    assert not second.closed
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [(True, True), (False, False), ("true", True), ("off", False), (None, False)],
