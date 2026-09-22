@@ -2449,7 +2449,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       executeSlashCommand,
       extractPlainText,
       getCurrentComposerTrigger,
-      isAgentGroupSelected,
       mode,
       onNewSession,
       onForkSession,
@@ -2896,7 +2895,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     };
     window.addEventListener('chat-input-insert-skill', handler);
     return () => window.removeEventListener('chat-input-insert-skill', handler);
-  }, [extractPlainText, insertSkillChip, isAgentGroupSelected]);
+  }, [extractPlainText, insertSkillChip]);
   // 外部进入新会话时可以预选技能。把 canonical session state 同步成输入框
   // 中的 chip，避免用户开始编辑后被 handleEditorInput 误判为手动移除。
   useEffect(() => {

@@ -629,29 +629,39 @@ test('concurrent Expert installs keep every affected card busy', async () => {
     tags: [],
     avatarUrl: null,
   }));
-  const document = new JSDOM(renderToStaticMarkup(React.createElement(CatalogPage, {
-    scope: 'catalog',
-    items,
-    totalItems: items.length,
-    page: 1,
-    query: '',
-    category: '',
-    status: 'success',
-    error: null,
-    busyIds: new Set(items.map((item) => item.id)),
-    onPageChange() {},
-    onCategoryChange() {},
-    onRetry() {},
-    onOpen() {},
-    onUse() {},
-    onReconnect() {},
-    onInstall() {},
-    onCreate() {},
-  }))).window.document;
+  const document = new JSDOM(
+    renderToStaticMarkup(
+      React.createElement(CatalogPage, {
+        scope: 'catalog',
+        items,
+        totalItems: items.length,
+        page: 1,
+        query: '',
+        category: '',
+        status: 'success',
+        error: null,
+        busyIds: new Set(items.map((item) => item.id)),
+        onPageChange() {},
+        onCategoryChange() {},
+        onRetry() {},
+        onOpen() {},
+        onUse() {},
+        onReconnect() {},
+        onInstall() {},
+        onCreate() {},
+      }),
+    ),
+  ).window.document;
   const installButtons = Array.from(document.querySelectorAll('[data-testid="agent-card"] button'));
   assert.equal(installButtons.length, 2);
-  assert.deepEqual(installButtons.map((button) => button.getAttribute('aria-busy')), ['true', 'true']);
-  assert.deepEqual(installButtons.map((button) => button.textContent), ['安装中…', '安装中…']);
+  assert.deepEqual(
+    installButtons.map((button) => button.getAttribute('aria-busy')),
+    ['true', 'true'],
+  );
+  assert.deepEqual(
+    installButtons.map((button) => button.textContent),
+    ['安装中…', '安装中…'],
+  );
 });
 
 test('pending connector installs use a queue instead of one mutable target slot', () => {
@@ -665,9 +675,7 @@ test('manual Expert Team creation requires at least one member', async () => {
   const { JSDOM } = await import('jsdom');
   const { createRoot } = await import('react-dom/client');
   const { act } = React;
-  const { AgentGroupEditor } = await import(
-    '../node_modules/.cache/agent-management-layout/AgentGroupEditor.mjs'
-  );
+  const { AgentGroupEditor } = await import('../node_modules/.cache/agent-management-layout/AgentGroupEditor.mjs');
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
   const previousWindow = globalThis.window;
   const previousDocument = globalThis.document;
@@ -678,19 +686,51 @@ test('manual Expert Team creation requires at least one member', async () => {
   let saveCount = 0;
   const root = createRoot(dom.window.document.getElementById('root'));
   try {
-    await act(async () => root.render(React.createElement(AgentGroupEditor, {
-      draft: {
-        id: '', name: '验收专家团', description: '能力介绍', persona: '专家团介绍', category: '',
-        tagIds: [], customTags: [], leaderId: 'leader', memberIds: [], skillRefs: [], suggestedPrompts: [],
-      },
-      agentOptions: [{
-        id: 'leader', runtimePackageName: 'leader', displayName: '负责人', description: '', source: 'local',
-        installed: true, connectionState: 'connected', tags: [], avatarUrl: null,
-      }],
-      agentsStatus: 'success', agentsError: null, skillOptions: [], skillsStatus: 'success', saving: false,
-      error: null, onChange() {}, onReloadAgents() {}, onReloadSkills() {}, onCancel() {},
-      onSave() { saveCount += 1; },
-    })));
+    await act(async () =>
+      root.render(
+        React.createElement(AgentGroupEditor, {
+          draft: {
+            id: '',
+            name: '验收专家团',
+            description: '能力介绍',
+            persona: '专家团介绍',
+            category: '',
+            tagIds: [],
+            customTags: [],
+            leaderId: 'leader',
+            memberIds: [],
+            skillRefs: [],
+            suggestedPrompts: [],
+          },
+          agentOptions: [
+            {
+              id: 'leader',
+              runtimePackageName: 'leader',
+              displayName: '负责人',
+              description: '',
+              source: 'local',
+              installed: true,
+              connectionState: 'connected',
+              tags: [],
+              avatarUrl: null,
+            },
+          ],
+          agentsStatus: 'success',
+          agentsError: null,
+          skillOptions: [],
+          skillsStatus: 'success',
+          saving: false,
+          error: null,
+          onChange() {},
+          onReloadAgents() {},
+          onReloadSkills() {},
+          onCancel() {},
+          onSave() {
+            saveCount += 1;
+          },
+        }),
+      ),
+    );
     const form = dom.window.document.querySelector('[data-testid="agent-group-editor-form"]');
     await act(async () => form.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })));
     assert.equal(saveCount, 0);
@@ -714,7 +754,10 @@ test('Expert Team upload error prioritizes the latest local validation and stays
 
 test('manual Expert Team validation names the capability description precisely', () => {
   assert.equal(zhLocale.agentManagement.group.form.errors.descriptionRequired, '请输入专家团能力介绍');
-  assert.equal(enLocale.agentManagement.group.form.errors.descriptionRequired, 'Enter an Expert Team capability description');
+  assert.equal(
+    enLocale.agentManagement.group.form.errors.descriptionRequired,
+    'Enter an Expert Team capability description',
+  );
 });
 
 test('leaving Expert management discards unfinished manual-create subpages', () => {
