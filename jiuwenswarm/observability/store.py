@@ -31,6 +31,7 @@ from jiuwenswarm.common.mode_matrix import (
 )
 from jiuwenswarm.observability.config import (
     DEFAULT_DETAIL_MAX_BYTES,
+    DEFAULT_DISCARD_FINAL_SPAN_FRAMES,
     database_files,
     session_database_path,
 )
@@ -218,6 +219,12 @@ CREATE TABLE IF NOT EXISTS trajectory_frame_spans (
 -- What a frame says is text, arguments_delta and a tool's identity. Its own
 -- identity is span_ref and sequence, and nothing else about where it came
 -- from is repeated here.
+--
+-- A frame lives only as long as the answer it stands in for is unfinished. The
+-- terminal record of its span states that answer in full, so by default the
+-- frames go as that record is committed; ``discard_final_span_frames: false``
+-- keeps them for the lifetime of the turn page instead, which is what
+-- replaying a finished answer frame by frame would need.
 CREATE TABLE IF NOT EXISTS trajectory_stream_frames (
     frame_seq INTEGER PRIMARY KEY AUTOINCREMENT,
     span_ref INTEGER NOT NULL REFERENCES trajectory_frame_spans(span_ref),
@@ -239,8 +246,9 @@ CREATE TABLE IF NOT EXISTS trajectory_stream_frames (
 -- 33,000 rows. Catching up walks the file in commit order, which frame_seq
 -- already is -- it is the rowid, so that walk is a primary-key scan.
 --
--- Replaying one answer, and discarding the frames of a span that turned out
--- to be incomplete, both address frames by the span that produced them.
+-- Replaying one answer, discarding the frames a terminal record supersedes,
+-- and discarding those of a span that turned out to be incomplete all address
+-- frames by the span that produced them.
 CREATE INDEX IF NOT EXISTS idx_trajectory_frames_span_ref
     ON trajectory_stream_frames(span_ref, sequence);
 
@@ -380,9 +388,16 @@ def _decode_payload(stored: bytes | None) -> bytes:
 class TrajectoryStore:
     """Single-threaded SQLite writer that preserves raw record bytes unchanged."""
 
-    def __init__(self, database_path: Path, *, retention_days: int = 7) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        retention_days: int = 7,
+        discard_final_span_frames: bool = DEFAULT_DISCARD_FINAL_SPAN_FRAMES,
+    ) -> None:
         self.database_path = Path(database_path)
         self.retention_days = max(1, int(retention_days))
+        self.discard_final_span_frames = bool(discard_final_span_frames)
         self._connection: sqlite3.Connection | None = None
 
     def initialize(self) -> None:
@@ -587,6 +602,9 @@ class TrajectoryStore:
 
             self._store_addressed_sequences(connection, records)
             frame_watermarks = self._append_stream_frames(connection, frames)
+            # Append first, then discard: one flush window can carry both the
+            # last frames of a span and the record that ends it.
+            self._discard_final_span_frames(connection, records)
             # A span whose record did not change in this batch can still have
             # produced frames, and a reader learns about those only if that
             # trace is reported as changed.
@@ -618,8 +636,8 @@ class TrajectoryStore:
             updates=updates,
         )
 
-    @staticmethod
     def _append_stream_frames(
+        self,
         connection: sqlite3.Connection,
         frames: Sequence[StreamFrameData],
     ) -> dict[tuple[str, str], int]:
@@ -629,6 +647,14 @@ class TrajectoryStore:
         later frame repeats. The rowid of the last insert for a trace is its
         watermark, because the sequence is monotonic within a transaction.
 
+        Frames and records reach the writer through queues of their own, so a
+        span's record can be committed before the last of its frames arrives.
+        Those late frames are dropped rather than stored: their span already
+        states its complete output, and no reader consults the frames of a span
+        that ended. Without this they would be stored with nothing left to
+        delete them -- ``_discard_final_span_frames`` runs as a record lands,
+        and that record has already landed.
+
         Args:
             connection: The open write transaction.
             frames: Frames to append, in the order they were produced.
@@ -637,13 +663,17 @@ class TrajectoryStore:
             Highest committed ``frame_seq`` keyed by session and trace.
         """
         watermarks: dict[tuple[str, str], int] = {}
-        span_refs: dict[tuple[str, str], int] = {}
+        # A span maps to its ref, or to None once it is known to have ended.
+        span_refs: dict[tuple[str, str], int | None] = {}
         for frame in frames:
             identity = (frame.trace_id, frame.span_id)
-            span_ref = span_refs.get(identity)
-            if span_ref is None:
-                span_ref = TrajectoryStore._resolve_frame_span(connection, frame)
+            if identity in span_refs:
+                span_ref = span_refs[identity]
+            else:
+                span_ref = self._resolve_frame_span(connection, frame)
                 span_refs[identity] = span_ref
+            if span_ref is None:
+                continue
             cursor = connection.execute(
                 """
                 INSERT INTO trajectory_stream_frames (
@@ -665,11 +695,11 @@ class TrajectoryStore:
             watermarks[(frame.session_id, frame.trace_id)] = int(cursor.lastrowid)
         return watermarks
 
-    @staticmethod
     def _resolve_frame_span(
+        self,
         connection: sqlite3.Connection,
         frame: StreamFrameData,
-    ) -> int:
+    ) -> int | None:
         """Name the span a frame came from, registering it the first time.
 
         No cache spans transactions: the batch a writer flushes almost always
@@ -683,9 +713,12 @@ class TrajectoryStore:
             frame: Any frame of the span to name.
 
         Returns:
-            The integer this database names that span by.
+            The integer this database names that span by, or None when the span
+            already has a terminal record and its frames are to be dropped.
         """
         identity = (frame.trace_id, frame.span_id)
+        if self.discard_final_span_frames and _has_final_record(connection, *identity):
+            return None
         connection.execute(
             """
             INSERT INTO trajectory_frame_spans (
@@ -700,6 +733,60 @@ class TrajectoryStore:
             identity,
         ).fetchone()
         return int(row["span_ref"])
+
+    def _discard_final_span_frames(
+        self,
+        connection: sqlite3.Connection,
+        records: Sequence[TraceRecordData],
+    ) -> None:
+        """Drop the frames of every span this batch brought to a terminal state.
+
+        A frame is a stand-in for an answer still being written. The record of
+        a finished span states that answer in full, so from the moment it is
+        committed the frames of that span are read by nothing: the reader drops
+        its own copy of them, the detail read never consults them, and an
+        archive excludes them. Keeping them would leave the largest table in
+        the database holding only content no code path reaches.
+        ``_delete_orphan_frames`` does not reach them either -- it ages out the
+        frames of spans that never produced a record, and these have one.
+
+        This runs after the batch's own frames are appended, so a flush window
+        that carries both a span's last frames and its record still discards
+        them. The trace's frame watermark is left as appended: it reports the
+        revision frames were last committed at, and a reader that comes back
+        for frames now gone is told to reset, which costs it the frame state of
+        a span whose record already supersedes it.
+
+        Args:
+            connection: The open write transaction.
+            records: Records committed in this batch, terminal or not.
+        """
+        if not self.discard_final_span_frames:
+            return
+        finished = {
+            (record.trace_id, record.span_id)
+            for record in records
+            if record.lifecycle == "final"
+        }
+        if not finished:
+            return
+        # Deleting by span_ref keeps the frame delete on the index the frames
+        # are clustered by, and resolving the ref first means a span that never
+        # streamed costs one lookup instead of a scan.
+        refs = [
+            (int(row["span_ref"]),)
+            for identity in finished
+            for row in connection.execute(
+                "SELECT span_ref FROM trajectory_frame_spans WHERE trace_id = ? AND span_id = ?",
+                identity,
+            )
+        ]
+        if not refs:
+            return
+        connection.executemany("DELETE FROM trajectory_stream_frames WHERE span_ref = ?", refs)
+        # The span was named only so its frames could point at it. Foreign keys
+        # are on, so this must follow the frames it owns.
+        connection.executemany("DELETE FROM trajectory_frame_spans WHERE span_ref = ?", refs)
 
     @staticmethod
     def _upsert_current_record(
@@ -1114,9 +1201,10 @@ class TrajectoryStore:
     def _delete_orphan_frames(connection: sqlite3.Connection, cutoff: int) -> None:
         """Age out frames of spans that never produced a record.
 
-        Frames of a span with a record go with that record's turn page. A
-        stream cut off before its span ended leaves frames no page owns, and
-        those still age by when the model produced them.
+        Frames of a span with a record are released by that record -- as it is
+        committed, or with its turn page where the store is configured to keep
+        them. A stream cut off before its span ended leaves frames no record
+        will ever release, and those still age by when the model produced them.
         """
         connection.execute(
             """
@@ -2157,9 +2245,11 @@ class AsyncTrajectoryReader:
             first_frame_seq = int(aggregate["first_frame_seq"])
             current_frame_seq = int(aggregate["current_frame_seq"])
             # Ahead of the store means the database was rebuilt; behind its
-            # first frame means retention removed what the reader wanted next.
-            # Either way the reader has to start over rather than resume into
-            # a gap it cannot see.
+            # first frame means what the reader wanted next is gone -- retired
+            # by retention, or released by the terminal record of the span that
+            # produced it. Either way the reader has to start over rather than
+            # resume into a gap it cannot see. Starting over costs it only the
+            # frames of spans whose own records now state more than they did.
             reset = since_frame_seq > current_frame_seq or (
                 since_frame_seq > 0 and since_frame_seq < first_frame_seq - 1
             )
@@ -2448,6 +2538,32 @@ def _stored_max_change_seq(connection: sqlite3.Connection) -> int:
         "SELECT max_change_seq FROM trajectory_store_state WHERE singleton = 1"
     ).fetchone()
     return int(row["max_change_seq"]) if row is not None else 0
+
+
+def _has_final_record(
+    connection: sqlite3.Connection,
+    trace_id: str,
+    span_id: str,
+) -> bool:
+    """Report whether one span already holds a terminal record.
+
+    Args:
+        connection: The open write transaction.
+        trace_id: Trace the span belongs to.
+        span_id: Span to test.
+
+    Returns:
+        True when the span's record states its complete output.
+    """
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM trajectory_current_records
+        WHERE trace_id = ? AND span_id = ? AND lifecycle = 'final'
+        """,
+        (trace_id, span_id),
+    ).fetchone()
+    return row is not None
 
 
 def _next_change_seq(connection: sqlite3.Connection) -> int:
