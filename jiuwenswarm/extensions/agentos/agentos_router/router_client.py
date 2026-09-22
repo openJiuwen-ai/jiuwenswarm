@@ -32,7 +32,12 @@ from jiuwenswarm.extensions.agentos.auth.common import (
     extract_token_from_path_and_headers,
     headers_to_dict,
 )
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthContext, AuthResult
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
+    AuthContext,
+    AuthResult,
+    lookup_user_name,
+    resolve_user_name,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
     SshChannelEndpoint,
@@ -737,12 +742,14 @@ class AgentOSRouterClient(AgentServerClient):
             remote_addr=remote,
         )
         result = await auth_client.authenticate(context)
+        user_name = resolve_user_name(result)
         if result.success:
             log_agentos(
                 logger,
                 logging.INFO,
                 "auth.ok",
                 user_id=result.user_id,
+                user_name=user_name,
                 channel=channel,
                 remote=remote,
             )
@@ -755,6 +762,7 @@ class AgentOSRouterClient(AgentServerClient):
                 logging.WARNING,
                 "auth.deny",
                 user_id=result.user_id,
+                user_name=user_name,
                 channel=channel,
                 remote=remote,
                 error=error_code or result.error or "unauthorized",
@@ -848,7 +856,11 @@ class AgentOSRouterClient(AgentServerClient):
             try:
                 runtimes = await self._agent_manager.list_user_agents(user_id)
             except Exception:
-                logger.exception("[AgentOS] cleanup.list.fail user_id=%s", user_id)
+                logger.exception(
+                    "[AgentOS] cleanup.list.fail user_id=%s user_name=%s",
+                    user_id,
+                    lookup_user_name(user_id),
+                )
                 return
 
             pending = False
@@ -872,8 +884,13 @@ class AgentOSRouterClient(AgentServerClient):
                     deleted = await self.delete_agent(user_id, runtime.info.agent_type, key_values=key_values,
                                                       idle_timeout_seconds=_DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS)
                 except Exception:
-                    logger.exception("[AgentOS] cleanup.delete.fail user_id=%s agent_type=%s sandbox_id=%s",
-                                     user_id, runtime.info.agent_type, sandbox_id)
+                    logger.exception(
+                        "[AgentOS] cleanup.delete.fail user_id=%s user_name=%s agent_type=%s sandbox_id=%s",
+                        user_id,
+                        lookup_user_name(user_id),
+                        runtime.info.agent_type,
+                        sandbox_id,
+                    )
                     pending = True
                     continue
                 if deleted:
@@ -1468,8 +1485,9 @@ class AgentOSRouterClient(AgentServerClient):
                     await client.disconnect()
                 except Exception:
                     logger.warning(
-                        "[AgentOS] agent.ws.cleanup.fail user_id=%s sandbox_id=%s attempt=%s",
+                        "[AgentOS] agent.ws.cleanup.fail user_id=%s user_name=%s sandbox_id=%s attempt=%s",
                         user_id,
+                        lookup_user_name(user_id),
                         instance_id,
                         attempt,
                         extra=agentos_extra(
@@ -2357,8 +2375,9 @@ class AgentOSRouterClient(AgentServerClient):
         params["agent_type"] = current
         envelope.params = params
         logger.info(
-            "[AgentOS] ssh.relay.agent_type user_id=%s agent_type=%s",
+            "[AgentOS] ssh.relay.agent_type user_id=%s user_name=%s agent_type=%s",
             user_id,
+            lookup_user_name(user_id),
             current,
         )
 
@@ -2481,8 +2500,9 @@ class AgentOSRouterClient(AgentServerClient):
                 )
             except Exception:  # noqa: BLE001 - keep reaping other agents
                 logger.exception(
-                    "[AgentOS] sandbox.reclaim.fail user_id=%s agent_type=%s",
+                    "[AgentOS] sandbox.reclaim.fail user_id=%s user_name=%s agent_type=%s",
                     user_id,
+                    lookup_user_name(user_id),
                     agent_type,
                 )
                 continue
@@ -2758,8 +2778,9 @@ class AgentOSRouterClient(AgentServerClient):
         except Exception:  # noqa: BLE001 - cleanup must not mask the route error
             logger.exception(
                 "[AgentOSRouter] network-failure cleanup failed: "
-                "user_id=%s agent_type=%s sandbox_id=%s",
+                "user_id=%s user_name=%s agent_type=%s sandbox_id=%s",
                 info.user_id,
+                lookup_user_name(info.user_id),
                 info.agent_type,
                 sandbox_id,
             )
