@@ -24,18 +24,31 @@ _SUPPORTED_IMAGE_MIME_TYPES = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+# ``.jpeg`` / ``.jfif`` 与 ``image/jpeg`` 的规范后缀 ``.jpg`` 等价。已有这些后缀时
+# 保留原文件名，避免 ``sample.jpeg`` 被再拼成 ``sample.jpeg.jpg``。
+_IMAGE_FILENAME_SUFFIX_ALIASES = frozenset({".jpeg", ".jfif"})
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_IMAGE_COUNT = 8
 
 
 def image_suffix_for_mime(mime_type: str) -> str | None:
-    """返回受支持图片 MIME 类型对应的扩展名（含点，如 ``.png``），不支持返回 ``None``。"""
+    """返回受支持图片 MIME 类型对应的规范扩展名（含点，如 ``.jpg``），不支持返回 ``None``。"""
     return _SUPPORTED_IMAGE_MIME_TYPES.get(mime_type)
 
 
 def supported_image_suffixes() -> frozenset[str]:
-    """返回全部受支持图片扩展名集合（含点，如 ``{".png", ".jpg"}``）。"""
-    return frozenset(_SUPPORTED_IMAGE_MIME_TYPES.values())
+    """返回已有合法图片扩展名（含点，如 ``.jpg``、``.jpeg``）。
+
+    含 MIME 规范后缀，以及 ``.jpeg``、``.jfif`` 这类等价别名。
+    """
+    return frozenset(_SUPPORTED_IMAGE_MIME_TYPES.values()) | _IMAGE_FILENAME_SUFFIX_ALIASES
+
+
+def ensure_image_upload_filename(filename: str, canonical_suffix: str) -> str:
+    """已有合法图片后缀时保留原名，否则在末尾补上规范后缀。"""
+    if Path(filename).suffix.lower() in supported_image_suffixes():
+        return filename
+    return f"{filename}{canonical_suffix}"
 
 
 def normalize_chat_media_attachments(params: dict[str, Any], session_id: str | None) -> None:
@@ -125,12 +138,13 @@ def _store_image_item(item: dict[str, Any], *, session_id: str | None, index: in
     upload_dir = get_agent_sessions_dir() / safe_session_id / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = safe_upload_filename(
-        str(item.get("filename") or f"image-{index + 1}{suffix}"),
-        fallback=f"image-{index + 1}{suffix}",
+    filename = ensure_image_upload_filename(
+        safe_upload_filename(
+            str(item.get("filename") or f"image-{index + 1}{suffix}"),
+            fallback=f"image-{index + 1}{suffix}",
+        ),
+        suffix,
     )
-    if Path(filename).suffix.lower() not in set(_SUPPORTED_IMAGE_MIME_TYPES.values()):
-        filename = f"{filename}{suffix}"
     path = atomic_write_unique(upload_dir / filename, data)
 
     return {

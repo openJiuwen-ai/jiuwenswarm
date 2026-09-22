@@ -2944,12 +2944,13 @@ async def _upload_media_item_via_http(
     suffix = _ma.image_suffix_for_mime(mime_type)
     if suffix is None:
         return None
-    filename = safe_upload_filename(
-        str(item.get("filename") or f"image-{index + 1}{suffix}"),
-        fallback=f"image-{index + 1}{suffix}",
+    filename = _ma.ensure_image_upload_filename(
+        safe_upload_filename(
+            str(item.get("filename") or f"image-{index + 1}{suffix}"),
+            fallback=f"image-{index + 1}{suffix}",
+        ),
+        suffix,
     )
-    if Path(filename).suffix.lower() not in _ma.supported_image_suffixes():
-        filename = f"{filename}{suffix}"
     safe_session_id = safe_session_dirname(session_id)
     rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
     if is_agentos_routing_client(agent_client):
