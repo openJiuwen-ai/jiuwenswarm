@@ -709,12 +709,11 @@ class RegistryClient:
             or sandbox_meta.get("instance_id")
             or ""
         ).strip()
-        # Registry rejects empty address. Placement IP is patched after
-        # YuanRong get_agent_info; until then reuse instance_id.
+        # Placement IP is patched after YuanRong get_agent_info. The first
+        # POST leaves address empty until that IP exists.
         address = str(
             info.metadata.get("address")
             or sandbox_meta.get("address")
-            or instance_id
             or ""
         ).strip()
         kind = str(info.metadata.get("kind") or resolve_instance_kind(framework)).strip()
