@@ -3356,3 +3356,111 @@ test('tool payload stays as recorded when the wrapper is not an invocation signa
   assert.ok(cell);
   assert.deepEqual(JSON.parse(cell.inputDetail), [[{ command: 'pwd' }], { user: 'u1' }]);
 });
+
+test('a turn that failed before its first model call is still drawn, with its reason', () => {
+  // An external CLI member throttled at the gateway never reaches a model
+  // call, so the turn records nothing but the span it ran on. Dropping it
+  // left the turn numbers around it skipping, with no sign a turn had run.
+  const traceId = '5'.repeat(32);
+  const member = [
+    v2Attribute('gen_ai.conversation.id', 'team-session'),
+    v2Attribute('openjiuwen.execution.subject.id', 'team-member:team-session:alpha:codex-coder'),
+    v2Attribute('openjiuwen.execution.subject.kind', 'team_member'),
+  ];
+  const failed = turnSpanRecord({
+    name: 'invoke_agent Codex',
+    spanId: 'a1'.padEnd(16, '0'),
+    startTimeUnixNano: 1_000_000_000,
+    traceId,
+    attributes: [
+      ...member,
+      v2Attribute('openjiuwen.turn.id', 'turn-failed'),
+      v2Attribute('openjiuwen.turn.number', 1, true),
+      v2Attribute('openjiuwen.trajectory.record.kind', 'turn'),
+      v2Attribute('openjiuwen.trace.root', 'true'),
+      v2Attribute('gen_ai.operation.name', 'invoke_agent'),
+      v2Attribute('openjiuwen.span.input', '<team-inbound from="team-leader">start</team-inbound>'),
+    ],
+  });
+  failed.resourceSpans[0].scopeSpans[0].spans[0].status = {
+    code: 2,
+    message: 'exceeded retry limit, last status: 429 Too Many Requests',
+  };
+  const answered = turnSpanRecord({
+    name: 'llm.call',
+    spanId: 'b2'.padEnd(16, '0'),
+    startTimeUnixNano: 2_000_000_000,
+    traceId,
+    attributes: [
+      ...member,
+      v2Attribute('openjiuwen.turn.id', 'turn-answered'),
+      v2Attribute('openjiuwen.turn.number', 2, true),
+      v2Attribute('openjiuwen.trajectory.record.kind', 'inference'),
+      v2Attribute('openjiuwen.step.number', 1, true),
+      v2Attribute('openjiuwen.inference.id', 'inference-answered'),
+      v2Attribute('gen_ai.output.messages', JSON.stringify([structuredMessage('assistant', 'done')])),
+    ],
+  });
+
+  const snapshot = projectOtelTrajectory([failed, answered]);
+
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, 2]);
+  const cells = snapshot.turns[0].groups.flatMap(group => group.cells);
+  assert.deepEqual(cells.map(cell => cell.kind), ['user', 'message']);
+  assert.equal(cells[0].text, '<team-inbound from="team-leader">start</team-inbound>');
+  assert.equal(cells[1].status, 'error');
+  assert.equal(cells[1].text, 'exceeded retry limit, last status: 429 Too Many Requests');
+});
+
+test('a turn that answered and then failed shows the failure after what it did', () => {
+  // The call the gateway throttled produced no response body, so nothing was
+  // reported for it and no row of this turn carries the failure. A native run
+  // states it on the record that hit it; an external CLI states it only on the
+  // span the turn ran on, which opened with the turn — so the row belongs at
+  // the end, not ahead of everything the turn went on to do.
+  const traceId = '6'.repeat(32);
+  const member = [
+    v2Attribute('gen_ai.conversation.id', 'team-session'),
+    v2Attribute('openjiuwen.execution.subject.id', 'team-member:team-session:alpha:codex-coder'),
+    v2Attribute('openjiuwen.execution.subject.kind', 'team_member'),
+    v2Attribute('openjiuwen.turn.id', 'turn-throttled'),
+    v2Attribute('openjiuwen.turn.number', 1, true),
+  ];
+  const answered = turnSpanRecord({
+    name: 'llm.call',
+    spanId: 'c1'.padEnd(16, '0'),
+    startTimeUnixNano: 1_000_000_000,
+    traceId,
+    attributes: [
+      ...member,
+      v2Attribute('openjiuwen.trajectory.record.kind', 'inference'),
+      v2Attribute('openjiuwen.step.number', 1, true),
+      v2Attribute('openjiuwen.inference.id', 'inference-throttled'),
+      v2Attribute('gen_ai.output.messages', JSON.stringify([structuredMessage('assistant', 'on it')])),
+    ],
+  });
+  const round = turnSpanRecord({
+    name: 'invoke_agent Codex',
+    spanId: 'c2'.padEnd(16, '0'),
+    startTimeUnixNano: 900_000_000,
+    traceId,
+    attributes: [
+      ...member,
+      v2Attribute('openjiuwen.trajectory.record.kind', 'turn'),
+      v2Attribute('openjiuwen.trace.root', 'true'),
+      v2Attribute('gen_ai.operation.name', 'invoke_agent'),
+      v2Attribute('openjiuwen.span.input', '<team-inbound from="team-leader">start</team-inbound>'),
+    ],
+  });
+  const roundSpan = round.resourceSpans[0].scopeSpans[0].spans[0];
+  roundSpan.endTimeUnixNano = String(3_000_000_000);
+  roundSpan.status = { code: 2, message: 'exceeded retry limit, last status: 429 Too Many Requests' };
+
+  const cells = cellsOf(projectOtelTrajectory([round, answered]));
+
+  const failure = cells[cells.length - 1];
+  assert.equal(failure.status, 'error');
+  assert.equal(failure.text, 'exceeded retry limit, last status: 429 Too Many Requests');
+  // The turn already shows what it was handed, on the call that read it.
+  assert.equal(cells.filter(cell => cell.text.startsWith('<team-inbound')).length, 0);
+});

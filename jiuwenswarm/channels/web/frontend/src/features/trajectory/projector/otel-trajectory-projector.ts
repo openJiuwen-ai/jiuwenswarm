@@ -280,6 +280,11 @@ function startedAt(span: ProjectedSpan): number {
   return Number(span.startTimeUnixNano / NANOSECONDS_PER_MILLISECOND)
 }
 
+function endedAt(span: ProjectedSpan): number | undefined {
+  if (span.endTimeUnixNano === undefined) return undefined
+  return Number(span.endTimeUnixNano / NANOSECONDS_PER_MILLISECOND)
+}
+
 function durationSeconds(span: ProjectedSpan): number | null {
   if (span.endTimeUnixNano === undefined) return null
   return Number(span.endTimeUnixNano - span.startTimeUnixNano) / Number(NANOSECONDS_PER_SECOND)
@@ -790,6 +795,62 @@ function spanCellBase(span: ProjectedSpan, suffix: string): Pick<
       ? {}
       : { requestRecordId: requestRecordIdentity(span) }),
   }
+}
+
+// How a turn that ended in failure is shown. A native run records the failure
+// on the record that hit it — the inference or tool whose span carries the
+// error — and the row for that record is drawn in error. An external CLI has
+// no such record: the call the gateway throttled produced no response body, so
+// nothing was ever reported for it, and the only place the failure is stated
+// is the span the turn itself ran on. That span is therefore shown too, at the
+// end of the turn it closes.
+//
+// `withInput` is for the turn that failed before its first model call: it has
+// no rows at all, and a turn without rows is not drawn, so the numbers around
+// it appear to skip with no sign that a turn ran. Its input is stated only on
+// that same span; a turn that did reach a model call already shows what it was
+// handed, on the call that read it.
+function failedTurnCells(root: ProjectedSpan | undefined, withInput: boolean): TrajectoryCell[] {
+  if (root === undefined) return []
+  const reason = statusError(root)
+  if (reason === undefined) return []
+  const cells: TrajectoryCell[] = []
+  const input = root.attributes.spanInput
+  if (withInput && input !== undefined && input.trim() !== '') {
+    cells.push({
+      ...spanCellBase(root, 'turn:input'),
+      timeSeconds: null,
+      status: 'complete',
+      kind: 'user',
+      text: input,
+      inputDetail: input,
+    })
+  }
+  cells.push({
+    ...spanCellBase(root, 'turn:error'),
+    // The span opened with the turn, so its own start would sort this row
+    // ahead of everything the turn went on to do; it belongs where the turn
+    // ended.
+    startedAt: endedAt(root) ?? startedAt(root),
+    kind: 'message',
+    status: 'error',
+    text: reason,
+    outputDetail: reason,
+    isError: true,
+  })
+  return cells
+}
+
+// Place a turn's own failure at the end of the turn, in the last group it
+// reached, or in a group of its own when the turn never opened one.
+function withTurnFailure(
+  groups: readonly TrajectoryGroupModel[],
+  cells: readonly TrajectoryCell[],
+): TrajectoryGroupModel[] {
+  if (cells.length === 0) return [...groups]
+  if (groups.length === 0) return [{ title: 'Step 1', cells: [...cells] }]
+  const last = groups[groups.length - 1]
+  return [...groups.slice(0, -1), { ...last, cells: [...last.cells, ...cells] }]
 }
 
 function inputCells(
@@ -1941,6 +2002,16 @@ export function projectOtelTrajectory(
       )
     ) rootByTrace.set(span.traceId, span)
   }
+  // The span each turn ran on. A turn that failed before its first model call
+  // recorded nothing else, and this is what states why it ended.
+  const turnRootByKey = new Map<string, ProjectedSpan>()
+  for (const span of spans) {
+    if (recordKind(span) !== 'turn') continue
+    const existing = turnRootByKey.get(span.turnKey)
+    if (existing === undefined || span.startTimeUnixNano < existing.startTimeUnixNano) {
+      turnRootByKey.set(span.turnKey, span)
+    }
+  }
   const compactionInferences = new Map<string, ProjectedSpan[]>()
   // The number each compaction operation was given, read from its model calls.
   const compactionNumberByOperationId = new Map<string, number>()
@@ -2172,7 +2243,15 @@ export function projectOtelTrajectory(
       }
       continue
     }
-    if (groups.length > 0) turnEntries.push({ startedAt, model: { turn: turn.turn, groups } })
+    // A turn that ended in failure shows it, whether it failed on its first
+    // call or after several that answered.
+    const turnGroups = withTurnFailure(
+      groups,
+      failedTurnCells(turnRootByKey.get(turnKey), groups.length === 0),
+    )
+    if (turnGroups.length > 0) {
+      turnEntries.push({ startedAt, model: { turn: turn.turn, groups: turnGroups } })
+    }
     if (requestCells.length > 0) {
       turnEntries.push({
         startedAt,

@@ -52,7 +52,7 @@ make check-genai-semconv
 6. **`projector/`** — 投影成读模型：
    - `attribute-resolver.ts` 把 OTLP 属性归一成 `NormalizedTrajectoryAttributes`。
    - `trajectory-v2-reducer.ts` 是 schema-v2 事件的幂等 reducer（context window commit/delta、compaction、tool result 回放），按 subject + sequence epoch 隔离。
-   - `otel-trajectory-projector.ts` 是入口 `projectOtelTrajectory()`，合并 v1 span 投影与 v2 reduction，产出 `TrajectorySnapshot`。
+   - `otel-trajectory-projector.ts` 是入口 `projectOtelTrajectory()`，合并 v1 span 投影与 v2 reduction，产出 `TrajectorySnapshot`。失败的呈现按记录归属：原生 run 把错误记在撞上它的那条记录上（inference / tool 的 span），对应行自然渲染成 error；外部 CLI 被网关限流时那次调用没有响应体、压根没产生记录，错误只落在 turn span 上，于是由 `failedTurnCells()` + `withTurnFailure()` 在该 turn 末尾补一行错误态 ASSISTANT（`startedAt` 取 span 结束时间，否则会排到整轮最前）。若这一轮连第一次模型调用都没成功（没有任何 group），再用 span 的 `openjiuwen.span.input` 补一行 USER —— 否则它没有任何行、整个 turn 不会被画出来，只留下看起来跳号的 Turn 编号。
 7. **`trajectory/`** — 读模型与展示投影：`model.ts`（`TrajectorySnapshot` / `TrajectoryTurnModel` / `TrajectoryRequest`）、`record.ts`（`TrajectoryCell`）、`timeline.ts`、`search-index.ts`、`virtual-rows.ts`、`preview.ts`、`compaction.ts`。
 8. **`client/`** — 展示组件 `TrajectoryExplorer` / `TrajectoryTable` / `TrajectoryTimeline` / `TrajectoryToolbar`，纯 props，不依赖任何应用级 context。
 
