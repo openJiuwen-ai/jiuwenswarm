@@ -691,12 +691,6 @@ def test_graph_rail_factory_installs_real_swarm_compat_type(
     assert type(rail) is expected_type
 
 
-@pytest.mark.skip(
-    reason=(
-        "openjiuwen 280b7ca18d21c50edd0a352e230f0d6eb0ae6dfe currently "
-        "builds an empty execution edge graph for this fixture"
-    )
-)
 def test_published_capability_snapshot_builds_nonempty_execution_edge(
     tmp_path: Path,
 ) -> None:
