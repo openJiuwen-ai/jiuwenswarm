@@ -146,7 +146,13 @@ export function GoalBar({ onSetGoal, onPauseGoal, onResumeGoal, onClearGoal }: G
       <div className={`goal-bar goal-bar--tone-${tone}`} data-testid="goal-bar" data-variant={tone}>
         <Target size={16} strokeWidth={2} className="goal-bar__icon" data-testid="goal-bar-icon" />
         <div className="goal-bar__main" data-testid="goal-bar-main">
-          <span className={`goal-bar__status goal-bar__status--${tone}`} data-testid="goal-bar-status" data-variant={tone}>
+          <span
+            className={`goal-bar__status goal-bar__status--${tone}`}
+            // 阻塞态把评估证据挂到 tooltip：光一个"已阻塞"用户不知道原因（issue #4682）
+            title={tone === 'blocked' ? goal.last_assessment?.evidence?.trim() || undefined : undefined}
+            data-testid="goal-bar-status"
+            data-variant={tone}
+          >
             {t(`goal.status.${degraded ?? goal.status}`, degraded ?? goal.status)}
           </span>
           <span className="goal-bar__objective" title={goal.objective} data-testid="goal-bar-objective">

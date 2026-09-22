@@ -94,6 +94,7 @@ import {
 } from '../utils/fileDownloadDedup';
 import { buildExtensionSendPayload } from '../utils/enabledExtensions';
 import { makeEventDedupKey } from '../utils/wsEventDedup';
+import i18n from '../i18n';
 import {
   normalizeToolCallPayload,
   normalizeToolResultPayload,
@@ -273,6 +274,9 @@ function scheduleAfterTurnSettles(sessionId: string, run: () => void): void {
  *    也没有这两个字段），如果直接落库会让 GoalBar 从"有后端计时"退回旧的 fallback 计时口径，
  *    暂停后又开始跳字。这里同一个 goal_id 下如果新数据缺这两个字段、旧数据有，就沿用旧值。
  */
+/** goal_id -> 本次页面存活期间最近一次落地的 goal 状态，供"实时目睹跳进 blocked"判定（见 applyIncomingGoal）。 */
+const goalLastStatusByGoalId = new Map<string, string>();
+
 function applyIncomingGoal(
   sessionId: string,
   goal: GoalRecord | null,
@@ -287,6 +291,7 @@ function applyIncomingGoal(
   if (!goal) {
     const prevGoalId = goalStore.runtimes[sessionId]?.goal?.goal_id;
     if (prevGoalId) {
+      goalLastStatusByGoalId.delete(prevGoalId);
       goalStore.clearLocalCreatedAt(prevGoalId);
       goalStore.clearGoalCompletionPhase(prevGoalId);
       goalStore.clearBannerHidden(prevGoalId);
@@ -329,6 +334,23 @@ function applyIncomingGoal(
   }
 
   goalStore.setLocalCreatedAt(goal.goal_id, new Date().toISOString());
+
+  // 实时目睹跳进 blocked：GoalBar 只展示一个干巴巴的"已阻塞"，用户完全不知道为什么被阻塞
+  // （issue #4682：确定修改新目标后显示已阻塞，原因其实藏在后端评估器的 evidence 里）。参照
+  // completed 播报的先例插一条带 evidence 的系统消息。只播报"亲眼目睹的跳变"——刷新后第一次
+  // 拿到就已经是 blocked 的不播（与 completed 的展示策略同一口径）。
+  const prevGoalStatus = goalLastStatusByGoalId.get(goal.goal_id);
+  goalLastStatusByGoalId.set(goal.goal_id, goal.status);
+  if (goal.status === 'blocked' && prevGoalStatus && prevGoalStatus !== 'blocked') {
+    const evidence = goal.last_assessment?.evidence?.trim() || goal.last_assessment?.next_instruction?.trim() || '';
+    useChatStore.getState().addMessage(sessionId, {
+      // 同一目标 resume 后可能再次 blocked，id 带时间戳避免消息 id 重复
+      id: `goal-blocked-${goal.goal_id}-${Date.now()}`,
+      role: 'system',
+      content: evidence ? i18n.t('goal.blockedMessage', { evidence }) : i18n.t('goal.blockedMessagePlain'),
+      timestamp: new Date().toISOString(),
+    });
+  }
 
   if (goal.status !== 'completed') {
     goalStore.markGoalSeenActive(goal.goal_id);

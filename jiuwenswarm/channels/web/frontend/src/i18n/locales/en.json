@@ -1035,6 +1035,10 @@
     "toolbarUnavailable": "A goal is already in progress. Finish or clear it first.",
     "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
     "overwriteConfirm": "The current goal \"{{currentObjective}}\" is unfinished. Replace it with \"{{requestedObjective}}\"?",
+    "overwriteTitle": "Replace current goal?",
+    "overwriteSubmit": "Replace",
+    "blockedMessage": "Goal blocked: {{evidence}}",
+    "blockedMessagePlain": "Goal blocked. Check the goal details for the reason, then resume or delete it.",
     "closeTag": "Cancel goal",
     "badge": "Goal",
     "status": {

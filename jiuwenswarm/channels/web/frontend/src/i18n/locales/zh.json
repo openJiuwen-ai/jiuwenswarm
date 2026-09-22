@@ -1026,6 +1026,10 @@
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
     "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
+    "overwriteTitle": "替换当前目标？",
+    "overwriteSubmit": "确认替换",
+    "blockedMessage": "目标已阻塞：{{evidence}}",
+    "blockedMessagePlain": "目标已阻塞。可在目标详情查看阻塞原因，恢复或删除目标后继续。",
     "closeTag": "取消目标",
     "badge": "目标",
     "status": {
