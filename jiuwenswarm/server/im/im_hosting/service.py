@@ -148,10 +148,6 @@ class HostingPollService:
             probe = await plugin.test_connection()
             if not probe.ok:
                 raise RuntimeError(probe.message or f"{channel_label(channel_id)} 未登录，无法拉取近期会话")
-        if channel_allows_auto_host(policy):
-            enrolled = await self.register_auto_targets(channel_id, conversations=convs)
-            if enrolled.get("added"):
-                LOGGER.info("[im_hosting] discover auto-host %s added=%s", channel_id, len(enrolled["added"]))
         hosted = self.store.hosted_keys(channel_id)
         items = []
         for conv in convs:

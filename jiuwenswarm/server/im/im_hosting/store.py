@@ -200,6 +200,9 @@ class HostingStore:
         if expert_persona is not None:
             extra["expert_persona"] = expert_persona
         if existing:
+            if source == "manual":
+                extra["enabled"] = True
+                extra["source"] = "manual"
             if extra:
                 patched = self.patch_target(existing["id"], extra)
                 return patched or existing
@@ -253,6 +256,7 @@ class HostingStore:
                 hosting_since = now
                 clear_watermark = True
         title = patch["title"] if "title" in patch else current["title"]
+        source = patch["source"] if "source" in patch else current.get("source") or "manual"
         poll_interval = (
             patch["poll_interval_seconds"]
             if "poll_interval_seconds" in patch
@@ -286,7 +290,7 @@ class HostingStore:
             conn.execute(
                 """
                 UPDATE im_hosting_targets SET
-                  title=?, enabled=?, poll_interval_seconds=?, fetch_count=?,
+                  title=?, enabled=?, source=?, poll_interval_seconds=?, fetch_count=?,
                   rule_override=?, hosting_since_ms=?, updated_at_ms=?,
                   expert_service_id=?, expert_agent_id=?,
                   expert_persona=?
@@ -295,6 +299,7 @@ class HostingStore:
                 (
                     title,
                     1 if enabled else 0,
+                    source,
                     poll_interval,
                     fetch_count,
                     rule_json,
@@ -313,6 +318,10 @@ class HostingStore:
                 )
             conn.commit()
         return self.get_target(target_id)
+
+    def release_target(self, target_id: str) -> bool:
+        """用户取消托管：停用但留行，避免自动发现立刻又加回来。"""
+        return self.patch_target(target_id, {"enabled": False}) is not None
 
     def delete_target(self, target_id: str) -> bool:
         current = self.get_target(target_id)

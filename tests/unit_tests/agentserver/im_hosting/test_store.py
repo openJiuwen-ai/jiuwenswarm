@@ -118,3 +118,29 @@ def test_drop_auto_targets_keeps_manual(tmp_path: Path):
     assert [row["id"] for row in left] == [manual["id"]]
     assert store.get_target(auto_group["id"]) is None
     assert store.get_target(auto_user["id"]) is None
+
+
+def test_release_target_stays_in_hosted_keys_until_manual_add(tmp_path: Path):
+    store = HostingStore(tmp_path / "hosting.db")
+    target = store.add_target(
+        channel_id="dingtalk",
+        target_kind="group",
+        external_id="cid_eat",
+        title="吃饭群",
+        source="auto",
+    )
+    assert store.release_target(target["id"]) is True
+    released = store.get_target(target["id"])
+    assert released is not None
+    assert released["enabled"] is False
+    assert ("group", "cid_eat") in store.hosted_keys("dingtalk")
+    revived = store.add_target(
+        channel_id="dingtalk",
+        target_kind="group",
+        external_id="cid_eat",
+        title="吃饭群",
+        source="manual",
+    )
+    assert revived["id"] == target["id"]
+    assert revived["enabled"] is True
+    assert revived["source"] == "manual"

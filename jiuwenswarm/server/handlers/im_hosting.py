@@ -99,7 +99,7 @@ async def _dispatch(svc, method: ReqMethod, params: dict[str, Any]) -> dict[str,
         target_id = str(params.get("id") or params.get("target_id") or "").strip()
         if not target_id:
             raise ValueError("id required")
-        if not svc.store.delete_target(target_id):
+        if not svc.store.release_target(target_id):
             raise KeyError(target_id)
         return {"deleted": True, "id": target_id}
     if method == ReqMethod.IM_HOSTING_POLICY_GET:
