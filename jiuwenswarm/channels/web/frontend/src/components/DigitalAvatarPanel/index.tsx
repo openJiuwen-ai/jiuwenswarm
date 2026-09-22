@@ -238,6 +238,8 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [channelPolicy, setChannelPolicy] = useState<ChannelPolicy | null>(null);
+  const [ruleOpen, setRuleOpen] = useState(false);
+  const [ruleKey, setRuleKey] = useState<string | null>(null);
   const [globalOpen, setGlobalOpen] = useState(false);
   const [globalSaving, setGlobalSaving] = useState(false);
   const [gUsers, setGUsers] = useState(false);
@@ -337,6 +339,7 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   }, [discoverItems, kindFilter, targets]);
 
   const selectedRow = rows.find((row) => row.key === selectedKey) || null;
+  const ruleRow = rows.find((row) => row.key === ruleKey) || null;
   const selectedTargetId = selectedRow?.target?.id || null;
   const timeline = useMemo(() => historyLines(historyRecords), [historyRecords]);
 
@@ -362,6 +365,8 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
 
   useEffect(() => {
     setSelectedKey(null);
+    setRuleOpen(false);
+    setRuleKey(null);
   }, [channelId]);
 
   const inheritedRule = (kind: SessionRow['target_kind']): HostingRule => {
@@ -396,19 +401,29 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   };
 
   useEffect(() => {
-    if (!selectedRow) return;
-    fillSessionDraft(selectedRow);
-  }, [selectedRow?.key, selectedRow?.target?.id, selectedRow?.target_kind, channelPolicy, t]);
+    if (!ruleOpen || !ruleRow) return;
+    fillSessionDraft(ruleRow);
+  }, [ruleOpen, ruleRow?.key, ruleRow?.target?.id, ruleRow?.target_kind, channelPolicy, t]);
 
-  const openEditor = (row: SessionRow) => {
+  const openChat = (row: SessionRow) => {
     setSelectedKey(row.key);
+  };
+
+  const openRuleModal = (row: SessionRow) => {
+    setRuleKey(row.key);
     fillSessionDraft(row);
+    setRuleOpen(true);
+  };
+
+  const closeRuleModal = () => {
+    setRuleOpen(false);
+    setRuleKey(null);
   };
 
   const applyInherit = (next: boolean) => {
     setInheritGlobal(next);
-    if (!selectedRow || !next) return;
-    const rule = inheritedRule(selectedRow.target_kind);
+    if (!ruleRow || !next) return;
+    const rule = inheritedRule(ruleRow.target_kind);
     setDraftMode(rule.match_mode);
     setDraftKeywords(keywordsToText(rule.keywords));
     setDraftPersona(
@@ -465,21 +480,23 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   });
 
   const confirmHost = async () => {
-    if (!selectedRow) return;
+    if (!ruleRow) return;
     const rule = currentRule();
     setSaving(true);
     setError(null);
     try {
       await webRequest('im.hosting.targets.add', {
-        channel_id: selectedRow.channel_id,
-        target_kind: selectedRow.target_kind,
-        external_id: selectedRow.external_id,
-        title: selectedRow.title,
+        channel_id: ruleRow.channel_id,
+        target_kind: ruleRow.target_kind,
+        external_id: ruleRow.external_id,
+        title: ruleRow.title,
         rule_override: inheritGlobal ? null : rule,
         expert_service_id: PERSONAL_EXPERT.serviceId,
         expert_agent_id: PERSONAL_EXPERT.agentId,
         expert_persona: inheritGlobal ? '' : draftPersona.trim(),
       });
+      setSelectedKey(ruleRow.key);
+      closeRuleModal();
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -489,18 +506,19 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   };
 
   const saveHostedRule = async () => {
-    if (!selectedRow?.target) return;
+    if (!ruleRow?.target) return;
     const rule = currentRule();
     setSaving(true);
     setError(null);
     try {
       await webRequest('im.hosting.targets.patch', {
-        id: selectedRow.target.id,
+        id: ruleRow.target.id,
         rule_override: inheritGlobal ? null : rule,
         expert_service_id: PERSONAL_EXPERT.serviceId,
         expert_agent_id: PERSONAL_EXPERT.agentId,
         expert_persona: inheritGlobal ? '' : draftPersona.trim(),
       });
+      closeRuleModal();
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -515,7 +533,7 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
     setError(null);
     try {
       await webRequest('im.hosting.targets.delete', { id: row.target.id });
-      if (selectedKey === row.key) setSelectedKey(null);
+      if (ruleKey === row.key) closeRuleModal();
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -611,7 +629,7 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
                     <li
                       key={row.key}
                       className={`da-panel__row is-clickable${selectedKey === row.key ? ' is-selected' : ''}`}
-                      onClick={() => openEditor(row)}
+                      onClick={() => openChat(row)}
                     >
                       <div className="da-panel__row-main">
                         <span className="da-panel__name">{row.title}</span>
@@ -625,31 +643,46 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
                           <span className="da-panel__tag is-auto">{t('digitalAvatar.sourceAuto')}</span>
                         ) : null}
                       </div>
-                      {row.hosted ? (
-                        <button
-                          type="button"
-                          className="da-panel__text-btn"
-                          disabled={busyKey === row.key}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void unhostRow(row);
-                          }}
-                        >
-                          {t('digitalAvatar.unhost')}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="da-panel__host-btn"
-                          disabled={!isConnected}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openEditor(row);
-                          }}
-                        >
-                          {t('digitalAvatar.host')}
-                        </button>
-                      )}
+                      <div className="da-panel__row-actions">
+                        {row.hosted ? (
+                          <>
+                            <button
+                              type="button"
+                              className="da-panel__text-btn"
+                              disabled={!isConnected}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openRuleModal(row);
+                              }}
+                            >
+                              {t('digitalAvatar.editRules')}
+                            </button>
+                            <button
+                              type="button"
+                              className="da-panel__text-btn da-panel__text-btn--danger"
+                              disabled={busyKey === row.key}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void unhostRow(row);
+                              }}
+                            >
+                              {t('digitalAvatar.unhost')}
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="da-panel__host-btn"
+                            disabled={!isConnected}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openRuleModal(row);
+                            }}
+                          >
+                            {t('digitalAvatar.host')}
+                          </button>
+                        )}
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -662,150 +695,60 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
               <>
                 <div className="da-panel__tile-head">
                   <div>
-                    <h2>{t('digitalAvatar.sessionRule', { title: selectedRow.title })}</h2>
-                    <p>
-                      {selectedRow.hosted
-                        ? t('digitalAvatar.editHostedHint')
-                        : t('digitalAvatar.draftHostHint')}
-                    </p>
+                    <h2>{selectedRow.title}</h2>
+                    <p>{t('digitalAvatar.historyHint')}</p>
                   </div>
-                  <button
-                    type="button"
-                    className="da-panel__text-btn"
-                    onClick={() => setSelectedKey(null)}
-                  >
-                    {t('common.close')}
-                  </button>
-                </div>
-                <div className="da-panel__tile-body da-panel__rules">
-                  {currentChannel && !currentChannel.cli_available ? (
-                    <p className="da-panel__note">{currentChannel.message || t('digitalAvatar.cliMissing')}</p>
-                  ) : null}
-
-                  <label className="da-panel__check">
-                    <input
-                      type="checkbox"
-                      checked={inheritGlobal}
-                      onChange={(event) => applyInherit(event.target.checked)}
-                    />
-                    <span>{t('digitalAvatar.inheritGlobal')}</span>
-                  </label>
-                  <p className="da-panel__note">{t('digitalAvatar.inheritGlobalHint')}</p>
-
-                  <div className="da-panel__rule-block">
-                    <details className="da-panel__fold" open>
-                      <summary>{t('digitalAvatar.gateSection')}</summary>
-                      <p className="da-panel__note">{t('digitalAvatar.gateHint')}</p>
-                      <label className="da-panel__field">
-                        <span>{t('digitalAvatar.matchMode')}</span>
-                        <select
-                          value={draftMode}
-                          disabled={inheritGlobal}
-                          onChange={(event) => setDraftMode(event.target.value as HostingRule['match_mode'])}
-                        >
-                          <option value="keyword">{t('digitalAvatar.modeKeyword')}</option>
-                          <option value="relevant">{t('digitalAvatar.modeRelevant')}</option>
-                        </select>
-                      </label>
-                      <label className="da-panel__field">
-                        <span>{t('digitalAvatar.keywords')}</span>
-                        <textarea
-                          value={draftKeywords}
-                          disabled={inheritGlobal}
-                          onChange={(event) => setDraftKeywords(event.target.value)}
-                          placeholder={t('digitalAvatar.keywordsPlaceholder')}
-                          rows={3}
-                        />
-                      </label>
-                    </details>
-
-                    <details className="da-panel__fold">
-                      <summary>{t('digitalAvatar.avatarSection')}</summary>
-                      <p className="da-panel__note">{t('digitalAvatar.avatarHint')}</p>
-                      <label className="da-panel__field">
-                        <span>{t('digitalAvatar.avatarProfile')}</span>
-                        <textarea
-                          className="da-panel__profile"
-                          value={draftPersona}
-                          disabled={inheritGlobal}
-                          onChange={(event) => setDraftPersona(event.target.value)}
-                          placeholder={t('digitalAvatar.avatarProfileTemplate')}
-                          rows={10}
-                          spellCheck={false}
-                        />
-                      </label>
-                    </details>
-                  </div>
-
-                  <div className="da-panel__actions">
+                  <div className="da-panel__row-actions">
+                    <button
+                      type="button"
+                      className="da-panel__text-btn"
+                      disabled={!isConnected}
+                      onClick={() => openRuleModal(selectedRow)}
+                    >
+                      {selectedRow.hosted ? t('digitalAvatar.editRules') : t('digitalAvatar.host')}
+                    </button>
                     {selectedRow.hosted ? (
                       <button
                         type="button"
-                        className="da-panel__host-btn"
-                        disabled={!isConnected || saving}
-                        onClick={() => void saveHostedRule()}
+                        className="da-panel__icon-btn"
+                        onClick={() => void loadHistory(selectedTargetId)}
+                        disabled={!isConnected || historyLoading}
                       >
-                        {saving ? t('common.saving') : t('digitalAvatar.saveSession')}
+                        <RefreshCw size={14} />
+                        {historyLoading ? t('common.refreshing') : t('common.refresh')}
                       </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="da-panel__host-btn"
-                        disabled={!isConnected || saving}
-                        onClick={() => void confirmHost()}
-                      >
-                        {saving ? t('common.saving') : t('digitalAvatar.confirmHost')}
-                      </button>
-                    )}
+                    ) : null}
                   </div>
-
-                  <div className="da-panel__rule-block da-panel__history">
-                    <div className="da-panel__history-head">
-                      <div>
-                        <h3>{t('digitalAvatar.historyTitle')}</h3>
-                        <p className="da-panel__note">{t('digitalAvatar.historyHint')}</p>
-                      </div>
-                      {selectedRow.hosted ? (
-                        <button
-                          type="button"
-                          className="da-panel__icon-btn"
-                          onClick={() => void loadHistory(selectedTargetId)}
-                          disabled={!isConnected || historyLoading}
-                        >
-                          <RefreshCw size={14} />
-                          {historyLoading ? t('common.refreshing') : t('common.refresh')}
-                        </button>
-                      ) : null}
-                    </div>
-                    {!selectedRow.hosted ? (
-                      <p className="da-panel__empty">{t('digitalAvatar.historyNeedHost')}</p>
-                    ) : historyLoading && timeline.length === 0 ? (
-                      <p className="da-panel__empty">{t('digitalAvatar.historyLoading')}</p>
-                    ) : timeline.length === 0 ? (
-                      <p className="da-panel__empty">{t('digitalAvatar.historyEmpty')}</p>
-                    ) : (
-                      <ol className="da-panel__timeline">
-                        {timeline.map((item) => (
-                          <li key={item.key} className={`da-panel__turn is-${item.kind}`}>
-                            {item.kind === 'reply' && (item.reasoning || item.tools?.length) ? (
-                              <details className="da-panel__think">
-                                <summary>{t('digitalAvatar.reasoningToggle')}</summary>
-                                {item.reasoning ? (
-                                  <div className="da-panel__think-body">{item.reasoning}</div>
-                                ) : null}
-                                {item.tools?.map((tool, index) => (
-                                  <div key={`${item.key}-tool-${index}`} className="da-panel__think-body is-tool">
-                                    {tool}
-                                  </div>
-                                ))}
-                              </details>
-                            ) : null}
-                            <div className="da-panel__turn-text">{item.text}</div>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                  </div>
+                </div>
+                <div className="da-panel__tile-body da-panel__chat">
+                  {!selectedRow.hosted ? (
+                    <p className="da-panel__empty">{t('digitalAvatar.historyNeedHost')}</p>
+                  ) : historyLoading && timeline.length === 0 ? (
+                    <p className="da-panel__empty">{t('digitalAvatar.historyLoading')}</p>
+                  ) : timeline.length === 0 ? (
+                    <p className="da-panel__empty">{t('digitalAvatar.historyEmpty')}</p>
+                  ) : (
+                    <ol className="da-panel__timeline">
+                      {timeline.map((item) => (
+                        <li key={item.key} className={`da-panel__turn is-${item.kind}`}>
+                          {item.kind === 'reply' && (item.reasoning || item.tools?.length) ? (
+                            <details className="da-panel__think">
+                              <summary>{t('digitalAvatar.reasoningToggle')}</summary>
+                              {item.reasoning ? (
+                                <div className="da-panel__think-body">{item.reasoning}</div>
+                              ) : null}
+                              {item.tools?.map((tool, index) => (
+                                <div key={`${item.key}-tool-${index}`} className="da-panel__think-body is-tool">
+                                  {tool}
+                                </div>
+                              ))}
+                            </details>
+                          ) : null}
+                          <div className="da-panel__turn-text">{item.text}</div>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
                 </div>
               </>
             ) : (
@@ -816,6 +759,101 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
           </section>
         </div>
       </div>
+
+      {ruleOpen && ruleRow ? (
+        <div className="da-panel__modal" role="dialog" aria-modal="true" aria-labelledby="da-rule-title">
+          <button type="button" className="da-panel__modal-backdrop" aria-label={t('common.close')} onClick={closeRuleModal} />
+          <div className="da-panel__modal-card da-panel__modal-card--wide">
+            <div className="da-panel__tile-head">
+              <div>
+                <h2 id="da-rule-title">
+                  {ruleRow.title}
+                  {ruleRow.target_kind === 'group' ? ` · ${t('digitalAvatar.group')}` : ` · ${t('digitalAvatar.user')}`}
+                </h2>
+                <p>
+                  {ruleRow.hosted ? t('digitalAvatar.editHostedHint') : t('digitalAvatar.draftHostHint')}
+                </p>
+              </div>
+              <button type="button" className="da-panel__text-btn" onClick={closeRuleModal}>
+                {t('common.close')}
+              </button>
+            </div>
+            <div className="da-panel__modal-body">
+              <label className="da-panel__check">
+                <input
+                  type="checkbox"
+                  checked={inheritGlobal}
+                  onChange={(event) => applyInherit(event.target.checked)}
+                />
+                <span>{t('digitalAvatar.inheritGlobal')}</span>
+              </label>
+              <p className="da-panel__note">{t('digitalAvatar.inheritGlobalHint')}</p>
+              <details className="da-panel__fold" open={!inheritGlobal}>
+                <summary>{t('digitalAvatar.gateSection')}</summary>
+                <p className="da-panel__note">{t('digitalAvatar.gateHint')}</p>
+                <label className="da-panel__field">
+                  <span>{t('digitalAvatar.matchMode')}</span>
+                  <select
+                    value={draftMode}
+                    onChange={(event) => setDraftMode(event.target.value as HostingRule['match_mode'])}
+                    disabled={inheritGlobal}
+                  >
+                    <option value="keyword">{t('digitalAvatar.modeKeyword')}</option>
+                    <option value="relevant">{t('digitalAvatar.modeRelevant')}</option>
+                  </select>
+                </label>
+                <label className="da-panel__field">
+                  <span>{t('digitalAvatar.keywords')}</span>
+                  <textarea
+                    value={draftKeywords}
+                    onChange={(event) => setDraftKeywords(event.target.value)}
+                    placeholder={t('digitalAvatar.keywordsPlaceholder')}
+                    disabled={inheritGlobal}
+                    rows={3}
+                  />
+                </label>
+              </details>
+              <details className="da-panel__fold" open={!inheritGlobal}>
+                <summary>{t('digitalAvatar.avatarSection')}</summary>
+                <p className="da-panel__note">{t('digitalAvatar.avatarHint')}</p>
+                <label className="da-panel__field">
+                  <span>{t('digitalAvatar.avatarProfile')}</span>
+                  <textarea
+                    className="da-panel__profile"
+                    value={draftPersona}
+                    onChange={(event) => setDraftPersona(event.target.value)}
+                    placeholder={t('digitalAvatar.avatarProfileTemplate')}
+                    disabled={inheritGlobal}
+                    rows={10}
+                    spellCheck={false}
+                  />
+                </label>
+              </details>
+              <div className="da-panel__actions da-panel__modal-actions">
+                {ruleRow.hosted ? (
+                  <button
+                    type="button"
+                    className="da-panel__host-btn"
+                    onClick={() => void saveHostedRule()}
+                    disabled={!isConnected || saving}
+                  >
+                    {saving ? t('common.saving') : t('digitalAvatar.saveSession')}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="da-panel__host-btn"
+                    onClick={() => void confirmHost()}
+                    disabled={!isConnected || saving}
+                  >
+                    {saving ? t('common.saving') : t('digitalAvatar.confirmHost')}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {globalOpen ? (
         <div className="da-panel__modal" role="dialog" aria-modal="true" aria-labelledby="da-global-title">

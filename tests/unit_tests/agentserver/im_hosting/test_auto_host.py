@@ -99,3 +99,62 @@ async def test_apply_policy_off_drops_auto_keeps_manual(tmp_path: Path):
     )
     left = store.list_targets("dingtalk")
     assert [row["id"] for row in left] == [manual["id"]]
+
+
+class _FakeDiscoverPlugin:
+    def __init__(self, convs: list[ChannelTarget]) -> None:
+        self.convs = convs
+
+    async def discover_conversations(self, *, query_count: int) -> list[ChannelTarget]:
+        return list(self.convs)
+
+    async def resolve_identity(self) -> Identity:
+        return Identity(account="me")
+
+
+@pytest.mark.asyncio
+async def test_discover_does_not_auto_enroll(tmp_path: Path):
+    from jiuwenswarm.server.im.im_hosting.policy import HostingPolicyStore
+    from jiuwenswarm.server.im.im_hosting.service import HostingPollService
+    from jiuwenswarm.server.im.im_hosting.store import HostingStore
+
+    store = HostingStore(tmp_path / "hosting.db")
+    policy = HostingPolicyStore(store=store)
+    policy.patch_channel("dingtalk", {"auto_host_groups": True, "auto_host_users": True})
+    convs = [ChannelTarget(kind="group", external_id="cid_eat", title="吃饭群")]
+    svc = HostingPollService(
+        store=store,
+        policy=policy,
+        connectors={"dingtalk": _FakeDiscoverPlugin(convs)},  # type: ignore[dict-item]
+    )
+    payload = await svc.discover("dingtalk")
+    assert payload["conversations"][0]["already_hosted"] is False
+    assert store.list_targets("dingtalk") == []
+
+
+@pytest.mark.asyncio
+async def test_register_auto_skips_released_target(tmp_path: Path):
+    from jiuwenswarm.server.im.im_hosting.policy import HostingPolicyStore
+    from jiuwenswarm.server.im.im_hosting.service import HostingPollService
+    from jiuwenswarm.server.im.im_hosting.store import HostingStore
+
+    store = HostingStore(tmp_path / "hosting.db")
+    policy = HostingPolicyStore(store=store)
+    policy.patch_channel("dingtalk", {"auto_host_groups": True, "auto_host_users": False})
+    target = store.add_target(
+        channel_id="dingtalk",
+        target_kind="group",
+        external_id="cid_eat",
+        title="吃饭群",
+        source="auto",
+    )
+    store.release_target(target["id"])
+    convs = [ChannelTarget(kind="group", external_id="cid_eat", title="吃饭群")]
+    svc = HostingPollService(
+        store=store,
+        policy=policy,
+        connectors={"dingtalk": _FakeDiscoverPlugin(convs)},  # type: ignore[dict-item]
+    )
+    summary = await svc.register_auto_targets("dingtalk", conversations=convs)
+    assert summary["added"] == []
+    assert store.get_target(target["id"])["enabled"] is False

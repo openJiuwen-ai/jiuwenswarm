@@ -138,6 +138,10 @@
   background: var(--color-surface-card);
 }
 
+.da-panel__modal-card--wide {
+  width: min(40rem, 100%);
+}
+
 .da-panel__modal-card .da-panel__tile-head {
   flex-shrink: 0;
   padding: 16px 16px 0;
@@ -532,7 +536,34 @@
 }
 
 .da-panel__text-btn:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.da-panel__text-btn--danger:hover:not(:disabled) {
   color: var(--color-feedback-danger);
+}
+
+.da-panel__row-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.da-panel__chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.da-panel__chat .da-panel__timeline {
+  flex: 1 1 0%;
+  max-height: none;
+  margin: 0;
+}
+
+.da-panel__modal-actions {
+  margin-top: 4px;
 }
 
 .da-panel__placeholder {
