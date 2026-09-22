@@ -7,6 +7,7 @@ import pytest
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness import DeepAgent, DeepAgentConfig
 from openjiuwen.harness.observability import AgentObservabilityRail
+from openjiuwen.harness.rails import TaskCompletionRail
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 
 from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail import (
@@ -131,6 +132,7 @@ def test_parent_composition_preserves_order_and_wiring(
         "_circuit_breaker_rail _avatar_rail "
         "_memory_forbidden_rail _subagent_rail _permission_rail "
         "_root_permission_completion_rail _context_processor_rail _eternal_conversation_rail "
+        "_budget_notice_rail "
         "_ask_user_rail _work_agent_mode_rail _work_plan_approval_rail"
     ).split()
     expected_profile_rails = [
@@ -138,8 +140,11 @@ def test_parent_composition_preserves_order_and_wiring(
         for attr in attrs
         if getattr(adapter, attr, None) is not None
     ]
-    assert rails[:-1] == expected_profile_rails
-    assert isinstance(rails[-1], AgentObservabilityRail)
+    # The adapter appends the observability rail and the task-loop budget rail
+    # after the profile rails; only the profile portion is order-locked here.
+    assert rails[:-2] == expected_profile_rails
+    assert isinstance(rails[-2], AgentObservabilityRail)
+    assert isinstance(rails[-1], TaskCompletionRail)
     queue_rail = required["queue_rail"]
     completion_rail = required["completion_rail"]
     execution = required["root_context_rail"]
