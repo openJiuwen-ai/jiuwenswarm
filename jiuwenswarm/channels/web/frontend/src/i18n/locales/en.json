@@ -457,6 +457,10 @@
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
       },
+      "ttse_enabled": {
+        "title": "Local environment facts and task experience auto-evolution",
+        "description": "Control the agent's learning of environment facts and task experience"
+      },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
         "description": "Enable the free DuckDuckGo search source."

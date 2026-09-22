@@ -454,6 +454,10 @@
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
       },
+      "ttse_enabled": {
+        "title": "本地环境事实与任务经验自动演进",
+        "description": "控制智能体对于环境事实和任务经验学习"
+      },
       "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
       "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
       "jina_api_key": { "title": "Jina API 密钥" },

@@ -57,6 +57,7 @@ from jiuwenswarm.common.config import (
     update_rsi_enabled_in_config,
     update_setup_guide_enabled_in_config,
     update_skill_evolution_enabled_in_config,
+    update_ttse_enabled_in_config,
     update_skill_retrieval_in_config,
     update_swarmflow_budget_in_config,
     update_swarmflow_enabled_in_config,
@@ -354,6 +355,7 @@ CONFIG_YAML_KEYS = frozenset({
     "external_cli_agent_codex_cli_path",
     "setup_guide_enabled",
     "skill_evolution",
+    "ttse_enabled",
     "enable_free_models",
 })
 EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
@@ -1221,6 +1223,8 @@ def apply_config_payload(
                     external_cli_agents_updated = True
             elif param_key == "skill_evolution":
                 update_skill_evolution_enabled_in_config(parsed)
+            elif param_key == "ttse_enabled":
+                update_ttse_enabled_in_config(parsed)
             elif param_key.startswith("a2ui_"):
                 ok, update, error = validate_a2ui_config_update(param_key, val)
                 if not ok:
@@ -1416,6 +1420,8 @@ async def config_get_handler(
         # Skill evolution is controlled solely by the canonical nested YAML key.
         evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
         payload["skill_evolution"] = "true" if evolution_cfg.get("skill_evolution", False) else "false"
+        ttse_cfg = (raw.get("react") or {}).get("ttse") or {}
+        payload["ttse_enabled"] = "true" if ttse_cfg.get("enabled", False) else "false"
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
         memory_desc = memory_cfg.get("description") or {}
@@ -1458,6 +1464,7 @@ async def config_get_handler(
         payload.setdefault("permissions_profile", "full_access")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
+        payload.setdefault("ttse_enabled", "false")
         payload.setdefault("memory_forbidden_enabled", "false")
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")
