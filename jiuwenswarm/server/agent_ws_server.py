@@ -2567,7 +2567,10 @@ class AgentWebSocketServer:
                 await self._handle_harness_packages_delete(ws, request, send_lock)
                 return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
-            if (request.req_method.value or "").startswith("rsi."):
+            if (
+                isinstance(request.req_method, ReqMethod)
+                and request.req_method.value.startswith("rsi.")
+            ):
                 await self._handle_rsi_request(ws, request, send_lock)
                 return
             # Schedule task management
