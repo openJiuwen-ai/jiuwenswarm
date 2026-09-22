@@ -70,7 +70,6 @@ export function DefinitionDetailPage({
   onInstall,
   onUninstall,
   onDelete,
-  onEdit,
 }: DefinitionDetailPageProps) {
   const { t } = useTranslation();
 
@@ -126,7 +125,6 @@ export function DefinitionDetailPage({
     { title: t('agentManagement.detail.rails'), items: detail.rails },
     { title: t('agentManagement.detail.mcps'), items: detail.mcps },
   ].filter((group) => group.items.length > 0);
-  const canEdit = detail.source === 'local';
   return (
     <div className="agent-management-detail" data-testid="agent-detail">
       <button type="button" className="detail-back" onClick={onBack} data-testid="agent-management-detail-back">
@@ -149,16 +147,6 @@ export function DefinitionDetailPage({
           ]}
           actions={
             <div className="agent-management-detail__actions">
-              {canEdit ? (
-                <button
-                  type="button"
-                  className="agent-management-button agent-management-button--secondary agent-management-detail-action--edit"
-                  disabled={busy}
-                  onClick={() => onEdit(detail.id)}
-                >
-                  {t('agentManagement.actions.edit')}
-                </button>
-              ) : null}
               {(detail.installed || detail.source !== 'hub') && (
                 <button
                   type="button"
