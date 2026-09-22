@@ -15,10 +15,7 @@ export function createPendingInstallQueue(): PendingInstallQueue {
   return { active: null, waiting: [] };
 }
 
-export function enqueuePendingInstall(
-  queue: PendingInstallQueue,
-  job: PendingInstallJob,
-): PendingInstallQueue {
+export function enqueuePendingInstall(queue: PendingInstallQueue, job: PendingInstallJob): PendingInstallQueue {
   if (queue.active?.id === job.id || queue.waiting.some((item) => item.id === job.id)) return queue;
   if (!queue.active) return { active: job, waiting: queue.waiting };
   return { ...queue, waiting: [...queue.waiting, job] };
