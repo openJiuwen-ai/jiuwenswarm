@@ -8,6 +8,7 @@ export type MainNavKey =
   | 'cron'
   | 'channels'
   | 'personalContext'
+  | 'digitalavatar'
   | 'extensions'
   | 'configpanel'
   | 'browserpanel'
@@ -26,6 +27,7 @@ const MAIN_NAV_KEYS = new Set<MainNavKey>([
   'cron',
   'channels',
   'personalContext',
+  'digitalavatar',
   'extensions',
   'configpanel',
   'browserpanel',

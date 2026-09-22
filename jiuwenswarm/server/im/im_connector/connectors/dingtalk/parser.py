@@ -194,18 +194,18 @@ def parse_recent_conversations(stdout: str) -> list[dict[str, Any]]:
     for item in rows:
         row = _as_record(item)
         mode = str(row.get("conversationType") or row.get("chatMode") or "").strip().lower()
+        group_type = str(row.get("groupType") or "").strip().upper()
         title = str(row.get("title") or row.get("name") or row.get("groupName") or "").strip()
-        if mode in {"p2p", "direct"}:
-            external_id = str(
-                row.get("openDingTalkId")
-                or row.get("openDingtalkId")
-                or row.get("userId")
-                or row.get("openConversationId")
-                or ""
+        conversation_id = str(row.get("openConversationId") or row.get("conversationId") or "").strip()
+        is_p2p = mode in {"p2p", "direct", "single"} or group_type in {"SINGLE_CHAT", "OTO"}
+        if is_p2p:
+            # 钉钉 chat-list 的 p2p 往往只有 openConversationId，没有对方 DGU。
+            external_id = conversation_id or str(
+                row.get("openDingTalkId") or row.get("openDingtalkId") or row.get("userId") or ""
             ).strip()
             kind = "user"
         else:
-            external_id = str(row.get("openConversationId") or row.get("conversationId") or "").strip()
+            external_id = conversation_id
             kind = "group"
         if external_id:
             results.append({"kind": kind, "external_id": external_id, "title": title})

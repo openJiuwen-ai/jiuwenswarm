@@ -234,5 +234,5 @@ async def test_dingtalk_discover_conversations_uses_chat_list(dingtalk):
     assert rows[0].external_id == "cidloxMLX2bSKUQPGOoXsE+Bg=="
     assert rows[0].title == "数字分身讨论"
     assert rows[1].kind == "user"
-    assert rows[1].external_id == "DGUother"
+    assert rows[1].external_id == "cid_dm_1"
     assert rows[1].title == "许康"

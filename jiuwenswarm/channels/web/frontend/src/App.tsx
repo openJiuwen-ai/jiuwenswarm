@@ -17,6 +17,7 @@ import { ToolPanel } from './components/ToolPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { ChannelsPanel } from './components/ChannelsPanel';
 import { PersonalContextPanel } from './components/PersonalContext';
+import { DigitalAvatarPanel } from './components/DigitalAvatarPanel';
 import { BrowserPanel } from './components/BrowserPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import { A2AIngressPanel } from './components/A2AIngressPanel';
@@ -2751,6 +2752,11 @@ function AppContent() {
         {FEATURE_PERSONAL_CONTEXT_UI && hasVisitedPersonalContext && (
           <div className={`app-section ${activeNav === 'personalContext' ? '' : 'is-hidden'}`}>
             <PersonalContextPanel isConnected={isConnected} isActive={activeNav === 'personalContext'} />
+          </div>
+        )}
+        {activeNav === 'digitalavatar' && (
+          <div className="app-section app-section--stack min-h-0">
+            <DigitalAvatarPanel isConnected={isConnected} />
           </div>
         )}
         {activeNav === 'extensions' && (
