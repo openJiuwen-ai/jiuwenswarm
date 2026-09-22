@@ -32,6 +32,16 @@ _DIALOG_TITLE = "选择文件"
 # open starts where the user left off (desktop + path.select_files share this).
 _LAST_DIR_FILENAME = "last_file_picker_dir.txt"
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".jfif"})
+# Python 3.11's mimetypes table has no .webp, and Windows 10 often has no
+# registry Content Type for it either. media.persist drops octet-stream images.
+_IMAGE_MIME_BY_EXTENSION = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".jfif": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 FORBIDDEN_DOCUMENT_EXTENSIONS = frozenset(
     {
@@ -248,6 +258,17 @@ def _run_capture(command: list[str], *, timeout: float = 600.0) -> subprocess.Co
     )
 
 
+def attachment_mime_type(filename: str) -> str:
+    """返回选中文件的 MIME。已知图片扩展名优先于 mimetypes.guess_type。"""
+    mapped = _IMAGE_MIME_BY_EXTENSION.get(Path(filename).suffix.lower())
+    if mapped:
+        return mapped
+    guessed = mimetypes.guess_type(filename)[0]
+    if isinstance(guessed, str) and guessed.strip():
+        return guessed
+    return "application/octet-stream"
+
+
 def describe_local_file(raw_path: str | Path) -> dict[str, Any] | None:
     """把本机路径描述成前端 ``LocalFilePick`` 同形字典。"""
     try:
@@ -267,7 +288,7 @@ def describe_local_file(raw_path: str | Path) -> dict[str, Any] | None:
         logger.warning("[file_picker] failed to stat selected file %s: %s", path, exc)
         return None
 
-    mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    mime_type = attachment_mime_type(filename)
     absolute = str(path)
     if ext in IMAGE_EXTENSIONS:
         if size > MAX_IMAGE_BYTES:

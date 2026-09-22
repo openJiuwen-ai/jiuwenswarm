@@ -38,6 +38,39 @@ function getFileExtension(filename: string): string {
   return filename.slice(idx).toLowerCase();
 }
 
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+};
+
+/**
+ * Known image suffixes win over an empty or octet-stream MIME.
+ * The desktop exe (Python 3.11) reports that for .webp.
+ */
+export function resolveImageMimeType(filename: string, mimeType?: string): string {
+  const mapped = IMAGE_MIME_BY_EXTENSION[getFileExtension(filename)];
+  const normalized = (mimeType || '').toLowerCase().split(';')[0].trim();
+  if (mapped && (!normalized || normalized === 'application/octet-stream' || !ACCEPTED_IMAGE_TYPES.has(normalized))) {
+    return mapped;
+  }
+  if (ACCEPTED_IMAGE_TYPES.has(normalized)) return normalized;
+  return mapped || normalized || 'application/octet-stream';
+}
+
+/** Desktop picks have no browser File; retry still works from base64 or a local path. */
+export function canRetryAttachmentDraft(draft: {
+  file?: unknown;
+  base64Data?: string;
+  localPath?: string;
+}): boolean {
+  if (draft.file) return true;
+  if (typeof draft.base64Data === 'string' && draft.base64Data.length > 0) return true;
+  return typeof draft.localPath === 'string' && draft.localPath.trim().length > 0;
+}
+
 function isImageFile(file: File): boolean {
   const type = file.type.toLowerCase();
   if (ACCEPTED_IMAGE_TYPES.has(type)) return true;

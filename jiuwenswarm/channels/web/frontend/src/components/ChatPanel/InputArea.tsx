@@ -88,11 +88,13 @@ import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { getInputProjectOptions, isDefaultInputProject } from './projectSelection';
 import {
+  canRetryAttachmentDraft,
   DESKTOP_CLIPBOARD_IMAGES_EVENT,
   getClipboardImageFiles,
   inspectClipboardImageFiles,
   IMAGE_INPUT_DISABLED_ALERT_KEY,
   isImageInputDisabled,
+  resolveImageMimeType,
   shouldAlertImagePasteDisabled,
   type DesktopClipboardImagesEventDetail,
 } from './clipboardImagePaste';
@@ -1516,7 +1518,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const retryAttachment = useCallback(
     (attachment: AttachmentDraft) => {
-      uploadAttachment(attachment);
+      if (attachment.kind !== 'image') {
+        uploadAttachment(attachment);
+        return;
+      }
+      const mimeType = resolveImageMimeType(attachment.filename, attachment.mimeType);
+      const previewUrl = attachment.base64Data
+        ? `data:${mimeType};base64,${attachment.base64Data}`
+        : attachment.previewUrl;
+      uploadAttachment({ ...attachment, mimeType, previewUrl });
     },
     [uploadAttachment],
   );
@@ -1555,7 +1565,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           id: makeAttachmentId(file),
           kind,
           filename: file.name || (kind === 'document' ? `document-${Date.now()}` : `image-${Date.now()}`),
-          mimeType: file.type || 'application/octet-stream',
+          mimeType:
+            kind === 'image'
+              ? resolveImageMimeType(file.name || '', file.type)
+              : file.type || 'application/octet-stream',
           size: file.size,
           file,
           ...(localPath ? { localPath } : {}),
@@ -1640,18 +1653,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           return items;
         }
 
+        const mimeType =
+          pick.kind === 'image'
+            ? resolveImageMimeType(pick.filename, pick.mime_type)
+            : pick.mime_type || 'application/octet-stream';
         const draft: AttachmentDraft = {
           id: `${pick.filename}-${pick.size}-${generateUuidV4()}`,
           kind: pick.kind,
           filename: pick.filename,
-          mimeType: pick.mime_type || 'application/octet-stream',
+          mimeType,
           size: pick.size,
           localPath: pick.path,
           status: 'uploading',
           ...(pick.kind === 'image' && pick.base64
             ? {
                 base64Data: pick.base64,
-                previewUrl: `data:${pick.mime_type || 'application/octet-stream'};base64,${pick.base64}`,
+                previewUrl: `data:${mimeType};base64,${pick.base64}`,
               }
             : {}),
         };
@@ -3205,7 +3222,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               >
                                 {t('chat.uploadFailed')}
                               </span>
-                              {attachment.file && (
+                              {canRetryAttachmentDraft(attachment) && (
                                 <button
                                   type="button"
                                   className="chat-input-attachment-retry"

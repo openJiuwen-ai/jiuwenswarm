@@ -6,7 +6,6 @@ import ctypes
 import http.client
 import json
 import logging
-import mimetypes
 import os
 import secrets
 import shlex
@@ -2197,7 +2196,9 @@ class DesktopRuntime:
             logger.warning("[desktop] failed to stat selected file %s: %s", path, exc)
             return None
 
-        mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        from jiuwenswarm.channels.web.file_picker import attachment_mime_type
+
+        mime_type = attachment_mime_type(filename)
         absolute = str(path)
         if ext in IMAGE_EXTENSIONS:
             if size > MAX_IMAGE_BYTES:

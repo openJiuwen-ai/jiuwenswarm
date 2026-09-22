@@ -50,6 +50,22 @@ def test_describe_local_file_image_includes_base64(tmp_path: Path):
     assert "error" not in item
 
 
+def test_describe_local_file_webp_mime_without_stdlib_mapping(tmp_path: Path, monkeypatch):
+    from jiuwenswarm.channels.web import file_picker
+
+    monkeypatch.setattr(file_picker.mimetypes, "guess_type", lambda _filename: (None, None))
+    path = tmp_path / "sample.webp"
+    path.write_bytes(b"RIFF\x1a\x00\x00\x00WEBP" + b"x" * 8)
+
+    item = desktop_app.DesktopRuntime._describe_local_file(path)
+
+    assert item is not None
+    assert item["kind"] == "image"
+    assert item["mime_type"] == "image/webp"
+    assert item["base64"]
+    assert "error" not in item
+
+
 def test_describe_local_file_forbidden_extension(tmp_path: Path):
     path = tmp_path / "setup.exe"
     path.write_bytes(b"MZ")
