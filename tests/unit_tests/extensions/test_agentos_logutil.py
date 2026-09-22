@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import logging
 
+from jiuwenswarm.common.utils import _sanitize_log_text
+from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
+    clear_user_names,
+    remember_user_name,
+)
 from jiuwenswarm.extensions.agentos.agentos_router.logutil import (
     agentos_extra,
     format_agentos,
@@ -32,6 +37,63 @@ def test_format_agentos_omits_empty_and_keeps_primary_order() -> None:
         "created=false",
         "extra_flag=ok",
     ]
+
+
+def test_format_agentos_puts_user_name_after_user_id() -> None:
+    line = format_agentos(
+        "auth.ok",
+        session_id="s1",
+        user_name="alice",
+        user_id="u1",
+        channel="web",
+    )
+    assert line.split() == [
+        "[AgentOS]",
+        "auth.ok",
+        "user_id=u1",
+        "user_name=alice",
+        "session_id=s1",
+        "channel=web",
+    ]
+
+
+def test_sanitize_masks_user_id_and_keeps_user_name() -> None:
+    line = format_agentos(
+        "auth.ok",
+        user_id="uid-opaque-1",
+        user_name="alice",
+        channel="web",
+    )
+    sanitized = _sanitize_log_text(line)
+    assert "uid-opaque-1" not in sanitized
+    assert "user_id=******(fp:" in sanitized
+    assert "user_name=alice" in sanitized
+
+
+def test_log_agentos_fills_remembered_user_name() -> None:
+    clear_user_names()
+    remember_user_name("uid-1", "alice")
+    logger = logging.getLogger("jiuwenswarm.extensions.agentos.test_logutil_name")
+    captured: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    handler = _Capture()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        log_agentos(logger, logging.INFO, "route.stream", user_id="uid-1", channel="web")
+    finally:
+        logger.removeHandler(handler)
+        clear_user_names()
+
+    assert len(captured) == 1
+    message = captured[0].getMessage()
+    assert "user_name=alice" in message
+    assert message.index("user_id=") < message.index("user_name=")
 
 
 def test_format_agentos_redacts_token_kwargs() -> None:
