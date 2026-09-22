@@ -28,13 +28,19 @@ function isOptionalContextRole(value: unknown): value is 'leader' | 'teammate' |
   return value === undefined || value === null || value === 'leader' || value === 'teammate';
 }
 
+function isSupportedContextUsagePhase(
+  value: unknown,
+): value is 'post_call' | 'post_compact' {
+  return value === 'post_call' || value === 'post_compact';
+}
+
 /** Validate only the v1 fields we consume. Never read aliases or calculate missing usage. */
 export function parseContextUsageSnapshot(value: unknown): ContextUsageSnapshot | null {
   if (
     !isRecord(value) ||
     value.event_type !== 'context.usage' ||
     value.schema_version !== 'context-usage.v1' ||
-    value.phase !== 'post_call' ||
+    !isSupportedContextUsagePhase(value.phase) ||
     typeof value.request_id !== 'string' ||
     !value.request_id ||
     typeof value.product_session_id !== 'string' ||

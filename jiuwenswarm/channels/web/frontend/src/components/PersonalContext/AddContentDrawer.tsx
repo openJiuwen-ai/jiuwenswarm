@@ -9,7 +9,7 @@
  * 后端 source 校验对齐 openjiuwen config.py:_normalize_service_source。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, Loader2, X } from 'lucide-react';
 import { usePersonalContextStore } from '../../stores';
@@ -143,6 +143,9 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [timeDropdownOpen, setTimeDropdownOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const timeDropdownRef = useRef<HTMLDivElement | null>(null);
+  // 点击时间范围下拉外部任意处自动收起
+  useOutsideDismiss(timeDropdownRef, timeDropdownOpen, () => setTimeDropdownOpen(false));
 
   // 分支字段
   const [rootDir, setRootDir] = useState(() => (editService?.provider === 'local_files' ? String(editService.source.root_dir ?? '') : ''));
@@ -520,7 +523,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
               {/* 采集时间 */}
               <div className="pc-drawer__field">
                 <label>{t('personalContext.addContent.timeRangeLabel')}</label>
-                <div className="pc-drawer__custom-select" >
+                <div className="pc-drawer__custom-select" ref={timeDropdownRef}>
                   <button
                     type="button"
                     className="pc-drawer__select-trigger"
@@ -934,11 +937,34 @@ interface MultiSelectDropdownProps<T extends string> {
   placeholder: string;
 }
 
+/** 下拉通用：open 时监听 document mousedown，点击容器外部任意处触发 onDismiss。 */
+function useOutsideDismiss(
+  containerRef: { current: HTMLElement | null },
+  open: boolean,
+  onDismiss: () => void,
+): void {
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onDismissRef.current();
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [containerRef, open]);
+}
+
 function MultiSelectDropdown<T extends string>({ options, selected, labelKey, onToggle, placeholder }: MultiSelectDropdownProps<T>) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // 点击多选下拉外部任意处自动收起（选项连续勾选时保持展开）
+  useOutsideDismiss(containerRef, open, () => setOpen(false));
   return (
-    <div className="pc-drawer__multi-select">
+    <div className="pc-drawer__multi-select" ref={containerRef}>
       <button
         type="button"
         className="pc-drawer__multi-select-trigger"

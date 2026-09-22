@@ -98,6 +98,7 @@ class SessionInputGuard(AgentRail):
         self.accepting = False
         self._model_allows_steer = False
         self._active_tools = 0
+        self._generation_boundary_pending = False
         self._session = None
 
     async def publish_input_received(self, entry: QueuedSessionInput) -> None:
@@ -157,11 +158,26 @@ class SessionInputGuard(AgentRail):
                 payload={"output_phase_id": phase_id,
                          "applied_input_ids": [entry.request_id for entry in entries]},
             ))
-        limit = getattr(ctx.agent.config, "max_iterations", 0)
+        limit = getattr(ctx.agent.config, "max_iterations", None)
         iteration = getattr(ctx.inputs, "react_iteration", 0)
-        self._model_allows_steer = bool(limit and 0 < iteration < limit)
+        # Unconfigured (None) means the inner loop is unbounded, so steer
+        # stays open. A configured cap keeps the original in-window check.
+        if limit is None:
+            self._model_allows_steer = True
+        else:
+            self._model_allows_steer = bool(limit and 0 < iteration < limit)
         self.accepting = self._model_allows_steer
         self._active_tools = 0
+
+    async def before_steering_drain(self, ctx):
+        """Mark the next visible model output as a steered generation."""
+        if int(getattr(ctx.inputs, "pending", 0) or 0) > 0:
+            self._generation_boundary_pending = True
+
+    def consume_generation_boundary(self) -> bool:
+        pending = self._generation_boundary_pending
+        self._generation_boundary_pending = False
+        return pending
 
     async def after_model_call(self, ctx):
         if not getattr(getattr(ctx.inputs, "response", None), "tool_calls", None):

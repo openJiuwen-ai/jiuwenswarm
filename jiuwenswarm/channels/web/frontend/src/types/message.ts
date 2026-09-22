@@ -126,6 +126,8 @@ export interface Message {
   toolResult?: ToolResult;
   // 是否正在流式输出
   isStreaming?: boolean;
+  /** 未收到工具/final 分段边界的集群输出；暂停只关闭光标，不移除此关联。 */
+  teamStream?: { requestId?: string };
   usageSummary?: UsageSummary;
   // Harness message flag for special styling
   isHarnessMessage?: boolean;

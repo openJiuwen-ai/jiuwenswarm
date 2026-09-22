@@ -615,6 +615,8 @@
   flex-direction: column;
   gap: 8px;
   overflow-y: auto;
+  /* 作为 tree-content 的 flex 子项不被压缩，超高时由外层滚动，避免卡片头被裁切 */
+  flex-shrink: 0;
 }
 
 /* 单个结果卡片：r8 描边 #dbdbdb */
@@ -623,6 +625,7 @@
   border-radius: 8px;
   overflow: hidden;
   background: #ffffff;
+  flex-shrink: 0;
 }
 
 /* 卡片头：34px 高，#fafafa 底，chevron + 标题 + 命中数 */

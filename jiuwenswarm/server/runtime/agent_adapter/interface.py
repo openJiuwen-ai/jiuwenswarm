@@ -4633,6 +4633,21 @@ class JiuWenSwarm:
             raise ValueError("Agent adapter not available")
         return await adapter.get_context_usage(session_id=session_id)
 
+    async def get_context_usage_event(
+        self,
+        session_id: str,
+        *,
+        request_id: str,
+    ) -> dict[str, Any] | None:
+        """Build a local usage event after an out-of-band context change."""
+        adapter = self._adapter
+        if adapter is None:
+            raise ValueError("Agent adapter not available")
+        build_event = getattr(adapter, "get_context_usage_event", None)
+        if not callable(build_event):
+            return None
+        return await build_event(session_id=session_id, request_id=request_id)
+
     async def generate_recap(
         self,
         session_id: str,

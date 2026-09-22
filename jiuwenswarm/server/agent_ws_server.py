@@ -186,6 +186,7 @@ from jiuwenswarm.runtime.host_services import (
     restore_runtime_push_handler,
 )
 from jiuwenswarm.runtime.plan import PlanModeController
+from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
@@ -1132,6 +1133,7 @@ class AgentWebSocketServer:
         # dispatch occurs before the legacy handler chain below.
         self._adapter_registry = AdapterRegistry()
         for adapter in (
+            VoiceTaskServerAdapter(),
             SessionAdapter(),
             WorkspaceFileAdapter(),
             MemoryAdapter(),
@@ -1928,6 +1930,7 @@ class AgentWebSocketServer:
                 self._install_session_message_service()
                 self._adapter_registry = AdapterRegistry()
                 for adapter in (
+                    VoiceTaskServerAdapter(),
                     SessionAdapter(),
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),
@@ -2320,7 +2323,7 @@ class AgentWebSocketServer:
             unguarded_methods = {
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
-                "session.stop",
+                "session.stop", "voice.task.checkpoint.ack",
             }
             if guarded_method not in unguarded_methods:
                 try:
@@ -2567,7 +2570,10 @@ class AgentWebSocketServer:
                 await self._handle_harness_packages_delete(ws, request, send_lock)
                 return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
-            if (request.req_method.value or "").startswith("rsi."):
+            if (
+                isinstance(request.req_method, ReqMethod)
+                and request.req_method.value.startswith("rsi.")
+            ):
                 await self._handle_rsi_request(ws, request, send_lock)
                 return
             # Schedule task management
@@ -7055,6 +7061,48 @@ class AgentWebSocketServer:
                             "session_id": session_id,
                             "payload": compression_state_payload,
                         })
+
+                # /compact runs outside the normal model-call stream, so the
+                # Core usage rail has no provider response from which to emit
+                # an authoritative input-token total. Ask the adapter for a
+                # canonical post_compact local-measurement snapshot and route
+                # it through both history and the live push path so the UI
+                # reflects the newly compacted context now.
+                if result in {"compressed", "noop"}:
+                    build_usage_event = getattr(agent, "get_context_usage_event", None)
+                    if callable(build_usage_event):
+                        try:
+                            usage_payload = await build_usage_event(
+                                session_id=session_id,
+                                request_id=request.request_id,
+                            )
+                        except Exception:  # usage telemetry must not fail /compact
+                            logger.warning(
+                                "[AgentWebSocketServer] manual context usage event failed",
+                                exc_info=True,
+                            )
+                        else:
+                            if isinstance(usage_payload, dict):
+                                append_history_record(
+                                    session_id=session_id,
+                                    request_id=request.request_id,
+                                    channel_id=channel_id,
+                                    role="assistant",
+                                    event_type="context.usage",
+                                    content="",
+                                    timestamp=_dt.datetime.now().timestamp(),
+                                    extra={
+                                        key: value
+                                        for key, value in usage_payload.items()
+                                        if key != "event_type"
+                                    },
+                                    mode=params.get("mode", "unknown"),
+                                )
+                                await self.send_push({
+                                    "channel_id": channel_id,
+                                    "session_id": session_id,
+                                    "payload": usage_payload,
+                                })
 
                 resp = AgentResponse(
                     request_id=request.request_id,

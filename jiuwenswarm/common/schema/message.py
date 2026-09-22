@@ -167,6 +167,10 @@ class ReqMethod(Enum):
     CRON_COMMAND_ACK = "cron.command.ack"
     CRON_RUN_NOW_ACK = "cron.run_now.ack"
 
+    # Gateway owns voice task records; AgentServer returns execution facts/files.
+    VOICE_TASK_CHECKPOINT_ACK = "voice.task.checkpoint.ack"
+    VOICE_TASK_FILES = "voice.task.files"
+
     # HarmonyOS TUI DevEco bootstrap（Phase 3：用户态在目标 AgentServer 注入目录执行）
     HARMONYOS_PROJECT_INIT = "harmonyos.project_init"
     HARMONYOS_DEV_INIT = "harmonyos.dev_init"

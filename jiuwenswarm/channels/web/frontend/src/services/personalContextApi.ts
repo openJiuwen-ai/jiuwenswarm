@@ -171,9 +171,13 @@ export type AuthorizationState =
   | 'authorized'
   | 'authorization_failed';
 
+/** 飞书授权阶段：config_init=首次应用配置（第1步），device_authorization=登录授权（第2步）。 */
+export type FeishuAuthorizationStep = 'config_init' | 'device_authorization';
+
 export type AuthorizationResult = {
   provider: string;
   state: AuthorizationState;
+  authorization_step?: FeishuAuthorizationStep | null;
   verification_url: string | null;
   expires_at: string | null;
   error: string | null;
@@ -368,12 +372,17 @@ export const pcApi = {
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
-  authorizeProvider: (provider: string, credentials?: Record<string, string>) =>
+  authorizeProvider: (
+    provider: string,
+    credentials?: Record<string, string>,
+    reauthorize?: boolean,
+  ) =>
     webRequest<AuthorizationResult>(
       'personal_context.fetch.authorize_provider',
       {
         provider,
         ...(credentials ? { credentials } : {}),
+        ...(reauthorize ? { reauthorize: true } : {}),
       },
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),

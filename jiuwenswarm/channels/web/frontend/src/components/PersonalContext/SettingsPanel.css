@@ -192,6 +192,44 @@
   cursor: not-allowed;
 }
 
+/* 飞书授权中提示条：引导文案 + 兜底链接 + 有效期 */
+.pc-settings__auth-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  background: #eef4ff;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #5f6368;
+}
+
+.pc-settings__auth-link {
+  color: #1476ff;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.pc-settings__auth-link:hover {
+  text-decoration: underline;
+}
+
+.pc-settings__auth-expires {
+  color: #8a8f98;
+}
+
+/* 当前授权步骤徽标（第 1 步 / 第 2 步），与提示条同风格 */
+.pc-settings__auth-step {
+  flex: 0 0 auto;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: rgba(20, 118, 255, 0.1);
+  color: #1476ff;
+  font-weight: 500;
+}
+
 /* 旧类名兼容（已废弃） */
 .pc-settings__header,
 .pc-settings__subtitle,
@@ -201,7 +239,6 @@
 .pc-settings__auth-table,
 .pc-settings__auth-foot,
 .pc-settings__auth-note,
-.pc-settings__auth-hint,
 .pc-settings__auth-btn {
   display: none;
 }

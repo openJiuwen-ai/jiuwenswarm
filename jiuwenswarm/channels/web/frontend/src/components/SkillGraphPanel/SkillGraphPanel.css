@@ -34,6 +34,14 @@
   padding: 14px;
 }
 
+.skill-graph-panel__sidebar {
+  overflow-y: auto;
+}
+
+.skill-graph-panel__sidebar > * {
+  flex-shrink: 0;
+}
+
 .skill-graph-panel h2,
 .skill-graph-panel h3,
 .skill-graph-panel h4,
@@ -317,7 +325,7 @@
 }
 
 .skill-graph-panel__node-list {
-  flex: 1;
+  flex: 1 0 auto;
 }
 
 .skill-graph-panel__node-list-items {
@@ -326,8 +334,6 @@
   flex: 1;
   flex-direction: column;
   gap: 8px;
-  overflow: auto;
-  padding-right: 8px;
 }
 
 .skill-graph-panel__node-list h3 {

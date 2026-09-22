@@ -29,14 +29,16 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
         del config
 
     async def shutdown(self) -> None:
-        return None
+        manager = getattr(self, "_task_manager", None)
+        if manager is not None:
+            await manager.close()
 
     def bind_web_channel(
         self,
         channel: Any,
         services: ApplicationPluginServices,
     ) -> None:
-        register_video_live_handler(
+        self._task_manager = register_video_live_handler(
             channel,
             agent_client=services.require_agent_client(),
             normalize_media_attachments=services.normalize_media_attachments,

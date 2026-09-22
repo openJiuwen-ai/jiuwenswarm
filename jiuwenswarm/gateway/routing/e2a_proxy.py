@@ -32,7 +32,10 @@ from typing import Any
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from jiuwenswarm.gateway.routing.agent_client import (
+    DuplicateRequestIdError,
+    WebSocketAgentServerClient,
+)
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
@@ -45,6 +48,24 @@ logger = logging.getLogger(__name__)
 #: 目标 AgentServer 不可达/请求失败时返回的外部协议错误码
 SERVICE_UNAVAILABLE_CODE = "SERVICE_UNAVAILABLE"
 DEFAULT_PROXY_LABEL = "agent-proxy"
+
+
+def _new_fetch_request_id() -> str:
+    """生成 Gateway 侧主动发起的 E2A request_id（``fetch-`` 前缀）。
+
+    request_id 是 ``WebSocketAgentServerClient`` 路由响应的唯一键：同一连接上
+    若两个在途请求撞号，客户端会拒绝注册第二个队列并抛错（请求根本发不出去）。
+
+    因此不能只用 ``time.time_ns()``：
+
+    - 墙钟分辨率有限（Windows 实测只有 100ns 步进，部分环境更粗），相邻两次
+      生成可能完全相同；归档/删除等长耗时 RPC 与 2s 生命周期轮询共用连接的
+      情况下，撞号会直接表现为偶发失败。
+    - 墙钟非单调，NTP 校正或休眠唤醒回拨时可能重放出已用过的取值。
+
+    保留时间戳前缀便于日志排序与排查，后缀补 8 位随机量保证进程内唯一。
+    """
+    return f"fetch-{time.time_ns()}-{uuid.uuid4().hex[:8]}"
 
 
 def is_agentos_routing_client(agent_client: Any) -> bool:
@@ -423,7 +444,7 @@ async def fetch_agent_unary(
         if is_legacy_shared_directory_client(agent_client):
             result = await _run_legacy_shared_directory_adapter(
                 channel_id=channel_id,
-                req_id=f"fetch-{time.time_ns()}",
+                req_id=_new_fetch_request_id(),
                 params=params,
                 session_id=session_id,
                 user_id=user_id,
@@ -436,42 +457,74 @@ async def fetch_agent_unary(
             "code": SERVICE_UNAVAILABLE_CODE,
         }
 
-    env = e2a_from_agent_fields(
-        request_id=f"fetch-{time.time_ns()}",
-        channel_id=channel_id,
-        session_id=session_id,
-        req_method=req_method,
-        params=dict(params or {}),
-        is_stream=False,
-        timestamp=time.time(),
-        user_id=user_id or None,
-    )
-    try:
-        response = await send_agent_request_with_timeout(
-            agent_client,
-            env,
-            label=f"{label} {req_method.value}",
-            timeout_seconds=timeout_seconds,
+    response = None
+    # request_id 撞号时请求尚未发出（拒绝发生在注册响应队列阶段），换号重试
+    # 一次是安全的；不做这层重试，id 生成器偶发重复会直接变成用户可见的失败。
+    for attempt in (0, 1):
+        env = e2a_from_agent_fields(
+            request_id=_new_fetch_request_id(),
+            channel_id=channel_id,
+            session_id=session_id,
+            req_method=req_method,
+            params=dict(params or {}),
+            is_stream=False,
+            timestamp=time.time(),
+            user_id=user_id or None,
         )
-    except AgentRequestTimeoutError:
-        return False, {
-            "error": AGENT_SERVER_TIMEOUT_ERROR,
-            "code": AGENT_SERVER_TIMEOUT_CODE,
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[%s] %s 转发失败: error=%s", label, req_method.value, exc)
-        if is_legacy_shared_directory_client(agent_client):
-            result = await _run_legacy_shared_directory_adapter(
-                channel_id=channel_id,
-                req_id=f"fetch-{time.time_ns()}",
-                params=params,
-                session_id=session_id,
-                user_id=user_id,
-                req_method=req_method,
+        try:
+            response = await send_agent_request_with_timeout(
+                agent_client,
+                env,
+                label=f"{label} {req_method.value}",
+                timeout_seconds=timeout_seconds,
             )
-            if result is not None:
-                return result
-        return False, {"error": str(exc), "code": SERVICE_UNAVAILABLE_CODE}
+            break
+        except AgentRequestTimeoutError:
+            return False, {
+                "error": AGENT_SERVER_TIMEOUT_ERROR,
+                "code": AGENT_SERVER_TIMEOUT_CODE,
+            }
+        except DuplicateRequestIdError as exc:
+            if attempt == 0:
+                logger.warning(
+                    "[%s] %s request_id 撞号，换号重试: request_id=%s",
+                    label,
+                    req_method.value,
+                    exc.request_id,
+                )
+                continue
+            logger.error(
+                "[%s] %s request_id 重复撞号，放弃: request_id=%s",
+                label,
+                req_method.value,
+                exc.request_id,
+            )
+            return False, {"error": str(exc), "code": SERVICE_UNAVAILABLE_CODE}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[%s] %s 转发失败: request_id=%s error=%s",
+                label,
+                req_method.value,
+                getattr(env, "request_id", ""),
+                exc,
+            )
+            if is_legacy_shared_directory_client(agent_client):
+                result = await _run_legacy_shared_directory_adapter(
+                    channel_id=channel_id,
+                    req_id=_new_fetch_request_id(),
+                    params=params,
+                    session_id=session_id,
+                    user_id=user_id,
+                    req_method=req_method,
+                )
+                if result is not None:
+                    return result
+            return False, {"error": str(exc), "code": SERVICE_UNAVAILABLE_CODE}
+    if response is None:  # pragma: no cover - 防御：循环内所有异常分支均已返回
+        return False, {
+            "error": "AgentServer is unavailable",
+            "code": SERVICE_UNAVAILABLE_CODE,
+        }
 
     payload = (
         dict(response.payload)

@@ -88,7 +88,9 @@
       "signedIn": "Signed in",
       "loggedInDescription": "Limited-time free models are now available in the chat model dropdown",
       "endedTitle": "Campaign ended",
-      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part."
+      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part.",
+      "configTitle": "Free model settings",
+      "configDescription": "Set the context window and other options for the limited-time free models"
     },
     "categories": {
       "general": "General",
@@ -923,6 +925,7 @@
     "extensionMore": "More",
     "recentTasks": "Progress",
     "applicationTasks": {
+      "unknown": "Status unconfirmed",
       "cancelling": "Stopping",
       "cancelled": "Cancelled",
       "controls": {
@@ -1808,7 +1811,10 @@
       "model": "Context Organize Model",
       "modelPlaceholder": "Please select an organize model",
       "modelRequiredFirst": "Please select an organize model first",
-      "modelHint": "Select a model configured in JiuwenSwarm."
+      "modelHint": "Select a model configured in JiuwenSwarm.",
+      "collectionStopPending": "A fetch task is running; the setting takes effect shortly.",
+      "collectionStoppingRetry": "A fetch task is still running or stopping. Please try again in a moment.",
+      "operationTimeout": "Request timed out. Please try again in a moment."
     },
     "authorization": {
       "title": "Content source authorization",
@@ -1837,7 +1843,20 @@
       "gitcodeTokenHint": "Token is stored locally in the browser and used to authenticate the fetch service.",
       "gitcodeTokenRequired": "Please enter a GitCode token",
       "feishuHint": "Feishu uses an OAuth device flow. After authorizing, complete the login in your browser as prompted.",
-      "feishuVerifyHint": "Complete the Feishu authorization in the opened page; the state will update automatically."
+      "feishuVerifyHint": "Complete the Feishu authorization in the opened page; the state will update automatically.",
+      "feishuConfigInitHint": "First time using Feishu: complete the app setup first (Step 1 of 2). Authorization will continue automatically afterward.",
+      "feishuStep1Done": "Step 1 complete. Click \"Authorize\" again to finish Step 2 sign-in.",
+      "feishuOpenLink": "Didn't open automatically? Click here to open the authorization page",
+      "feishuStep1": "Step 1: Set up the Feishu app",
+      "feishuStep2": "Step 2: Sign in to Feishu",
+      "feishuExpiresInSeconds": "Authorization link expires in {{count}}s",
+      "feishuExpiresInMinutes": "Authorization link expires in {{count}} min",
+      "feishuAuthExpiredShort": "Authorization link expired",
+      "feishuAuthSuccess": "Feishu authorization successful",
+      "feishuAuthFailed": "Feishu authorization failed. Please re-authorize.",
+      "feishuConfigInitFailed": "Feishu app setup failed. Please re-authorize.",
+      "feishuAuthExpired": "Authorization link expired. Please re-authorize.",
+      "tokenInvalid": "Authorization failed. Please enter a valid token and try again."
     },
     "info": {
       "tabGraph": "Context graph",
@@ -1912,6 +1931,7 @@
       "empty": "No content yet. Click \"Add content\" at the top right to create one.",
       "noContentInCategory": "No content",
       "runSubmitted": "Fetch request submitted",
+      "updated": "Configuration updated",
       "startedAt": "Started",
       "finishedAt": "Finished",
       "backToGraph": "Back to Graph",
@@ -3899,6 +3919,7 @@
       "loginSuccessToast": "Signed in with HUAWEI ID",
       "statusStarting": "Preparing sign-in…",
       "statusWaiting": "Sign-in page opened in your browser — come back here when you're done…",
+      "claimPendingHint": "We haven't received your sign-in yet. Finish authorizing your Huawei account in the page that opened, then click \"I've signed in\".",
       "checkLogin": "I've signed in",
       "popupBlocked": "The browser blocked the new tab. Copy this URL and open it manually:",
       "modelError": {

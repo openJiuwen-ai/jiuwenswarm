@@ -88,7 +88,9 @@
       "signedIn": "已登录",
       "loggedInDescription": "限时免费模型已可在对话的模型下拉中选用",
       "endedTitle": "活动已结束",
-      "endedDescription": "本期限时免费模型活动已结束，感谢参与"
+      "endedDescription": "本期限时免费模型活动已结束，感谢参与",
+      "configTitle": "免费模型配置",
+      "configDescription": "为限时免费模型单独设置上下文窗口等参数"
     },
     "categories": {
       "general": "常规",
@@ -914,6 +916,7 @@
     "extensionMore": "更多",
     "recentTasks": "进度",
     "applicationTasks": {
+      "unknown": "状态待核对",
       "cancelling": "正在停止",
       "cancelled": "已取消",
       "controls": {
@@ -1799,7 +1802,10 @@
       "modelPlaceholder": "请选择整理模型",
       "modelRequiredFirst": "请先选择整理模型",
       "title": "上下文",
-      "modelHint": "选择已在 JiuwenSwarm 中配置的模型。"
+      "modelHint": "选择已在 JiuwenSwarm 中配置的模型。",
+      "collectionStopPending": "采集任务运行中，稍后生效",
+      "collectionStoppingRetry": "采集任务仍在运行或停止中，请稍后再试",
+      "operationTimeout": "请求超时，请稍后重试"
     },
     "authorization": {
       "title": "内容采集授权",
@@ -1828,7 +1834,20 @@
       "gitcodeTokenHint": "令牌仅保存在本地浏览器，创建采集服务时用于认证。",
       "gitcodeTokenRequired": "请输入 GitCode 令牌",
       "feishuHint": "飞书使用 OAuth 设备授权流程。点击授权后按提示在浏览器完成登录。",
-      "feishuVerifyHint": "请在打开的页面完成飞书授权，授权完成后状态将自动更新。"
+      "feishuVerifyHint": "请在打开的页面完成飞书授权，授权完成后状态将自动更新。",
+      "feishuConfigInitHint": "首次使用飞书，需要先完成应用配置（第 1 步，共 2 步）。请在弹出的页面完成配置，之后会自动进入登录授权。",
+      "feishuStep1Done": "第 1 步已完成，请再次点击「授权」完成第 2 步登录授权",
+      "feishuOpenLink": "页面未自动打开？点击此处打开授权页",
+      "feishuStep1": "第 1 步：配置飞书应用",
+      "feishuStep2": "第 2 步：登录授权",
+      "feishuExpiresInSeconds": "授权链接将于 {{count}} 秒后失效",
+      "feishuExpiresInMinutes": "授权链接将于 {{count}} 分钟后失效",
+      "feishuAuthExpiredShort": "授权链接已过期",
+      "feishuAuthSuccess": "飞书授权成功",
+      "feishuAuthFailed": "飞书授权失败，请重新授权",
+      "feishuConfigInitFailed": "飞书应用配置失败，请重新授权",
+      "feishuAuthExpired": "授权链接已过期，请重新授权",
+      "tokenInvalid": "授权失败，请输入正确的 Token 后重试"
     },
     "info": {
       "tabGraph": "上下文图谱",
@@ -1903,6 +1922,7 @@
       "empty": "暂无采集内容，点击右上角「添加内容」创建",
       "noContentInCategory": "暂无内容",
       "runSubmitted": "已提交采集请求",
+      "updated": "配置已更新",
       "startedAt": "开始",
       "finishedAt": "结束",
       "backToGraph": "返回图谱",
@@ -3885,6 +3905,7 @@
       "loginSuccessToast": "华为账号登录成功",
       "statusStarting": "正在准备登录…",
       "statusWaiting": "已在浏览器中打开登录页，完成后回到这里…",
+      "claimPendingHint": "还没有收到登录结果。请先在打开的页面中完成华为账号授权，再点「我已完成登录」。",
       "checkLogin": "我已完成登录",
       "popupBlocked": "浏览器拦截了新标签页，请复制下面的地址手动打开：",
       "modelError": {

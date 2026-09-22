@@ -18,6 +18,9 @@ export interface RealtimeBrief {
 }
 
 export interface SearchJobPayload {
+  sequence?: number;
+  revision?: number;
+  replay?: boolean;
   queue_position?: number;
   queue_version?: number;
   job_id?: string;
@@ -28,8 +31,10 @@ export interface SearchJobPayload {
   display_result?: string;
   realtime_brief?: RealtimeBrief;
   error?: string;
+  interaction?: { id: string; request_id: string; state: string; questions: Array<{ question: string }> };
+  wait_reason?: string;
   engine?: string;
-  status?: 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed';
+  status?: 'unknown' | 'queued' | 'running' | 'waiting_user' | 'cancelling' | 'cancelled' | 'completed' | 'failed';
   latency_ms?: number;
   progress?: SearchProgressEntry;
   progress_history?: SearchProgressEntry[];
@@ -63,7 +68,7 @@ export interface SearchProgressEntry {
 export interface SearchProgressJob {
   id: string;
   query: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
+  status: NonNullable<SearchJobPayload['status']>;
   latencyMs?: number;
   progress: SearchProgressEntry[];
 }

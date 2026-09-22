@@ -57,6 +57,7 @@ from jiuwenswarm.common.config import (
     get_default_models,
     replace_teams_in_config,
     update_default_models_in_config,
+    update_login_model_settings_in_config,
     update_health_check_in_config,
     update_channel_in_config,
     replace_channel_subsection_with_cleanup,
@@ -3677,6 +3678,24 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _clear_agent_config_cache(_resolve(agent_client))
         return True
 
+    def _parse_login_model_settings(raw: Any) -> dict[str, int | None]:
+        if not isinstance(raw, dict):
+            raise _ConfigBadRequest("login_model_settings must be object")
+        parsed: dict[str, int | None] = {}
+        for name, item in raw.items():
+            model_name = str(name or "").strip()
+            if not model_name or not isinstance(item, dict) or "context_window" not in item:
+                raise _ConfigBadRequest(f"login_model_settings[{name!r}].context_window is required")
+            value = item["context_window"]
+            if value is None:
+                parsed[model_name] = None
+                continue
+            context_window = parse_positive_int(value)
+            if context_window is None:
+                raise _ConfigBadRequest(f"login_model_settings[{name!r}].context_window must be positive")
+            parsed[model_name] = context_window
+        return parsed
+
     def _build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]:
         if not isinstance(raw_models, list):
             raise _ConfigBadRequest("models must be a non-empty list")
@@ -4158,6 +4177,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         Accepted payload keys:
         - config: config.set-style key/value updates
         - models: complete models.defaults draft list
+        - login_model_settings: per-login-model user settings (context window)
         - agents/team: team editor payload
         """
         if not isinstance(params, dict):
@@ -4172,6 +4192,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             new_models: list[dict[str, Any]] | None = None
             if "models" in params:
                 new_models = _build_models_defaults_from_frontend(params.get("models"))
+            login_model_settings: dict[str, int | None] | None = None
+            if "login_model_settings" in params:
+                login_model_settings = _parse_login_model_settings(params.get("login_model_settings"))
 
             config_params: dict[str, Any] = {}
             raw_config_params = params.get("config")
@@ -4212,6 +4235,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 update_default_models_in_config(new_models)
                 yaml_updated.append("models.defaults")
                 models_count = len(new_models)
+
+            if login_model_settings:
+                update_login_model_settings_in_config(login_model_settings)
+                yaml_updated.append("models.login_model_settings")
 
             kvc_config_changed = new_models is not None or any(
                 key in config_params for key in KVC_CONFIG_KEYS
@@ -4907,7 +4934,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 return
             from jiuwenswarm.server.runtime.session.session_metadata import set_session_pinned
 
-            result = set_session_pinned(sid.strip(), pinned)
+            result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
             if result is None:
                 await channel.send_response(ws, req_id, ok=False, error="session not found", code="NOT_FOUND")
                 return

@@ -1,3 +1,4 @@
+import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
 import {
   ChangeEvent,
   FormEvent,
@@ -114,6 +115,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const conversationSearchSessionRef = useRef('');
   const mediaGenerationRef = useRef(0);
   const mediaToolCallIdsRef = useRef(new Set<string>());
+  const mediaTaskIdsRef = useRef(new Set<string>());
   const latestUserInstructionRef = useRef({ text: '', turnId: '' });
   const searchJobsRef = useRef<Map<string, SearchJobState>>(new Map());
   const pollingSearchJobsRef = useRef<Set<string>>(new Set());
@@ -162,6 +164,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     mediaGenerationRef.current += 1;
     startingRealtimeRef.current = null;
     mediaToolCallIdsRef.current.clear();
+    mediaTaskIdsRef.current.clear();
     duplexRef.current?.stop();
     duplexRef.current = null;
     joyaiProviderRef.current?.stop();
@@ -426,6 +429,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
     const unsubscribeProgress = webClient.on<SearchJobPayload>('video.search.progress', ({ payload }) => {
       if (!belongsToCurrentSession(payload)) return;
+      if (!payload.replay && payload.job_id && payload.interaction) {
+        duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
+      }
       updateSearchProgress(payload);
       onCoreAgentProgress?.('progress', payload);
       const job = payload.job_id ? searchJobsRef.current.get(payload.job_id) : undefined;
@@ -436,6 +442,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       updateSearchProgress(payload);
       onCoreAgentProgress?.('completed', payload);
       acceptCompletedSearch(payload);
+    });
+    const unsubscribeCancelled = webClient.on<SearchJobPayload>('video.search.cancelled', ({ payload }) => {
+      if (!belongsToCurrentSession(payload) || !payload.job_id || !payload.tool_call_id) return;
+      duplexRef.current?.cancelToolTask(payload.job_id, payload.tool_call_id);
+      searchJobsRef.current.delete(payload.job_id);
     });
     const unsubscribeFailed = webClient.on<SearchJobPayload>('video.search.failed', ({ payload }) => {
       if (!belongsToCurrentSession(payload)) return;
@@ -478,6 +489,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       unsubscribeProgress();
       unsubscribeCompleted();
       unsubscribeFailed();
+      unsubscribeCancelled();
       window.clearInterval(pollTimer);
     };
   }, [headless, onCoreAgentProgress]);
@@ -878,6 +890,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 duplexRef.current = null;
                 mediaGenerationRef.current += 1;
                 mediaToolCallIdsRef.current.clear();
+                mediaTaskIdsRef.current.clear();
                 searchSessionRef.current = '';
                 setIsRealtimeStarting(false);
               }
@@ -901,8 +914,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               if (mediaGeneration !== mediaGenerationRef.current) return;
               mediaToolCallIdsRef.current.add(call.callId);
               const searchSessionId = searchSessionRef.current;
-              const latestInstruction = latestUserInstructionRef.current;
-              const originalInstruction = latestInstruction.text.trim() || call.task;
+              const latestInstruction = {text: call.originalInstruction || call.task, turnId: call.inputId || ''};
+              const originalInstruction = latestInstruction.text.trim();
               reportRealtimeEvent('qwen_tool_call_forwarding', {
                 name: call.name,
                 call_id: call.callId,
@@ -910,7 +923,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 task: call.task,
                 turn_id: latestInstruction.turnId,
               });
-              void webRequest<AgentAction & { call_id?: string }>(
+              void webRequest<AgentAction & { call_id?: string; tool_result?: unknown }>(
                 'video.qwen.tool',
                 {
                   name: call.name,
@@ -924,8 +937,28 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 { timeoutMs: 10_000 },
               )
                 .then((action) => {
+                  reportRealtimeEvent('qwen_tool_call_receipt', {
+                    name: call.name, call_id: call.callId,
+                    job_id: action.search_job?.id || '',
+                    decision: (action.tool_result as {state?: string})?.state === 'rejected' ? 'rejected' : 'accepted',
+                  });
+                  if (action.tool_result !== undefined) {
+                    const successor = (action.tool_result as {successor_id?: string}).successor_id;
+                    if (successor && mediaGeneration === mediaGenerationRef.current) mediaTaskIdsRef.current.add(successor);
+                    if (mediaGeneration === mediaGenerationRef.current)
+                      session.enqueueOperationResult(call.callId, action.tool_result);
+                    return;
+                  }
                   const jobId = action.search_job?.id?.trim() || '';
                   if (!jobId) throw new Error('Jiuwen Core Agent did not create a search job');
+                  if (mediaGeneration === mediaGenerationRef.current) mediaTaskIdsRef.current.add(jobId);
+                  if (mediaGeneration === mediaGenerationRef.current) {
+                    session.enqueueOperationResult(call.callId, {
+                      state: 'accepted', job_id: jobId, status: action.search_job?.status,
+                      accepted_instruction: action.search_job?.question || originalInstruction,
+                      message: TASK_ACCEPTED_INSTRUCTIONS,
+                    });
+                  }
                   rememberSearchJob(
                     action.search_job,
                     latestInstruction.turnId,
@@ -934,33 +967,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 })
                 .catch((toolError) => {
                   const message = toolError instanceof Error ? toolError.message : 'Jiuwen Core Agent request failed';
-                  if (headless) {
-                    onCoreAgentProgress?.('failed', {
-                      job_id: `qwen-tool-error-${call.callId}`,
-                      search_session_id: searchSessionId,
-                      question: originalInstruction,
-                      error: message,
-                      status: 'failed',
-                      tool_call_id: call.callId,
-                    });
-                    return;
-                  }
                   if (mediaGeneration !== mediaGenerationRef.current) return;
-                  appendChat('assistant', t('videoLive.coreAgent.startFailed', { message }), 'tool_result');
-                  const queued = session.enqueueToolResult({
-                    jobId: `qwen-tool-error-${call.callId}`,
-                    question: originalInstruction,
-                    brief: {
-                      status: 'failed',
-                      result_kind: 'generic',
-                      summary: t('videoLive.coreAgent.startFailedSummary'),
-                      displayed_in_ui: true,
-                      response_mode: 'acknowledge',
-                      source: 'fallback',
-                    },
-                    callId: call.callId,
+                  reportRealtimeEvent('qwen_tool_call_receipt', {
+                    name: call.name, call_id: call.callId, decision: 'rejected', message,
                   });
-                  if (!queued) setError(message);
+                  setError(message);
+                  session.enqueueOperationResult(call.callId, { state: 'rejected', error: message });
                 });
             },
             onDiagnostic: (event) => {
@@ -1038,7 +1050,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       // A function_call_output is valid only on the Qwen connection that created its call ID.
       // JoyAI jobs likewise need to belong to this media run; old results stay visible without replay.
       if (duplexRef.current) {
-        if (!payload.tool_call_id || !mediaToolCallIdsRef.current.has(payload.tool_call_id)) return;
+        if (!mediaTaskIdsRef.current.has(payload.job_id || '') && (!payload.tool_call_id || !mediaToolCallIdsRef.current.has(payload.tool_call_id))) return;
       } else if (!joyaiProviderRef.current?.active || !searchJobsRef.current.has(payload.job_id || '')) {
         return;
       }

@@ -294,3 +294,91 @@ test('tool calls without pending deltas preserve finalized text and do not creat
     await connection.dispose();
   }
 });
+
+function teamDelta(connection, sessionId, requestId, content) {
+  connection.receive('chat.delta', { session_id: sessionId, request_id: requestId, content });
+}
+
+function pauseTeam(connection, sessionId) {
+  connection.receive('chat.interrupt_result', {
+    session_id: sessionId, request_id: `pause-${sessionId}`, intent: 'pause', success: true,
+  });
+}
+
+test('team pause preserves the delta target without restarting its cursor or processing state', async (context) => {
+  const sessionId = 'team-paused-deltas';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    useSessionStore.getState().setMode(sessionId, 'team');
+    teamDelta(connection, sessionId, 'round-1', '你好');
+    const id = connection.runtime().messages[0].id;
+    pauseTeam(connection, sessionId);
+    for (const chunk of ['，', '很', '高兴见到你。']) teamDelta(connection, sessionId, 'round-1', chunk);
+    assert.equal(connection.runtime().messages.length, 1);
+    assert.equal(connection.runtime().messages[0].id, id);
+    assert.equal(connection.runtime().messages[0].content, '你好，很高兴见到你。');
+    assert.equal(connection.runtime().messages[0].isStreaming, false);
+    assert.equal(connection.runtime().isProcessing, false);
+    assert.equal(connection.runtime().isPaused, true);
+    connection.receive('chat.final', {
+      session_id: sessionId, request_id: 'round-1', content: '你好，很高兴见到你。',
+    });
+    assert.equal(connection.runtime().messages.length, 1, 'final updates the paused segment instead of duplicating it');
+    assert.match(connection.runtime().messages[0].content, /你好，很高兴见到你。/);
+  } finally { await connection.dispose(); }
+});
+
+test('the first delta after pause creates one non-streaming segment and subsequent chunks append', async (context) => {
+  const sessionId = 'team-pause-before-text';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    useSessionStore.getState().setMode(sessionId, 'team');
+    pauseTeam(connection, sessionId);
+    teamDelta(connection, sessionId, 'round-1', '你');
+    teamDelta(connection, sessionId, 'round-1', '好');
+    assert.deepEqual(connection.runtime().messages.map(m => m.content), ['你好']);
+    assert.equal(connection.runtime().messages[0].isStreaming, false);
+  } finally { await connection.dispose(); }
+});
+
+test('paused team tool and final boundaries keep distinct output segments', async (context) => {
+  const sessionId = 'team-paused-boundaries';
+  const connection = await mountConnection(context, [sessionId]);
+  try {
+    useSessionStore.getState().setMode(sessionId, 'team');
+    teamDelta(connection, sessionId, 'round-1', '先检查。');
+    pauseTeam(connection, sessionId);
+    connection.receive('chat.tool_call', {
+      session_id: sessionId, request_id: 'round-1', tool_call_id: 'read-paused', name: 'read_file', arguments: {},
+    });
+    teamDelta(connection, sessionId, 'round-1', '检查');
+    teamDelta(connection, sessionId, 'round-1', '完成。');
+    assert.deepEqual(connection.runtime().messages.map(m => m.content), ['先检查。', '检查完成。']);
+    connection.receive('chat.final', { session_id: sessionId, request_id: 'round-1', content: '' });
+    teamDelta(connection, sessionId, 'round-1', '下一段');
+    teamDelta(connection, sessionId, 'round-1', '正文。');
+    assert.deepEqual(connection.runtime().messages.map(m => m.content), ['先检查。', '检查完成。', '下一段正文。']);
+    assert.ok(connection.runtime().messages.every(m => m.isStreaming === false));
+  } finally { await connection.dispose(); }
+});
+
+test('late paused output stays with its request across a new user turn and another session', async (context) => {
+  const sessionId = 'team-paused-old-request';
+  const other = 'team-paused-other-session';
+  const connection = await mountConnection(context, [sessionId, other]);
+  try {
+    for (const id of [sessionId, other]) useSessionStore.getState().setMode(id, 'team');
+    teamDelta(connection, sessionId, 'round-1', '旧轮');
+    pauseTeam(connection, sessionId);
+    useChatStore.getState().addMessage(sessionId, { id: 'new-user', role: 'user', content: '新问题', timestamp: new Date().toISOString() });
+    useChatStore.getState().setPaused(sessionId, false);
+    teamDelta(connection, sessionId, 'round-2', '新轮');
+    teamDelta(connection, other, 'round-1', '另一会话');
+    teamDelta(connection, sessionId, 'round-1', '尾部');
+    teamDelta(connection, sessionId, 'round-2', '正文');
+    assert.deepEqual(connection.runtime().messages.map(m => m.content), ['旧轮尾部', '新问题', '新轮正文']);
+    assert.equal(connection.runtime().messages[0].isStreaming, false);
+    assert.equal(connection.runtime().messages[2].isStreaming, true);
+    assert.deepEqual(connection.runtime(other).messages.map(m => m.content), ['另一会话']);
+  } finally { await connection.dispose(); }
+});

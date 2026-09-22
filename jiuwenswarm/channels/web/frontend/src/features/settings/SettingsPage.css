@@ -943,7 +943,7 @@
   line-height: 22px;
   border-color: var(--color-settings-border);
   border-radius: 8px;
-  background: var(--color-surface-card);
+  background-color: var(--color-surface-card);
 }
 
 .settings-page .ui-input::placeholder,

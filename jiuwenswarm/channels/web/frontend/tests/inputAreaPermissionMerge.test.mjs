@@ -16,6 +16,7 @@ const globals = {
   HTMLElement: dom.window.HTMLElement,
   MutationObserver: dom.window.MutationObserver,
   CustomEvent: dom.window.CustomEvent,
+  FileReader: dom.window.FileReader,
   getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
   requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
   cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
@@ -102,6 +103,7 @@ test('idle composer still submits normally', async () => {
 
 async function mount({ mode = 'agent', profile = 'default', language = 'en' } = {}, run) {
   const sessionId = 'input-permission-merge';
+  useChatStore.getState().ensureRuntime(sessionId);
   useSessionStore.getState().ensureRuntime(sessionId);
   useSessionStore.getState().setMode(sessionId, mode);
   useChatStore.getState().ensureRuntime(sessionId);
@@ -259,3 +261,31 @@ for (const action of ['cancel', 'confirm']) {
     });
   });
 }
+test('composer exposes Full-duplex only when idle with no text or attachments', async () => {
+  await mount({}, async ({ sessionId, props, render }) => {
+    props.onPersistDocuments = async (_content, items) => ({
+      media_items: items.map((item) => ({ ...item, path: '/workspace/note.txt' })),
+    });
+    await render();
+    assert.ok(byId('test-duplex-action'));
+    await act(async () => useChatStore.getState().setInputValue(sessionId, 'read this file'));
+    assert.equal(!!document.querySelector('[data-testid="test-duplex-action"]'), false, 'text hides voice action');
+    assert.ok(byId('chat-panel-input-send'));
+    await act(async () => useChatStore.getState().setInputValue(sessionId, ''));
+    assert.ok(byId('test-duplex-action'));
+    props.isProcessing = true;
+    await render();
+    assert.equal(!!document.querySelector('[data-testid="test-duplex-action"]'), false, 'processing hides voice action');
+    props.isProcessing = false;
+    await render();
+    const input = byId('chat-panel-input-file-input');
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new dom.window.File(['test'], 'note.txt', { type: 'text/plain' })],
+    });
+    await act(async () => input.dispatchEvent(new dom.window.Event('change', { bubbles: true })));
+    assert.ok(byId('chat-panel-input-attachment-card'));
+    assert.equal(!!document.querySelector('[data-testid="test-duplex-action"]'), false, 'attachment hides voice action');
+    assert.ok(byId('chat-panel-input-send'));
+  });
+});

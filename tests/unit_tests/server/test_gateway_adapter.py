@@ -333,6 +333,34 @@ class TestSessionAdapter:
         assert resp.ok is False
         assert resp.payload["code"] == "NOT_FOUND"
 
+    async def test_pin_keeps_event_loop_responsive(self, monkeypatch) -> None:
+        import asyncio
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        def slow_pin(sid, pinned):
+            started.set()
+            assert release.wait(3), "event loop could not release pin worker"
+            return True, 1
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.set_session_pinned",
+            slow_pin,
+        )
+        task = asyncio.create_task(SessionAdapter().handle(
+            _request(ReqMethod.SESSION_PIN, {"session_id": "sess-1", "pinned": True})
+        ))
+        try:
+            async with asyncio.timeout(2):
+                while not started.is_set():
+                    await asyncio.sleep(0.01)
+            assert not task.done()
+        finally:
+            release.set()
+            response = await task
+        assert response.ok is True
+
     async def test_pin(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.set_session_pinned",

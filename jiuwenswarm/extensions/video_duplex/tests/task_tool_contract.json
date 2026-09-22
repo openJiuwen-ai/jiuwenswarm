@@ -1,0 +1,129 @@
+[
+  {
+    "id": "create",
+    "name": "jiuwen_delegate",
+    "arguments": {
+      "task": "计算1到10的和",
+      "independent": true,
+      "depends_on": [],
+      "resources": []
+    },
+    "server_accepts": true,
+    "client_accepts": true
+  },
+  {
+    "id": "query",
+    "name": "jiuwen_task_query",
+    "arguments": {
+      "status": "unfinished",
+      "offset": 0
+    },
+    "server_accepts": true,
+    "client_accepts": true
+  },
+  {
+    "id": "cancel",
+    "name": "jiuwen_task_cancel",
+    "arguments": {
+      "job_id": "task-a"
+    },
+    "server_accepts": true,
+    "client_accepts": true
+  },
+  {
+    "id": "modify",
+    "name": "jiuwen_task_modify",
+    "arguments": {
+      "job_id": "task-a",
+      "revision": 1,
+      "instruction": "改为1到11"
+    },
+    "server_accepts": true,
+    "client_accepts": true
+  },
+  {
+    "id": "reorder",
+    "name": "jiuwen_task_reorder",
+    "arguments": {
+      "job_id": "task-a",
+      "queue_version": 0,
+      "action": "before",
+      "before_job_id": "task-b"
+    },
+    "server_accepts": true,
+    "client_accepts": true
+  },
+  {
+    "id": "answer",
+    "name": "jiuwen_task_answer",
+    "arguments": {
+      "job_id": "task-a",
+      "interaction_id": "question-a",
+      "answers": [
+        "5000元"
+      ]
+    },
+    "server_accepts": true,
+    "client_accepts": true
+  },
+  {
+    "id": "wrong-independent",
+    "name": "jiuwen_delegate",
+    "arguments": {
+      "task": "weather",
+      "independent": "true"
+    },
+    "server_accepts": false,
+    "client_accepts": false
+  },
+  {
+    "id": "ambiguous-task",
+    "name": "jiuwen_delegate",
+    "arguments": {
+      "task": "weather",
+      "query": "other"
+    },
+    "server_accepts": false,
+    "client_accepts": false
+  },
+  {
+    "id": "wrong-version",
+    "name": "jiuwen_task_modify",
+    "arguments": {
+      "job_id": "task-a",
+      "revision": true,
+      "instruction": "修改"
+    },
+    "server_accepts": false,
+    "client_accepts": true
+  },
+  {
+    "id": "missing-target",
+    "name": "jiuwen_task_cancel",
+    "arguments": {},
+    "server_accepts": false,
+    "client_accepts": true
+  },
+  {
+    "id": "preempt-not-exposed",
+    "name": "jiuwen_task_reorder",
+    "arguments": {
+      "job_id": "task-a",
+      "queue_version": 1,
+      "action": "preempt"
+    },
+    "server_accepts": false,
+    "client_accepts": true
+  },
+  {
+    "id": "wrong-answer-container",
+    "name": "jiuwen_task_answer",
+    "arguments": {
+      "job_id": "task-a",
+      "interaction_id": "question-a",
+      "answers": "5000"
+    },
+    "server_accepts": false,
+    "client_accepts": true
+  }
+]

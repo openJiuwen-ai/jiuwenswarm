@@ -241,11 +241,17 @@ class RsiServiceContext:
         adapters: dict[str, Any] = {}
         if program is not None:
             adapters["ARTIFACT:PROGRAM"] = ArtifactEngineAdapter(
-                "PROGRAM", program, model_resolver=model_resolver
+                "PROGRAM",
+                program,
+                model_resolver=model_resolver,
+                tasks_root=self.tasks_root,
             )
         if paper is not None:
             adapters["ARTIFACT:PAPER"] = ArtifactEngineAdapter(
-                "PAPER", paper, model_resolver=model_resolver
+                "PAPER",
+                paper,
+                model_resolver=model_resolver,
+                tasks_root=self.tasks_root,
             )
         self.register_adapters(adapters)
         return adapters

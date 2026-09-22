@@ -492,13 +492,14 @@ body.workspace-resize-active iframe {
   /* 页面通栏容器：flex 列，自身不限宽也不加横向 padding——
      滚动条由内层滚动列渲染，始终贴 viewport 最右缘 */
   .page-content {
+    --page-content-padding-top: 32px;
     display: flex;
     flex: 1 1 0%;
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
     background: var(--color-surface-card);
-    padding-top: 32px;
+    padding-top: var(--page-content-padding-top);
   }
 
   /* 限宽骨架：页面不滚动的固定区（header/toolbar 等）使用，
@@ -550,9 +551,21 @@ body.workspace-resize-active iframe {
     flex-shrink: 0;
   }
 
-  /* skill 详情加载中的整区域状态视图：参考 agent-management-detail--state，
-     但用 flex:1 + min-height:0 真正撑满详情可用区域，数据到达前后外层结构不位移，避免页面抖动。
-     返回按钮贴容器顶部，文案区 flex:1 占满剩余空间并在其中水平垂直居中 */
+  /* 加载层覆盖整个详情页，返回按钮保留原有顶部内边距。 */
+  .detail-loading-shell {
+    position: relative;
+    margin-top: calc(-1 * var(--page-content-padding-top));
+    padding-top: var(--page-content-padding-top);
+  }
+
+  .detail-loading-center {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+  }
+
   .skill-detail-state {
     flex: 1;
     min-height: 0;
@@ -562,11 +575,6 @@ body.workspace-resize-active iframe {
   }
 
   .skill-detail-state p {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     margin: 0;
   }
 
