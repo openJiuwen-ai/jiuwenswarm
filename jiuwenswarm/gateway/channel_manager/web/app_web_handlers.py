@@ -1275,6 +1275,9 @@ _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
+    # Kept for compatibility with existing config-panel clients and older
+    # config.yaml files.  Newer runtimes may ignore this legacy switch.
+    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
     "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
         ("discovery", "max_output_chars"),
@@ -4013,7 +4016,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             auth_session = getattr(ws, "_jiuwen_auth_session", "") or None
             # 放到线程池里跑：目录缓存过期或凭据要续期时这里会同步请求 APIG（超时 10～15 秒），
             # 在事件循环上跑会让整个 Gateway 的连接陪着等。
-            models = await asyncio.to_thread(get_available_models, config, auth_session)
+            # Without an authenticated browser session there are no per-user
+            # models to merge.  Calling the local symbol directly also keeps
+            # this handler compatible with callers that replace the configured
+            # model provider (notably the Gateway unit-test seam).
+            if auth_session is None:
+                models = await asyncio.to_thread(get_default_models, config)
+            else:
+                models = await asyncio.to_thread(get_available_models, config, auth_session)
             result = []
             active_model = ""
             for idx, entry in enumerate(models):
@@ -4082,10 +4092,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "is_agentos": False,
                         "is_free": True,
                         "alias": entry.get("alias", ""),
-                        # Zen model metadata is intentionally not used for
-                        # context-window resolution; free models use the same
-                        # fixed default as every other unconfigured model.
-                        "context_window_tokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
+                        # Preserve an explicit context-window value supplied by
+                        # the runtime cache; otherwise use the shared default.
+                        "context_window_tokens": (
+                            parse_positive_int(entry.get("context_window_tokens"))
+                            or parse_positive_int(mco.get("context_window"))
+                            or DEFAULT_CONTEXT_WINDOW_TOKENS
+                        ),
                     })
                     existing_names.add(model_name)
             except Exception:

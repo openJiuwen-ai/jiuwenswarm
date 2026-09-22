@@ -271,9 +271,13 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 if method.startswith(("session.", "project.sessions.")):
                     for item in payload.get("results", [payload]):
                         if item.get("ok", True) and item.get("session_id"):
-                            await channel.send_event(ws, event, item)
+                            send_event = getattr(channel, "send_event", None)
+                            if callable(send_event):
+                                await send_event(ws, event, item)
                 elif "operation_id" not in payload and (method != "project.delete" or payload.get("deleted")):
-                    await channel.send_event(ws, event, payload)
+                    send_event = getattr(channel, "send_event", None)
+                    if callable(send_event):
+                        await send_event(ws, event, payload)
 
         return handle
 
