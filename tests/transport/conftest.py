@@ -19,6 +19,7 @@ PATH_PARAM_SAMPLES: dict[str, str] = {
     "rule_id": "rule_probe",
     "override_id": "ovr_probe",
     "method": "session.list",
+    "id": "hosting_probe",
 }
 
 

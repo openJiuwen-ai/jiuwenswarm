@@ -20,6 +20,7 @@ import { ChannelsPanel } from './components/ChannelsPanel';
 import { PersonalContextPanel } from './components/PersonalContext';
 import { SettingsPage } from './features/settings/SettingsPage';
 import { settingsPageDefinition } from './features/settings/registry/openSourceDefinition';
+import { DigitalAvatarPanel } from './components/DigitalAvatarPanel';
 import { BrowserPanel } from './components/BrowserPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import { A2AIngressPanel } from './components/A2AIngressPanel';
@@ -2834,6 +2835,11 @@ function AppContent() {
               connectionState={connectionState}
               request={request}
             />
+          </div>
+        )}
+        {activeNav === 'digitalavatar' && (
+          <div className="app-section app-section--stack min-h-0">
+            <DigitalAvatarPanel isConnected={isConnected} />
           </div>
         )}
         {activeNav === 'extensions' && (

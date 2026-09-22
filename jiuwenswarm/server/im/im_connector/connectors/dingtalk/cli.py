@@ -10,6 +10,28 @@ from jiuwenswarm.server.im.im_connector.cli_runtime import ChannelCli
 class DingTalkCli(ChannelCli):
     CLI_NAME = "dws"
 
+    @staticmethod
+    def _session_target_args(target_kind: str, external_id: str) -> list[str]:
+        eid = (external_id or "").strip()
+        if target_kind == "user":
+            if eid.startswith("cid"):
+                return ["--open-conversation-id", eid]
+            if eid.startswith("DGU"):
+                return ["--open-dingtalk-id", eid]
+            return ["--user", eid]
+        return ["--group", eid]
+
+    @staticmethod
+    def _send_target_args(target_kind: str, external_id: str) -> list[str]:
+        eid = (external_id or "").strip()
+        if target_kind == "user":
+            if eid.startswith("cid"):
+                return ["--chat-id", eid]
+            if eid.startswith("DGU"):
+                return ["--open-dingtalk-id", eid]
+            return ["--user", eid]
+        return ["--group", eid]
+
     def history_args(
         self,
         *,
@@ -23,10 +45,7 @@ class DingTalkCli(ChannelCli):
         del message_id
         del query_direction
         args = ["chat", "+chat-messages", "--format", "json"]
-        if target_kind == "user":
-            args += ["--user", external_id or ""]
-        else:
-            args += ["--group", external_id or ""]
+        args += self._session_target_args(target_kind, external_id)
         token = (page_token or "").strip()
         if token:
             args += ["--page-token", token]
@@ -73,8 +92,7 @@ class DingTalkCli(ChannelCli):
             "user",
             "--format",
             "json",
-            "--user",
-            user_account,
+            *self._send_target_args("user", user_account),
             "--text",
             text,
             "--yes",

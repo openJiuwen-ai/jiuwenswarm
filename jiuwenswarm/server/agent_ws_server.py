@@ -561,6 +561,14 @@ class AgentWebSocketServer:
         await self._bootstrap_internal_jiuwenbox()
         await self._start_loop_lag_monitor()
         self._install_runtime_push_host()
+        try:
+            from jiuwenswarm.server.im.im_hosting.service import get_hosting_service
+
+            hosting = get_hosting_service()
+            hosting.set_agent_manager(TenantAgentPool.get_instance())
+            await hosting.start()
+        except Exception:
+            logger.exception("[AgentWebSocketServer] im hosting poll 启动失败（已忽略）")
 
     def _install_runtime_push_host(self) -> None:
         """Register send_push as the optional Runtime host for this lifetime."""
@@ -1086,7 +1094,12 @@ class AgentWebSocketServer:
         await cancel_pending_tasks()
 
         self._restore_runtime_push_host()
+        try:
+            from jiuwenswarm.server.im.im_hosting.service import get_hosting_service
 
+            await get_hosting_service().stop()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AgentWebSocketServer] im hosting poll stop failed: %s", exc)
         if not had_server:
             return
         try:

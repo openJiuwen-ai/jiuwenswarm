@@ -9,6 +9,7 @@ export type MainNavKey =
   | 'channels'
   | 'personalContext'
   | 'settings'
+  | 'digitalavatar'
   | 'extensions'
   | 'configpanel'
   | 'browserpanel'
@@ -30,6 +31,7 @@ const MAIN_NAV_KEYS = new Set<MainNavKey>([
   'channels',
   'personalContext',
   'settings',
+  'digitalavatar',
   'extensions',
   'configpanel',
   'browserpanel',

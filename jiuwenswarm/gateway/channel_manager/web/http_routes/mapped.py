@@ -271,6 +271,58 @@ _CRON_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+_IM_HOSTING_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/im/hosting/status", "im.hosting.status",
+        "im-hosting", "数字分身通道与轮询状态",
+    ),
+    WebHttpMappedRoute(
+        "GET", "/im/hosting/discover", "im.hosting.discover",
+        "im-hosting", "发现近期会话",
+        query_keys=("channel_id", "query_count"),
+    ),
+    WebHttpMappedRoute(
+        "GET", "/im/hosting/targets", "im.hosting.targets.list",
+        "im-hosting", "托管会话列表",
+        query_keys=("channel_id",),
+    ),
+    WebHttpMappedRoute(
+        "POST", "/im/hosting/targets", "im.hosting.targets.add",
+        "im-hosting", "手选加入托管",
+        accept_body=True,
+        created=True,
+    ),
+    WebHttpMappedRoute(
+        "PATCH", "/im/hosting/targets/{id}", "im.hosting.targets.patch",
+        "im-hosting", "改托管开关或覆盖字段",
+        path_to_param={"id": "id"},
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "DELETE", "/im/hosting/targets/{id}", "im.hosting.targets.delete",
+        "im-hosting", "移除托管会话",
+        path_to_param={"id": "id"},
+    ),
+    WebHttpMappedRoute(
+        "GET", "/im/hosting/policy", "im.hosting.policy.get",
+        "im-hosting", "读全局托管策略",
+    ),
+    WebHttpMappedRoute(
+        "PATCH", "/im/hosting/policy", "im.hosting.policy.patch",
+        "im-hosting", "改全局托管策略",
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/im/hosting/actions/poll-now", "im.hosting.poll_now",
+        "im-hosting", "立即拉一轮",
+    ),
+    WebHttpMappedRoute(
+        "GET", "/im/hosting/targets/{id}/history", "im.hosting.history",
+        "im-hosting", "托管代回 history",
+        path_to_param={"id": "id"},
+    ),
+)
+
 SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_CONFIG_ROUTES,
     *_A2A_INGRESS_ROUTES,
@@ -278,6 +330,7 @@ SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_MODELS_ROUTES,
     *_LOCALE_ROUTES,
     *_CRON_ROUTES,
+    *_IM_HOSTING_ROUTES,
 )
 
 # ---------------------------------------------------------------------------
