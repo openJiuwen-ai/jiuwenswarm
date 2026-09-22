@@ -175,6 +175,7 @@ import {
 } from './features/trajectory/SingleAgentSurface';
 import {
   shouldInsetTrajectoryForFloatingTasks,
+  trajectoryComposerClearance,
 } from './features/trajectory/trajectoryLayout';
 import {
   normalizeTrajectoryUiEnabled,
@@ -394,6 +395,10 @@ function AppContent({
     return 'new';
   });
   const [chatSurfaceViews, setChatSurfaceViews] = useState<Record<string, ChatSurfaceView>>({});
+  // Whether the composer kept available on the trajectory view is collapsed to
+  // watch-only, per session, alongside which view that session last showed.
+  const [trajectoryComposerCollapsed, setTrajectoryComposerCollapsed] = useState<Record<string, boolean>>({});
+  const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
 
@@ -702,6 +707,14 @@ function AppContent({
         ? current
         : { ...current, [sessionId]: nextView }
     ));
+  }, [sessionId]);
+  const composerDocked = chatSurfaceView === 'trajectory';
+  const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
+  const toggleTrajectoryComposer = useCallback(() => {
+    setTrajectoryComposerCollapsed((current) => ({
+      ...current,
+      [sessionId]: !(current[sessionId] ?? false),
+    }));
   }, [sessionId]);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
@@ -3831,6 +3844,10 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onRefreshGoal={refreshGoal}
                         onClearGoal={handleClearGoal}
                         onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
+                        composerDocked={composerDocked}
+                        composerCollapsed={composerCollapsed}
+                        onToggleComposerCollapsed={toggleTrajectoryComposer}
+                        onComposerHeightChange={setTrajectoryComposerHeight}
                       />
                     )}
                     chatLabel={t('nav.chat')}
@@ -3849,6 +3866,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           active={chatSurfaceView === 'trajectory'}
                           mode={mode}
                           sessionId={sessionId}
+                          bottomInset={trajectoryComposerClearance(
+                            composerDocked,
+                            composerCollapsed,
+                            trajectoryComposerHeight,
+                          )}
                         />
                       </Suspense>
                     )}

@@ -89,6 +89,29 @@
   pointer-events: none;
 }
 
+/*
+ * The composer stays live while the trajectory is shown, so a reader can answer
+ * an approval or send a message without switching back to the chat. It floats
+ * above the trajectory view; TrajectoryTable keeps its last rows clear of it
+ * through the measured height the panel reports as `bottomInset`.
+ */
+.single-agent-surface--trajectory
+  .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)
+  > .chat-compose {
+  visibility: visible;
+  pointer-events: auto;
+  z-index: 11;
+  padding-bottom: 10px;
+}
+
+/* The docked composer sits at the bottom; the chat disclaimer belongs to the
+   reading surface behind it and gives its space back. */
+.single-agent-surface--trajectory
+  .chat-panel-shell--composer-docked
+  > .chat-ai-disclaimer {
+  display: none;
+}
+
 .single-agent-surface--trajectory .chat-surface-toolbar {
   position: absolute;
   z-index: 19;

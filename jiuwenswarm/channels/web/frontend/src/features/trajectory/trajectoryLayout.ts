@@ -26,6 +26,29 @@ export function shouldInsetTrajectoryForFloatingTasks(
     && !taskPanelExpanded;
 }
 
+/**
+ * Bottom clearance the trajectory content reserves for the docked chat
+ * composer.
+ *
+ * The composer floats over the trajectory rather than shrinking it, so the
+ * ledger pads its last rows by exactly what the composer covers. A composer
+ * that is undocked or collapsed to watch-only covers nothing.
+ *
+ * @param docked - Whether the composer is kept available on the trajectory view.
+ * @param collapsed - Whether the docked composer is collapsed to watch-only.
+ * @param measuredHeight - Composer height in pixels, as laid out.
+ * @returns Non-negative whole-pixel clearance.
+ */
+export function trajectoryComposerClearance(
+  docked: boolean,
+  collapsed: boolean,
+  measuredHeight: number,
+): number {
+  if (!docked || collapsed) return 0;
+  if (!Number.isFinite(measuredHeight)) return 0;
+  return Math.max(0, Math.ceil(measuredHeight));
+}
+
 export function rawInspectorHeightBounds(containerHeight: number): RawInspectorHeightBounds {
   return {
     min: RAW_INSPECTOR_MIN_HEIGHT,

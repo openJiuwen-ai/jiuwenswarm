@@ -574,6 +574,10 @@
       "memberLanes": "Member trajectory lanes",
       "members": "Members"
     },
+    "composer": {
+      "collapse": "Collapse composer",
+      "expand": "Expand composer"
+    },
     "layout": {
       "hideSessions": "Collapse sessions",
       "showSessions": "Show sessions",

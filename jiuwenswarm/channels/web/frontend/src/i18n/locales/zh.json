@@ -565,6 +565,10 @@
       "memberLanes": "成员轨迹泳道",
       "members": "成员"
     },
+    "composer": {
+      "collapse": "收起输入框",
+      "expand": "展开输入框"
+    },
     "layout": {
       "hideSessions": "收起会话栏",
       "showSessions": "展开会话栏",

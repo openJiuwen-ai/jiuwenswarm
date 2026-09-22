@@ -129,6 +129,11 @@ export interface TrajectoryPanelProps {
   active: boolean;
   mode?: string;
   sessionId: string;
+  /**
+   * Bottom clearance in pixels for content the host floats over this panel,
+   * such as the chat composer kept available while the trajectory is shown.
+   */
+  bottomInset?: number;
 }
 
 interface InitialLoadProgress {
@@ -200,6 +205,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   active,
   mode = 'agent',
   sessionId,
+  bottomInset = 0,
 }: TrajectoryPanelProps) {
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
@@ -1418,6 +1424,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 toolbarAddon={toolbarAddon}
                 viewState={viewState}
                 onOverviewActivate={onOverviewActivate}
+                bottomInset={expanded ? bottomInset : 0}
                 className={expanded ? css.explorer : undefined}
               />
               {expanded && rawRecords.length > 0 ? rawInspector : null}
@@ -1500,6 +1507,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                   error={selected && replayArchive === null ? error : null}
                   messages={copy.toolbar}
                   colorMode="light"
+                  bottomInset={selected ? bottomInset : 0}
                   className={css.explorer}
                 />
               </div>
