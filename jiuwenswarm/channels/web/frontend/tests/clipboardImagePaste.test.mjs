@@ -168,6 +168,8 @@ test('webp octet-stream from the desktop exe is corrected to image/webp', () => 
   assert.equal(resolveImageMimeType('sample.WEBP', ''), 'image/webp');
   assert.equal(resolveImageMimeType('sample.webp'), 'image/webp');
   assert.equal(resolveImageMimeType('photo.png', 'image/png'), 'image/png');
+  assert.equal(resolveImageMimeType('sample.webp', 'image/webp'), 'image/webp');
+  assert.equal(resolveImageMimeType('pic.png', 'image/x-png'), 'image/x-png');
 });
 
 test('desktop attachment drafts can retry without a browser File', () => {
