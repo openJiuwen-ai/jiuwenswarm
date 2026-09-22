@@ -3,6 +3,7 @@ import type { Message } from '../../../types/message';
 import { useGoalStore } from '../../../stores/goalStore';
 import { usePlanStore } from '../../../stores/planStore';
 import { isSessionBusyForPlanToggle } from '../../../features/planMode/planModeGate';
+import { evaluateGoalArm } from '../../../features/goalMode/goalModeGate';
 import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversationLifecycle';
 import { resolvePlanGoalInterlock } from './semantics';
 
@@ -304,6 +305,11 @@ function goalStatusOutput(goal: GoalSlashSnapshot): string {
  * /goal —— 复用 Web 已有的 Goal 状态机和 GoalBar。
  * 语法与 TUI 一致：无参查询，pause/resume/clear 控制，set <objective>
  * 或任意其他文本设置目标。已有未完成目标时先请用户确认覆盖。
+ *
+ * `clear` 走 evaluateGoalArm 同一套忙态保护（bugfix 2026092201 bug001 第9轮）：跟"+"菜单
+ * 目标开关的关闭方向、目标 tag 的 × 关闭按钮口径一致，目标 active 时不能被命令行随手清掉。
+ * `pause`/`resume`/`get` 不受这层限制——暂停本来就该在 active 时可用，对齐 GoalBar 的
+ * 暂停按钮（那个按钮从第7轮起就只受"双击防护"限制，不受 active 状态限制）。
  */
 const goalCommand: SlashCommand = {
   name: 'goal',
@@ -353,6 +359,22 @@ const goalCommand: SlashCommand = {
         }
         await ctx.runGoalAction(ctx.sessionId, 'set', intent.objective);
         return;
+      }
+
+      // bugfix 2026092201 bug001 第9轮：`/goal clear` 在这次改造之前完全没有忙态保护，
+      // 直接绕过"+"菜单开关、目标 tag 关闭按钮共用的 evaluateGoalArm，能在目标 active 时
+      // 把它当场清掉——跟那两个入口应该"同样不能被随手关闭"的要求不一致，这里补上同一套
+      // 判断。`pause`/`resume`/`get` 不受影响：暂停本来就该在 active 时可用（对齐 GoalBar
+      // 的暂停按钮），查询任何时候都不该被拦。
+      if (intent.action === 'clear') {
+        const decision = evaluateGoalArm(ctx.sessionId, false);
+        if (!decision.ok) {
+          ctx.addMessage(
+            ctx.sessionId,
+            commandResultMessage(ctx.inputLine, '目标正在执行中，暂时无法清除，请先暂停或等待执行结束。'),
+          );
+          return;
+        }
       }
 
       const goal = await ctx.runGoalAction(ctx.sessionId, intent.action);
