@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 import webbrowser
+import weakref
 from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -78,6 +79,51 @@ STARTUP_DOCTOR_TIMEOUT_SECONDS = DOCTOR_TIMEOUT_SECONDS + 15.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
 MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
+_MACOS_RUNTIME_REF: weakref.ReferenceType[Any] | None = None
+DESKTOP_WINDOW_PREFERENCES_FILENAME = "desktop-window.json"
+CLOSE_ACTION_ASK = "ask"
+CLOSE_ACTION_HIDE = "hide"
+CLOSE_ACTION_QUIT = "quit"
+VALID_CLOSE_ACTIONS = frozenset(
+    {CLOSE_ACTION_ASK, CLOSE_ACTION_HIDE, CLOSE_ACTION_QUIT}
+)
+
+
+def _desktop_window_preferences_path() -> Path:
+    return get_user_workspace_dir() / "config" / DESKTOP_WINDOW_PREFERENCES_FILENAME
+
+
+def _load_close_action() -> str | None:
+    path = _desktop_window_preferences_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        logger.warning("[desktop] failed to load window preferences: %s", exc)
+        return None
+    action = payload.get("close_action") if isinstance(payload, dict) else None
+    return action if action in VALID_CLOSE_ACTIONS else None
+
+
+def _save_close_action(action: str) -> bool:
+    if action not in VALID_CLOSE_ACTIONS:
+        return False
+    path = _desktop_window_preferences_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"close_action": action}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("[desktop] failed to save window preferences: %s", exc)
+        return False
+    return True
+
+
+def _is_windows_desktop() -> bool:
+    return os.name == "nt"
 
 
 @dataclass(frozen=True)
@@ -677,6 +723,19 @@ class _WindowApi:
     def close_window(self) -> bool:
         return self._runtime.close_window()
 
+    # pywebview drops the first argument of exposed methods from the JS signature.
+    @classmethod
+    def get_close_action(cls) -> str | None:
+        if not _is_windows_desktop():
+            return None
+        return _load_close_action() or CLOSE_ACTION_ASK
+
+    @classmethod
+    def set_close_action(cls, action: str) -> bool:
+        if not _is_windows_desktop():
+            return False
+        return _save_close_action(action)
+
     def get_startup_status(self) -> dict[str, str]:
         """Return a snapshot consumed by the local Loading page."""
         return self._runtime.get_startup_status()
@@ -1035,6 +1094,9 @@ class DesktopRuntime:
         self._blob_save_lock = threading.Lock()
         self._blob_save_transfers: dict[str, _BlobSaveTransfer] = {}
         self._is_shutting_down = False
+        self._allow_window_close = False
+        self._tray_icon = None
+        self._tray_menu = None
         self._desktop_dnd_bound = False
         self._startup_cancelled = threading.Event()
         # 先行导航(web 静态页就绪即跳转前端)后, 若后端随后启动失败, 需把
@@ -1472,6 +1534,15 @@ class DesktopRuntime:
         self.window.minimize()
         return True
 
+    def show_and_maximize_window(self) -> bool:
+        if self.window is None:
+            return False
+        if hasattr(self.window, "show"):
+            self.window.show()
+        if hasattr(self.window, "maximize"):
+            self.window.maximize()
+        return True
+
     def toggle_fullscreen_window(self) -> bool:
         if self.window is None:
             return False
@@ -1487,15 +1558,260 @@ class DesktopRuntime:
         if self.window is None or not hasattr(self.window, "destroy"):
             return False
 
+        self._allow_window_close = True
+
         def _delayed_destroy() -> None:
             time.sleep(0.15)
             try:
                 self.window.destroy()
             except Exception as exc:  # noqa: BLE001
+                if sys.platform == "darwin":
+                    self._allow_window_close = False
                 logger.warning("[desktop] failed to close desktop window: %s", exc)
 
         threading.Thread(target=_delayed_destroy, daemon=True).start()
         return True
+
+    def _configure_macos_window_lifecycle(self) -> None:
+        """Keep the macOS app alive when its main window is closed."""
+        if sys.platform != "darwin" or self.window is None:
+            return
+
+        native_window = getattr(self.window, "native", None)
+        if native_window is None:
+            logger.warning("[desktop] macOS native window is unavailable")
+            return
+
+        try:
+            import AppKit  # type: ignore[import-not-found]
+            import objc  # type: ignore[import-not-found]
+            from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+            from webview.platforms.cocoa import BrowserView
+
+            def _set_window_lifecycle() -> None:
+                global _MACOS_RUNTIME_REF  # pylint: disable=global-statement
+
+                close_button = native_window.standardWindowButton_(
+                    AppKit.NSWindowCloseButton
+                )
+                if close_button is None:
+                    logger.warning("[desktop] macOS close button is unavailable")
+                    return
+                close_button.setTarget_(native_window)
+                close_button.setAction_("orderOut:")
+
+                _MACOS_RUNTIME_REF = weakref.ref(self)
+                window_delegate = BrowserView.WindowDelegate
+                bool_signature = getattr(objc, "_C_NSBOOL")
+                close_interceptor_attr = (
+                    "_jiuwenswarm_close_interceptor_installed"
+                )
+                if not getattr(window_delegate, close_interceptor_attr, False):
+                    original_should_close = window_delegate.windowShouldClose_
+
+                    def window_should_close(
+                        _delegate, window
+                    ) -> bool:
+                        runtime_ref = _MACOS_RUNTIME_REF
+                        runtime = runtime_ref() if runtime_ref is not None else None
+                        runtime_window = (
+                            getattr(runtime.window, "native", None)
+                            if runtime is not None
+                            else None
+                        )
+                        if runtime is not None and window is runtime_window:
+                            if not runtime._allow_window_close:  # pylint: disable=protected-access
+                                window.orderOut_(None)
+                                return False
+                        return original_should_close(_delegate, window)
+
+                    close_handler = objc.selector(
+                        window_should_close,
+                        selector=b"windowShouldClose:",
+                        signature=bool_signature + b"@:@",
+                    )
+                    setattr(window_delegate, "windowShouldClose_", close_handler)
+                    setattr(window_delegate, close_interceptor_attr, True)
+
+                reopen_selector = (
+                    b"applicationShouldHandleReopen:hasVisibleWindows:"
+                )
+                if BrowserView.AppDelegate.instancesRespondToSelector_(
+                    reopen_selector
+                ):
+                    return
+
+                def application_should_handle_reopen(
+                    _delegate, _application, _has_visible_windows
+                ) -> bool:
+                    runtime_ref = _MACOS_RUNTIME_REF
+                    runtime = runtime_ref() if runtime_ref is not None else None
+                    if runtime is not None and runtime.window is not None:
+                        runtime.window.show()
+                    return True
+
+                signature = bool_signature + b"@:@" + bool_signature
+                reopen_handler = objc.selector(
+                    application_should_handle_reopen,
+                    selector=reopen_selector,
+                    signature=signature,
+                )
+                setattr(
+                    BrowserView.AppDelegate,
+                    "applicationShouldHandleReopen_hasVisibleWindows_",
+                    reopen_handler,
+                )
+
+            # pywebview dispatches the shown event on a worker thread. Cocoa
+            # controls must be changed on the application thread.
+            AppHelper.callAfter(_set_window_lifecycle)
+        except (AttributeError, ImportError, RuntimeError) as exc:
+            logger.warning("[desktop] failed to configure macOS window lifecycle: %s", exc)
+
+    def _prompt_windows_close_action(self) -> tuple[str | None, bool]:
+        """Ask whether the native close button should hide or quit."""
+        if self.window is None or getattr(self.window, "native", None) is None:
+            return None, False
+        try:
+            import clr  # type: ignore[import-not-found]
+
+            clr.AddReference("System.Drawing")
+            clr.AddReference("System.Windows.Forms")
+            import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
+            from System.Drawing import Point, Size  # type: ignore[import-not-found]
+
+            dialog = WinForms.Form()
+            dialog.Text = f"关闭 {DISPLAY_NAME}"
+            dialog.ClientSize = Size(430, 238)
+            dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
+            dialog.StartPosition = WinForms.FormStartPosition.CenterParent
+            dialog.MaximizeBox = False
+            dialog.MinimizeBox = False
+            dialog.ShowInTaskbar = False
+            native_icon = getattr(self.window.native, "Icon", None)
+            if native_icon is not None:
+                dialog.Icon = native_icon
+
+            message = WinForms.Label()
+            message.Text = "关闭窗口后，您希望隐藏到系统托盘，还是退出应用？"
+            message.AutoSize = False
+            message.Location = Point(24, 24)
+            message.Size = Size(382, 24)
+
+            hide_option = WinForms.RadioButton()
+            hide_option.Text = "最小化到托盘"
+            hide_option.Checked = True
+            hide_option.AutoSize = True
+            hide_option.Location = Point(28, 62)
+
+            quit_option = WinForms.RadioButton()
+            quit_option.Text = "退出应用"
+            quit_option.AutoSize = True
+            quit_option.Location = Point(28, 94)
+
+            remember = WinForms.CheckBox()
+            remember.Text = "记住我的选择"
+            remember.Checked = False
+            remember.AutoSize = True
+            remember.Location = Point(24, 138)
+
+            confirm_button = WinForms.Button()
+            confirm_button.Text = "确认"
+            confirm_button.DialogResult = WinForms.DialogResult.OK
+            confirm_button.Location = Point(238, 186)
+            confirm_button.Size = Size(80, 32)
+
+            cancel_button = WinForms.Button()
+            cancel_button.Text = "取消"
+            cancel_button.DialogResult = WinForms.DialogResult.Cancel
+            cancel_button.Location = Point(326, 186)
+            cancel_button.Size = Size(80, 32)
+
+            dialog.Controls.Add(message)
+            dialog.Controls.Add(hide_option)
+            dialog.Controls.Add(quit_option)
+            dialog.Controls.Add(remember)
+            dialog.Controls.Add(confirm_button)
+            dialog.Controls.Add(cancel_button)
+            dialog.AcceptButton = confirm_button
+            dialog.CancelButton = cancel_button
+            try:
+                result = dialog.ShowDialog(self.window.native)
+                if result == WinForms.DialogResult.OK:
+                    action = CLOSE_ACTION_HIDE if hide_option.Checked else CLOSE_ACTION_QUIT
+                    return action, bool(remember.Checked)
+                return None, False
+            finally:
+                dialog.Dispose()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[desktop] failed to show close behavior dialog: %s", exc)
+            return None, False
+
+    def _ensure_windows_tray(self) -> bool:
+        if self._tray_icon is not None:
+            return True
+        if self.window is None or getattr(self.window, "native", None) is None:
+            return False
+        try:
+            import clr  # type: ignore[import-not-found]
+
+            clr.AddReference("System.Drawing")
+            clr.AddReference("System.Windows.Forms")
+            import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
+            from System.Drawing import SystemIcons  # type: ignore[import-not-found]
+
+            tray = WinForms.NotifyIcon()
+            tray.Icon = getattr(self.window.native, "Icon", None) or SystemIcons.Application
+            tray.Text = DISPLAY_NAME[:63]
+            menu = WinForms.ContextMenuStrip()
+            show_item = WinForms.ToolStripMenuItem("显示并最大化")
+            quit_item = WinForms.ToolStripMenuItem("退出")
+            show_item.Click += lambda _sender, _args: self.show_and_maximize_window()
+            quit_item.Click += lambda _sender, _args: self.close_window()
+            menu.Items.Add(show_item)
+            menu.Items.Add(WinForms.ToolStripSeparator())
+            menu.Items.Add(quit_item)
+            tray.ContextMenuStrip = menu
+            tray.DoubleClick += lambda _sender, _args: self.show_and_maximize_window()
+            tray.Visible = True
+            self._tray_menu = menu
+            self._tray_icon = tray
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[desktop] failed to create Windows tray icon: %s", exc)
+            return False
+
+    def _dispose_windows_tray(self) -> None:
+        tray = self._tray_icon
+        self._tray_icon = None
+        self._tray_menu = None
+        if tray is None:
+            return
+        try:
+            tray.Visible = False
+            tray.Dispose()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[desktop] failed to dispose Windows tray icon: %s", exc)
+
+    def _on_closing(self) -> bool | None:
+        if not _is_windows_desktop() or self._allow_window_close:
+            return None
+        action = _load_close_action()
+        remember = False
+        if action in (None, CLOSE_ACTION_ASK):
+            action, remember = self._prompt_windows_close_action()
+        if action is None:
+            return False
+        if remember:
+            _save_close_action(action)
+        if action == CLOSE_ACTION_QUIT:
+            self._allow_window_close = True
+            return None
+        if self._ensure_windows_tray() and hasattr(self.window, "hide"):
+            self.window.hide()
+        elif hasattr(self.window, "minimize"):
+            self.window.minimize()
+        return False
 
     def download_file(self, url: str, filename: str) -> DesktopSaveResult:
         """选择保存位置并在实际写入完成后返回结果。"""
@@ -2017,6 +2333,22 @@ class DesktopRuntime:
       return false;
     }
   }
+  // Archive managers expose dragged folders as virtual FileSystemEntry
+  // directories. Letting pywebview serialize that DataTransfer can recurse
+  // through a large virtual tree and freeze/crash WebView2, so reject it before
+  // the document-level Python bridge sees the event.
+  function hasDirectory(dt) {
+    if (!dt || !dt.items) return false;
+    try {
+      return Array.from(dt.items).some(function (item) {
+        if (!item || item.kind !== 'file' || typeof item.webkitGetAsEntry !== 'function') return false;
+        var entry = item.webkitGetAsEntry();
+        return Boolean(entry && entry.isDirectory);
+      });
+    } catch (err) {
+      return false;
+    }
+  }
   // Distinguish an app-internal HTML5 drag (queue reorder, etc.) from an OS file
   // drag. 'Files' alone is NOT reliable: dragging an <img> element makes Chromium
   // inject a spurious 'Files'/'text/uri-list' entry. Chromium tags every drag
@@ -2041,6 +2373,11 @@ class DesktopRuntime:
     function accept(e) {
       if (!hasFiles(e.dataTransfer)) return;
       e.preventDefault();
+      if (hasDirectory(e.dataTransfer)) {
+        try { e.dataTransfer.dropEffect = 'none'; } catch (err) {}
+        e.stopImmediatePropagation();
+        return;
+      }
       try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
       window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:true}}));
     }
@@ -2055,6 +2392,10 @@ class DesktopRuntime:
     window.addEventListener('drop', function (e) {
       if (!hasFiles(e.dataTransfer)) return;
       e.preventDefault();
+      if (hasDirectory(e.dataTransfer)) {
+        e.stopImmediatePropagation();
+        window.dispatchEvent(new CustomEvent('jiuwen-desktop-directory-drop-rejected'));
+      }
       endDrag();
     }, true);
   }
@@ -2156,6 +2497,16 @@ class DesktopRuntime:
                 paths.append(path.strip())
         if not paths:
             logger.warning("[desktop] drop files missing pywebviewFullPath: %s", raw_files)
+            return
+        # Never pass directories (including archive-manager temporary/virtual
+        # extraction directories) into the local-file upload pipeline. The page
+        # normally rejects FileSystemEntry directories before this callback; this
+        # is the native-path fallback for shells that expose only full paths.
+        if any(Path(path).is_dir() for path in paths):
+            logger.info("[desktop] rejected directory drop")
+            self._run_js(
+                "window.dispatchEvent(new CustomEvent('jiuwen-desktop-directory-drop-rejected'));"
+            )
             return
         described = self.describe_local_files(paths)
         if described:
@@ -2732,7 +3083,12 @@ nohup {q_executable} >/dev/null 2>&1 &
         )
 
         self.window.events.loaded += self._on_loaded_first
+        self.window.events.closing += self._on_closing
         self.window.events.closed += self._on_closed
+        if sys.platform == "darwin":
+            shown_event = getattr(self.window.events, "shown", None)
+            if shown_event is not None:
+                shown_event += self._configure_macos_window_lifecycle
 
         def _start_services_and_report() -> None:
             def _navigate_on_web_ready() -> None:
@@ -3044,6 +3400,7 @@ if(bridgeNeverResponded||bridgeStoppedResponding){
         self._schedule_desktop_file_dnd_bind()
 
     def _on_closed(self) -> None:
+        self._dispose_windows_tray()
         self.shutdown()
 
 

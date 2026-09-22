@@ -476,7 +476,7 @@ gateway:
     #（builtin 默认 3+3*6=21；3rdagent 默认 2+3*8=26）。load_router_config
     # 取二者较大值，若本值更小则告警并抬到该下限。liveness 在 running 之后，
     # 不计入 GET 等待。环境变量 AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS 可覆盖。
-    wait_running_timeout_seconds: 60
+    wait_running_timeout_seconds: 90
     # GET 轮询间隔（秒）。环境变量 AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS 可覆盖。
     wait_running_interval_seconds: 1
     # YuanRong runtime_spec.probes。builtin 用这些时序打 18092；3rdagent 在

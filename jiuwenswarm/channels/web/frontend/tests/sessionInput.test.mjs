@@ -265,8 +265,9 @@ test('two queued messages: only the selected item steers, locks double click, an
     await c.tick(16);
     assert.equal(c.runtime().messages.find((message) => message.id === streamId).content, 'original answer continued');
     const visible = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')].map((node) => node.textContent.trim());
-    assert.deepEqual(visible, ['original question', 'extra constraint', 'original answer continued']);
-    assert.equal(document.querySelectorAll('[data-testid="chat-panel-turn-elapsed-value"]').length, 1);
+    assert.deepEqual(visible, ['original question', 'original answer continued', 'extra constraint']);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-turn-elapsed-value"]').length, 2,
+      'the supplemental bubble separates the two visible work sections of the running task');
     c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
     await c.flush();
     assert.equal(c.requests().length, 2);
@@ -361,7 +362,7 @@ test('the original final completes one task without duplicating text around the 
     c.receive('chat.final', { request_id: 'original', content: 'original answer in space' });
     await c.flush();
     const visible = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')].map(node => node.textContent.trim());
-    assert.deepEqual(visible, ['original question', 'space theme', 'original answer in space']);
+    assert.deepEqual(visible, ['original question', 'original answer in space', 'space theme']);
     assert.equal(document.querySelectorAll('[data-testid="chat-panel-turn-elapsed-value"]').length, 1);
     assert.equal(c.runtime().isProcessing, false);
     assert.equal(c.runtime().currentStreamId, null);
@@ -686,84 +687,55 @@ test('accepted steering preserves the thinking display while recording a lazy re
   }
 });
 
-for (const scenario of [
-  {
-    name: 'before reasoning',
-    before: null,
-    closeBefore: false,
-    after: 'reasoning after early supplement',
-    expectedSegments: ['reasoning after early supplement'],
-    boundaryPending: false,
-    withoutStreamId: true,
-  },
-  {
-    name: 'during reasoning',
-    before: 'reasoning before supplement',
-    closeBefore: false,
-    after: 'reasoning after supplement',
-    expectedSegments: ['reasoning before supplement', 'reasoning after supplement'],
-    boundaryPending: false,
-  },
-  {
-    name: 'after reasoning',
-    before: 'completed reasoning before supplement',
-    closeBefore: true,
-    after: null,
-    expectedSegments: ['completed reasoning before supplement'],
-    boundaryPending: true,
-  },
-]) {
-  test(`supplement ${scenario.name} keeps user-work-answer layout`, async (context) => {
+for (const ackFirst of [true, false]) {
+  test(`ordered input boundary freezes old output with ${ackFirst ? 'early' : 'late'} ACK`, async (context) => {
     const c = await mount(context);
     try {
       addOriginalUser(c);
-      if (scenario.before) {
-        c.receive('chat.reasoning', { request_id: 'original', content: scenario.before });
-      }
-      if (scenario.closeBefore) {
-        act(() => c.store.closeReasoning(c.sid));
-      }
-      if (scenario.withoutStreamId) {
-        act(() => c.store.stopStreaming(c.sid));
-      }
-
-      const taskId = c.queue(`supplement ${scenario.name}`);
-      await c.click(taskId, 'send');
-      c.receive('runtime.accepted', { request_id: c.requests()[0].id });
+      let seq = 0;
+      const emit = (event, phase, payload = {}) => c.receive(event, {
+        request_id: 'original', output_phase_id: phase,
+        output_order: { request_id: 'original', sequence: ++seq },
+        timestamp: Date.now(), ...payload,
+      });
+      emit('chat.output_phase', 'phase-1', { applied_input_ids: [] });
+      emit('chat.reasoning', 'phase-1', { content: 'first thought' });
+      const task = c.queue('new instruction');
+      await c.click(task, 'send');
+      const requestId = c.requests()[0].id;
+      if (ackFirst) c.receive('runtime.accepted', { request_id: requestId, input_boundary: 'stream' });
+      // This delta is still batched when the user marker arrives. It must be
+      // flushed into the original bubble BEFORE adding the new user message.
+      emit('chat.delta', 'phase-1', { content: ' visible prefix' });
+      emit('chat.input_received', 'phase-1', { input_request_id: requestId, content: 'new instruction' });
+      if (!ackFirst) c.receive('runtime.accepted', { request_id: requestId, input_boundary: 'stream' });
+      emit('chat.delta', 'phase-1', { content: ' HIDDEN OLD TAIL', output_suppressed: true });
+      emit('chat.reasoning', 'phase-1', { content: 'HIDDEN OLD THOUGHT', output_suppressed: true });
+      emit('chat.final', 'phase-1', { content: 'HIDDEN OLD FINAL', output_suppressed: true });
+      assert.equal(c.runtime().isProcessing, true);
+      assert.equal(c.runtime().currentStreamId, null);
+      assert.deepEqual(c.runtime().messages.filter(m => m.role === 'assistant').map(m => m.content), ['original answer visible prefix']);
+      const frozenAnswer = c.runtime().messages.find(m => m.role === 'assistant');
+      const supplementalUser = c.runtime().messages.find(m => m.supplementalInput);
+      assert.equal(frozenAnswer.completedAt, supplementalUser.timestamp);
+      emit('chat.output_phase', 'phase-2', { applied_input_ids: [requestId] });
+      emit('chat.reasoning', 'phase-2', { content: 'second thought' });
+      emit('chat.delta', 'phase-2', { content: 'new answer' });
+      // Late old final cannot replace/finish the new phase, even without a
+      // suppression bit: the phase identity itself rejects it.
+      emit('chat.final', 'phase-1', { content: 'late old final' });
+      assert.equal(c.runtime().isProcessing, true);
+      emit('chat.final', 'phase-2', { content: 'new answer' });
       await c.flush();
-
-      if (scenario.after) {
-        c.receive('chat.reasoning', { request_id: 'original', content: scenario.after });
-        await c.flush();
-      }
-
-      const runtime = c.runtime();
-      assert.deepEqual(
-        runtime.reasoningSegments.map((segment) => segment.text),
-        scenario.expectedSegments,
-      );
-      assert.equal(runtime.reasoningInputBoundaryPending, scenario.boundaryPending);
-
-      const bubbles = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')];
-      const originalUser = bubbles.find((node) => node.textContent.trim() === 'original question');
-      const supplement = bubbles.find(
-        (node) => node.textContent.trim() === `supplement ${scenario.name}`,
-      );
-      const assistant = bubbles.find((node) => node.textContent.trim() === 'original answer');
-      const reasoningPanel = document.querySelector('[data-testid="chat-panel-reasoning-panel"]');
-      assert.ok(originalUser && supplement && reasoningPanel && assistant);
-      assertNodeBefore(originalUser, supplement, '原 USER 消息应位于补充消息之前');
-      assertNodeBefore(supplement, reasoningPanel, '补充消息应位于 Jiuwen 思考区域之前');
-      assertNodeBefore(reasoningPanel, assistant, '思考区域应位于完整 assistant 回答之前');
-      assert.equal(
-        document.querySelectorAll('[data-testid="chat-panel-reasoning-panel"]').length,
-        1,
-        '连续思考段在视觉上应保持一个思考区域',
-      );
-      assert.equal(
-        document.querySelector('[data-testid="chat-panel-reasoning-panel-body"]').textContent,
-        scenario.expectedSegments.join('\n\n'),
-      );
+      assert.deepEqual(c.runtime().messages.filter(m => m.role === 'assistant').map(m => m.content), ['original answer visible prefix', 'new answer']);
+      const visible = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')].map(n => n.textContent.trim());
+      assert.deepEqual(visible, ['original question', 'original answer visible prefix', 'new instruction', 'new answer']);
+      assert.equal(c.runtime().messages.filter(m => m.supplementalInput).length, 1);
+      assert.equal(c.runtime().messages.find(m => m.supplementalInput).supplementalInput.requestId, requestId);
+      assert.equal(c.runtime().outputPhaseId, 'phase-2');
+      assert.equal(c.runtime().reasoningSegments.length, 2);
+      assert.ok(c.runtime().reasoningSegments.every(s => s.closed));
+      assert.equal(c.runtime().isProcessing, false);
     } finally {
       await c.dispose();
     }
@@ -787,6 +759,75 @@ test('a late supplement rejection preserves the message without starting a new t
     assert.equal(c.runtime().isProcessing, false);
     assert.equal(c.runtime().activeExecutionId, null);
     assert.equal(c.requests().length, 1, 'failed supplement is not automatically sent as a new task');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('automatic Goal phases keep the same visible answer and reasoning segment', async (context) => {
+  const c = await mount(context);
+  try {
+    addOriginalUser(c);
+    c.receive('goal.updated', { goal: {
+      goal_id: 'goal-phases', session_id: c.sid, objective: 'keep working',
+      status: 'active', revision: 1, attempt_count: 1,
+    } });
+    c.receive('chat.output_phase', { output_phase_id: 'attempt-1', applied_input_ids: [] });
+    c.receive('chat.reasoning', { output_phase_id: 'attempt-1', content: 'first thought. ' });
+    const firstStreamId = c.runtime().currentStreamId;
+    c.receive('chat.output_phase', { output_phase_id: 'attempt-2', applied_input_ids: [] });
+    c.receive('chat.reasoning', { output_phase_id: 'attempt-2', content: 'second thought.' });
+    c.receive('chat.delta', { request_id: 'original', output_phase_id: 'attempt-2', content: ' second attempt' });
+    await c.tick(16);
+    assert.equal(c.runtime().currentStreamId, firstStreamId);
+    assert.deepEqual(c.runtime().messages.filter(m => m.role === 'assistant').map(m => m.content), [
+      'original answer second attempt',
+    ]);
+    assert.equal(c.runtime().reasoningSegments.length, 1);
+    assert.equal(c.runtime().reasoningSegments[0].text, 'first thought. second thought.');
+    assert.equal(c.runtime().isProcessing, true);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('Goal pause then clear ends processing without revealing the old steering tail', async (context) => {
+  const c = await mount(context);
+  try {
+    addOriginalUser(c);
+    const goal = (status) => c.receive('goal.updated', { goal: status ? {
+      goal_id: 'goal-clear', session_id: c.sid, objective: 'keep working',
+      status, revision: 1, attempt_count: 1,
+    } : null });
+    let sequence = 0;
+    const emit = (event, payload = {}) => c.receive(event, {
+      request_id: 'original', output_phase_id: 'attempt-1',
+      output_order: { request_id: 'original', sequence: ++sequence },
+      timestamp: Date.now(), ...payload,
+    });
+    goal('active');
+    emit('chat.output_phase', { applied_input_ids: [] });
+    const task = c.queue('new instruction');
+    await c.click(task, 'send');
+    const requestId = c.requests()[0].id;
+    emit('chat.input_received', { input_request_id: requestId, content: 'new instruction' });
+    c.receive('runtime.accepted', { request_id: requestId, input_boundary: 'stream' });
+    emit('chat.delta', { content: 'HIDDEN OLD TAIL', output_suppressed: true });
+    emit('chat.reasoning', { content: 'HIDDEN OLD THOUGHT', output_suppressed: true });
+    emit('chat.final', { content: 'HIDDEN OLD FINAL', output_suppressed: true });
+    assert.equal(c.runtime().isProcessing, true);
+    goal('paused');
+    goal(null);
+    // The adapter's stream-end control is unsuppressed even though this input
+    // was never consumed. Goal streams have no chat.processing_status=false.
+    emit('chat.final', { content: '' });
+    await c.flush();
+    assert.equal(c.runtime().isProcessing, false);
+    assert.equal(c.runtime().isThinking, false);
+    assert.equal(c.runtime().currentStreamId, null);
+    assert.equal(useGoalStore.getState().getRuntime(c.sid).goal, null);
+    const visible = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')].map(n => n.textContent.trim());
+    assert.deepEqual(visible, ['original question', 'original answer', 'new instruction']);
   } finally {
     await c.dispose();
   }

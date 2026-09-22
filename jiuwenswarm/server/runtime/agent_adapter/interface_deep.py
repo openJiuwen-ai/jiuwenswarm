@@ -6602,6 +6602,21 @@ class JiuWenSwarmDeepAdapter:
         return model
 
     @staticmethod
+    def _with_execution_deadline(inputs: dict[str, Any], request: AgentRequest) -> dict[str, Any]:
+        deadline = (request.metadata or {}).get("execution_deadline_at")
+        if not isinstance(deadline, (int, float)) or deadline <= 0:
+            return inputs
+        updated = dict(inputs)
+        run = dict(updated.get("run") or {})
+        context = dict(run.get("context") or {})
+        extra = dict(context.get("extra") or {})
+        extra["execution_deadline_at"] = deadline
+        context["extra"] = extra
+        run["context"] = context
+        updated["run"] = run
+        return updated
+
+    @staticmethod
     def _with_symphony_request_model(
         inputs: dict[str, Any],
         model: Model,
@@ -12651,6 +12666,7 @@ class JiuWenSwarmDeepAdapter:
         session_id: str,
         total_tokens: int,
         had_assistant_output: bool,
+        had_tool_output: bool,
         run_failure: tuple[str, str] | None,
         stream_consumer_cancelled: bool,
         emitted_ask_user_events: set[tuple[Any, ...]],
@@ -12662,9 +12678,10 @@ class JiuWenSwarmDeepAdapter:
         issue #1447). Detect that here — total 0 tokens, nothing streamed, no
         terminal failure already surfaced, and none of the legitimate 0-token
         exits (consumer cancel, HITL ask_user pending, an active goal round,
-        rail abort from user cancel/supplement).
+        rail abort from user cancel/supplement, forwarded tool events such as
+        a Web plan-execute resume that only finishes ``exit_plan_mode``).
         """
-        if total_tokens > 0 or had_assistant_output:
+        if total_tokens > 0 or had_assistant_output or had_tool_output:
             return False
         if run_failure is not None or stream_consumer_cancelled:
             return False
@@ -15075,6 +15092,7 @@ class JiuWenSwarmDeepAdapter:
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
+        inputs = self._with_execution_deadline(inputs, request)
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
@@ -15362,7 +15380,6 @@ class JiuWenSwarmDeepAdapter:
         Literal '/...' supplements remain text rather than slash commands.
         """
         from jiuwenswarm.server.runtime.agent_adapter.session_input import (
-            SessionInputDeliveryUnknown,
             enqueue_bound_session_input,
             sdk_input_mode,
         )
@@ -15402,22 +15419,11 @@ class JiuWenSwarmDeepAdapter:
 
             async def send(sdk_request: SendInputRequest) -> None:
                 require_open_input()
-                if request.params.get("expected_execution_id"):
-                    enqueue_bound_session_input(instance, bound_round, request, sdk_request)
+                if mode is InputDispatchMode.STEER:
+                    entry = enqueue_bound_session_input(instance, bound_round, request, sdk_request)
+                    await self._session_input_guard.publish_input_received(entry)
                     return
-                target_round = instance.active_round
                 await instance.send_input(sdk_request)
-                # A closing boundary during SDK admission makes delivery
-                # uncertain. Preserve that receipt; never retry automatically.
-                if mode is InputDispatchMode.STEER and (
-                    not self._session_input_guard.accepting
-                    or instance.active_round is not target_round
-                ):
-                    raise SessionInputDeliveryUnknown(
-                        "session changed while sending; "
-                        "supplemental delivery is unknown, "
-                        "do not retry automatically"
-                    )
 
             await self._send_input_with_permission_resume_guard(
                 SendInputRequest(
@@ -15437,6 +15443,8 @@ class JiuWenSwarmDeepAdapter:
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AsyncIterator[AgentResponseChunk]:
         """Deliver to the cached owner without resetting its active run state."""
+        from jiuwenswarm.server.runtime.agent_adapter.session_input import sdk_input_mode
+
         session_id = self._session_adapter_key(request.session_id)
         if not self._is_session_scoped_adapter:
             adapter = self._get_cached_session_adapter(session_id)
@@ -15461,7 +15469,12 @@ class JiuWenSwarmDeepAdapter:
             if accepted:
                 yield AgentResponseChunk(
                     request_id=request.request_id, channel_id=request.channel_id,
-                    payload={"event_type": "runtime.accepted", "request_id": request.request_id},
+                    payload={
+                        "event_type": "runtime.accepted",
+                        "request_id": request.request_id,
+                        **({"input_boundary": "stream"}
+                           if sdk_input_mode(request.params) is InputDispatchMode.STEER else {}),
+                    },
                     is_complete=False,
                 )
                 yield AgentResponseChunk(
@@ -15856,6 +15869,7 @@ class JiuWenSwarmDeepAdapter:
         accumulated_text = ""
         accumulated_reasoning = ""
         had_assistant_output = False
+        had_tool_output = False
         emitted_terminal_chat_final = False
         usage_accumulator = {
             "input_tokens": 0,
@@ -15875,6 +15889,9 @@ class JiuWenSwarmDeepAdapter:
         # deltas plus the terminal chat.final — see ``_assemble_run_answer``.
         run_answer_deltas: list[str] = []
         run_answer_final = ""
+        output_phase_id: str | None = None
+        pending_input_ids: set[str] = set()
+        output_sequence = 0
 
         def should_skip_duplicate_ask_user(parsed: dict | None) -> bool:
             if not isinstance(parsed, dict):
@@ -15889,10 +15906,22 @@ class JiuWenSwarmDeepAdapter:
             emitted_ask_user_events.add(identity)
             return False
 
-        async def note_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
-            nonlocal had_assistant_output, emitted_terminal_chat_final
-            nonlocal run_answer_final
+        async def note_chat_payload(
+            payload: dict[str, Any], *, stream_end: bool = False,
+        ) -> dict[str, Any]:
+            nonlocal had_assistant_output, had_tool_output, emitted_terminal_chat_final
+            nonlocal run_answer_final, output_sequence
             event_type = payload.get("event_type")
+            if output_phase_id and isinstance(event_type, str) and event_type.startswith("chat."):
+                output_sequence += 1
+                payload = {**payload, "output_phase_id": output_phase_id,
+                           "output_order": {"request_id": rid, "sequence": output_sequence},
+                           "timestamp": time.time() * 1000}
+                if (
+                    pending_input_ids and not stream_end
+                    and event_type not in ("chat.input_received", "chat.output_phase")
+                ):
+                    payload["output_suppressed"] = True
             if event_type in ("chat.delta", "chat.reasoning", "chat.final"):
                 had_assistant_output = True
             if event_type == "chat.delta" or (
@@ -15901,11 +15930,13 @@ class JiuWenSwarmDeepAdapter:
                 guard = self._session_input_guard
                 if guard is not None and guard.consume_generation_boundary():
                     payload["steering_generation_start"] = True
+            if event_type in ("chat.tool_call", "chat.tool_update", "chat.tool_result"):
+                had_tool_output = True
             if event_type == "chat.delta":
                 # Single choke point for forwarded text: memo it so a demoted
                 # goal attempt final can skip text the bubble already shows.
                 self._note_round_visible_text(str(payload.get("content") or ""))
-            if event_type == "chat.final":
+            if event_type == "chat.final" and not payload.get("output_suppressed"):
                 emitted_terminal_chat_final = True
             # Assemble the run's final answer for the OTel trace output. This is
             # the one choke point every assistant-visible payload passes through,
@@ -15995,6 +16026,7 @@ class JiuWenSwarmDeepAdapter:
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
+        inputs = self._with_execution_deadline(inputs, request)
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
@@ -16492,6 +16524,24 @@ class JiuWenSwarmDeepAdapter:
 
                 chunk_type = chunk.type
 
+                # Markers and model chunks share the SDK output queue. Read the
+                # phase here, never from the guard's mutable current model state:
+                # that model may already have advanced while old chunks waited.
+                if chunk_type in ("session_input_received", "session_output_phase"):
+                    if chunk_type == "session_input_received":
+                        pending_input_ids.add(chunk.payload["input_request_id"])
+                        event_type = "chat.input_received"
+                    else:
+                        output_phase_id = chunk.payload["output_phase_id"]
+                        pending_input_ids.difference_update(chunk.payload["applied_input_ids"])
+                        event_type = "chat.output_phase"
+                    yield AgentResponseChunk(
+                        request_id=rid, channel_id=cid,
+                        payload=await note_chat_payload({"event_type": event_type, **chunk.payload}),
+                        is_complete=False,
+                    )
+                    continue
+
                 if chunk_type == "llm_usage":
                     logger.info(f"[JiuWenSwarmDeepAdapter] llm_usage chunk: {chunk}")
                     usage_meta = (
@@ -16718,14 +16768,17 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             # Issue #1447 guard: a round that consumed 0 tokens and streamed no
-            # assistant output means the LLM was never called (upstream corrupted
-            # interruption state makes this a persistent, silently failing state).
-            # Must run BEFORE the stream-end chat.final synthesis below so the
-            # guard can suppress the synthetic success final.
+            # assistant output and no tool events means the LLM was never called
+            # (upstream corrupted interruption state makes this a persistent,
+            # silently failing state). Must run BEFORE the stream-end chat.final
+            # synthesis below so the guard can suppress the synthetic success
+            # final. Tool-only 0-token finishes (Web plan execute/skip resume)
+            # are legitimate and must not be flagged.
             empty_llm_run = self._detect_empty_llm_run(
                 session_id=session_id,
                 total_tokens=usage_accumulator["total_tokens"],
                 had_assistant_output=had_assistant_output,
+                had_tool_output=had_tool_output,
                 run_failure=run_failure,
                 stream_consumer_cancelled=stream_consumer_cancelled,
                 emitted_ask_user_events=emitted_ask_user_events,
@@ -16756,7 +16809,8 @@ class JiuWenSwarmDeepAdapter:
 
             # pause→clear (and similar): round cancelled, iterator ends without
             # a model chat.final. Synthesize a real final so the frontend can
-            # stopStreaming; do not demote.
+            # stopStreaming; do not demote or suppress this stream-end control
+            # when accepted steering remains unconsumed.
             if run_failure is None and self._should_emit_stream_end_chat_final(
                 had_assistant_output=had_assistant_output,
                 emitted_terminal_chat_final=emitted_terminal_chat_final,
@@ -16768,7 +16822,7 @@ class JiuWenSwarmDeepAdapter:
                     payload=await note_chat_payload({
                         "event_type": "chat.final",
                         "content": "",
-                    }),
+                    }, stream_end=True),
                     is_complete=False,
                     runtime_completion=self._stream_completion_state(
                         had_interaction=bool(emitted_ask_user_events),

@@ -48,7 +48,8 @@ interface AuthState {
   accountCenterUrl: string;
   /**
    * 换账号走到哪一步：`signout` = 已把用户送去华为账号中心，等他退出后回来点继续。
-   * 华为不认 prompt、也没有登出端点，浏览器里的华为登录态只能由用户自己清掉。
+   * 华为不认 prompt、也没有登出端点，所以浏览器里的华为登录态只能由用户自己清掉——
+   * 桌面端例外，授权页开在应用内的浏览器里，主进程能直接清，见 `switchAccount`。
    */
   switchStep: 'idle' | 'signout';
   /** 换账号后又登进了同一个账号：说明浏览器里的华为登录态还在。 */
@@ -67,6 +68,8 @@ interface AuthState {
   quota: ModelQuota | null;
   /** 这套部署有没有额度这回事。false 时整块额度 UI 不展示，而不是显示报错。 */
   quotaAvailable: boolean;
+  /** 额度这次没查到和"这套部署没有额度"不是一回事：那时该隐藏，这时该说未知。 */
+  quotaError: boolean;
   quotaLoading: boolean;
 
   refresh: () => Promise<void>;
@@ -178,22 +181,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   initialized: false,
   quota: null,
   quotaAvailable: false,
+  quotaError: false,
   quotaLoading: false,
 
   async refreshQuota() {
     // 没登录就没有额度可言，也别去打接口——未登录时它必然 401。
     if (!get().islogin) {
-      set({ quota: null, quotaAvailable: false });
+      set({ quota: null, quotaAvailable: false, quotaError: false });
       return;
     }
     set({ quotaLoading: true });
     try {
       const result = await fetchQuota();
-      set({ quota: result.quota, quotaAvailable: result.available });
+      set({ quota: result.quota, quotaAvailable: result.available, quotaError: false });
     } catch (error) {
-      // 额度查不到不该冒泡成报错：它是个附加信息，对话功能完全不依赖它。留一条日志方便排查
+      // 额度查不到不该冒泡成报错：它是个附加信息，对话功能完全不依赖它。留一条日志方便排查。
+      // quotaAvailable 保持原样：它回答的是"这套部署有没有额度"，一次抖动不该把答案改掉
       console.warn('[auth] 查询免费额度失败', error);
-      set({ quota: null, quotaAvailable: false });
+      set({ quota: null, quotaError: true });
     } finally {
       set({ quotaLoading: false });
     }
@@ -305,11 +310,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   async switchAccount() {
     accountBeforeSwitch = get().userId;
-    // 华为的登录态在它自己的域名下，我们删不掉，也没有登出端点：只能把用户送过去自己退。
+    set({ sameAccountAfterSwitch: false });
+
+    const clearHuaweiSignIn = window.jiuwenDesktop?.clearHuaweiSignIn;
+    let cleared = false;
+    if (clearHuaweiSignIn) {
+      try {
+        await clearHuaweiSignIn();
+        cleared = true;
+      } catch (error) {
+        console.warn('[auth] 清理华为登录态失败，改为引导用户手动退出', error);
+      }
+    }
+    if (cleared) {
+      accountBeforeSwitch = null;
+      await get().logout();
+      await get().startLogin();
+      return;
+    }
+
+    // 其他形态：华为的登录态在它自己的域名下，我们删不掉，也没有登出端点，只能把用户送过去自己退。
     // **先开页面再登出**：await 之后的 window.open 丢了用户手势，会被弹窗拦截器挡下。
     // 拦截了也不算失败，弹窗里同时给了地址让用户自己点
     openExternal(get().accountCenterUrl);
-    set({ switchStep: 'signout', sameAccountAfterSwitch: false });
+    set({ switchStep: 'signout' });
     await get().logout();
   },
 
@@ -341,6 +365,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       pendingAuthorizeUrl: null,
       quota: null,
       quotaAvailable: false,
+      quotaError: false,
     });
     // 登录送的模型此刻已失效，通知 App 重拉，别留在列表里
     notifyAuthChanged(false);

@@ -465,7 +465,7 @@ def test_failure_after_early_navigation_shows_diagnostics(
     class FakeWindow:
         def __init__(self) -> None:
             self.events = types.SimpleNamespace(
-                loaded=FakeEvent(), closed=FakeEvent()
+                loaded=FakeEvent(), closing=FakeEvent(), closed=FakeEvent()
             )
             self.loaded_html = None
 
@@ -553,7 +553,9 @@ def test_service_failure_transitions_loading_state_without_worker_window_calls(
 
     class FakeWindow:
         def __init__(self) -> None:
-            self.events = types.SimpleNamespace(loaded=FakeEvent(), closed=FakeEvent())
+            self.events = types.SimpleNamespace(
+                loaded=FakeEvent(), closing=FakeEvent(), closed=FakeEvent()
+            )
 
     fake_window = FakeWindow()
     monkeypatch.setattr(desktop_app, "get_user_workspace_dir", lambda: tmp_path)

@@ -33,13 +33,17 @@ class FakeStreamingResponse:
             yield chunk
 
 
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
 def _zip_bytes(entries: dict[str, bytes], *, symlink: str | None = None) -> bytes:
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
         for name, body in entries.items():
-            archive.writestr(name, body)
+            info = zipfile.ZipInfo(filename=name, date_time=_ZIP_EPOCH)
+            archive.writestr(info, body)
         if symlink is not None:
-            info = zipfile.ZipInfo(symlink)
+            info = zipfile.ZipInfo(symlink, date_time=_ZIP_EPOCH)
             info.create_system = 3
             info.external_attr = (stat.S_IFLNK | 0o777) << 16
             archive.writestr(info, "target")
@@ -106,6 +110,7 @@ def test_checksum_must_be_exactly_64_hexadecimal_characters(checksum: str) -> No
         (_zip_bytes({"../escape.txt": b"bad"}), "非法路径"),
         (_zip_bytes({}, symlink="link"), "链接文件"),
     ],
+    ids=["escape-path", "symlink"],
 )
 async def test_download_and_extract_rejects_unsafe_members(
     tmp_path: Path, body: bytes, error: str

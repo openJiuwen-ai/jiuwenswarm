@@ -299,6 +299,16 @@ async def test_locked_sdk_steering_consumption_and_final_save_admission(
         save_release.set()
         chunks = await asyncio.wait_for(reader, 15)
         assert chunks
+        if ingress == "harness" and arrival == "tool":
+            received_index = next(i for i, chunk in enumerate(chunks)
+                                  if getattr(chunk, "type", None) == "session_input_received")
+            applied_index = next(i for i, chunk in enumerate(chunks)
+                                 if getattr(chunk, "type", None) == "session_output_phase"
+                                 and chunk.payload["applied_input_ids"] == ["new-unrelated-id"])
+            assert received_index < applied_index
+            phases = [chunk.payload["output_phase_id"] for chunk in chunks
+                      if getattr(chunk, "type", None) == "session_output_phase"]
+            assert len(phases) == len(set(phases)) == 2
         assert len(model.messages) == 2
         assert "STEERING_ACCEPTANCE_731" not in str(model.messages[0])
         if arrival == "tool":
@@ -495,4 +505,207 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
         await client.disconnect()
         await runtime.close()
         await sdk.stop()
+        await Runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_continuous_streaming_steers_have_exact_batch_identity_and_order(tmp_path):
+    """Hold the real SDK inside model streaming; never use sleeps for admission."""
+    class StreamingModel(ScriptedModel):
+        def __init__(self):
+            super().__init__()
+            self.entered = [asyncio.Event() for _ in range(3)]
+            self.release = [asyncio.Event() for _ in range(3)]
+
+        async def stream(self, messages, **kwargs):
+            index = len(self.messages)
+            self.messages.append(copy.deepcopy(messages))
+            yield AssistantMessageChunk(content=f"prefix-{index}")
+            self.entered[index].set()
+            await self.release[index].wait()
+            yield AssistantMessageChunk(content=f"tail-{index}", usage_metadata=UsageMetadata(
+                model_name="steering-test", finish_reason="stop",
+            ))
+
+    await Runner.start()
+    model = StreamingModel()
+    agent = create_deep_agent(model=model, workspace=str(tmp_path), enable_task_loop=True,
+                              max_iterations=5, enable_model_anomaly_detection_rail=False,
+                              enable_read_image_multimodal=False)
+    session = create_agent_session(session_id=f"phase-stream-{uuid.uuid4().hex}", card=agent.card)
+    await session.pre_run(inputs={})
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = agent
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = session.get_session_id()
+    stream, reader = None, None
+
+    async def collect(output):
+        return [chunk async for chunk in output]
+
+    async def send_input(request_id):
+        request = AgentRequest(request_id=request_id, channel_id="web", session_id=session.get_session_id(),
+                               params={"content": "same instruction", "input_mode": "steer", "mode": "agent"})
+        assert await adapter.deliver_active_session_input(request, {"query": "same instruction"})
+        assert not reader.done()
+
+    try:
+        await adapter.install_session_input_guard()
+        await agent.start(session=session)
+        stream = await agent.attach_output()
+        reader = asyncio.create_task(collect(stream))
+        await agent.send_input(SendInputRequest(request_id="original", inputs={"query": "begin"}))
+        await asyncio.wait_for(model.entered[0].wait(), 15)
+        await send_input("input-1")
+        await send_input("input-2")
+        model.release[0].set()
+        await asyncio.wait_for(model.entered[1].wait(), 15)
+        await send_input("input-3")
+        model.release[1].set()
+        await asyncio.wait_for(model.entered[2].wait(), 15)
+        model.release[2].set()
+        chunks = await asyncio.wait_for(reader, 15)
+        phases = [chunk for chunk in chunks if getattr(chunk, "type", None) == "session_output_phase"]
+        assert [p.payload["applied_input_ids"] for p in phases] == [[], ["input-1", "input-2"], ["input-3"]]
+        assert len({p.payload["output_phase_id"] for p in phases}) == 3
+        receipts = [c for c in chunks if getattr(c, "type", None) == "session_input_received"]
+        assert [r.payload["input_request_id"] for r in receipts] == ["input-1", "input-2", "input-3"]
+        assert chunks.index(receipts[0]) < chunks.index(receipts[1]) < chunks.index(phases[1])
+        assert chunks.index(phases[1]) < chunks.index(receipts[2]) < chunks.index(phases[2])
+        assert "same instruction" not in str(model.messages[0])
+        assert str(model.messages[1]).count("same instruction") == 2
+        assert str(model.messages[2]).count("same instruction") == 3
+    finally:
+        for release in model.release:
+            release.set()
+        if stream is not None:
+            await stream.close(abort_active_round=True)
+        await agent.stop()
+        if reader is not None and not reader.done():
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        await Runner.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["automatic", "steer", "pause", "resume", "clear"])
+async def test_goal_steering_uses_real_adapter_stream_and_closes_after_clear(tmp_path, monkeypatch, action):
+    """Keep SDK scheduling and the host event formatter real through Goal teardown."""
+    from jiuwenswarm.agents.harness import agent_observability
+
+    class GoalModel(ScriptedModel):
+        def __init__(self):
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def invoke(self, messages, **kwargs):
+            # The Goal assessor asks for another attempt; max_attempts bounds
+            # autonomous execution without relying on timing or remote models.
+            return AssistantMessage(content=json.dumps({
+                "status": "continue", "evidence": "another attempt required",
+                "next_instruction": "continue",
+            }))
+
+        async def stream(self, messages, **kwargs):
+            self.messages.append(copy.deepcopy(messages))
+            index = len(self.messages)
+            yield AssistantMessageChunk(content=f"prefix-{index}")
+            if index == 1:
+                self.entered.set()
+                await self.release.wait()
+            yield AssistantMessageChunk(content=f"tail-{index}", usage_metadata=UsageMetadata(
+                model_name="steering-test", finish_reason="stop",
+            ))
+
+    await Runner.start()
+    model = GoalModel()
+    agent = create_deep_agent(
+        model=model, workspace=str(tmp_path), enable_task_loop=True, max_iterations=5,
+        enable_model_anomaly_detection_rail=False, enable_read_image_multimodal=False,
+    )
+    session = create_agent_session(session_id=f"goal-steering-{uuid.uuid4().hex}", card=agent.card)
+    await session.pre_run(inputs={})
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = agent
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = session.get_session_id()
+    # Isolate host configuration/observability from the running desktop. The
+    # output iterator, Goal manager, steering admission and formatter stay real.
+    monkeypatch.setattr(adapter, "_model_config_error", lambda _request: None)
+    monkeypatch.setattr(adapter, "_ensure_chat_extensions", AsyncMock(return_value=None))
+    monkeypatch.setattr(adapter, "_update_runtime_config", AsyncMock())
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: model)
+    monkeypatch.setattr(adapter, "_prepare_root_input_dispatch", AsyncMock(side_effect=lambda _req, inputs: inputs))
+    monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
+    reader = None
+    payloads = []
+    prefix_received = asyncio.Event()
+    input_received = asyncio.Event()
+
+    async def collect():
+        request = AgentRequest(
+            request_id="goal-output", channel_id="web", session_id=session.get_session_id(),
+            params={"mode": "agent", "attach_goal": True},
+        )
+        async for chunk in adapter._process_message_stream_impl(request, {"query": ""}):
+            payload = chunk.payload
+            if not isinstance(payload, dict):
+                continue
+            payloads.append(payload)
+            if payload.get("event_type") == "chat.delta":
+                prefix_received.set()
+            if payload.get("event_type") == "chat.input_received":
+                input_received.set()
+        assert not any(p.get("event_type") == "chat.error" for p in payloads), payloads
+
+    try:
+        await adapter.install_session_input_guard()
+        await agent.start(session=session)
+        await agent.goal_manager.set("Verify Goal streaming", max_attempts=2)
+        reader = asyncio.create_task(collect())
+        await asyncio.wait_for(prefix_received.wait(), 10)
+        assert model.entered.is_set() and not reader.done()
+        if action != "automatic":
+            request = AgentRequest(
+                request_id="goal-supplement", channel_id="web", session_id=session.get_session_id(),
+                params={"content": "NEW_GOAL_CONSTRAINT", "input_mode": "steer", "mode": "agent"},
+            )
+            assert await adapter.deliver_active_session_input(request, {"query": "NEW_GOAL_CONSTRAINT"})
+            await asyncio.wait_for(input_received.wait(), 10)
+        if action in ("pause", "resume", "clear"):
+            await agent.goal_manager.pause()
+        if action == "resume":
+            await agent.goal_manager.resume()
+        if action == "clear":
+            await agent.goal_manager.clear()
+        model.release.set()
+        await asyncio.wait_for(reader, 15)
+
+        phases = [p for p in payloads if p.get("event_type") == "chat.output_phase"]
+        goal = await agent.goal_manager.get()
+        expected_status = None if action == "clear" else "paused" if action == "pause" else "blocked"
+        assert (goal.status.value if goal is not None else None) == expected_status
+        if action == "clear":
+            assert len(model.messages) == 1
+            assert [p["applied_input_ids"] for p in phases] == [[]]
+            assert not agent.event_handler.interaction_queues.steering.empty()
+        elif action == "automatic":
+            assert len(model.messages) == 2
+            assert [p["applied_input_ids"] for p in phases] == [[], []]
+        else:
+            assert "NEW_GOAL_CONSTRAINT" not in str(model.messages[0])
+            assert str(model.messages[1]).count("NEW_GOAL_CONSTRAINT") == 1
+            assert [p["applied_input_ids"] for p in phases if p["applied_input_ids"]] == [["goal-supplement"]]
+            assert agent.event_handler.interaction_queues.steering.empty()
+        finals = [p for p in payloads if p.get("event_type") == "chat.final"]
+        assert finals and not finals[-1].get("output_suppressed"), payloads
+        if action == "clear":
+            assert finals[-1]["content"] == ""
+    finally:
+        model.release.set()
+        if reader is not None and not reader.done():
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        await agent.stop()
         await Runner.stop()

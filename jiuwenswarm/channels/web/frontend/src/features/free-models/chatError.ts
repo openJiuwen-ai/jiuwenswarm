@@ -19,5 +19,6 @@ export function describeChatError(
   if (code === 'login_required' && payload.upstream !== true) {
     return rawErrorMsg;
   }
-  return `${t(hintKey)}（${rawErrorMsg}）`;
+  console.warn('[free-models] chat error', code, rawErrorMsg);
+  return t(hintKey);
 }

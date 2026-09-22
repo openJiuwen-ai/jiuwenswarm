@@ -1,7 +1,7 @@
 /**
  * 对话轮次时间线纯函数：live / history / FileViewer 共用同一套排序与折叠分组逻辑。
  */
-import type { Message, ToolExecution } from '../../types';
+import type { Message, OutputOrder, ToolExecution } from '../../types';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import { getMessageActor } from '../../components/ChatPanel/MessageItem';
 import {
@@ -83,6 +83,7 @@ export type RenderItem =
       type: 'turnSummary';
       key: string;
       turnId: number;
+      executionTurnId?: number;
       startMs: number;
       endMs: number;
       /** 工作活动跨度（工具/思考/助手气泡），不含用户消息，供「已完成」耗时 */
@@ -101,7 +102,23 @@ export function toTimestampMs(value: string | undefined): number {
   return parseTimestampToMs(value);
 }
 
+function getTimelineOutputOrder(item: TimelineItem): OutputOrder | undefined {
+  switch (item.type) {
+    case 'message':
+      return item.message.outputOrder;
+    case 'reasoning':
+      return item.segment.outputOrder;
+    case 'toolExecution':
+      return item.execution.outputOrder;
+  }
+}
+
 function compareTimelineItems(a: TimelineItem, b: TimelineItem): number {
+  const aOrder = getTimelineOutputOrder(a);
+  const bOrder = getTimelineOutputOrder(b);
+  if (aOrder && bOrder && aOrder.requestId === bOrder.requestId && aOrder.sequence !== bOrder.sequence) {
+    return aOrder.sequence - bOrder.sequence;
+  }
   const aTsValid = Number.isFinite(a.timestampMs);
   const bTsValid = Number.isFinite(b.timestampMs);
   if (aTsValid && bTsValid && a.timestampMs !== b.timestampMs) {
@@ -148,123 +165,9 @@ export function buildTimelineItems(
     segment,
   }));
 
-  return placeSupplementedAssistantAfterWork(
-    groupSupplementalMessages(
-      [...messageItems, ...executionItems, ...reasoningItems].sort(compareTimelineItems)
-    )
-  );
-}
-
-/** Keep supplemental inputs together below their original user message without splitting assistant output. */
-function groupSupplementalMessages(items: TimelineItem[]): TimelineItem[] {
-  const assistantTurnAnchors = new Map<string, string>();
-  const fallbackAnchors = new Map<string, string>();
-  let currentUserKey: string | null = null;
-
-  for (const item of items) {
-    if (item.type !== 'message') continue;
-    if (item.message.role === 'user' && !item.message.supplementalInput) {
-      currentUserKey = item.key;
-      continue;
-    }
-    if (item.message.role === 'user' && item.message.supplementalInput) {
-      if (currentUserKey) fallbackAnchors.set(item.key, currentUserKey);
-      continue;
-    }
-    if (item.message.role === 'assistant' && currentUserKey) {
-      assistantTurnAnchors.set(item.message.id, currentUserKey);
-    }
-  }
-
-  const supplementsByAnchor = new Map<string, Extract<TimelineItem, { type: 'message' }>[]>();
-  const groupedSupplements = new Set<TimelineItem>();
-  for (const item of items) {
-    if (item.type !== 'message' || item.message.role !== 'user' || !item.message.supplementalInput) {
-      continue;
-    }
-    const streamId = item.message.supplementalInput.streamMessageId;
-    const anchorKey =
-      (streamId ? assistantTurnAnchors.get(streamId) : undefined) ?? fallbackAnchors.get(item.key);
-    if (!anchorKey) continue;
-    const group = supplementsByAnchor.get(anchorKey) ?? [];
-    group.push(item);
-    supplementsByAnchor.set(anchorKey, group);
-    groupedSupplements.add(item);
-  }
-
-  const grouped: TimelineItem[] = [];
-  for (const item of items) {
-    if (groupedSupplements.has(item)) continue;
-    grouped.push(item);
-    const supplements = supplementsByAnchor.get(item.key);
-    if (supplements) grouped.push(...supplements);
-  }
-  return grouped;
-}
-
-/** In a supplemented turn, keep the final ordinary assistant answer after all work. */
-function placeSupplementedAssistantAfterWork(items: TimelineItem[]): TimelineItem[] {
-  const reordered = [...items];
-  const isOrdinaryUser = (
-    item: TimelineItem
-  ): item is Extract<TimelineItem, { type: 'message' }> =>
-    item.type === 'message' &&
-    item.message.role === 'user' &&
-    !item.message.supplementalInput;
-  let turnStart = 0;
-  while (turnStart < reordered.length) {
-    while (turnStart < reordered.length && !isOrdinaryUser(reordered[turnStart])) {
-      turnStart += 1;
-    }
-    if (turnStart >= reordered.length) break;
-
-    let turnEnd = reordered.length;
-    for (let index = turnStart + 1; index < reordered.length; index += 1) {
-      const item = reordered[index];
-      if (isOrdinaryUser(item)) {
-        turnEnd = index;
-        break;
-      }
-    }
-
-    const hasSupplement = reordered
-      .slice(turnStart + 1, turnEnd)
-      .some(
-        (item) =>
-          item.type === 'message' &&
-          item.message.role === 'user' &&
-          Boolean(item.message.supplementalInput)
-      );
-    if (!hasSupplement) {
-      turnStart = turnEnd;
-      continue;
-    }
-
-    let assistantIndex = -1;
-    let lastWorkIndex = -1;
-    for (let index = turnStart + 1; index < turnEnd; index += 1) {
-      const item = reordered[index];
-      if (
-        item.type === 'message' &&
-        item.message.role === 'assistant' &&
-        !item.message.keepExpanded &&
-        item.message.presentation !== 'tool_result' &&
-        !item.message.isProactiveRecommendation &&
-        !isGoalCompletedContent(item.message.content)
-      ) {
-        assistantIndex = index;
-      }
-      if (reordered[index].type === 'reasoning' || reordered[index].type === 'toolExecution') {
-        lastWorkIndex = index;
-      }
-    }
-    if (assistantIndex >= 0 && lastWorkIndex > assistantIndex) {
-      const [assistant] = reordered.splice(assistantIndex, 1);
-      reordered.splice(lastWorkIndex, 0, assistant);
-    }
-    turnStart = turnEnd;
-  }
-  return reordered;
+  // Every user message is a chronological boundary. Never move a supplement
+  // ahead of assistant text that was already visible when it was sent.
+  return [...messageItems, ...executionItems, ...reasoningItems].sort(compareTimelineItems);
 }
 
 const IMAGE_TOOL_FALLBACK_NOTICE_PREFIX = 'notice-image_tool_fallback-';
@@ -443,7 +346,7 @@ export function buildRenderItems(items: TimelineItem[], isTeamMode: boolean, isP
     flushToolGroup(true);
     pushMessage(item);
 
-    if (item.message.role === 'user' && !item.message.supplementalInput) {
+    if (item.message.role === 'user') {
       currentTurnId += 1;
     }
   }
@@ -577,6 +480,7 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
   let hasActivity = false;
   let hasWork = false;
   let turnId = 0;
+  let executionTurnId = 0;
   // 已完成轮次锚定该轮最后一个业务项：历史页从半轮开始时，后续只会在它前面
   // 补数据，末项不会变化。进行中轮次仍锚定 user，避免流式追加时反复换 key。
   let summaryAnchorKey: string | null = null;
@@ -613,6 +517,7 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
         type: 'turnSummary',
         key: `turn-summary-${anchorKey}`,
         turnId,
+        executionTurnId,
         startMs,
         endMs,
         workStartMs: Number.isFinite(workStartMs) ? workStartMs : startMs,
@@ -652,19 +557,10 @@ function insertTurnSummaries(items: RenderItem[], isProcessing: boolean): Render
   };
 
   for (const item of items) {
-    if (item.type === 'message' && item.message.role === 'user' && item.message.supplementalInput) {
-      // A supplement is visible between output pieces but does not close or restart the task timer.
-      out.push(item);
-      // Leading supplements still belong to the user-input area. Keep the timer immediately
-      // above the first assistant/reasoning/tool content instead of before these user bubbles.
-      if (!hasActivity) {
-        turnContentStart = out.length;
-      }
-      continue;
-    }
     if (item.type === 'message' && item.message.role === 'user') {
       flush(false);
       turnId += 1;
+      if (!item.message.supplementalInput) executionTurnId = turnId;
       // 空窗起点仅并入「设目标」消息开启的轮次：goal 插队时上一提问与设目标同属一次
       // 交互流程，本轮耗时从上一提问算起；普通新提问（哪怕只隔几分钟）与上一条空窗
       // 提问无关，不继承起点，避免把无关/跨会话等待算进本轮「已完成」耗时。
@@ -858,9 +754,11 @@ function emptyTurnMeta(turnId: number, partial?: Partial<TurnWorkMeta>): TurnWor
 
 export function buildTurnWorkMeta(items: RenderItem[], isProcessing: boolean): Map<number, TurnWorkMeta> {
   const map = new Map<number, TurnWorkMeta>();
+  const executionTurns = new Map<number, number>();
   let lastTurnId = Number.NEGATIVE_INFINITY;
   for (const item of items) {
     if (item.type === 'turnSummary') {
+      executionTurns.set(item.turnId, item.executionTurnId ?? item.turnId);
       lastTurnId = Math.max(lastTurnId, item.turnId);
       const prev = map.get(item.turnId);
       map.set(
@@ -931,8 +829,10 @@ export function buildTurnWorkMeta(items: RenderItem[], isProcessing: boolean): M
     if (proactiveTurnIds.has(meta.turnId)) {
       meta.hasWork = false;
     }
-    const isLast = Number.isFinite(lastTurnId) && meta.turnId === lastTurnId;
-    meta.completed = !(isProcessing && isLast);
+    const isCurrentExecution = executionTurns.has(meta.turnId)
+      ? executionTurns.get(meta.turnId) === executionTurns.get(lastTurnId)
+      : meta.turnId === lastTurnId;
+    meta.completed = !(isProcessing && isCurrentExecution);
     meta.outcomeTone = resolveWorkOutcomeTone(
       meta.toolSuccessCount,
       meta.toolFailedCount,

@@ -823,6 +823,16 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     ]
 
 
+def test_host_deadline_preserves_other_run_context_without_mutating_input():
+    inputs = {"query": "test", "run": {"context": {"extra": {"existing": "kept"}}}}
+    request = SimpleNamespace(metadata={"execution_deadline_at": 123456.0})
+    updated = JiuWenSwarmDeepAdapter._with_execution_deadline(inputs, request)
+    assert updated["run"]["context"]["extra"] == {"existing": "kept", "execution_deadline_at": 123456.0}
+    assert inputs["run"]["context"]["extra"] == {"existing": "kept"}
+    ordinary = SimpleNamespace(metadata={})
+    assert JiuWenSwarmDeepAdapter._with_execution_deadline(inputs, ordinary) is inputs
+
+
 @pytest.mark.asyncio
 async def test_symphony_tool_model_is_isolated_from_interleaved_adapter_requests(
     monkeypatch,
@@ -1098,9 +1108,14 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "genuinely unanswered requirements" in task_section.content["en"]
     assert "a partial label or unmapped field alone does not justify" in task_section.content["en"]
     assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
+    assert "Delegate only the original goal and necessary constraints" in task_section.content["en"]
+    assert "top AI/knowledge/weather answers with attribution" in task_section.content["en"]
+    assert "preserve explicit natural-result/detail-visit requests" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
     assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
+    assert "派发描述只保留原始目标和必要约束" in build_browser_task_prompt("cn")
+    assert "用户明确要求自然结果或进入详情时仍须执行" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
         SubAgentConfig(

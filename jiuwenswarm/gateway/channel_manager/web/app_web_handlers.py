@@ -4886,7 +4886,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 return
             from jiuwenswarm.server.runtime.session.session_metadata import set_session_pinned
 
-            result = set_session_pinned(sid.strip(), pinned)
+            result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
             if result is None:
                 await channel.send_response(ws, req_id, ok=False, error="session not found", code="NOT_FOUND")
                 return

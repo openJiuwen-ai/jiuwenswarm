@@ -867,7 +867,9 @@ export function SkillPanel({
 
   // 2026-08-25：改用 utils/mySkills.ts 的共享 isSkillInstalled/filterEnabledMySkills，跟"手动创建
   // 插件"的"添加技能"弹窗（CreatePluginPage.tsx）共用同一份"已启用"判定规则，见该文件头注释。
-  const skillPublication = useAssetPublication(activeTab === 'my' ? visibleSkills.map(s => ({ kind: 'skill', local_id: s.name })) : []);
+  const skillPublication = useAssetPublication(
+    activeTab === 'my' ? visibleSkills.map((s) => ({ kind: 'skill', local_id: s.name })) : [],
+  );
   const mySkillsFiltered = useMemo(() => {
     let filtered = visibleSkills;
     switch (mySkillsSubTab) {
@@ -885,16 +887,23 @@ export function SkillPanel({
     }
     // 发布状态筛选
     if (mySkillsPublishFilter === 'published') {
-      filtered = filtered.filter((s) => matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'published'));
+      filtered = filtered.filter((s) =>
+        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'published'),
+      );
     } else if (mySkillsPublishFilter === 'unpublished') {
-      filtered = filtered.filter((s) => matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'unpublished'));
+      filtered = filtered.filter((s) =>
+        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'unpublished'),
+      );
     }
     return filtered;
   }, [visibleSkills, mySkillsSubTab, mySkillsPublishFilter, installedSkillNames, skillPublication]);
 
   // 内置/非内置分组（用于"我的技能"列表分组展示）；技能包单独成组置顶
   const builtinSkills = useMemo(() => mySkillsFiltered.filter((s) => s.source === 'builtin'), [mySkillsFiltered]);
-  const skillPackSkills = useMemo(() => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'), [mySkillsFiltered]);
+  const skillPackSkills = useMemo(
+    () => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'),
+    [mySkillsFiltered],
+  );
   const otherSkills = useMemo(
     () => mySkillsFiltered.filter((s) => s.source !== 'builtin' && s.skill_type !== 'skillpack'),
     [mySkillsFiltered],
@@ -912,8 +921,34 @@ export function SkillPanel({
 
   const toggleSkillDisabled = useCallback(
     async (skillName: string) => {
-      const skill = skills.find((s) => s.name === skillName);
-      const newEnabled = skill?.enabled === false ? true : false;
+      // 当前目标状态：优先取详情页状态（成员技能不在顶层列表中，
+      // 从列表取会恒判为 false，导致禁用后无法再启用）
+      const isSelfDetail = selectedSkill?.name === skillName;
+      const listSkill = skills.find((s) => s.name === skillName);
+      const currentEnabled = isSelfDetail
+        ? selectedSkill?.enabled !== false
+        : listSkill?.enabled !== false;
+      const newEnabled = !currentEnabled;
+
+      // 二次确认以服务端实时探测为准：skills.toggle(dry_run) 返回该技能
+      // 当前关联的技能包列表，不依赖页面缓存的列表数据。
+      // 成员技能启用/禁用都会影响所属技能包的可用性，两个方向都确认
+      let parentPacks: string[] = [];
+      try {
+        const probe = await webRequest<{ success: boolean; parent_skillpacks?: string[] }>(
+          'skills.toggle',
+          withSession({ name: skillName, enabled: newEnabled, dry_run: true }),
+        );
+        if (probe.success) parentPacks = probe.parent_skillpacks ?? [];
+      } catch {
+        // 探测失败不阻塞切换：保持与旧行为一致（直接切换，不弹窗）
+      }
+      if (parentPacks.length > 0) {
+        const confirmed = window.confirm(
+          t('skills.packMemberToggleConfirm', { packs: parentPacks.join('、') }),
+        );
+        if (!confirmed) return;
+      }
 
       const toggleKey = `toggle:${skillName}`;
       setActionTarget(toggleKey);
@@ -935,6 +970,16 @@ export function SkillPanel({
         if (selectedSkill && selectedSkill.name === skillName) {
           setSelectedSkill({ ...selectedSkill, enabled: newEnabled });
         }
+
+        // 仅成员技能影响技能包聚合状态，确认后才刷新列表与技能包详情；
+        // 无技能包关联的技能保持轻量更新，不重新拉取列表
+        if (parentPacks.length > 0) {
+          await fetchSkills();
+          if (selectedSkill && isSkillPackage(selectedSkill) && selectedSkill.name !== skillName) {
+            const data = await webRequest<SkillDetail>('skills.get', withSession({ name: selectedSkill.name }));
+            setSelectedSkill(normalizeSkillItem(data));
+          }
+        }
       } catch (error) {
         console.error('Failed to toggle skill enabled:', error);
         showMessage('error', t('skills.setEnabledError'));
@@ -942,7 +987,7 @@ export function SkillPanel({
         setActionTarget(null);
       }
     },
-    [skills, selectedSkill, withSession, showMessage, t],
+    [skills, selectedSkill, isSkillPackage, fetchSkills, withSession, showMessage, t],
   );
 
   // 技能包成员从包内备份一键安装（恢复已卸载成员）
@@ -957,10 +1002,7 @@ export function SkillPanel({
           success: boolean;
           detail?: string;
           message?: string;
-        }>(
-          'skills.pack_member.install',
-          withSession({ pack: packName, name: memberName }),
-        );
+        }>('skills.pack_member.install', withSession({ pack: packName, name: memberName }));
         if (!result.success) {
           throw new Error(result.detail || result.message || t('skills.errors.installFailed'));
         }
@@ -1106,10 +1148,7 @@ export function SkillPanel({
             tooltip={t('skills.actions.goTry')}
           />
         </div>
-        <span
-          title={isPackBlocked ? t('skills.packBlockedHint') : undefined}
-          className="flex items-center"
-        >
+        <span title={isPackBlocked ? t('skills.packBlockedHint') : undefined} className="flex items-center">
           <Switch
             checked={!isDisabled}
             onChange={() => toggleSkillDisabled(skill.name)}
@@ -1275,7 +1314,6 @@ export function SkillPanel({
                   { value: 'published', label: t('skills.publishFilter.published') },
                   { value: 'unpublished', label: t('skills.publishFilter.unpublished') },
                 ]}
-                style={{ width: mySkillsPublishFilter === 'all' ? '40px' : '55px' }}
                 testId="skill-panel-filter-publish"
               />
               {/* 启用/禁用筛选 */}
@@ -1297,7 +1335,6 @@ export function SkillPanel({
                   { value: 'disabled', label: t('skills.mySkillsTabs.disabled') },
                   { value: 'builtin', label: t('skills.mySkillsTabs.builtin') },
                 ]}
-                style={{ width: '40px' }}
                 testId="skill-panel-filter-enable"
               />
             </>
@@ -1445,26 +1482,26 @@ export function SkillPanel({
       />
     ) : (
       <>
-      <CatalogCacheNotice cache={hubCache} />
-      <MarketplaceView
-        marketplaceSubView={marketplaceSubView}
-        teamSkills={teamSkills}
-        featuredSkills={featuredSkills}
-        hubTeamMore={hubTeamMore}
-        hubSkillMore={hubSkillMore}
-        skillPacks={skillPacks}
-        hubSkills={hubSkills}
-        hubLoading={hubLoading}
-        hubMoreLoading={hubMoreLoading}
-        searchKeyword={searchKeyword}
-        marketplaceCategory={marketplaceCategory}
-        onSelectHubSkill={handleSelectHubSkill}
-        renderHubSkillAction={renderHubSkillAction}
-        onOpenAllPacks={openHubAllPacks}
-        onCategoryChange={handleMarketplaceCategoryChange}
-        onOpenMore={openHubMore}
-        onBackFromMore={handleBackToHubDetail}
-      />
+        <CatalogCacheNotice cache={hubCache} />
+        <MarketplaceView
+          marketplaceSubView={marketplaceSubView}
+          teamSkills={teamSkills}
+          featuredSkills={featuredSkills}
+          hubTeamMore={hubTeamMore}
+          hubSkillMore={hubSkillMore}
+          skillPacks={skillPacks}
+          hubSkills={hubSkills}
+          hubLoading={hubLoading}
+          hubMoreLoading={hubMoreLoading}
+          searchKeyword={searchKeyword}
+          marketplaceCategory={marketplaceCategory}
+          onSelectHubSkill={handleSelectHubSkill}
+          renderHubSkillAction={renderHubSkillAction}
+          onOpenAllPacks={openHubAllPacks}
+          onCategoryChange={handleMarketplaceCategoryChange}
+          onOpenMore={openHubMore}
+          onBackFromMore={handleBackToHubDetail}
+        />
       </>
     );
 
@@ -1531,7 +1568,7 @@ export function SkillPanel({
             <div className="page-shell mt-4 text-sm text-text-muted">{t(MY_SKILLS_EMPTY_KEY[mySkillsSubTab])}</div>
           ) : null}
           {listState !== 'success' || mySkillsFiltered.length > 0 ? (
-            <div className="page-scroll pt-4 flex-1 min-h-0 overflow-y-auto">
+            <div className="page-scroll mt-0 flex-1 min-h-0 overflow-y-auto">
               {listState === 'loading' && (
                 <div className="text-sm text-text-muted" data-testid="skill-panel-my-list-loading">
                   {t('common.loading')}

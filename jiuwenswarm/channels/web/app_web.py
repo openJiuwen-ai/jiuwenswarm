@@ -48,7 +48,10 @@ _resolve_agent_http_base = resolve_agent_http_base
 _resolve_agent_upload_base = resolve_agent_upload_base
 
 if TYPE_CHECKING:
-    from jiuwenswarm.channels.web.share_image_export import ShareImageExportManager
+    from jiuwenswarm.channels.web.share_image_export import (
+        ShareImageExportManager,
+        ShareImageRenderAuth,
+    )
 
 _share_image_export_manager: ShareImageExportManager | None = None
 _share_image_export_manager_lock = threading.Lock()
@@ -1401,12 +1404,25 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
 
         port = int(self.server.server_address[1])
+        # 桌面模式: 长图任务使用独立的 Playwright 无头 BrowserContext, 不共享
+        # 桌面 WebView 的 Cookie, 必须把当前实例的 desktop cookie 名与 token
+        # 交给渲染器注入, 否则 /share-export-runner 返回 403。普通 web 模式
+        # desktop_token 为空, 不构造认证信息, 行为保持不变。
+        render_auth: ShareImageRenderAuth | None = None
+        if self.desktop_token:
+            from jiuwenswarm.channels.web.share_image_export import ShareImageRenderAuth
+
+            render_auth = ShareImageRenderAuth(
+                cookie_name=self.desktop_cookie_name,
+                cookie_value=self.desktop_token,
+            )
         status = _get_share_image_export_manager().create_job(
             session_id=session_id,
             snapshot=snapshot,
             filename=filename,
             locale=normalized_locale,
             base_url=f"http://127.0.0.1:{port}",
+            render_auth=render_auth,
         )
         self._write_json(200 if status.get("reused") else 202, status)
 

@@ -71,51 +71,25 @@ async def test_accepted_steer_persists_supplemental_user_history(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("race", ["closed", "changed_round", "rejected", "accepted"])
-async def test_receipt_truthfulness_across_sdk_submission(race):
-    instance = SimpleNamespace(active_round=object(), has_output_stream=lambda: True)
-    guard = SessionInputGuard(instance)
-    guard.accepting = race != "rejected"
+@pytest.mark.parametrize("failure", [False, True])
+async def test_receipt_boundary_failure_is_unknown_and_releases_model_wait(failure):
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import QueuedSessionInput
 
-    async def sdk_send(_request):
-        if race == "closed":
-            guard.accepting = False
-        if race == "changed_round":
-            instance.active_round = object()
-
-    instance.send_input = AsyncMock(side_effect=sdk_send)
-
-    async def permission_send(request, *, send):
-        await send(request)
-        # Existing adapter's bool is permission-transaction ownership, not ACK.
-        return False
-
-    adapter = SimpleNamespace(
-        _instance=instance, _session_input_guard=guard,
-        _stream_completion_state=lambda **kwargs: "completed",
-        _prepare_root_input_dispatch=AsyncMock(return_value="prepared"),
-        _permission_inputs_for_dispatch=lambda *args: {"query": "extra text"},
-        _send_input_with_permission_resume_guard=permission_send,
-        _permission_dispatch=SimpleNamespace(finalize=Mock()),
-    )
-    request = SimpleNamespace(params={"input_mode": "steer"}, request_id="input")
-    if race == "accepted":
-        assert await JiuWenSwarmDeepAdapter.deliver_active_session_input(
-            adapter, request, {"query": "extra text"}
-        )
-    elif race == "rejected":
-        with pytest.raises(RuntimeError, match="not sent"):
-            await JiuWenSwarmDeepAdapter.deliver_active_session_input(adapter, request, {})
-        instance.send_input.assert_not_awaited()
-        adapter._prepare_root_input_dispatch.assert_not_awaited()
-        return
+    guard = SessionInputGuard(SimpleNamespace())
+    guard._session = SimpleNamespace(write_stream=AsyncMock(
+        side_effect=RuntimeError("closed output") if failure else None,
+    ))
+    entry = QueuedSessionInput("same text", "input-1")
+    if failure:
+        with pytest.raises(SessionInputDeliveryUnknown):
+            await guard.publish_input_received(entry)
+        assert entry.boundary_error is not None
     else:
-        with pytest.raises(SessionInputDeliveryUnknown, match="do not retry automatically"):
-            await JiuWenSwarmDeepAdapter.deliver_active_session_input(
-                adapter, request, {"query": "extra text"}
-            )
-    instance.send_input.assert_awaited_once()
-    adapter._permission_dispatch.finalize.assert_called_once_with("prepared")
+        await guard.publish_input_received(entry)
+        marker = guard._session.write_stream.await_args.args[0]
+        assert marker.type == "session_input_received"
+        assert marker.payload["input_request_id"] == "input-1"
+    assert entry.boundary_ready.is_set()
 
 
 @pytest.mark.asyncio
@@ -206,6 +180,7 @@ async def test_bound_steer_checks_target_at_sdk_enqueue_without_idle_dispatch(ra
     )
     guard = SessionInputGuard(instance)
     guard.accepting = True
+    guard._session = SimpleNamespace(write_stream=AsyncMock())
 
     async def prepare(*_args):
         # The task can finish/change during awaited permission preparation.
@@ -285,3 +260,61 @@ async def test_bound_input_cannot_fall_back_after_sdk_round_ends(monkeypatch, is
     adapter.process_message_impl.assert_not_awaited()
     adapter.process_message_stream_impl.assert_not_called()
     adapter._unregister_session_agent_task.assert_called_once_with("session")
+
+
+@pytest.mark.asyncio
+async def test_model_phase_waits_for_input_boundary_under_backpressure():
+    import asyncio
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ModelCallInputs
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import QueuedSessionInput
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    written = []
+
+    async def write(chunk):
+        if chunk.type == 'session_input_received':
+            entered.set()
+            await release.wait()
+        written.append(chunk)
+
+    owner = SimpleNamespace()
+    guard = SessionInputGuard(owner)
+    session = SimpleNamespace(write_stream=write)
+    guard._session = session
+    entry = QueuedSessionInput('same body', 'input-id')
+    ctx = AgentCallbackContext(agent=SimpleNamespace(config=SimpleNamespace(max_iterations=5)),
+                               inputs=ModelCallInputs(react_iteration=2), session=session)
+    ctx.extra['session_input_parts'] = [entry]
+    publish = asyncio.create_task(guard.publish_input_received(entry))
+    await entered.wait()
+    model = asyncio.create_task(guard.before_model_call(ctx))
+    assert not entry.boundary_ready.is_set()
+    assert not model.done()
+    release.set()
+    await asyncio.gather(publish, model)
+    assert [chunk.type for chunk in written] == ['session_input_received', 'session_output_phase']
+    assert written[1].payload['applied_input_ids'] == ['input-id']
+
+
+@pytest.mark.asyncio
+async def test_cancelled_input_boundary_releases_model_waiter_without_accepting_input():
+    import asyncio
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ModelCallInputs
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import QueuedSessionInput
+
+    guard = SessionInputGuard(SimpleNamespace())
+    guard._session = SimpleNamespace(write_stream=AsyncMock(side_effect=asyncio.CancelledError))
+    entry = QueuedSessionInput("cancelled body", "cancelled-input")
+    with pytest.raises(asyncio.CancelledError):
+        await guard.publish_input_received(entry)
+    assert entry.boundary_ready.is_set()
+    assert isinstance(entry.boundary_error, asyncio.CancelledError)
+    ctx = AgentCallbackContext(
+        agent=SimpleNamespace(config=SimpleNamespace(max_iterations=5)),
+        inputs=ModelCallInputs(react_iteration=2),
+        session=guard._session,
+    )
+    ctx.extra["session_input_parts"] = [entry]
+    with pytest.raises(RuntimeError, match="boundary was not published"):
+        await guard.before_model_call(ctx)
+    assert guard._session.write_stream.await_count == 1

@@ -1,6 +1,5 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import type { Message, TeamMemberContextCompressionState } from '../../types';
 import type { TeamMemberExecutionEvent, TeamTask as SessionTeamTask } from '../../stores/sessionStore';
@@ -9,8 +8,10 @@ import { parseTeamEventMessage, type ParsedTeamEvent } from '../ChatPanel/teamEv
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember, isUserMember } from '../../utils/teamMemberAvatar';
 import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { getSkillAvatar } from '../../utils/skillAvatar';
 import teamIcon from '../../assets/team.svg';
 import PendingIcon from '../../assets/pending.svg?react';
+import LoadingIcon from '../../assets/subagent/loading.svg?react';
 
 import BackIcon from '../../assets/back.svg?react';
 import { MemberListItem } from './MemberListItem';
@@ -44,8 +45,6 @@ type TeamMembersPanelProps = {
 };
 
 type GroupMessageItem = { message: Message; event: ParsedTeamEvent };
-
-const GROUP_LEADER_MEMBER_ID = 'team_leader';
 
 function getGroupMemberIds(members: TeamMember[]): string[] {
   return members.map((member) => member.member_id).filter((memberId) => !isTeamLeaderMember(memberId));
@@ -121,6 +120,11 @@ export function TeamMembersPanel({
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const teamLeaderMemberIds = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
   const groupMessages = useMemo(() => buildGroupMessageItems(historyMessages, messages), [historyMessages, messages]);
+  const groupMemberNames = [t('team.leader'), ...getGroupMemberIds(members).map(getMemberDisplayName)].join(
+    t('team.memberSeparator'),
+  );
+  // 群聊头像：文字取本地化群聊名的首字符（getSkillAvatar 的配色也按同一名字哈希），随语言切换
+  const groupAvatar = getSkillAvatar(t('team.groupChat'));
   const visibleMembers = useMemo(
     () => members.filter((member) => !isLeaderMember(member, teamLeaderMemberIds)),
     [members, teamLeaderMemberIds],
@@ -185,41 +189,62 @@ export function TeamMembersPanel({
       data-testid="team-area-members-panel"
       data-variant="expanded"
     >
-      {activeDetailTab === 'members' && (
-        <aside
-          className="w-[240px] shrink-0 overflow-y-auto border-r border-border bg-card"
-          data-testid="team-area-members-sidebar"
-        >
-          <div className="px-[24px] pt-[24px]">
-            <DetailTabSwitch activeTab={activeDetailTab} onChange={onDetailTabChange} />
-          </div>
+      <aside
+        className="w-[240px] shrink-0 overflow-y-auto border-r border-border bg-card"
+        data-testid="team-area-members-sidebar"
+      >
+        <div className="px-[24px] pt-[24px]">
+          <DetailTabSwitch activeTab={activeDetailTab} onChange={onDetailTabChange} />
+        </div>
 
-          <div className="space-y-3 px-[24px] py-4" data-testid="team-area-members-sidebar-list">
-            {visibleMembers.length === 0 ? (
-              <div className="py-10 text-center text-sm text-text-muted" data-testid="team-area-members-sidebar-empty">
-                {t('team.noMemberData')}
+        <div className="space-y-3 px-[24px] py-4" data-testid="team-area-members-sidebar-list">
+          {activeDetailTab === 'group' ? (
+            <div
+              className="flex w-full items-center gap-3 rounded-md border border-transparent bg-[var(--color-tool-tab-active-bg)] px-[8px] py-[9px] text-left"
+              data-testid="team-area-member-item"
+              data-variant="group-chat"
+            >
+              <div className="relative shrink-0" data-testid="team-area-member-item-avatar">
+                <span
+                  className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full text-sm font-semibold"
+                  style={groupAvatar.style}
+                >
+                  {groupAvatar.firstChar}
+                </span>
               </div>
-            ) : (
-              visibleMembers.map((member) => (
-                <MemberListItem
-                  key={member.member_id}
-                  member={member}
-                  selected={visibleSelectedMember?.member_id === member.member_id}
-                  onClick={() => onSelectMember?.(member.member_id)}
-                />
-              ))
-            )}
-          </div>
-        </aside>
-      )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-semibold text-text" data-testid="team-area-member-item-name">
+                    {t('team.groupChat')}
+                  </span>
+                </div>
+                <div
+                  className="mt-0.5 truncate text-xs text-[var(--color-team-member-item-id-text)]"
+                  data-testid="team-area-member-item-id"
+                >
+                  {groupMemberNames}
+                </div>
+              </div>
+            </div>
+          ) : visibleMembers.length === 0 ? (
+            <div className="py-10 text-center text-sm text-text-muted" data-testid="team-area-members-sidebar-empty">
+              {t('team.noMemberData')}
+            </div>
+          ) : (
+            visibleMembers.map((member) => (
+              <MemberListItem
+                key={member.member_id}
+                member={member}
+                selected={visibleSelectedMember?.member_id === member.member_id}
+                onClick={() => onSelectMember?.(member.member_id)}
+              />
+            ))
+          )}
+        </div>
+      </aside>
 
       {activeDetailTab === 'group' ? (
-        <GroupChatDetail
-          items={groupMessages}
-          members={members}
-          activeTab={activeDetailTab}
-          onTabChange={onDetailTabChange}
-        />
+        <GroupChatDetail items={groupMessages} />
       ) : visibleSelectedMember ? (
         <MemberTaskDetail
           member={visibleSelectedMember}
@@ -273,36 +298,10 @@ function DetailTabSwitch({
   );
 }
 
-function GroupChatDetail({
-  items,
-  members,
-  activeTab,
-  onTabChange,
-}: {
-  items: GroupMessageItem[];
-  members: TeamMember[];
-  activeTab: TeamDetailTab;
-  onTabChange?: (tab: TeamDetailTab) => void;
-}) {
+function GroupChatDetail({ items }: { items: GroupMessageItem[] }) {
   const { t } = useTranslation();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
-  const groupMemberIds = getGroupMemberIds(members);
-  const memberNames = [t('team.leader'), ...groupMemberIds.map(getMemberDisplayName)].join(t('team.memberSeparator'));
-  const avatarMemberIds = [GROUP_LEADER_MEMBER_ID, ...groupMemberIds];
-  const memberNamesRef = useRef<HTMLDivElement>(null);
-  const [memberNamesTruncated, setMemberNamesTruncated] = useState(false);
-  const { tooltip: memberNamesTooltip, handlers: memberNamesTooltipHandlers } = useAdaptiveTooltip();
-
-  useLayoutEffect(() => {
-    const element = memberNamesRef.current;
-    if (!element) return;
-    const checkOverflow = () => setMemberNamesTruncated(element.scrollWidth > element.clientWidth);
-    checkOverflow();
-    const observer = new ResizeObserver(checkOverflow);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [memberNames]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -320,36 +319,6 @@ function GroupChatDetail({
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-card" data-testid="team-area-group-chat">
-      <div
-        className="flex shrink-0 items-center justify-between gap-5 border-b border-border bg-card px-[24px] pt-[22px] pb-[24px]"
-        data-testid="team-area-group-chat-section"
-      >
-        <div className="w-[192px] shrink-0">
-          <DetailTabSwitch activeTab={activeTab} onChange={onTabChange} />
-        </div>
-        <div className="flex min-w-0 items-center justify-end gap-3">
-          <div className="min-w-0 text-right">
-            <div className="text-base font-semibold text-text" data-testid="team-area-group-chat-title">
-              {t('team.groupChat')}
-            </div>
-            <div
-              ref={memberNamesRef}
-              className="mt-1 truncate text-xs text-text-muted"
-              data-testid="team-area-group-chat-member-names"
-              data-tooltip={memberNamesTruncated ? memberNames : undefined}
-              tabIndex={memberNamesTruncated ? 0 : undefined}
-              {...memberNamesTooltipHandlers}
-            >
-              {memberNames}
-            </div>
-          </div>
-          <div className="flex -space-x-2" data-testid="team-area-group-chat-avatar-stack">
-            <GroupAvatarStack memberIds={avatarMemberIds} />
-          </div>
-        </div>
-      </div>
-
-      {memberNamesTooltip}
       <div
         ref={scrollContainerRef}
         className="team-group-chat-message-list min-h-0 flex-1 overflow-y-auto px-7 py-6"
@@ -372,27 +341,6 @@ function GroupChatDetail({
         )}
       </div>
     </section>
-  );
-}
-
-function GroupAvatarStack({ memberIds }: { memberIds: string[] }) {
-  const visibleMemberIds = memberIds.length > 3 ? memberIds.slice(0, 2) : memberIds;
-  const hiddenCount = memberIds.length - visibleMemberIds.length;
-
-  return (
-    <>
-      {visibleMemberIds.map((memberId) => (
-        <TeamMemberAvatar key={memberId} member={memberId} className="!h-7 !w-7 ring-2 ring-card" />
-      ))}
-      {hiddenCount > 0 && (
-        <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--color-team-overflow-surface)] text-xs font-medium text-accent ring-2 ring-card"
-          data-testid="team-area-group-chat-avatar-overflow"
-        >
-          +{hiddenCount}
-        </span>
-      )}
-    </>
   );
 }
 
@@ -524,16 +472,7 @@ const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
   const statusKey = getMemberStatusKey(member);
   const isRunning = statusKey === 'running';
   const statusIcon = isRunning ? (
-    <svg className="w-4 h-4 text-info animate-spin shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 2v4" />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m16.2 7.8 2.9-2.9" />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 12h4" />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m16.2 16.2 2.9 2.9" />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18v4" />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m4.9 19.1 2.9-2.9" />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2 12h4" />
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m4.9 4.9 2.9 2.9" />
-    </svg>
+    <LoadingIcon className="h-4 w-4 shrink-0 text-muted animate-spin" />
   ) : (
     <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
   );
@@ -663,9 +602,7 @@ function MemberTaskDetail({
           }}
         />
         {memberTasks.length > 0 ? (
-          <div
-            data-testid="team-area-member-detail-footer"
-          >
+          <div data-testid="team-area-member-detail-footer">
             <MemberTaskListBar
               tasks={memberTasks}
               expanded={taskListExpanded}
@@ -798,4 +735,3 @@ function FinalSummaryList({ events }: { events: TeamMemberExecutionEvent[] }) {
     </div>
   );
 }
-
