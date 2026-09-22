@@ -3,10 +3,8 @@ from __future__ import annotations
 import json
 import secrets
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Optional
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
-from jiuwenswarm.common.utils import logger
 
 
 def _new_trace_id() -> str:
@@ -77,21 +75,6 @@ class RoutingDecision:
     model_usage_stats: dict[str, Any] = field(default_factory=dict)
 
 
-
-def _extract_prompt_text(messages: list[Any]) -> str:
-    """取最后一条 user 消息文本作为分类输入。
-
-    TUI 等通道会把用户输入包成 ``你收到一条消息：\\n{json envelope}``（真实文本在
-    envelope 的 ``content`` 字段）。先解包 envelope 再返回，否则信封中的时间戳/数字
-    会干扰分类器，且 1/2 确认回复会被当成整段 JSON 而永远匹配不上。
-    """
-    for msg in reversed(messages or []):
-        role = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else None)
-        if role == "user":
-            return _unwrap_user_message(_message_text(msg))
-    return _unwrap_user_message("\n".join(_message_text(m) for m in (messages or [])))
-
-
 def _unwrap_user_message(text: str) -> str:
     """解开 TUI 的 ``你收到一条消息：\\n{...}`` 信封，取 ``content`` 字段。
 
@@ -126,21 +109,6 @@ def _unwrap_user_message(text: str) -> str:
                 parts.append(str(part))
         return "\n".join(parts)
     return text
-
-
-def _message_text(msg: Any) -> str:
-    content = getattr(msg, "content", None)
-    if content is None and isinstance(msg, dict):
-        content = msg.get("content", "")
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if isinstance(part, dict):
-                parts.append(str(part.get("text", "")))
-            else:
-                parts.append(str(part))
-        return "\n".join(parts)
-    return str(content or "")
 
 
 def _agent_model_name(ctx: AgentCallbackContext) -> str:
@@ -179,22 +147,3 @@ def _extract_agent_info(ctx: AgentCallbackContext) -> dict[str, Any]:
         "provider": provider or "unknown",
         "available_model_ids": [],  # 占位：能力表完善后填充
     }
-
-
-def _get_session_id(ctx: AgentCallbackContext) -> str | None:
-    """从 ctx.session 取 session_id（兼容 get_session_id()/session_id 属性）。"""
-    session = getattr(ctx, "session", None)
-    if session is None:
-        return None
-    for _name in ("get_session_id", "session_id"):
-        attr = getattr(session, _name, None)
-        if attr is None:
-            continue
-        try:
-            value = attr() if callable(attr) else attr
-        except Exception as exc:
-            logger.debug("[ModelRouting] session_id access failed: %s", exc)
-            continue
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None

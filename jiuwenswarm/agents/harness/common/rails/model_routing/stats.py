@@ -5,9 +5,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
-
-from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from typing import Any, Optional
 
 from jiuwenswarm.common.utils import logger
 
@@ -185,17 +183,3 @@ def get_stats_store(path: Optional[str] = None) -> _ModelUsageStats:
             if _STATS_SINGLETON is None:
                 _STATS_SINGLETON = _ModelUsageStats(Path(path) if path else None)
     return _STATS_SINGLETON
-
-
-def reset_stats_store_for_test(path: Optional[str] = None) -> _ModelUsageStats:
-    """测试用：重置单例并指向指定路径。"""
-    global _STATS_SINGLETON
-    with _STATS_SINGLETON_LOCK:
-        _STATS_SINGLETON = _ModelUsageStats(Path(path) if path else None)
-    return _STATS_SINGLETON
-
-
-# --------------------------------------------------------------------------- #
-# 分类器（dev：大模型 prompt 代替 1.5B）
-# --------------------------------------------------------------------------- #
-Classifier = Callable[[str], Any]

@@ -8963,27 +8963,21 @@ class JiuWenSwarmDeepAdapter:
         """构建 ModelRoutingRail（模型路由）。
 
         - 使能：config.yaml ``model_routing.enabled`` = true。
-        - 始终真切换（apply_routing=True，不再有"仅推荐"模式）。
+        - 始终真切换（apply_routing=True）。
         - 模型选择由前端下拉框与具体模型同级，经 frame ``params.model_name`` 注入
-          （具体模型名 / fast / balanced / extreme / auto），见 ModelRoutingRail。
-        - ``model_routing.classifier``：分类器专用模型（只有 api_base/api_key/model_name/temperature 四个字段）；
-          api_base 非空即生效；不配则用 agent 当前 LLM。
-        - 能力表来自 config.yaml ``models.defaults`` + ``models.vision``（后者作 model_type="vision"
-          候选，仅含图请求参与路由）；model_builder 传 _build_model_from_entry 使能力表带 Model 对象（真切换前置）。
+          （fast / balanced / extreme / auto 四档写死模式，或具体模型名），见 ModelRoutingRail。
+        - 能力表来自 ``routing_state/models.json``（sidecar）或 config.yaml ``models.defaults``
+          + ``models.vision``（后者作 model_type="vision" 候选）；model_builder 传
+          _build_model_from_entry 使能力表带 Model 对象（真切换前置）。
         """
         mr_cfg = (config or {}).get("model_routing") or {}
         if not (mr_cfg.get("enabled") is True):
             return None
 
-        # （模板拷贝已在 classifier/capability 模块加载时完成，此处不再重复）
-
         try:
             from jiuwenswarm.agents.harness.common.rails.model_routing import (
                 ModelRoutingRail,
                 build_capability_table_from_config,
-                ensure_routing_state_files,
-                load_mapper_config,
-                load_classifier_impl,
             )
 
             stats_path = str(mr_cfg.get("stats_path") or "").strip() or None
@@ -8991,29 +8985,16 @@ class JiuWenSwarmDeepAdapter:
                 config,
                 model_builder=JiuWenSwarmDeepAdapter._build_model_from_entry,
             )
-            # 分类器：从 classifier_mapper.json 加载（exec 注入）
-            ensure_routing_state_files()
-            classifier = None
-            mapper = {}
-            try:
-                mapper = load_mapper_config()
-                classifier, _ = load_classifier_impl(mapper)
-            except Exception as exc:
-                logger.debug("[JiuWenSwarmDeepAdapter] classifier load skipped: %s", exc)
             rail = ModelRoutingRail(
                 caps,
                 apply_routing=True,
                 stats_path=stats_path,
-                classifier=classifier,
-                mapper=mapper,
-                health_check_config=mr_cfg.get("health_check"),
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] ModelRoutingRail create success, "
-                "%d models, stats_path=%s, classifier=%s",
+                "%d models, stats_path=%s",
                 len(caps),
                 stats_path or "(default)",
-                "dedicated" if classifier is not None else "agent-llm",
             )
             return rail
         except Exception as exc:

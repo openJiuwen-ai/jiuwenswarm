@@ -1,4 +1,4 @@
-"""model_routing.capability — ModelCapability + table builder + ranking."""
+"""model_routing.capability — ModelCapability + 能力表构建。"""
 from __future__ import annotations
 import hashlib
 import json
@@ -17,8 +17,8 @@ class ModelCapability:
 
     model_name: str
     max_length: int = 65535  # 上下文窗口占位
-    model_group: str = "unknown"  # 由 model_name 本地映射
-    model_provider: str = "unknown"  # 厂商，由 model_name 本地映射（非 config 的 service provider）
+    model_group: str = "unknown"  # 由条目顶层 model_group 提供，缺省 "unknown"
+    model_provider: str = "unknown"  # 厂商，由条目顶层 model_provider 提供（非 config 的 service provider）
     model_expertise_category: list[str] = field(default_factory=list)  # e.g. ["coding", "reasoning"]
     model_cost: int = 0  # 相对成本
     model_performance: int = 0  # 基准得分
@@ -33,137 +33,6 @@ class ModelCapability:
     token_used: dict[str, Any] = field(default_factory=dict)
 
 
-def _capability_rank(cap: ModelCapability) -> float:
-    """能力排序值：高=更强。优先 model_score，次 model_performance。不考虑 model_size。"""
-    for val in (cap.model_score, cap.model_performance):
-        try:
-            v = float(val)
-            if v > 0:
-                return v
-        except (TypeError, ValueError):
-            continue
-    return 0.0
-
-
-# --------------------------------------------------------------------------- #
-# 能力映射表（model_capability_map.json）
-# --------------------------------------------------------------------------- #
-# 两部分：
-# - vendor_map：model_name 子串 -> (model_group, model_provider)，按顺序首匹配（前缀越长放越前）。
-# - models：按 model_name 精确匹配的能力覆盖（model_cost / model_performance / model_score /
-#   max_length / model_group / model_provider）。命中则覆盖 config 条目里的同名字段。
-#
-# 查找顺序：~/.jiuwenswarm/config/routing_state/model_capability_map.json（用户自定义）
-#         > <package>/resources/model_capability_map.json（包内模板）
-# 文件缺失或解析失败 -> 返回空表（group/provider 回退 "unknown"，无 cost/score 覆盖），不抛。
-
-
-def _ensure_user_copy(filename: str) -> None:
-    """确保用户 routing_state 目录下有 filename 的副本。
-
-    若用户目录下不存在，从包内模板拷贝过去，让用户可以自定义覆盖。
-    已存在则不覆盖（保留用户的修改）。
-    """
-    import shutil
-    try:
-        from jiuwenswarm.common.utils import get_config_dir, _find_package_root
-    except Exception as exc:
-        logger.debug("[ModelRouting] import utils failed in _ensure_user_copy: %s", exc)
-        return
-    try:
-        pkg_root = _find_package_root()
-        if pkg_root is None:
-            return
-        src = pkg_root / "resources" / "model_routing" / filename
-        if not src.exists():
-            return
-        dst_dir = get_config_dir() / "routing_state"
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        dst = dst_dir / filename
-        if not dst.exists():
-            shutil.copy2(src, dst)
-            logger.info("[ModelRouting] copied template %s to %s", filename, dst)
-    except Exception as exc:
-        logger.debug("[ModelRouting] template copy for %s failed: %s", filename, exc)
-
-
-def _load_capability_map() -> dict:
-    """加载 model_capability_map.json，返回 {"vendor_map": [...], "models": {...}}。
-
-    先确保用户目录有模板副本（从包内拷贝），然后按顺序加载：
-    1. ~/.jiuwenswarm/config/routing_state/model_capability_map.json（用户自定义）
-    2. <package>/resources/model_routing/model_capability_map.json（包内兜底）
-
-    文件缺失或解析失败 -> 返回空表（group/provider 回退 "unknown"，无 cost/score 覆盖），不抛。
-    """
-    _ensure_user_copy("model_capability_map.json")
-
-    paths: list = []
-    try:
-        from jiuwenswarm.common.utils import get_config_dir
-        paths.append(get_config_dir() / "routing_state" / "model_capability_map.json")
-    except Exception as exc:
-        logger.debug("[ModelRouting] get_config_dir failed: %s", exc)
-    try:
-        from jiuwenswarm.common.utils import _find_package_root
-        pr = _find_package_root()
-        if pr is not None:
-            paths.append(pr / "resources" / "model_routing" / "model_capability_map.json")
-    except Exception as exc:
-        logger.debug("[ModelRouting] _find_package_root failed: %s", exc)
-
-    path = next((p for p in paths if p.exists()), None)
-    if path is None:
-        logger.debug(
-            "[ModelRouting] capability map not found, tried: %s",
-            ", ".join(str(p) for p in paths) or "(no paths)",
-        )
-        return {"vendor_map": [], "models": {}}
-    try:
-        with open(path, encoding="utf-8") as f:
-            cfg = json.load(f)
-    except Exception as exc:
-        logger.warning("[ModelRouting] capability map load failed (%s): %s", path, exc)
-        return {"vendor_map": [], "models": {}}
-
-    vendor_map: list[tuple[str, str, str]] = []
-    raw_vm = cfg.get("vendor_map") if isinstance(cfg, dict) else None
-    if isinstance(raw_vm, list):
-        for item in raw_vm:
-            if isinstance(item, dict):
-                pfx = str(item.get("prefix", "") or "").lower()
-                grp = str(item.get("group", "") or "")
-                prov = str(item.get("provider", "") or "")
-                if pfx:
-                    vendor_map.append((pfx, grp, prov))
-            elif isinstance(item, (list, tuple)) and len(item) >= 3:
-                vendor_map.append((str(item[0]).lower(), str(item[1]), str(item[2])))
-    models = cfg.get("models") if isinstance(cfg, dict) else None
-    if not isinstance(models, dict):
-        models = {}
-    logger.info(
-        "[ModelRouting] capability map loaded from %s: vendor_prefixes=%d models=%d",
-        path, len(vendor_map), len(models),
-    )
-    return {"vendor_map": vendor_map, "models": models}
-
-
-_CAP_MAP: dict = _load_capability_map()
-
-
-def _map_model_group_provider(model_name: str) -> tuple[str, str]:
-    """按 model_name 子串映射 (model_group, 厂商)。未命中返回 ("unknown","unknown")。
-
-    例：GLM-5.1 -> ("GLM", "zhipu")；qwen3-max -> ("Qwen", "alibaba")。
-    前缀表来自 model_capability_map.json::vendor_map，按顺序首匹配。
-    """
-    name = (model_name or "").lower()
-    for prefix, group, vendor in _CAP_MAP.get("vendor_map", ()):
-        if prefix and prefix in name:
-            return group, vendor
-    return "unknown", "unknown"
-
-
 def _build_cap_from_entry(
     entry: Any,
     model_builder: Optional[Callable[[dict, dict], Any]] = None,
@@ -173,38 +42,28 @@ def _build_cap_from_entry(
     """从单个 config 条目（model_client_config + model_config_obj + 顶层字段）建一个 cap。
 
     - model_name：``model_client_config.model_name``（无则 alias / "unknown"）。
-    - model_group / model_provider：``_map_model_group_provider`` 按 model_name 推导；
-      model_capability_map.json::models[name] 里的 model_group/model_provider 可覆盖。
+    - model_group / model_provider：条目顶层 ``model_group``/``model_provider``，缺省 "unknown"。
     - model_type：``force_model_type`` 优先，否则条目顶层 ``model_type``。
     - is_trusted：条目顶层读。
-    - model_cost / model_performance / model_score / max_length：优先用
-      model_capability_map.json::models[name] 里的值（命中覆盖），否则条目顶层值，否则默认。
+    - model_cost / model_performance / model_score / max_length：条目顶层读，缺省默认。
     - model：model_builder 构建（真切换用）；缺省则 model=None 仅推荐不切换。
     """
     mcc = entry.get("model_client_config", {}) if isinstance(entry, dict) else {}
     mco = entry.get("model_config_obj", {}) if isinstance(entry, dict) else {}
     name = str(mcc.get("model_name", "") or entry.get("alias", "") or "unknown")
-    group, vendor = _map_model_group_provider(name)
-    ovr = _CAP_MAP.get("models", {}).get(name) if isinstance(_CAP_MAP.get("models"), dict) else None
-    ovr = ovr if isinstance(ovr, dict) else {}
+    group = str(entry.get("model_group", "") or "unknown") if isinstance(entry, dict) else "unknown"
+    vendor = str(entry.get("model_provider", "") or "unknown") if isinstance(entry, dict) else "unknown"
 
     def _int(field_name: str, default: int) -> int:
-        """能力数值：config 条目 > map 覆盖 > 默认。0 视为合法值（不误判为 falsy）。"""
+        """能力数值：config 条目 > 默认。0 视为合法值（不误判为 falsy）。"""
         ev = entry.get(field_name) if isinstance(entry, dict) else None
         if ev is not None and ev != "":
             try:
                 return int(ev)
             except (TypeError, ValueError):
                 pass
-        if field_name in ovr and ovr[field_name] is not None:
-            try:
-                return int(ovr[field_name])
-            except (TypeError, ValueError):
-                return default
         return default
 
-    group = str(ovr.get("model_group") or group)
-    vendor = str(ovr.get("model_provider") or vendor)
     is_trusted = bool(entry.get("is_trusted", False)) if isinstance(entry, dict) else False
     explicit_cid = str(mcc.get("client_id", "") or "").strip()
     api_base = str(mcc.get("api_base", "") or "")
@@ -250,8 +109,7 @@ def _build_cap_from_entry(
 def _load_models_json() -> dict | None:
     """加载 sidecar 模式落盘的 models.json（relay spawn 前写入）。
 
-    路径：``get_config_dir()/routing_state/models.json``（与 classifier_mapper.json /
-    model_capability_map.json 同目录）。结构对齐 config.yaml::models::
+    路径：``get_config_dir()/routing_state/models.json``。结构对齐 config.yaml::models::
 
         {"defaults": [<entry>, ...], "vision": {<entry>}}
 
@@ -296,9 +154,6 @@ def build_capability_table_from_config(
 
     vision 专用模型：优先 ``models.json::vision``，回退 ``config.yaml::models.vision``。
     api_base 配了才进表，作为 ``model_type="vision"`` 候选，仅含图请求时参与路由。
-
-    能力字段（cost/performance/score/max_length/group/provider）由
-    model_capability_map.json 按 model_name 覆盖（命中即用），未命中回退条目值/默认。
     """
     # 优先 models.json（sidecar 模式）；缺失回退 config.yaml（stock 模式）
     models_json = _load_models_json()
