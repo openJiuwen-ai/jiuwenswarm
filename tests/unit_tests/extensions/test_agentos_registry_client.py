@@ -400,7 +400,7 @@ async def test_http_register_agent_maps_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_register_agent_pending_address_and_empty_node() -> None:
+async def test_http_register_agent_pending_address_and_node() -> None:
     transport = _FakeRegistryTransport()
     client = RegistryClient(
         RegistryConfig(endpoint="http://registry.test", node="192.168.0.12")
@@ -421,7 +421,7 @@ async def test_http_register_agent_pending_address_and_empty_node() -> None:
     assert post[2] is not None
     assert post[2]["instance_id"] == "sbx-pending-ip"
     assert post[2]["address"] == PENDING_INSTANCE_ADDRESS
-    assert post[2]["node"] == ""
+    assert post[2]["node"] == PENDING_INSTANCE_ADDRESS == "pending"
     await client.close()
 
 

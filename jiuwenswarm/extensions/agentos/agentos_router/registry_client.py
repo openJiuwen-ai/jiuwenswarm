@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 KIND_THIRD_PARTY = "三方"
 KIND_JIUWEN = "九问"
-# Registry rejects empty address; first POST uses this until placement PATCH.
+# First POST uses this for address and node until placement PATCH.
+# The registry rejects an empty address; node uses the same non-IP placeholder.
 PENDING_INSTANCE_ADDRESS = "pending"
 _JIUWEN_FRAMEWORKS = frozenset({"jiuwenswarm", "jiuwen-report"})
 # Offline registry stub default list when no framework filter is given.
@@ -701,10 +702,11 @@ class RegistryClient:
         ).strip()
         # Placement node is YuanRong node_ip, patched after running. Do not
         # stamp Gateway heartbeat IP (RegistryConfig.node) as the sandbox site.
+        # Until that IP exists, use the same non-empty placeholder as address.
         node = str(
             info.metadata.get("node")
             or sandbox_meta.get("node")
-            or ""
+            or PENDING_INSTANCE_ADDRESS
         ).strip()
         instance_id = str(
             info.sandbox_id
