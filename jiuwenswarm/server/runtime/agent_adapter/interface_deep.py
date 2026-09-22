@@ -12462,15 +12462,17 @@ class JiuWenSwarmDeepAdapter:
         """
         if self._stream_event_rail is None:
             return []
+        # rail 内部按归一化 sid 存取（_sid_key），统一下发归一化值：raw 与
+        # stripped 的差异会让 cancel/pause 落到别的 key 上。
         sid = self._resolve_interrupt_session_id(session_id)
-        self._stream_event_rail.abort(session_id or sid)
-        self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid)
+        self._stream_event_rail.abort(sid)
+        self._stream_event_rail.collect_cancelled_tool_updates(sid)
         cancelled_tool_results = self._stream_event_rail.get_cancelled_tool_results(
-            session_id or sid,
+            sid,
         )
-        self._stream_event_rail.clear_cancelled_tool_results(session_id or sid)
+        self._stream_event_rail.clear_cancelled_tool_results(sid)
         if reset_for_new_task:
-            self._stream_event_rail.reset_for_new_task(session_id or sid)
+            self._stream_event_rail.reset_for_new_task(sid)
         return cancelled_tool_results
 
     @staticmethod
@@ -13351,11 +13353,13 @@ class JiuWenSwarmDeepAdapter:
         # an empty-string or None request.session_id doesn't bypass the guard.
         _normalized_sid = self._resolve_interrupt_session_id(request.session_id)
         _session_is_active = self._is_session_active(_normalized_sid)
-        if not _session_is_active and intent in ("pause", "resume"):
+        # 只有 pause 受活跃守卫限制：跳过 pause 无害（暂停只是不生效）。
+        # resume 不受限：它幂等且无害，若因会话不在活跃计数里被跳过，
+        # 已阻塞的 pause latch 将永久无人解除（cron 挂死 59 分钟的机制之一）。
+        if not _session_is_active and intent == "pause":
             logger.info(
-                "[JiuWenSwarmDeepAdapter] interrupt(%s):",
-                "session=%s not active on this adapter, ",
-                "skipping pause/resume (active_sessions=%s)",
+                "[JiuWenSwarmDeepAdapter] interrupt(%s): session=%s not active on "
+                "this adapter, skipping pause (active_sessions=%s)",
                 intent,
                 request.session_id,
                 dict(self._active_session_ids),
@@ -13377,9 +13381,11 @@ class JiuWenSwarmDeepAdapter:
         continuation_discarded = True
 
         if intent == "pause":
-            # 暂停：通过 StreamEventRail 在下一个 model_call/tool_call checkpoint 阻塞
+            # 暂停：通过 StreamEventRail 在下一个 model_call/tool_call checkpoint 阻塞。
+            # 下发必须用与守卫一致的 _normalized_sid，否则 strip/空值差异会让
+            # pause 落到别的 key 上，resume 永远对不上号。
             if _session_is_active and self._stream_event_rail is not None:
-                self._stream_event_rail.pause(request.session_id)
+                self._stream_event_rail.pause(_normalized_sid)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] interrupt: 已暂停执行 request_id=%s",
                     request.request_id,
@@ -13387,12 +13393,16 @@ class JiuWenSwarmDeepAdapter:
             message = "任务已暂停"
 
         elif intent == "resume":
-            # 恢复：解除 StreamEventRail 的 pause 阻塞 + 清除 abort 标志
-            if _session_is_active and self._stream_event_rail is not None:
-                self._stream_event_rail.resume(request.session_id)
+            # 恢复：解除 StreamEventRail 的 pause 阻塞 + 清除 abort 标志。
+            # 不检查 _session_is_active：resume 到达时会话可能已离开活跃计数
+            # （stream 已回卷），跳过它会让 latch 卡死；resume 本身幂等无害。
+            if self._stream_event_rail is not None:
+                self._stream_event_rail.resume(_normalized_sid)
                 logger.info(
-                    "[JiuWenSwarmDeepAdapter] interrupt: 已恢复执行 request_id=%s",
+                    "[JiuWenSwarmDeepAdapter] interrupt: 已恢复执行 request_id=%s"
+                    " (session_active=%s)",
                     request.request_id,
+                    _session_is_active,
                 )
             message = "任务已恢复"
 
