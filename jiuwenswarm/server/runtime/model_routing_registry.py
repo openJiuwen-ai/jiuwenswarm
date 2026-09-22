@@ -7,9 +7,18 @@ from typing import Callable
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_errors import (
-    MODEL_GROUP_INVALID, MODEL_SELECTION_DISABLED, MODEL_SELECTION_FORBIDDEN, ModelSelectionError,
+    MODEL_GROUP_INVALID,
+    MODEL_SELECTION_DISABLED,
+    MODEL_SELECTION_FORBIDDEN,
+    ModelSelectionError,
 )
-from jiuwenswarm.common.model_selection import ModelSelection, ResolvedModel, ResolvedModelGroup, ResolvedRoute, ResolvedSelection
+from jiuwenswarm.common.model_selection import (
+    ModelSelection,
+    ResolvedModel,
+    ResolvedModelGroup,
+    ResolvedRoute,
+    ResolvedSelection,
+)
 
 
 @dataclass(frozen=True)
@@ -31,14 +40,27 @@ class ModelSelectionResolver:
             return context.session_selection
         if context.spec_selection is not None:
             return context.spec_selection
-        groups = [g for g in self.catalog.snapshot["groups"] if isinstance(g, dict) and g.get("enabled", True) and g.get("is_default")]
+        groups = [
+            group
+            for group in self.catalog.snapshot["groups"]
+            if isinstance(group, dict)
+            and group.get("enabled", True)
+            and group.get("is_default")
+        ]
         if groups:
             return ModelSelection(type="model_group", id=groups[0]["model_group_id"])
         if context.legacy_model_name:
-            matches = [m for m in self.catalog.list_public_models() if m["model_name"] == context.legacy_model_name or m["alias"] == context.legacy_model_name]
+            matches = [
+                model
+                for model in self.catalog.list_public_models()
+                if model["model_name"] == context.legacy_model_name
+                or model["alias"] == context.legacy_model_name
+            ]
             if len(matches) == 1:
                 return ModelSelection(type="model", id=matches[0]["model_id"])
-        models = [m for m in self.catalog.list_public_models() if m["is_default"]] or self.catalog.list_public_models()
+        models = [
+            model for model in self.catalog.list_public_models() if model["is_default"]
+        ] or self.catalog.list_public_models()
         if not models:
             raise ModelSelectionError(MODEL_GROUP_INVALID, "no model is configured")
         return ModelSelection(type="model", id=models[0]["model_id"])
@@ -54,7 +76,21 @@ class ModelSelectionResolver:
         options = {k: v for k, v in mcc.items() if k not in {"model_name", "client_provider", "api_base", "api_key"}}
         defaults = {k: v for k, v in mco.items() if k not in {"context_window", "_source"}}
         detail = entry.get("model_detail") or {}
-        return ResolvedModel(model_id=model_id, source=source, model_name=mcc.get("model_name", ""), provider=mcc.get("client_provider", ""), api_base=mcc.get("api_base", ""), api_key=mcc.get("api_key", ""), endpoint_profile=entry.get("endpoint_profile") or mcc.get("endpoint_profile") or None, fallback_tag=detail.get("fallback_tag") or None, model_description=detail.get("model_description") or None, client_options=options, request_defaults=defaults)
+        return ResolvedModel(
+            model_id=model_id,
+            source=source,
+            model_name=mcc.get("model_name", ""),
+            provider=mcc.get("client_provider", ""),
+            api_base=mcc.get("api_base", ""),
+            api_key=mcc.get("api_key", ""),
+            endpoint_profile=entry.get("endpoint_profile")
+            or mcc.get("endpoint_profile")
+            or None,
+            fallback_tag=detail.get("fallback_tag") or None,
+            model_description=detail.get("model_description") or None,
+            client_options=options,
+            request_defaults=defaults,
+        )
 
     def resolve(self, selection: ModelSelection | None, context: ModelExecutionContext | None = None) -> ResolvedSelection:
         context = context or ModelExecutionContext()
@@ -66,8 +102,24 @@ class ModelSelectionResolver:
         group = self.catalog.get_group(selected.id)
         if not group.get("enabled", True):
             raise ModelSelectionError(MODEL_SELECTION_DISABLED, f"model group {selected.id!r} is disabled")
-        routes = [ResolvedRoute(route_id=route["route_id"], model=self._model(route["model_id"], context), enabled=route.get("enabled", True), request_overrides=route.get("request_overrides") or {}, tpm=route.get("tpm"), rpm=route.get("rpm"), timeout=route.get("timeout")) for route in (group.get("routes") or [])]
+        routes = [
+            ResolvedRoute(
+                route_id=route["route_id"],
+                model=self._model(route["model_id"], context),
+                enabled=route.get("enabled", True),
+                request_overrides=route.get("request_overrides") or {},
+                tpm=route.get("tpm"),
+                rpm=route.get("rpm"),
+                timeout=route.get("timeout"),
+            )
+            for route in (group.get("routes") or [])
+        ]
         if not routes:
             raise ModelSelectionError(MODEL_GROUP_INVALID, f"model group {selected.id!r} has no routes")
-        return ResolvedModelGroup(model_group_id=selected.id, routes=routes, request_config=group.get("request_config") or {}, routing=group.get("routing") or {})
+        return ResolvedModelGroup(
+            model_group_id=selected.id,
+            routes=routes,
+            request_config=group.get("request_config") or {},
+            routing=group.get("routing") or {},
+        )
 

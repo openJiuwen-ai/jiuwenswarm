@@ -71,7 +71,12 @@ class ModelCatalog:
             if "custom_headers" in client:
                 client.pop("custom_headers", None)
                 write_only.append("model_client_config.custom_headers")
-        entry.update(source=hit["source"], is_agentos=hit["source"] == "agentos", read_only=hit["source"] == "agentos", write_only_fields=write_only)
+        entry.update(
+            source=hit["source"],
+            is_agentos=hit["source"] == "agentos",
+            read_only=hit["source"] == "agentos",
+            write_only_fields=write_only,
+        )
         return entry
 
     def find_references(self, selection: ModelSelection) -> list[SelectionReference]:
