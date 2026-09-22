@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.gateway.routing.agent_client import DuplicateRequestIdError
 from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
 
 
@@ -67,7 +68,16 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                                     },
                                 )
                     first = False
+            except DuplicateRequestIdError:
+                # request_id 撞号说明 id 生成器出了问题（或同一连接上请求串行
+                # 堆积），不是"服务暂不可用"的正常抖动，必须可见。
+                logging.getLogger(__name__).warning(
+                    "lifecycle event polling dropped: duplicate request_id",
+                    exc_info=True,
+                )
             except Exception:
+                # 后台轮询，AgentServer 短暂不可用时每 2s 都会走到这里，
+                # 保持 debug，避免刷屏。
                 logging.getLogger(__name__).debug(
                     "lifecycle event polling deferred", exc_info=True
                 )
