@@ -504,15 +504,13 @@ def build_filesystem_policy(
         - ``mode=ro`` makes the first-pass mount land in bwrap's
           ``--ro-bind`` stage, which is the natural and self-documenting
           encoding for "ro intrinsic resource".
-        - The :data:`read_only_promote` entry survives the case where a
-          later rw parent bind (e.g. a user-configured ``files.allow`` on
-          the parent directory of ``config.yaml``) overlays the same
-          subtree and silently upgrades the mount back to rw. bwrap's
-          ``created_paths`` set is the union of ro_binds + rw_binds
-          destinations (see ``bwrap.py``), so the trailing
-          ``--remount-ro <path>`` is guaranteed to fire on this dst and
-          flip it back to read-only regardless of which stage owned the
-          mount last.
+        - The :data:`read_only_promote` entry adds the path to the policy
+          ``read_only`` list, granting Landlock read-only access and
+          scheduling a trailing ``--remount-ro``. That remount flips the file
+          back to read-only when a later rw bind overlays it; it resolves
+          because :meth:`BwrapConfig.to_args` emits a ro-bind nested under a
+          rw parent *after* the rw parent (see
+          ``_partition_nested_ro_binds`` in ``bwrap.py``).
         """
         bind_mounts.append({
             "host_path": host_path,
