@@ -366,6 +366,10 @@ class SessionCoordinator:
         self._write_manifest()
         _LIVE_COORDINATORS.add(self)
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def _write_manifest(self) -> None:
         path = self.root / "audit" / "source-manifest.json"
         if path.exists():
