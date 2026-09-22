@@ -32,6 +32,7 @@ const desktopApi = Object.freeze({
   selectLocalFilePath: (initialPath, title) => invoke('desktop:select-local-file-path', initialPath, title),
   describeLocalFiles: paths => invoke('desktop:describe-local-files', paths),
   getClipboardFiles: () => invoke('desktop:get-clipboard-files'),
+  pasteClipboard: () => invoke('desktop:paste-clipboard'),
   clearHuaweiSignIn: () => invoke('auth:clear-huawei-sign-in'),
   onLayoutInvalidated: callback => {
     const listener = () => callback();
@@ -86,5 +87,6 @@ contextBridge.exposeInMainWorld('pywebview', {
     select_local_file_path: desktopApi.selectLocalFilePath,
     describe_local_files: desktopApi.describeLocalFiles,
     get_clipboard_files: desktopApi.getClipboardFiles,
+    paste_clipboard: desktopApi.pasteClipboard,
   },
 });

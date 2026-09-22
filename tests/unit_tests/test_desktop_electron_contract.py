@@ -119,12 +119,22 @@ def _window_api_methods() -> set[str]:
     """pywebview 暴露给前端的 API 面 = _WindowApi 的公开方法。"""
     for node in ast.walk(_desktop_app_module()):
         if isinstance(node, ast.ClassDef) and node.name == "_WindowApi":
-            return {
+            methods = {
                 item.name
                 for item in node.body
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and not item.name.startswith("_")
             }
+            # Platform-specific native commands may be bound in __init__.
+            for item in ast.walk(node):
+                if isinstance(item, ast.Assign) and isinstance(item.value, ast.Attribute):
+                    for target in item.targets:
+                        if (isinstance(target, ast.Attribute)
+                                and isinstance(target.value, ast.Name)
+                                and target.value.id == "self"
+                                and not target.attr.startswith("_")):
+                            methods.add(target.attr)
+            return methods
     raise AssertionError("class _WindowApi not found in desktop_app.py")
 
 
