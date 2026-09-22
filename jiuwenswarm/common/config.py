@@ -1617,6 +1617,36 @@ def update_default_models_in_config(models_list: list[dict[str, Any]]) -> None:
     update_config(_mutate)
 
 
+def update_login_model_settings_in_config(context_windows: dict[str, int | None]) -> None:
+    from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SETTINGS_KEY
+
+    def _mutate(data):
+        if "models" not in data:
+            data["models"] = {}
+        models = data["models"]
+        settings = models.get(LOGIN_MODEL_SETTINGS_KEY)
+        if not isinstance(settings, dict):
+            settings = {}
+        for name, context_window in context_windows.items():
+            own = settings.get(name)
+            if context_window is None:
+                if isinstance(own, dict):
+                    own.pop("context_window", None)
+                    if not own:
+                        del settings[name]
+                continue
+            if not isinstance(own, dict):
+                own = {}
+                settings[name] = own
+            own["context_window"] = context_window
+        if settings:
+            models[LOGIN_MODEL_SETTINGS_KEY] = settings
+        else:
+            models.pop(LOGIN_MODEL_SETTINGS_KEY, None)
+        return data
+    update_config(_mutate)
+
+
 def update_default_model_provider_in_config(provider: str) -> bool:
     """Update only the default model provider in config.yaml.
 
@@ -2738,7 +2768,7 @@ def get_model_names() -> list[str]:
                 name_count[display] = count
                 names.append(display)
         return names
-    skip = {"default", "defaults"}
+    skip = {"default", "defaults", "login_model_settings"}
     return [k for k, v in models.items() if isinstance(v, dict) and k not in skip]
 
 

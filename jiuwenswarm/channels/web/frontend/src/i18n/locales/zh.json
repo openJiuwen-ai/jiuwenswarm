@@ -73,7 +73,9 @@
       "signedIn": "已登录",
       "loggedInDescription": "限时免费模型已可在对话的模型下拉中选用",
       "endedTitle": "活动已结束",
-      "endedDescription": "本期限时免费模型活动已结束，感谢参与"
+      "endedDescription": "本期限时免费模型活动已结束，感谢参与",
+      "configTitle": "免费模型配置",
+      "configDescription": "为限时免费模型单独设置上下文窗口等参数"
     },
     "categories": {
       "general": "常规",
@@ -3830,6 +3832,7 @@
       "loginSuccessToast": "华为账号登录成功",
       "statusStarting": "正在准备登录…",
       "statusWaiting": "已在浏览器中打开登录页，完成后回到这里…",
+      "claimPendingHint": "还没有收到登录结果。请先在打开的页面中完成华为账号授权，再点「我已完成登录」。",
       "checkLogin": "我已完成登录",
       "popupBlocked": "浏览器拦截了新标签页，请复制下面的地址手动打开：",
       "modelError": {
