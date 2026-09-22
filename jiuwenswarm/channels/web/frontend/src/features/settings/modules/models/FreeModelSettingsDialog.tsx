@@ -8,11 +8,7 @@ import type { ModelEntry } from '../../../../types';
 import { useSessionStore } from '../../../../stores/sessionStore';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { ContextWindowField } from './ContextWindowField';
-import {
-  DEFAULT_CONTEXT_WINDOW_TOKENS,
-  normalizeContextWindowTokens,
-  parseContextWindowTokens,
-} from './contextWindow';
+import { normalizeContextWindowTokens, parseContextWindowTokens } from './contextWindow';
 import { parseModelsPayload } from './ModelsSettings';
 import './FreeModelSettingsDialog.css';
 
@@ -55,7 +51,7 @@ export function FreeModelSettingsDialog({
   );
 
   const save = async () => {
-    const changes: Record<string, { context_window: number | null }> = {};
+    const changes: Record<string, { context_window: number }> = {};
     for (const model of models) {
       const draft = drafts[model.model_name];
       if (draft === undefined) continue;
@@ -64,11 +60,7 @@ export function FreeModelSettingsDialog({
         setError(t('settingsPanel.models.validation.contextWindowInvalid'));
         return;
       }
-      if (tokens !== parseContextWindowTokens(model.context_window_tokens)) {
-        changes[model.model_name] = {
-          context_window: tokens === DEFAULT_CONTEXT_WINDOW_TOKENS ? null : tokens,
-        };
-      }
+      changes[model.model_name] = { context_window: tokens };
     }
     if (Object.keys(changes).length === 0) {
       onClose();
