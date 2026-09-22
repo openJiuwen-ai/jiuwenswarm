@@ -2,6 +2,8 @@
 
 import asyncio
 import sys
+import threading
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -1192,3 +1194,278 @@ def test_has_parked_team_streams_requires_all_requests_round_ended(monkeypatch):
     assert not AgentRuntime.has_parked_team_streams(runtime, "sess_a")
     monkeypatch.setattr(team_manager, "_team_manager", None)
     assert not AgentRuntime.has_parked_team_streams(runtime, "sess_a")
+
+
+async def _cancel_mid_move(service, sid, action):
+    """Cancel a lifecycle action while its directory move is in flight."""
+    reached = threading.Event()
+    release = threading.Event()
+    real = SessionArchiveService.__dict__["_move_session_directory"]
+
+    def stalled(*args, **kwargs):
+        reached.set()
+        release.wait(10)
+
+    SessionArchiveService._move_session_directory = staticmethod(stalled)
+    task = asyncio.create_task(service.session(sid, action, "web"))
+    try:
+        assert await asyncio.to_thread(reached.wait, 3), "move never reached"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        SessionArchiveService._move_session_directory = real
+
+
+async def _wait_until(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.05)
+    pytest.fail("condition not reached in time")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_restore_marks_failed_and_recovers_promptly(archive):
+    service, create, root, _ = archive
+    create()
+    await service.session("sess_a", "archive", "web")
+    service.start_recovery()
+    await _cancel_mid_move(service, "sess_a", "unarchive")
+
+    # The fence is labelled failed (not stuck at running) and stays up ...
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] == "failed"
+    assert lc.state("session", "sess_a")["blocked"] is True
+    # ... but the poke plus backoff-aware polling make recovery retry within
+    # seconds instead of after the 10s idle poll.
+    await _wait_until(
+        lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
+    )
+    assert (root / "sessions/sess_a").exists()
+    lc.guard("sess_a")
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_archive_is_finalized_and_keeps_session_active(archive):
+    service, create, root, _ = archive
+    create()
+    service.start_recovery()
+    await _cancel_mid_move(service, "sess_a", "archive")
+
+    assert lc.state("session", "sess_a")["operation"]["status"] == "failed"
+    assert (root / "sessions/sess_a").exists()
+    # Recovery finalizes the abandoned archive op by directory position:
+    # still active -> completed without relocating anything.
+    await _wait_until(
+        lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
+    )
+    assert (root / "sessions/sess_a").exists()
+    assert not (root / "sessions_archived/sess_a").exists()
+    lc.guard("sess_a")
+    # The former kind-mismatch deadlock is gone: the opposite action is
+    # admissible again.
+    assert (await service.session("sess_a", "unarchive", "web"))["restored"] is False
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_abandoned_archive_with_moved_directory_finalizes_archived(archive):
+    service, create, root, _ = archive
+    directory = create()
+    # Simulate a crashed archive: the move finished, the operation never
+    # completed, and the owner released its lease.
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "dead-owner")
+    destination = root / "sessions_archived/sess_a"
+    destination.parent.mkdir()
+    directory.rename(destination)
+    lc.renew_operation("session", "sess_a", "dead-owner", release=True)
+    service.start_recovery()
+    await _wait_until(
+        lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
+    )
+    assert lc.state("session", "sess_a")["blocked"] is True
+    with pytest.raises(lc.LifecycleError) as error:
+        lc.guard("sess_a")
+    assert error.value.code == "SESSION_ARCHIVED"
+    # ... and unarchive is admissible again instead of kind-mismatch-deadlocked.
+    assert (await service.session("sess_a", "unarchive", "web"))["ok"] is True
+    assert (root / "sessions/sess_a").exists()
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_finalize_never_completes_a_live_retry_of_the_same_operation(archive):
+    service, create, root, _ = archive
+    create()
+    # Cancelled archive: failed, lease released by the unwinding owner.
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "old-owner")
+    lc.update(
+        "session",
+        "sess_a",
+        status="failed",
+        errors=["operation cancelled"],
+        retryable=True,
+    )
+    lc.renew_operation("session", "sess_a", "old-owner", release=True)
+    snapshot = lc.state("session", "sess_a")["operation"]
+
+    # A manual retry reuses the same operation_id and refreshes the lease;
+    # until its first status update the record still reads status=failed.
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "new-owner")
+    assert (
+        lc.state("session", "sess_a")["operation"]["lease_expires_at"] > time.time()
+    )
+
+    service._finalize_abandoned_archive(snapshot)
+
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] != "completed"
+    assert operation["owner_id"] == "new-owner"
+
+    # Once the retry truly exits and releases its lease, the same stale
+    # snapshot is finalized by the directory's position.
+    lc.renew_operation("session", "sess_a", "new-owner", release=True)
+    service._finalize_abandoned_archive(snapshot)
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] == "completed"
+    assert lc.state("session", "sess_a")["blocked"] is False
+    assert (root / "sessions/sess_a").exists()
+    lc.guard("sess_a")
+
+
+@pytest.mark.asyncio
+async def test_abandoned_archive_finalization_repairs_pin_reindex(archive, monkeypatch):
+    service, create, root, _ = archive
+    directory = create(pinned=True)
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "old-owner")
+    # Cancelled after the move: the requirement persisted before the move
+    # must still be honored by the recovery finalization.
+    lc.update(
+        "session",
+        "sess_a",
+        pin_reindex_required=True,
+        status="failed",
+        errors=["operation cancelled"],
+        retryable=True,
+    )
+    destination = root / "sessions_archived/sess_a"
+    destination.parent.mkdir()
+    directory.rename(destination)
+    lc.renew_operation("session", "sess_a", "old-owner", release=True)
+
+    calls = []
+    monkeypatch.setattr(
+        SessionArchiveService, "reindex_pins", staticmethod(lambda: calls.append(1))
+    )
+    service._finalize_abandoned_archive(lc.state("session", "sess_a")["operation"])
+    assert calls == [1]
+    assert lc.state("session", "sess_a")["operation"]["status"] == "completed"
+    with pytest.raises(lc.LifecycleError) as error:
+        lc.guard("sess_a")
+    assert error.value.code == "SESSION_ARCHIVED"
+
+
+@pytest.mark.asyncio
+async def test_pin_reindex_failure_keeps_operation_retryable(archive, monkeypatch):
+    service, create, root, _ = archive
+    directory = create(pinned=True)
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "old-owner")
+    lc.update(
+        "session",
+        "sess_a",
+        pin_reindex_required=True,
+        status="failed",
+        errors=["operation cancelled"],
+        retryable=True,
+    )
+    destination = root / "sessions_archived/sess_a"
+    destination.parent.mkdir()
+    directory.rename(destination)
+    lc.renew_operation("session", "sess_a", "old-owner", release=True)
+
+    def failing_reindex():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        SessionArchiveService, "reindex_pins", staticmethod(failing_reindex)
+    )
+    service._finalize_abandoned_archive(lc.state("session", "sess_a")["operation"])
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] == "failed"
+    assert operation["retryable"] is True
+
+    # A manual archive retry then runs the full flow and repairs the index.
+    repaired = []
+    monkeypatch.setattr(
+        SessionArchiveService, "reindex_pins", staticmethod(lambda: repaired.append(1))
+    )
+    result = await service.session("sess_a", "archive", "web")
+    assert result["archived"] is True
+    assert repaired == [1]
+    assert lc.state("session", "sess_a")["operation"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_project_delete_is_marked_failed_and_retryable(archive):
+    import shutil
+
+    service, create, root, runtime = archive
+    project = project_store.create_project("cancel-delete", str(root / "work"))
+    directory = create()
+    meta = lc.raw_metadata("sess_a")
+    meta["project_id"] = project.project_id
+    lc.atomic_json(directory / "metadata.json", meta)
+    token = await service.project(
+        project.project_id, "delete", "web", {"_lifecycle_stage": "prepare"}
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_delete(*, channel_id, session_id):
+        entered.set()
+        await release.wait()
+        return SimpleNamespace(ok=True)
+
+    runtime.delete_session.side_effect = blocked_delete
+    task = asyncio.create_task(
+        service.project(
+            project.project_id,
+            "delete",
+            "web",
+            {**token, "_lifecycle_stage": "finish"},
+        )
+    )
+    assert await asyncio.wait_for(entered.wait(), 3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+
+    operation = lc.state("project", project.project_id)["operation"]
+    assert operation["status"] == "failed"
+    assert operation["retryable"] is True
+    assert lc.projection("project", project.project_id)["execution_blocked"]
+
+    # The two-phase retry resumes from per-session state and completes.
+    async def delete_session(*, channel_id, session_id):
+        shutil.rmtree(lc.resolve_session(session_id))
+        return SimpleNamespace(ok=True)
+
+    runtime.delete_session.side_effect = delete_session
+    result = await service.project(
+        project.project_id,
+        "delete",
+        "web",
+        {**token, "_lifecycle_stage": "finish"},
+    )
+    assert result["deleted"] is True
+    assert project_store.get_project_by_id(project.project_id, cache_bust=True) is None

@@ -50,7 +50,7 @@
     "settings": "Settings",
     "logs": "Logs",
     "update": "Updates",
-    "personalContext": "Context"
+    "personalContext": "Knowledge"
   },
   "applicationPlugins": {
     "title": "Application plugins",
@@ -61,6 +61,21 @@
     "disabled": "Disabled",
     "empty": "No application plugins were found",
     "noSettings": "This plugin does not provide a settings page."
+  },
+  "videoLive": {
+    "modelFallback": "Video model",
+    "subtitle": "Real-time multi-screen audio and video Q&A",
+    "status": { "connecting": "Connecting to the Full-duplex model and requesting microphone access…", "speaking": "The model is responding…" },
+    "coreAgent": { "startFailed": "Jiuwen Core Agent could not start the task: {{message}}", "startFailedSummary": "The task could not start. The error is shown in the interface." },
+    "errors": { "startFailed": "Failed to start the Full-duplex session.", "joyaiTextNotAccepted": "The text input was not accepted by the JoyAI session.", "qwenTextNotAccepted": "The text input was not accepted by the Qwen Realtime session.", "textSendFailed": "Failed to send the text input." },
+    "empty": { "title": "Open a real-time view", "description": "Use a camera, local video, or add multiple screens", "listening": "Listening continuously", "waiting": "Waiting to start Full-duplex", "hint": "Speak after starting; no need to click for each sentence" },
+    "sources": { "camera": "Camera", "localVideo": "Local video", "addScreen": "Add screen", "shareScreen": "Share screen", "stopCamera": "Stop camera", "stopScreens": "Stop all screens" },
+    "actions": { "closeVideo": "Close video", "starting": "Starting Full-duplex session", "stopSession": "End Full-duplex session", "startSession": "Start Full-duplex session" },
+    "frameWindow": "Rolling window: {{count}}/{{max}} frames",
+    "audioOnly": "Audio only; no video frames sent",
+    "chat": { "coreResult": "Tool result · Jiuwen Core Agent", "user": "You", "search": "Jiuwen Search", "assistant": "Assistant", "searchCompleted": "Jiuwen Search Agent completed" },
+    "search": { "ready": "Preparing search", "selectHistory": "Select search history", "latest": "Latest search (automatic)" },
+    "input": { "activePlaceholder": "You can also type in this session…", "inactivePlaceholder": "Start Full-duplex first…", "send": "Send question" }
   },
   "settingsPanel": {
     "title": "Settings",
@@ -73,7 +88,9 @@
       "signedIn": "Signed in",
       "loggedInDescription": "Limited-time free models are now available in the chat model dropdown",
       "endedTitle": "Campaign ended",
-      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part."
+      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part.",
+      "configTitle": "Free model settings",
+      "configDescription": "Set the context window and other options for the limited-time free models"
     },
     "categories": {
       "general": "General",
@@ -81,7 +98,7 @@
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
-      "personalContext": "Context",
+      "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
@@ -334,7 +351,7 @@
       "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
-      "taskAsr": "ASR model configuration",
+      "taskAsr": "Speech transcription",
       "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-Party Agents",
       "externalCliAgentsDescription": "For Team mode only.",
@@ -347,6 +364,41 @@
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check."
+    },
+    "taskAsr": {
+      "dialogTitle": "Configure speech transcription model",
+      "validationRequired": "Enter the speech transcription URL, API key, and model.",
+      "notConfigured": "Speech transcription model is not configured."
+    },
+    "videoDuplex": {
+      "loading": "Loading full-duplex model settings…",
+      "description": "Configure the vision model and its speech recognition and synthesis channels.",
+      "enabled": "Full duplex enabled",
+      "disabled": "Full duplex disabled",
+      "enable": "Enable",
+      "disable": "Disable",
+      "toggleError": "Unable to update the plugin status",
+      "saved": "Settings saved; new requests will use the latest configuration",
+      "videoSectionTitle": "Video model",
+      "saveSettings": "Save settings",
+      "loadError": "Unable to load full-duplex model settings",
+      "saveError": "Unable to save full-duplex model settings",
+      "notConfigured": "Full-duplex model is not configured",
+      "dialogTitle": "Configure full-duplex model",
+      "providerLabel": "Model channel",
+      "joyaiModelLabel": "JoyAI model",
+      "voiceSectionTitle": "Speech transcription and synthesis",
+      "voiceProtocolLabel": "Voice channel",
+      "voiceApiKeyLabel": "Voice API key",
+      "asrEndpointLabel": "Speech transcription endpoint",
+      "ttsEndpointLabel": "Speech synthesis endpoint",
+      "asrModelLabel": "Speech transcription model",
+      "ttsModelLabel": "Speech synthesis model",
+      "ttsVoiceLabel": "Speech synthesis voice",
+      "qwenModelLabel": "Qwen model",
+      "qwenVoiceLabel": "Qwen voice",
+      "deleteTitle": "Delete full-duplex model settings",
+      "deleteConfirm": "This clears the saved full-duplex endpoint, model, and API key."
     },
     "fields": {
       "preferred_language": {
@@ -372,19 +424,23 @@
       "embed_api_key": { "title": "API key" },
       "embed_model": { "title": "Model name" },
       "asr_api_base": {
-        "title": "ASR API URL",
+        "title": "Speech transcription API URL",
         "description": "Enter an OpenAI-compatible base URL or the full /audio/transcriptions URL.",
         "placeholder": "e.g. https://api.example.com/v1"
       },
       "asr_api_key": {
-        "title": "ASR API key",
+        "title": "Speech transcription API key",
         "description": "Used for general speech transcription; JoyAI has separate settings.",
         "placeholder": "e.g. sk-..."
       },
       "asr_model": {
-        "title": "ASR model",
+        "title": "Speech transcription model",
         "description": "Model used for general speech transcription.",
         "placeholder": "e.g. FunAudioLLM/SenseVoiceSmall"
+      },
+      "task_asr_enabled": {
+        "title": "Speech transcription",
+        "description": "Enable microphone speech transcription in task conversations."
       },
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",
@@ -869,6 +925,7 @@
     "extensionMore": "More",
     "recentTasks": "Progress",
     "applicationTasks": {
+      "unknown": "Status unconfirmed",
       "cancelling": "Stopping",
       "cancelled": "Cancelled",
       "controls": {
@@ -1755,7 +1812,10 @@
       "model": "Context Organize Model",
       "modelPlaceholder": "Please select an organize model",
       "modelRequiredFirst": "Please select an organize model first",
-      "modelHint": "Select a model configured in JiuwenSwarm."
+      "modelHint": "Select a model configured in JiuwenSwarm.",
+      "collectionStopPending": "A fetch task is running; the setting takes effect shortly.",
+      "collectionStoppingRetry": "A fetch task is still running or stopping. Please try again in a moment.",
+      "operationTimeout": "Request timed out. Please try again in a moment."
     },
     "authorization": {
       "title": "Content source authorization",
@@ -1784,7 +1844,20 @@
       "gitcodeTokenHint": "Token is stored locally in the browser and used to authenticate the fetch service.",
       "gitcodeTokenRequired": "Please enter a GitCode token",
       "feishuHint": "Feishu uses an OAuth device flow. After authorizing, complete the login in your browser as prompted.",
-      "feishuVerifyHint": "Complete the Feishu authorization in the opened page; the state will update automatically."
+      "feishuVerifyHint": "Complete the Feishu authorization in the opened page; the state will update automatically.",
+      "feishuConfigInitHint": "First time using Feishu: complete the app setup first (Step 1 of 2). Authorization will continue automatically afterward.",
+      "feishuStep1Done": "Step 1 complete. Click \"Authorize\" again to finish Step 2 sign-in.",
+      "feishuOpenLink": "Didn't open automatically? Click here to open the authorization page",
+      "feishuStep1": "Step 1: Set up the Feishu app",
+      "feishuStep2": "Step 2: Sign in to Feishu",
+      "feishuExpiresInSeconds": "Authorization link expires in {{count}}s",
+      "feishuExpiresInMinutes": "Authorization link expires in {{count}} min",
+      "feishuAuthExpiredShort": "Authorization link expired",
+      "feishuAuthSuccess": "Feishu authorization successful",
+      "feishuAuthFailed": "Feishu authorization failed. Please re-authorize.",
+      "feishuConfigInitFailed": "Feishu app setup failed. Please re-authorize.",
+      "feishuAuthExpired": "Authorization link expired. Please re-authorize.",
+      "tokenInvalid": "Authorization failed. Please enter a valid token and try again."
     },
     "info": {
       "tabGraph": "Context graph",
@@ -1859,6 +1932,7 @@
       "empty": "No content yet. Click \"Add content\" at the top right to create one.",
       "noContentInCategory": "No content",
       "runSubmitted": "Fetch request submitted",
+      "updated": "Configuration updated",
       "startedAt": "Started",
       "finishedAt": "Finished",
       "backToGraph": "Back to Graph",
@@ -2056,7 +2130,7 @@
     "noEnabledSkills": "No enabled skills",
     "noBuiltinSkills": "No builtin skills",
     "setEnabledError": "Failed to set skill enabled status",
-    "packBlockedHint": "This skill pack contains uninstalled or disabled skills. Resolve them under \"Included Skills\" before enabling.",
+    "packBlockedHint": "This skill pack contains uninstalled or disabled skills.",
     "packMemberToggleConfirm": "This skill belongs to skill pack(s) {{packs}}. Changing its enabled state will affect the availability of the entire pack. Continue?",
     "setEnabledSuccess": "Skill {name} enabled",
     "setDisabledSuccess": "Skill {name} disabled",
@@ -3460,11 +3534,13 @@
       "deleteFailedSummary": "Project deletion incomplete: deleted {{sessions}} conversation(s) and {{crons}} cron job(s).",
       "deleteSkippedRunning": "Deleted {{sessions}} conversation(s) and {{crons}} cron job(s). Skipped {{count}} running conversation(s) and kept the project. Stop them manually, then retry deletion.",
       "archiveSessions": "Archive all conversations",
-      "archiveSessionsDescription": "Archive all ordinary conversations in “<name>{{projectName}}</name>”. Running conversations will remain active and be skipped. Cron jobs stay unchanged.",
+      "archiveConfirmTitle": "Archive ({{count}}) conversations",
+      "archiveConfirmTitleFallback": "Archive all conversations",
+      "archiveConfirmDescription": "This will archive conversations in the current project. You can find them later in archived conversations.",
+      "archiveConfirmAll": "Archive all",
       "sessionsArchived": "Archived {{count}} conversations",
-      "archiveSkippedRunning": "{{count}} conversation(s) are running and were skipped",
-      "archiveSkippedRunningWithSuccess": "Archived {{succeeded}} conversation(s); {{count}} running conversation(s) were skipped",
-      "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed. Failed items can be retried.",
+      "archiveBatchFailedRunning": "{{count}} conversation(s) are running and could not be archived",
+      "archiveBatchFailed": "{{count}} conversation(s) failed to archive",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
       "errors": {
@@ -3768,7 +3844,8 @@
       "stepDone": "Done, continue to the next step",
       "error": "Connection failed, please retry",
       "retry": "Retry",
-      "timeout": "Authorization timed out, please reopen the page and retry"
+      "timeout": "Authorization timed out, please reopen the page and retry",
+      "cancelConnect": "Cancel connection"
     },
     "registerMcp": {
       "title": "Configure connector",
@@ -3846,6 +3923,7 @@
       "loginSuccessToast": "Signed in with HUAWEI ID",
       "statusStarting": "Preparing sign-in…",
       "statusWaiting": "Sign-in page opened in your browser — come back here when you're done…",
+      "claimPendingHint": "We haven't received your sign-in yet. Finish authorizing your Huawei account in the page that opened, then click \"I've signed in\".",
       "checkLogin": "I've signed in",
       "popupBlocked": "The browser blocked the new tab. Copy this URL and open it manually:",
       "modelError": {

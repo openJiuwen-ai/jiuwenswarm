@@ -57,6 +57,7 @@ from jiuwenswarm.common.config import (
     get_default_models,
     replace_teams_in_config,
     update_default_models_in_config,
+    update_login_model_settings_in_config,
     update_health_check_in_config,
     update_channel_in_config,
     replace_channel_subsection_with_cleanup,
@@ -82,6 +83,7 @@ from jiuwenswarm.common.config import (
     update_proactive_recommendation_in_config,
     update_trajectory_ui_in_config,
     update_task_full_duplex_in_config,
+    update_task_asr_in_config,
     update_skill_evolution_enabled_in_config,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
@@ -807,6 +809,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "personal_context.runtime.stop_collection",
     "personal_context.runtime.start_agent_use",
     "personal_context.runtime.stop_agent_use",
+    "personal_context.runtime.set_master_enabled",
     "personal_context.runtime.get_config",
     "personal_context.runtime.patch_config",
     "personal_context.runtime.select_model",
@@ -863,6 +866,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "mcp.uninstall",
     "mcp.connect",
     "mcp.wait_auth",
+    "mcp.cancel_connect",
     "mcp.disconnect",
     "mcp.register_custom",
     "mcp.delete_custom",
@@ -991,6 +995,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "personal_context.runtime.stop_collection",
     "personal_context.runtime.start_agent_use",
     "personal_context.runtime.stop_agent_use",
+    "personal_context.runtime.set_master_enabled",
     "personal_context.runtime.get_config",
     "personal_context.runtime.patch_config",
     "personal_context.runtime.select_model",
@@ -1047,6 +1052,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "mcp.uninstall",
     "mcp.connect",
     "mcp.wait_auth",
+    "mcp.cancel_connect",
     "mcp.disconnect",
     "mcp.register_custom",
     "mcp.delete_custom",
@@ -1179,6 +1185,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "rsi_enabled",
     "trajectory_ui_enabled",
     "task_full_duplex_enabled",
+    "task_asr_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -1273,6 +1280,9 @@ _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
+    # Kept for compatibility with existing config-panel clients and older
+    # config.yaml files.  Newer runtimes may ignore this legacy switch.
+    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
     "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
         ("discovery", "max_output_chars"),
@@ -3223,6 +3233,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["task_full_duplex_enabled"] = (
                 "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
             )
+            payload["task_asr_enabled"] = (
+                "true" if experimental_cfg.get("task_asr_enabled", False) else "false"
+            )
             payload.update(_flatten_swarmflow_for_config_panel(raw))
             payload.update(_flatten_external_cli_agents_for_config_panel(raw))
             payload.update(_flatten_symphony_for_config_panel(raw))
@@ -3256,6 +3269,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload.setdefault(key, value)
             payload.setdefault("trajectory_ui_enabled", "false")
             payload.setdefault("task_full_duplex_enabled", "false")
+            payload.setdefault("task_asr_enabled", "false")
             for key, (_, value_type, default) in {
                 **_SYMPHONY_CONFIG_SPECS,
                 **_SKILL_RETRIEVAL_CONFIG_SPECS,
@@ -3555,6 +3569,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_trajectory_ui_in_config(parsed)
                 elif param_key == "task_full_duplex_enabled":
                     update_task_full_duplex_in_config(parsed)
+                elif param_key == "task_asr_enabled":
+                    update_task_asr_in_config(parsed)
                 elif param_key == "proactive_recommendation_enabled":
                     update_proactive_recommendation_in_config({"enabled": parsed})
                 elif param_key == "proactive_recommendation_max_recommend_per_day":
@@ -3665,6 +3681,24 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return bool(callback_result)
         await _clear_agent_config_cache(_resolve(agent_client))
         return True
+
+    def _parse_login_model_settings(raw: Any) -> dict[str, int | None]:
+        if not isinstance(raw, dict):
+            raise _ConfigBadRequest("login_model_settings must be object")
+        parsed: dict[str, int | None] = {}
+        for name, item in raw.items():
+            model_name = str(name or "").strip()
+            if not model_name or not isinstance(item, dict) or "context_window" not in item:
+                raise _ConfigBadRequest(f"login_model_settings[{name!r}].context_window is required")
+            value = item["context_window"]
+            if value is None:
+                parsed[model_name] = None
+                continue
+            context_window = parse_positive_int(value)
+            if context_window is None:
+                raise _ConfigBadRequest(f"login_model_settings[{name!r}].context_window must be positive")
+            parsed[model_name] = context_window
+        return parsed
 
     def _build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]:
         if not isinstance(raw_models, list):
@@ -4005,7 +4039,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             auth_session = getattr(ws, "_jiuwen_auth_session", "") or None
             # 放到线程池里跑：目录缓存过期或凭据要续期时这里会同步请求 APIG（超时 10～15 秒），
             # 在事件循环上跑会让整个 Gateway 的连接陪着等。
-            models = await asyncio.to_thread(get_available_models, config, auth_session)
+            # Without an authenticated browser session there are no per-user
+            # models to merge.  Calling the local symbol directly also keeps
+            # this handler compatible with callers that replace the configured
+            # model provider (notably the Gateway unit-test seam).
+            if auth_session is None:
+                models = await asyncio.to_thread(get_default_models, config)
+            else:
+                models = await asyncio.to_thread(get_available_models, config, auth_session)
             result = []
             active_model = ""
             for idx, entry in enumerate(models):
@@ -4074,10 +4115,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "is_agentos": False,
                         "is_free": True,
                         "alias": entry.get("alias", ""),
-                        # Zen model metadata is intentionally not used for
-                        # context-window resolution; free models use the same
-                        # fixed default as every other unconfigured model.
-                        "context_window_tokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
+                        # Preserve an explicit context-window value supplied by
+                        # the runtime cache; otherwise use the shared default.
+                        "context_window_tokens": (
+                            parse_positive_int(entry.get("context_window_tokens"))
+                            or parse_positive_int(mco.get("context_window"))
+                            or DEFAULT_CONTEXT_WINDOW_TOKENS
+                        ),
                     })
                     existing_names.add(model_name)
             except Exception:
@@ -4137,6 +4181,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         Accepted payload keys:
         - config: config.set-style key/value updates
         - models: complete models.defaults draft list
+        - login_model_settings: per-login-model user settings (context window)
         - agents/team: team editor payload
         """
         if not isinstance(params, dict):
@@ -4151,6 +4196,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             new_models: list[dict[str, Any]] | None = None
             if "models" in params:
                 new_models = _build_models_defaults_from_frontend(params.get("models"))
+            login_model_settings: dict[str, int | None] | None = None
+            if "login_model_settings" in params:
+                login_model_settings = _parse_login_model_settings(params.get("login_model_settings"))
 
             config_params: dict[str, Any] = {}
             raw_config_params = params.get("config")
@@ -4191,6 +4239,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 update_default_models_in_config(new_models)
                 yaml_updated.append("models.defaults")
                 models_count = len(new_models)
+
+            if login_model_settings:
+                update_login_model_settings_in_config(login_model_settings)
+                yaml_updated.append("models.login_model_settings")
 
             kvc_config_changed = new_models is not None or any(
                 key in config_params for key in KVC_CONFIG_KEYS

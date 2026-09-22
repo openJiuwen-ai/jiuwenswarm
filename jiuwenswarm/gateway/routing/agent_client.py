@@ -53,6 +53,22 @@ class AgentServerUnaryTimeout(RuntimeError):
         self.timeout = timeout
 
 
+class DuplicateRequestIdError(RuntimeError):
+    """同一连接上 request_id 撞号，第二个请求被拒绝注册响应队列。
+
+    该拒绝发生在**发送之前**：请求尚未写入 WebSocket，AgentServer 侧没有任何
+    副作用，因此调用方换一个新 request_id 重试是安全的。保留 RuntimeError 继承
+    关系，避免破坏既有 ``except RuntimeError`` 的调用方。
+    """
+
+    def __init__(self, request_id: str) -> None:
+        super().__init__(
+            f"WebSocketAgentServerClient: duplicate in-flight request_id={request_id!r}; "
+            "refusing to register queue (would mis-route responses, e.g. stream chunks to unary waiters)."
+        )
+        self.request_id = request_id
+
+
 class _ReceiverFailure:
     def __init__(self, exc: BaseException) -> None:
         self.exc = exc
@@ -510,10 +526,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         )
 
         if rid in self._message_queues:
-            raise RuntimeError(
-                f"WebSocketAgentServerClient: duplicate in-flight request_id={rid!r}; "
-                "refusing to register queue (would mis-route responses, e.g. stream chunks to unary waiters)."
-            )
+            raise DuplicateRequestIdError(rid)
 
         # 创建该请求的消息队列
         queue = asyncio.Queue()
@@ -565,10 +578,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         )
 
         if rid in self._message_queues:
-            raise RuntimeError(
-                f"WebSocketAgentServerClient: duplicate in-flight request_id={rid!r}; "
-                "refusing to register queue (would mis-route responses, e.g. stream chunks to unary waiters)."
-            )
+            raise DuplicateRequestIdError(rid)
 
         # 创建该请求的消息队列
         queue = asyncio.Queue()

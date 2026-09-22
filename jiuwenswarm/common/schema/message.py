@@ -167,6 +167,10 @@ class ReqMethod(Enum):
     CRON_COMMAND_ACK = "cron.command.ack"
     CRON_RUN_NOW_ACK = "cron.run_now.ack"
 
+    # Gateway owns voice task records; AgentServer returns execution facts/files.
+    VOICE_TASK_CHECKPOINT_ACK = "voice.task.checkpoint.ack"
+    VOICE_TASK_FILES = "voice.task.files"
+
     # HarmonyOS TUI DevEco bootstrap（Phase 3：用户态在目标 AgentServer 注入目录执行）
     HARMONYOS_PROJECT_INIT = "harmonyos.project_init"
     HARMONYOS_DEV_INIT = "harmonyos.dev_init"
@@ -199,6 +203,7 @@ class ReqMethod(Enum):
     MCP_UNINSTALL = "mcp.uninstall"
     MCP_CONNECT = "mcp.connect"
     MCP_WAIT_AUTH = "mcp.wait_auth"
+    MCP_CANCEL_CONNECT = "mcp.cancel_connect"
     MCP_DISCONNECT = "mcp.disconnect"
     MCP_REGISTER_CUSTOM = "mcp.register_custom"
     MCP_DELETE_CUSTOM = "mcp.delete_custom"
@@ -277,6 +282,9 @@ class ReqMethod(Enum):
         "personal_context.runtime.start_agent_use"
     )
     PERSONAL_CONTEXT_RUNTIME_STOP_AGENT_USE = "personal_context.runtime.stop_agent_use"
+    PERSONAL_CONTEXT_RUNTIME_SET_MASTER_ENABLED = (
+        "personal_context.runtime.set_master_enabled"
+    )
     PERSONAL_CONTEXT_RUNTIME_GET_CONFIG = "personal_context.runtime.get_config"
     PERSONAL_CONTEXT_RUNTIME_PATCH_CONFIG = "personal_context.runtime.patch_config"
     PERSONAL_CONTEXT_RUNTIME_SELECT_MODEL = "personal_context.runtime.select_model"

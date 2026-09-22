@@ -975,6 +975,15 @@ def update_task_full_duplex_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_task_asr_in_config(enabled: bool) -> None:
+    """Update the task-chat speech transcription switch in config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["task_asr_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_updater_in_config(updates: dict[str, Any]) -> None:
     """只更新 updater 段并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -1617,6 +1626,36 @@ def update_default_models_in_config(models_list: list[dict[str, Any]]) -> None:
     update_config(_mutate)
 
 
+def update_login_model_settings_in_config(context_windows: dict[str, int | None]) -> None:
+    from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SETTINGS_KEY
+
+    def _mutate(data):
+        if "models" not in data:
+            data["models"] = {}
+        models = data["models"]
+        settings = models.get(LOGIN_MODEL_SETTINGS_KEY)
+        if not isinstance(settings, dict):
+            settings = {}
+        for name, context_window in context_windows.items():
+            own = settings.get(name)
+            if context_window is None:
+                if isinstance(own, dict):
+                    own.pop("context_window", None)
+                    if not own:
+                        del settings[name]
+                continue
+            if not isinstance(own, dict):
+                own = {}
+                settings[name] = own
+            own["context_window"] = context_window
+        if settings:
+            models[LOGIN_MODEL_SETTINGS_KEY] = settings
+        else:
+            models.pop(LOGIN_MODEL_SETTINGS_KEY, None)
+        return data
+    update_config(_mutate)
+
+
 def update_default_model_provider_in_config(provider: str) -> bool:
     """Update only the default model provider in config.yaml.
 
@@ -2179,9 +2218,12 @@ def get_mcp_servers() -> list[dict[str, Any]]:
             list_connected_mcps,
             record_to_mcp_entry,
         )
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            is_stale_marketplace_record,
+        )
         for rec in list_connected_mcps():
             name = rec.get("name", "")
-            if not name:
+            if not name or is_stale_marketplace_record(name, rec):
                 continue
             entry = record_to_mcp_entry(name, rec)
             # skill-only MCPs return None
@@ -2738,7 +2780,7 @@ def get_model_names() -> list[str]:
                 name_count[display] = count
                 names.append(display)
         return names
-    skip = {"default", "defaults"}
+    skip = {"default", "defaults", "login_model_settings"}
     return [k for k, v in models.items() if isinstance(v, dict) and k not in skip]
 
 

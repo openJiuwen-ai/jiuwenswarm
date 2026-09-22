@@ -576,6 +576,7 @@ trajectory_ui:
 
 experimental:
   task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
+  task_asr_enabled: false            # 默认关闭普通任务对话中的语音转写入口
 
 # ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置
@@ -628,7 +629,8 @@ react:
   enable_read_image_multimodal: null
   # 单轮任务循环等待上限（秒）；null 表示不限时，避免长任务被静默截断
   completion_timeout: null
-  max_iterations: 100
+  # 主 Agent 内层 ReAct 轮次上限。不配则无上限；显式配置后即使开启 task_loop 也会生效。
+  # max_iterations: 50
   model_name: ${MODEL_NAME}
   skill_mode: all
   # code_agent / research_agent 默认不启用；只有显式配置 enabled: true 才会显示并可被 task_tool 调用
@@ -742,6 +744,8 @@ react:
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
     dream_enabled: true     # 是否启用静默 Auto-dream
+    consult_top_k: 8        # ttse_consult 每轨（FACT/TIP）返回条数，改配置即可调
+    consult_retrieve_mode: hybrid  # hybrid | embed | bm25；池子不够仍 dump；embed/hybrid 向量不通时 BM25 兜底
     # 语义检索 / dedup；变量名与 embed.* 一致。三段解析非空时混合召回，否则 BM25 兜底
     embedding:
       api_key: ${EMBED_API_KEY}

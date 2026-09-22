@@ -1196,6 +1196,52 @@ def parse_int(value: Any, default: int) -> int:
         return default
 
 
+def parse_optional_int(value: Any) -> int | None:
+    """Parse integer-like values; missing/invalid becomes None (unbounded)."""
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_general_purpose_max_iterations(config: dict[str, Any] | None) -> int:
+    """Resolve the general-purpose inner cap; unconfigured inherits the former 100."""
+    react_cfg = config if isinstance(config, dict) else {}
+    subagents_cfg = react_cfg.get("subagents")
+    general_cfg = (
+        subagents_cfg.get("general_agent") if isinstance(subagents_cfg, dict) else None
+    )
+    return parse_int(
+        general_cfg.get("max_iterations") if isinstance(general_cfg, dict) else None,
+        parse_int(react_cfg.get("max_iterations"), 100),
+    )
+
+
+def _with_general_purpose_max_iterations(
+    subagents: list[Any] | None,
+    config: dict[str, Any] | None,
+) -> list[Any] | None:
+    """Fill an omitted general-purpose cap so it does not inherit unbounded."""
+    if not subagents:
+        return subagents
+    max_iterations = _resolve_general_purpose_max_iterations(config)
+    patched: list[Any] = []
+    changed = False
+    for spec in subagents:
+        if (
+            isinstance(spec, SubAgentConfig)
+            and getattr(spec.agent_card, "name", None) == "general-purpose"
+            and spec.max_iterations is None
+        ):
+            patched.append(replace(spec, max_iterations=max_iterations))
+            changed = True
+        else:
+            patched.append(spec)
+    return patched if changed else subagents
+
+
 def _parse_bool(value: Any, default: bool = False) -> bool:
     """Parse persisted YAML/API boolean values without truthiness surprises."""
     if isinstance(value, bool):
@@ -1818,6 +1864,19 @@ class JiuWenSwarmDeepAdapter:
     - Deep interrupt / user_answer 处理
     """
 
+    @property
+    def task_execution_binding(self):
+        """Expose the session-owned harness and callback rail to task management."""
+        return self._instance, self._voice_agent_task_rail
+
+    async def install_voice_task_rail(self, *, reload=False):
+        """Keep task rail lifecycle and internal Agent ownership inside the Host."""
+        from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import install_task_rail
+
+        self._voice_agent_task_rail = await install_task_rail(
+            self._instance, self._voice_agent_task_rail, reload=reload
+        )
+
     def __init__(self) -> None:
         # Apply the MCP per-call timeout patch once per process: wraps
         # StreamableHttpClient/SseClient.call_tool & list_tools in
@@ -1835,6 +1894,7 @@ class JiuWenSwarmDeepAdapter:
         self._instance: DeepAgent | None = None
         self._interaction_output_handoff: OutputHandoff | None = None
         self._session_input_guard: SessionInputGuard | None = None
+        self._voice_agent_task_rail = None
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._permission_workspace_root: Path | None = None
@@ -4535,21 +4595,25 @@ class JiuWenSwarmDeepAdapter:
                 for rail in self._general_purpose_rail_snapshot
             ]
         self._general_purpose_rail_snapshot = tuple(self._general_purpose_rails(candidates, smart=smart))
-        return _inject_general_purpose_subagent(
-            subagents,
-            add_general_purpose_agent=allow_general and add_general,
-            resolved_language=workspace.language,
-            rails=list(self._general_purpose_rail_snapshot),
-            system_prompt=build_agent_identity_prompt(
-                language=self._resolve_prompt_language(),
-            ),
-            tools=list(tools),
-            mcps=None,
-            model=model,
-            skills=None,
-            workspace=workspace,
-            sys_operation=sys_operation,
-        ) or None
+        return _with_general_purpose_max_iterations(
+            _inject_general_purpose_subagent(
+                subagents,
+                add_general_purpose_agent=allow_general and add_general,
+                resolved_language=workspace.language,
+                rails=list(self._general_purpose_rail_snapshot),
+                system_prompt=build_agent_identity_prompt(
+                    language=self._resolve_prompt_language(),
+                ),
+                tools=list(tools),
+                mcps=None,
+                model=model,
+                skills=None,
+                workspace=workspace,
+                sys_operation=sys_operation,
+            )
+            or None,
+            config,
+        )
 
     def _general_purpose_rails(self, rails: list[Any], *, smart: bool) -> list[Any]:
         """Select child rails without copying root permission ownership."""
@@ -4655,7 +4719,7 @@ class JiuWenSwarmDeepAdapter:
                         language=resolved_language,
                         max_iterations=parse_int(
                             research_agent_cfg.get("max_iterations"),
-                            react_cfg.get("max_iterations", 15),
+                            parse_int(react_cfg.get("max_iterations"), 100),
                         ),
                     )
                 )
@@ -7996,6 +8060,28 @@ class JiuWenSwarmDeepAdapter:
         """User yaml ``react.ttse`` plus adapter cache (runtime cache wins)."""
         return _merge_ttse_config(config if config is not None else self._config_cache)
 
+    @staticmethod
+    def _ttse_consult_knobs(ttse_cfg: dict[str, Any]) -> tuple[int, str]:
+        """Parse live ``consult_top_k`` / ``consult_retrieve_mode`` from yaml."""
+        try:
+            consult_top_k = int(ttse_cfg.get("consult_top_k", 8) or 8)
+        except (TypeError, ValueError):
+            consult_top_k = 8
+        if consult_top_k <= 0:
+            consult_top_k = 8
+        try:
+            from openjiuwen.agent_evolving.ttse.config import (
+                normalize_consult_retrieve_mode,
+            )
+        except ImportError:
+            def normalize_consult_retrieve_mode(value: Any) -> str:
+                raw = str(value or "").strip().lower()
+                return raw if raw in ("hybrid", "embed", "bm25") else "hybrid"
+
+        return consult_top_k, normalize_consult_retrieve_mode(
+            ttse_cfg.get("consult_retrieve_mode")
+        )
+
     def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
         """Build TTSERail for FACT/TIP dual-track self-evolution.
 
@@ -8017,10 +8103,7 @@ class JiuWenSwarmDeepAdapter:
             evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
             inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
             dream_enabled = coerce_config_bool(ttse_cfg.get("dream_enabled"), True)
-            try:
-                consult_top_k = int(ttse_cfg.get("consult_top_k", 8) or 8)
-            except (TypeError, ValueError):
-                consult_top_k = 8
+            consult_top_k, consult_retrieve_mode = self._ttse_consult_knobs(ttse_cfg)
             try:
                 consult_rrf_k = int(ttse_cfg.get("consult_rrf_k", 60) or 60)
             except (TypeError, ValueError):
@@ -8066,6 +8149,7 @@ class JiuWenSwarmDeepAdapter:
                 "dream_min_hours": _TTSE_DREAM_MIN_HOURS,
                 "dream_ttl_days": _TTSE_DREAM_TTL_DAYS,
                 "consult_top_k": consult_top_k,
+                "consult_retrieve_mode": consult_retrieve_mode,
                 "consult_rrf_k": consult_rrf_k,
             }
             try:
@@ -8127,14 +8211,43 @@ class JiuWenSwarmDeepAdapter:
             )
         cfg_obj = getattr(rail, "_ttse_config", None)
         if cfg_obj is not None:
+            consult_top_k, consult_retrieve_mode = self._ttse_consult_knobs(ttse_cfg)
             for attr, value in (
                 ("dream_enabled", bool(dream_enabled)),
                 ("dream_interval", _TTSE_DREAM_INTERVAL),
                 ("dream_min_hours", _TTSE_DREAM_MIN_HOURS),
                 ("dream_ttl_days", _TTSE_DREAM_TTL_DAYS),
+                ("consult_top_k", consult_top_k),
+                ("consult_retrieve_mode", consult_retrieve_mode),
             ):
                 if hasattr(cfg_obj, attr):
                     setattr(cfg_obj, attr, value)
+            store = getattr(rail, "_ttse_store", None)
+            store_cfg = getattr(store, "_config", None) if store is not None else None
+            if store_cfg is not None and store_cfg is not cfg_obj:
+                if hasattr(store_cfg, "consult_top_k"):
+                    store_cfg.consult_top_k = consult_top_k
+                if hasattr(store_cfg, "consult_retrieve_mode"):
+                    store_cfg.consult_retrieve_mode = consult_retrieve_mode
+            emb_cfg = get_ttse_embedding_config({"react": {"ttse": ttse_cfg}})
+            embedding = None
+            if emb_cfg:
+                from jiuwenswarm.agents.harness.common.memory.embeddings import (
+                    OpenAICompatibleEmbeddingProvider,
+                )
+
+                embedding = OpenAICompatibleEmbeddingProvider(
+                    api_key=emb_cfg["api_key"],
+                    base_url=emb_cfg["base_url"],
+                    model=emb_cfg["model"],
+                )
+            if embedding is not None:
+                if store is not None:
+                    attach = getattr(store, "attach_embedding", None)
+                    if callable(attach):
+                        attach(embedding)
+                if hasattr(cfg_obj, "embedding"):
+                    cfg_obj.embedding = embedding
         logger.info(
             "[JiuWenSwarmDeepAdapter] TTSERail config synced: "
             "store_path=%s evolve_enabled=%s inject_enabled=%s",
@@ -9368,7 +9481,7 @@ class JiuWenSwarmDeepAdapter:
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config_base, model),
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
-            max_iterations=config.get("max_iterations", 15),
+            max_iterations=parse_optional_int(config.get("max_iterations")),
             subagents=configured_subagents,
             add_general_purpose_agent=False,
             tools=normalized_tool_cards,
@@ -10482,7 +10595,7 @@ class JiuWenSwarmDeepAdapter:
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
             add_general_purpose_agent=False,
-            max_iterations=config.get("max_iterations", 15),
+            max_iterations=parse_optional_int(config.get("max_iterations")),
             workspace=workspace_obj,
             sys_operation=sys_operation,
             language=resolved_language,
@@ -10932,6 +11045,8 @@ class JiuWenSwarmDeepAdapter:
         # memory / task_planning / ask_user / context_* / skill_evolution use.
         await self._ensure_permission_rail_live_registered()
         await self.install_session_input_guard(reload=True)
+        if getattr(self, "_voice_agent_task_rail", None) is not None:
+            await self.install_voice_task_rail(reload=True)
         self._sync_active_evolution_review_agent_after_reload()
 
         await self._sync_mcp_servers_for_runtime(config_base, tag="agent.reload")
@@ -12136,6 +12251,8 @@ class JiuWenSwarmDeepAdapter:
         )
         await session.pre_run(inputs={})
         await self.install_session_input_guard()
+        if session_id.startswith("managed-task-"):
+            await self.install_voice_task_rail()
         await self._instance.start(session=session)
         if getattr(self._instance, "_interaction_started", True) is not True:
             raise RuntimeError(f"DeepAgent interaction did not become ready: {session_id}")
@@ -13489,6 +13606,10 @@ class JiuWenSwarmDeepAdapter:
                 reason="user_cancel",
             )
             cancel_call_completed = True
+            if request.channel_id == "video_tool":
+                from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import close_task_output
+
+                await close_task_output(self._voice_agent_task_rail, request)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] interrupt(%s): interaction round cancel "
                 "cancelled=%s session=%s",
@@ -14913,8 +15034,11 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one request."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+
             with self._bind_permission_request_context(request):
-                return await self._process_message_impl(request, inputs)
+                async with bind_task_execution(request, self, inputs):
+                    return await self._process_message_impl(request, inputs)
 
     async def _process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -15519,10 +15643,13 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one stream."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+
             with self._bind_permission_request_context(request):
-                async with aclosing(self._process_message_stream_impl(request, inputs)) as stream:
-                    async for chunk in stream:
-                        yield chunk
+                async with bind_task_execution(request, self, inputs):
+                    async with aclosing(self._process_message_stream_impl(request, inputs)) as stream:
+                        async for chunk in stream:
+                            yield chunk
 
     async def _process_message_stream_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -16462,6 +16589,9 @@ class JiuWenSwarmDeepAdapter:
             # A previous consumer may have stopped mid-round; this stream must
             # sample the run kind again on its own first chunk.
             self._reset_round_kind_latch()
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_output
+
+            await bind_task_output(self._voice_agent_task_rail, request, interaction_stream)
             async for chunk in interaction_stream:
                 first_chunk_seen, run_failure = observe_runner_stream_chunk(
                     chunk,

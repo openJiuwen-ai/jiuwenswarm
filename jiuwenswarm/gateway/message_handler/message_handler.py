@@ -3227,6 +3227,11 @@ class MessageHandler(ABC):
         else:
             session_id = self._stream_sessions.get(rid)
 
+        from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import EVENT, handle_checkpoint_push
+
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == EVENT:
+            await handle_checkpoint_push(self.agent_client, chunk, session_id)
+            return
         if await self._handle_trajectory_update_push(chunk, session_id):
             return
         

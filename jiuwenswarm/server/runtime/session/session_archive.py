@@ -48,6 +48,7 @@ class SessionArchiveService:
         self._stopping: dict[str, asyncio.Task] = {}
         self._recovery_task: asyncio.Task | None = None
         self._backfill_task: asyncio.Task | None = None
+        self._recovery_wake = asyncio.Event()
         self._owner_id = uuid.uuid4().hex
 
     @asynccontextmanager
@@ -157,12 +158,16 @@ class SessionArchiveService:
                     else:
                         operation = lc.read_json(path).get("operation") or {}
                         parsed[path.name] = (stamp, operation)
-                    if not operation or not operation.get("retryable", True):
+                    if not operation or operation.get("status") == "completed":
                         continue
-                    if (
-                        operation.get("status") == "completed"
-                        or operation.get("kind") == "archive"
-                    ):
+                    if operation.get("kind") == "archive":
+                        # 归档不设执行栅栏，卡死的 operation 只挡住反向操作；
+                        # 重放搬目录等于替用户做决定，按目录实际位置收尾即可。
+                        await asyncio.to_thread(
+                            self._finalize_abandoned_archive, operation
+                        )
+                        continue
+                    if not operation.get("retryable", True):
                         continue
                     sid = operation.get("resource_id")
                     attempts, next_try = failures.get(sid, (0, 0))
@@ -181,7 +186,125 @@ class SessionArchiveService:
             for name in list(parsed):
                 if name not in seen:
                     del parsed[name]
-            await asyncio.sleep(10)
+            # Idle poll is 10s, but a pending per-resource backoff must not
+            # wait it out: wake at the earliest scheduled retry, or right away
+            # when a failure path pokes the loop.
+            delay = 10.0
+            now = time.monotonic()
+            for _, next_try in failures.values():
+                if next_try > now:
+                    delay = min(delay, next_try - now)
+            try:
+                await asyncio.wait_for(
+                    self._recovery_wake.wait(), timeout=max(0.05, delay)
+                )
+            except asyncio.TimeoutError:
+                pass
+            else:
+                self._recovery_wake.clear()
+
+    def _poke_recovery(self) -> None:
+        """Request a prompt recovery pass instead of waiting out the idle poll.
+
+        Deferred by a short grace period: at failure/cancel time the previous
+        execution is usually still unwinding (lease not yet released,
+        execution locks still held), and an immediate pass would bounce off
+        it — or silently skip — and then sleep the full idle interval.
+        """
+        asyncio.get_running_loop().call_later(0.5, self._recovery_wake.set)
+
+    def _finalize_abandoned_archive(self, operation: dict) -> None:
+        """Finalize an abandoned archive operation by the directory's position.
+
+        A cancelled or crashed archive leaves a pending operation that
+        ``begin`` rejects with a kind mismatch, deadlocking the opposite
+        action.  The move is never replayed here — that would relocate the
+        session on the user's behalf — the operation is closed out to match
+        where the directory actually sits.  Runs in a worker thread: the
+        cross-process locks must never block the recovery loop.
+        """
+        sid = operation.get("resource_id") or ""
+        if not sid or operation.get("status") == "completed":
+            return
+        lease = float(operation.get("lease_expires_at") or 0)
+        if not operation.get("owner_id") or lease >= time.time():
+            # Cheap pre-filter on the scan snapshot; a snapshot alone must
+            # never decide.  A manual retry reuses this operation_id and
+            # refreshes the lease, so the authoritative recheck below runs
+            # under the execution-owner lock against the current state.
+            return
+        # Order matches a live execution (service.lock -> lc.begin/complete):
+        # execution-owner lock first, resource lock second.  Holding the
+        # owner lock also means no retry can sit between begin and claim.
+        owner_path = (
+            lc.resource_path("session", sid).parent.parent
+            / "owners"
+            / f"session_{sid}.json"
+        )
+        with lc.file_lock(owner_path):
+            with lc.resource_lock("session", sid):
+                value = lc.state("session", sid)
+                current = value.get("operation") or {}
+                if (
+                    current.get("operation_id") != operation.get("operation_id")
+                    or current.get("status") == "completed"
+                ):
+                    return
+                if (
+                    not current.get("owner_id")
+                    or float(current.get("lease_expires_at") or 0) >= time.time()
+                ):
+                    # The lease is alive NOW (a retry re-claimed after the
+                    # scan): never finalize out from under a live execution.
+                    return
+                if lc.session_paths(sid)[1].exists():
+                    if current.get("pin_reindex_required"):
+                        # The archive intent persisted this requirement before
+                        # the move so retries retain it; finalization is the
+                        # last repair window — after completion a manual
+                        # archive short-circuits on "already archived" and
+                        # never reindexes.  reindex only touches sessions in
+                        # the active area, never this archived one, so the
+                        # per-session locks it takes cannot nest with ours.
+                        try:
+                            self.reindex_pins()
+                        except Exception:
+                            lc.update(
+                                "session",
+                                sid,
+                                status="failed",
+                                errors=["pin reindex failed during recovery"],
+                                retryable=True,
+                            )
+                            return
+                    lc.complete(
+                        "session",
+                        sid,
+                        archived=True,
+                        result=dict(
+                            session_id=sid,
+                            ok=True,
+                            archived=True,
+                            archived_at=current.get("archived_at") or time.time(),
+                            stop_pending=False,
+                            project_id=current.get("project_id", ""),
+                        ),
+                    )
+                else:
+                    # Still in the active area (or gone): the move never happened;
+                    # keep the session where it is and simply clear the operation.
+                    lc.complete(
+                        "session",
+                        sid,
+                        archived=False,
+                        result=dict(
+                            session_id=sid,
+                            ok=True,
+                            archived=False,
+                            aborted=True,
+                            project_id=current.get("project_id", ""),
+                        ),
+                    )
 
     async def stop(self, session_id: str, channel_id: str) -> None:
         task = self._stopping.get(session_id)
@@ -358,10 +481,12 @@ class SessionArchiveService:
                 pin_reindex_required=pin_reindex_required,
             )
             mailbox = self._session_message_service() if action == "delete" else None
-            if mailbox is not None:
-                # 删除屏障先于 stop 生效：阻止信箱新执行并取消目标消费者。
-                await mailbox.begin_target_delete(session_id)
             try:
+                if mailbox is not None:
+                    # 删除屏障先于 stop 生效：阻止信箱新执行并取消目标消费者。
+                    # 必须在 try 内建立：取消发生在这个 await 上时，下面的
+                    # except 分支才有机会恢复信箱消费。
+                    await mailbox.begin_target_delete(session_id)
                 if action == "delete":
                     lc.update(
                         "session", session_id, phase="stop_sessions", status="running"
@@ -489,6 +614,7 @@ class SessionArchiveService:
                     retryable=getattr(exc, "code", "")
                     not in {"SESSION_ID_CONFLICT", "BAD_REQUEST"},
                 )
+                self._poke_recovery()
                 if isinstance(exc, lc.LifecycleError):
                     if exc.code in {"STOP_TIMEOUT", "STOP_SUBMIT_FAILED"}:
                         raise lc.LifecycleError(
@@ -517,6 +643,29 @@ class SessionArchiveService:
                     else "DELETE_FAILED",
                     str(exc),
                 ) from exc
+            except BaseException:
+                # 取消（WS 断开/服务关停）不走 except Exception：CancelledError
+                # 继承 BaseException。栅栏必须立刻标记 failed/retryable 并尽力
+                # 恢复信箱删除屏障，否则会以 running 状态遗留，挡住该会话的
+                # 所有后续请求，只能等 10s 轮询兜底。
+                lc.update(
+                    "session",
+                    session_id,
+                    status="failed",
+                    errors=["operation cancelled"],
+                    retryable=True,
+                )
+                if mailbox is not None:
+                    try:
+                        await mailbox.abort_target_delete(session_id)
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "session.cancel failed to resume mailbox consumer: "
+                            "session_id=%s",
+                            session_id,
+                        )
+                self._poke_recovery()
+                raise
 
     @staticmethod
     def _move_session_directory(
@@ -546,7 +695,9 @@ class SessionArchiveService:
                     except PermissionError:
                         if attempt == 4:
                             raise
-                        time.sleep(0.05 * (attempt + 1))
+                        # Windows 句柄常被杀软/索引器多握几秒：线性 50ms 步进
+                        # 累计约 0.5s 就放弃；指数退避把重试窗口放大到约 3s。
+                        time.sleep(0.2 * 2 ** attempt)
             meta = lc.read_json(destination / "metadata.json")
             if action == "archive":
                 meta.update(
@@ -1205,3 +1356,15 @@ class SessionArchiveService:
                 raise lc.LifecycleError(
                     "PARTIAL_PROJECT_DELETE_FAILED", str(exc), details
                 ) from exc
+            except BaseException:
+                # 与 _session 同理：项目栅栏挡住整个项目所有会话的准入，且
+                # 项目操作不在 _recover 的扫描范围内，取消遗留 running 会
+                # 永久卡死，只能靠用户手动重试删除来解。
+                lc.update(
+                    "project",
+                    project_id,
+                    status="failed",
+                    errors=["operation cancelled"],
+                    retryable=True,
+                )
+                raise

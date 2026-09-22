@@ -161,6 +161,11 @@ _DISTRIBUTED_TEAM_SHAPE: dict[tuple[str, ...], str] = {
 
 # Individual keys, same rule.
 _ACCEPTED_KEYS: dict[tuple[str, ...], str] = {
+    ("react", "max_iterations"): (
+        "The default template no longer ships a generic inner ReAct cap so "
+        "an unconfigured main agent stays unbounded. Distributed team and "
+        "yuanrong configs keep an explicit value as a per-deployment choice."
+    ),
     ("symphony", "fingerprint", "normalization"): (
         "Retired. SymphonyConfig builds `fingerprint` from `scan` and "
         "`extraction` only; no reader in this tree, in openjiuwen, or in the "

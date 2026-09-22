@@ -166,6 +166,7 @@ import {
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
 import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
+import { useTaskAsrEnabled } from '../../features/taskAsr/featureFlag';
 import { ApplicationPluginTaskInputActions } from '../../applicationPlugins/ApplicationPluginOutlet';
 
 /** 输入栏下拉所需的最小技能数据结构（与 SkillPanel 中的 SkillItem 保持一致） */
@@ -1004,7 +1005,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 个人上下文：agent 加载开关（总开关联动）。总开关关闭时整个菜单项隐藏；开启时默认打开，可单独控制。
   const isConnected = useSessionStore((s) => s.isConnected);
   const personalContextMasterEnabled = usePersonalContextStore(
-    (s) => s.config.collection_enabled || s.config.agent_use_enabled,
+    (s) => s.config.master_enabled ?? (s.config.collection_enabled || s.config.agent_use_enabled),
   );
   const agentUseEnabled = usePersonalContextStore((s) => s.config.agent_use_enabled);
   const agentUsePending = usePersonalContextStore((s) => !!s.pendingWrites.agent_use_enabled);
@@ -1209,6 +1210,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onTranscript: appendTaskAsrTranscript,
     onError: setSpeechError,
   });
+  const taskAsrEnabled = useTaskAsrEnabled();
 
   const imageInputDisabled = isImageInputDisabled({
     isListening: isListening || isTranscribing,
@@ -4361,7 +4363,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   }
                 />
 
-                <button
+                {taskAsrEnabled && <button
                   type="button"
                   onClick={toggleRecording}
                   disabled={composerDisabled || isTranscribing || !taskAsrSupported}
@@ -4393,7 +4395,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   ) : (
                     <Mic className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
                   )}
-                </button>
+                </button>}
                 {micTooltipNode}
 
                 <ApplicationPluginTaskInputActions

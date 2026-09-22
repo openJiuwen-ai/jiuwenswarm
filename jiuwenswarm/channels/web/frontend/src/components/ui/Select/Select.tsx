@@ -30,7 +30,7 @@ const VIEWPORT_MARGIN = 8;
 /** 退出动画时长，需与 Select.css 中 ui-dropdown-menu--closing 的 animation-duration 保持一致 */
 const EXIT_DURATION_MS = 120;
 
-/** 自定义下拉：trigger 样式与原生 select 一致，面板门户挂到 body，样式复用 ui-dropdown-menu（参考 DropdownMenu） */
+/** 自定义下拉：面板挂到所属 dialog 或 body，样式复用 ui-dropdown-menu。 */
 export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select(
   { options, invalid = false, className, onChange, value, defaultValue, disabled, onBlur, id, ...props },
   forwardedRef,
@@ -46,6 +46,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
   const panelId = useId();
   const innerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
   const restoreFocusRef = useRef(false);
 
   const setTrigger = (node: HTMLButtonElement | null) => {
@@ -127,6 +128,8 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
 
   const openPanel = useCallback(() => {
     if (disabled) return;
+    // 模态 dialog 外的节点不可交互；面板必须留在触发器所属的顶层对话框内。
+    setPortalHost(innerRef.current?.closest('dialog') ?? document.body);
     setPosition(null);
     setOpen(true);
   }, [disabled]);
@@ -202,6 +205,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
   return (
     <>
       <button
+        data-testid="ui-select-trigger"
         {...props}
         ref={setTrigger}
         id={id}
@@ -219,16 +223,17 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
       >
         {selectedOption?.label ?? ''}
       </button>
-      {phase !== null
+      {phase !== null && portalHost
         ? createPortal(
             <div
               ref={panelRef}
+              data-testid="ui-select-panel"
               role="listbox"
               id={panelId}
               aria-labelledby={id}
               tabIndex={-1}
               data-side="bottom"
-              // 门户挂到 body 后不在宿主面板 DOM 子树内：宿主的"点击外部关闭"逻辑
+              // 门户不在宿主面板 DOM 子树内：宿主的"点击外部关闭"逻辑
               // 靠该标记把面板内部识别为"内部点击"，避免点选项时误关宿主面板
               data-select-panel=""
               className={`ui-dropdown-menu ui-select__panel${phase === 'closing' ? ' ui-dropdown-menu--closing' : ''}`}
@@ -240,6 +245,8 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
                 return (
                   <button
                     key={option.value}
+                    data-testid="ui-select-option"
+                    data-variant={option.value}
                     type="button"
                     role="option"
                     aria-selected={isSelected}
@@ -255,7 +262,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
                 );
               })}
             </div>,
-            document.body,
+            portalHost,
           )
         : null}
     </>

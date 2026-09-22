@@ -1,3 +1,4 @@
+import { taskCancellationNotice, taskQuestionNotice } from './taskPrompts.js';
 import {
   createQwenOmniCancelResponseEvent,
   createQwenOmniFinishSessionEvent,
@@ -10,7 +11,7 @@ import {
 } from './qwenOmniProtocol.js';
 import { getWsBase } from '../../../../channels/web/frontend/src/utils/env.js';
 import type { RealtimeBrief } from './types.js';
-import { createQwenOmniToolOutputEvent } from './qwenOmniTools.js';
+import { createQwenOmniOperationResponseEvent, createQwenOmniToolOutputEvent } from './qwenOmniTools.js';
 import type { SileroVad, SpeechDetection } from '../../../../channels/web/frontend/src/utils/speechDetection/sileroVad';
 
 export interface RealtimeDuplexConfig {
@@ -122,6 +123,8 @@ export class RealtimeDuplexSession {
   private sendTimer: number | null = null;
   private sessionReady = false;
   private responseId: string | null = null;
+  private pendingOperations: Array<{ callId: string; output: unknown }> = [];
+  private pendingQuestions: Array<{ jobId: string; interaction: unknown }> = [];
   private pendingToolResults: RealtimeToolResult[] = [];
   private toolResultWaitKey = '';
   private acceptedToolResultIds = new Set<string>();
@@ -130,6 +133,22 @@ export class RealtimeDuplexSession {
   private responseToolJobIds = new Map<string, string>();
   private assistantPlaying = false;
   private responseActive = false;
+  private providerSpeechActive = false;
+  private awaitingProviderResponse = false;
+  private retryNotificationResponse = false;
+  private operationResponse = false;
+  private notificationConflicts = 0;
+  private notificationConflictWaiting = false;
+  private inputEpoch = 0;
+  private toolAttempts = 0;
+  private toolFailures = new Map<string, number>();
+  private toolCalls = new Map<string, { epoch: number; signature: string; target: string }>();
+  private rejectedToolCalls = new Set<string>();
+  private pendingTextTurns: string[] = [];
+  private pendingNotices: string[] = [];
+  private latestInputId = '';
+  private inputTexts = new Map<string, string>();
+  private responseInputs = new Map<string, string>();
   private playbackOperation: Promise<void> = Promise.resolve();
   private playbackGeneration = 0;
   private queuedDrainResponseId: string | null = null;
@@ -272,6 +291,8 @@ export class RealtimeDuplexSession {
     this.pending = [];
     this.pendingSamples = 0;
     this.pendingToolResults = [];
+    this.pendingOperations = [];
+    this.pendingQuestions = [];
     this.toolResultWaitKey = '';
     this.acceptedToolResultIds.clear();
     this.acceptedFunctionCallIds.clear();
@@ -279,6 +300,19 @@ export class RealtimeDuplexSession {
     this.responseToolJobIds.clear();
     this.sessionReady = false;
     this.responseActive = false;
+    this.providerSpeechActive = false;
+    this.awaitingProviderResponse = false;
+    this.retryNotificationResponse = false;
+    this.operationResponse = false;
+    this.notificationConflicts = 0;
+    this.notificationConflictWaiting = false;
+    this.pendingTextTurns = [];
+    this.pendingNotices = [];
+    this.latestInputId = '';
+    this.inputTexts.clear();
+    this.responseInputs.clear();
+    this.toolCalls.clear();
+    this.resetToolBudget();
     this.activeUserTurnId = null;
     this.userSpeechMs = 0;
     this.userSilenceMs = 0;
@@ -295,28 +329,57 @@ export class RealtimeDuplexSession {
   async sendTextTurn(text: string, isFresh: () => boolean = () => true): Promise<boolean> {
     const normalized = text.trim();
     if (!normalized || !isFresh()) return false;
-    createQwenOmniTextTurnEvents(normalized).forEach((event) => this.send(event));
+    this.resetToolBudget();
+    this.pendingTextTurns.push(normalized);
+    this.dispatchQueuedToolResult();
     this.emitDiagnostic('qwen_text_input_dispatched', { text: normalized });
     return true;
   }
 
   cancelToolTask(jobId: string, callId: string): void {
+    this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== jobId);
     this.pendingToolResults = this.pendingToolResults.filter((item) => item.jobId !== jobId);
     if (this.acceptedToolResultIds.has(jobId)) return;
     this.acceptedToolResultIds.add(jobId);
-    this.send(createQwenOmniToolOutputEvent(callId, JSON.stringify({
-      status: 'cancelled', job_id: jobId,
-      message: '用户手动停止了此任务。不要重试，不要宣称完成；取消记录已显示，无需播报。',
-    })));
+    this.pendingNotices.push(taskCancellationNotice(jobId));
+    this.dispatchQueuedToolResult();
+  }
+
+  enqueueOperationResult(callId: string, output: unknown): void {
+    const key = `operation:${callId}`;
+    if (this.acceptedToolResultIds.has(key)) return;
+    this.acceptedToolResultIds.add(key);
+    const call = this.toolCalls.get(callId);
+    this.toolCalls.delete(callId);
+    const receipt = output as { state?: string; error?: string } | null;
+    if (call?.epoch === this.inputEpoch && receipt?.state === 'rejected') {
+      this.toolFailures.set(call.target, (this.toolFailures.get(call.target) || 0) + 1);
+      this.rejectedToolCalls.add(call.signature);
+    }
+    this.pendingOperations.push({ callId, output });
+    this.dispatchQueuedToolResult();
+  }
+
+  enqueueQuestion(jobId: string, interaction: { id?: string; request_id: string; state: string }): void {
+    if (interaction.state !== 'pending') {
+      this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== jobId);
+      return;
+    }
+    const key = `question:${jobId}:${interaction.id || interaction.request_id}`;
+    if (this.acceptedToolResultIds.has(key)) return;
+    this.acceptedToolResultIds.add(key);
+    this.pendingQuestions.push({ jobId, interaction });
+    this.dispatchQueuedToolResult();
   }
 
   enqueueToolResult(toolResult: RealtimeToolResult): boolean {
+    this.pendingQuestions = this.pendingQuestions.filter(item => item.jobId !== toolResult.jobId);
     const jobId = toolResult.jobId.trim();
     const question = toolResult.question.trim();
-    const summary = toolResult.brief.summary.trim();
+    const summary = toolResult.brief.summary.trim().slice(0, 1600);
     const callId = toolResult.callId?.trim();
     if (!jobId || !question || !summary || this.acceptedToolResultIds.has(jobId)) return false;
-    if (!callId) return false;
+
     this.acceptedToolResultIds.add(jobId);
     this.pendingToolResults.push({
       jobId,
@@ -345,6 +408,21 @@ export class RealtimeDuplexSession {
     });
   }
 
+  private resetToolBudget(): void {
+    this.inputEpoch += 1;
+    this.toolAttempts = 0;
+    this.toolFailures.clear();
+    this.rejectedToolCalls.clear();
+  }
+
+  private requestResponse(operation = false): void {
+    this.responseActive = true;
+    // A late response.done for the preceding response must not free this reservation.
+    this.responseId = null;
+    this.operationResponse = operation;
+    this.send(operation ? createQwenOmniOperationResponseEvent() : { type: 'response.create' });
+  }
+
   private openSocket(): Promise<void> {
     return new Promise((resolve, reject) => {
       const url = new URL(this.config.url);
@@ -352,6 +430,7 @@ export class RealtimeDuplexSession {
       this.socket = socket;
       let initSent = false;
       let settled = false;
+      let reportedStartupError = false;
       const initTimeout = window.setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -396,6 +475,7 @@ export class RealtimeDuplexSession {
           const event = JSON.parse(data) as Record<string, unknown>;
           const type = String(event.type || '');
           if (type === 'session.closed' && !this.sessionReady) {
+            reportedStartupError = true;
             const closeReason = readableError(event.reason || event.error || '远端在初始化阶段主动关闭');
             const startupAlreadyResolved = settled;
             this.emitDiagnostic('realtime_websocket_error', {
@@ -413,6 +493,10 @@ export class RealtimeDuplexSession {
           if (type === 'session.updated' || type === 'session.created') {
             this.sessionReady = true;
             this.emitDiagnostic('realtime_session_ready', {});
+          }
+          if (type === 'error' && !this.sessionReady) {
+            reportedStartupError = true;
+            rejectOnce(new Error(readableError(event.error || event)));
           }
           this.handleEvent(event, data);
         } catch {
@@ -433,13 +517,13 @@ export class RealtimeDuplexSession {
           code,
           message: reason,
         });
-        if (!this.sessionReady) {
+        if (!this.sessionReady && !reportedStartupError) {
           const closeReason = reason || (code === 1000 ? '远端在初始化阶段主动关闭' : `关闭代码 ${code}`);
           const startupAlreadyResolved = settled;
           rejectOnce(new Error(`Realtime 会话初始化失败：${closeReason}`));
           if (startupAlreadyResolved) this.callbacks.onError(`Realtime 会话初始化失败：${closeReason}`);
-        } else if (code !== 1000) {
-          this.callbacks.onError(`Realtime 连接已断开（${code}），请确认远端模型服务仍可用。`);
+        } else if (this.sessionReady) {
+          this.callbacks.onError(`语音连接已断开（${code}${reason ? `：${reason}` : ''}），麦克风已停止，请重新开启 Full-duplex。后台任务继续执行。`);
         }
         // Release media on remote disconnect as well. Conversation-owned work continues outside this session.
         this.stop();
@@ -515,20 +599,20 @@ export class RealtimeDuplexSession {
   }
 
   private dispatchQueuedToolResult(): void {
-    if (!this.pendingToolResults.length) {
+    if (!this.pendingToolResults.length && !this.pendingOperations.length && !this.pendingQuestions.length && !this.pendingTextTurns.length && !this.retryNotificationResponse && !this.pendingNotices.length) {
       this.toolResultWaitKey = '';
       return;
     }
     const reason =
       this.socket?.readyState !== WebSocket.OPEN || !this.sessionReady
         ? 'connection_not_ready'
-        : this.userActivityActive || this.turnHasUserActivity
+        : this.userActivityActive || this.turnHasUserActivity || this.providerSpeechActive || this.awaitingProviderResponse
           ? 'user_speaking'
           : this.responseActive
             ? 'response_generating'
             : '';
     if (reason) {
-      const jobId = this.pendingToolResults[0].jobId;
+      const jobId = this.pendingToolResults[0]?.jobId || this.pendingOperations[0]?.callId || this.pendingQuestions[0]?.jobId || 'conversation';
       const waitKey = `${jobId}:${reason}`;
       if (waitKey !== this.toolResultWaitKey) {
         this.toolResultWaitKey = waitKey;
@@ -541,6 +625,46 @@ export class RealtimeDuplexSession {
       return;
     }
     this.toolResultWaitKey = '';
+    if (this.retryNotificationResponse) {
+      this.retryNotificationResponse = false;
+      this.requestResponse(this.operationResponse);
+      return;
+    }
+    const textTurn = this.pendingTextTurns.shift();
+    if (textTurn) {
+      this.latestInputId = this.newTurnId('text');
+      this.inputTexts.set(this.latestInputId, textTurn);
+      this.send(createQwenOmniTextTurnEvents(textTurn)[0]);
+      this.requestResponse();
+      return;
+    }
+    const notice = this.pendingNotices.shift();
+    if (notice) {
+      this.notificationConflicts = 0;
+      this.send({type: 'conversation.item.create', item: {
+        type: 'message', role: 'user', content: [{type: 'input_text', text: notice}],
+      }});
+      this.requestResponse();
+      return;
+    }
+    const question = this.pendingQuestions.shift();
+    if (question) {
+      this.notificationConflicts = 0;
+      this.send({ type: 'conversation.item.create', item: {
+        type: 'message', role: 'user', content: [{ type: 'input_text', text:
+          taskQuestionNotice(question),
+        }],
+      } });
+      this.requestResponse();
+      return;
+    }
+    const operation = this.pendingOperations.shift();
+    if (operation) {
+      this.notificationConflicts = 0;
+      this.send(createQwenOmniToolOutputEvent(operation.callId, JSON.stringify(operation.output)));
+      this.requestResponse(true);
+      return;
+    }
     while (this.pendingToolResults.length > 0) {
       const toolResult = this.pendingToolResults.shift();
       if (!toolResult) return;
@@ -549,14 +673,19 @@ export class RealtimeDuplexSession {
         turn_id: toolResult.turnId,
       });
       this.callbacks.onToolResultDispatched?.(toolResult.jobId);
-      if (!toolResult.callId) continue;
+
       this.pendingToolResponseJobId = toolResult.jobId;
+      this.notificationConflicts = 0;
       this.responseActive = true;
-      createQwenOmniToolResultEvents(toolResult.callId, toolResult.brief, {
+      this.responseId = null;
+      const events = createQwenOmniToolResultEvents(toolResult.callId || '', toolResult.brief, {
         jobId: toolResult.jobId,
         turnId: toolResult.turnId,
         question: toolResult.question,
-      }).forEach((event) => this.send(event));
+      });
+      // Accepted delegation closed the call; completion is a separate notification.
+      if (!toolResult.callId || this.acceptedToolResultIds.has(`operation:${toolResult.callId}`)) events.shift();
+      events.forEach((event) => this.send(event));
       this.emitDiagnostic('qwen_tool_result_returned', {
         job_id: toolResult.jobId,
         turn_id: toolResult.turnId,
@@ -571,6 +700,10 @@ export class RealtimeDuplexSession {
     const type = String(event.type || '');
     const response = event.response as Record<string, unknown> | undefined;
     const eventResponseId = String(event.response_id || response?.id || '') || null;
+    if (type === 'response.function_call_arguments.done' && eventResponseId && this.interruptedResponseIds.has(eventResponseId)) {
+      this.emitDiagnostic('qwen_tool_call_stale', { response_id: eventResponseId, call_id: String(event.call_id || '') });
+      return; // Cancellation may end a function call with incomplete JSON.
+    }
     const functionCall = parseQwenOmniFunctionCall(event);
     if (functionCall) {
       if (!this.acceptedFunctionCallIds.has(functionCall.callId)) {
@@ -584,7 +717,23 @@ export class RealtimeDuplexSession {
           call_id: functionCall.callId,
           task: functionCall.task,
         });
-        this.callbacks.onFunctionCall?.(functionCall);
+        const args = JSON.parse(functionCall.arguments) as Record<string, unknown>;
+        const signature = JSON.stringify([functionCall.name, Object.keys(args).sort().map(key => [key, args[key]])]);
+        const target = JSON.stringify([functionCall.name, args.job_id || '', args.interaction_id || '']);
+        if ((this.toolFailures.get(target) || 0) >= 3 || this.toolAttempts >= 16 || this.rejectedToolCalls.has(signature)) {
+          const message = '本次操作未完成：已停止重复或超限尝试，请确认任务和要求后再试。';
+          this.send(createQwenOmniToolOutputEvent(functionCall.callId, JSON.stringify({ state: 'rejected', retryable: false, error: message })));
+          this.emitDiagnostic('qwen_tool_retry_stopped', { name: functionCall.name, call_id: functionCall.callId, attempt: this.toolAttempts });
+          this.callbacks.onError(message);
+          // No response.create: a rejected-call response must not recursively drive more calls.
+          return;
+        }
+        this.toolAttempts += 1;
+        this.toolCalls.set(functionCall.callId, { epoch: this.inputEpoch, signature, target });
+        const inputId = this.responseInputs.get(eventResponseId || this.responseId || '');
+        this.callbacks.onFunctionCall?.(inputId
+          ? {...functionCall, inputId, originalInstruction: this.inputTexts.get(inputId)}
+          : functionCall);
       }
     } else if (type === 'response.function_call_arguments.done') {
       this.emitDiagnostic('qwen_tool_call_invalid', {
@@ -596,9 +745,12 @@ export class RealtimeDuplexSession {
     } else if (type === 'session.created') {
       this.callbacks.onState('listening');
     } else if (type === 'response.created') {
+      this.awaitingProviderResponse = false;
       // Some providers start the tool-call response before ending its spoken acknowledgement.
       if (this.assistantTranscript) this.finishAssistantText();
       this.responseId = eventResponseId || this.newTurnId('response');
+      this.responseInputs.set(this.responseId, this.latestInputId);
+      if (this.responseInputs.size > 64) this.responseInputs.delete(this.responseInputs.keys().next().value!);
       if (this.pendingToolResponseJobId) {
         this.responseToolJobIds.set(this.responseId, this.pendingToolResponseJobId);
         this.pendingToolResponseJobId = null;
@@ -645,10 +797,12 @@ export class RealtimeDuplexSession {
       const responseId = eventResponseId || this.responseId;
       this.enqueueAudioDelta(event, encoded, responseId);
     } else if (type === 'response.audio.done' || type === 'response.output_audio.done' || type === 'response.done') {
-      const affectsActive = !eventResponseId || eventResponseId === this.responseId;
+      const affectsActive = !eventResponseId || eventResponseId === this.responseId || this.notificationConflictWaiting;
       if (type === 'response.done' && affectsActive) {
         if (this.assistantTranscript) this.finishAssistantText();
         this.responseActive = false;
+        this.notificationConflictWaiting = false;
+        this.emitDiagnostic('qwen_response_finished', { response_id: eventResponseId, reason: String(response?.status || '') });
       }
       if (affectsActive) this.enqueuePlaybackDrain(eventResponseId || this.responseId);
       if (type === 'response.done' && affectsActive) this.dispatchQueuedToolResult();
@@ -667,11 +821,18 @@ export class RealtimeDuplexSession {
       this.assistantTranscript = String(event.transcript || this.assistantTranscript);
       this.finishAssistantText();
     } else if (type === 'input_audio_buffer.speech_started' || type === 'input_audio_buffer.speech_stopped') {
+      this.providerSpeechActive = type === 'input_audio_buffer.speech_started';
+      if (this.providerSpeechActive) this.latestInputId = String(event.item_id || this.newTurnId('audio'));
+      this.awaitingProviderResponse = true;
       this.emitDiagnostic('qwen_provider_vad', { source: type, raw_event: rawEvent || JSON.stringify(event) });
     } else if (type === 'conversation.item.input_audio_transcription.delta') {
       this.callbacks.onUserText(`${String(event.delta || event.text || '')}${String(event.stash || '')}`, false);
     } else if (type === 'conversation.item.input_audio_transcription.completed') {
       const transcript = String(event.transcript || '');
+      const inputId = String(event.item_id || this.latestInputId);
+      if (inputId && transcript.trim()) this.inputTexts.set(inputId, transcript.trim());
+      if (this.inputTexts.size > 64) this.inputTexts.delete(this.inputTexts.keys().next().value!);
+      if (transcript.trim()) this.resetToolBudget();
       this.emitDiagnostic('qwen_native_asr_completed', {
         transcript,
         has_transcript: Boolean(transcript.trim()),
@@ -682,6 +843,14 @@ export class RealtimeDuplexSession {
       const media = this.qwenMedia.snapshot();
       const error = event.error;
       const errorRecord = error && typeof error === 'object' ? (error as Record<string, unknown>) : {};
+      if (readableError(error || event).includes('Conversation already has an active response')) {
+        // The conversation items were already submitted. Retry only response creation,
+        // after the provider's active response ends; never replay a tool or its output.
+        this.responseActive = true;
+        this.notificationConflictWaiting = true;
+        this.retryNotificationResponse = ++this.notificationConflicts <= 3;
+        if (!this.retryNotificationResponse) this.callbacks.onError('结果播报响应冲突，已停止重试。请查看任务结果。');
+      }
       this.emitDiagnostic('qwen_realtime_error', {
         raw_event: rawEvent || JSON.stringify(event),
         code: String(errorRecord.code || event.code || 'unknown'),
@@ -714,7 +883,7 @@ export class RealtimeDuplexSession {
       type: 'clear',
       cancelResponse: false,
     });
-    this.responseActive = false;
+    // response.cancel is a request, not confirmation that the provider is idle.
     this.assistantPlaying = false;
     if (this.assistantTranscript) this.finishAssistantText();
     this.emitDiagnostic('qwen_response_interrupted_by_user', {

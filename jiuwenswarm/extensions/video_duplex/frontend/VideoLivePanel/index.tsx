@@ -1,3 +1,4 @@
+import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
 import {
   ChangeEvent,
   FormEvent,
@@ -24,6 +25,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../../../channels/web/frontend/src/services/webClient';
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
@@ -94,6 +96,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   { headless = false, onConversationItem, onAssistantStream, onRuntimeState, onError, onCoreAgentProgress },
   ref,
 ) {
+  const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
@@ -112,6 +115,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const conversationSearchSessionRef = useRef('');
   const mediaGenerationRef = useRef(0);
   const mediaToolCallIdsRef = useRef(new Set<string>());
+  const mediaTaskIdsRef = useRef(new Set<string>());
   const latestUserInstructionRef = useRef({ text: '', turnId: '' });
   const searchJobsRef = useRef<Map<string, SearchJobState>>(new Map());
   const pollingSearchJobsRef = useRef<Set<string>>(new Set());
@@ -128,7 +132,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const [streamingAnswer, setStreamingAnswer] = useState('');
   const [error, setError] = useState('');
   const [toolStatus, setToolStatus] = useState('');
-  const [model, setModel] = useState('视频模型');
+  const [model, setModel] = useState(() => t('videoLive.modelFallback'));
   const [isRecording, setIsRecording] = useState(false);
   const [isAwaitingVoiceTranscript, setIsAwaitingVoiceTranscript] = useState(false);
   const [realtimeStatus, setRealtimeStatus] = useState('');
@@ -160,6 +164,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     mediaGenerationRef.current += 1;
     startingRealtimeRef.current = null;
     mediaToolCallIdsRef.current.clear();
+    mediaTaskIdsRef.current.clear();
     duplexRef.current?.stop();
     duplexRef.current = null;
     joyaiProviderRef.current?.stop();
@@ -424,6 +429,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     });
     const unsubscribeProgress = webClient.on<SearchJobPayload>('video.search.progress', ({ payload }) => {
       if (!belongsToCurrentSession(payload)) return;
+      if (!payload.replay && payload.job_id && payload.interaction) {
+        duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
+      }
       updateSearchProgress(payload);
       onCoreAgentProgress?.('progress', payload);
       const job = payload.job_id ? searchJobsRef.current.get(payload.job_id) : undefined;
@@ -434,6 +442,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       updateSearchProgress(payload);
       onCoreAgentProgress?.('completed', payload);
       acceptCompletedSearch(payload);
+    });
+    const unsubscribeCancelled = webClient.on<SearchJobPayload>('video.search.cancelled', ({ payload }) => {
+      if (!belongsToCurrentSession(payload) || !payload.job_id || !payload.tool_call_id) return;
+      duplexRef.current?.cancelToolTask(payload.job_id, payload.tool_call_id);
+      searchJobsRef.current.delete(payload.job_id);
     });
     const unsubscribeFailed = webClient.on<SearchJobPayload>('video.search.failed', ({ payload }) => {
       if (!belongsToCurrentSession(payload)) return;
@@ -476,6 +489,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       unsubscribeProgress();
       unsubscribeCompleted();
       unsubscribeFailed();
+      unsubscribeCancelled();
       window.clearInterval(pollTimer);
     };
   }, [headless, onCoreAgentProgress]);
@@ -876,17 +890,18 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 duplexRef.current = null;
                 mediaGenerationRef.current += 1;
                 mediaToolCallIdsRef.current.clear();
+                mediaTaskIdsRef.current.clear();
                 searchSessionRef.current = '';
                 setIsRealtimeStarting(false);
               }
               setIsRecording(state !== 'closed');
               setRealtimeStatus(
                 state === 'connecting'
-                  ? '正在连接 Full-duplex 模型并申请麦克风权限…'
+                  ? t('videoLive.status.connecting')
                   : state === 'listening'
                     ? ''
                     : state === 'speaking'
-                      ? '模型正在回答…'
+                      ? t('videoLive.status.speaking')
                       : '',
               );
               if (state === 'listening') setIsRealtimeStarting(false);
@@ -899,8 +914,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               if (mediaGeneration !== mediaGenerationRef.current) return;
               mediaToolCallIdsRef.current.add(call.callId);
               const searchSessionId = searchSessionRef.current;
-              const latestInstruction = latestUserInstructionRef.current;
-              const originalInstruction = latestInstruction.text.trim() || call.task;
+              const latestInstruction = {text: call.originalInstruction || call.task, turnId: call.inputId || ''};
+              const originalInstruction = latestInstruction.text.trim();
               reportRealtimeEvent('qwen_tool_call_forwarding', {
                 name: call.name,
                 call_id: call.callId,
@@ -908,7 +923,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 task: call.task,
                 turn_id: latestInstruction.turnId,
               });
-              void webRequest<AgentAction & { call_id?: string }>(
+              void webRequest<AgentAction & { call_id?: string; tool_result?: unknown }>(
                 'video.qwen.tool',
                 {
                   name: call.name,
@@ -922,8 +937,28 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 { timeoutMs: 10_000 },
               )
                 .then((action) => {
+                  reportRealtimeEvent('qwen_tool_call_receipt', {
+                    name: call.name, call_id: call.callId,
+                    job_id: action.search_job?.id || '',
+                    decision: (action.tool_result as {state?: string})?.state === 'rejected' ? 'rejected' : 'accepted',
+                  });
+                  if (action.tool_result !== undefined) {
+                    const successor = (action.tool_result as {successor_id?: string}).successor_id;
+                    if (successor && mediaGeneration === mediaGenerationRef.current) mediaTaskIdsRef.current.add(successor);
+                    if (mediaGeneration === mediaGenerationRef.current)
+                      session.enqueueOperationResult(call.callId, action.tool_result);
+                    return;
+                  }
                   const jobId = action.search_job?.id?.trim() || '';
                   if (!jobId) throw new Error('Jiuwen Core Agent did not create a search job');
+                  if (mediaGeneration === mediaGenerationRef.current) mediaTaskIdsRef.current.add(jobId);
+                  if (mediaGeneration === mediaGenerationRef.current) {
+                    session.enqueueOperationResult(call.callId, {
+                      state: 'accepted', job_id: jobId, status: action.search_job?.status,
+                      accepted_instruction: action.search_job?.question || originalInstruction,
+                      message: TASK_ACCEPTED_INSTRUCTIONS,
+                    });
+                  }
                   rememberSearchJob(
                     action.search_job,
                     latestInstruction.turnId,
@@ -932,33 +967,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 })
                 .catch((toolError) => {
                   const message = toolError instanceof Error ? toolError.message : 'Jiuwen Core Agent request failed';
-                  if (headless) {
-                    onCoreAgentProgress?.('failed', {
-                      job_id: `qwen-tool-error-${call.callId}`,
-                      search_session_id: searchSessionId,
-                      question: originalInstruction,
-                      error: message,
-                      status: 'failed',
-                      tool_call_id: call.callId,
-                    });
-                    return;
-                  }
                   if (mediaGeneration !== mediaGenerationRef.current) return;
-                  appendChat('assistant', `Jiuwen Core Agent 未能启动任务：${message}`, 'tool_result');
-                  const queued = session.enqueueToolResult({
-                    jobId: `qwen-tool-error-${call.callId}`,
-                    question: originalInstruction,
-                    brief: {
-                      status: 'failed',
-                      result_kind: 'generic',
-                      summary: '任务未能启动，错误信息已经显示在界面中。',
-                      displayed_in_ui: true,
-                      response_mode: 'acknowledge',
-                      source: 'fallback',
-                    },
-                    callId: call.callId,
+                  reportRealtimeEvent('qwen_tool_call_receipt', {
+                    name: call.name, call_id: call.callId, decision: 'rejected', message,
                   });
-                  if (!queued) setError(message);
+                  setError(message);
+                  session.enqueueOperationResult(call.callId, { state: 'rejected', error: message });
                 });
             },
             onDiagnostic: (event) => {
@@ -979,7 +993,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         setIsRealtimeStarting(false);
         searchSessionRef.current = '';
         searchJobsRef.current.clear();
-        setError(realtimeError instanceof Error ? realtimeError.message : 'Full-duplex 会话启动失败。');
+        setError(realtimeError instanceof Error ? realtimeError.message : t('videoLive.errors.startFailed'));
       }
     })();
     startingRealtimeRef.current = start;
@@ -1036,7 +1050,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       // A function_call_output is valid only on the Qwen connection that created its call ID.
       // JoyAI jobs likewise need to belong to this media run; old results stay visible without replay.
       if (duplexRef.current) {
-        if (!payload.tool_call_id || !mediaToolCallIdsRef.current.has(payload.tool_call_id)) return;
+        if (!mediaTaskIdsRef.current.has(payload.job_id || '') && (!payload.tool_call_id || !mediaToolCallIdsRef.current.has(payload.tool_call_id))) return;
       } else if (!joyaiProviderRef.current?.active || !searchJobsRef.current.has(payload.job_id || '')) {
         return;
       }
@@ -1068,13 +1082,13 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       setQuestion('');
       if (joyaiProviderRef.current?.active) {
         const result = await getJoyAIProvider().submitUserInstruction(text);
-        if (!result) throw new Error('文字输入未进入 JoyAI 会话');
+        if (!result) throw new Error(t('videoLive.errors.joyaiTextNotAccepted'));
         return;
       }
       const accepted = await duplexRef.current?.sendTextTurn(text);
-      if (!accepted) throw new Error('文字输入未进入千问 Realtime 会话');
+      if (!accepted) throw new Error(t('videoLive.errors.qwenTextNotAccepted'));
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : '文字输入发送失败');
+      setError(sendError instanceof Error ? sendError.message : t('videoLive.errors.textSendFailed'));
     }
   };
 
@@ -1118,7 +1132,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           </span>
           <div>
             <h1>Jiuwen Full-duplex</h1>
-            <p>实时多屏音视频问答</p>
+            <p>{t('videoLive.subtitle')}</p>
           </div>
         </div>
         <div className="video-live__header-actions">
@@ -1180,8 +1194,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 <span className="video-live__empty-icon">
                   <Video aria-hidden />
                 </span>
-                <strong>打开一个实时画面</strong>
-                <p>使用摄像头、本地视频，或添加多个屏幕</p>
+                <strong>{t('videoLive.empty.title')}</strong>
+                <p>{t('videoLive.empty.description')}</p>
               </div>
             )}
             {source && source !== 'screen' && (
@@ -1191,7 +1205,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               </div>
             )}
             {source && source !== 'screen' && (
-              <button className="video-live__close" type="button" onClick={closeSource} aria-label="关闭视频">
+              <button className="video-live__close" type="button" onClick={closeSource} aria-label={t('videoLive.actions.closeVideo')}>
                 <X aria-hidden />
               </button>
             )}
@@ -1200,11 +1214,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           <div className="video-live__source-actions">
             <button type="button" className="video-live__source-button" onClick={() => void startCamera()}>
               <Camera aria-hidden />
-              摄像头
+              {t('videoLive.sources.camera')}
             </button>
             <label className="video-live__source-button">
               <FileVideo aria-hidden />
-              本地视频
+              {t('videoLive.sources.localVideo')}
               <input type="file" accept="video/*" onChange={(event) => void openFile(event)} />
             </label>
             <button
@@ -1214,7 +1228,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               onClick={() => void startScreen()}
             >
               <Monitor aria-hidden />
-              {source === 'screen' ? '添加屏幕' : '共享屏幕'}
+              {source === 'screen' ? t('videoLive.sources.addScreen') : t('videoLive.sources.shareScreen')}
             </button>
             {source && (
               <button
@@ -1223,11 +1237,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 onClick={closeSource}
               >
                 <X aria-hidden />
-                {source === 'camera' ? '停止摄像头' : source === 'screen' ? '停止全部屏幕' : '关闭视频'}
+                {source === 'camera' ? t('videoLive.sources.stopCamera') : source === 'screen' ? t('videoLive.sources.stopScreens') : t('videoLive.actions.closeVideo')}
               </button>
             )}
             <span className="video-live__frame-count">
-              {source ? `滚动窗口：${frameCount}/${MAX_FRAMES} 帧` : '纯语音不发送画面'}
+              {source ? t('videoLive.frameWindow', { count: frameCount, max: MAX_FRAMES }) : t('videoLive.audioOnly')}
               {source === 'screen' ? ` · ${screens.length}/${MAX_SCREENS} 屏` : ''}
             </span>
           </div>
@@ -1254,19 +1268,19 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   >
                     <strong>
                       {item.presentation === 'tool_result'
-                        ? '工具结果 · Jiuwen Core Agent'
+                        ? t('videoLive.chat.coreResult')
                         : item.role === 'user'
-                          ? '你'
+                          ? t('videoLive.chat.user')
                           : item.role === 'tool'
-                            ? '九问搜索'
-                            : '助手'}
+                            ? t('videoLive.chat.search')
+                            : t('videoLive.chat.assistant')}
                     </strong>
-                    <p>{item.role === 'tool' ? '九问搜索 Agent 搜索完成' : item.text}</p>
+                    <p>{item.role === 'tool' ? t('videoLive.chat.searchCompleted') : item.text}</p>
                   </div>
                 ))}
                 {streamingAnswer && !isAwaitingVoiceTranscript && (
                   <div className="video-live__chat-item is-assistant is-streaming">
-                    <strong>助手</strong>
+                    <strong>{t('videoLive.chat.assistant')}</strong>
                     <p>{streamingAnswer}</p>
                   </div>
                 )}
@@ -1274,8 +1288,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             ) : (
               <div className="video-live__answer-empty">
                 <Video aria-hidden />
-                <strong>{isRecording ? '正在持续听取' : '等待开启 Full-duplex'}</strong>
-                <span>开启后直接说话，无需逐句点击</span>
+                <strong>{isRecording ? t('videoLive.empty.listening') : t('videoLive.empty.waiting')}</strong>
+                <span>{t('videoLive.empty.hint')}</span>
               </div>
             )}
           </div>
@@ -1302,7 +1316,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   </span>
                   <span className="video-live__search-progress-copy">
                     <strong>Jiuwen Core Agent</strong>
-                    <span>{visibleSearchStep?.title || '准备搜索'}</span>
+                    <span>{visibleSearchStep?.title || t('videoLive.search.ready')}</span>
                   </span>
                   {visibleSearchProgress.latencyMs !== undefined && (
                     <span className="video-live__search-progress-time">
@@ -1316,10 +1330,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                     className="video-live__search-progress-select"
                     value={effectiveSelectedSearchJobId}
                     onChange={(event) => setSelectedSearchJobId(event.target.value)}
-                    aria-label="选择搜索记录"
-                    title="选择搜索记录"
+                    aria-label={t('videoLive.search.selectHistory')}
+                    title={t('videoLive.search.selectHistory')}
                   >
-                    <option value="">最新搜索（自动）</option>
+                    <option value="">{t('videoLive.search.latest')}</option>
                     {[...searchProgressJobs].reverse().map((job, index) => (
                       <option value={job.id} key={job.id}>
                         {searchProgressOptionLabel(job, searchProgressJobs.length - index)}
@@ -1373,13 +1387,13 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               disabled={isRealtimeStarting && !isRecording}
               aria-label={
                 isRealtimeStarting
-                  ? '正在启动 Full-duplex 会话'
+                  ? t('videoLive.actions.starting')
                   : isRecording
-                    ? '结束 Full-duplex 会话'
-                    : '开启 Full-duplex 会话'
+                    ? t('videoLive.actions.stopSession')
+                    : t('videoLive.actions.startSession')
               }
               title={
-                isRealtimeStarting ? realtimeStatus : isRecording ? '结束 Full-duplex 会话' : '开启 Full-duplex 会话'
+                isRealtimeStarting ? realtimeStatus : isRecording ? t('videoLive.actions.stopSession') : t('videoLive.actions.startSession')
               }
             >
               {isRealtimeStarting && !isRecording ? (
@@ -1393,9 +1407,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             <input
               value={question}
               onChange={(event) => setQuestion(event.target.value)}
-              placeholder={isRecording ? '也可以在当前会话中输入文字……' : '先开启 Full-duplex……'}
+              placeholder={isRecording ? t('videoLive.input.activePlaceholder') : t('videoLive.input.inactivePlaceholder')}
             />
-            <button type="submit" disabled={!question.trim()} aria-label="发送问题" title="发送问题">
+            <button type="submit" disabled={!question.trim()} aria-label={t('videoLive.input.send')} title={t('videoLive.input.send')}>
               <Send aria-hidden />
             </button>
           </form>

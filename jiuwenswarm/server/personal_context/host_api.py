@@ -190,6 +190,7 @@ def _initial_stored_config(*, collection_enabled: bool) -> dict[str, object]:
     max_pages, max_subdirectories = _directory_capacity_defaults()
     strategy_profile, model_index, model_id = _default_strategy_and_model()
     return {
+        "master_enabled": collection_enabled,
         "collection_enabled": collection_enabled,
         "agent_use_enabled": False,
         "strategy_profile": strategy_profile,
@@ -207,6 +208,7 @@ def _unconfigured_projection() -> dict[str, object]:
     strategy_profile, model_index, model_id = _default_strategy_and_model()
     return {
         "configured": False,
+        "master_enabled": False,
         "collection_enabled": False,
         "agent_use_enabled": False,
         "strategy_profile": strategy_profile,
@@ -486,6 +488,10 @@ def _project_service(service: dict[str, object]) -> dict[str, object]:
 
 def _project_stored_config(stored: dict[str, object]) -> dict[str, object]:
     projected = deepcopy(stored)
+    if "master_enabled" not in projected:
+        projected["master_enabled"] = bool(
+            projected.get("collection_enabled") or projected.get("agent_use_enabled")
+        )
     projected.pop("provider_credentials", None)
     services = projected.get("fetch_services", [])
     if not isinstance(services, list) or any(
@@ -499,6 +505,8 @@ def _project_stored_config(stored: dict[str, object]) -> dict[str, object]:
 def _build_core_config(stored: dict[str, object]) -> PersonalContext.Config:
     raw = deepcopy(stored)
     raw.pop("provider_credentials", None)
+    # 总开关是 Host 侧 UI 状态，Core 配置不感知（extra=forbid）
+    raw.pop("master_enabled", None)
     model_index = raw.pop("model_index", None)
     raw.pop("model_id", None)
     raw.pop("model_client", None)
@@ -557,6 +565,10 @@ def _prepare_stored_config(
     normalized = candidate.model_dump(mode="json", by_alias=True)
     normalized.pop("model_client", None)
     normalized.pop("model_request", None)
+    # 旧配置无 master_enabled 时按子开关补齐默认，落盘始终携带总开关字段
+    normalized["master_enabled"] = bool(
+        stored.get("master_enabled", stored.get("collection_enabled", False) or stored.get("agent_use_enabled", False))
+    )
     if "model_index" in stored:
         normalized["model_index"] = stored["model_index"]
     normalized["model_id"] = stored.get("model_id")
@@ -1052,6 +1064,64 @@ class PersonalContextHostAPI:
                     else self._personal_context.start_agent_use
                 ),
             )
+            return _project_stored_config(stored)
+
+    async def set_master_enabled(self, enabled: bool) -> dict[str, object]:
+        """Persist and apply the master switch, cascading to both sub-switches.
+
+        总开关是 Host 侧独立持久化状态：开启=两个子开关都开，关闭=两个子开关都关；
+        之后子开关可独立切换，不再反向影响总开关。
+        """
+
+        if not isinstance(enabled, bool):
+            _raise_host_error("enabled must be a boolean")
+        async with self._operation_lock:
+            first_start = self._stored_config is None
+            if self._stored_config is None:
+                if not enabled:
+                    return _unconfigured_projection()
+                stored = _initial_stored_config(collection_enabled=True)
+            else:
+                stored = deepcopy(self._stored_config)
+            stored["master_enabled"] = enabled
+            stored["collection_enabled"] = enabled
+            stored["agent_use_enabled"] = enabled
+            stored, candidate = _prepare_stored_config(stored)
+            payload = _serialize_config(stored)
+            if first_start:
+                await self._apply_configuration_locked(candidate, stored, payload)
+                if enabled:
+                    await self._personal_context.start_agent_use()
+            else:
+
+                async def apply_master() -> None:
+                    if enabled:
+                        await self._start_collection_with_embedding()
+                        await self._personal_context.start_agent_use()
+                    else:
+                        await self._personal_context.stop_collection(
+                            timeout_seconds=_STOP_TIMEOUT_SECONDS
+                        )
+                        await self._personal_context.stop_agent_use()
+
+                async def rollback_master() -> None:
+                    if enabled:
+                        await self._personal_context.stop_agent_use()
+                        await self._personal_context.stop_collection(
+                            timeout_seconds=_STOP_TIMEOUT_SECONDS
+                        )
+                    else:
+                        await self._start_collection_with_embedding()
+                        await self._personal_context.start_agent_use()
+
+                await self._apply_live_update_locked(
+                    candidate,
+                    stored,
+                    payload,
+                    apply=apply_master,
+                    rollback=rollback_master,
+                    publish_before_apply=not enabled,
+                )
             return _project_stored_config(stored)
 
     async def list_fetch_services(self) -> list[dict[str, object]]:

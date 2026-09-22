@@ -4,7 +4,7 @@ import {
   A2UISetting,
   ExternalCliSettingsItem,
   ProactiveLimitsSetting,
-  RSISetting,
+  TaskAsrSetting,
   TaskFullDuplexSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
@@ -18,11 +18,7 @@ export const experimentalModule: SettingsModuleDefinition = {
     {
       id: 'asr',
       titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [
-        { id: 'asr-api-base', component: 'input', key: 'asr_api_base' },
-        { id: 'asr-api-key', component: 'input', key: 'asr_api_key', inputType: 'password' },
-        { id: 'asr-model', component: 'input', key: 'asr_model' },
-      ],
+      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
     },
     {
       id: 'task-full-duplex',
@@ -35,11 +31,6 @@ export const experimentalModule: SettingsModuleDefinition = {
       items: [{ id: 'external-cli-agents', component: 'custom', render: ExternalCliSettingsItem }],
     },
     {
-      id: 'rsi',
-      titleKey: 'settingsPanel.experimental.rsi',
-      items: [{ id: 'rsi-enabled', component: 'custom', render: RSISetting }],
-    },
-    {
       id: 'a2ui',
       titleKey: 'settingsPanel.experimental.a2ui',
       items: [{ id: 'a2ui', component: 'custom', render: A2UISetting }],
@@ -48,17 +39,6 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'trajectory-ui',
       titleKey: 'settingsPanel.experimental.trajectoryUi',
       items: [{ id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting }],
-    },
-    {
-      id: 'skill-pack',
-      titleKey: 'settingsPanel.experimental.skillPack',
-      items: [
-        {
-          id: 'discover-skill-pack-enabled',
-          component: 'switch',
-          key: 'symphony_evolution_enabled',
-        },
-      ],
     },
     {
       id: 'kv-cache-affinity',

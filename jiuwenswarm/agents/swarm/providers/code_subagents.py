@@ -64,7 +64,6 @@ STATUSLINE_SETUP_AGENT = "swarm.statusline_setup_agent"
 # Key under ``ctx.extras`` where ``DeepAgentSpec.build`` publishes the resolved
 # parent member model for sub-agent providers to reuse.
 _PARENT_MODEL_EXTRAS_KEY = "_parent_model"
-_DEFAULT_MAX_ITERATIONS = 15
 
 
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:
@@ -75,9 +74,10 @@ def _workspace_root(ctx: SwarmBuildContext) -> str | None:
 class CodeAgentInput(ConstructionInput):
     """Construction inputs for the swarm code sub-agent."""
 
-    max_iterations: int = param_field(
-        default=_DEFAULT_MAX_ITERATIONS,
-        description="Maximum task-loop iterations for the sub-agent.",
+    max_iterations: int | None = param_field(
+        default=None,
+        description="Maximum inner ReAct iterations for the sub-agent. "
+        "None means unbounded.",
     )
     workspace_root: str | None = context_field(
         resolver=_workspace_root,

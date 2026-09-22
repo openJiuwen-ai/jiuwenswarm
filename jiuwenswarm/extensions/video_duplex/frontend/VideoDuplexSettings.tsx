@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { LoaderCircle, Power, Save, Settings2 } from 'lucide-react';
 
 import type { ApplicationPluginSettingsProps } from '../../../channels/web/frontend/src/applicationPlugins/types';
@@ -57,12 +58,22 @@ function secretPlaceholder(length?: number): string {
   return Number.isSafeInteger(length) && Number(length) > 0 ? '*'.repeat(Number(length)) : '';
 }
 
+export interface VideoDuplexSettingsProps extends Partial<ApplicationPluginSettingsProps> {
+  /** Render the configuration directly inside Settings > Experimental. */
+  embedded?: boolean;
+  /** The plugin tab no longer owns the enable switch when embedded. */
+  showEnableControl?: boolean;
+}
+
 export function VideoDuplexSettings({
   contribution,
   onManifestChanged,
-}: ApplicationPluginSettingsProps) {
-  const [enabled, setEnabled] = useState(contribution.enabled !== false);
-  const [expanded, setExpanded] = useState(false);
+  embedded = false,
+  showEnableControl = !embedded,
+}: VideoDuplexSettingsProps) {
+  const { t } = useTranslation();
+  const [enabled, setEnabled] = useState(contribution?.enabled !== false);
+  const [expanded, setExpanded] = useState(embedded);
   const [values, setValues] = useState<SettingsValues>(EMPTY_SETTINGS);
   const [secretLengths, setSecretLengths] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -84,7 +95,7 @@ export function VideoDuplexSettings({
         if (active) applyPayload(payload);
       })
       .catch((loadError: unknown) => {
-        if (active) setError(loadError instanceof Error ? loadError.message : '无法读取全双工设置');
+        if (active) setError(loadError instanceof Error ? loadError.message : t('settingsPanel.videoDuplex.loadError'));
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -109,10 +120,10 @@ export function VideoDuplexSettings({
         { timeoutMs: 10_000 },
       );
       applyPayload(payload);
-      setNotice(payload.enabled ? '全双工已启用' : '全双工已禁用');
-      onManifestChanged();
+      setNotice(payload.enabled ? t('settingsPanel.videoDuplex.enabled') : t('settingsPanel.videoDuplex.disabled'));
+      onManifestChanged?.();
     } catch (toggleError) {
-      setError(toggleError instanceof Error ? toggleError.message : '无法更新插件状态');
+      setError(toggleError instanceof Error ? toggleError.message : t('settingsPanel.videoDuplex.toggleError'));
     } finally {
       setSaving(false);
     }
@@ -134,9 +145,9 @@ export function VideoDuplexSettings({
         { timeoutMs: 10_000 },
       );
       applyPayload(payload);
-      setNotice('设置已保存，新请求将使用最新配置');
+      setNotice(t('settingsPanel.videoDuplex.saved'));
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : '无法保存全双工设置');
+      setError(saveError instanceof Error ? saveError.message : t('settingsPanel.videoDuplex.saveError'));
     } finally {
       setSaving(false);
     }
@@ -163,27 +174,31 @@ export function VideoDuplexSettings({
     <div className="video-duplex-settings">
       <div className="video-duplex-settings__summary">
         <div>
-          <p>配置视觉模型以及配套的语音识别与语音合成通道。</p>
+          <p>{t('settingsPanel.videoDuplex.description')}</p>
           {error && <small className="is-error">{error}</small>}
           {notice && <small className="is-success">{notice}</small>}
         </div>
         <div className="video-duplex-settings__actions">
-          <button type="button" className={enabled ? 'is-danger' : ''} disabled={loading || saving} onClick={() => void toggleEnabled()}>
-            {loading || saving ? <LoaderCircle className="is-spinning" aria-hidden /> : <Power aria-hidden />}
-            {enabled ? '禁用' : '启用'}
-          </button>
-          <button type="button" disabled={loading || saving} onClick={() => setExpanded(current => !current)}>
-            <Settings2 aria-hidden />
-            {expanded ? '收起' : '设置'}
-          </button>
+          {showEnableControl && (
+            <button type="button" className={enabled ? 'is-danger' : ''} disabled={loading || saving} onClick={() => void toggleEnabled()}>
+              {loading || saving ? <LoaderCircle className="is-spinning" aria-hidden /> : <Power aria-hidden />}
+              {enabled ? t('settingsPanel.videoDuplex.disable') : t('settingsPanel.videoDuplex.enable')}
+            </button>
+          )}
+          {!embedded && (
+            <button type="button" disabled={loading || saving} onClick={() => setExpanded(current => !current)}>
+              <Settings2 aria-hidden />
+              {expanded ? t('common.collapse') : t('settingsPanel.common.configure')}
+            </button>
+          )}
         </div>
       </div>
 
       {expanded && (
         <form className="video-duplex-settings__form" onSubmit={event => void save(event)}>
-          <h3>视频模型</h3>
+          <h3>{t('settingsPanel.videoDuplex.videoSectionTitle')}</h3>
           <label className="video-duplex-settings__field">
-            <span>模型通道</span>
+            <span>{t('settingsPanel.videoDuplex.providerLabel')}</span>
             <select value={values.video_live_provider} onChange={event => updateValue('video_live_provider', event.target.value as Provider)}>
               <option value="joyai">JoyAI</option>
               <option value="qwen_omni">Qwen Omni Realtime</option>
@@ -194,24 +209,24 @@ export function VideoDuplexSettings({
             <>
               {field('joyai_api_base', 'JoyAI API Base', { placeholder: 'http://127.0.0.1:8070/v1' })}
               {field('joyai_api_key', 'JoyAI API Key', { secret: true })}
-              {field('joyai_model', 'JoyAI 模型')}
+              {field('joyai_model', t('settingsPanel.videoDuplex.joyaiModelLabel'))}
 
-              <h3>ASR 与 TTS</h3>
+              <h3>{t('settingsPanel.videoDuplex.voiceSectionTitle')}</h3>
               <label className="video-duplex-settings__field">
-                <span>语音通道</span>
+                <span>{t('settingsPanel.videoDuplex.voiceProtocolLabel')}</span>
                 <select value={values.voice_protocol} onChange={event => updateValue('voice_protocol', event.target.value as VoiceProtocol)}>
                   <option value="native_ws">JoyAI WebSocket</option>
                   <option value="openai_http">OpenAI HTTP</option>
                 </select>
               </label>
-              {field('voice_asr_endpoint', 'ASR 完整接口')}
-              {field('voice_tts_endpoint', 'TTS 完整接口')}
+              {field('voice_asr_endpoint', t('settingsPanel.videoDuplex.asrEndpointLabel'))}
+              {field('voice_tts_endpoint', t('settingsPanel.videoDuplex.ttsEndpointLabel'))}
               {values.voice_protocol === 'openai_http' && (
                 <>
-                  {field('voice_api_key', '语音 API Key', { secret: true })}
-                  {field('voice_asr_model', 'ASR 模型')}
-                  {field('voice_tts_model', 'TTS 模型')}
-                  {field('voice_tts_voice', 'TTS 音色')}
+                  {field('voice_api_key', t('settingsPanel.videoDuplex.voiceApiKeyLabel'), { secret: true })}
+                  {field('voice_asr_model', t('settingsPanel.videoDuplex.asrModelLabel'))}
+                  {field('voice_tts_model', t('settingsPanel.videoDuplex.ttsModelLabel'))}
+                  {field('voice_tts_voice', t('settingsPanel.videoDuplex.ttsVoiceLabel'))}
                 </>
               )}
             </>
@@ -219,15 +234,15 @@ export function VideoDuplexSettings({
             <>
               {field('qwen_omni_realtime_url', 'Qwen Realtime WebSocket')}
               {field('qwen_omni_api_key', 'Qwen API Key', { secret: true })}
-              {field('qwen_omni_model', 'Qwen 模型')}
-              {field('qwen_omni_voice', 'Qwen 音色')}
+              {field('qwen_omni_model', t('settingsPanel.videoDuplex.qwenModelLabel'))}
+              {field('qwen_omni_voice', t('settingsPanel.videoDuplex.qwenVoiceLabel'))}
             </>
           )}
 
           <footer>
             <button type="submit" className="is-primary" disabled={saving}>
               {saving ? <LoaderCircle className="is-spinning" aria-hidden /> : <Save aria-hidden />}
-              {saving ? '保存中' : '保存设置'}
+              {saving ? t('common.saving') : t('settingsPanel.videoDuplex.saveSettings')}
             </button>
           </footer>
         </form>

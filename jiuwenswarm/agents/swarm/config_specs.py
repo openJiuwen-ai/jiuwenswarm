@@ -195,7 +195,6 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
 )
 
 # code_agent sub-agents are always-on (explore / plan) or config-gated.
-_DEFAULT_SUBAGENT_MAX_ITERATIONS = 15
 
 
 def _is_code_mode(mode: str) -> bool:
@@ -738,12 +737,11 @@ def _code_subagent_spec(
     elif name == "statusline-setup":
         max_iterations = registry.DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS
     else:
-        max_iterations = react_cfg.get(
-            "max_iterations",
-            _DEFAULT_SUBAGENT_MAX_ITERATIONS,
-        )
-    if isinstance(sub_cfg, dict) and sub_cfg.get("max_iterations"):
+        max_iterations = react_cfg.get("max_iterations", 100)
+    if isinstance(sub_cfg, dict) and sub_cfg.get("max_iterations") is not None:
         max_iterations = sub_cfg["max_iterations"]
+    if max_iterations is not None:
+        max_iterations = int(max_iterations)
     card_kwargs: dict[str, Any] = {"name": name}
     if name == "statusline-setup":
         card_kwargs["id"] = "jiuwenswarm.statusline-setup"
@@ -752,7 +750,7 @@ def _code_subagent_spec(
         system_prompt="",
         factory_name=factory_name,
         factory_kwargs={
-            "max_iterations": int(max_iterations),
+            "max_iterations": max_iterations,
             "language": language,
         },
     )

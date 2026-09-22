@@ -44,7 +44,6 @@ interface MarketplacePageProps {
   onCreateWithSkill: () => void;
   onCreateWithUpload: () => void;
   onRegisterCustomMcp: () => void;
-  onOpenApplicationPlugins: () => void;
 }
 
 // 2026-08-07：backend-requests.md 需求8 已解决——plugin_packages.list/show 现在真的下发单值
@@ -187,7 +186,6 @@ export function MarketplacePage({
   onCreateWithSkill,
   onCreateWithUpload,
   onRegisterCustomMcp,
-  onOpenApplicationPlugins,
 }: MarketplacePageProps) {
   const { t, i18n } = useTranslation();
   const [category, setCategory] = useState<string>('all');
@@ -498,8 +496,6 @@ export function MarketplacePage({
 
         <div className="page-toolbar" data-testid="page-toolbar">
           <div className="flex min-h-[34px] items-stretch">
-            {/* "应用插件"不是可选中页签：作为 Tabs 动作项混排（onClick 直连，不经过 onChange、
-              永远无选中态），交互与原独立按钮一致 */}
             <Tabs
               role="tablist"
               wrapperTestId="connector-market-tabs"
@@ -512,11 +508,6 @@ export function MarketplacePage({
                   value: tab,
                   label: t(tab === 'my' ? 'connectorMarket.tabs.my' : `connectorMarket.tabs.${tab}Market`),
                 })),
-                {
-                  value: 'application-plugins',
-                  label: t('connectorMarket.tabs.applicationPlugins'),
-                  onClick: onOpenApplicationPlugins,
-                },
               ]}
             />
           </div>
