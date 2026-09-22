@@ -3178,6 +3178,8 @@ class JiuWenSwarm:
         if _is_ask_user_answer_resume(params):
             answer_request_id = str(params.get("request_id") or "").strip()
             if answer_request_id:
+                from .sensitive_answers import redact_sensitive_answers
+
                 await _run_history_io(
                     append_history_record,
                     session_id=session_id,
@@ -3190,7 +3192,7 @@ class JiuWenSwarm:
                     extra={
                         "request_id": answer_request_id,
                         "source": "ask_user_interrupt",
-                        "answers": params.get("answers", []),
+                        "answers": redact_sensitive_answers(params.get("answers", [])),
                     },
                     mode=params.get("mode", "unknown"),
                 )

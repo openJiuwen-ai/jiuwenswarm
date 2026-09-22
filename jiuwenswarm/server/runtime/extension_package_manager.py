@@ -3776,9 +3776,22 @@ def _import_package_from_path(
         )
     if src.is_file():
         with tempfile.TemporaryDirectory(prefix="jiuwenswarm_pkg_import_") as tmp:
-            extract_dir = Path(tmp)
+            extract_dir = Path(tmp) / "contents"
             _extract_archive(src, extract_dir)
             pkg_root = _find_package_root(extract_dir, kind_label)
+            if kind == _AGENT_GROUP_KIND and pkg_root == extract_dir:
+                manifest = _read_package_manifest(pkg_root)
+                if manifest is None:
+                    raise ValueError(
+                        f"{kind_label} package missing/corrupt manifest.json"
+                    )
+                package_id = _package_id_from_manifest(
+                    manifest, package_type=package_type, kind_label=kind_label
+                )
+                if pkg_root.name != package_id:
+                    canonical_root = Path(tmp) / package_id
+                    pkg_root.rename(canonical_root)
+                    pkg_root = canonical_root
             return _commit_imported_package(
                 pkg_root, kind=kind, kind_label=kind_label, package_type=package_type
             )
