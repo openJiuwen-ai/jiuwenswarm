@@ -325,6 +325,51 @@ async def test_service_persists_while_disconnected_then_runs_target_fifo(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("blocker", ["interaction", "goal"])
+async def test_busy_target_accepts_messages_without_executing_until_released(
+    tmp_path, monkeypatch, blocker,
+) -> None:
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    admission = SessionRunAdmission()
+    blocked = True
+    if blocker == "interaction":
+        await admission.mark_interaction_pending("target-1", "plan-confirm")
+    else:
+        admission.set_session_message_blocker(lambda sid: sid == "target-1" and blocked)
+    executed = []
+
+    async def execute(record):
+        executed.append(record.content)
+        return SessionMessageExecutionResult(status="succeeded")
+
+    service = SessionMessageService(
+        store=store, admission=admission, execute=execute, available=True,
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    monkeypatch.setattr(service, "_metadata", lambda: ([_metadata("target-1")], 1))
+    try:
+        first = await asyncio.wait_for(service.send_message(
+            _source("first"), target_session_id="target-1", message="first",
+        ), 1)
+        second = await asyncio.wait_for(service.send_message(
+            _source("second"), target_session_id="target-1", message="second",
+        ), 1)
+        listed = await service.list_targets(_source("list"))
+        assert listed["sessions"][0]["runtime_state"] == "busy"
+        assert listed["sessions"][0]["pending_message_count"] == 2
+        assert first["accepted"] is True
+        assert first["status"] == second["status"] == "queued"
+        assert executed == []
+        assert store.get(first["message_id"]).status == "queued"
+        blocked = False
+        await admission.clear_interaction_pending("target-1", "plan-confirm")
+        await _wait_for_status(store, second["message_id"], "succeeded")
+        assert executed == ["first", "second"]
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_uncertain_execution_blocks_later_messages_without_replay(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1027,6 +1072,31 @@ async def test_session_message_admission_is_mutually_exclusive_with_user_turns()
     await asyncio.wait_for(user_task, timeout=1)
     await admission.end_user("target-1")
     await message_task
+
+
+@pytest.mark.asyncio
+async def test_session_message_waits_for_matching_interaction_answer() -> None:
+    admission = SessionRunAdmission()
+    await admission.mark_interaction_pending("target-1", "plan-confirmation")
+    message = asyncio.create_task(admission.begin_session_message("target-1", "run-1"))
+    try:
+        await asyncio.sleep(0)
+        assert not message.done()
+        await admission.clear_interaction_pending("target-1", "stale-answer")
+        await asyncio.sleep(0)
+        assert not message.done()
+        # Answering remains possible while the mailbox waits. The continuation
+        # must finish before external work is admitted.
+        await admission.begin_user("target-1")
+        await admission.clear_interaction_pending("target-1", "plan-confirmation")
+        await asyncio.sleep(0)
+        assert not message.done()
+        await admission.end_user("target-1")
+        await asyncio.wait_for(message, timeout=1)
+    finally:
+        message.cancel()
+        await asyncio.gather(message, return_exceptions=True)
+        await admission.end_session_message("target-1", "run-1")
 
 
 def test_cross_session_request_does_not_touch_human_activity_metadata(

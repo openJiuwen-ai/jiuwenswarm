@@ -5202,6 +5202,11 @@ class JiuWenSwarm:
             return bool(has_runtime())
         return bool(has_runtime(session_id))
 
+    def has_active_goal(self, session_id: str) -> bool:
+        """Inspect existing Goal work without creating or attaching a session."""
+        checker = getattr(self._adapter, "has_active_goal", None)
+        return bool(callable(checker) and checker(session_id))
+
     def has_auto_permission_session(self, session_id: str | None) -> bool:
         adapter = self._adapter
         checker = getattr(adapter, "has_auto_permission_session", None)

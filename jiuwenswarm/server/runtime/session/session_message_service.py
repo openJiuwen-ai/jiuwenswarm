@@ -286,6 +286,11 @@ class SessionMessageService:
                     "is_heartbeat_active",
                     lambda _sid: False,
                 )(session_id)
+                or getattr(
+                    self._admission,
+                    "is_session_message_blocked",
+                    lambda _sid: False,
+                )(session_id)
             )
             sessions.append(
                 {

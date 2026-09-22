@@ -12591,6 +12591,20 @@ class JiuWenSwarmDeepAdapter:
         status_value = getattr(status, "value", status)
         return status_value == "active"
 
+    def has_active_goal(self, session_id: str) -> bool:
+        """Read the cached Goal owner, including between autonomous rounds."""
+        if (
+            self._is_session_scoped_adapter
+            and self._session_adapter_key(self._parent_session_id)
+            != self._session_adapter_key(session_id)
+        ):
+            return False
+        adapter = (
+            self if self._is_session_scoped_adapter
+            else self._get_cached_session_adapter(session_id)
+        )
+        return bool(adapter and adapter._has_active_goal_interaction())
+
     def _has_active_goal_interaction(self) -> bool:
         """Whether the shared DeepAgent still owns an active goal interaction."""
         if self._has_active_goal_round():

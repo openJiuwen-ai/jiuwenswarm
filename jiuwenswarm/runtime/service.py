@@ -370,6 +370,7 @@ class AgentRuntime:
         self._pending_session_provisions: set[PreparedSessionProvision[Any]] = set()
         self._started = False
         self._closed = False
+        self.set_admission_controller(admission_controller)
 
     @property
     def agent_manager(self) -> AgentManager:
@@ -383,6 +384,25 @@ class AgentRuntime:
     def set_admission_controller(self, controller: Any | None) -> None:
         """Attach optional host-owned scheduling admission to chat execution."""
         self._admission_controller = controller
+        setter = getattr(controller, "set_session_message_blocker", None)
+        if callable(setter):
+            setter(self._session_message_goal_busy)
+
+    def _session_message_goal_busy(self, session_id: str) -> bool:
+        """Check Goal ownership, including rounds without an output consumer."""
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is None:
+            return False
+        if any(
+            execution.work_kind in {
+                SessionWorkKind.GOAL_STREAM, SessionWorkKind.GOAL_ATTACH,
+            }
+            and not execution.state.terminal
+            for execution in snapshot.executions
+        ):
+            return True
+        checker = getattr(self._agent_manager, "has_active_goal", None)
+        return bool(callable(checker) and checker(snapshot.channel_id, session_id))
 
     async def _mark_pending_interaction(self, event: RuntimeEvent) -> None:
         if event.event_type != "chat.ask_user_question":
@@ -1331,7 +1351,10 @@ class AgentRuntime:
         )
         activity_execution_started = False
         activity_execution_succeeded = False
-        admitted = foreground and not self._request_targets_team(request)
+        admitted = (
+            (foreground or self._starts_goal(request))
+            and not self._request_targets_team(request)
+        )
         interrupt_resume = self._is_interrupt_resume_request(request)
         interaction_answer = (
             interrupt_resume or request.req_method == ReqMethod.CHAT_ANSWER
@@ -1844,7 +1867,9 @@ class AgentRuntime:
         activity_execution_started = False
         activity_execution_succeeded = False
         admitted = (
-            is_chat_turn and not background and not self._request_targets_team(request)
+            (is_chat_turn or self._starts_goal(request))
+            and not background
+            and not self._request_targets_team(request)
         )
         interrupt_resume = self._is_interrupt_resume_request(request)
         interaction_answer = (
@@ -2682,6 +2707,14 @@ class AgentRuntime:
             request.req_method in cls._chat_turn_methods()
             and resolve_session_input_mode(request.params) is not None
             and not cls._is_interrupt_resume_request(request)
+        )
+
+    @staticmethod
+    def _starts_goal(request: AgentRequest) -> bool:
+        params = request.params if isinstance(request.params, dict) else {}
+        return (
+            request.req_method is ReqMethod.COMMAND_GOAL
+            and str(params.get("action") or "get").strip().lower() in {"set", "resume"}
         )
 
     @classmethod

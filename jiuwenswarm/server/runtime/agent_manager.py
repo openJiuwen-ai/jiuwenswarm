@@ -1298,6 +1298,15 @@ class AgentManager:
             )
             return self._borrow_agent(agent)
 
+    def has_active_goal(self, channel_id: str, session_id: str) -> bool:
+        """Inspect cached Goal owners without borrowing or creating an Agent."""
+        channel_agents = self.agents.get(_normalize_channel_id(channel_id), {})
+        for agent in channel_agents.values():
+            checker = getattr(agent, "has_active_goal", None)
+            if callable(checker) and checker(session_id):
+                return True
+        return False
+
     def get_agent_for_session_nowait(
         self,
         channel_id: str,
