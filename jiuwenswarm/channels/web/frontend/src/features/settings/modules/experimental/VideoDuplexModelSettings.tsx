@@ -1,10 +1,15 @@
-import { FormEvent, useEffect, useState } from 'react';
-import { LoaderCircle, Save } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { settingsActionIcons } from '../../../../assets/settings';
+import { Button } from '../../../../components/ui';
+import { FormDialog } from '../../../../components/form';
+import { SettingsConfirmDialog } from '../../components';
 import { webRequest } from '../../../../services/webClient';
 import './VideoDuplexModelSettings.css';
 
 type Provider = 'joyai' | 'qwen_omni';
 type VoiceProtocol = 'native_ws' | 'openai_http';
+
 type SettingsValues = {
   video_live_provider: Provider;
   joyai_api_base: string;
@@ -24,74 +29,277 @@ type SettingsValues = {
 };
 
 const DEFAULTS: SettingsValues = {
-  video_live_provider: 'joyai', joyai_api_base: '', joyai_api_key: '',
-  joyai_model: 'jdopensource/JoyAI-VL-Interaction', qwen_omni_realtime_url: '',
-  qwen_omni_api_key: '', qwen_omni_model: 'qwen3.5-omni-flash-realtime', qwen_omni_voice: 'Cherry',
-  voice_protocol: 'native_ws', voice_asr_endpoint: 'ws://127.0.0.1:8994/ws/asr',
-  voice_tts_endpoint: 'ws://127.0.0.1:8992/ws/tts', voice_api_key: '', voice_asr_model: '',
-  voice_tts_model: '', voice_tts_voice: 'vivian',
+  video_live_provider: 'joyai',
+  joyai_api_base: '',
+  joyai_api_key: '',
+  joyai_model: 'jdopensource/JoyAI-VL-Interaction',
+  qwen_omni_realtime_url: '',
+  qwen_omni_api_key: '',
+  qwen_omni_model: 'qwen3.5-omni-flash-realtime',
+  qwen_omni_voice: 'Cherry',
+  voice_protocol: 'native_ws',
+  voice_asr_endpoint: 'ws://127.0.0.1:8994/ws/asr',
+  voice_tts_endpoint: 'ws://127.0.0.1:8992/ws/tts',
+  voice_api_key: '',
+  voice_asr_model: '',
+  voice_tts_model: '',
+  voice_tts_voice: 'vivian',
 };
+
 const SECRET_KEYS = ['joyai_api_key', 'qwen_omni_api_key', 'voice_api_key'] as const;
 type Payload = { values: SettingsValues; configured_secret_lengths: Record<string, number> };
 
+function secretPlaceholder(length?: number): string {
+  return Number.isSafeInteger(length) && Number(length) > 0 ? '*'.repeat(Number(length)) : '';
+}
+
+function isConfigured(values: SettingsValues, secretLengths: Record<string, number>): boolean {
+  if (values.video_live_provider === 'qwen_omni') {
+    return Boolean(values.qwen_omni_realtime_url.trim() && values.qwen_omni_model.trim());
+  }
+  return Boolean(
+    values.joyai_api_base.trim() &&
+      values.joyai_model.trim() &&
+      (values.joyai_api_key.trim() || secretLengths.joyai_api_key),
+  );
+}
+
+function ConfigField({
+  value,
+  label,
+  secret,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  label: string;
+  secret?: boolean;
+  placeholder?: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="video-duplex-model-settings__field">
+      <span>{label}</span>
+      <input
+        type={secret ? 'password' : 'text'}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        autoComplete="off"
+      />
+    </label>
+  );
+}
+
 export function VideoDuplexModelSettings() {
+  const { t } = useTranslation();
   const [values, setValues] = useState<SettingsValues>(DEFAULTS);
   const [secretLengths, setSecretLengths] = useState<Record<string, number>>({});
+  const [draft, setDraft] = useState<SettingsValues | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState('');
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
 
   const applyPayload = (payload: Payload) => {
     setValues({ ...DEFAULTS, ...payload.values });
     setSecretLengths(payload.configured_secret_lengths || {});
   };
+
   useEffect(() => {
     let active = true;
-    void webRequest<Payload & { enabled?: boolean }>('video.duplex.settings.get', {}, { timeoutMs: 10_000 })
-      .then((payload) => { if (active) applyPayload(payload); })
-      .catch((loadError: unknown) => { if (active) setError(loadError instanceof Error ? loadError.message : '无法读取全双工模型配置'); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+    void webRequest<Payload>('video.duplex.settings.get', {}, { timeoutMs: 10_000 })
+      .then((payload) => {
+        if (active) applyPayload(payload);
+      })
+      .catch((loadError: unknown) => {
+        if (active) setError(loadError instanceof Error ? loadError.message : '无法读取全双工模型配置');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
-  const update = <K extends keyof SettingsValues>(key: K, value: SettingsValues[K]) => {
-    setValues((current) => ({ ...current, [key]: value }));
-    setMessage('');
-  };
-  const field = (key: keyof SettingsValues, label: string, secret = false) => (
-    <label className="video-duplex-model-settings__field" key={key}>
-      <span>{label}</span>
-      <input type={secret ? 'password' : 'text'} value={values[key]} placeholder={secret ? '*'.repeat(secretLengths[key] || 0) : undefined}
-        onChange={(event) => update(key, event.target.value as SettingsValues[typeof key])} autoComplete="off" />
-    </label>
-  );
-  const save = async (event: FormEvent) => {
-    event.preventDefault(); setSaving(true); setError(''); setMessage('');
-    const outgoing: Record<string, string> = { ...values };
-    SECRET_KEYS.forEach((key) => { if (!values[key]) delete outgoing[key]; });
-    try {
-      const payload = await webRequest<Payload>('video.duplex.settings.update', { values: outgoing }, { timeoutMs: 10_000 });
-      applyPayload(payload); setMessage('全双工模型配置已保存');
-    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : '无法保存全双工模型配置'); }
-    finally { setSaving(false); }
+  const configured = isConfigured(values, secretLengths);
+  const modelName = values.video_live_provider === 'qwen_omni' ? values.qwen_omni_model : values.joyai_model;
+  const providerName = values.video_live_provider === 'qwen_omni' ? 'Qwen Omni Realtime' : 'JoyAI';
+  const updateDraft = <K extends keyof SettingsValues>(key: K, value: SettingsValues[K]) => {
+    setDraft((current) => (current ? { ...current, [key]: value } : current));
   };
 
-  if (loading) return <div className="video-duplex-model-settings__status"><LoaderCircle className="is-spinning" />正在读取全双工模型配置…</div>;
-  return <form className="video-duplex-model-settings" onSubmit={(event) => void save(event)}>
-    <p className="video-duplex-model-settings__description">配置全双工视觉模型，以及 JoyAI 所需的语音转写与语音播报通道。</p>
-    {error && <div className="video-duplex-model-settings__error" role="alert">{error}</div>}
-    {message && <div className="video-duplex-model-settings__success" role="status">{message}</div>}
-    <h3>视觉模型</h3>
-    <label className="video-duplex-model-settings__field"><span>模型通道</span><select value={values.video_live_provider} onChange={(event) => update('video_live_provider', event.target.value as Provider)}><option value="joyai">JoyAI</option><option value="qwen_omni">Qwen Omni Realtime</option></select></label>
-    {values.video_live_provider === 'joyai' && <>
-      {field('joyai_api_base', 'JoyAI API Base')}{field('joyai_api_key', 'JoyAI API Key', true)}{field('joyai_model', 'JoyAI 模型')}
-      <h3>语音转写与语音播报</h3>
-      <label className="video-duplex-model-settings__field"><span>语音通道</span><select value={values.voice_protocol} onChange={(event) => update('voice_protocol', event.target.value as VoiceProtocol)}><option value="native_ws">JoyAI WebSocket</option><option value="openai_http">OpenAI HTTP</option></select></label>
-      {field('voice_asr_endpoint', '语音转写完整接口')}{field('voice_tts_endpoint', '语音播报完整接口')}
-      {values.voice_protocol === 'openai_http' && <>{field('voice_api_key', '语音 API Key', true)}{field('voice_asr_model', '语音转写模型')}{field('voice_tts_model', '语音播报模型')}{field('voice_tts_voice', '语音播报音色')}</>}
-    </>}
-    {values.video_live_provider === 'qwen_omni' && <>{field('qwen_omni_realtime_url', 'Qwen Realtime WebSocket')}{field('qwen_omni_api_key', 'Qwen API Key', true)}{field('qwen_omni_model', 'Qwen 模型')}{field('qwen_omni_voice', 'Qwen 音色')}</>}
-    <footer><button type="submit" disabled={saving}>{saving ? <LoaderCircle className="is-spinning" /> : <Save />}{saving ? '保存中' : '保存设置'}</button></footer>
-  </form>;
+  const openEditor = () => {
+    setError('');
+    setDraft({ ...values });
+  };
+
+  const saveDraft = async () => {
+    if (!draft) return;
+    setSaving(true);
+    setError('');
+    const outgoing: Record<string, string> = { ...draft };
+    SECRET_KEYS.forEach((key) => {
+      if (!draft[key]) delete outgoing[key];
+    });
+    try {
+      const payload = await webRequest<Payload>(
+        'video.duplex.settings.update',
+        { values: outgoing },
+        { timeoutMs: 10_000 },
+      );
+      applyPayload(payload);
+      setDraft(null);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : '无法保存全双工模型配置');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clearConfig = async () => {
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      const emptyValues = Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, ''])) as Record<string, string>;
+      emptyValues.video_live_provider = 'joyai';
+      const payload = await webRequest<Payload>(
+        'video.duplex.settings.update',
+        { values: emptyValues, clear_secrets: true },
+        { timeoutMs: 10_000 },
+      );
+      applyPayload(payload);
+      setDeleteOpen(false);
+    } catch (clearError) {
+      setDeleteError(clearError instanceof Error ? clearError.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="video-duplex-model-settings__status">正在读取全双工模型配置…</div>;
+  }
+
+  return (
+    <>
+      {error ? <div className="video-duplex-model-settings__error" role="alert">{error}</div> : null}
+      {configured ? (
+        <div className="settings-agent-media__model-card">
+          <div className="video-duplex-model-settings__model-copy">
+            <strong className="settings-agent-media__model-name">{modelName}</strong>
+            <small>{providerName}</small>
+          </div>
+          <div className="settings-agent-media__actions">
+            <Button
+              variant="quiet"
+              size="sm"
+              icon={<settingsActionIcons.edit aria-hidden />}
+              title={t('common.modify')}
+              aria-label={`${t('common.modify')} ${providerName}`}
+              disabled={saving || deleting}
+              onClick={openEditor}
+              data-testid="settings-task-full-duplex-edit-btn"
+            />
+            <Button
+              variant="quiet"
+              size="sm"
+              icon={<settingsActionIcons.delete aria-hidden />}
+              title={t('common.delete')}
+              aria-label={`${t('common.delete')} ${providerName}`}
+              disabled={saving || deleting}
+              onClick={() => {
+                setDeleteError('');
+                setDeleteOpen(true);
+              }}
+              data-testid="settings-task-full-duplex-delete-btn"
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="settings-agent-media__model-card">
+          <span className="settings-agent-media__model-name">尚未配置全双工模型</span>
+          <Button size="sm" variant="primary" disabled={saving || deleting} onClick={openEditor}>
+            配置模型
+          </Button>
+        </div>
+      )}
+
+      {draft ? (
+        <FormDialog
+          open
+          title="配置全双工模型"
+          submitting={saving}
+          confirmLabel={t('common.save')}
+          cancelLabel={t('common.cancel')}
+          dialogClassName="settings-model-dialog"
+          testIdPrefix="settings-task-full-duplex-config-dialog"
+          onConfirm={() => void saveDraft()}
+          onCancel={() => {
+            if (!saving) setDraft(null);
+          }}
+        >
+          <div className="video-duplex-model-settings__dialog-fields">
+            <label className="video-duplex-model-settings__field">
+              <span>模型通道</span>
+              <select
+                value={draft.video_live_provider}
+                onChange={(event) => updateDraft('video_live_provider', event.target.value as Provider)}
+              >
+                <option value="joyai">JoyAI</option>
+                <option value="qwen_omni">Qwen Omni Realtime</option>
+              </select>
+            </label>
+            {draft.video_live_provider === 'joyai' ? (
+              <>
+                <ConfigField value={draft.joyai_api_base} label="JoyAI API Base" placeholder="http://127.0.0.1:8070/v1" onChange={(value) => updateDraft('joyai_api_base', value)} />
+                <ConfigField value={draft.joyai_api_key} label="JoyAI API Key" secret placeholder={secretPlaceholder(secretLengths.joyai_api_key)} onChange={(value) => updateDraft('joyai_api_key', value)} />
+                <ConfigField value={draft.joyai_model} label="JoyAI 模型" onChange={(value) => updateDraft('joyai_model', value)} />
+                <h3>语音转写与语音播报</h3>
+                <label className="video-duplex-model-settings__field">
+                  <span>语音通道</span>
+                  <select value={draft.voice_protocol} onChange={(event) => updateDraft('voice_protocol', event.target.value as VoiceProtocol)}>
+                    <option value="native_ws">JoyAI WebSocket</option>
+                    <option value="openai_http">OpenAI HTTP</option>
+                  </select>
+                </label>
+                <ConfigField value={draft.voice_asr_endpoint} label="语音转写完整接口" onChange={(value) => updateDraft('voice_asr_endpoint', value)} />
+                <ConfigField value={draft.voice_tts_endpoint} label="语音播报完整接口" onChange={(value) => updateDraft('voice_tts_endpoint', value)} />
+                {draft.voice_protocol === 'openai_http' ? (
+                  <>
+                    <ConfigField value={draft.voice_api_key} label="语音 API Key" secret placeholder={secretPlaceholder(secretLengths.voice_api_key)} onChange={(value) => updateDraft('voice_api_key', value)} />
+                    <ConfigField value={draft.voice_asr_model} label="语音转写模型" onChange={(value) => updateDraft('voice_asr_model', value)} />
+                    <ConfigField value={draft.voice_tts_model} label="语音播报模型" onChange={(value) => updateDraft('voice_tts_model', value)} />
+                    <ConfigField value={draft.voice_tts_voice} label="语音播报音色" onChange={(value) => updateDraft('voice_tts_voice', value)} />
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <ConfigField value={draft.qwen_omni_realtime_url} label="Qwen Realtime WebSocket" onChange={(value) => updateDraft('qwen_omni_realtime_url', value)} />
+                <ConfigField value={draft.qwen_omni_api_key} label="Qwen API Key" secret placeholder={secretPlaceholder(secretLengths.qwen_omni_api_key)} onChange={(value) => updateDraft('qwen_omni_api_key', value)} />
+                <ConfigField value={draft.qwen_omni_model} label="Qwen 模型" onChange={(value) => updateDraft('qwen_omni_model', value)} />
+                <ConfigField value={draft.qwen_omni_voice} label="Qwen 音色" onChange={(value) => updateDraft('qwen_omni_voice', value)} />
+              </>
+            )}
+          </div>
+          {error ? <div className="settings-page__error" role="alert">{error}</div> : null}
+        </FormDialog>
+      ) : null}
+      <SettingsConfirmDialog
+        open={deleteOpen}
+        title="删除全双工模型配置"
+        message="删除后将清除已保存的全双工模型地址、模型和密钥。"
+        confirming={deleting}
+        error={deleteError}
+        onConfirm={() => void clearConfig()}
+        onCancel={() => {
+          if (!deleting) setDeleteOpen(false);
+        }}
+      />
+    </>
+  );
 }

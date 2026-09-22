@@ -334,7 +334,7 @@
       "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
-      "taskAsr": "ASR model configuration",
+      "taskAsr": "Speech transcription",
       "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-Party Agents",
       "externalCliAgentsDescription": "For Team mode only.",
@@ -372,19 +372,23 @@
       "embed_api_key": { "title": "API key" },
       "embed_model": { "title": "Model name" },
       "asr_api_base": {
-        "title": "ASR API URL",
+        "title": "Speech transcription API URL",
         "description": "Enter an OpenAI-compatible base URL or the full /audio/transcriptions URL.",
         "placeholder": "e.g. https://api.example.com/v1"
       },
       "asr_api_key": {
-        "title": "ASR API key",
+        "title": "Speech transcription API key",
         "description": "Used for general speech transcription; JoyAI has separate settings.",
         "placeholder": "e.g. sk-..."
       },
       "asr_model": {
-        "title": "ASR model",
+        "title": "Speech transcription model",
         "description": "Model used for general speech transcription.",
         "placeholder": "e.g. FunAudioLLM/SenseVoiceSmall"
+      },
+      "task_asr_enabled": {
+        "title": "Speech transcription",
+        "description": "Enable microphone speech transcription in task conversations."
       },
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",
