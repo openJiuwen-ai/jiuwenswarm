@@ -32,6 +32,21 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent, TERMINAL_ERROR_EVENT_TYPES
 
 _DELIVERY_TIMEOUT_SECONDS = 5.0
+_STEER_CONTEXT_KEYS = (
+    "mode",
+    "work_mode",
+    "cwd",
+    "project_dir",
+    "trusted_dirs",
+    "supports_user_interaction",
+)
+_TARGET_CHANGED_MARKERS = (
+    "supplemental input was not sent",
+    "targeted execution has ended",
+    "waiting for an interaction answer",
+    "session is finishing",
+    "session output is finishing",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +129,21 @@ def execution_id_from_event(event: RuntimeEvent) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _copy_steer_context(params: dict[str, Any]) -> dict[str, Any]:
+    trusted: dict[str, Any] = {}
+    for key in _STEER_CONTEXT_KEYS:
+        if key in params:
+            trusted[key] = params[key]
+    return trusted
+
+
+def _message_marks_target_changed(normalized: str) -> bool:
+    for marker in _TARGET_CHANGED_MARKERS:
+        if marker in normalized:
+            return True
+    return False
+
+
 def build_steer_request(
     root: AgentRequest,
     *,
@@ -123,18 +153,7 @@ def build_steer_request(
     """Build a text-only steer bound to the execution visible in this worker."""
 
     params = root.params if isinstance(root.params, dict) else {}
-    trusted = {
-        key: params[key]
-        for key in (
-            "mode",
-            "work_mode",
-            "cwd",
-            "project_dir",
-            "trusted_dirs",
-            "supports_user_interaction",
-        )
-        if key in params
-    }
+    trusted = _copy_steer_context(params)
     trusted.update(
         {
             "query": text,
@@ -174,16 +193,7 @@ def classify_delivery_error(code: str, message: str) -> LiveInputReceipt:
             "unknown",
             "补充输入投递结果未知，请勿自动重试",
         )
-    if code == "SESSION_INPUT_TARGET_CHANGED" or any(
-        marker in normalized
-        for marker in (
-            "supplemental input was not sent",
-            "targeted execution has ended",
-            "waiting for an interaction answer",
-            "session is finishing",
-            "session output is finishing",
-        )
-    ):
+    if code == "SESSION_INPUT_TARGET_CHANGED" or _message_marks_target_changed(normalized):
         return LiveInputReceipt("rejected", "补充输入未投递：当前执行状态已变化")
     return LiveInputReceipt("rejected", f"补充输入未投递：{message}")
 

@@ -158,7 +158,8 @@ async def _drain_runtime_logs(
             decoded = line.decode("utf-8", errors="replace").rstrip("\r")
             if decoded.startswith(FORWARDED_RECEIPT_PREFIX):
                 try:
-                    receipt = json.loads(decoded[len(FORWARDED_RECEIPT_PREFIX) :])
+                    prefix_length = len(FORWARDED_RECEIPT_PREFIX)
+                    receipt = json.loads(decoded[prefix_length:])
                 except json.JSONDecodeError:
                     tail.append("工作进程返回了无效的补充输入回执")
                 else:
@@ -168,6 +169,14 @@ async def _drain_runtime_logs(
             tail.append(decoded)
         if len(pending) > _LOG_LINE_TAIL_BYTES:
             pending = _TRUNCATED_LOG_MARKER + pending[-_LOG_LINE_TAIL_BYTES:]
+
+
+def _write_parent_output(text: str) -> None:
+    """Write worker text through the parent terminal stream."""
+
+    stream = sys.stdout
+    stream.write(text)
+    stream.flush()
 
 
 async def _relay_worker_output(
@@ -186,15 +195,13 @@ async def _relay_worker_output(
             if layout is not None:
                 layout.append_output(text)
             elif text:
-                sys.stdout.write(text)
-                sys.stdout.flush()
+                _write_parent_output(text)
             return
         text = decoder.decode(chunk)
         if layout is not None:
             layout.append_output(text)
         elif text:
-            sys.stdout.write(text)
-            sys.stdout.flush()
+            _write_parent_output(text)
 
 
 async def _read_live_prompt(
@@ -391,8 +398,7 @@ async def _run_worker(
             except asyncio.CancelledError:
                 log_tail = deque()
             if live_layout is not None:
-                sys.stdout.write(live_layout.final_text())
-                sys.stdout.flush()
+                _write_parent_output(live_layout.final_text())
 
         next_session = session_id
         worker_result: dict[str, object] | None = None

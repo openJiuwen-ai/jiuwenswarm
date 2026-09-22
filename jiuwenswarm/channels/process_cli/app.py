@@ -714,6 +714,17 @@ async def _invoke_skills_list(
     return (1 if renderer.failed else 0), request, session_id
 
 
+def _emit_live_receipt(receipt, *, forwarded: bool, renderer: EventRenderer) -> None:
+    """Return a steer receipt to the parent, or show it in this process."""
+
+    if forwarded:
+        stream = sys.stderr
+        stream.write(encode_forwarded_receipt(receipt) + "\n")
+        stream.flush()
+        return
+    renderer.live_input_receipt(status=receipt.status, message=receipt.message)
+
+
 async def run(
     args: argparse.Namespace,
     *,
@@ -822,19 +833,10 @@ async def run(
                         str(request.params.get("query") or "")
                     )
                 ),
-                on_receipt=(
-                    lambda receipt: (
-                        print(
-                            encode_forwarded_receipt(receipt),
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                        if getattr(args, "_forwarded_live_input", False)
-                        else renderer.live_input_receipt(
-                            status=receipt.status,
-                            message=receipt.message,
-                        )
-                    )
+                on_receipt=lambda receipt: _emit_live_receipt(
+                    receipt,
+                    forwarded=bool(getattr(args, "_forwarded_live_input", False)),
+                    renderer=renderer,
                 ),
             )
             live_input.start()
