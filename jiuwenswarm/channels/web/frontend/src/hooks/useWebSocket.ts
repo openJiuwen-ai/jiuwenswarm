@@ -3146,7 +3146,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldIgnoreSessionOutput(payload)) return;
         // Supplemental requests never own a separate answer or task lifecycle.
         if (handleTaskInputReceipt('chat.final', payload)) return;
-        if (shouldDropDuplicatedEvent('chat.final', payload)) return;
+        const crossSession = extractCrossSessionMessage(payload);
+        // One cross-session request may emit several finals. Its stable bubble ID
+        // makes each final safe to replay, while the latest one replaces the text.
+        if (!crossSession && shouldDropDuplicatedEvent('chat.final', payload)) return;
 
         const cronMeta = payload.cron as Record<string, unknown> | undefined;
 
@@ -3289,7 +3292,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
         // 与 delta 使用同一稳定 ID，只收尾本次跨会话后台请求。这里不能执行普通
         // final 的 turn collapse/segment rewrite，否则可能重写目标会话已有回复。
-        const crossSession = extractCrossSessionMessage(payload);
         if (crossSession) {
           ensureCrossSessionUserTurn(
             sessionId,

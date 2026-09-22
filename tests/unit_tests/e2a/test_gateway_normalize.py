@@ -41,6 +41,35 @@ def test_execution_binding_survives_agent_wire_and_web_payload(event_type):
     assert payload["session_id"] == "session-A"
 
 
+@pytest.mark.parametrize(
+    ("event_type", "is_complete"),
+    [("chat.delta", False), ("chat.final", False), ("chat.final", True)],
+)
+def test_cross_session_identity_survives_agent_wire_and_web_payload(event_type, is_complete):
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+
+    fields = {
+        "turn_request_id": "turn-A",
+        "message_origin": "cross_session_agent",
+        "session_message_id": "sm-A",
+        "cross_session": {"message_id": "sm-A", "source_session_id": "source-A"},
+    }
+    chunk = AgentResponseChunk(
+        request_id="wire-A", channel_id="web", is_complete=is_complete,
+        payload={"event_type": event_type, "content": "text", **fields},
+    )
+    wire = e2a_response_from_agent_chunk(chunk, response_id="wire-A", sequence=1)
+    restored = e2a_response_to_agent_chunk(wire)
+    message = Message(
+        id=restored.request_id, type="event", channel_id="web", session_id="target-A",
+        params={}, timestamp=1, ok=True, payload=restored.payload,
+    )
+    payload = WebChannel._build_event_payload(message, event_type)
+    assert {key: payload.get(key) for key in fields} == fields
+
+
 @pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final", "chat.tool_call", "chat.input_received", "chat.output_phase"])
 def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk

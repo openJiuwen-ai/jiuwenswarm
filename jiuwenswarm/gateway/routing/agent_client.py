@@ -140,6 +140,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         self._running = False
         # AgentServer send_push：旁路投递，勿进入与 request_id 绑定的 RPC 等待队列
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+        self._server_push_tails: dict[str, asyncio.Task] = {}
         # receiver 致命错误（连接断开 / ping 超时 / 发送失败）后的断连通知回调
         self._on_disconnect: Callable[[BaseException], Awaitable[None]] | None = None
 
@@ -294,7 +295,9 @@ class WebSocketAgentServerClient(AgentServerClient):
                     meta = data.get("metadata")
                     if isinstance(meta, dict) and meta.get(E2A_WIRE_SERVER_PUSH_KEY):
                         if self._on_server_push is not None:
-                            asyncio.create_task(self._on_server_push(data))
+                            # Push callbacks may await I/O. Independent tasks can
+                            # overtake each other, putting a delta after its final.
+                            self._schedule_server_push(data)
                         else:
                             logger.warning(
                                 "[WebSocketAgentServerClient] 收到 server_push 但未注册 handler，已丢弃: "
@@ -364,6 +367,43 @@ class WebSocketAgentServerClient(AgentServerClient):
                     await asyncio.sleep(0.1)  # 避免快速循环
         finally:
             logger.info("[WebSocketAgentServerClient] 消息接收任务已停止")
+
+    def _schedule_server_push(self, data: dict[str, Any]) -> None:
+        """Keep one turn's push frames ordered without blocking other turns."""
+        request_id = _wire_request_id_key(data.get("request_id"))
+        body = data.get("body")
+        turn_id = body.get("turn_request_id") if isinstance(body, dict) else None
+        if isinstance(body, dict) and not (isinstance(turn_id, str) and turn_id.strip()):
+            payload = body.get("delta")
+            if not isinstance(payload, dict):
+                payload = body.get("result")
+            if not isinstance(payload, dict):
+                payload = body.get("details")
+            turn_id = payload.get("turn_request_id") if isinstance(payload, dict) else None
+        # Interaction frames may use their own wire request_id inside a turn.
+        order_key = (
+            f"turn:{turn_id.strip()}" if isinstance(turn_id, str) and turn_id.strip()
+            else f"request:{request_id}"
+        )
+        previous = self._server_push_tails.get(order_key)
+        handler = self._on_server_push
+
+        async def deliver() -> None:
+            try:
+                if previous is not None:
+                    await previous
+                if handler is not None:
+                    await handler(data)
+            except Exception:
+                logger.exception(
+                    "[WebSocketAgentServerClient] server_push 处理失败: request_id=%s",
+                    request_id,
+                )
+            finally:
+                if self._server_push_tails.get(order_key) is asyncio.current_task():
+                    self._server_push_tails.pop(order_key, None)
+
+        self._server_push_tails[order_key] = asyncio.create_task(deliver())
 
     async def _stop_receiver_after_fatal_error(self, exc: BaseException) -> None:
         detail = format_ws_diagnostics(

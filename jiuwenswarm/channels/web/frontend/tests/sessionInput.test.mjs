@@ -231,6 +231,33 @@ test('queued cross-session message appears in the target queue until it starts',
   }
 });
 
+test('cross-session final replaces later output from the same request', async (context) => {
+  const c = await mount(context);
+  try {
+    const route = {
+      request_id: 'cross-session-turn',
+      turn_request_id: 'cross-session-turn',
+      message_origin: 'cross_session_agent',
+      session_message_id: 'sm-1',
+      cross_session: {
+        message_id: 'sm-1',
+        source_session_id: 'source-1',
+        content: 'Check the weather',
+      },
+    };
+    c.receive('chat.delta', { ...route, content: '杭州今日天气' });
+    c.receive('chat.final', { ...route, content: '杭州今日天气' });
+    c.receive('chat.delta', { ...route, content: '杭州今日天气' });
+    c.receive('chat.final', { ...route, content: '杭州今日天气' });
+
+    const reply = c.runtime().messages.find((message) => message.id === 'cross-session-assistant-cross-session-turn');
+    assert.equal(reply?.content, '杭州今日天气');
+    assert.equal(reply?.isStreaming, false);
+  } finally {
+    await c.dispose();
+  }
+});
+
 test('mixed queues show pause only on the local section', async (context) => {
   const c = await mount(context);
   try {
