@@ -208,6 +208,23 @@ class XiaoyiChannelConfig:
     session_cleanup_timeout_ms: int = 3600000
 
 
+def _a2a_transport_kind(ws: Any) -> str:
+    """中转连接形态标签（命名管道 / WebSocket），用于 A2A 调试落盘上下文。"""
+    if ws is None:
+        return ""
+    return "pipe" if isinstance(ws, PipeStream) else "ws"
+
+
+def _a2a_channel_label(channel: Any) -> str:
+    """渠道名（XiaoyiChannel.name = "xiaoyi"；配置里 channel_id 兜底）。"""
+    name = getattr(channel, "name", None)
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    config = getattr(channel, "config", None)
+    channel_id = getattr(config, "channel_id", None)
+    return channel_id.strip() if isinstance(channel_id, str) else ""
+
+
 def _generate_signature(sk: str, timestamp: str) -> str:
     """生成 HMAC-SHA256 签名（Base64 编码）."""
     h = hmac.new(
@@ -2058,6 +2075,24 @@ class XiaoyiChannel(BaseChannel):
         try:
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8")
+            # A2A 全量入站落盘（开关：<数据目录>/trace.json → a2a）：
+            # 只落原始报文，缺省关闭，异常不影响业务。
+            try:
+                from jiuwenswarm.common.e2a.wire_trace import trace_a2a_inbound
+
+                _conn = None
+                if url_key:
+                    _conns = getattr(self, "_ws_connections", None)
+                    _conn = _conns.get(url_key) if isinstance(_conns, dict) else None
+                trace_a2a_inbound(
+                    raw,
+                    channel=_a2a_channel_label(self),
+                    transport=_a2a_transport_kind(_conn),
+                    url_key=url_key,
+                    agent_id=str(getattr(getattr(self, "config", None), "agent_id", "") or ""),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             is_gui_response_frame = "InvokeJarvisGUIAgentResponse" in raw
             message = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -3889,6 +3924,20 @@ class XiaoyiChannel(BaseChannel):
             lock = asyncio.Lock()
             self._send_locks[url_key] = lock
         async with lock:
+            # A2A 全量出站落盘（开关：<数据目录>/trace.json → a2a）：
+            # 只落实际发出的原始报文，缺省关闭，异常不影响业务。
+            try:
+                from jiuwenswarm.common.e2a.wire_trace import trace_a2a_outbound
+
+                trace_a2a_outbound(
+                    payload,
+                    channel=_a2a_channel_label(self),
+                    transport=_a2a_transport_kind(ws),
+                    url_key=url_key,
+                    agent_id=str(getattr(getattr(self, "config", None), "agent_id", "") or ""),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             if isinstance(ws, PipeStream):
                 # 命名管道形态：帧负载即 JSON 对象（桌面侧按帧 JSON.parse 后透传）
                 await ws.send_frame(payload)
