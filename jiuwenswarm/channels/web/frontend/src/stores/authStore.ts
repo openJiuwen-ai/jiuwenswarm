@@ -61,6 +61,8 @@ interface AuthState {
   error: string | null;
   /** 浏览器被拦截时展示这个地址让用户手动打开 */
   pendingAuthorizeUrl: string | null;
+  /** 用户点了「我已完成登录」，但授权其实还没完成：提示他先去完成授权。自动触发的认领不置这个 */
+  claimPendingHint: boolean;
   /** 已查过一次状态，用于区分「未登录」和「还没查」 */
   initialized: boolean;
 
@@ -81,8 +83,11 @@ interface AuthState {
   continueSwitchAccount: () => Promise<void>;
   /** 放弃换账号。 */
   cancelSwitchAccount: () => void;
-  /** 去认领一次登录结果。等待授权期间由事件触发，也给「我已完成登录」按钮用。 */
-  checkLogin: () => Promise<void>;
+  /**
+   * 去认领一次登录结果。等待授权期间由事件触发，也给「我已完成登录」按钮用；
+   * `manual` = 用户亲手点的，授权还没完成时要给出提示，而自动触发时保持安静。
+   */
+  checkLogin: (manual?: boolean) => Promise<void>;
   cancelLogin: () => void;
   logout: () => Promise<void>;
   clearError: () => void;
@@ -94,6 +99,8 @@ let detachTriggers: (() => void) | null = null;
 let claimInFlight = false;
 /** 认领进行中又来了新的触发：回调可能恰好在这期间完成，结束后要再认领一次。 */
 let claimRequestedAgain = false;
+/** 合并进来的那次触发是不是用户点的按钮：切回应用时焦点事件已先发起认领，紧接着的点击会被合并到这里 */
+let claimRequestedManually = false;
 /** 登录流程代次：发起 / 取消 / 登出都 +1，卡在 `await authorize()` 里的旧流程醒来发现变了就作废。 */
 let loginRun = 0;
 /** 正在进行的状态查询。多处 UI 同时发现「还没查过」时共用这一次，不各起一条退避重试。 */
@@ -105,6 +112,7 @@ function stopWaiting(): void {
   loginRun += 1;
   pendingLogin = null;
   claimRequestedAgain = false;
+  claimRequestedManually = false;
   detachTriggers?.();
   detachTriggers = null;
 }
@@ -178,6 +186,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   phase: 'idle',
   error: null,
   pendingAuthorizeUrl: null,
+  claimPendingHint: false,
   initialized: false,
   quota: null,
   quotaAvailable: false,
@@ -237,7 +246,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (get().phase !== 'idle') return;
     stopWaiting();
     const run = loginRun;
-    set({ phase: 'starting', error: null, pendingAuthorizeUrl: null });
+    set({ phase: 'starting', error: null, pendingAuthorizeUrl: null, claimPendingHint: false });
 
     let request;
     try {
@@ -267,20 +276,26 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     });
   },
 
-  async checkLogin() {
+  async checkLogin(manual = false) {
     const current = pendingLogin;
     if (!current) return;
     if (claimInFlight) {
       claimRequestedAgain = true;
+      claimRequestedManually = claimRequestedManually || manual;
       return;
     }
     claimInFlight = true;
     claimRequestedAgain = false;
+    claimRequestedManually = false;
     let finished = false;
     try {
       const outcome = await claim(current.state, current.claimToken);
       // 认领期间用户取消了 / 又发起了一次新登录：这个结果已经没人要了
-      if (pendingLogin !== current || outcome.kind === 'pending') return;
+      if (pendingLogin !== current) return;
+      if (outcome.kind === 'pending') {
+        if (manual) set({ claimPendingHint: true });
+        return;
+      }
       finished = true;
       stopWaiting();
       const sameAccountAfterSwitch =
@@ -291,6 +306,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         phase: 'idle',
         pendingAuthorizeUrl: null,
         error: null,
+        claimPendingHint: false,
         sameAccountAfterSwitch,
       });
       // 登录送的模型此刻才出现，通知 App 重拉模型列表
@@ -301,10 +317,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (pendingLogin !== current || !(error instanceof AuthApiError)) return;
       finished = true;
       stopWaiting();
-      set({ phase: 'idle', error: messageOf(error, '登录失败，请重试') });
+      set({ phase: 'idle', error: messageOf(error, '登录失败，请重试'), claimPendingHint: false });
     } finally {
       claimInFlight = false;
-      if (!finished && claimRequestedAgain) void get().checkLogin();
+      if (!finished && claimRequestedAgain) void get().checkLogin(claimRequestedManually);
     }
   },
 
@@ -350,7 +366,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   cancelLogin() {
     abandonWaiting();
     // 连同上一次的报错一起清掉：取消就是重新开始，再打开登录框不该还挂着旧错误
-    set({ phase: 'idle', pendingAuthorizeUrl: null, error: null });
+    set({ phase: 'idle', pendingAuthorizeUrl: null, error: null, claimPendingHint: false });
   },
 
   async logout() {

@@ -73,7 +73,9 @@
       "signedIn": "Signed in",
       "loggedInDescription": "Limited-time free models are now available in the chat model dropdown",
       "endedTitle": "Campaign ended",
-      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part."
+      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part.",
+      "configTitle": "Free model settings",
+      "configDescription": "Set the context window and other options for the limited-time free models"
     },
     "categories": {
       "general": "General",
@@ -3875,6 +3877,7 @@
       "loginSuccessToast": "Signed in with HUAWEI ID",
       "statusStarting": "Preparing sign-in…",
       "statusWaiting": "Sign-in page opened in your browser — come back here when you're done…",
+      "claimPendingHint": "We haven't received your sign-in yet. Finish authorizing your Huawei account in the page that opened, then click \"I've signed in\".",
       "checkLogin": "I've signed in",
       "popupBlocked": "The browser blocked the new tab. Copy this URL and open it manually:",
       "modelError": {
