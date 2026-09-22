@@ -34,7 +34,9 @@ import {
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
+import { applyGoalArm, evaluateGoalArm } from '../../features/goalMode/goalModeGate';
 import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObjectiveBubble';
+import { OverwriteGoalConfirmModal } from '../GoalBar/OverwriteGoalConfirmModal';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
@@ -752,6 +754,23 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return () => window.clearTimeout(timeoutId);
   }, [projectDirError, workDialogOpen]);
 
+  // bugfix 2026092201 bug001 子问题 1：覆盖已有目标时改用自定义弹窗（OverwriteGoalConfirmModal）
+  // 取代 window.confirm。confirmGoalOverwrite 把参数存进这个 state、返回一个等按钮点击才
+  // resolve 的 Promise；两处需要"确认覆盖"的调用点（handleSubmit 整行提交 / 建议菜单选中后
+  // 立即执行）都改用同一个 useCallback，不再各自内联 window.confirm。
+  const [goalOverwriteRequest, setGoalOverwriteRequest] = useState<{
+    currentObjective: string;
+    requestedObjective: string;
+    resolve: (confirmed: boolean) => void;
+  } | null>(null);
+  const confirmGoalOverwrite = useCallback(
+    (currentObjective: string, requestedObjective: string) =>
+      new Promise<boolean>((resolve) => {
+        setGoalOverwriteRequest({ currentObjective, requestedObjective, resolve });
+      }),
+    [],
+  );
+
   const [composerSuggestion, setComposerSuggestion] = useState<ComposerSuggestionState | null>(null);
   const [composerSuggestionIndex, setComposerSuggestionIndex] = useState(0);
   const [composerSuggestionNavigationMode, setComposerSuggestionNavigationMode] = useState<'keyboard' | 'pointer'>(
@@ -970,17 +989,18 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const showWorkContextRow = activeSessionId === NEW_CONVERSATION_ID;
   /** Goal 入口是否适用于当前上下文（agent 模式 + 已接入 onSetGoal，如欢迎页新会话就不适用） */
   const canUseGoalMenu = isAgentMode && Boolean(onSetGoal);
-  // 只跟 armed 挂钩：这个 tag 是"下一条消息将用于设置目标"的过渡态指示，发送后 armed 变 false
-  // 就该跟着消失，不能靠"目标是否存在"续命——目标存在与否、当前状态、编辑/暂停/删除，已经由
-  // 输入框上方常驻的 GoalBar 完整覆盖，工具栏这里再挂一份重复的常驻入口只会显得"选择没解除"。
-  const goalTagVisible = canUseGoalMenu && goalArmed;
+  // bugfix 2026092201 bug001 第2轮修订：原来只跟 armed 挂钩（发送后 armed 变 false 就消失，
+  // 理由是"目标是否存在"已由 GoalBar 覆盖，工具栏不需要重复常驻）。但这样一来目标在真正执行
+  // 期间（armed 已经变 false、hasUnfinishedGoal 才是 true）这个 tag 会凭空消失，跟 Plan 的
+  // tag（跟 planActive 走、整个执行期间常驻）体验不一致，用户测试后明确要求对齐 Plan——所以
+  // 改成跟"+"菜单开关的 `goalChecked` 同一个公式：武装中或者真有未完成目标都要显示，关闭按钮
+  // 会在下面按 evaluateGoalArm 的"关闭方向"结果做忙态保护，不会出现"tag 一直在、点了却把执行
+  // 中的目标误关掉"的问题。
+  const goalTagVisible = canUseGoalMenu && (goalArmed || hasUnfinishedGoal);
   // Plan 是持续开关（不是 Goal 那种"下一条消息生效"的过渡态）：打开后一直用
   // agent.plan 发送，直到用户点叉或后端推 plan.mode_exited。
   // 和 Goal 一样只对单 agent 开放，集群模式不提供 Plan 入口。
   const planActive = usePlanStore((s) => s.runtimes[activeSessionId ?? '']?.active ?? false);
-  const planPendingExplicitEntry = usePlanStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.pendingExplicitEntry ?? false,
-  );
   // 个人上下文：agent 加载开关（总开关联动）。总开关关闭时整个菜单项隐藏；开启时默认打开，可单独控制。
   const isConnected = useSessionStore((s) => s.isConnected);
   const personalContextMasterEnabled = usePersonalContextStore(
@@ -1004,9 +1024,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const swarmflowBudget = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.swarmflowBudget ?? null);
   // 进入真实会话后开关只读：仅新建对话页可修改，真实会话可查看不可改
   const swarmflowToggleDisabled = isProcessing || (activeSessionId !== NEW_CONVERSATION_ID && hasHistory);
-  // Plan 已经真正生效：开关打开且至少发出过一条 Plan 消息（pendingExplicitEntry 已被消费）。
-  // 区别于"刚打开开关但还没发消息"的未提交态——后者和 Goal 的 armed 一样可以被对方随手顶替。
-  const planCommitted = planActive && !planPendingExplicitEntry;
   const canUsePlanMenu = supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
 
@@ -1990,6 +2007,21 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           return;
         }
       }
+      // bugfix 2026092201 bug001 子问题 3：`/goal`（不带目标正文——handleSubmit 精确输入
+      // `/goal` 回车，或 insertComposerToken 在建议菜单选中后立即走到这里）与 `/plan` 对齐，
+      // 选中/回车即"武装"、立刻显示"目标"tag，不再只插入一个占位 chip、什么状态都不改。
+      // 带目标正文的 `/goal set <objective>`、`/goal <objective>` 一次性单发用法不受影响，
+      // args 非空会跳过这里、继续走下面 command.execute 的正常解析。互斥判断统一走
+      // goalModeGate，和"+"菜单的目标开关共用同一套决策层，不再各自定制。
+      if (command.name === 'goal' && args.trim() === '') {
+        const decision = evaluateGoalArm(activeSessionId, true);
+        if (!decision.ok) {
+          if (decision.reason) pushAttachmentAlert(t(decision.reason));
+          return;
+        }
+        applyGoalArm(activeSessionId, true);
+        return;
+      }
       if (command.name !== 'compact') {
         await command.execute(context, args);
         return;
@@ -2048,8 +2080,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               forkConversation: onForkSession,
               startSideConversation: onStartSideConversation,
               runGoalAction: runGoalSlashAction,
-              confirmGoalOverwrite: (currentObjective, requestedObjective) =>
-                window.confirm(t('goal.overwriteConfirm', { currentObjective, requestedObjective })),
+              confirmGoalOverwrite,
             },
             args,
           );
@@ -2293,7 +2324,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
         // 无参命令（/new、/fork、/plan、/compact）：选中即执行，不插入文本、不再等回车。
         // `/fork title`、`/plan hi` 这类手工输入不走此选中路径，提交时会被当作普通消息。
-        if (slashCmd && slashTakesArgs === false) {
+        // `/goal` 后端元数据是 takesArgs:true（要支持 `/goal <objective>` 一次性单发），但
+        // "不带正文、从建议菜单选中"这一种情况要跟 /plan 对齐——选中即武装、清空输入框，不再
+        // 插入占位 chip（bugfix 2026092201 bug001 子问题 3），所以这里单独把 'goal' 也纳入
+        // 这条"选中即执行"分支；executeSlashCommand 内部会按 args 是否为空区分"武装"还是
+        // 走 goalCommand 正常解析。
+        if (slashCmd && (slashTakesArgs === false || slashCmd.name === 'goal')) {
           const trigger = getCurrentComposerTrigger();
           if (trigger) {
             const beforeRange = range.cloneRange();
@@ -2328,8 +2364,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 forkConversation: onForkSession,
                 startSideConversation: onStartSideConversation,
                 runGoalAction: runGoalSlashAction,
-                confirmGoalOverwrite: (currentObjective, requestedObjective) =>
-                  window.confirm(t('goal.overwriteConfirm', { currentObjective, requestedObjective })),
+                confirmGoalOverwrite,
               },
               '',
             );
@@ -3892,33 +3927,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           })()}
                         {canUseGoalMenu &&
                           (() => {
-                            // Goal 和 Plan 互斥：已有真正生效的计划时不能再选目标；"打开"方向沿用原逻辑，
-                            // "关闭"方向不受限制（跟输入框旁边现有的目标 chip 关闭按钮一致，随时可关）。
+                            // Goal 和 Plan 互斥：已有真正生效的计划时不能再选目标。能否武装/解除武装统一走
+                            // goalModeGate（evaluateGoalArm/applyGoalArm）——`/goal` 斜杠命令选中即武装、
+                            // 目标 tag 关闭按钮也调同一套决策层，不再各自定制一份判断（bugfix 2026092201
+                            // bug001；第2轮补上关闭方向的会话忙态保护）。
                             const goalChecked = goalArmed || hasUnfinishedGoal;
-                            const goalDisabledOn = hasUnfinishedGoal || planCommitted;
-                            const goalDisabledOnTitle = hasUnfinishedGoal
-                              ? t('goal.toolbarUnavailable')
-                              : planCommitted
-                                ? t('goal.toolbarUnavailablePlan')
-                                : undefined;
-                            const goalDisabled = goalChecked ? false : goalDisabledOn;
-                            const goalTitle = goalChecked ? undefined : goalDisabledOnTitle;
+                            // bugfix 2026092201 bug001 第2轮：开、关两个方向分别求 evaluateGoalArm 的决策——
+                            // 之前"已勾选就永远不 disabled"会导致目标真正执行期间（goalChecked 恒为 true）
+                            // 这个开关完全没有保护，随手一点 `next=false` 就会把执行中的目标清掉、会话跟着
+                            // 停摆。现在关闭方向也要过 evaluateGoalArm 的忙态检查，跟"计划"开关关闭时受
+                            // planModeGate 保护的做法对齐。
+                            const goalOffDecision = evaluateGoalArm(activeSessionId, false);
+                            const goalOnDecision = evaluateGoalArm(activeSessionId, true);
+                            const goalDisabled = goalChecked ? !goalOffDecision.ok : !goalOnDecision.ok;
+                            const goalActiveDecision = goalChecked ? goalOffDecision : goalOnDecision;
+                            const goalTitle = goalActiveDecision.reason ? t(goalActiveDecision.reason) : undefined;
                             const toggleGoal = (next: boolean) => {
                               if (!activeSessionId) return;
                               if (next) {
-                                if (goalDisabledOn) return;
-                                // 走到这里 planCommitted 一定是 false（否则上面已 disabled），所以 planActive
-                                // 为 true 时只可能是"刚打开开关、还没发过消息"的未提交态，可以放心顶掉。
-                                // 内部互斥复位（非用户主动退出计划模式），直接 setActive、不过 planModeGate。
-                                if (planActive) {
-                                  usePlanStore.getState().setActive(activeSessionId, false);
-                                }
-                                useGoalStore.getState().setArmed(activeSessionId, true);
-                              } else {
-                                if (currentGoal) {
-                                  onClearGoal?.(activeSessionId);
-                                }
-                                useGoalStore.getState().setArmed(activeSessionId, false);
+                                applyGoalArm(activeSessionId, true);
+                                return;
+                              }
+                              const applied = applyGoalArm(activeSessionId, false);
+                              if (!applied) return;
+                              if (currentGoal) {
+                                onClearGoal?.(activeSessionId);
                               }
                               // 不关闭菜单：用户拨动开关后保持菜单打开，便于看到开关状态变化并继续操作。
                             };
@@ -4185,31 +4218,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     )}
                   </div>
                 )}
-                {goalTagVisible && (
-                  <div className="chat-agent-tag" data-testid="chat-panel-goal-tag">
-                    <span className="chat-agent-tag__avatar chat-agent-tag__avatar--plain" aria-hidden="true">
-                      <GoalIcon aria-hidden="true" />
-                    </span>
-                    <span className="chat-agent-tag__label" data-testid="chat-panel-goal-tag-label">
-                      {t('goal.toolbarTag')}
-                    </span>
-                    <button
-                      type="button"
-                      className="chat-agent-tag__close"
-                      data-testid="chat-panel-goal-tag-close"
-                      aria-label={t('goal.closeTag')}
-                      onClick={() => {
-                        if (!activeSessionId) return;
-                        if (currentGoal) {
-                          onClearGoal?.(activeSessionId);
-                        }
-                        useGoalStore.getState().setArmed(activeSessionId, false);
-                      }}
-                    >
-                      <WorkIcon name="close" />
-                    </button>
-                  </div>
-                )}
+                {goalTagVisible &&
+                  (() => {
+                    // 关闭「目标」tag 与"+"菜单目标开关、evaluateGoalArm 共用同一套忙态保护
+                    // （bugfix 2026092201 bug001 第2轮）：目标真正执行期间不能被随手关掉/清除，
+                    // 跟「计划」chip 关闭按钮受 planModeGate 保护的做法对齐。
+                    const goalCloseBlocked = !evaluateGoalArm(activeSessionId, false).ok;
+                    return (
+                      <div className="chat-agent-tag" data-testid="chat-panel-goal-tag">
+                        <span className="chat-agent-tag__avatar chat-agent-tag__avatar--plain" aria-hidden="true">
+                          <GoalIcon aria-hidden="true" />
+                        </span>
+                        <span className="chat-agent-tag__label" data-testid="chat-panel-goal-tag-label">
+                          {t('goal.toolbarTag')}
+                        </span>
+                        <button
+                          type="button"
+                          className="chat-agent-tag__close"
+                          data-testid="chat-panel-goal-tag-close"
+                          disabled={goalCloseBlocked}
+                          aria-label={goalCloseBlocked ? t('goal.closeTagDisabled') : t('goal.closeTag')}
+                          onClick={() => {
+                            if (!activeSessionId) return;
+                            const applied = applyGoalArm(activeSessionId, false);
+                            if (!applied) return;
+                            if (currentGoal) {
+                              onClearGoal?.(activeSessionId);
+                            }
+                          }}
+                        >
+                          <WorkIcon name="close" />
+                        </button>
+                      </div>
+                    );
+                  })()}
 
                 {planTagVisible && (
                   <div className="chat-agent-tag" data-testid="chat-panel-plan-tag">
@@ -4814,6 +4856,21 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             })()}
         </div>
       </div>
+
+      {goalOverwriteRequest && (
+        <OverwriteGoalConfirmModal
+          currentObjective={goalOverwriteRequest.currentObjective}
+          requestedObjective={goalOverwriteRequest.requestedObjective}
+          onConfirm={() => {
+            goalOverwriteRequest.resolve(true);
+            setGoalOverwriteRequest(null);
+          }}
+          onCancel={() => {
+            goalOverwriteRequest.resolve(false);
+            setGoalOverwriteRequest(null);
+          }}
+        />
+      )}
     </>
   );
 });
