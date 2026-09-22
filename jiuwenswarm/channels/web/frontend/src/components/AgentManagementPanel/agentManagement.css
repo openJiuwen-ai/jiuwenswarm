@@ -2329,7 +2329,6 @@
   width: 360px !important;
 }
 
-.page-content[data-testid='agent-management-panel'][data-variant='detail'] .agent-management-detail,
 .page-content[data-testid='agent-management-panel'][data-variant='create'] .agent-management-editor {
   padding-top: 0;
 }
