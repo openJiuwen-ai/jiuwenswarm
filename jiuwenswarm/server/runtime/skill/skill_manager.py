@@ -5985,7 +5985,14 @@ class SkillManager:
         meta.setdefault("version", "")
         meta.setdefault("author", "")
         meta["tags"] = SkillManager._coerce_str_list(meta.get("tags"))
-        meta["allowed_tools"] = SkillManager._coerce_str_list(meta.get("allowed_tools"))
+        # ``allowed-tools`` is the canonical skill frontmatter key accepted by
+        # skilldev/quick_validate. Keep the underscore form for compatibility
+        # with older bundled skills.
+        allowed_tools = meta.get(
+            "allowed-tools",
+            meta.get("allowed_tools"),
+        )
+        meta["allowed_tools"] = SkillManager._coerce_str_list(allowed_tools)
 
         meta["body"] = body
         meta["path"] = str(path)
