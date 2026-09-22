@@ -6978,6 +6978,9 @@ class JiuWenSwarmDeepAdapter:
                     rebound = rebind_context_model(
                         context_config,
                         session_id=session_id,
+                        model=model,
+                        model_config=model.model_config,
+                        model_client_config=model.model_client_config,
                     )
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] synchronized context model=%s provider=%s "
@@ -18278,6 +18281,60 @@ class JiuWenSwarmDeepAdapter:
             "context_occupancy": context_occupancy,
         }
 
+    async def get_context_usage_event(
+        self,
+        session_id: str,
+        *,
+        request_id: str,
+    ) -> dict[str, Any] | None:
+        """Build a local usage snapshot after an out-of-band operation."""
+        if not self._is_session_scoped_adapter:
+            session_adapter = await self._get_or_create_session_adapter(session_id)
+            try:
+                return await session_adapter.get_context_usage_event(
+                    session_id=session_id,
+                    request_id=request_id,
+                )
+            finally:
+                await self._evict_idle_session_adapters()
+
+        if self._instance is None or self._instance.react_agent is None:
+            return None
+
+        context_engine = self._instance.react_agent.context_engine
+        context = context_engine.get_context(session_id=session_id)
+        if context is None:
+            return None
+
+        build_snapshot = getattr(
+            self._instance.react_agent,
+            "build_context_usage_snapshot",
+            None,
+        )
+        if not callable(build_snapshot):
+            # Keep compatibility with an older agent-core during rolling
+            # upgrades. The server will still return the compact result.
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] agent-core has no manual usage snapshot API"
+            )
+            return None
+
+        try:
+            session = context.get_session_ref()
+            payload = await build_snapshot(
+                context,
+                session=session,
+                request_id=request_id,
+                phase="post_compact",
+            )
+            return normalize_context_usage_payload(payload)
+        except Exception:  # usage telemetry must not fail /compact
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] manual context usage snapshot failed",
+                exc_info=True,
+            )
+            return None
+
     async def generate_recap(
         self,
         session_id: str,
@@ -18822,24 +18879,28 @@ class JiuWenSwarmDeepAdapter:
         from openjiuwen.core.foundation.tool import ToolInfo
 
         token_counter = context.token_counter()
+        if token_counter is None:
+            # A custom ModelContext may not have a native tokenizer.  Keep the
+            # compact statistics on the same explicit three-character fallback
+            # used by Core usage reports instead of silently dropping tools or
+            # switching to a different divisor.
+            from openjiuwen.core.context_engine.token.string_length_counter import (
+                StringLengthCounter,
+            )
+
+            token_counter = StringLengthCounter(fallback_reason="counter_unavailable")
         total_tokens = 0
 
         # 1. 计算系统消息的 tokens
         system_prompt = self._get_agent_system_prompt()
 
         if system_prompt:
-            if token_counter is not None:
-                total_tokens += token_counter.count(system_prompt)
-            else:
-                total_tokens += len(system_prompt) // 4
+            total_tokens += token_counter.count(system_prompt)
 
         # 2. 计算对话消息的 tokens
         context_messages = context.get_messages()
         if context_messages:
-            if token_counter is not None:
-                total_tokens += token_counter.count_messages(context_messages)
-            else:
-                total_tokens += sum(len(str(msg.content)) // 4 for msg in context_messages)
+            total_tokens += token_counter.count_messages(context_messages)
 
         # 3. 计算工具定义的 tokens
         tools: list[ToolInfo] = []
@@ -18854,7 +18915,7 @@ class JiuWenSwarmDeepAdapter:
                         parameters=getattr(card, "input_params", {}),
                     ))
 
-        if tools and token_counter is not None:
+        if tools:
             total_tokens += token_counter.count_tools(tools)
 
         return total_tokens
