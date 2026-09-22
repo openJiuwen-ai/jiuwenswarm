@@ -3320,6 +3320,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
         "personal_context.runtime.get_config",
         "personal_context.runtime.patch_config",
         "personal_context.runtime.select_model",
+        "personal_context.runtime.set_master_enabled",
         "personal_context.fetch.list_services",
         "personal_context.fetch.create_service",
         "personal_context.fetch.delete_service",
@@ -3351,7 +3352,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
 
     assert forwarded == methods
     assert no_local == methods
-    assert len(methods) == 25
+    assert len(methods) == 26
 
 
 # =====================================================================
