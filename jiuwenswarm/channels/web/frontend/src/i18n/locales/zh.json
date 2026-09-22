@@ -339,7 +339,7 @@
       "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
-      "taskAsr": "语音转写模型配置",
+      "taskAsr": "语音转写",
       "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
       "externalCliAgentsDescription": "仅用于集群模式。",
@@ -390,6 +390,10 @@
         "title": "语音转写模型",
         "description": "用于通用语音转写的模型名称。",
         "placeholder": "例如：FunAudioLLM/SenseVoiceSmall"
+      },
+      "task_asr_enabled": {
+        "title": "语音转写",
+        "description": "开启后，任务对话可以使用麦克风进行语音转写。"
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
       "symphony_evolution_enabled": {

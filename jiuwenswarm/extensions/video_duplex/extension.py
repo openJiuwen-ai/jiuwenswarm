@@ -64,7 +64,10 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
                 )
                 return
             try:
-                settings.update_settings(values)
+                clear_secrets = params.get("clear_secrets", False)
+                if not isinstance(clear_secrets, bool):
+                    raise ValueError("clear_secrets must be a boolean")
+                settings.update_settings(values, clear_secrets=clear_secrets)
             except ValueError as exc:
                 await channel.send_response(
                     ws,

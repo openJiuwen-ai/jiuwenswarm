@@ -339,7 +339,7 @@
       "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
-      "taskAsr": "Speech transcription model configuration",
+      "taskAsr": "Speech transcription",
       "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-Party Agents",
       "externalCliAgentsDescription": "For Team mode only.",
@@ -390,6 +390,10 @@
         "title": "Speech transcription model",
         "description": "Model used for general speech transcription.",
         "placeholder": "e.g. FunAudioLLM/SenseVoiceSmall"
+      },
+      "task_asr_enabled": {
+        "title": "Speech transcription",
+        "description": "Enable microphone speech transcription in task conversations."
       },
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",

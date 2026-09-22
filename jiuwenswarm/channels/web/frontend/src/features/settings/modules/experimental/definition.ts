@@ -6,7 +6,6 @@ import {
   ProactiveLimitsSetting,
   RSISetting,
   TaskAsrSetting,
-  TaskAsrModelSettings,
   TaskFullDuplexSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
@@ -20,10 +19,7 @@ export const experimentalModule: SettingsModuleDefinition = {
     {
       id: 'asr',
       titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [
-        { id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting },
-        { id: 'task-asr-model-settings', component: 'custom', render: TaskAsrModelSettings },
-      ],
+      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
     },
     {
       id: 'task-full-duplex',

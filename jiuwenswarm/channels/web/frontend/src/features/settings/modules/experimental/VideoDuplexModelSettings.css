@@ -1,14 +1,91 @@
-.video-duplex-model-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--color-border-default); }
-.video-duplex-model-settings__description, .video-duplex-model-settings__error, .video-duplex-model-settings__success, .video-duplex-model-settings h3, .video-duplex-model-settings footer { grid-column: 1 / -1; }
-.video-duplex-model-settings__description { margin: 0; color: var(--color-text-secondary); font-size: 12px; }
-.video-duplex-model-settings__error { color: var(--color-feedback-danger); font-size: 12px; }
-.video-duplex-model-settings__success { color: var(--color-feedback-success); font-size: 12px; }
-.video-duplex-model-settings h3 { margin: 4px 0 0; padding-bottom: 6px; border-bottom: 1px solid var(--color-border-default); font-size: 13px; }
-.video-duplex-model-settings__field { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: var(--color-text-secondary); font-size: 12px; }
-.video-duplex-model-settings__field input, .video-duplex-model-settings__field select { width: 100%; min-width: 0; height: 36px; padding: 0 9px; border: 1px solid var(--color-border-default); border-radius: 6px; color: var(--color-text-primary); background: var(--color-surface-page); font: inherit; }
-.video-duplex-model-settings footer { display: flex; justify-content: flex-end; padding-top: 4px; }
-.video-duplex-model-settings footer button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 12px; border: 1px solid var(--color-action-primary); border-radius: 6px; color: var(--color-action-primary-text); background: var(--color-action-primary); cursor: pointer; }
-.video-duplex-model-settings button:disabled { opacity: .6; cursor: wait; }
-.video-duplex-model-settings svg, .video-duplex-model-settings__status svg { width: 15px; height: 15px; }
-.video-duplex-model-settings__status { display: inline-flex; align-items: center; gap: 8px; color: var(--color-text-secondary); font-size: 12px; }
-@media (max-width: 720px) { .video-duplex-model-settings { grid-template-columns: 1fr; } }
+.video-duplex-model-settings__model-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.video-duplex-model-settings__model-copy small {
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-duplex-model-settings__dialog-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.video-duplex-model-settings__dialog-fields h3 {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--color-border-default);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.video-duplex-model-settings__field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.video-duplex-model-settings__field input,
+.video-duplex-model-settings__field select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  background: var(--color-surface-page);
+  font: inherit;
+}
+
+.video-duplex-model-settings__error {
+  margin-bottom: 12px;
+  color: var(--color-feedback-danger);
+  font-size: 12px;
+}
+
+.video-duplex-model-settings__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.video-duplex-model-settings__status svg,
+.video-duplex-model-settings svg {
+  width: 15px;
+  height: 15px;
+}
+
+.settings-model-dialog {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.settings-model-dialog .form-dialog__body {
+  overflow-y: auto;
+}
+
+@media (max-width: 720px) {
+  .video-duplex-model-settings__dialog-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .video-duplex-model-settings__dialog-fields h3 {
+    grid-column: auto;
+  }
+}

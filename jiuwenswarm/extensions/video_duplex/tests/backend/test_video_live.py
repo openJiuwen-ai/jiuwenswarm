@@ -96,6 +96,28 @@ def test_plugin_settings_persist_provider_and_preserve_blank_secret(
     assert settings.settings_payload(enabled=True)["values"]["voice_protocol"] == "native_ws"
 
 
+def test_plugin_settings_clear_secrets_removes_persisted_secret(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text('JOYAI_API_KEY="existing-secret"\n', encoding="utf-8")
+    monkeypatch.setattr(settings, "_active_env_file", lambda: env_file)
+    monkeypatch.setenv("JOYAI_API_KEY", "existing-secret")
+
+    settings.update_settings(
+        {
+            "video_live_provider": "joyai",
+            "joyai_api_key": "",
+        },
+        clear_secrets=True,
+    )
+
+    assert 'JOYAI_API_KEY="existing-secret"' not in env_file.read_text(encoding="utf-8")
+    assert "JOYAI_API_KEY=\n" in env_file.read_text(encoding="utf-8")
+    assert settings.settings_payload(enabled=True)["configured_secret_lengths"] == {}
+
+
 class FakeChannel:
     def __init__(self) -> None:
         self.handlers = {}
