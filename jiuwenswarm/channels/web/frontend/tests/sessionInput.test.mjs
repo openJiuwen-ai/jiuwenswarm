@@ -203,6 +203,56 @@ function assertNodeBefore(earlier, later, message) {
   assert.ok(relation & following, message);
 }
 
+test('queued cross-session message appears in the target queue until it starts', async (context) => {
+  const c = await mount(context);
+  try {
+    const streamId = c.runtime().currentStreamId;
+    const message = {
+      message_id: 'sm-1',
+      source_session_id: 'source-1',
+      source_title: 'Source',
+      target_session_id: c.sid,
+      content: 'Check the weather',
+      status: 'queued',
+    };
+    c.receive('session.message.updated', { message });
+    const row = document.querySelector('[data-testid="chat-panel-cross-session-queue-item"]');
+    assert.ok(row);
+    assert.match(row.textContent, /Check the weather/);
+    assert.match(row.textContent, /Source/);
+    assert.equal(row.querySelector('button'), null);
+    assert.equal(c.runtime().currentStreamId, streamId);
+    assert.equal(c.runtime().isProcessing, true);
+
+    c.receive('session.message.updated', { message: { ...message, status: 'running' } });
+    assert.equal(document.querySelector('[data-testid="chat-panel-cross-session-queue-item"]'), null);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('mixed queues show pause only on the local section', async (context) => {
+  const c = await mount(context);
+  try {
+    c.queue('local task');
+    act(() => useChatStore.getState().setQueuePaused(c.sid, true));
+    c.receive('session.message.updated', { message: {
+      message_id: 'sm-mixed',
+      source_session_id: 'source-1',
+      source_title: 'Source',
+      target_session_id: c.sid,
+      content: 'remote task',
+      status: 'queued',
+    } });
+    assert.equal(document.querySelector('[data-testid="chat-panel-task-queue-header"] [data-testid="chat-panel-task-queue-paused-badge"]'), null);
+    assert.ok(document.querySelector('[data-testid="chat-panel-cross-session-queue-section"]'));
+    assert.ok(document.querySelector('[data-testid="chat-panel-task-queue-local-section"] [data-testid="chat-panel-task-queue-paused-badge"]'));
+    assert.ok(document.querySelector('[data-testid="chat-panel-task-queue-local-section"] [data-testid="chat-panel-task-queue-resume"]'));
+  } finally {
+    await c.dispose();
+  }
+});
+
 test('two queued messages: only the selected item steers, locks double click, and waits for Runtime ACK', async (context) => {
   const c = await mount(context);
   try {

@@ -166,6 +166,7 @@ function ensureCrossSessionUserTurn(
   timestamp: string
 ): void {
   const chatStore = useChatStore.getState();
+  chatStore.removeQueuedSessionMessage(sessionId, crossSession.messageId);
   const userMsgId = crossSessionUserMessageId(crossSession.messageId);
   const existing = chatStore
     .getRuntime(sessionId)
@@ -2880,6 +2881,25 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const runtime = useSessionStore.getState().getRuntime(sessionId);
         if (runtime?.mode !== 'team') return;
         useSessionStore.getState().setTeamLeaderIdentity(sessionId, identity);
+      }),
+      webClient.on('session.message.updated', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        const message = payload.message;
+        if (!sessionId || !message || typeof message !== 'object' || Array.isArray(message)) return;
+        const record = message as Record<string, unknown>;
+        const messageId = typeof record.message_id === 'string' ? record.message_id : '';
+        if (!messageId || record.target_session_id !== sessionId) return;
+        const chatStore = useChatStore.getState();
+        if (record.status !== 'queued') {
+          chatStore.removeQueuedSessionMessage(sessionId, messageId);
+          return;
+        }
+        chatStore.upsertQueuedSessionMessage(sessionId, {
+          messageId,
+          sourceSessionId: typeof record.source_session_id === 'string' ? record.source_session_id : '',
+          sourceTitle: typeof record.source_title === 'string' ? record.source_title : '',
+          content: typeof record.content === 'string' ? record.content : '',
+        });
       }),
       ...['chat.input_received', 'chat.output_phase'].map((event) => webClient.on(event, ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);

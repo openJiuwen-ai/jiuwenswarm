@@ -52,6 +52,82 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
 )
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_id, include_content", [("web", True), ("tui", False)])
+async def test_session_message_status_content_is_web_only(monkeypatch, channel_id, include_content):
+    record = SimpleNamespace(
+        message_id="sm-1",
+        execution_request_id="",
+        owner_scope_id="owner",
+        source_session_id="source-1",
+        source_title_snapshot="Source",
+        target_session_id="target-1",
+        content="private prompt",
+        chain_id="chain-1",
+        hop_count=0,
+        status="queued",
+        created_at="now",
+        started_at=None,
+        finished_at=None,
+        last_error_code="",
+        last_error="",
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "build_server_push_message",
+        lambda **kwargs: {
+            **kwargs,
+            "channel_id": channel_id,
+            "metadata": {SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY: True},
+        },
+    )
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    pushed = []
+
+    async def send_push(message):
+        pushed.append(message)
+        return True
+
+    server.send_push = send_push
+    await server._push_session_message_status(record)
+
+    message = pushed[0]
+    assert message["metadata"]["_jiuwenswarm_session_message_owner_scope_id"] == "owner"
+    assert message["metadata"][SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY] is False
+    assert ("content" in message["payload"]["message"]) is include_content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_user_id", ["", "local"])
+async def test_session_message_status_distinguishes_anonymous_local_owner(monkeypatch, target_user_id):
+    record = SimpleNamespace(
+        message_id="sm-1", execution_request_id="", owner_scope_id="local",
+        source_session_id="source-1", source_title_snapshot="Source",
+        target_session_id="target-1", content="private prompt",
+        chain_id="chain-1", hop_count=0, status="queued", created_at="now",
+        started_at=None, finished_at=None, last_error_code="", last_error="",
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module, "get_session_metadata",
+        lambda *args, **kwargs: {"user_id": target_user_id},
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module, "build_server_push_message",
+        lambda **kwargs: {**kwargs, "channel_id": "web"},
+    )
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    pushed = []
+
+    async def send_push(message):
+        pushed.append(message)
+        return True
+
+    server.send_push = send_push
+    await server._push_session_message_status(record)
+    assert pushed[0]["metadata"][SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY] is not bool(target_user_id)
 
 
 async def _wait_for_status(

@@ -3077,6 +3077,8 @@
     "paused": "已暂停",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
+    "crossSessionMessageQueue": "跨会话消息",
+    "localMessageQueue": "本地消息",
     "turnRunning": "任务执行",
     "turnElapsed": "任务用时",
     "workCompleted": "已完成 {{duration}}",

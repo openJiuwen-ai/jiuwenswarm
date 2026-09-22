@@ -3091,6 +3091,8 @@
     "paused": "Paused",
     "waitingTasks": "Waiting Tasks",
     "messageQueue": "Message Queue",
+    "crossSessionMessageQueue": "Cross-session messages",
+    "localMessageQueue": "Local messages",
     "turnRunning": "Running",
     "turnElapsed": "Took",
     "workCompleted": "Completed {{duration}}",

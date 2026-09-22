@@ -513,6 +513,7 @@ function AppContent({
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
   const sessionIdRef = useRef(sessionId);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
   const sessionViewIdRef = useRef(generateUuidV4());
   const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
@@ -1589,16 +1590,32 @@ function AppContent({
     }
   }, []);
 
-  const loadSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
+  const fetchSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
+    const queueSnapshot = useChatStore.getState().beginQueuedSessionMessageSnapshot(targetSessionId);
     try {
-      const session = await request<Session>('session.get_metadata', {
+      const response = await request<Session>('session.get_metadata', {
         session_id: targetSessionId,
       });
+      const { queued_session_messages: queuedMessages, ...session } = response;
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
           navigate({ kind: 'chat-new' }, { replace: true });
         }
         return null;
+      }
+      if (Array.isArray(queuedMessages)) {
+        useChatStore.getState().reconcileQueuedSessionMessageSnapshot(
+          targetSessionId,
+          queueSnapshot,
+          queuedMessages
+            .filter((message) => message.status === 'queued' && message.target_session_id === targetSessionId)
+            .map((message) => ({
+              messageId: message.message_id,
+              sourceSessionId: message.source_session_id,
+              sourceTitle: message.source_title,
+              content: message.content,
+            }))
+        );
       }
       upsertSessionMetadata(session, { setCurrent: sessionIdRef.current === targetSessionId });
       useWorkspaceStore.getState().upsertSession(session);
@@ -1675,6 +1692,18 @@ function AppContent({
       return null;
     }
   }, [navigate, request, setProcessing, setThinking, upsertSessionMetadata]);
+
+  const loadSessionMetadata = useCallback((targetSessionId: string): Promise<Session | null> => {
+    const inFlight = sessionMetadataRequestsRef.current.get(targetSessionId);
+    if (inFlight) return inFlight;
+    const pending = fetchSessionMetadata(targetSessionId).finally(() => {
+      if (sessionMetadataRequestsRef.current.get(targetSessionId) === pending) {
+        sessionMetadataRequestsRef.current.delete(targetSessionId);
+      }
+    });
+    sessionMetadataRequestsRef.current.set(targetSessionId, pending);
+    return pending;
+  }, [fetchSessionMetadata]);
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {

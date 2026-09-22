@@ -285,6 +285,7 @@ export function AgentActivityCard({
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const taskQueue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.taskQueue ?? []);
+  const queuedSessionMessages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuedSessionMessages ?? []);
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
   const removeFromTaskQueue = useChatStore((s) => s.removeFromTaskQueue);
   const reorderTaskQueue = useChatStore((s) => s.reorderTaskQueue);
@@ -295,10 +296,10 @@ export function AgentActivityCard({
 
   // 有等待任务时自动展开
   useEffect(() => {
-    if (taskQueue.length > 0) {
+    if (taskQueue.length > 0 || queuedSessionMessages.length > 0) {
       setExpanded(true);
     }
-  }, [taskQueue.length]);
+  }, [taskQueue.length, queuedSessionMessages.length]);
 
   // While a queue reorder drag is active, preventDefault any dragover/drop that
   // lands outside the queue card so the page doesn't navigate to the drag image.
@@ -315,7 +316,7 @@ export function AgentActivityCard({
     };
   }, [dragIndex]);
 
-  if (!isAgentMode || taskQueue.length === 0) {
+  if (!isAgentMode || (taskQueue.length === 0 && queuedSessionMessages.length === 0)) {
     return null;
   }
 
@@ -420,7 +421,7 @@ export function AgentActivityCard({
         >
           <span className="team-event-group-summary__main">
             <span className="team-event-group-summary__title">{t('chatUi.messageQueue')}</span>
-            {queuePaused && (
+            {queuePaused && queuedSessionMessages.length === 0 && (
               <span
                 data-testid="chat-panel-task-queue-paused-badge"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', marginLeft: '8px' }}
@@ -438,7 +439,7 @@ export function AgentActivityCard({
               </span>
             )}
           </span>
-          {queuePaused && (
+          {queuePaused && queuedSessionMessages.length === 0 && (
             <span
               role="button"
               tabIndex={0}
@@ -468,6 +469,48 @@ export function AgentActivityCard({
         </button>
         {expanded && (
           <div className="team-event-group-list team-event-group-list--activity">
+            {queuedSessionMessages.length > 0 && taskQueue.length > 0 && (
+              <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-cross-session-queue-section">
+                {t('chatUi.crossSessionMessageQueue')}
+              </div>
+            )}
+            {queuedSessionMessages.map((message) => (
+              <div
+                key={message.messageId}
+                className="team-event-group-row team-event-group-row--activity"
+                data-testid="chat-panel-cross-session-queue-item"
+                data-variant={message.messageId}
+              >
+                <div className="team-event-group-row__main" style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                  <div className="team-event-group-row__avatar">
+                    <img src={lineUpIcon} alt="" className="w-4 h-4" />
+                  </div>
+                  <span className="team-event-group-row__member" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {message.content}
+                  </span>
+                </div>
+                <span
+                  title={message.sourceSessionId}
+                  data-testid="chat-panel-cross-session-queue-source"
+                  style={{ flexShrink: 0, maxWidth: '40%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {t('crossSession.messageBadge', { title: message.sourceTitle || message.sourceSessionId })}
+                </span>
+              </div>
+            ))}
+            {queuedSessionMessages.length > 0 && taskQueue.length > 0 && (
+              <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-task-queue-local-section" style={{ alignItems: 'center' }}>
+                <span>{t('chatUi.localMessageQueue')}</span>
+                {queuePaused && (
+                  <span data-testid="chat-panel-task-queue-paused-badge" style={{ marginLeft: 'auto', color: 'var(--color-text-secondary)' }}>{t('chat.paused')}</span>
+                )}
+                {queuePaused && (
+                  <button type="button" data-testid="chat-panel-task-queue-resume" onClick={handleResume} style={{ border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}>
+                    {t('chat.resume')}
+                  </button>
+                )}
+              </div>
+            )}
             {taskQueue.map((task, index) => (
               <div
                 key={task.id}

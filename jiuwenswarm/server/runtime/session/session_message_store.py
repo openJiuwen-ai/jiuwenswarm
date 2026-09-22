@@ -349,6 +349,22 @@ class SessionMessageStore:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def queued_for_target(
+        self, *, owner_scope_id: str, target_session_id: str
+    ) -> list[SessionMessageRecord]:
+        self.ensure_schema()
+        with self._session() as conn, conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM session_messages
+                WHERE owner_scope_id = ? AND target_session_id = ?
+                  AND status = 'queued'
+                ORDER BY sequence
+                """,
+                (owner_scope_id, target_session_id),
+            ).fetchall()
+        return self._rows_to_records(rows)
+
     def next_queued(
         self, target_session_id: str, input_mode: str = ""
     ) -> SessionMessageRecord | None:

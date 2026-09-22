@@ -36,6 +36,10 @@ from jiuwenswarm.common.security.ws_origin import (
     get_header_value,
 )
 from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+)
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
@@ -116,6 +120,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.symphony_status",
         "chat.notice",
         "chat.message_updated",
+        "session.message.updated",
         "history.message",
         "chat.session_result",
         "chat.usage_metadata",
@@ -429,7 +434,11 @@ class WebChannel(BaseWsChannel):
 
     @classmethod
     def _resolve_connection_user_id(cls, flat_query: dict[str, str], ws: Any) -> str | None:
-        connection_user_id = cls._extract_query_user_id(flat_query) or cls._extract_ws_header_user_id(ws)
+        authenticated_user_id = getattr(ws, "authenticated_user_id", None)
+        if authenticated_user_id is not None:
+            connection_user_id = str(authenticated_user_id).strip() or None
+        else:
+            connection_user_id = cls._extract_query_user_id(flat_query) or cls._extract_ws_header_user_id(ws)
         setattr(ws, _WEB_CONNECTION_USER_ID_ATTR, connection_user_id)
         return connection_user_id
 
@@ -983,6 +992,29 @@ class WebChannel(BaseWsChannel):
                 "[WebChannel] proactive_notification broadcast to %d client(s) id=%s",
                 len(clients), getattr(msg, "id", ""),
             )
+            return
+
+        if _et == "session.message.updated":
+            metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+            owner_scope_id = str(metadata.get(SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY) or "").strip()
+            if not owner_scope_id or not msg.session_id:
+                logger.warning("[WebChannel] dropping session.message.updated without owner or session")
+                return
+            anonymous_owner = metadata.get(SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY)
+            if owner_scope_id == "local" and not isinstance(anonymous_owner, bool):
+                return
+            clients = {
+                ws
+                for rk, ws_list in self._clients_by_key.items()
+                if rk.session_id == msg.session_id
+                for ws in ws_list
+                if not getattr(ws, "closed", False)
+                and (
+                    self.connection_user_id(ws) is None if anonymous_owner
+                    else self.connection_user_id(ws) == owner_scope_id
+                )
+            }
+            await self._broadcast_to(self._serialize_frame(msg), clients)
             return
 
         if msg.type == "res":

@@ -30,6 +30,7 @@ MAX_SESSION_MESSAGE_BYTES = 32 * 1024
 MAX_SESSION_MESSAGE_HOPS = 4
 _STORE_RETRY_ATTEMPTS = 3
 _STORE_RETRY_BASE_DELAY_SECONDS = 0.05
+_STATUS_PUSH_TIMEOUT_SECONDS = 5.0
 # Deadlock breaker, not a task deadline: a normal cross-session turn may run
 # for a long time, but a wedged runtime stream must not hold the target's
 # admission forever.
@@ -449,6 +450,26 @@ class SessionMessageService:
             "offset": offset,
         }
 
+    async def queued_for_target(
+        self, session_id: str, user_id: str
+    ) -> list[dict[str, Any]]:
+        """Return the target's durable queue for session metadata recovery."""
+
+        metadata = await asyncio.to_thread(self._session_metadata, session_id)
+        if (
+            not metadata
+            or not self._owner_matches(metadata, user_id)
+            or not self._supported(metadata)
+        ):
+            return []
+        owner_scope_id = str(user_id or "local").strip() or "local"
+        records = await self._store_call(
+            self._store.queued_for_target,
+            owner_scope_id=owner_scope_id,
+            target_session_id=session_id,
+        )
+        return [self._message_projection(record) for record in records]
+
     @staticmethod
     def _message_projection(record: SessionMessageRecord) -> dict[str, Any]:
         """Expose mailbox state without leaking host-only routing identifiers."""
@@ -770,7 +791,9 @@ class SessionMessageService:
         if self._status_callback is None:
             return
         try:
-            await self._status_callback(record)
+            await asyncio.wait_for(
+                self._status_callback(record), timeout=_STATUS_PUSH_TIMEOUT_SECONDS
+            )
         except Exception:
             logger.debug("[SessionMessaging] status push failed", exc_info=True)
 

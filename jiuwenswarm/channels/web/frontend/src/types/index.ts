@@ -37,6 +37,14 @@ export interface Session {
   updated_at: string;
   is_active?: boolean;
   is_processing?: boolean;
+  queued_session_messages?: Array<{
+    message_id: string;
+    target_session_id: string;
+    source_session_id: string;
+    source_title: string;
+    content: string;
+    status: string;
+  }>;
   current_task?: string;
   tools?: string[];
   team_name?: string;

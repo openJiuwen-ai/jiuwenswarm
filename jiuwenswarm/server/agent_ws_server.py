@@ -37,6 +37,8 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     SESSION_MESSAGE_ORIGIN,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
 )
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
@@ -2213,6 +2215,27 @@ class AgentWebSocketServer:
                 payload={"error": str(exc), "code": "INTERNAL_ERROR"},
                 metadata=request.metadata,
             )
+        # The mailbox belongs to this AgentServer, not the metadata adapter.
+        if (
+            request.req_method == ReqMethod.SESSION_GET_METADATA
+            and request.channel_id == "web"
+            and response.ok
+            and isinstance(response.payload, dict)
+        ):
+            service = getattr(self, "_session_message_service", None)
+            if service is not None:
+                try:
+                    params = request.params if isinstance(request.params, dict) else {}
+                    session_id = str(params.get("session_id") or "")
+                    response.payload["queued_session_messages"] = (
+                        await service.queued_for_target(session_id, request.user_id)
+                    )
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] queue snapshot failed: session_id=%s",
+                        session_id,
+                        exc_info=True,
+                    )
         if getattr(response, "agent_ref", None) is None:
             response.agent_ref = request.agent_ref
         wire = encode_agent_response_for_wire(response, response_id=request.request_id)
@@ -3669,6 +3692,22 @@ class AgentWebSocketServer:
             },
             fallback_channel_id="web",
         )
+        if message["channel_id"] == "web":
+            message["payload"]["message"]["content"] = record.content
+        message.setdefault("metadata", {})[SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY] = record.owner_scope_id
+        message["metadata"][SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY] = False
+        if record.owner_scope_id == "local":
+            target_metadata = await asyncio.to_thread(
+                get_session_metadata,
+                record.target_session_id,
+                cache_bust=True,
+                enable_writeback=False,
+            )
+            if not target_metadata or str(target_metadata.get("user_id") or "").strip() not in {"", "local"}:
+                return
+            message["metadata"][SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY] = not bool(
+                str(target_metadata.get("user_id") or "").strip()
+            )
         await self.send_push(message)
 
     async def execute_internal_session_message(
