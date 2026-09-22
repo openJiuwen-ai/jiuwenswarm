@@ -8101,18 +8101,10 @@ class JiuWenSwarmDeepAdapter:
             )
             trajectory_export_path = str(ttse_cfg.get("trajectory_export_path") or "").strip()
             dream_enabled = coerce_config_bool(ttse_cfg.get("dream_enabled"), True)
-            try:
-                dream_interval = int(ttse_cfg.get("dream_interval", 50))
-            except (TypeError, ValueError):
-                dream_interval = 50
-            try:
-                dream_min_hours = float(ttse_cfg.get("dream_min_hours", 24.0))
-            except (TypeError, ValueError):
-                dream_min_hours = 24.0
-            try:
-                dream_ttl_days = int(ttse_cfg.get("dream_ttl_days", 90))
-            except (TypeError, ValueError):
-                dream_ttl_days = 90
+            # Auto-dream schedule knobs are fixed (not user-configurable).
+            dream_interval = 50
+            dream_min_hours = 24.0
+            dream_ttl_days = 90
             try:
                 consult_top_k = int(ttse_cfg.get("consult_top_k", 8) or 8)
             except (TypeError, ValueError):
