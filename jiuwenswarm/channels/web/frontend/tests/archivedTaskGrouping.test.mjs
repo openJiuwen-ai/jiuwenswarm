@@ -58,3 +58,34 @@ test('groups sessions without a project name under the unassigned key', () => {
   assert.equal(groups[0].projectName, null);
   assert.deepEqual(groups[0].sessions.map((session) => session.session_id), ['s1', 's2']);
 });
+
+test('marks a group whose project was removed', () => {
+  const groups = buildArchivedTaskGroups([
+    { session_id: 's1', project_id: 'p1', project_name: 'Alpha', archived_at: 100, project_hidden: true },
+    { session_id: 's2', project_id: 'p2', project_name: 'Beta', archived_at: 300 },
+  ]);
+
+  const beta = groups.find((group) => group.projectId === 'p2');
+  const alpha = groups.find((group) => group.projectId === 'p1');
+  assert.equal(alpha.projectHidden, true);
+  assert.equal(beta.projectHidden, false);
+});
+
+test('keeps the removed-project mark when only part of a page carries the flag', () => {
+  const groups = buildArchivedTaskGroups([
+    { session_id: 's1', project_id: 'p1', project_name: 'Alpha', archived_at: 100 },
+    { session_id: 's2', project_id: 'p1', project_name: 'Alpha', archived_at: 200, project_hidden: true },
+  ]);
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].projectHidden, true);
+});
+
+test('unassigned groups are never marked as removed projects', () => {
+  const groups = buildArchivedTaskGroups([
+    { session_id: 's1', project_id: '', project_name: null, archived_at: 100 },
+  ]);
+
+  assert.equal(groups[0].key, UNASSIGNED_GROUP_KEY);
+  assert.equal(groups[0].projectHidden, false);
+});

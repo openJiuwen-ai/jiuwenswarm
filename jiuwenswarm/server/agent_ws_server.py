@@ -2625,6 +2625,26 @@ class AgentWebSocketServer:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
+                if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
+                    try:
+                        await self._execution_runtime().stop_session_for_archive(
+                            channel_id=request.channel_id or "default",
+                            session_id=request.session_id or "default",
+                        )
+                        response = AgentResponse(
+                            request_id=request.request_id, channel_id=request.channel_id,
+                            ok=True, payload={"success": True},
+                        )
+                    except Exception as exc:
+                        response = AgentResponse(
+                            request_id=request.request_id, channel_id=request.channel_id,
+                            ok=False, payload={"success": False, "error": str(exc)},
+                        )
+                    async with send_lock:
+                        await send_wire_payload(
+                            ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+                        )
+                    return
                 # 中断请求：根据 intent 决定是否取消流式任务
                 sid = request.session_id or "default"
                 intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
@@ -5298,7 +5318,7 @@ class AgentWebSocketServer:
             "session.delete",
             "cron.sessions.delete",
             "project.sessions.archive", "project.sessions.delete_archived",
-            "project.delete", "project.lifecycle",
+            "project.lifecycle",
         }
         if method not in methods:
             return False
@@ -5337,17 +5357,22 @@ class AgentWebSocketServer:
                 project_id = lc.validate_id(params.get("project_id"))
                 payload = lc.projection("project", project_id)
                 from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
-                payload["exists"] = get_project_by_id(project_id, cache_bust=True) is not None
+                project = get_project_by_id(project_id, cache_bust=True)
+                payload["exists"] = project is not None
+                # 调度闸门(project_execution_allowed)据此拒隐藏项目:被移除
+                # 项目的定时任务不到点触发、不进任务列表。
+                payload["hidden"] = bool(project is not None and project.hidden)
                 payload["operation"] = lc.state("project", project_id).get("operation")
-                if any(key in params for key in ("completed_cron_job_ids", "planned_cron_job_ids", "failed")):
-                    payload["operation"] = lc.checkpoint_project(project_id, params)
-                    payload.update(lc.projection("project", project_id))
             elif method.startswith("session."):
                 ids = lc.parse_ids(params, delete=method == "session.delete")
                 results = []
                 for sid in ids:
                     try:
-                        results.append(await service.session(sid, method.split(".")[1], request.channel_id or ""))
+                        results.append(await service.session(
+                            sid,
+                            method.split(".")[1],
+                            request.channel_id or "",
+                        ))
                     except lc.LifecycleError as exc:
                         results.append(dict(session_id=sid, ok=False, code=exc.code, error=str(exc), **exc.details))
                 if method == "session.delete" and "session_ids" not in params:
@@ -5361,11 +5386,8 @@ class AgentWebSocketServer:
                 else:
                     succeeded = sum(item["ok"] for item in results)
                     payload = dict(succeeded_count=succeeded, failed_count=len(results) - succeeded, results=results)
-            else:
-                payload = await service.project(
-                    params.get("project_id"), method.split(".")[1],
-                    request.channel_id or "", params,
-                )
+            # methods 集合已穷尽上面的分支;不再有项目级删除级联,
+            # 任何新增方法都必须在这里拿到显式分支。
         except lc.LifecycleError as exc:
             ok, payload = False, dict(code=exc.code, error=str(exc), **exc.details)
         except Exception as exc:

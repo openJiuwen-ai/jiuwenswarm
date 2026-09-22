@@ -15,6 +15,8 @@ export interface ArchivedTaskGroup {
   projectId: string;
   /** null 表示未归属项目（项目已删除或会话本就无项目）。 */
   projectName: string | null;
+  /** 组内会话所属项目已被移除，页面对该组给出说明。 */
+  projectHidden: boolean;
   sessions: ArchivedSession[];
   /** 分组内最新的归档时间（Unix 秒），用于统一列表排序。 */
   latestArchivedAt: number;
@@ -34,7 +36,14 @@ export function buildArchivedTaskGroups(
   const ensureGroup = (key: string, projectId: string, projectName: string | null): ArchivedTaskGroup => {
     let group = groupByKey.get(key);
     if (!group) {
-      group = { key, projectId, projectName, sessions: [], latestArchivedAt: 0 };
+      group = {
+        key,
+        projectId,
+        projectName,
+        projectHidden: false,
+        sessions: [],
+        latestArchivedAt: 0,
+      };
       groupByKey.set(key, group);
       groups.push(group);
     }
@@ -45,6 +54,8 @@ export function buildArchivedTaskGroups(
     const unassigned = !session || session.project_name == null || !session.project_name.trim();
     const key = unassigned ? UNASSIGNED_GROUP_KEY : session.project_id;
     const group = ensureGroup(key, unassigned ? '' : session.project_id, unassigned ? null : session.project_name);
+    // 同一分组必属同一项目，取或即可覆盖分页交错时的取值差异。
+    if (session?.project_hidden === true) group.projectHidden = true;
     group.sessions.push(session);
     if (session.archived_at > group.latestArchivedAt) group.latestArchivedAt = session.archived_at;
   }

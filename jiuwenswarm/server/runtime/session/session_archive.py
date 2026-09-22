@@ -17,11 +17,6 @@ from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
 logger = logging.getLogger(__name__)
 
-# Project deletion checkpoints progress every K processed sessions instead of
-# after each one.  Session state files remain the crash-recovery truth; the
-# project file is only a fast-path cache, so periodic refreshes suffice.
-_PROJECT_DELETE_CHECKPOINT_EVERY = 10
-
 
 def get_agent_sessions_dir():
     return lc.get_agent_sessions_dir()
@@ -38,11 +33,6 @@ class ProjectSessionInventoryItem:
 
 class SessionArchiveService:
     def __init__(self, runtime):
-        try:
-            lc.migrate_project_archives()
-        except Exception:
-            # 一次性数据迁移不得阻断服务启动；marker 未写入时会于下次启动重试。
-            logger.exception("project archive migration failed; retry on next start")
         self.runtime = runtime
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._stopping: dict[str, asyncio.Task] = {}
@@ -364,7 +354,8 @@ class SessionArchiveService:
                     pre_stopped=pre_stopped,
                 )
         return await self._session(
-            session_id, action, channel_id, project_id, pre_stopped=pre_stopped
+            session_id, action, channel_id, project_id,
+            pre_stopped=pre_stopped,
         )
 
     def _session_message_service(self):
@@ -429,7 +420,11 @@ class SessionArchiveService:
             is_cron_session = bool(meta.get("cron_id")) or session_id.startswith(
                 ("cron_", "heartbeat_")
             )
-            pin_reindex_required = action == "archive" and bool(meta.get("pinned"))
+            # 两个方向都要重排置顶序号：归档后该会话离开活跃区（活跃区留空档），
+            # 取消归档后它带着归档前的序号回到活跃区（可能与其他会话重复）。
+            pin_reindex_required = action in {"archive", "unarchive"} and bool(
+                meta.get("pinned")
+            )
             if action != "delete" and is_cron_session:
                 raise lc.LifecycleError(
                     "FORBIDDEN",
@@ -472,10 +467,10 @@ class SessionArchiveService:
                 "session", session_id, action, block_execution=action != "archive"
             )
             operation = lc.claim_operation("session", session_id, self._owner_id)
-            # Moving an archive clears metadata.pinned before reindexing can
-            # fail. Persist the requirement before the move so retries retain
-            # it, including retries handled by a new service instance.
-            pin_reindex_required = action == "archive" and (
+            # 置顶会话跨归档边界后活跃区序号必然失真（归档留空档、取消归档带
+            # 回旧序号），重排需求在搬目录前写入状态：重排失败时重试（含新服务
+            # 实例接管的重试）仍能读到它。
+            pin_reindex_required = action in {"archive", "unarchive"} and (
                 pin_reindex_required or bool(operation.get("pin_reindex_required"))
             )
             lc.update(
@@ -536,6 +531,12 @@ class SessionArchiveService:
                 source, destination = (
                     (active, archived) if action == "archive" else (archived, active)
                 )
+                if action == "unarchive":
+                    # 项目被移除时,归档区是它唯一还能被看到的内容。先把项目
+                    # 恢复出来,否则会话离开归档页后在工作区里也找不到。
+                    await asyncio.to_thread(
+                        self._restore_hidden_project, project_id
+                    )
                 lc.update(
                     "session",
                     session_id,
@@ -559,12 +560,16 @@ class SessionArchiveService:
                 )
 
                 remove_session_metadata_cache(session_id)
-                if (
-                    action == "archive"
-                    and not defer_pin_reindex
-                    and pin_reindex_required
-                ):
-                    await asyncio.to_thread(self.reindex_pins)
+                deferred_pin_reindex = action == "archive" and defer_pin_reindex
+                if not deferred_pin_reindex and pin_reindex_required:
+                    if action == "unarchive":
+                        # 刚搬回活跃区的会话仍在执行栅栏内，reindex_pins 默认跳过
+                        # blocked 会话，这里显式让它写回这一条的序号。
+                        await asyncio.to_thread(
+                            self.reindex_pins, include_blocked=session_id
+                        )
+                    else:
+                        await asyncio.to_thread(self.reindex_pins)
                 payload = (
                     dict(
                         session_id=session_id,
@@ -582,7 +587,6 @@ class SessionArchiveService:
                         project_id=project_id,
                     )
                 )
-                deferred_pin_reindex = action == "archive" and defer_pin_reindex
                 if deferred_pin_reindex:
                     # The batch owner consumes this private marker before
                     # returning its public result.  A pinned session was
@@ -613,8 +617,14 @@ class SessionArchiveService:
                     stop_pending=isinstance(exc, lc.LifecycleError)
                     and exc.code == "STOP_TIMEOUT",
                     errors=[str(exc)],
+                    # 项目名冲突只能由用户先重命名占用方再重试,自动重放会一直
+                    # 撞同一堵墙,因此不标记 retryable;用户手动重试仍然有效。
                     retryable=getattr(exc, "code", "")
-                    not in {"SESSION_ID_CONFLICT", "BAD_REQUEST"},
+                    not in {
+                        "SESSION_ID_CONFLICT",
+                        "BAD_REQUEST",
+                        "PROJECT_NAME_CONFLICT",
+                    },
                 )
                 self._poke_recovery()
                 if isinstance(exc, lc.LifecycleError):
@@ -670,6 +680,28 @@ class SessionArchiveService:
                 raise
 
     @staticmethod
+    def _restore_hidden_project(project_id: str) -> None:
+        """Bring a removed project back before one of its sessions is unarchived.
+
+        An archived session is the only part of a removed project still on
+        screen, so undoing its archive restores the project as well.  Without
+        that the session would leave the archive page and stay hidden in the
+        workspace, since a hidden project's sessions are excluded everywhere.
+        A name already taken by another project is reported instead of silently
+        restoring under a different name, and the archive is left untouched.
+        """
+        if not project_id or is_default_project_id(project_id):
+            return
+        # Recheck atomically: visibility may change after a batch snapshot.
+        try:
+            project_store.restore_project(project_id)
+        except project_store.ProjectNameConflict as exc:
+            raise lc.LifecycleError(
+                "PROJECT_NAME_CONFLICT",
+                "a project with this name exists; rename it before restoring",
+            ) from exc
+
+    @staticmethod
     def _move_session_directory(
         session_id: str,
         source: Path,
@@ -702,11 +734,12 @@ class SessionArchiveService:
                         time.sleep(0.2 * 2 ** attempt)
             meta = lc.read_json(destination / "metadata.json")
             if action == "archive":
+                # 置顶状态原样保留:归档只是离开活跃区,取消归档后会话要回到
+                # 置顶区。活跃区置顶序号的紧凑化由调用方的 reindex_pins 负责,
+                # 归档区会话不在其扫描范围内,因此不会占用活跃区序号。
                 meta.update(
                     archived=True,
                     archived_at=archived_at,
-                    pinned=False,
-                    pin_order=0,
                 )
             else:
                 meta.pop("archived", None)
@@ -726,7 +759,14 @@ class SessionArchiveService:
                 raise
 
     @staticmethod
-    def reindex_pins():
+    def reindex_pins(*, include_blocked: str = "") -> None:
+        """Renumber the active pinned sessions to a compact 1..N ordering.
+
+        Sessions under a live lifecycle operation are skipped: their own
+        operation owns the metadata until it completes.  ``include_blocked``
+        names the one session that must be written anyway — an unarchive that
+        just moved the directory back and is still inside its execution fence.
+        """
         from jiuwenswarm.server.runtime.session.session_metadata import (
             remove_session_metadata_cache,
         )
@@ -740,7 +780,7 @@ class SessionArchiveService:
                     pinned.append((int(meta.get("pin_order", 0)), directory.name))
         for order, (_, sid) in enumerate(sorted(pinned), 1):
             with lc.resource_lock("session", sid):
-                if lc.state("session", sid).get("blocked"):
+                if sid != include_blocked and lc.state("session", sid).get("blocked"):
                     continue
                 path = lc.resolve_session(sid)
                 meta = lc.read_json(path / "metadata.json")
@@ -903,9 +943,14 @@ class SessionArchiveService:
                         "archived_at": self._listing_archived_at(
                             directory, meta, value
                         ),
+                        # 展示语义:归档项不出现在置顶区。会话自身的置顶状态仍保存在
+                        # metadata 中,取消归档时原样恢复(见 _move_session_directory)。
                         "pinned": False,
                         "pin_order": 0,
                         "project_name": project.name if project else None,
+                        # 项目被移除后归档页是它唯一的展示位:前端据此提示用户,
+                        # 并说明撤销归档会连带恢复该项目。
+                        "project_hidden": bool(project.hidden) if project else False,
                         **lc.projection(
                             "session",
                             sid,
@@ -1083,9 +1128,18 @@ class SessionArchiveService:
             raise lc.LifecycleError("BAD_REQUEST", "unknown session batch operation")
         async with self.lock("project", project_id):
             lc.guard(project_id=project_id)
-            if not is_default_project_id(
-                project_id
-            ) and not project_store.get_project_by_id(project_id, cache_bust=True):
+            default_project = is_default_project_id(project_id)
+            project = (
+                None
+                if default_project
+                else project_store.get_project_by_id(project_id, cache_bust=True)
+            )
+            if not default_project and project is None:
+                raise lc.LifecycleError("NOT_FOUND", "project not found")
+            # 隐藏项目对前端不可见,不该再接受新的批量归档(与 project.get_sessions
+            # 对隐藏项目的 NOT_FOUND 一致)。delete_archived 保持放行:归档页是
+            # 已移除项目归档会话的展示位,清空入口依赖它。
+            if project is not None and project.hidden and action == "archive":
                 raise lc.LifecycleError("NOT_FOUND", "project not found")
             inventory = await asyncio.to_thread(
                 self.project_session_inventory, project_id
@@ -1140,235 +1194,3 @@ class SessionArchiveService:
                 failed_count=len(results) - succeeded,
                 results=results,
             )
-
-    async def project(
-        self, project_id: str, action: str, channel_id: str, params: dict
-    ) -> dict:
-        lc.validate_id(project_id)
-        if action != "delete":
-            raise lc.LifecycleError("BAD_REQUEST", "projects only support deletion")
-        if is_default_project_id(project_id):
-            raise lc.LifecycleError("FORBIDDEN", "default project cannot be deleted")
-        async with self.lock("project", project_id):
-            project = project_store.get_project_by_id(project_id, cache_bust=True)
-            old = lc.state("project", project_id).get("operation", {})
-            if not project:
-                finalized = (
-                    old.get("status") == "completed"
-                    or old.get("phase") == "delete_project"
-                )
-                if old.get("kind") == "delete" and old.get("result") and finalized:
-                    if old.get("status") != "completed":
-                        lc.complete(
-                            "project", project_id, deleted=True, result=old["result"]
-                        )
-                    return old["result"]
-                raise lc.LifecycleError("NOT_FOUND", "project not found")
-            # 两阶段契约必须显式声明阶段：无阶段调用会在 begin 时立起
-            # 执行栅栏却永不提交，遗留 pending operation 阻塞整个项目。
-            stage = params.get("_lifecycle_stage")
-            if stage not in {"prepare", "finish"}:
-                raise lc.LifecycleError(
-                    "BAD_REQUEST", "project deletion requires an explicit lifecycle stage"
-                )
-            operation = lc.begin("project", project_id, "delete")
-            operation = lc.claim_operation("project", project_id, self._owner_id)
-            if stage == "prepare":
-                return dict(
-                    project_id=project_id,
-                    operation_id=operation["operation_id"],
-                    generation=operation["generation"],
-                )
-            if (
-                params.get("operation_id") != operation["operation_id"]
-                or params.get("generation") != operation["generation"]
-            ):
-                raise lc.LifecycleError(
-                    "OPERATION_IN_PROGRESS", "stale project lifecycle generation"
-                )
-            completed: dict = {}
-            done_ids: list[str] = []
-            try:
-                inventory = await asyncio.to_thread(
-                    self.project_session_inventory, project_id
-                )
-                inventory_by_id = {item.session_id: item for item in inventory}
-                ids = list(
-                    dict.fromkeys(
-                        [
-                            *operation.get("session_ids", []),
-                            *inventory_by_id,
-                        ]
-                    )
-                )
-                conversation_ids = list(operation.get("conversation_session_ids", []))
-                for sid in ids:
-                    item = inventory_by_id.get(sid)
-                    if item is None:
-                        # A retry can contain an item saved by a previous
-                        # operation snapshot. Re-check it individually rather
-                        # than assuming the current inventory still has it.
-                        active, archived = lc.session_paths(sid)
-                        if not (active.exists() or archived.exists()):
-                            continue
-                        meta = lc.raw_metadata(sid)
-                    else:
-                        meta = item.metadata
-                    if not (
-                        meta.get("cron_id")
-                        or sid.startswith(("cron_", "heartbeat_"))
-                    ):
-                        conversation_ids.append(sid)
-                conversation_ids = list(dict.fromkeys(conversation_ids))
-                operation = lc.update(
-                    "project",
-                    project_id,
-                    session_ids=ids,
-                    conversation_session_ids=conversation_ids,
-                    phase="stop_sessions",
-                    status="running",
-                )
-                lc.update("project", project_id, phase="delete_sessions")
-                completed = dict(operation.get("completed_items", {}))
-                done_ids = list(completed.get("sessions", []))
-                busy_ids: list[str] = []
-                # Checkpointing after every deletion rewrites a linearly
-                # growing completed_items list (O(N^2) write amplification).
-                # Session state files remain the recovery truth, so periodic
-                # refreshes plus one forced write per exit path suffice.
-                uncheckpointed = 0
-                for sid in ids:
-                    if sid in done_ids:
-                        continue
-                    child = lc.state("session", sid)
-                    if (
-                        child.get("deleted")
-                        and child.get("operation", {}).get("status") == "completed"
-                    ):
-                        done_ids.append(sid)
-                        uncheckpointed += 1
-                        continue
-                    # The project execution lock makes the inventory snapshot
-                    # stable; reuse it instead of re-reading metadata per
-                    # session.  Snapshot sids already validated by the scan.
-                    item = inventory_by_id.get(sid)
-                    if item is not None:
-                        meta = item.metadata
-                        pid = project_id
-                        was_active = item.active
-                    else:
-                        meta = lc.raw_metadata(sid)
-                        pid = lc.project_id_for(meta)
-                        was_active = lc.session_paths(sid)[0].exists()
-                    is_cron = bool(meta.get("cron_id")) or sid.startswith(("cron_", "heartbeat_"))
-                    # busy 判定统一下沉到 _session_is_busy_for_action（不再按 is_cron 豁免），
-                    # 这里仅做前置短路以减少对 running cron session 的无谓 stop 尝试。
-                    if was_active and not is_cron and self.runtime.is_session_running(sid):
-                        busy_ids.append(sid)
-                        continue
-                    try:
-                        # The project cascade already owns the project lock;
-                        # go straight to _session with the snapshot's project.
-                        await self._session(
-                            sid, "delete", channel_id, pid, preloaded_meta=meta
-                        )
-                    except lc.LifecycleError as exc:
-                        if exc.code == "SESSION_BUSY":
-                            busy_ids.append(sid)
-                            continue
-                        raise
-                    if sid not in done_ids:
-                        done_ids.append(sid)
-                    uncheckpointed += 1
-                    if uncheckpointed >= _PROJECT_DELETE_CHECKPOINT_EVERY:
-                        uncheckpointed = 0
-                        completed["sessions"] = done_ids
-                        lc.update("project", project_id, completed_items=completed)
-                if busy_ids:
-                    result = dict(
-                        project_id=project_id,
-                        deleted=False,
-                        deleted_sessions=len(done_ids),
-                        deleted_conversation_sessions=len(set(done_ids) & set(conversation_ids)),
-                        deleted_cron_jobs=params.get("deleted_cron_jobs", 0),
-                        skipped_running_session_ids=busy_ids,
-                    )
-                    completed["sessions"] = done_ids
-                    lc.update("project", project_id, completed_items=completed)
-                    lc.complete("project", project_id, result=result)
-                    return result
-                if await asyncio.to_thread(self.project_sessions, project_id):
-                    raise lc.LifecycleError("DELETE_FAILED", "project sessions remain")
-                result = dict(
-                    project_id=project_id,
-                    deleted=True,
-                    deleted_sessions=len(done_ids),
-                    deleted_conversation_sessions=len(set(done_ids) & set(conversation_ids)),
-                    deleted_cron_jobs=params.get("deleted_cron_jobs", 0),
-                )
-                completed["sessions"] = done_ids
-                lc.update(
-                    "project",
-                    project_id,
-                    phase="delete_project",
-                    result=result,
-                    completed_items=completed,
-                )
-                project_store.delete_project(project_id)
-                lc.complete("project", project_id, deleted=True, result=result)
-                return result
-            except Exception as exc:
-                failure_changes = dict(
-                    status="failed",
-                    errors=[str(exc)],
-                    stop_pending=getattr(exc, "code", "")
-                    in {"STOP_TIMEOUT", "STOP_SUBMIT_FAILED"},
-                    retryable=getattr(exc, "code", "")
-                    not in {"SESSION_ID_CONFLICT", "BAD_REQUEST"},
-                )
-                if done_ids:
-                    # Persist the accurate in-memory progress; recovery also
-                    # re-derives it from per-session state files.
-                    completed["sessions"] = done_ids
-                    failure_changes["completed_items"] = completed
-                operation = lc.update("project", project_id, **failure_changes)
-                details = dict(
-                    operation_id=operation["operation_id"],
-                    project_id=project_id,
-                    phase=operation["phase"],
-                    retryable=operation["retryable"],
-                    completed_session_ids=operation.get("completed_items", {}).get(
-                        "sessions", []
-                    ),
-                    completed_conversation_session_ids=list(
-                        set(operation.get("completed_items", {}).get("sessions", []))
-                        & set(operation.get("conversation_session_ids", []))
-                    ),
-                    completed_cron_job_ids=params.get("completed_cron_job_ids", []),
-                    failed_items=[
-                        dict(
-                            resource_type="project",
-                            resource_id=project_id,
-                            code=getattr(exc, "code", "DELETE_FAILED"),
-                            error=str(exc),
-                        )
-                    ],
-                    **lc.projection("project", project_id),
-                )
-                if isinstance(exc, lc.LifecycleError):
-                    details.update(exc.details)
-                raise lc.LifecycleError(
-                    "PARTIAL_PROJECT_DELETE_FAILED", str(exc), details
-                ) from exc
-            except BaseException:
-                # 与 _session 同理：项目栅栏挡住整个项目所有会话的准入，且
-                # 项目操作不在 _recover 的扫描范围内，取消遗留 running 会
-                # 永久卡死，只能靠用户手动重试删除来解。
-                lc.update(
-                    "project",
-                    project_id,
-                    status="failed",
-                    errors=["operation cancelled"],
-                    retryable=True,
-                )
-                raise

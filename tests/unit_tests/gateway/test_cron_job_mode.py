@@ -408,8 +408,8 @@ class TestCronJobLazyMigration:
         assert _read_cron_jobs(store_path)[0]["work_mode"] == "code"
 
     @pytest.mark.asyncio
-    async def test_legacy_job_project_id_preserves_mode_after_migration(self, tmp_path, monkeypatch):
-        """旧项目迁移后 cron 继续按项目 ID 继承 work_mode。"""
+    async def test_legacy_job_project_id_preserves_mode_when_hidden(self, tmp_path, monkeypatch):
+        """隐藏项目的 cron 继续按项目 ID 继承 work_mode。"""
         root = tmp_path / "agent"
         root.mkdir()
         monkeypatch.setattr(
@@ -422,7 +422,7 @@ class TestCronJobLazyMigration:
         records = json.loads((root / "projects.json").read_text(encoding="utf-8"))
         records["projects"][0]["hidden"] = True
         (root / "projects.json").write_text(json.dumps(records), encoding="utf-8")
-        project_store.migrate_archived_projects()
+        project_store.invalidate_cache()
 
         store_path = tmp_path / "cron_jobs.json"
         _write_cron_jobs(store_path, [

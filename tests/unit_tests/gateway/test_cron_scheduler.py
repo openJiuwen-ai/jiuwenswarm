@@ -131,11 +131,20 @@ class _TestableScheduler(CronSchedulerService):
         """Expose _schedule_event for test use (G.CLS.11: access via subclass wrapper)."""
         return self._schedule_event(at_dt, kind, job_id, run_id)
 
+    @property
+    def events(self):
+        """Expose the queued event heap for test assertions."""
+        return self._events
+
+    def drop_run_events(self, run_ids):
+        """Expose _drop_run_events for test use (G.CLS.11: access via subclass wrapper)."""
+        return self._drop_run_events(run_ids)
+
     async def on_wake(self, job, run_id):
         return await self._on_wake(job, run_id)
 
-    async def cancel_agent_session(self, state, *, reason="test"):
-        return await self._cancel_agent_session(state, reason=reason)
+    async def cancel_agent_session(self, state, *, reason="test", strict=False):
+        return await self._cancel_agent_session(state, reason=reason, strict=strict)
 
     async def cancel_team_agent_session(
         self,
@@ -274,6 +283,20 @@ class FailingAgentClient(FakeAgentClient):
         raise RuntimeError("agent unavailable")
 
 
+class HiddenProjectAgentClient(FakeAgentClient):
+    """project.lifecycle 报告项目已被移除(hidden):调度闸门必须拒绝。"""
+
+    async def send_request(self, envelope, *a, **kw):
+        if envelope.method == "project.lifecycle":
+            return AgentResponse(
+                request_id=envelope.request_id or "",
+                channel_id=envelope.channel or "",
+                ok=True,
+                payload={"exists": True, "hidden": True, "execution_blocked": False},
+            )
+        return await super().send_request(envelope, *a, **kw)
+
+
 class FakeMessageHandler:
     """Stub MessageHandler that records published messages."""
 
@@ -320,6 +343,52 @@ def _make_scheduler(store, handler=None, agent_client=None, now_fn=None):
         message_handler=handler or FakeMessageHandler(),
         **({"now_fn": now_fn} if now_fn is not None else {}),
     )
+
+
+# ── project_execution_allowed ────────────────────────────────────────────────
+
+
+class TestProjectExecutionAllowed:
+    @pytest.mark.asyncio
+    async def test_hidden_project_is_rejected(self, tmp_path):
+        """被移除(hidden)的项目即使存在且无生命周期栅栏也不放行。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        svc = _make_scheduler(store, agent_client=HiddenProjectAgentClient())
+        assert await svc.project_execution_allowed("proj_hidden", "alice") is False
+
+    @pytest.mark.asyncio
+    async def test_visible_project_is_allowed(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        svc = _make_scheduler(store)
+        assert await svc.project_execution_allowed("proj_visible", "alice") is True
+
+
+# ── _drop_run_events ─────────────────────────────────────────────────────────
+
+
+class TestDropRunEvents:
+    def test_drops_only_matching_runs_and_keeps_heap_order(self, tmp_path):
+        """停止在途执行后其排队事件必须一并丢弃,否则隐藏后仍会推送结果。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        svc = _make_scheduler(store)
+        now = datetime.now(tz=ZoneInfo("UTC"))
+        svc.schedule_event(now, "push", "job_a", "run_1")
+        svc.schedule_event(now, "push_update", "job_a", "run_1")
+        svc.schedule_event(now, "push", "job_b", "run_2")
+
+        assert svc.drop_run_events({"run_1"}) == 2
+        assert [ev.run_id for _, _, ev in svc.events] == ["run_2"]
+        # 过滤后必须重新堆化:堆顶仍是最小 at_ts 的元素。
+        assert svc.events[0][0] <= svc.events[-1][0]
+
+    def test_noop_when_no_matching_run(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        svc = _make_scheduler(store)
+        now = datetime.now(tz=ZoneInfo("UTC"))
+        svc.schedule_event(now, "push", "job_a", "run_1")
+        assert svc.drop_run_events({"other"}) == 0
+        assert len(svc.events) == 1
+        assert svc.drop_run_events(set()) == 0
 
 
 # ── _check_store_changed ─────────────────────────────────────────────────────
@@ -2538,3 +2607,46 @@ async def test_crash_recovery_skip_after_etcd_full_load(tmp_path, monkeypatch):
     assert len(svc.jobs) == 1
     wake_events = [ev for _ts, _seq, ev in svc.events if ev.kind == "wake"]
     assert wake_events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ok, payload", [(False, {"error": "denied"}), (True, {"success": False})])
+async def test_strict_cancel_rejects_failed_response(tmp_path, ok, payload):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    svc = _make_scheduler(CronJobStore(path=tmp_path / "cron_jobs.json"))
+    svc._agent_client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=ok, payload=payload)))
+    state = CronRunState(run_id="r", job_id="j", wake_at_iso="", push_at_iso="")
+    with pytest.raises(RuntimeError):
+        await svc.cancel_agent_session(state, strict=True)
+    assert svc._agent_client.send_request.await_args.args[0].params["wait_for_stop"] is True
+
+
+@pytest.mark.asyncio
+async def test_disable_project_jobs_preserves_other_jobs(tmp_path):
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    jobs = [await store.create_job(name="job", cron_expr="0 0 * * *", timezone="UTC", description="x", targets="web", project_id=pid) for pid in ("a", "a", "b")]
+    await store.disable_project_jobs("a")
+    result = {job.id: job for job in await store.list_jobs()}
+    assert [result[job.id].enabled for job in jobs] == [False, False, True]
+
+
+@pytest.mark.asyncio
+async def test_project_gate_discards_response_crossing_hide(tmp_path, monkeypatch):
+    import asyncio
+    from jiuwenswarm.gateway.routing import e2a_proxy
+
+    svc = _make_scheduler(CronJobStore(path=tmp_path / "cron_jobs.json"))
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def stale_response(**kwargs):
+        entered.set()
+        await release.wait()
+        return True, {"exists": True, "hidden": False, "execution_blocked": False}
+
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", stale_response)
+    pending = asyncio.create_task(svc.project_execution_allowed("p"))
+    await entered.wait()
+    svc._project_admission_revisions["p"] = 2
+    release.set()
+    assert await pending is False
