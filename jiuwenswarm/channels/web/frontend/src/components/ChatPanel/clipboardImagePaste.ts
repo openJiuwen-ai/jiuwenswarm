@@ -47,17 +47,15 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
 };
 
 /**
- * Known image suffixes win over an empty or octet-stream MIME.
- * The desktop exe (Python 3.11) reports that for .webp.
+ * Keep a MIME that mimetypes (or the browser) already resolved.
+ * Fill image/webp only when that result is missing or octet-stream.
  */
 export function resolveImageMimeType(filename: string, mimeType?: string): string {
-  const mapped = IMAGE_MIME_BY_EXTENSION[getFileExtension(filename)];
   const normalized = (mimeType || '').toLowerCase().split(';')[0].trim();
-  if (mapped && (!normalized || normalized === 'application/octet-stream' || !ACCEPTED_IMAGE_TYPES.has(normalized))) {
-    return mapped;
+  if (normalized && normalized !== 'application/octet-stream') {
+    return normalized;
   }
-  if (ACCEPTED_IMAGE_TYPES.has(normalized)) return normalized;
-  return mapped || normalized || 'application/octet-stream';
+  return IMAGE_MIME_BY_EXTENSION[getFileExtension(filename)] || normalized || 'application/octet-stream';
 }
 
 /** Desktop picks have no browser File; retry still works from base64 or a local path. */

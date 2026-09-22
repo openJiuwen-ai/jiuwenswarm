@@ -107,12 +107,18 @@ def test_webp_keeps_image_mime_when_stdlib_guess_misses(tmp_path: Path, monkeypa
     assert "media_items" not in rejected
 
 
-def test_known_image_extensions_do_not_depend_on_mimetypes(monkeypatch):
+def test_missing_mimetypes_guess_uses_image_extension(monkeypatch):
     monkeypatch.setattr(file_picker.mimetypes, "guess_type", lambda _filename: (None, None))
     assert set(file_picker.IMAGE_EXTENSIONS) == set(file_picker._IMAGE_MIME_BY_EXTENSION)
     for ext in file_picker.IMAGE_EXTENSIONS:
         mime = file_picker.attachment_mime_type(f"sample{ext}")
         assert mime.startswith("image/")
+
+
+def test_attachment_mime_keeps_mimetypes_guess(monkeypatch):
+    monkeypatch.setattr(file_picker.mimetypes, "guess_type", lambda _filename: ("image/png", None))
+    assert file_picker.attachment_mime_type("sample.webp") == "image/png"
+    assert file_picker.attachment_mime_type("notes.txt") == "image/png"
 
 
 def test_attachment_dialog_extensions_exclude_blacklist():

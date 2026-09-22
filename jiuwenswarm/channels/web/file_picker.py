@@ -32,8 +32,8 @@ _DIALOG_TITLE = "选择文件"
 # open starts where the user left off (desktop + path.select_files share this).
 _LAST_DIR_FILENAME = "last_file_picker_dir.txt"
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".jfif"})
-# Python 3.11's mimetypes table has no .webp, and Windows 10 often has no
-# registry Content Type for it either. media.persist drops octet-stream images.
+# Used only when mimetypes.guess_type has no useful result. Python 3.11's table
+# has no .webp, and Windows 10 often has no registry Content Type for it.
 _IMAGE_MIME_BY_EXTENSION = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -259,14 +259,18 @@ def _run_capture(command: list[str], *, timeout: float = 600.0) -> subprocess.Co
 
 
 def attachment_mime_type(filename: str) -> str:
-    """返回选中文件的 MIME。已知图片扩展名优先于 mimetypes.guess_type。"""
+    """先用 mimetypes.guess_type，没有有效结果时再用已知图片扩展名补齐。"""
+    guessed = mimetypes.guess_type(filename)[0]
+    if isinstance(guessed, str):
+        guessed = guessed.split(";", 1)[0].strip().lower()
+    else:
+        guessed = ""
+    if guessed and guessed != "application/octet-stream":
+        return guessed
     mapped = _IMAGE_MIME_BY_EXTENSION.get(Path(filename).suffix.lower())
     if mapped:
         return mapped
-    guessed = mimetypes.guess_type(filename)[0]
-    if isinstance(guessed, str) and guessed.strip():
-        return guessed
-    return "application/octet-stream"
+    return guessed or "application/octet-stream"
 
 
 def describe_local_file(raw_path: str | Path) -> dict[str, Any] | None:
