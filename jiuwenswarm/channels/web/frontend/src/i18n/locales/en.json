@@ -1432,7 +1432,8 @@
       "more": "More",
       "history": "Run history",
       "triggeredSessions": "Run history",
-      "noTriggeredSessions": "No trigger records"
+      "noTriggeredSessions": "No trigger records",
+      "viewMore": "View more ({{count}} remaining)"
     },
     "empty": {
       "createButton": "Create scheduled task",
