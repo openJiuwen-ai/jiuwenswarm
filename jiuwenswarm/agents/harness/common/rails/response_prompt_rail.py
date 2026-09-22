@@ -33,6 +33,41 @@ _RESPONSE_SECTION_NAMES = (
 )
 
 
+def _a2ui_recency_boost_prompt() -> PromptSection:
+    """a2ui 路径优先提示，紧邻业务人设(soul, priority 110)之后注入(priority 115)，
+    靠 recency 引导浏览器自动化任务走 a2ui-json 表单而非 ask_user 澄清。仅约束执行前的
+    任务细节收集/预确认，不冲突 FINAL_VISIBLE_REPLY(120，管工具执行后的最终纯文本轮)。"""
+    cn = (
+        "# A2UI 路径优先（浏览器自动化任务）\n"
+        "当用户请求属于浏览器自动化场景（酒店/机票/门票预订、表单填写、邮箱操作、"
+        "社媒发布、在线下单等）且需要收集任务细节或做执行前确认时，**必须优先**直接在回复中"
+        "输出一个 `<a2ui-json>...</a2ui-json>` 表单（其 Button 提交 action 名为 "
+        "`browser_preflight_submit`）来收集这些信息，**不要**改用 ask_user 工具逐项澄清。"
+        "ask_user 仅用于与浏览器自动化无关的一般性澄清。"
+        "本条仅约束执行前的任务细节收集与预确认；工具执行完毕后的最终结果仍按"
+        "最终可见回复规则用纯文本复述。"
+        "若 A2UI 不适用（寒暄、简单事实、纯文本即可），照常纯文本回复，不要强行 A2UI。"
+    )
+    en = (
+        "# A2UI path priority (browser automation tasks)\n"
+        "When the user request is a browser-automation scenario (hotel/flight/ticket booking, "
+        "form filling, email operations, social posting, online ordering, etc.) and you need to "
+        "collect task details or confirm before execution, you **must prefer** to output an "
+        "`<a2ui-json>...</a2ui-json>` form (whose Button submit action is "
+        "`browser_preflight_submit`) to collect that information, **instead of** using the "
+        "ask_user tool to clarify item by item. ask_user is only for general clarifications "
+        "unrelated to browser automation. This rule constrains only pre-execution detail "
+        "collection and pre-confirmation; the final result after tools finish still follows the "
+        "final-visible-reply rule as plain text. If A2UI does not fit (greetings, simple facts, "
+        "plain text suffices), answer in plain text; do not force A2UI."
+    )
+    return PromptSection(
+        name=LocalSectionName.A2UI_RECENCY,
+        content={"cn": cn, "en": en},
+        priority=PromptPriority.A2UI_RECENCY,
+    )
+
+
 class ResponsePromptRail(DeepAgentRail):
     """Inject response format, thinking discipline, and final-reply rules."""
 
@@ -51,6 +86,7 @@ class ResponsePromptRail(DeepAgentRail):
             for name in _RESPONSE_SECTION_NAMES:
                 self.system_prompt_builder.remove_section(name)
             self.system_prompt_builder.remove_section(LocalSectionName.A2UI)
+            self.system_prompt_builder.remove_section(LocalSectionName.A2UI_RECENCY)
         self.system_prompt_builder = None
         self._runtime_channel = None
 
@@ -183,6 +219,7 @@ class ResponsePromptRail(DeepAgentRail):
 
             if not injected:
                 self.system_prompt_builder.remove_section(LocalSectionName.A2UI)
+                self.system_prompt_builder.remove_section(LocalSectionName.A2UI_RECENCY)
             else:
                 self.system_prompt_builder.add_section(
                     PromptSection(
@@ -200,6 +237,28 @@ class ResponsePromptRail(DeepAgentRail):
                         priority=PromptPriority.A2UI,
                     )
                 )
+                # recency boost：仅 officeclaw 注入（web 无 request_system_prompt/soul(110)
+                # 压顶，a2ui 本就突出不需对冲）。boost priority 115 紧跟 soul(110) 之后、
+                # FINAL_VISIBLE_REPLY(120) 之前，靠 recency 对冲 soul 的「结构化输出」引导，
+                # 引导浏览器自动化任务走 a2ui-json 而非 ask_user。
+                is_officeclaw = str(channel or "").strip().lower() == "officeclaw"
+                if is_officeclaw:
+                    self.system_prompt_builder.add_section(
+                        _a2ui_recency_boost_prompt()
+                    )
+                    # 诊断日志：直接证据 boost 已注入（priority 115 紧跟 soul 110 之后）
+                    logger.info(
+                        "[A2UI-BOOST] recency boost injected: request_id=%s "
+                        "conversation_id=%s channel=%s priority=%s",
+                        request_id or "-",
+                        conversation_id or "-",
+                        channel or "-",
+                        PromptPriority.A2UI_RECENCY,
+                    )
+                else:
+                    self.system_prompt_builder.remove_section(
+                        LocalSectionName.A2UI_RECENCY
+                    )
 
             logger.info(
                 "A2UI prompt decision: request_id=%s conversation_id=%s "

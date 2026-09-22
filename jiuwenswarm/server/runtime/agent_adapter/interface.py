@@ -3714,7 +3714,10 @@ class JiuWenSwarm:
         suppress_a2ui_stream = False
         a2ui_pending_render_sent = False
         a2ui_stream_probe = ""
-        a2ui_probe_enabled = is_a2ui_channel(cid)
+        a2ui_probe_enabled = str(cid or "").strip().lower() == "web"
+        # officeclaw (relay-claw) 不发 a2ui probe pending chunk：relay-claw 前端用
+        # parseA2UIContent 从文本提取 <a2ui-json> 块，probe 插入的 <a2ui-json>\n
+        # 会与 agent 原始块重复，污染累积 content 致前端提取失败。probe 仅 web channel 需要。
         _yielded_from_queue = 0
         logger.info(
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",

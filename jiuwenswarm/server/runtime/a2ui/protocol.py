@@ -255,7 +255,7 @@ def format_a2ui_for_text_channel(content: str, version: str = VERSION_0_8) -> st
 
 
 def format_content_for_channel(content: str, channel_id: str | None) -> str:
-    if str(channel_id or "").lower() == "web":
+    if str(channel_id or "").lower() in {"web", "officeclaw"}:
         return content
     spec = get_protocol_spec()
     if not spec.may_contain_a2ui_content(content):
