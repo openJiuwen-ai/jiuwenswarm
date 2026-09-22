@@ -63,6 +63,21 @@
     "empty": "尚未发现应用插件",
     "noSettings": "此插件未提供设置页面。"
   },
+  "videoLive": {
+    "modelFallback": "视频模型",
+    "subtitle": "实时多屏音视频问答",
+    "status": { "connecting": "正在连接 Full-duplex 模型并申请麦克风权限…", "speaking": "模型正在回答…" },
+    "coreAgent": { "startFailed": "Jiuwen Core Agent 未能启动任务：{{message}}", "startFailedSummary": "任务未能启动，错误信息已经显示在界面中。" },
+    "errors": { "startFailed": "Full-duplex 会话启动失败。", "joyaiTextNotAccepted": "文字输入未进入 JoyAI 会话", "qwenTextNotAccepted": "文字输入未进入千问 Realtime 会话", "textSendFailed": "文字输入发送失败" },
+    "empty": { "title": "打开一个实时画面", "description": "使用摄像头、本地视频，或添加多个屏幕", "listening": "正在持续听取", "waiting": "等待开启 Full-duplex", "hint": "开启后直接说话，无需逐句点击" },
+    "sources": { "camera": "摄像头", "localVideo": "本地视频", "addScreen": "添加屏幕", "shareScreen": "共享屏幕", "stopCamera": "停止摄像头", "stopScreens": "停止全部屏幕" },
+    "actions": { "closeVideo": "关闭视频", "starting": "正在启动 Full-duplex 会话", "stopSession": "结束 Full-duplex 会话", "startSession": "开启 Full-duplex 会话" },
+    "frameWindow": "滚动窗口：{{count}}/{{max}} 帧",
+    "audioOnly": "纯语音不发送画面",
+    "chat": { "coreResult": "工具结果 · Jiuwen Core Agent", "user": "你", "search": "九问搜索", "assistant": "助手", "searchCompleted": "九问搜索 Agent 搜索完成" },
+    "search": { "ready": "准备搜索", "selectHistory": "选择搜索记录", "latest": "最新搜索（自动）" },
+    "input": { "activePlaceholder": "也可以在当前会话中输入文字……", "inactivePlaceholder": "先开启 Full-duplex……", "send": "发送问题" }
+  },
   "settingsPanel": {
     "title": "设置",
     "freeModels": {
@@ -352,6 +367,41 @@
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。"
+    },
+    "taskAsr": {
+      "dialogTitle": "配置语音转写模型",
+      "validationRequired": "请完整填写语音转写地址、密钥和模型。",
+      "notConfigured": "尚未配置语音转写模型"
+    },
+    "videoDuplex": {
+      "loading": "正在读取全双工模型配置…",
+      "description": "配置视觉模型以及配套的语音识别与语音合成通道。",
+      "enabled": "全双工已启用",
+      "disabled": "全双工已禁用",
+      "enable": "启用",
+      "disable": "禁用",
+      "toggleError": "无法更新插件状态",
+      "saved": "设置已保存，新请求将使用最新配置",
+      "videoSectionTitle": "视频模型",
+      "saveSettings": "保存设置",
+      "loadError": "无法读取全双工模型配置",
+      "saveError": "无法保存全双工模型配置",
+      "notConfigured": "尚未配置全双工模型",
+      "dialogTitle": "配置全双工模型",
+      "providerLabel": "模型通道",
+      "joyaiModelLabel": "JoyAI 模型",
+      "voiceSectionTitle": "语音转写与语音播报",
+      "voiceProtocolLabel": "语音通道",
+      "voiceApiKeyLabel": "语音 API 密钥",
+      "asrEndpointLabel": "语音转写完整接口",
+      "ttsEndpointLabel": "语音播报完整接口",
+      "asrModelLabel": "语音转写模型",
+      "ttsModelLabel": "语音播报模型",
+      "ttsVoiceLabel": "语音播报音色",
+      "qwenModelLabel": "Qwen 模型",
+      "qwenVoiceLabel": "Qwen 音色",
+      "deleteTitle": "删除全双工模型配置",
+      "deleteConfirm": "删除后将清除已保存的全双工模型地址、模型和密钥。"
     },
     "fields": {
       "preferred_language": {

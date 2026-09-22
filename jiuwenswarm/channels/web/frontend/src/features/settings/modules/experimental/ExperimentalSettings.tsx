@@ -639,7 +639,7 @@ function TaskAsrConfigDialog({
   const confirm = async () => {
     const missing = (Object.keys(draft) as Array<keyof TaskAsrDraft>).find((key) => !draft[key].trim());
     if (missing) {
-      setError('请完整填写语音转写地址、密钥和模型。');
+      setError(t('settingsPanel.taskAsr.validationRequired'));
       return;
     }
     setSubmitting(true);
@@ -676,10 +676,10 @@ function TaskAsrConfigDialog({
   return (
     <FormDialog
       open
-      title="配置语音转写模型"
+      title={t('settingsPanel.taskAsr.dialogTitle')}
       submitting={submitting}
       confirmDisabled={!isConnected}
-      confirmLabel={enableOnSave ? '保存并启用' : t('common.save')}
+      confirmLabel={enableOnSave ? t('settingsPanel.agent.saveAndEnable') : t('common.save')}
       cancelLabel={t('common.cancel')}
       dialogClassName="settings-model-dialog"
       testIdPrefix="settings-task-asr-config-dialog"
@@ -687,9 +687,9 @@ function TaskAsrConfigDialog({
       onCancel={onClose}
     >
       <div className="video-duplex-model-settings__dialog-fields">
-        {field('api_base', '语音转写 API 地址')}
-        {field('api_key', '语音转写 API 密钥', true)}
-        {field('model', '语音转写模型')}
+        {field('api_base', t('settingsPanel.fields.asr_api_base.title'))}
+        {field('api_key', t('settingsPanel.fields.asr_api_key.title'), true)}
+        {field('model', t('settingsPanel.fields.asr_model.title'))}
       </div>
       {error ? <div className="settings-page__error" role="alert">{error}</div> : null}
     </FormDialog>
@@ -769,9 +769,9 @@ export function TaskAsrSetting({ disabled }: SettingsCustomItemProps) {
       </div>
     ) : (
       <div className="settings-agent-media__model-card">
-        <span className="settings-agent-media__model-name">尚未配置语音转写模型</span>
+        <span className="settings-agent-media__model-name">{t('settingsPanel.taskAsr.notConfigured')}</span>
         <Button size="sm" variant="primary" disabled={disabled || !isConnected} onClick={() => setDialogOpen(true)}>
-          配置模型
+          {t('settingsPanel.common.configure')}
         </Button>
       </div>
     )
