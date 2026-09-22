@@ -5583,6 +5583,32 @@ class JiuWenSwarmDeepAdapter:
                 len(ext_config),
             )
 
+    def _inject_model_selection_into_inputs(
+        self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> None:
+        """把请求的模型选择值注入 ``inputs["run"]["context"]["extra"]["model_selection"]``，供 ModelRoutingRail 每请求读取。
+
+        relay 前端下拉框与具体模型同级：选择值经 frame ``params.model_name`` →
+        ``request.params`` → 这里写入 ``run_context.extra``（DeepAgent ``_normalize_inputs``
+        会把它带进 ``InvokeInputs.run_context.extra``）。取值可为具体模型名，或
+        fast/balanced/extreme（固定 score 路由）、auto（分类器）。缺失不写入，
+        rail 侧走"具体模型/默认"分支（跳过路由）。
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        raw = str(params.get("model_name") or "").strip()
+        if not raw:
+            return
+        run_extra = (
+            inputs.setdefault("run", {})
+            .setdefault("context", {})
+            .setdefault("extra", {})
+        )
+        if isinstance(run_extra, dict):
+            run_extra["model_selection"] = raw
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] model_selection injected: value=%s", raw
+            )
+
     def _refresh_multimodal_configs(
         self,
         config_base: dict[str, Any],
@@ -8937,7 +8963,9 @@ class JiuWenSwarmDeepAdapter:
         """构建 ModelRoutingRail（模型路由）。
 
         - 使能：config.yaml ``model_routing.enabled`` = true。
-        - ``model_routing.apply=true``：apply_routing=True 真切换（默认 false 只推荐不切）。
+        - 始终真切换（apply_routing=True，不再有"仅推荐"模式）。
+        - 模型选择由前端下拉框与具体模型同级，经 frame ``params.model_name`` 注入
+          （具体模型名 / fast / balanced / extreme / auto），见 ModelRoutingRail。
         - ``model_routing.classifier``：分类器专用模型（只有 api_base/api_key/model_name/temperature 四个字段）；
           api_base 非空即生效；不配则用 agent 当前 LLM。
         - 能力表来自 config.yaml ``models.defaults`` + ``models.vision``（后者作 model_type="vision"
@@ -8958,7 +8986,6 @@ class JiuWenSwarmDeepAdapter:
                 load_classifier_impl,
             )
 
-            apply_routing = bool(mr_cfg.get("apply", False))
             stats_path = str(mr_cfg.get("stats_path") or "").strip() or None
             caps = build_capability_table_from_config(
                 config,
@@ -8975,7 +9002,7 @@ class JiuWenSwarmDeepAdapter:
                 logger.debug("[JiuWenSwarmDeepAdapter] classifier load skipped: %s", exc)
             rail = ModelRoutingRail(
                 caps,
-                apply_routing=apply_routing,
+                apply_routing=True,
                 stats_path=stats_path,
                 classifier=classifier,
                 mapper=mapper,
@@ -8983,9 +9010,8 @@ class JiuWenSwarmDeepAdapter:
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] ModelRoutingRail create success, "
-                "%d models, apply_routing=%s, stats_path=%s, classifier=%s",
+                "%d models, stats_path=%s, classifier=%s",
                 len(caps),
-                apply_routing,
                 stats_path or "(default)",
                 "dedicated" if classifier is not None else "agent-llm",
             )
@@ -17728,6 +17754,7 @@ class JiuWenSwarmDeepAdapter:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
         self._inject_extension_config_into_inputs(inputs)
+        self._inject_model_selection_into_inputs(request, inputs)
 
         _req_model = (request.params.get("model_name") or "") if isinstance(request.params, dict) else ""
         if not self._has_valid_model_config(_req_model):
@@ -18435,6 +18462,7 @@ class JiuWenSwarmDeepAdapter:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
         self._inject_extension_config_into_inputs(inputs)
+        self._inject_model_selection_into_inputs(request, inputs)
 
         _req_model = (request.params.get("model_name") or "") if isinstance(request.params, dict) else ""
         if not self._has_valid_model_config(_req_model):

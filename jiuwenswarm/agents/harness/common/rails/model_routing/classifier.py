@@ -3,8 +3,8 @@
 本模块提供以下纯函数，由 _build_model_routing 在 build 时显式调用：
 - load_mapper_config()     — 加载 classifier_mapper.json
 - load_classifier_impl()   — 从 mapper.classifier.source 文本编译分类器函数（exec 注入）
-- validate_score()         — 验 classify 返回值，0-100 否则兜底 50
-- task_score()             — 查 score_table → default_score → 50
+- validate_score()         — 验 classify 返回值，0-100 否则兜底 60
+- task_score()             — 查 score_table → default_score → 60
 
 公开工具函数（source 文本可通过 import 引用）：
 - _build_llm_model()       — 从 extras dict 构建 LLM Model 对象（带缓存）
@@ -20,7 +20,7 @@
     _CATEGORIES          tuple — categories 字段
     _DIFFICULTIES         tuple — difficulties 字段
     _SCORE_TABLE          dict — score 字段解析后 {(category,difficulty)->int}
-    _DEFAULT_SCORE        dict — 难度默认分 {easy:10, medium:30, hard:50}
+    _DEFAULT_SCORE        dict — 难度默认分 {easy:25, medium:40, hard:60}
     imports 列表指定的模块（如 re、json）
 
   工具函数不自动注入——source 文本需要时自行 import：
@@ -35,6 +35,91 @@ import textwrap
 from pathlib import Path
 from typing import Any
 from jiuwenswarm.common.utils import logger
+
+
+# 默认分数：category 无法识别时按难度兜底；难度也无法识别时的最终兜底。
+# （load_mapper_config 硬编码写入 mapper["default_score"]，不读 JSON）
+DEFAULT_SCORE_BY_DIFFICULTY: dict[str, int] = {"easy": 25, "medium": 40, "hard": 60}
+DEFAULT_SCORE_FALLBACK: int = 60
+
+
+# 续写/确认指令哨兵：classify 前先短路，返回哨兵让 rail 跳过重路由（保留当前模型）。
+# 多轮对话里「继续/同意/好的」这类消息不能触发换模型，故在分类器内部兜住。
+CONTINUATION_CATEGORY = "continuation"
+CONTINUATION_SCORE = -1
+
+# 纯续写/确认短语（骨架形式：已去标点/空白/小写、去掉「请/please」）。
+_CONTINUATION_PHRASES: frozenset[str] = frozenset(
+    {
+        # 中文续写动词（裸 + 常见短补语）
+        "继续", "继续吧", "继续做", "继续写", "继续改", "继续优化", "继续加油", "继续往下",
+        "接着", "接着来", "接着做", "接着写", "往下", "往下走",
+        # 中文确认/同意
+        "同意", "好的", "好", "行", "可以", "嗯", "对", "是", "是的", "没错", "就这样", "可以了",
+        # 英文续写动词（skeleton：空格已去除）
+        "continue", "goahead", "goon", "proceed", "keepgoing", "keepitup", "carryon", "pleasecontinue",
+        # 英文确认/同意
+        "ok", "okay", "yes", "yep", "yeah", "sure", "agreed", "agree", "right", "correct", "gotit",
+    }
+)
+
+# 中文续写动词前缀：仅短形式（「继续 + ≤2 字补语」）算续写，
+# 避免「继续优化这个函数」「往下看第三行的变量」这类带实义内容的长句被误判。
+_CONTINUATION_PREFIXES_ZH: tuple[str, ...] = ("继续", "接着", "往下")
+_CONTINUATION_PREFIX_MAX_LEN = 4
+
+# 组合「确认词 + 续写动词」：好继续 / 对继续 / 好的请继续 …
+_CONFIRMATION_LEADERS: frozenset[str] = frozenset(
+    {"对", "好", "好的", "行", "可以", "嗯", "是", "是的", "没错", "同意",
+     "ok", "okay", "yes", "yeah", "sure", "right", "correct", "gotit", "agreed"}
+)
+_CONTINUATION_ACTIONS: frozenset[str] = frozenset(
+    {"继续", "接着", "往下", "continue", "goahead", "goon", "proceed"}
+)
+
+_STRIP_CHARS = " \t\r\n　。．！？!?.,，、;；:：…~～-—_'\"`()（）[]【】"
+
+
+def _skeleton(text: str) -> str:
+    """去掉空白与标点，返回小写纯字符骨架（用于精确匹配）。"""
+    s = (text or "").strip().lower()
+    return "".join(ch for ch in s if ch not in _STRIP_CHARS and not ch.isspace())
+
+
+def _strip_polite_prefix(s: str) -> str:
+    """去掉开头的「请 / please」敬语前缀（如「请继续」「please continue」）。"""
+    while s.startswith("请"):
+        s = s[1:]
+    while s.startswith("please"):
+        s = s[len("please"):]
+    return s
+
+
+def is_continuation_utterance(text: str) -> bool:
+    """判断当前消息是否为纯续写/确认指令（精确匹配，去标点/空白后）。
+
+    放在分类器内部：load_classifier_impl 会用它在调用底层 classify 之前短路，
+    所以无论底层是 LLM 分类器还是规则/TF-IDF 分类器，续写指令都不会触发重路由。
+
+    匹配规则（骨架去掉「请/please」后）：
+    1. 精确短语：继续 / 好的 / 同意 / ok / continue …
+    2. 短中文续写前缀：继续X（X ≤ 2 字），如 继续做 / 继续优化 …
+    3. 组合「确认词 + 续写动词」：好继续 / 对继续 / 好的请继续 …
+    """
+    s = _skeleton(text)
+    if not s:
+        return False
+    s = _strip_polite_prefix(s)
+    if not s:
+        return False
+    if s in _CONTINUATION_PHRASES:
+        return True
+    if len(s) <= _CONTINUATION_PREFIX_MAX_LEN and s.startswith(_CONTINUATION_PREFIXES_ZH):
+        return True
+    for lead in _CONFIRMATION_LEADERS:
+        if s.startswith(lead) and _strip_polite_prefix(s[len(lead):]) in _CONTINUATION_ACTIONS:
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -114,13 +199,13 @@ def _lookup_score(
     score_table: dict | None = None,
     default_score: dict | None = None,
 ) -> int:
-    """查 score_table → default_score → 50。"""
+    """查 score_table → default_score → 最终兜底。"""
     st = score_table or {}
-    ds = default_score or {"easy": 10, "medium": 30, "hard": 50}
+    ds = default_score or DEFAULT_SCORE_BY_DIFFICULTY
     v = st.get((category, difficulty))
     if v is not None:
         return v
-    return ds.get(difficulty, 50)
+    return ds.get(difficulty, DEFAULT_SCORE_FALLBACK)
 
 
 # --------------------------------------------------------------------------- #
@@ -238,7 +323,7 @@ def load_mapper_config() -> dict:
         "categories": cats,
         "difficulties": diffs,
         "score_table": score_table,
-        "default_score": {"easy": 10, "medium": 30, "hard": 50},
+        "default_score": DEFAULT_SCORE_BY_DIFFICULTY,
         "classifier": classifier_cfg,
     }
 
@@ -285,7 +370,7 @@ def load_classifier_impl(mapper: dict) -> tuple[Any, str]:
         "_CATEGORIES": mapper.get("categories", ("chat", "reasoning", "coding", "summarization", "format")),
         "_DIFFICULTIES": mapper.get("difficulties", ("easy", "medium", "hard")),
         "_SCORE_TABLE": mapper.get("score_table", {}),
-        "_DEFAULT_SCORE": mapper.get("default_score", {"easy": 10, "medium": 30, "hard": 50}),
+        "_DEFAULT_SCORE": mapper.get("default_score", DEFAULT_SCORE_BY_DIFFICULTY),
     }
 
     # ── 注入 imports ──
@@ -315,8 +400,18 @@ def load_classifier_impl(mapper: dict) -> tuple[Any, str]:
     if classify_fn is None or not callable(classify_fn):
         raise RuntimeError("classifier.source produced no callable 'classify' function")
 
+    async def _classify_with_continuation_guard(prompt_text: str):
+        """续写/确认指令短路：不调底层 classify，返回哨兵让 rail 跳过重路由。"""
+        if is_continuation_utterance(prompt_text):
+            logger.info(
+                "[ModelRouting] classifier continuation guard: prompt=%r",
+                str(prompt_text)[:40],
+            )
+            return CONTINUATION_SCORE, CONTINUATION_CATEGORY, "skip"
+        return await classify_fn(prompt_text)
+
     logger.info("[ModelRouting] classifier loaded OK (text-injection)")
-    return classify_fn, "text-injection:classifier_mapper.json"
+    return _classify_with_continuation_guard, "text-injection:classifier_mapper.json"
 
 
 # --------------------------------------------------------------------------- #
@@ -324,13 +419,13 @@ def load_classifier_impl(mapper: dict) -> tuple[Any, str]:
 # --------------------------------------------------------------------------- #
 
 def validate_score(raw: Any) -> int:
-    """验证 classify 返回的 score：必须是 0-100 的数值；否则兜底 50。"""
+    """验证 classify 返回的 score：必须是 0-100 的数值；否则兜底 60。"""
     try:
         v = int(raw)
     except (TypeError, ValueError):
-        return 50
+        return DEFAULT_SCORE_FALLBACK
     if v < 0 or v > 100:
-        return 50
+        return DEFAULT_SCORE_FALLBACK
     return v
 
 
@@ -341,4 +436,4 @@ def task_score(category: str, difficulty: str, mapper: dict) -> int:
     v = score_table.get((category, difficulty))
     if v is not None:
         return v
-    return default_score.get(difficulty, 50)
+    return default_score.get(difficulty, DEFAULT_SCORE_FALLBACK)

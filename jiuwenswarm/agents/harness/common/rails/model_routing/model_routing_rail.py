@@ -1,6 +1,7 @@
 """model_routing.rail — ModelRoutingRail."""
 from __future__ import annotations
 import asyncio
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -10,7 +11,7 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.common.utils import logger
 from .capability import ModelCapability, build_capability_table_from_config, _capability_rank
-from .classifier import task_score
+from .classifier import task_score, CONTINUATION_CATEGORY
 from .stats import _ModelUsageStats, get_stats_store, reset_stats_store_for_test
 from .routing import _decide_and_select, _detect_model_type
 from .health_check import ModelHealthChecker, HealthCheckConfig
@@ -22,10 +23,35 @@ from .types import (
 )
 
 
-class ModelRoutingRail(DeepAgentRail):
-    """模型路由 Rail —— 产出推荐模型 + 任务分析 + token 统计；apply_routing 控制是否真切换。
+# 固定模式 → 固定 target score（屏蔽分类器）。auto 不在此表内，走分类器动态路由。
+_FIXED_MODE_SCORES: dict[str, int] = {"fast": 25, "balanced": 40, "extreme": 60}
 
-    路由在 before_invoke 中执行（每个 invoke 一次），before_model_call 不再需要。
+# 固定档位 → 思考深度（fast 关思考 / balanced 正常 / extreme 开到最高）。
+# auto 与具体模型不覆盖（default 原样，走模型自身默认）。
+_THINKING_BY_SELECTION: dict[str, str] = {"fast": "off", "balanced": "default", "extreme": "on"}
+
+# 档位 → 直接注入的 llm_call_kwargs（不经 vendor 白名单 / 语义适配层，短路）。
+#   off → extra_body.thinking.type=disabled（DeepSeek/GLM 通用的“关闭思考”物理参数）
+#   on  → reasoning_effort=high（OpenAI 兼容的“思考开到最高”，核心 allowlist 直接透传）
+# balanced/default → 不注入（走模型自身默认）。
+_THINKING_KWARGS: dict[str, dict[str, Any]] = {
+    "off": {"extra_body": {"thinking": {"type": "disabled"}}},
+    "on": {"reasoning_effort": "high"},
+}
+
+
+class ModelRoutingRail(DeepAgentRail):
+    """模型路由 Rail —— 产出推荐模型 + 任务分析 + token 统计；按请求的模型选择路由。
+
+    请求模型选择（前端下拉框，经 relay frame ``params.model_name`` → request.params →
+    ``run_context.extra["model_selection"]``）取值决定行为：
+    - 具体模型名（非关键字）→ 跳过路由，保留 adapter 已应用的具体/默认模型；
+    - "fast"/"balanced"/"extreme" → 固定 score 25/40/60 屏蔽分类器；
+    - "auto" → 分类器动态 score（= 之前的模型路由）。
+    始终真切换（set_llm）。
+
+    路由在 before_invoke 中执行（每个 invoke 一次）；before_model_call 用于按固定档位
+    注入思考深度（fast/balanced/extreme → off/default/on）。
     健康检查以后台循环运行，首次 before_invoke 时懒启动；路由直接读缓存，不阻塞。
     """
 
@@ -39,7 +65,7 @@ class ModelRoutingRail(DeepAgentRail):
         mapper: Optional[dict] = None,
         stats: Optional[_ModelUsageStats] = None,
         stats_path: Optional[str] = None,
-        apply_routing: bool = False,
+        apply_routing: bool = True,
         health_check_config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
@@ -50,6 +76,7 @@ class ModelRoutingRail(DeepAgentRail):
         self._token_counter = TiktokenCounter()
         self._stats: _ModelUsageStats = stats or get_stats_store(stats_path)
         self._apply_routing: bool = apply_routing
+        self._request_thinking: str = "default"
         self._trace_id: str = _new_trace_id()
         self._health_checker = ModelHealthChecker(HealthCheckConfig.from_dict(health_check_config))
         self._bg_tasks: set[BackgroundTask] = set()
@@ -130,10 +157,29 @@ class ModelRoutingRail(DeepAgentRail):
 
     # ---- 路由 ---- #
 
+    def _resolve_request_selection(self, ctx: AgentCallbackContext) -> str:
+        """每请求读取前端下拉选择值（经 relay frame params.model_name → run_context.extra 注入）。
+
+        - fast/balanced/extreme → _FIXED_MODE_SCORES 固定 score 屏蔽分类器；
+        - auto → 分类器动态路由；
+        - 其它（具体模型名 / 空）→ 跳过路由（返回 ""，before_invoke 走 skip 分支）。
+        注入链：adapter 把 request.params["model_name"] 写入
+        ``inputs["run"]["context"]["extra"]["model_selection"]``，DeepAgent
+        ``_normalize_inputs`` 再把它带进 ``InvokeInputs.run_context.extra``。
+        """
+        run_context = getattr(getattr(ctx, "inputs", None), "run_context", None)
+        extra = getattr(run_context, "extra", None)
+        if isinstance(extra, dict):
+            raw = extra.get("model_selection")
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        return ""
+
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         """invoke 开始时：重置 trace_id / call_history，执行路由决策。"""
         self._trace_id = _new_trace_id()
         self._call_history = []
+        self._request_thinking = "default"
 
         try:
             # 从 ctx.inputs.query 提取用户查询文本（before_invoke 时无 messages 列表）
@@ -165,14 +211,57 @@ class ModelRoutingRail(DeepAgentRail):
                 )
                 return
 
-            # --- 正常路由（含图请求会在 _decide_and_select 里限到 model_type=="vision" 候选）---
-            if self._classifier is not None:
-                raw_score, category, difficulty = await self._classifier(prompt_text)
-                cls_reasoning = f"classifier score={raw_score}"
+            # --- 路由：具体模型→跳过；fast/balanced/extreme→固定 score 屏蔽分类器；auto→分类器 ---
+            selection = self._resolve_request_selection(ctx)
+            fixed_score = _FIXED_MODE_SCORES.get(selection)
+            if fixed_score is not None:
+                # 极速/均衡/极致：固定 score 屏蔽分类器，直接选最接近的模型
+                raw_score, category, difficulty = fixed_score, "manual", "medium"
+                cls_reasoning = f"fixed score={fixed_score} (selection={selection})"
+                target = fixed_score
+                self._request_thinking = _THINKING_BY_SELECTION.get(selection, "default")
+            elif selection == "auto":
+                # auto：分类器动态路由（= 之前的模型路由）
+                if self._classifier is not None:
+                    raw_score, category, difficulty = await self._classifier(prompt_text)
+                    if category == CONTINUATION_CATEGORY:
+                        # 续写/确认指令（「继续」「同意」…）：分类器内部已短路，保留当前模型不重路由
+                        self._emit_decision(
+                            ctx,
+                            recommended_cap=None,
+                            category="skipped",
+                            difficulty="skipped",
+                            input_tokens=input_tokens,
+                            agent_info=agent_info,
+                            reasoning="continuation utterance, keep current model",
+                        )
+                        logger.info(
+                            "[ModelRouting] skipped (continuation); prompt=%r",
+                            prompt_text[:40],
+                        )
+                        return
+                    cls_reasoning = f"classifier score={raw_score}"
+                    target = task_score(category, difficulty, self._mapper)
+                else:
+                    raw_score, category, difficulty = 50, "unknown", "hard"
+                    cls_reasoning = "no classifier, fallback"
+                    target = task_score(category, difficulty, self._mapper)
             else:
-                raw_score, category, difficulty = 50, "unknown", "hard"
-                cls_reasoning = "no classifier, fallback"
-            target = task_score(category, difficulty, self._mapper)
+                # 传了具体模型（或未传选择值）：不路由，保留 adapter 已应用的具体/默认模型
+                self._emit_decision(
+                    ctx,
+                    recommended_cap=None,
+                    category="skipped",
+                    difficulty="skipped",
+                    input_tokens=input_tokens,
+                    agent_info=agent_info,
+                    reasoning=f"concrete model selected ({selection or 'default'}), routing skipped",
+                )
+                logger.info(
+                    "[ModelRouting] skipped (concrete model); selection=%s",
+                    selection or "(none)",
+                )
+                return
             required_model_type = _detect_model_type(ctx)
             recommended_cap, reason = _decide_and_select(
                 target, routing_caps, ctx,
@@ -205,6 +294,31 @@ class ModelRoutingRail(DeepAgentRail):
             )
         except Exception as exc:
             logger.warning("[ModelRouting] before_invoke failed: %s", exc, exc_info=True)
+
+    async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        """按请求档位直接注入思考深度（fast=off / extreme=on / balanced=default no-op）。
+
+        auto 与具体模型不覆盖（``_request_thinking`` 保持 default，本方法 no-op）。
+        直接写 ``ctx.extra["llm_call_kwargs"]``，由 ReActAgent 每次 model call 消费
+        （pop 后合入调用 kwargs）。不经 vendor 白名单：off 用 DeepSeek/GLM 通用的
+        ``extra_body.thinking.type=disabled``，on 用 OpenAI 兼容的
+        ``reasoning_effort=high``（核心 allowlist 直接透传）。
+        """
+        kwargs = _THINKING_KWARGS.get(self._request_thinking)
+        if kwargs is None:
+            return
+        try:
+            extra = getattr(ctx, "extra", None)
+            if not isinstance(extra, dict):
+                return
+            extra["llm_call_kwargs"] = deepcopy(kwargs)
+            logger.info(
+                "[ModelRouting] thinking inject thinking=%s kwargs=%r",
+                self._request_thinking,
+                kwargs,
+            )
+        except Exception as exc:
+            logger.debug("[ModelRouting] thinking inject failed: %s", exc)
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
         try:
