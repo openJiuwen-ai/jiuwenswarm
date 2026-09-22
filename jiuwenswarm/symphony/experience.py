@@ -77,15 +77,33 @@ def _core_compatible_truncation_trajectory(trajectory: Trajectory) -> Trajectory
     return Trajectory.from_otlp(payload) if changed else trajectory
 
 
+def _same_trajectory_objects(
+    normalized: tuple[tuple[int, Trajectory], ...],
+    original: tuple[tuple[int, Trajectory], ...],
+) -> bool:
+    for (_, normalized_item), (_, original_item) in zip(
+        normalized,
+        original,
+        strict=True,
+    ):
+        if normalized_item is not original_item:
+            return False
+    return True
+
+
 class _SwarmOtelTruncationCompatMixin:
     """Adapt current OTel truncation markers to the pinned Core rail contract."""
+
+    _normalize_truncation_trajectory = staticmethod(
+        _core_compatible_truncation_trajectory
+    )
 
     def _capture_quality_issues(
         self,
         trajectory: Trajectory | None,
     ) -> tuple[Mapping[str, object], ...]:
         normalized = (
-            _core_compatible_truncation_trajectory(trajectory)
+            self._normalize_truncation_trajectory(trajectory)
             if trajectory is not None
             else None
         )
@@ -106,21 +124,18 @@ class _SwarmOtelTruncationCompatMixin:
                 "Core Symphony rail returned an incompatible evolution input"
             )
 
-        normalized_trajectory = _core_compatible_truncation_trajectory(
+        normalized_trajectory = self._normalize_truncation_trajectory(
             prepared.trajectory
         )
         normalized_continuities = tuple(
-            (index, _core_compatible_truncation_trajectory(item))
+            (index, self._normalize_truncation_trajectory(item))
             for index, item in prepared.execution_continuities
         )
-        if normalized_trajectory is prepared.trajectory and all(
-            normalized is original
-            for (_, normalized), (_, original) in zip(
-                normalized_continuities,
-                prepared.execution_continuities,
-                strict=True,
-            )
-        ):
+        continuities_unchanged = _same_trajectory_objects(
+            normalized_continuities,
+            prepared.execution_continuities,
+        )
+        if normalized_trajectory is prepared.trajectory and continuities_unchanged:
             return prepared
 
         fragments = project_symphony_execution_fragments(
@@ -232,15 +247,19 @@ class PublishedCapabilitySnapshotProvider:
             description = _snapshot_optional_text(raw.get("description"))
             inputs = _snapshot_ports(raw.get("inputs"))
             outputs = _snapshot_ports(raw.get("outputs"))
-            if (
-                capability_type not in {"skill", "tool", "subagent"}
-                or not capability_id
-                or not capability_name
-                or not version
-                or description is None
-                or inputs is None
-                or outputs is None
-            ):
+            if capability_type not in {"skill", "tool", "subagent"}:
+                continue
+            if not capability_id:
+                continue
+            if not capability_name:
+                continue
+            if not version:
+                continue
+            if description is None:
+                continue
+            if inputs is None:
+                continue
+            if outputs is None:
                 continue
             identities.append(
                 CapabilityIdentity(
