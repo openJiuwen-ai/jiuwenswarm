@@ -39,6 +39,14 @@ const groupDetailSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupDetailPage.tsx', import.meta.url),
   'utf8',
 );
+const pluginDetailSource = readFileSync(
+  new URL('../src/components/ConnectorMarket/PluginDetailPage.tsx', import.meta.url),
+  'utf8',
+);
+const mcpDetailSource = readFileSync(
+  new URL('../src/components/ConnectorMarket/McpDetailPage.tsx', import.meta.url),
+  'utf8',
+);
 const memberPickerSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupMemberPicker.tsx', import.meta.url),
   'utf8',
@@ -146,6 +154,72 @@ for (const detailStatus of ['loading', 'error']) {
     );
   });
 }
+
+test('expert catalog shows a spinner while the first page is loading', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const markup = renderToStaticMarkup(
+    React.createElement(CatalogPage, {
+      scope: 'catalog',
+      items: [],
+      totalItems: 0,
+      page: 1,
+      query: '',
+      category: '',
+      status: 'loading',
+      error: null,
+      busyIds: new Set(),
+      onPageChange() {},
+      onCategoryChange() {},
+      onRetry() {},
+      onOpen() {},
+      onUse() {},
+      onReconnect() {},
+      onInstall() {},
+      onCreate() {},
+    }),
+  );
+  const document = new JSDOM(markup).window.document;
+  const loading = document.querySelector('[data-testid="agent-management-catalog-loading"]');
+  assert.ok(loading);
+  assert.equal(loading.getAttribute('role'), 'status');
+  assert.ok(loading.querySelector('.animate-spin'));
+});
+
+test('Expert Team loading keeps the back bar outside the centered content', async () => {
+  const { AgentGroupDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/AgentGroupDetailPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const markup = renderToStaticMarkup(
+    React.createElement(AgentGroupDetailPage, {
+      detail: null,
+      detailStatus: 'loading',
+      detailError: null,
+      onBack() {},
+      onRetry() {},
+    }),
+  );
+  const document = new JSDOM(markup).window.document;
+  const shell = document.querySelector('[data-testid="agent-group-detail"]');
+  assert.ok(shell);
+  assert.equal(shell.classList.contains('agent-management-detail--state'), false);
+  const back = shell.querySelector('[data-testid="agent-group-detail-back"]');
+  assert.equal(back.parentElement, shell);
+  const content = shell.querySelector('[data-testid="agent-group-detail-state"]');
+  assert.ok(content);
+  assert.equal(content.contains(back), false);
+  assert.equal(content.getAttribute('role'), 'status');
+});
+
+test('publish actions require an installed runtime asset', () => {
+  assert.match(agentDetailSource, /canShowAssetPublish\(detail\.installed\)/);
+  assert.match(
+    groupDetailSource,
+    /canShowAssetPublish\(detail\.installed, detail\.capabilities\.canPublish\)/,
+  );
+  assert.match(pluginDetailSource, /canShowAssetPublish\(installed\)/);
+  assert.match(mcpDetailSource, /canShowAssetPublish\(connector\.installed\)/);
+});
 
 for (const [source, installed, expected] of [
   ['local', true, 'delete'],

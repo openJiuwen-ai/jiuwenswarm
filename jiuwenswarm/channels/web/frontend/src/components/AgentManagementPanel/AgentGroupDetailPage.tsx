@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { openAssetPublish } from '../../features/assetPublishEvents';
+import { canShowAssetPublish } from '../../features/assetPublishState';
 import type {
   AgentFileContent,
   AgentGroupDetail,
@@ -69,15 +70,24 @@ export function AgentGroupDetailPage({
   if (detailStatus === 'loading')
     return (
       <div
-        className="agent-management-detail agent-management-detail--state"
-        data-testid="agent-group-detail-state"
-        data-variant="loading"
+        className="agent-management-detail detail-loading-shell"
+        data-testid="agent-group-detail"
+        aria-busy="true"
       >
         <button type="button" className="detail-back" data-testid="agent-group-detail-back" onClick={onBack}>
           <BackIcon aria-hidden="true" />
           {t('agentManagement.actions.back')}
         </button>
-        <p>{t('common.loading')}</p>
+        <div className="detail-loading-center">
+          <div
+            className="agent-management-detail--state"
+            data-testid="agent-group-detail-state"
+            data-variant="loading"
+            role="status"
+          >
+            <p>{t('common.loading')}</p>
+          </div>
+        </div>
       </div>
     );
   if (detailStatus === 'error' || !detail)
@@ -132,7 +142,7 @@ export function AgentGroupDetailPage({
           ]}
           actions={
             <div className="agent-management-detail__actions">
-              {detail.capabilities.canPublish ? (
+              {canShowAssetPublish(detail.installed, detail.capabilities.canPublish) ? (
                 <button
                   type="button"
                   className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text"
