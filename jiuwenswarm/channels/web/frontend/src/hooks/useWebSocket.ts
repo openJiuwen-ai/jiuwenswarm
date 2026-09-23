@@ -118,6 +118,7 @@ import {
 import {
   buildAgentGroupSelectionPayloadForMode,
   buildDefinitionSelectionPayloadForMode,
+  resolveSelectedSkillsForRequest,
 } from '../features/agentManagement/port';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
@@ -701,6 +702,7 @@ interface UseWebSocketReturn {
   ) => Promise<T>;
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
+  discardMedia: (sessionId: string, path: string) => Promise<{ deleted?: boolean }>;
   sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => Promise<boolean>;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
@@ -1481,6 +1483,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     [request],
   );
 
+  const discardMedia = useCallback(
+    async (sessionId: string, path: string) => {
+      return request<{ deleted?: boolean }>('media.discard', {
+        session_id: sessionId,
+        path,
+      });
+    },
+    [request],
+  );
+
   const persistDocuments = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
       return request<PersistMediaResponse>(
@@ -1713,7 +1725,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         sessionRuntime?.agentGroupBinding,
         sessionId === NEW_CONVERSATION_ID || Boolean(sessionRuntime?.agentGroupBindingPending),
       );
-      const selectedSkillsForRequest = Object.keys(agentGroupSelectionPayload).length > 0 ? [] : selectedSkills;
+      const selectedSkillsForRequest = resolveSelectedSkillsForRequest(
+        currentMode,
+        selectedSkills,
+        agentGroupSelectionIntent,
+        sessionRuntime?.agentGroupBinding,
+        sessionRuntime?.agentGroupBindingPending,
+      );
       if (agentGroupSelectionPayload.agent_group_name) {
         markPendingAgentGroupBinding(sessionId, agentGroupSelectionPayload.agent_group_name);
       }
@@ -5208,6 +5226,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     request,
     persistMedia,
     persistDocuments,
+    discardMedia,
     sendMessage,
     sendStructuredChatContent,
     interrupt,

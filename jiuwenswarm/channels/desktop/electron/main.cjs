@@ -2334,6 +2334,9 @@ function registerIpcHandlers() {
     const paths = await clipboardFilePaths();
     return describeLocalPaths(paths);
   });
+  registerHandler('desktop:paste-clipboard', () => {
+    mainWindow.webContents.paste();
+  });
   registerHandler('desktop:save-data-url', async (dataUrl, filename) => {
     if (typeof dataUrl !== 'string' || !dataUrl.startsWith(PNG_DATA_URL_PREFIX)) {
       return { ok: false, cancelled: false };

@@ -3877,6 +3877,39 @@ def test_persist_media_locally_concurrent_same_name_does_not_clobber(tmp_path, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "expected_name"),
+    [
+        ("sample.jpeg", "sample.jpeg"),
+        ("sample.jfif", "sample.jfif"),
+        ("photo", "photo.jpg"),
+        ("notes.txt", "notes.txt.jpg"),
+    ],
+)
+async def test_upload_media_item_via_http_keeps_recognized_image_suffix(
+    tmp_path, monkeypatch, filename, expected_name
+):
+    """大图 HTTP 落盘与 AgentServer 共用后缀规则：``.jpeg`` / ``.jfif`` 保留原名。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path
+    )
+
+    result = await app_web_handlers._upload_media_item_via_http(
+        {"type": "image", "mimeType": "image/jpeg", "filename": filename},
+        b"jpeg-bytes",
+        session_id="sess-1",
+        index=0,
+        agent_client=None,
+        user_id=None,
+    )
+
+    assert result is not None
+    assert result["filename"] == expected_name
+    assert Path(result["path"]).name == expected_name
+    assert Path(result["path"]).read_bytes() == b"jpeg-bytes"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("upload_succeeds", [True, False])
 async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
     monkeypatch, upload_succeeds,

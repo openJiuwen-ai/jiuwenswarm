@@ -1378,7 +1378,11 @@ export function ConversationSidebar({
               removeSessionLocally(session.session_id);
               await useWorkspaceStore.getState().refreshWorkspaceData();
             } catch (error) {
-              toast.open({ content: error instanceof Error ? error.message : String(error), variant: 'error' });
+              const code = getArchiveErrorCode(error);
+              const message = code === 'SESSION_BUSY'
+                ? t('multiSession.project.errors.deleteSessionBusy')
+                : (error instanceof Error ? error.message : String(error));
+              toast.open({ content: message, variant: 'error' });
             }
           })();
         } : undefined}
@@ -1443,7 +1447,11 @@ export function ConversationSidebar({
                         removeSessionLocally(ts.session_id);
                         await loadCronSessions(projectId, job.id);
                       } catch (error) {
-                        toast.open({ content: error instanceof Error ? error.message : String(error), variant: 'error' });
+                        const code = getArchiveErrorCode(error);
+                        const message = code === 'SESSION_BUSY'
+                          ? t('multiSession.project.errors.deleteSessionBusy')
+                          : (error instanceof Error ? error.message : String(error));
+                        toast.open({ content: message, variant: 'error' });
                       }
                     })();
                   }}

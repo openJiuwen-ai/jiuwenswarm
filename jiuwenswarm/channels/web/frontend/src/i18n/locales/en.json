@@ -24,6 +24,7 @@
     "processing": "Processing…",
     "retry": "Retry",
     "editMenu": {
+      "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
       "copy": "Copy",
       "paste": "Paste",
@@ -456,6 +457,10 @@
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
       },
+      "ttse_enabled": {
+        "title": "Local environment facts and task experience auto-evolution",
+        "description": "Control the agent's learning of environment facts and task experience"
+      },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
         "description": "Enable the free DuckDuckGo search source."
@@ -568,6 +573,10 @@
     "team": {
       "memberLanes": "Member trajectory lanes",
       "members": "Members"
+    },
+    "composer": {
+      "collapse": "Collapse composer",
+      "expand": "Expand composer"
     },
     "layout": {
       "hideSessions": "Collapse sessions",
@@ -798,6 +807,9 @@
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
     "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
+    "sessionArchived": "This session has been archived. Restore it or start a new session to continue.",
+    "sessionDeleted": "This session has been deleted and can no longer be used.",
+    "sessionOperationInProgress": "An archive or delete operation is in progress for this session. Please try again later.",
     "placeholderAwaitingApproval": "Please respond to the pending confirmation above",
     "placeholderProcessing": "Processing, enter to interrupt...",
     "placeholderProcessingQueue": "Processing, new input will join the queue...",
@@ -914,6 +926,7 @@
     "agentGroupNoMatches": "No matching Expert Teams found",
     "agentGroupRemove": "Remove Expert Team",
     "agentGroupSkillsLocked": "An Expert Team is selected; additional Expert Team skills are unavailable",
+    "teamSkillsGroupLocked": "Team skills are selected; an Expert Team cannot be selected",
     "agentGroupBinding": "This conversation is bound to an Expert Team and cannot be changed",
     "agentGroupFirstBuildOnly": "Expert Teams can only be selected when a Team is first created",
     "agentOnlyInSingleAgentMode": "Experts can only be selected in single-Agent mode",
@@ -1092,6 +1105,7 @@
     "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
     "overwriteConfirm": "The current goal \"{{currentObjective}}\" is unfinished. Replace it with \"{{requestedObjective}}\"?",
     "closeTag": "Cancel goal",
+    "closeTagDisabled": "Cannot close the goal while the session is busy",
     "badge": "Goal",
     "status": {
       "active": "Active",
@@ -1722,6 +1736,7 @@
       "updateFailed": "Failed to update task",
       "updateFailedWithReason": "Failed to update task: {{reason}}",
       "deleteFailed": "Failed to delete task",
+      "deleteSessionBusy": "The session associated with this scheduled task is still running and cannot be deleted. Please stop the session manually and try again.",
       "toggleFailed": "Failed to update task status",
       "previewFailed": "Failed to preview next runs",
       "runNowFailed": "Failed to trigger the task immediately",
@@ -3042,9 +3057,10 @@
         "uploadInvalidType": "Only .zip, .tar and .tar.gz Expert Team packages are supported",
         "errors": {
           "nameRequired": "Enter an Expert Team name",
-          "descriptionRequired": "Enter an Expert Team description",
+          "descriptionRequired": "Enter an Expert Team capability description",
           "personaRequired": "Enter an Expert Team introduction",
-          "leaderRequired": "Choose a leader Expert"
+          "leaderRequired": "Choose a leader Expert",
+          "membersRequired": "Choose at least one member Expert"
         }
       },
       "picker": {
@@ -3667,6 +3683,9 @@
     "customOption": "Custom",
     "customPlaceholder": "No suitable option? Type your answer...",
     "skippedSummary": "Skipped"
+  },
+  "skillPackagePrompt": {
+    "creating": "Creating…"
   },
   "qaSummary": {
     "title": "Clarifications"

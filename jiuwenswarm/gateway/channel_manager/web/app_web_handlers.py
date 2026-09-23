@@ -1810,12 +1810,13 @@ async def _upload_media_item_via_http(
     suffix = _ma.image_suffix_for_mime(mime_type)
     if suffix is None:
         return None
-    filename = safe_upload_filename(
-        str(item.get("filename") or f"image-{index + 1}{suffix}"),
-        fallback=f"image-{index + 1}{suffix}",
+    filename = _ma.ensure_image_upload_filename(
+        safe_upload_filename(
+            str(item.get("filename") or f"image-{index + 1}{suffix}"),
+            fallback=f"image-{index + 1}{suffix}",
+        ),
+        suffix,
     )
-    if Path(filename).suffix.lower() not in _ma.supported_image_suffixes():
-        filename = f"{filename}{suffix}"
     safe_session_id = safe_session_dirname(session_id)
     rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
     if is_agentos_routing_client(agent_client):
@@ -3626,6 +3627,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="media.persist",
         )
 
+    async def _media_discard(ws, req_id, params, session_id, user_id=None):
+        """删除尚未发送的会话 uploads 副本（E2A 转发，路径边界在 AgentServer）。"""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params,
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.MEDIA_DISCARD,
+            label="media.discard",
+        )
+
     async def _document_persist(ws, req_id, params, session_id, user_id=None):
         """文档附件落盘（E2A 转发；base64 小文档由 AgentServer 注入目录落盘，
         大文档在 Gateway 侧解码后经受认证 HTTP bridge 上传，避免超内部 WS 帧限制）。"""
@@ -4774,8 +4792,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             deleted = await cc.delete_job(job_id)
         except Exception as exc:
+            from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+            code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
             await channel.send_response(
-                ws, req_id, ok=False, error=str(exc), code="DELETE_FAILED"
+                ws, req_id, ok=False, error=str(exc), code=code
             )
             return
         if not deleted:
@@ -5031,6 +5051,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     channel.register_method("chat.send", _chat_send)
     channel.register_method("media.persist", _media_persist)
+    channel.register_method("media.discard", _media_discard)
     channel.register_method("document.persist", _document_persist)
     channel.register_method("document.formats", _document_formats)
     channel.register_method("chat.resume", _chat_resume)

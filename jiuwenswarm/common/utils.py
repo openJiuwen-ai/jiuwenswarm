@@ -1504,13 +1504,21 @@ def _ensure_mcp_builtins(
         pass  # 仅登记到 diff 摘要，文件已解压就位
 
 
-def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
+def prepare_runtime_workspace(
+    *,
+    cleanup_stale_descs: bool = True,
+    migrate_config: bool = True,
+) -> None:
     """Perform the idempotent workspace work required before runtime children start.
 
     Desktop and the ``jiuwenswarm.app`` supervisor call this once before they
     launch AgentServer and Gateway.  The children can then skip the same disk
     work via ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``.  Standalone child
     entrypoints intentionally retain this function as their fallback.
+
+    AgentServer Front skips ``cleanup_stale_descs`` and ``migrate_config``
+    because both import OpenJiuwen / ``common.config``. Runtime backend
+    completes those steps after the port is listening.
     """
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
@@ -1535,7 +1543,8 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     if workspace_preparation_needed:
         prepare_workspace(overwrite=False, workspace_dir=workspace_dir)
 
-    ensure_config_migrated_from_template(workspace_dir)
+    if migrate_config:
+        ensure_config_migrated_from_template(workspace_dir)
     ensure_default_builtin_skills()
 
 
@@ -2491,8 +2500,13 @@ _KV_SENSITIVE_PATTERN = re.compile(
 # 2) 值的起始引号（' 或 "）
 # 3) 值内容（非贪婪）
 # 4) 结束引号（通过 (\2) 强制与起始引号一致）
+# The leading lookbehind only lets a match start where a key run starts. Without
+# it the unanchored ``[A-Za-z0-9_.-]*`` rescans the rest of the run from every
+# offset, which is quadratic on long identifier-like text (8k chars took ~3.6s).
+# Matches are unchanged: a leftmost match can never start mid-run, because the
+# ``*`` would absorb the preceding key character too.
 _NAMED_SENSITIVE_KV_PATTERN = re.compile(
-    r"(?i)([\"']?[A-Za-z0-9_.-]*"
+    r"(?i)(?<![A-Za-z0-9_.-])([\"']?[A-Za-z0-9_.-]*"
     r"(?:token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|"
     r"secret[_-]?key|authorization|auth[_-]?code|auth[_-]?token|"
     r"credential|private[_-]?key|"

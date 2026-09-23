@@ -1017,3 +1017,28 @@ test('editing, deleting and clearing queued messages preserve sending and unknow
     await c.dispose();
   }
 });
+
+test('cross-session steering keeps its Agent source and the original task running', async (context) => {
+  const c = await mount(context);
+  try {
+    addOriginalUser(c);
+    const received = {
+      request_id: 'original', input_request_id: 'cross-steer', content: 'Agent adjustment',
+      timestamp: Date.now(), message_origin: 'cross_session_agent', session_message_id: 'sm-cross',
+      cross_session: { message_id: 'sm-cross', source_session_id: 'source-agent', source_title: 'Source Agent', content: 'Agent adjustment' },
+    };
+    c.receive('chat.input_received', received);
+    c.receive('chat.input_received', received);
+    await c.flush();
+    const inputs = c.runtime().messages.filter(m => m.supplementalInput?.requestId === 'cross-steer');
+    assert.equal(inputs.length, 1);
+    assert.deepEqual(inputs[0].crossSession, {
+      messageId: 'sm-cross', sourceSessionId: 'source-agent', sourceTitle: 'Source Agent', content: 'Agent adjustment',
+    });
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.requests().length, 0);
+    assert.match(document.body.textContent, /Source Agent/);
+  } finally {
+    await c.dispose();
+  }
+});

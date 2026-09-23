@@ -130,6 +130,8 @@ class WebSocketAgentServerClient(AgentServerClient):
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
         self._server_ready: bool = False
+        self._agent_ready: bool = False
+        self._readiness_state: str | None = None
         # 消息分发机制：根据 request_id 路由到对应队列
         self._message_queues: dict[str, asyncio.Queue] = {}
         self._queue_lock = asyncio.Lock()  # 保护队列操作的锁
@@ -165,6 +167,8 @@ class WebSocketAgentServerClient(AgentServerClient):
             "uri": self._uri,
             "running": self._running,
             "server_ready": self._server_ready,
+            "agent_ready": self._agent_ready,
+            "readiness": self._readiness_state,
             "pending_requests": len(self._message_queues),
             "cancelled_requests": len(self._cancelled_request_ids),
             "ping_interval": self._ping_interval,
@@ -183,8 +187,33 @@ class WebSocketAgentServerClient(AgentServerClient):
 
     @property
     def server_ready(self) -> bool:
-        """AgentServer 是否已发送 connection.ack 确认就绪."""
+        """Front transport is connected. Does not mean Agent Runtime can execute."""
         return self._server_ready
+
+    @property
+    def agent_ready(self) -> bool:
+        """Agent Runtime can execute. False while warming or failed."""
+        return self._agent_ready
+
+    def _apply_connection_ack(self, data: dict[str, Any]) -> None:
+        payload = data.get("payload")
+        if not isinstance(payload, dict):
+            payload = data.get("params") if isinstance(data.get("params"), dict) else {}
+        status = str(payload.get("status") or "").strip().lower()
+        readiness = payload.get("readiness")
+        self._readiness_state = str(readiness) if isinstance(readiness, str) else None
+        # Any ack means Front transport is up. FAILED/DRAINING describe Runtime,
+        # not the socket; e2a_proxy must still reach Front control RPCs.
+        self._server_ready = True
+        self._agent_ready = self._readiness_state in {"AGENT_READY", "DEGRADED"}
+        logger.info(
+            "[WebSocketAgentServerClient] 收到 connection.ack status=%s readiness=%s "
+            "server_ready=%s agent_ready=%s",
+            status or "ready",
+            self._readiness_state,
+            self._server_ready,
+            self._agent_ready,
+        )
 
     async def connect(
         self,
@@ -196,6 +225,8 @@ class WebSocketAgentServerClient(AgentServerClient):
         logger.debug("[WebSocketAgentServerClient] 正在连接: %s", uri)
         self._uri = uri
         self._server_ready = False
+        self._agent_ready = False
+        self._readiness_state = None
         origin = _build_ws_origin(uri)
         connect_kwargs: dict[str, Any] = {
             "origin": origin,
@@ -229,8 +260,7 @@ class WebSocketAgentServerClient(AgentServerClient):
             data = json.loads(raw)
             logger.debug("[WebSocketAgentServerClient] connect 首帧(parsed): %s", _to_json(data))
             if data.get("type") == "event" and data.get("event") == "connection.ack":
-                self._server_ready = True
-                logger.info("[WebSocketAgentServerClient] 收到 connection.ack，AgentServer 已就绪")
+                self._apply_connection_ack(data)
             else:
                 logger.warning(
                     "[WebSocketAgentServerClient] 首帧非 connection.ack: %s",
@@ -259,11 +289,7 @@ class WebSocketAgentServerClient(AgentServerClient):
                     # e2a_proxy 等依赖 server_ready 的入口（如 Web session.list）
                     # 永久返回 SERVICE_UNAVAILABLE，即使连接实际已建立。
                     if data.get("type") == "event" and data.get("event") == "connection.ack":
-                        if not self._server_ready:
-                            self._server_ready = True
-                            logger.info(
-                                "[WebSocketAgentServerClient] 接收循环收到迟到的 connection.ack，AgentServer 已就绪"
-                            )
+                        self._apply_connection_ack(data)
                         continue
                     meta = data.get("metadata")
                     if isinstance(meta, dict) and meta.get(E2A_WIRE_SERVER_PUSH_KEY):
@@ -346,6 +372,8 @@ class WebSocketAgentServerClient(AgentServerClient):
         )
         self._running = False
         self._server_ready = False
+        self._agent_ready = False
+        self._readiness_state = None
         self._ws = None
         failure = _ReceiverFailure(exc)
         async with self._queue_lock:
@@ -408,6 +436,9 @@ class WebSocketAgentServerClient(AgentServerClient):
         finally:
             self._ws = None
             self._uri = None
+            self._server_ready = False
+            self._agent_ready = False
+            self._readiness_state = None
         logger.info("[WebSocketAgentServerClient] 已断开")
 
     def _ensure_connected(self) -> None:

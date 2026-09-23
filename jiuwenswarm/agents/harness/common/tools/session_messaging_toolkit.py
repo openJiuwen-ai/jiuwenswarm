@@ -206,7 +206,9 @@ class SessionMessagingRouteRail(DeepAgentRail):
             extra = getattr(run_context, "extra", None)
         if not isinstance(extra, Mapping):
             return None
-        raw = extra.get(SESSION_MESSAGING_ROUTE_EXTRA_KEY)
+        raw = ctx.extra.get("session_input_message_route") or extra.get(
+            SESSION_MESSAGING_ROUTE_EXTRA_KEY
+        )
         if not isinstance(raw, Mapping):
             return None
         try:
@@ -296,6 +298,7 @@ class SessionMessagingToolkit:
         self,
         target_session_id: str,
         message: str,
+        input_mode: str = "",
     ) -> dict[str, Any]:
         try:
             service, route = self._service_and_route()
@@ -308,6 +311,7 @@ class SessionMessagingToolkit:
                 source,
                 target_session_id=target_session_id,
                 message=message,
+                **({"input_mode": input_mode} if input_mode else {}),
             )
         except SessionMessagingError as exc:
             return {"accepted": False, "code": exc.code, "error": str(exc)}
@@ -379,6 +383,8 @@ class SessionMessagingToolkit:
                         description=(
                             "向同一用户的另一个持久化会话发送文本，让目标 Agent 异步处理。"
                             "成功只表示消息已保存并排队，不表示目标已经完成。"
+                            "省略 input_mode 保持独立任务排队；显式 steer 补充目标当前任务，"
+                            "目标空闲时按普通消息执行。delivered 仅表示补充已送达，不代表任务成功。"
                         ),
                         input_params={
                             "type": "object",
@@ -390,6 +396,11 @@ class SessionMessagingToolkit:
                                 "message": {
                                     "type": "string",
                                     "description": "交给目标 Agent 处理的完整文本。",
+                                },
+                                "input_mode": {
+                                    "type": "string",
+                                    "enum": ["steer"],
+                                    "description": "可选：steer 补充目标运行中的任务。省略保持原投递方式。",
                                 },
                             },
                             "required": ["target_session_id", "message"],

@@ -531,12 +531,41 @@ class CronSchedulerService:
             for at_ts, seq, ev in self._events
             if ev.kind == "push_update" and ev.job_id in new_job_ids
         ]
+        # 已到点但尚未被主循环消费的 wake/push 事件必须原样保留。
+        # 运行期 reload 可能恰好落在触发边界之后、事件被消费之前——
+        # 最常见的触发源是本调度器自己：每次 run 成功后
+        # _mark_last_session_ready 写 last_session_id 会 bump store
+        # revision，5s 轮询随即 reload。下方重排只按 now 向未来计算
+        # （_compute_next_run），这一轮会被静默吞掉：无 wake、无 session、
+        # 无推送、无日志（实测：每 2 分钟的任务，上一轮在边界前 4s 完成
+        # 触发 reload，11:00 那轮整体丢失，用户看到侧边栏缺一个
+        # cron-session）。保留后 _on_wake/_on_push 自身的幂等保护
+        # （already_active / pushed_final / placeholder_sent）可防止
+        # 已开始或已完成的 run 被重复触发；被删除 job 的事件不保留，
+        # 与 push_update 同口径防幽灵任务。
+        now_ts = self._now_fn()
+        due_unconsumed_events = [
+            (at_ts, seq, ev)
+            for at_ts, seq, ev in self._events
+            if ev.kind in ("wake", "push") and at_ts <= now_ts and ev.job_id in new_job_ids
+        ]
+        due_unconsumed_job_ids = {ev.job_id for _, _, ev in due_unconsumed_events}
         self._events.clear()
         # 不重置 _seq：保留的 push_update 事件携带原始 seq 值，
         # 若重置为 0，新调度事件的 seq 会从 1 开始递增，与保留事件的 seq 碰撞。
         # 当 at_ts 也相同时，heapq 元组比较回退到 _Event 比较（即使 _Event
         # 已加 order=True，仍应避免 seq 碰撞以保证排序语义正确）。
         for item in pending_push_updates:
+            heapq.heappush(self._events, item)
+        if due_unconsumed_events:
+            logger.info(
+                "[Cron] reload kept %d due unconsumed event(s): %s",
+                len(due_unconsumed_events),
+                ", ".join(
+                    f"{ev.kind}:{ev.run_id}" for _, _, ev in due_unconsumed_events
+                ),
+            )
+        for item in due_unconsumed_events:
             heapq.heappush(self._events, item)
 
         # 取消并清理不再存在于 store 中的运行任务（ghost tasks）。
@@ -583,6 +612,11 @@ class CronSchedulerService:
                 push_dt, wake_dt, run_id = self._compute_next_run(job, now_ts=now)
             except Exception as exc:  # noqa: BLE001
                 if self._is_croniter_no_next_date(exc):
+                    # A one-shot may be more than the missed-trigger window late
+                    # while its original wake/push is still queued. Let those
+                    # events run; the push handler will mark the job expired.
+                    if job.enabled and job.id in due_unconsumed_job_ids:
+                        continue
                     # 已过期的 one-shot：标记 expired 并停用，避免 UI 仍显示"运行中/已暂停"。
                     # 这里故意不提前 continue 掉 disabled 的任务——一个单次任务如果在到期前
                     # 被手动暂停，同样需要能被检测到"已经没有下一次执行时间"从而转入过期态，
@@ -790,7 +824,20 @@ class CronSchedulerService:
             timeout_seconds=120,
         )
         if not ok or result.get("failed_count"):
-            raise RuntimeError(result.get("error") or "cron sessions could not be deleted")
+            # delete_cron_sessions returns per-session results; surface the
+            # first failure's code (e.g. SESSION_BUSY) so the web/TUI handler
+            # can translate it via i18n instead of a generic DELETE_FAILED.
+            failed = next(
+                (item for item in (result.get("results") or []) if not item.get("ok")),
+                None,
+            )
+            err = RuntimeError(
+                (failed.get("error") if failed else None)
+                or result.get("error")
+                or "cron sessions could not be deleted"
+            )
+            err.code = (failed.get("code") if failed else None) or result.get("code") or "DELETE_FAILED"
+            raise err
         return result
 
     async def trigger_run_now(self, job_id: str) -> str:
@@ -1040,9 +1087,17 @@ class CronSchedulerService:
 
         # Handle proactive.tick mode: send WebSocket request to AgentServer
         if job is not None and job.mode == "proactive.tick" and ev.kind == "wake":
-            logger.info("[Cron] triggering proactive.tick for job=%s run_id=%s", job.id, ev.run_id)
             previous_state = self._runs.get(ev.run_id)
             manually_triggered = bool(previous_state and previous_state.manually_triggered)
+            # Reload may retain a due scheduled wake for a job now disabled in
+            # the store. Manual run-now requests remain valid for disabled jobs.
+            if not job.enabled and not manually_triggered:
+                logger.info(
+                    "[Cron] skipping disabled proactive.tick job=%s run_id=%s",
+                    job.id, ev.run_id,
+                )
+                return
+            logger.info("[Cron] triggering proactive.tick for job=%s run_id=%s", job.id, ev.run_id)
             try:
                 # Create run state for tracking
                 tz = ZoneInfo(job.timezone)

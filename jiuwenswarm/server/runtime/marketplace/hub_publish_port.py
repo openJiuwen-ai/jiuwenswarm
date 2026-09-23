@@ -26,8 +26,6 @@ def parse_publish_result(
         raise PublishProtocolError("Invalid publish data")
     if expected.kind == "skill":
         accepted_types = frozenset({"skill", "swarmskill", "teamskills"})
-    elif expected.kind == "agent_group":
-        accepted_types = get_hub_asset_type_contract("agent_template").accepted_hub_types
     else:
         accepted_types = get_hub_asset_type_contract(expected.kind).accepted_hub_types
     # Skill uploads use the generic asset category "plugin" in production.

@@ -24,6 +24,7 @@
     "processing": "处理中…",
     "retry": "重试",
     "editMenu": {
+      "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
       "copy": "复制",
       "paste": "粘贴",
@@ -453,6 +454,10 @@
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
       },
+      "ttse_enabled": {
+        "title": "本地环境事实与任务经验自动演进",
+        "description": "控制智能体对于环境事实和任务经验学习"
+      },
       "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
       "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
       "jina_api_key": { "title": "Jina API 密钥" },
@@ -559,6 +564,10 @@
     "team": {
       "memberLanes": "成员轨迹泳道",
       "members": "成员"
+    },
+    "composer": {
+      "collapse": "收起输入框",
+      "expand": "展开输入框"
     },
     "layout": {
       "hideSessions": "收起会话栏",
@@ -789,6 +798,9 @@
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
     "modelNotConfigured": "还没有配置可用的模型。请在「设置 → 模型」里配置一个模型，或登录获取限时免费模型。",
+    "sessionArchived": "该会话已归档，无法继续对话。请恢复会话或新建会话。",
+    "sessionDeleted": "该会话已被删除，无法继续对话。",
+    "sessionOperationInProgress": "该会话正在执行归档或删除操作，请稍后再试。",
     "placeholderAwaitingApproval": "请先处理上方待确认项",
     "placeholderProcessing": "处理中，输入新指令可中断...",
     "placeholderProcessingQueue": "处理中，输入新指令将加入等待队列...",
@@ -905,6 +917,7 @@
     "agentGroupNoMatches": "没有找到匹配的专家团",
     "agentGroupRemove": "移除专家团",
     "agentGroupSkillsLocked": "已选择专家团，不能额外添加专家团技能",
+    "teamSkillsGroupLocked": "已选择团队技能，不能额外选择专家团",
     "agentGroupBinding": "当前对话已绑定专家团，暂不可更换",
     "agentGroupFirstBuildOnly": "专家团只能在首次创建 Team 时选择",
     "agentOnlyInSingleAgentMode": "专家仅支持在单 Agent 模式下选择",
@@ -1083,6 +1096,7 @@
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
     "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
+    "closeTagDisabled": "会话进行中，无法关闭目标",
     "badge": "目标",
     "status": {
       "active": "进行中",
@@ -1713,6 +1727,7 @@
       "updateFailed": "更新任务失败",
       "updateFailedWithReason": "更新任务失败：{{reason}}",
       "deleteFailed": "删除任务失败",
+      "deleteSessionBusy": "该定时任务关联的会话正在运行，无法删除。请先手动停止会话，再重试删除。",
       "toggleFailed": "更新任务状态失败",
       "previewFailed": "预览触发时间失败",
       "runNowFailed": "立即执行失败",
@@ -3028,9 +3043,10 @@
         "uploadInvalidType": "仅支持 .zip、.tar 和 .tar.gz 专家团包",
         "errors": {
           "nameRequired": "请输入专家团名称",
-          "descriptionRequired": "请输入专家团介绍",
+          "descriptionRequired": "请输入专家团能力介绍",
           "personaRequired": "请输入专家团介绍",
-          "leaderRequired": "请选择负责人"
+          "leaderRequired": "请选择负责人",
+          "membersRequired": "请至少选择一名成员"
         }
       },
       "picker": {
@@ -3653,6 +3669,9 @@
     "customOption": "自定义",
     "customPlaceholder": "没有合适的选项？输入您的答案...",
     "skippedSummary": "已跳过"
+  },
+  "skillPackagePrompt": {
+    "creating": "正在创建…"
   },
   "qaSummary": {
     "title": "问题澄清"

@@ -58,6 +58,8 @@ const groupUploadSource = readFileSync(
 );
 const inputAreaSource = readFileSync(new URL('../src/components/ChatPanel/InputArea.tsx', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const zhLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/zh.json', import.meta.url), 'utf8'));
+const enLocale = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url), 'utf8'));
 
 await i18next.use(initReactI18next).init({
   lng: 'zh',
@@ -365,7 +367,10 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
     /const existingTeamGroupSelectionDisabled = Boolean\([\s\S]*activeSessionId !== NEW_CONVERSATION_ID/,
   );
   assert.match(inputAreaSource, /const agentSelectionDisabled = isTeamMode;/);
-  assert.match(inputAreaSource, /const agentGroupSelectionDisabled = isAgentMode \|\| agentGroupPickerLocked;/);
+  assert.match(
+    inputAreaSource,
+    /const teamSkillSelectionActive = isTeamMode && selectedSkills\.length > 0;[\s\S]*const agentGroupSelectionDisabled = isAgentMode \|\| agentGroupPickerLocked \|\| teamSkillSelectionActive;/,
+  );
   assert.match(inputAreaSource, /aria-disabled=\{agentSelectionDisabled\}[\s\S]*disabled=\{agentSelectionDisabled\}/);
   assert.match(
     inputAreaSource,
@@ -373,6 +378,7 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
   );
   assert.match(inputAreaSource, /chat\.agentOnlyInSingleAgentMode/);
   assert.match(inputAreaSource, /chat\.agentGroupOnlyInTeamMode/);
+  assert.match(inputAreaSource, /chat\.teamSkillsGroupLocked/);
   assert.match(inputAreaSource, /if \(!activeSessionId \|\| agentSelectionDisabled\) return;/);
   assert.match(inputAreaSource, /if \(agentGroupSelectionDisabled \|\| !activeSessionId\) return;/);
   assert.match(inputAreaSource, /agentSelectionDisabled && 'is-locked'/);
@@ -609,6 +615,158 @@ test('Expert Team upload dialog puts Expert first and removes the reference link
   assert.doesNotMatch(groupUploadSource, /uploadHintReference|hint-reference/);
 });
 
+test('concurrent Expert installs keep every affected card busy', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const items = ['expert-a', 'expert-b'].map((id) => ({
+    id,
+    runtimePackageName: id,
+    displayName: id,
+    description: '',
+    source: 'hub',
+    installed: false,
+    connectionState: 'disconnected',
+    tags: [],
+    avatarUrl: null,
+  }));
+  const document = new JSDOM(
+    renderToStaticMarkup(
+      React.createElement(CatalogPage, {
+        scope: 'catalog',
+        items,
+        totalItems: items.length,
+        page: 1,
+        query: '',
+        category: '',
+        status: 'success',
+        error: null,
+        busyIds: new Set(items.map((item) => item.id)),
+        onPageChange() {},
+        onCategoryChange() {},
+        onRetry() {},
+        onOpen() {},
+        onUse() {},
+        onReconnect() {},
+        onInstall() {},
+        onCreate() {},
+      }),
+    ),
+  ).window.document;
+  const installButtons = Array.from(document.querySelectorAll('[data-testid="agent-card"] button'));
+  assert.equal(installButtons.length, 2);
+  assert.deepEqual(
+    installButtons.map((button) => button.getAttribute('aria-busy')),
+    ['true', 'true'],
+  );
+  assert.deepEqual(
+    installButtons.map((button) => button.textContent),
+    ['安装中…', '安装中…'],
+  );
+});
+
+test('pending connector installs use a queue instead of one mutable target slot', () => {
+  assert.doesNotMatch(panelSource, /installFlowTargetRef/);
+  assert.doesNotMatch(panelSource, /installFlowModeRef/);
+  assert.match(panelSource, /enqueuePendingInstall/);
+  assert.match(panelSource, /advancePendingInstallQueue/);
+});
+
+test('manual Expert Team creation requires at least one member', async () => {
+  const { JSDOM } = await import('jsdom');
+  const { createRoot } = await import('react-dom/client');
+  const { act } = React;
+  const { AgentGroupEditor } = await import('../node_modules/.cache/agent-management-layout/AgentGroupEditor.mjs');
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+  let saveCount = 0;
+  const root = createRoot(dom.window.document.getElementById('root'));
+  try {
+    await act(async () =>
+      root.render(
+        React.createElement(AgentGroupEditor, {
+          draft: {
+            id: '',
+            name: '验收专家团',
+            description: '能力介绍',
+            persona: '专家团介绍',
+            category: '',
+            tagIds: [],
+            customTags: [],
+            leaderId: 'leader',
+            memberIds: [],
+            skillRefs: [],
+            suggestedPrompts: [],
+          },
+          agentOptions: [
+            {
+              id: 'leader',
+              runtimePackageName: 'leader',
+              displayName: '负责人',
+              description: '',
+              source: 'local',
+              installed: true,
+              connectionState: 'connected',
+              tags: [],
+              avatarUrl: null,
+            },
+          ],
+          agentsStatus: 'success',
+          agentsError: null,
+          skillOptions: [],
+          skillsStatus: 'success',
+          saving: false,
+          error: null,
+          onChange() {},
+          onReloadAgents() {},
+          onReloadSkills() {},
+          onCancel() {},
+          onSave() {
+            saveCount += 1;
+          },
+        }),
+      ),
+    );
+    const form = dom.window.document.querySelector('[data-testid="agent-group-editor-form"]');
+    await act(async () => form.dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })));
+    assert.equal(saveCount, 0);
+    assert.match(dom.window.document.body.textContent, /请至少选择一名成员/);
+  } finally {
+    await act(async () => root.unmount());
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});
+
+test('Expert Team upload error prioritizes the latest local validation and stays below the picker', () => {
+  assert.match(groupUploadSource, /\{pickerError \|\| error\}/);
+  assert.match(
+    agentManagementCss,
+    /\.agent-group-upload-dialog \.agent-management-upload-dialog__error\s*\{[\s\S]*order: 4;[\s\S]*margin:/,
+  );
+  assert.match(agentManagementCss, /\.agent-group-upload-dialog > footer\s*\{[\s\S]*order: 5;/);
+});
+
+test('manual Expert Team validation names the capability description precisely', () => {
+  assert.equal(zhLocale.agentManagement.group.form.errors.descriptionRequired, '请输入专家团能力介绍');
+  assert.equal(
+    enLocale.agentManagement.group.form.errors.descriptionRequired,
+    'Enter an Expert Team capability description',
+  );
+});
+
+test('leaving Expert management discards unfinished manual-create subpages', () => {
+  assert.match(
+    panelSource,
+    /if \(!isActive && prevIsActive && \(view === 'create' \|\| view === 'group-create'\)\) \{[\s\S]*setView\('mine'\);/,
+  );
+});
+
 for (const status of ['success', 'loading', 'error']) {
   test(`expert catalog keeps page two cards during ${status}`, async () => {
     const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
@@ -635,6 +793,7 @@ for (const status of ['success', 'loading', 'error']) {
           category: '',
           status,
           error: 'Refresh failed',
+          busyIds: new Set(),
           onPageChange() {},
         }),
       ),

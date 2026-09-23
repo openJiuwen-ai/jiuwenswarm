@@ -7,7 +7,7 @@ import { AssetPublishHost } from './components/AssetPublishDrawer';
  * 应用主布局，整合所有组件
  */
 
-import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type PointerEvent as ReactPointerEvent } from 'react';
+import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { SideConversationPanel } from './components/ChatPanel/SideConversationPanel';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
@@ -175,6 +175,7 @@ import {
 } from './features/trajectory/SingleAgentSurface';
 import {
   shouldInsetTrajectoryForFloatingTasks,
+  trajectoryComposerClearance,
 } from './features/trajectory/trajectoryLayout';
 import {
   normalizeTrajectoryUiEnabled,
@@ -394,6 +395,10 @@ function AppContent({
     return 'new';
   });
   const [chatSurfaceViews, setChatSurfaceViews] = useState<Record<string, ChatSurfaceView>>({});
+  // Whether the composer kept available on the trajectory view is collapsed to
+  // watch-only, per session, alongside which view that session last showed.
+  const [trajectoryComposerCollapsed, setTrajectoryComposerCollapsed] = useState<Record<string, boolean>>({});
+  const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
 
@@ -703,6 +708,14 @@ function AppContent({
         : { ...current, [sessionId]: nextView }
     ));
   }, [sessionId]);
+  const composerDocked = chatSurfaceView === 'trajectory';
+  const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
+  const toggleTrajectoryComposer = useCallback(() => {
+    setTrajectoryComposerCollapsed((current) => ({
+      ...current,
+      [sessionId]: !(current[sessionId] ?? false),
+    }));
+  }, [sessionId]);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
@@ -1004,6 +1017,7 @@ function AppContent({
     request,
     persistMedia,
     persistDocuments,
+    discardMedia,
     sendMessage,
     sendStructuredChatContent,
     pause,
@@ -2385,6 +2399,19 @@ function AppContent({
           summaries: info.summaries,
         });
       },
+      onPendingQuestionReplay: (items) => {
+        // 防御性兜底：当前 materializeHistoryTimeline 把未答问题也渲染成只读
+        // qa.summary 卡片（不弹实时交互框——web 重连后后端不重发挂起中断，弹框 +
+        // resume 会报 "session has no active execution"），所以 pendingQuestionReplay
+        // 恒为空、本回调不会被触发。保留此钩子是为了将来后端支持重发挂起中断时
+        // 可直接重新启用，无需改接口。
+        const chatStore = useChatStore.getState();
+        chatStore.ensureRuntime(sessionId);
+        const sorted = [...items].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+        for (const item of sorted) {
+          chatStore.enqueuePendingQuestion(sessionId, item.payload);
+        }
+      },
       onError: (message) => {
         console.warn('[history.restore]', message);
       },
@@ -3037,6 +3064,13 @@ function AppContent({
     return persistMedia(content, currentSessionId, mediaItems);
   }, [persistMedia]);
 
+  const handleDiscardMedia = useCallback((sessionId: string, path: string) => {
+    if (!sessionId || sessionId === NEW_CONVERSATION_ID || !path) {
+      return Promise.resolve();
+    }
+    return discardMedia(sessionId, path);
+  }, [discardMedia]);
+
   const handlePersistDocuments = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
@@ -3206,6 +3240,12 @@ function AppContent({
         clearTodos(targetSessionId);
         resetHarnessStore(targetSessionId);
         historyRestoreFromPanelHintRef.current = true;
+      }
+      if (options?.skipHistoryLoad) {
+        // The session returned by cron.run_now can precede its first persisted
+        // message. The sessionId effect must skip its initial history request too.
+        useChatStore.getState().setNewSession(targetSessionId, true);
+        historyRestoreFromPanelHintRef.current = false;
       }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
@@ -3750,7 +3790,14 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 {/* Chat Panel - 在展开时可拖拽调整宽度 */}
                 <div
                   className={`${showConversationNotFound || shouldFullscreen ? 'hidden' : 'flex'} chat-layout__surface  pt-0 flex-col ${effectiveTeamAreaExpanded ? '' : 'min-w-0'} min-h-0 ${effectiveTeamAreaExpanded ? '' : 'flex-1'}`}
-                  style={effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : undefined}
+                  style={{
+                    ...(effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : {}),
+                    '--trajectory-composer-clearance': `${trajectoryComposerClearance(
+                      composerDocked,
+                      composerCollapsed,
+                      trajectoryComposerHeight,
+                    )}px`,
+                  } as CSSProperties}
                   data-testid="app-chat-surface"
                 >
 <SingleAgentSurface
@@ -3767,6 +3814,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onInputIntent={handleSessionInputIntent}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}
+                        onDiscardMedia={handleDiscardMedia}
                         onInterrupt={handleInterrupt}
                         onCancel={handleCancel}
                         onSwitchMode={handleSwitchMode}
@@ -3803,6 +3851,10 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onRefreshGoal={refreshGoal}
                         onClearGoal={handleClearGoal}
                         onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
+                        composerDocked={composerDocked}
+                        composerCollapsed={composerCollapsed}
+                        onToggleComposerCollapsed={toggleTrajectoryComposer}
+                        onComposerHeightChange={setTrajectoryComposerHeight}
                       />
                     )}
                     chatLabel={t('nav.chat')}
