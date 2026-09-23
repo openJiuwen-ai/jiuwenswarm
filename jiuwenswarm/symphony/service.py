@@ -47,7 +47,7 @@ CapabilityPackager = core_symphony.flow.CapabilityPackager
 LLMPackageReviewAgent = core_symphony.LLMPackageReviewAgent
 PackageReviewGate = core_symphony.flow.PackageReviewGate
 SymphonyFlowEngine = core_symphony.flow.SymphonyFlowEngine
-SymphonyFlowConfig = core_symphony.orchestration.config.SymphonyFlowConfig
+CoreSymphonyFlowConfig = core_symphony.orchestration.SymphonyFlowConfig
 SkillPackAdapter = core_symphony.flow.SkillPackAdapter
 VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
 
@@ -666,9 +666,10 @@ class SwarmSymphonyService:
             flow_cfg = config.evolution.flow
             flow_engine = SymphonyFlowEngine(
                 flow_dir,
-                config=SymphonyFlowConfig(
-                    min_successes=flow_cfg.min_successes,
-                    min_pack_success_rate=flow_cfg.min_pack_success_rate,
+                config=CoreSymphonyFlowConfig(
+                    min_successes_candidate=config.flow.min_successes_candidate,
+                    min_successes_verified=config.flow.min_successes_verified,
+                    min_pack_success_rate_verified=flow_cfg.min_pack_success_rate,
                 ),
                 llm_client=model,
                 gate=PackageReviewGate(LLMPackageReviewAgent(model)),

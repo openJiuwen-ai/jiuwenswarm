@@ -274,7 +274,8 @@ def test_evolution_is_the_only_core_experience_switch(tmp_path: Path) -> None:
 
     assert config.evolution.flow.enabled is False
     assert not hasattr(config.evolution, "backend")
-    assert not hasattr(config, "flow")
+    assert config.flow.min_successes_candidate == 2
+    assert config.flow.min_successes_verified == 3
 
 
 def test_experience_candidate_server_methods_are_routable() -> None:
@@ -867,12 +868,18 @@ def test_published_capability_snapshot_rejects_invalid_contracts(
     assert [item.capability_id for item in identities] == ["valid"]
 
 
-def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) -> None:
+def test_core_flow_uses_success_count_config_and_ignores_legacy_switch(
+    monkeypatch, tmp_path: Path
+) -> None:
     config = symphony_config_from_dict(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True, "flow": {"enabled": False}},
+            "evolution": {"enabled": False, "flow": {"enabled": True}},
+            "flow": {
+                "min_successes_candidate": 4,
+                "min_successes_verified": 6,
+            },
         }
     )
     service = SwarmSymphonyService()
@@ -908,6 +915,8 @@ def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) ->
     assert created["review_agent"] is not None
     assert created["flow_root"] == tmp_path / "flow"
     assert created["llm_client"] is model
+    assert created["config"].min_successes_candidate == 4
+    assert created["config"].min_successes_verified == 6
     assert isinstance(created["skill_adapter"], SkillPackAdapter)
     assert isinstance(created["runtime"]["flow_engine"], Flow)
 
