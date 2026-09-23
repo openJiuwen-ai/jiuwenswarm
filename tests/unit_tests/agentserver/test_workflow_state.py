@@ -1321,3 +1321,197 @@ def test_workflow_run_dict_carries_recovered_only_when_set():
     state = WorkflowRunState.model_validate({"id": "r1", "recovered": True})
     assert state.to_workflow_run_dict()["recovered"] is True
     assert "recovered" not in WorkflowRunState.model_validate({"id": "r2"}).to_workflow_run_dict()
+
+
+# ── verify round folding (verify_started / verify_settled) ──────────────
+
+def test_verify_started_then_settled_folds_one_group():
+    """A verify round folds into one group card under its phase."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    delta = state.apply(_make_progress(
+        "verify_started", phase="评审", label="round-0",
+        verify_reviewers=2, verify_threshold=0.6,
+    ))
+    phase = state.phases[0]
+    assert len(phase.verify_groups) == 1
+    group = phase.verify_groups[0]
+    assert group.status == "running"
+    assert group.reviewers == 2
+    assert group.threshold == 0.6
+    assert group.verdict is None
+    assert delta["phases"][0]["verify_groups"][0]["label"] == "round-0"
+
+    state.apply(_make_progress(
+        "agent_started", phase="评审", agent_id="a1", label="v", node_type="agent",
+    ))
+    delta = state.apply(_make_progress(
+        "verify_settled", phase="评审", label="round-0",
+        verify_reviewers=2, verify_verdict="pass", verify_threshold=0.6,
+        verify_votes=[
+            {"name": "v", "kind": "verdict", "decision": "pass", "score": None, "feedback": "ok", "voted": True},
+            {"name": "round-0-1", "kind": "score", "decision": None, "score": 0.9, "feedback": "solid", "voted": True},
+        ],
+    ))
+    assert group.status == "settled"
+    assert group.verdict == "pass"
+    assert group.votes[1]["name"] == "round-0-1"
+    assert delta["phases"][0]["verify_groups"][0]["verdict"] == "pass"
+    # reviewers stay ordinary agent nodes in the same phase
+    assert phase.agents[0].name == "v"
+
+
+def test_verify_settled_undecided_keeps_verdict_none():
+    """verdict=None settles as undecided — never coerced to a pass."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    state.apply(_make_progress("verify_started", phase="评审", verify_reviewers=1, verify_threshold=0.85))
+    state.apply(_make_progress(
+        "verify_settled", phase="评审", verify_reviewers=1,
+        verify_verdict=None, verify_threshold=0.85,
+        verify_votes=[{"name": "v", "kind": "verdict", "decision": None, "score": None, "feedback": "", "voted": False}],
+    ))
+    group = state.phases[0].verify_groups[0]
+    assert group.status == "settled"
+    assert group.verdict is None
+    assert group.votes[0]["voted"] is False
+
+
+def test_verify_rework_loop_same_label_yields_card_per_round():
+    """A rework loop re-verifying under one label gets one group per round."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    for rnd in range(2):
+        state.apply(_make_progress("verify_started", phase="评审", label="verify", verify_reviewers=1))
+        state.apply(_make_progress(
+            "verify_settled", phase="评审", label="verify", verify_reviewers=1,
+            verify_verdict="fail" if rnd == 0 else "pass",
+        ))
+    groups = state.phases[0].verify_groups
+    assert len(groups) == 2
+    assert [g.verdict for g in groups] == ["fail", "pass"]
+    assert groups[0].id != groups[1].id
+
+
+def test_verify_settled_without_started_materializes_group():
+    """A settled event with no matching started card still lands (partial replay)."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    delta = state.apply(_make_progress(
+        "verify_settled", phase="评审", label="verify", verify_reviewers=1,
+        verify_verdict="pass",
+    ))
+    group = state.phases[0].verify_groups[0]
+    assert group.status == "settled"
+    assert group.verdict == "pass"
+    assert delta is not None
+
+
+def test_verify_completed_alias_routes_to_settled_handler():
+    """verify_completed (new kind) folds like verify_settled and stores outcome."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    state.apply(_make_progress("verify_started", phase="评审", verify_reviewers=1, verify_threshold=0.85))
+    state.apply(_make_progress(
+        "verify_completed", phase="评审", label="verify", verify_reviewers=1,
+        verify_verdict="pass", verify_threshold=0.85,
+        verify_votes=[{"name": "verify-verdict-0", "kind": "verdict", "role": "verifier",
+                       "decision": "pass", "score": None, "feedback": "ok", "voted": True}],
+        outcome='{"verdict": "pass", "votes": [{"kind": "verdict", "role": "verifier"}], "passed": true}',
+    ))
+    group = state.phases[0].verify_groups[0]
+    assert group.status == "settled"
+    assert group.verdict == "pass"
+    assert group.outcome == '{"verdict": "pass", "votes": [{"kind": "verdict", "role": "verifier"}], "passed": true}'
+    assert group.votes[0]["role"] == "verifier"
+
+
+def test_fork_agent_started_carries_parent_session_id():
+    """A fork child's agent_started lands parent_session_id on the node."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    delta = state.apply(_make_progress(
+        "agent_started", phase="分叉", agent_id="a1", label="child",
+        node_type="agent_session_fork", parent_session_id="arch",
+    ))
+    agent = state.phases[0].agents[0]
+    assert agent.parent_session_id == "arch"
+    assert delta["phases"][0]["agents"][0]["parent_session_id"] == "arch"
+
+
+def test_verify_started_records_reviewer_labels():
+    """verify_started's label roster lands on the group and serializes in deltas."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    delta = state.apply(_make_progress(
+        "verify_started", phase="评审", label="verify:V1",
+        verify_reviewers=2, verify_threshold=0.85,
+        verify_reviewer_labels=["verify:V1-verdict-0", "verify:V1-score-1"],
+    ))
+    group = state.phases[0].verify_groups[0]
+    assert group.reviewer_labels == ["verify:V1-verdict-0", "verify:V1-score-1"]
+    assert delta["phases"][0]["verify_groups"][0]["reviewer_labels"] == group.reviewer_labels
+
+
+def test_agent_completed_records_cache_tokens():
+    """agent_completed's cache_tokens lands on the agent node and in deltas."""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    state.apply(_make_progress(
+        "agent_started", phase="评审", agent_id="a1", label="reviewer", node_type="agent",
+    ))
+    state.apply(_make_progress(
+        "agent_completed", phase="评审", agent_id="a1", label="reviewer",
+        outcome="ok", tokens=1000, cache_tokens=640,
+    ))
+    agent = state.phases[0].agents[0]
+    assert agent.token_count == 1000
+    assert agent.cache_token_count == 640
+    # legacy events without cache_tokens leave the field unset
+    assert WorkflowAgentState(
+        id="x", name="n", token_count=5,
+    ).cache_token_count is None
+
+
+def test_concurrent_same_label_verify_rounds_get_card_per_round():
+    """并行同 label verify 各自成卡，settled 按 verify_id 精确落卡（fork-multi-model 场景）。"""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    # 3 个并行同 label started——默认 label 下 reviewer 名册完全相同
+    for vid in ("r1", "r2", "r3"):
+        state.apply(_make_progress(
+            "verify_started", phase="交叉评审", label="verify", verify_reviewers=1,
+            verify_reviewer_labels=["verify-verdict-0"], verify_id=vid,
+        ))
+    assert len(state.phases[0].verify_groups) == 3
+    # settled 交错到达，各回各卡
+    state.apply(_make_progress(
+        "verify_settled", phase="交叉评审", label="verify", verify_id="r2",
+        verify_verdict="fail",
+        verify_votes=[{"name": "verify-verdict-0", "agent_id": "k2", "kind": "verdict",
+                       "decision": "fail", "score": None, "feedback": "", "voted": True}],
+    ))
+    state.apply(_make_progress(
+        "verify_settled", phase="交叉评审", label="verify", verify_id="r1",
+        verify_verdict="pass",
+        verify_votes=[{"name": "verify-verdict-0", "agent_id": "k1", "kind": "verdict",
+                       "decision": "pass", "score": None, "feedback": "", "voted": True}],
+    ))
+    by_id = {g.verify_id: g for g in state.phases[0].verify_groups}
+    assert by_id["r1"].verdict == "pass"
+    assert by_id["r2"].verdict == "fail"
+    # r3 仍 running，且没有吞掉 r1/r2 的票（名册相同的旧兜底不会误配）
+    assert by_id["r3"].status == "running"
+    assert by_id["r3"].votes == []
+
+
+def test_verify_started_replay_dedupes_by_verify_id():
+    """resume 回放的同 verify_id started 复用同一张卡，不翻倍。"""
+    state = WorkflowRunState()
+    state.apply(_make_progress("workflow_started", workflow_name="t"))
+    for _ in range(2):
+        state.apply(_make_progress(
+            "verify_started", phase="评审", label="verify", verify_reviewers=1,
+            verify_reviewer_labels=["verify-verdict-0"], verify_id="same",
+        ))
+    assert len(state.phases[0].verify_groups) == 1

@@ -292,6 +292,18 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 nested_phase=getattr(payload, "nested_phase", None),
                 parent_phase=getattr(payload, "parent_phase", None),
                 phase_iteration=getattr(payload, "phase_iteration", None),
+                parent_session_id=getattr(payload, "parent_session_id", None),
+                member_name=getattr(payload, "member_name", None),
+                verify_reviewers=getattr(payload, "verify_reviewers", None),
+                verify_verdict=getattr(payload, "verify_verdict", None),
+                verify_threshold=getattr(payload, "verify_threshold", None),
+                verify_votes=getattr(payload, "verify_votes", None),
+                verify_reviewer_labels=getattr(payload, "verify_reviewer_labels", None),
+                verify_reviewer_roles=getattr(payload, "verify_reviewer_roles", None),
+                verify_id=getattr(payload, "verify_id", None),
+                cache_tokens=getattr(payload, "cache_tokens", None),
+                token_input=getattr(payload, "token_input", None),
+                token_output=getattr(payload, "token_output", None),
             )
         except Exception:
             logger.warning("[WorkflowMonitorHandler] Failed to extract progress from event")
