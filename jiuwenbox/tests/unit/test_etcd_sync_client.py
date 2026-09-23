@@ -79,7 +79,7 @@ def test_decode_extracts_jiuwenbox_and_ignores_gateway():
         value=payload.encode("utf-8"),
         mod_revision=9,
     )
-    fetched = PolicySyncClient._decode(kv)
+    fetched = PolicySyncClient.decode(kv)
     assert fetched.mod_revision == 9
     assert fetched.section == {"network": {"egress": {"default": "deny"}}}
     assert fetched.metadata["_version"] == 1
@@ -88,7 +88,7 @@ def test_decode_extracts_jiuwenbox_and_ignores_gateway():
 
 def test_decode_invalid_yaml_yields_empty_section():
     kv = EtcdKv(key=b"/k", value=b"::::not yaml", mod_revision=3)
-    fetched = PolicySyncClient._decode(kv)
+    fetched = PolicySyncClient.decode(kv)
     assert fetched.section == {}
     assert fetched.mod_revision == 3
 

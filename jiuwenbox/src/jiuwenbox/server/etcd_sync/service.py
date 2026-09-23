@@ -65,6 +65,18 @@ class PolicySyncService:
         return bool(self._endpoints)
 
     @property
+    def endpoints(self) -> list[str]:
+        return list(self._endpoints)
+
+    @property
+    def key(self) -> str:
+        return self._key
+
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    @property
     def last_applied_mod_revision(self) -> int:
         return self._last_applied_mod_revision
 
@@ -103,8 +115,6 @@ class PolicySyncService:
     async def _watch(self, client: PolicySyncClient) -> None:
         try:
             await client.watch_loop(self.apply)
-        except asyncio.CancelledError:
-            raise
         except Exception:  # noqa: BLE001
             logger.exception("[PolicySync] watcher exited unexpectedly")
         finally:

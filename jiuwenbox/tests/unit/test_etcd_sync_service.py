@@ -141,7 +141,7 @@ async def test_start_disabled_without_endpoints():
     service = PolicySyncService(manager, etcd_endpoints=[])
     assert service.enabled is False
     await service.start()
-    assert service._task is None
+    assert service.is_running is False
     await service.stop()
 
 
@@ -151,8 +151,8 @@ async def test_from_env_reads_endpoints_and_key(monkeypatch):
     monkeypatch.setenv(ETCD_CONFIG_KEY_ENV, "/custom/key")
     service = PolicySyncService.from_env(_FakeManager())
     assert service.enabled is True
-    assert service._endpoints == ["http://10.0.0.1:32379", "http://10.0.0.2:32379"]
-    assert service._key == "/custom/key"
+    assert service.endpoints == ["http://10.0.0.1:32379", "http://10.0.0.2:32379"]
+    assert service.key == "/custom/key"
 
 
 @pytest.mark.asyncio
@@ -186,9 +186,9 @@ async def test_start_stop_cancels_watch_task():
     )
     await service.start()
     await asyncio.wait_for(started.wait(), timeout=1)
-    assert service._task is not None
+    assert service.is_running is True
     await service.stop()
-    assert service._task is None
+    assert service.is_running is False
 
 
 @pytest.mark.asyncio

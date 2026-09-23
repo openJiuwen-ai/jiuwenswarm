@@ -325,7 +325,7 @@ class PolicySyncClient:
         kv = _pick_exact(result.kvs, key_bytes)
         if kv is None:
             return None, int(result.revision or 0)
-        return self._decode(kv), int(result.revision or 0)
+        return self.decode(kv), int(result.revision or 0)
 
     async def watch_loop(
         self,
@@ -358,10 +358,8 @@ class PolicySyncClient:
                     kv = _pick_exact(events, key_bytes)
                     if kv is not None:
                         delay = _CONNECT_INITIAL_DELAY
-                        await on_event(self._decode(kv))
+                        await on_event(self.decode(kv))
                 raise RuntimeError("etcd watch stream ended")
-            except asyncio.CancelledError:
-                raise
             except Exception as exc:  # noqa: BLE001 - keep the watcher alive
                 logger.warning(
                     "[PolicySync] watch/connect retry in %.1fs: %s", delay, exc
@@ -370,7 +368,8 @@ class PolicySyncClient:
                 delay = min(delay * 2, _CONNECT_MAX_DELAY)
 
     @staticmethod
-    def _decode(kv: EtcdKv) -> FetchResult:
+    def decode(kv: EtcdKv) -> FetchResult:
+        """Decode one etcd kv into the jiuwenbox section and metadata."""
         mod_revision = int(kv.mod_revision or 0)
         try:
             document = yaml.safe_load(kv.value.decode("utf-8"))
