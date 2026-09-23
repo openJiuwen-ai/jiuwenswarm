@@ -48,6 +48,9 @@ const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
   'chat.usage_summary',
   'chat.file',
   'chat.subtask_update',
+  'chat.ask_user_question',
+  'chat.ask_user_answer',
+  'chat.error',
   'team.message',
   'team.member',
   'team.task',
@@ -1133,6 +1136,33 @@ function parseHistoryTimelineEntry(
 
   if (eventType === 'chat.subtask_update') {
     return { kind: 'subagent_update', at, payload };
+  }
+
+  if (eventType === 'chat.error') {
+    // 后端仅 interface.py 一处把 chat.error 落盘（content=str(data)，error_type 在顶层，
+    // code 未落盘——见 interface.py:4040 的 extra 只带 error_type）。历史恢复时转成
+    // role=system 消息，与实时 useWebSocket.ts chat.error 分支对齐（实时 content=
+    // t('network.errorPrefix', {message})，历史层无 i18n，直接用错误原文）。
+    // code 缺失无法走 describeChatError 翻译生命周期错误，仅展示原文。
+    const errContent =
+      (typeof record.content === 'string' && record.content) ||
+      (typeof payload.content === 'string' && payload.content) ||
+      '';
+    if (!errContent.trim()) {
+      return null;
+    }
+    const restoredId =
+      pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-error-${sessionId}-${at}`;
+    return {
+      kind: 'message',
+      message: {
+        id: restoredId,
+        role: 'system',
+        content: errContent,
+        timestamp: at,
+        ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
+      },
+    };
   }
 
   if (eventType === 'chat.final') {

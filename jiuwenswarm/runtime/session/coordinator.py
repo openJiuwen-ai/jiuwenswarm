@@ -515,7 +515,9 @@ class RuntimeSessionCoordinator:
             session_id=session_id, generation=record.generation, active_only=True,
         )
         if any(handle.waiting_control_id for handle in active):
-            raise SessionInputRejectedError("session is waiting for an interaction answer; supplemental input was not sent")
+            raise SessionInputRejectedError(
+                "session is waiting for an interaction answer; supplemental input was not sent"
+            )
         parents = []
         for handle in active:
             if handle.state is not SessionExecutionState.RUNNING:

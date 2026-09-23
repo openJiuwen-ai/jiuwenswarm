@@ -1084,6 +1084,7 @@
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
     "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
+    "closeTagDisabled": "会话进行中，无法关闭目标",
     "badge": "目标",
     "status": {
       "active": "进行中",

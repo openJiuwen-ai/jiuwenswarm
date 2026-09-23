@@ -784,3 +784,37 @@ for (const [format, supplementalFields] of [
     ]);
   });
 }
+
+test('history restores chat.error as a system message with the error text', () => {
+  // 后端 interface.py:4040 把 chat.error 落盘为 role=assistant, event_type=chat.error,
+  // content=str(data), error_type 在顶层（code 未落盘）。历史恢复转成 role=system 消息，
+  // 与实时 useWebSocket.ts chat.error 分支对齐（实时加 t('network.errorPrefix') 前缀，
+  // 历史层无 i18n，直接用错误原文）。刷新后错误不再凭空消失。
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    {
+      id: 'err-1:assistant',
+      role: 'assistant',
+      event_type: 'chat.error',
+      content: '模型调用失败：超时',
+      error_type: 'TimeoutError',
+      timestamp: 1,
+    },
+  ], sessionId);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].role, 'system');
+  assert.equal(messages[0].content, '模型调用失败：超时');
+});
+
+test('history skips chat.error with empty content', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    {
+      id: 'err-empty:assistant',
+      role: 'assistant',
+      event_type: 'chat.error',
+      content: '',
+      error_type: 'RuntimeError',
+      timestamp: 1,
+    },
+  ], sessionId);
+  assert.equal(messages.length, 0);
+});
