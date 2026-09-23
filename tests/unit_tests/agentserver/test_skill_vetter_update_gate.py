@@ -26,6 +26,7 @@ def _make_mgr(tmp_path, skill_dir) -> SkillManager:
     )
     mgr._get_installed_plugins = lambda: []
     mgr._resolve_local_skill_dir = lambda name: skill_dir
+    mgr._skills_dir = skill_dir.parent
     mgr._is_builtin_skill = lambda name, installed_plugins, skill_path=None: False
     return mgr
 
