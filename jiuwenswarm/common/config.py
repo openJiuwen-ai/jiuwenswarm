@@ -303,23 +303,28 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Return whether both Symphony and its evolution switch are enabled."""
+
+    from jiuwenswarm.symphony.config import (
+        resolve_symphony_enabled,
+        resolve_symphony_evolution_enabled,
+    )
+
     if not isinstance(config, dict):
         return False
     symphony = config.get("symphony")
     if not isinstance(symphony, dict):
-        return False
+        symphony = {}
     evolution = symphony.get("evolution")
     if not isinstance(evolution, dict):
-        return False
+        evolution = {}
     # enabled 位于 evolution.flow 下；旧配置（evolution.enabled）向后兼容
     flow = evolution.get("flow")
     flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
     if flow_enabled is None:
         flow_enabled = evolution.get("enabled")
-    enabled_values = {"1", "true", "yes", "on"}
     return (
-        str(symphony.get("enabled")).strip().lower() in enabled_values
-        and str(flow_enabled).strip().lower() in enabled_values
+        resolve_symphony_enabled(symphony.get("enabled"))
+        and resolve_symphony_evolution_enabled(flow_enabled)
     )
 
 

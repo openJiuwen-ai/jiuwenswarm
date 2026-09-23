@@ -131,6 +131,12 @@ from jiuwenswarm.common.work_mode import (
     is_default_project_id,
 )
 from jiuwenswarm.common.version import __version__
+from jiuwenswarm.symphony.config import (
+    DEFAULT_EVOLUTION_ENABLED,
+    DEFAULT_SYMPHONY_ENABLED,
+    resolve_symphony_enabled,
+    resolve_symphony_evolution_enabled,
+)
 from jiuwenswarm.gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
@@ -1275,8 +1281,12 @@ def _validate_wechat_numeric_params(params: dict) -> str | None:
 
 
 _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "symphony_enabled": (("enabled",), "bool", False),
-    "symphony_evolution_enabled": (("evolution", "flow", "enabled"), "bool", False),
+    "symphony_enabled": (("enabled",), "bool", DEFAULT_SYMPHONY_ENABLED),
+    "symphony_evolution_enabled": (
+        ("evolution", "flow", "enabled"),
+        "bool",
+        DEFAULT_EVOLUTION_ENABLED,
+    ),
 }
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
@@ -1372,12 +1382,20 @@ def _flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in _SYMPHONY_CONFIG_SPECS.items():
         value = _get_nested_config_value(symphony, path, default)
-        if key == "symphony_evolution_enabled" and value == default:
-            # enabled 已移到 evolution.flow 下；旧配置（evolution.enabled）回退显示
+        if key == "symphony_evolution_enabled":
+            # null 或缺失时回退旧配置；明确写 false 时保持关闭。
+            flow = _get_nested_config_value(symphony, ("evolution", "flow"), {})
             legacy = _get_nested_config_value(symphony, ("evolution", "enabled"), None)
-            if legacy is not None:
+            if (
+                (not isinstance(flow, dict) or flow.get("enabled") is None)
+                and legacy is not None
+            ):
                 value = legacy
         if value_type == "bool":
+            if key == "symphony_enabled":
+                value = resolve_symphony_enabled(value)
+            elif key == "symphony_evolution_enabled":
+                value = resolve_symphony_evolution_enabled(value)
             flat[key] = "true" if bool(value) else "false"
         else:
             flat[key] = str(value)
