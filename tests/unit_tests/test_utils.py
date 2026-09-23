@@ -9,6 +9,7 @@ import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -166,6 +167,21 @@ class TestLoggerSetup:
         assert '\"authorization_outcome\":\"allow\"' not in sanitized
         assert '\"authorization_outcome\":\"deny\"' not in sanitized
         assert sanitized.count("******(fp:") == 2
+
+    @staticmethod
+    def test_log_sanitizer_handles_oversized_identifiers_in_linear_time():
+        """A 10KB session/run id must not trigger quadratic regex backtracking."""
+        raw = (
+            "session_id=" + "s" * 10_240
+            + " run_id=" + "x" * 10_240
+        )
+
+        started = time.perf_counter()
+        sanitized = utils._sanitize_log_text(raw)
+        elapsed = time.perf_counter() - started
+
+        assert sanitized == raw
+        assert elapsed < 1.0, f"log sanitization took {elapsed:.3f}s"
 
 
 class TestSourceRecordMasking:

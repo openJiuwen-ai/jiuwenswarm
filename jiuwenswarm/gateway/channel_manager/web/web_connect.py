@@ -22,6 +22,11 @@ from urllib.parse import parse_qs, urlparse
 
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
+from jiuwenswarm.common.protocol_ids import (
+    InvalidProtocolId,
+    validate_session_id,
+    validate_workflow_run_id,
+)
 from jiuwenswarm.common.utils import get_logs_dir
 from jiuwenswarm.gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter, ConnectHook
 from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
@@ -74,6 +79,13 @@ def _resolve_ws_auth_session(ws: Any) -> str:
 
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 _LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
+_SWARMFLOW_CONTROL_METHODS = frozenset(
+    {
+        ReqMethod.SWARMFLOW_PAUSE.value,
+        ReqMethod.SWARMFLOW_RESUME.value,
+        ReqMethod.SWARMFLOW_STOP.value,
+    }
+)
 
 _STREAM_COALESCE_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
 _STREAM_COALESCE_MAX_FRAMES = 32
@@ -1238,7 +1250,22 @@ class WebChannel(BaseWsChannel):
         _app_id = _flat_query.get("app_id", "default")
         _mode = _flat_query.get("mode", "agent")
         _agent_id = _flat_query.get("agent_id", "default")
-        _initial_sid = _flat_query.get("session_id", self._make_session_id())
+        _raw_initial_sid = _flat_query.get("session_id")
+        try:
+            _initial_sid = (
+                validate_session_id(_raw_initial_sid)
+                if _raw_initial_sid
+                else self._make_session_id()
+            )
+        except InvalidProtocolId as exc:
+            logger.warning(
+                "[WebChannel] rejected websocket with invalid session_id: reason=%s remote=%s path=%s",
+                exc,
+                remote,
+                request_path,
+            )
+            await ws.close(code=1008, reason=str(exc))
+            return
         uid_marker = "" if connection_user_id else " uid_empty=yes"
         logger.info(
             "[WebChannel] ws.connect user_id=%s session_id=%s channel=web remote=%s path=%s%s",
@@ -1467,10 +1494,34 @@ class WebChannel(BaseWsChannel):
         # 仅合成一个临时 id 供后续 Message 构造使用，但【不】参与 register_ws，
         # 保留 ws 上一次的真实 RoutingKey，避免把 ws 从其所属 team session 摘除。
         _explicit_session_id = params.get("session_id")
-        has_explicit_session = (
-            isinstance(_explicit_session_id, str) and bool(_explicit_session_id)
-        )
-        session_id = _explicit_session_id if has_explicit_session else self._make_session_id()
+        has_explicit_session = _explicit_session_id is not None and _explicit_session_id != ""
+        try:
+            session_id = (
+                validate_session_id(_explicit_session_id)
+                if has_explicit_session
+                else self._make_session_id()
+            )
+            if method in _SWARMFLOW_CONTROL_METHODS:
+                run_id = params.get("run_id")
+                workflow_run_id = params.get("workflow_run_id")
+                if (
+                    run_id not in (None, "")
+                    and workflow_run_id not in (None, "")
+                    and run_id != workflow_run_id
+                ):
+                    raise InvalidProtocolId(
+                        "run_id and workflow_run_id must match"
+                    )
+                validate_workflow_run_id(run_id or workflow_run_id)
+        except InvalidProtocolId as exc:
+            await self.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error=str(exc),
+                code="BAD_REQUEST",
+            )
+            return
 
         # 追踪 ws → 真实 session_id，用于断连清理/日志。
         # 与 register_ws 一致：仅显式 session 入集；临时 id 只供 Message 构造，避免膨胀。
