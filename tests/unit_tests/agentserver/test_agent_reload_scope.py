@@ -816,6 +816,7 @@ async def test_deep_adapter_global_reload_marks_sessions_stale_without_fanout(mo
     parent = JiuWenSwarmDeepAdapter()
     # Preserve the SDK's async initialization and rail registration contract.
     parent._instance = MagicMock(spec=interface_module.DeepAgent)
+    parent._instance.react_agent = SimpleNamespace(register_callback=AsyncMock())
     session_a = FakeAgent()
     session_b = FakeAgent()
     parent._session_adapters = {
@@ -866,6 +867,7 @@ async def test_deep_adapter_global_reload_marks_sessions_stale_without_fanout(mo
 
     assert session_a.reload_calls == []
     assert session_b.reload_calls == []
+    parent._instance.react_agent.register_callback.assert_awaited_once()
 
 
 def _fake_deep_reload_model():
@@ -910,6 +912,7 @@ async def _reload_deep_adapter_config_for_test(previous_config, deep_config_fact
     configured_fields = []
     adapter = JiuWenSwarmDeepAdapter()
     adapter._instance = MagicMock(spec=interface_module.DeepAgent)
+    adapter._instance.react_agent = SimpleNamespace(register_callback=AsyncMock())
     adapter._instance._deep_config = previous_config
 
     def _configure(cfg):
@@ -977,6 +980,7 @@ async def _reload_deep_adapter_config_for_test(previous_config, deep_config_fact
             {},
         )
 
+    adapter._instance.react_agent.register_callback.assert_awaited_once()
     return adapter, configured_fields
 
 

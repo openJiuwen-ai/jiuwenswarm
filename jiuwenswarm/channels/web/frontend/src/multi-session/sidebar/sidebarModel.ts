@@ -12,6 +12,7 @@ export type SidebarMenuItem = {
   label: string;
   danger?: boolean;
   pinned?: boolean;
+  disabled?: boolean;
 };
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
@@ -96,17 +97,26 @@ function buildSidebarMenuItems(
   ];
 }
 
-export function getProjectMenuItems(isPinned: boolean, translate: Translate, isDefault = false): SidebarMenuItem[] {
+export function getProjectMenuItems(
+  isPinned: boolean,
+  translate: Translate,
+  options: { isDefault?: boolean; archiveSessionsDisabled?: boolean } = {},
+): SidebarMenuItem[] {
   // “删除已归档会话”属于归档管理页的项目分组操作，项目菜单只保留批量归档。
   const batchItems: SidebarMenuItem[] = [
-    { action: 'archive-sessions', label: translate('multiSession.project.archiveSessions') },
+    {
+      action: 'archive-sessions',
+      label: translate('multiSession.project.archiveSessions'),
+      disabled: options.archiveSessionsDisabled,
+    },
   ];
-  if (isDefault) return batchItems;
-  // 项目不再有整体归档；菜单 = 置顶/重命名/删除 + 项目级批量会话操作。
+  if (options.isDefault) return batchItems;
+  // 项目不再有整体归档；菜单 = 置顶/重命名/移除 + 项目级批量会话操作。
+  // 项目移除是软删除（可从 toast 撤销），文案与真正的删除操作区分，不共用 multiSession.delete。
   return [
     { action: 'pin', label: translate(isPinned ? PIN_LABEL_PAIRS.project[1] : PIN_LABEL_PAIRS.project[0]), pinned: isPinned },
     { action: 'rename', label: translate('multiSession.project.rename') },
-    { action: 'delete', label: translate('multiSession.delete'), danger: true },
+    { action: 'delete', label: translate('multiSession.project.removeProject'), danger: true },
     ...batchItems,
   ];
 }

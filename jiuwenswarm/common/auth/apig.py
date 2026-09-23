@@ -308,7 +308,7 @@ def classify_model_error(text: str, *, login_model: bool) -> str | None:
         return QUOTA_EXHAUSTED_CODE
     if 429 in statuses or any(h in lowered for h in _RATE_LIMIT_TEXT_HINTS):
         return RATE_LIMITED_CODE
-    if statuses & {401, 403}:
+    if statuses & {401, 403, 404}:
         return SERVICE_UNAVAILABLE_CODE
     if any(status >= 500 for status in statuses) or any(h in lowered for h in _SERVICE_TEXT_HINTS):
         return SERVICE_UNAVAILABLE_CODE

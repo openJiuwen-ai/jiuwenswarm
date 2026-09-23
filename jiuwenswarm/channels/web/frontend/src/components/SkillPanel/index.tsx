@@ -1,4 +1,4 @@
-import { useAssetPublication } from '../../hooks/useAssetPublication';
+﻿import { useAssetPublication } from '../../hooks/useAssetPublication';
 import { publicationLabel, matchesPublicationFilter } from '../../features/assetPublication';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
@@ -6,7 +6,7 @@ import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
  *
  * Skills 管理面板（编排层）：
  * - 类型见 ./types.ts；纯函数工具见 ./skillPanelUtils.ts；小组件见 ./SkillPanelWidgets.tsx
- * - 数据域 hooks：useHubMarketplace / useSkillFilesTab / useSymphonyGraph / useIndexRecommendation /
+ * - 数据域 hooks：useHubMarketplace / useSkillFilesTab / useSymphonyGraph / useRetrievalIndexBuild /
  *   useEvolution / useSkillToasts；发布与登录由公共 AssetPublishHost 承载
  * - 视图：SkillGraphTab / MarketplaceView / SkillDetailView；弹窗：UploadSkillModal / DocToSkillModal /
  */
@@ -20,7 +20,7 @@ import { SourceManagerModal } from '../../features/SourceManagerModal';
 import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
 import { ClawHubSearchModal } from '../../features/ClawHubSearchModal';
 import { TeamSkillsHubModal } from '../../features/TeamSkillsHubModal';
-import { normalizeSkillNetUrl } from '../../utils/skillNetUrl';
+import { normalizeSkillNetUrl, resolveMarketplaceInstalledLocalName } from '../../utils/skillNetUrl';
 import { computeMySkills, filterEnabledMySkills } from '../../utils/mySkills';
 import { Switch } from '../Switch';
 import {
@@ -34,14 +34,14 @@ import {
 import { FilterDropdown, MySkillGoTryButton, TopAnchorTooltip } from './SkillPanelWidgets';
 import { SkillToasts } from './SkillToasts';
 import { SkillGraphTab } from './SkillGraphTab';
-import { MarketplaceView } from './MarketplaceView';
+import { MarketplaceView, SkillPacksView } from './MarketplaceView';
 import { SkillDetailView } from './SkillDetailView';
 import { UploadSkillModal } from './UploadSkillModal';
 import { DocToSkillModal } from './DocToSkillModal';
 import { useSkillToasts } from './useSkillToasts';
 import { useHubMarketplace, type MarketplaceSubView } from './useHubMarketplace';
 import { useSymphonyGraph } from './useSymphonyGraph';
-import { useIndexRecommendation } from './useIndexRecommendation';
+import { useRetrievalIndexBuild } from './useRetrievalIndexBuild';
 import { useEvolution } from './useEvolution';
 import { useSkillFilesTab } from './useSkillFilesTab';
 import type {
@@ -160,7 +160,7 @@ export function SkillPanel({
   const [mySkillsSubTab, setMySkillsSubTab] = useState<'all' | 'enabled' | 'disabled' | 'builtin'>('all');
   const [mySkillsPublishFilter, setMySkillsPublishFilter] = useState<'all' | 'published' | 'unpublished'>('all');
   const [marketplaceCategory, setMarketplaceCategory] = useState<(typeof MARKETPLACE_CATEGORIES)[number]>('all');
-  const [detailTab, setDetailTab] = useState<'content' | 'files' | 'experience'>('content');
+  const [detailTab, setDetailTab] = useState<'content' | 'files' | 'experience' | 'members'>('content');
 
   // 列表与详情数据（含搜索筛选）
   const [skills, setSkills] = useState<SkillItem[]>([]);
@@ -169,6 +169,8 @@ export function SkillPanel({
   const [selectedSkill, setSelectedSkill] = useState<SkillDetail | null>(null);
   const [listState, setListState] = useState<LoadState>('idle');
   const [detailState, setDetailState] = useState<LoadState>('idle');
+  // 详情页导航栈：从技能包进入成员时记录包名，返回时逐层回退
+  const [detailNavStack, setDetailNavStack] = useState<string[]>([]);
   const [skillVersions, setSkillVersions] = useState<SkillVersion[]>([]);
   const [skillVersionsDefault, setSkillVersionsDefault] = useState<string | null>(null);
   const [versionsLoadState, setVersionsLoadState] = useState<LoadState>('idle');
@@ -250,14 +252,18 @@ export function SkillPanel({
     hubSkillMore,
     teamSkills,
     featuredSkills,
+    skillPacks,
     selectedHubSkill,
     hubDetail,
     hubDetailState,
+    hubDetailTab,
+    setHubDetailTab,
     setSelectedHubSkill,
     setHubDetail,
     setHubDetailState,
     fetchHubSkillDetail,
     openHubMore,
+    openHubAllPacks,
     invalidateHubFetch,
     pauseHubFetching,
   } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, setMarketplaceSubView, withSession });
@@ -274,13 +280,7 @@ export function SkillPanel({
     updateGraphReading,
   } = useSymphonyGraph({ isConnected, symphonyEnabled, onSymphonyEnabledChange });
 
-  const {
-    indexRecommendationVisible,
-    indexRecommendationBuilding,
-    setIndexRecommendationVisible,
-    startRetrievalIndexBuild,
-    buildRecommendedIndex,
-  } = useIndexRecommendation({ isActive, activeTab, isConnected, withSession, showMessage });
+  const { startRetrievalIndexBuild } = useRetrievalIndexBuild({ isConnected, withSession, showMessage });
 
   const {
     filesLoadState,
@@ -540,31 +540,59 @@ export function SkillPanel({
 
   const handleOpenSkill = useCallback(
     (skillName: string) => {
+      // 从列表/其他入口打开详情：清空导航栈，回到根层级
+      setDetailNavStack([]);
       fetchSkillDetail(skillName);
     },
     [fetchSkillDetail],
   );
 
+  // 技能包详情内打开成员：记录当前包名，供返回上一层使用
+  const handleOpenPackMember = useCallback(
+    (memberName: string) => {
+      setDetailNavStack((stack) =>
+        selectedSkill && selectedSkill.name !== memberName ? [...stack, selectedSkill.name] : stack,
+      );
+      fetchSkillDetail(memberName);
+    },
+    [selectedSkill, fetchSkillDetail],
+  );
+
+  // 返回上一层：成员详情 → 所属技能包详情；无上级时回到列表
+  const handleBackOneLevel = useCallback(() => {
+    const parent = detailNavStack[detailNavStack.length - 1];
+    if (parent) {
+      setDetailNavStack((stack) => stack.slice(0, -1));
+      fetchSkillDetail(parent);
+      return;
+    }
+    setSelectedSkill(null);
+    setDetailState('idle');
+  }, [detailNavStack, fetchSkillDetail]);
+
+  // 直接回到列表（卸载等场景）：同时清空导航栈
   const handleBackToList = useCallback(() => {
+    setDetailNavStack([]);
     setSelectedSkill(null);
     setDetailState('idle');
   }, []);
 
-  // 新建会话并将技能选中到输入框
+  // 新建会话并将技能选中到输入框：只有集群技能进集群模式，其余（普通技能、技能包等）固定单 agent
   const handleGoToChat = useCallback((skillName: string, skillType?: string) => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
-        detail: { skillName, ...(skillType === 'swarm_skill' ? { mode: 'team' as const } : {}) },
+        detail: { skillName, mode: skillType === 'swarm_skill' ? ('team' as const) : ('agent' as const) },
       }),
     );
   }, []);
 
   const renderHubSkillAction = useCallback(
     (skill: MarketplacePluginItem) => {
-      if (installedSkillMap.has(skill.name)) {
+      const localName = resolveMarketplaceInstalledLocalName(skill, skills, installedSkillNames);
+      if (localName) {
         return {
           icon: <NewConversationIcon aria-hidden />,
-          onClick: () => handleGoToChat(skill.name, skill.plugin_type === 'swarmskill' ? 'swarm_skill' : undefined),
+          onClick: () => handleGoToChat(localName, skill.plugin_type === 'swarmskill' ? 'swarm_skill' : undefined),
           tooltip: t('skills.actions.goTry'),
         };
       }
@@ -579,7 +607,7 @@ export function SkillPanel({
         tooltip: t('skills.actions.install'),
       };
     },
-    [installedSkillMap, handleGoToChat, handleInstallHubSkill, actionTarget, t],
+    [skills, installedSkillNames, handleGoToChat, handleInstallHubSkill, actionTarget, t],
   );
 
   // 新建会话：skill-creator（所有 Skill Creator 统一入口）chip + "帮我修改这个技能" + 该技能 chip
@@ -869,7 +897,9 @@ export function SkillPanel({
 
   // 2026-08-25：改用 utils/mySkills.ts 的共享 isSkillInstalled/filterEnabledMySkills，跟"手动创建
   // 插件"的"添加技能"弹窗（CreatePluginPage.tsx）共用同一份"已启用"判定规则，见该文件头注释。
-  const skillPublication = useAssetPublication(activeTab === 'my' ? visibleSkills.map(s => ({ kind: 'skill', local_id: s.name })) : []);
+  const skillPublication = useAssetPublication(
+    activeTab === 'my' ? visibleSkills.map((s) => ({ kind: 'skill', local_id: s.name })) : [],
+  );
   const mySkillsFiltered = useMemo(() => {
     let filtered = visibleSkills;
     switch (mySkillsSubTab) {
@@ -887,20 +917,32 @@ export function SkillPanel({
     }
     // 发布状态筛选
     if (mySkillsPublishFilter === 'published') {
-      filtered = filtered.filter((s) => matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'published'));
+      filtered = filtered.filter((s) =>
+        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'published'),
+      );
     } else if (mySkillsPublishFilter === 'unpublished') {
-      filtered = filtered.filter((s) => matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'unpublished'));
+      filtered = filtered.filter((s) =>
+        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'unpublished'),
+      );
     }
     return filtered;
   }, [visibleSkills, mySkillsSubTab, mySkillsPublishFilter, installedSkillNames, skillPublication]);
 
-  // 内置/非内置分组（用于"我的技能"列表分组展示）
+  // 内置/非内置分组（用于"我的技能"列表分组展示）；技能包单独成组置顶
   const builtinSkills = useMemo(() => mySkillsFiltered.filter((s) => s.source === 'builtin'), [mySkillsFiltered]);
-  const otherSkills = useMemo(() => mySkillsFiltered.filter((s) => s.source !== 'builtin'), [mySkillsFiltered]);
+  const skillPackSkills = useMemo(
+    () => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'),
+    [mySkillsFiltered],
+  );
+  const otherSkills = useMemo(
+    () => mySkillsFiltered.filter((s) => s.source !== 'builtin' && s.skill_type !== 'skillpack'),
+    [mySkillsFiltered],
+  );
 
-  /** 判断技能是否为技能包（技能名与所属插件名一致） */
+  /** 判断技能是否为技能包（接口标记 skillpack，或技能名与所属插件名一致） */
   const isSkillPackage = useCallback(
     (skill: SkillItem): boolean => {
+      if (skill.skill_type === 'skillpack') return true;
       const plugin = installedSkillMap.get(skill.name);
       return Boolean(plugin && plugin.plugin_name === skill.name && plugin.skills.length > 1);
     },
@@ -909,8 +951,34 @@ export function SkillPanel({
 
   const toggleSkillDisabled = useCallback(
     async (skillName: string) => {
-      const skill = skills.find((s) => s.name === skillName);
-      const newEnabled = skill?.enabled === false ? true : false;
+      // 当前目标状态：优先取详情页状态（成员技能不在顶层列表中，
+      // 从列表取会恒判为 false，导致禁用后无法再启用）
+      const isSelfDetail = selectedSkill?.name === skillName;
+      const listSkill = skills.find((s) => s.name === skillName);
+      const currentEnabled = isSelfDetail
+        ? selectedSkill?.enabled !== false
+        : listSkill?.enabled !== false;
+      const newEnabled = !currentEnabled;
+
+      // 二次确认以服务端实时探测为准：skills.toggle(dry_run) 返回该技能
+      // 当前关联的技能包列表，不依赖页面缓存的列表数据。
+      // 成员技能启用/禁用都会影响所属技能包的可用性，两个方向都确认
+      let parentPacks: string[] = [];
+      try {
+        const probe = await webRequest<{ success: boolean; parent_skillpacks?: string[] }>(
+          'skills.toggle',
+          withSession({ name: skillName, enabled: newEnabled, dry_run: true }),
+        );
+        if (probe.success) parentPacks = probe.parent_skillpacks ?? [];
+      } catch {
+        // 探测失败不阻塞切换：保持与旧行为一致（直接切换，不弹窗）
+      }
+      if (parentPacks.length > 0) {
+        const confirmed = window.confirm(
+          t('skills.packMemberToggleConfirm', { packs: parentPacks.join('、') }),
+        );
+        if (!confirmed) return;
+      }
 
       const toggleKey = `toggle:${skillName}`;
       setActionTarget(toggleKey);
@@ -932,6 +1000,16 @@ export function SkillPanel({
         if (selectedSkill && selectedSkill.name === skillName) {
           setSelectedSkill({ ...selectedSkill, enabled: newEnabled });
         }
+
+        // 仅成员技能影响技能包聚合状态，确认后才刷新列表与技能包详情；
+        // 无技能包关联的技能保持轻量更新，不重新拉取列表
+        if (parentPacks.length > 0) {
+          await fetchSkills();
+          if (selectedSkill && isSkillPackage(selectedSkill) && selectedSkill.name !== skillName) {
+            const data = await webRequest<SkillDetail>('skills.get', withSession({ name: selectedSkill.name }));
+            setSelectedSkill(normalizeSkillItem(data));
+          }
+        }
       } catch (error) {
         console.error('Failed to toggle skill enabled:', error);
         showMessage('error', t('skills.setEnabledError'));
@@ -939,7 +1017,7 @@ export function SkillPanel({
         setActionTarget(null);
       }
     },
-    [skills, selectedSkill, withSession, showMessage, t],
+    [skills, selectedSkill, isSkillPackage, fetchSkills, withSession, showMessage, t],
   );
 
   const renderMySkillCard = (skill: SkillItem) => {
@@ -948,6 +1026,8 @@ export function SkillPanel({
     const isToggling = actionTarget === `toggle:${skill.name}`;
     const isUninstalling = actionTarget === `uninstall:${installedSkillMap.get(skill.name)?.plugin_name || skill.name}`;
     const isPackage = isSkillPackage(skill);
+    // 技能包含有已卸载成员时整包被禁用，不允许直接启用（需重新下载完整技能包）
+    const isPackBlocked = isPackage && (skill.blocked_members?.length ?? 0) > 0;
     const listKey = skill.path || `${skill.source || 'local'}:${skill.name}`;
 
     const titleEndContent = skill.has_evolutions ? (
@@ -985,6 +1065,13 @@ export function SkillPanel({
       labelTags.push(t('skills.skillTypes.team'));
     } else if (skill.skill_type === 'multimodal_skill') {
       labelTags.push(t('skills.skillTypes.multimodal'));
+    }
+    // 技能包标签 + 成员数量（与"内置"标签同风格）
+    if (isPackage) {
+      labelTags.push(t('skills.skillPackTag'));
+      if (typeof skill.member_count === 'number') {
+        labelTags.push(t('skills.memberCountSuffix', { count: skill.member_count }));
+      }
     }
     if (skill.source === 'builtin') {
       labelTags.push(t('skills.mySkillsTabs.builtin'));
@@ -1048,7 +1135,13 @@ export function SkillPanel({
             tooltip={t('skills.actions.goTry')}
           />
         </div>
-        <Switch checked={!isDisabled} onChange={() => toggleSkillDisabled(skill.name)} disabled={isToggling} />
+        <span title={isPackBlocked ? t('skills.packBlockedHint') : undefined} className="flex items-center">
+          <Switch
+            checked={!isDisabled}
+            onChange={() => toggleSkillDisabled(skill.name)}
+            disabled={isToggling || isPackBlocked}
+          />
+        </span>
       </div>
     );
 
@@ -1058,7 +1151,7 @@ export function SkillPanel({
         onClick={() => handleOpenSkill(skill.name)}
         testId="skill-panel-my-skill-card"
         variant={listKey}
-        avatar={{ name: displayName, testId: 'skill-panel-my-skill-card-avatar' }}
+        avatar={{ name: displayName }}
         title={displayName}
         titleEnd={titleEndContent}
         label={labelTags}
@@ -1208,7 +1301,6 @@ export function SkillPanel({
                   { value: 'published', label: t('skills.publishFilter.published') },
                   { value: 'unpublished', label: t('skills.publishFilter.unpublished') },
                 ]}
-                style={{ width: mySkillsPublishFilter === 'all' ? '40px' : '55px' }}
                 testId="skill-panel-filter-publish"
               />
               {/* 启用/禁用筛选 */}
@@ -1230,7 +1322,6 @@ export function SkillPanel({
                   { value: 'disabled', label: t('skills.mySkillsTabs.disabled') },
                   { value: 'builtin', label: t('skills.mySkillsTabs.builtin') },
                 ]}
-                style={{ width: '40px' }}
                 testId="skill-panel-filter-enable"
               />
             </>
@@ -1341,10 +1432,6 @@ export function SkillPanel({
   const renderGraphTab = () => (
     <SkillGraphTab
       isConnected={isConnected}
-      indexRecommendationVisible={indexRecommendationVisible}
-      indexRecommendationBuilding={indexRecommendationBuilding}
-      onDismissRecommendation={() => setIndexRecommendationVisible(false)}
-      onBuildRecommendedIndex={() => void buildRecommendedIndex()}
       symphonySaveError={symphonySaveError}
       symphonySaving={symphonySaving}
       symphonyEnabledDraft={symphonyEnabledDraft}
@@ -1357,40 +1444,53 @@ export function SkillPanel({
     />
   );
 
-  // 技能广场页签：hub 技能详情 或 列表视图
+  // 技能广场页签：hub 技能详情 / 全部技能包专页 或 列表视图
   const renderMarketplace = () =>
     marketplaceSubView === 'detail' && selectedHubSkill ? (
       <SkillDetailView
         mode="hub"
         detailState={hubDetailState}
         installedSkillMap={installedSkillMap}
+        localSkills={skills}
+        installedSkillNames={installedSkillNames}
         hubSkill={selectedHubSkill}
         hubDetail={hubDetail}
+        hubDetailTab={hubDetailTab}
+        setHubDetailTab={setHubDetailTab}
         actionTarget={actionTarget}
         onInstallHubSkill={handleInstallHubSkill}
         onGoToChat={handleGoToChat}
         onBackToHubDetail={handleBackToHubDetail}
       />
-    ) : (
-      <>
-      <CatalogCacheNotice cache={hubCache} />
-      <MarketplaceView
-        marketplaceSubView={marketplaceSubView}
-        teamSkills={teamSkills}
-        featuredSkills={featuredSkills}
-        hubTeamMore={hubTeamMore}
-        hubSkillMore={hubSkillMore}
-        hubSkills={hubSkills}
-        hubLoading={hubLoading}
-        hubMoreLoading={hubMoreLoading}
-        searchKeyword={searchKeyword}
-        marketplaceCategory={marketplaceCategory}
+    ) : marketplaceSubView === 'packs' ? (
+      <SkillPacksView
+        skillPacks={skillPacks}
+        onBack={handleBackToHubDetail}
         onSelectHubSkill={handleSelectHubSkill}
         renderHubSkillAction={renderHubSkillAction}
-        onCategoryChange={handleMarketplaceCategoryChange}
-        onOpenMore={openHubMore}
-        onBackFromMore={handleBackToHubDetail}
       />
+    ) : (
+      <>
+        <CatalogCacheNotice cache={hubCache} />
+        <MarketplaceView
+          marketplaceSubView={marketplaceSubView}
+          teamSkills={teamSkills}
+          featuredSkills={featuredSkills}
+          hubTeamMore={hubTeamMore}
+          hubSkillMore={hubSkillMore}
+          skillPacks={skillPacks}
+          hubSkills={hubSkills}
+          hubLoading={hubLoading}
+          hubMoreLoading={hubMoreLoading}
+          searchKeyword={searchKeyword}
+          marketplaceCategory={marketplaceCategory}
+          onSelectHubSkill={handleSelectHubSkill}
+          renderHubSkillAction={renderHubSkillAction}
+          onOpenAllPacks={openHubAllPacks}
+          onCategoryChange={handleMarketplaceCategoryChange}
+          onOpenMore={openHubMore}
+          onBackFromMore={handleBackToHubDetail}
+        />
       </>
     );
 
@@ -1440,11 +1540,12 @@ export function SkillPanel({
           rebuildLoading={rebuildLoading}
           onRebuild={handleRebuild}
           setSynthesizeTooltip={setSynthesizeTooltip}
-          onBackToList={handleBackToList}
+          onBack={handleBackOneLevel}
           onEditSkill={handleEditSkill}
           onUninstall={handleUninstall}
           onToggleSkillDisabled={toggleSkillDisabled}
           onGoToChat={handleGoToChat}
+          onOpenPackMember={handleOpenPackMember}
         />
       ) : (
         <>
@@ -1452,7 +1553,7 @@ export function SkillPanel({
             <div className="page-shell mt-4 text-sm text-text-muted">{t(MY_SKILLS_EMPTY_KEY[mySkillsSubTab])}</div>
           ) : null}
           {listState !== 'success' || mySkillsFiltered.length > 0 ? (
-            <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
+            <div className="page-scroll mt-0 flex-1 min-h-0 overflow-y-auto">
               {listState === 'loading' && (
                 <div className="text-sm text-text-muted" data-testid="skill-panel-my-list-loading">
                   {t('common.loading')}
@@ -1465,9 +1566,17 @@ export function SkillPanel({
               )}
               {listState === 'success' && (
                 <>
+                  {skillPackSkills.length > 0 && (
+                    <>
+                      <MySkillsGroupHeader label={t('skills.mySkillsGroups.skillPack')} />
+                      <div className="card-grid-auto mb-6">{skillPackSkills.map(renderMySkillCard)}</div>
+                    </>
+                  )}
                   {otherSkills.length > 0 && (
                     <>
-                      {builtinSkills.length > 0 && <MySkillsGroupHeader label={t('skills.mySkillsGroups.added')} />}
+                      {(builtinSkills.length > 0 || skillPackSkills.length > 0) && (
+                        <MySkillsGroupHeader label={t('skills.mySkillsGroups.added')} />
+                      )}
                       <div className="card-grid-auto mb-6">{otherSkills.map(renderMySkillCard)}</div>
                     </>
                   )}

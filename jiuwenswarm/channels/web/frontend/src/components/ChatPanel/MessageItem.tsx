@@ -48,6 +48,7 @@ import { ProactiveRecommendationCard } from './ProactiveRecommendationCard';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
+import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
 import { webRequest } from '../../services/webClient';
@@ -55,6 +56,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
+import { writeClipboard } from '../../utils/writeClipboard';
 import { isSkillPackageFile } from '../../utils/skillPackageFile';
 import {
   resolveTeamLeaderDisplayName,
@@ -201,7 +203,10 @@ function TeamLeaderPlainTextMessage({
         <FileDownloadList
           files={fileItems}
           className="chat-message-file-list"
-          onPreview={(index) => openArtifactPanelForActiveMode(fileArtifactId(fileItems[index]))}
+          onPreview={(index) => {
+            if (openFileInDesktopBrowser(fileItems[index])) return;
+            openArtifactPanelForActiveMode(fileArtifactId(fileItems[index]));
+          }}
         />
       )}
       <div className="team-member-message__plain" data-testid="chat-panel-team-leader-message-plain">
@@ -464,18 +469,8 @@ export const MessageItem = memo(function MessageItem({
     const raw = role === 'user' ? stripUploadDocumentBlocks(stripSwarmflowAdvisory(content)) : content;
     if (!raw) return;
     const copyContent = a2uiContentToText(raw) || raw;
-    try {
-      await navigator.clipboard.writeText(copyContent);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = copyContent;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
+    const ok = await writeClipboard(copyContent);
+    if (!ok) return;
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2000);
   }, [content, role]);
@@ -849,7 +844,10 @@ export const MessageItem = memo(function MessageItem({
                   <FileDownloadList
                     files={visibleFileItems}
                     className="chat-message-file-list"
-                    onPreview={(index) => openArtifactPanelForActiveMode(fileArtifactId(visibleFileItems[index]))}
+                    onPreview={(index) => {
+                      if (openFileInDesktopBrowser(visibleFileItems[index])) return;
+                      openArtifactPanelForActiveMode(fileArtifactId(visibleFileItems[index]));
+                    }}
                   />
                 )}
               </>
@@ -894,8 +892,8 @@ export const MessageItem = memo(function MessageItem({
                   {...tooltipHandlers}
                   onClick={handleCopy}
                   className={clsx(
-                    'p-1.5 rounded-md',
-                    copied ? 'text-accent' : 'hover:text-accent hover:bg-secondary'
+                    'px-1 py-1.5 rounded-md',
+                    copied ? 'text-accent' : 'hover:bg-secondary'
                   )}
                 >
                   {copied ? (
@@ -917,10 +915,10 @@ export const MessageItem = memo(function MessageItem({
                   {...tooltipHandlers}
                   onClick={handleSpeak}
                   className={clsx(
-                    'p-1.5 rounded-md ',
+                    'px-1 py-1.5 rounded-md ',
                     isPlaying
                       ? 'text-accent bg-accent/10'
-                      : 'hover:text-accent hover:bg-secondary'
+                      : 'hover:bg-secondary'
                   )}
                 >
                   {isPlaying ? (
@@ -944,7 +942,7 @@ export const MessageItem = memo(function MessageItem({
                   onClick={() => void handleForkFromMessage()}
                   disabled={isForking}
                   className={clsx(
-                    'p-1.5 rounded-md hover:text-accent hover:bg-secondary',
+                    'px-1 py-1.5 rounded-md hover:bg-secondary',
                     isForking && 'cursor-wait opacity-50'
                   )}
                 >

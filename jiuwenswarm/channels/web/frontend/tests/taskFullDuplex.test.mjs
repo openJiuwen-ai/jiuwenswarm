@@ -4,15 +4,6 @@ import test from 'node:test';
 
 const read = (path) => readFileSync(path, 'utf8');
 
-test('task composer delegates only its empty idle action to application plugins', () => {
-  const source = read('src/components/ChatPanel/InputArea.tsx');
-  assert.match(source, /<ApplicationPluginTaskInputActions/);
-  assert.match(source, /!hasTextDraft/);
-  assert.match(source, /attachments\.length === 0/);
-  assert.match(source, /fallback=\{\(/);
-  assert.match(source, /data-testid="chat-panel-input-send"/);
-});
-
 test('video duplex contributes a task action backed by the headless existing workflow', () => {
   const entry = read('../../../extensions/video_duplex/frontend/index.tsx');
   const action = read('../../../extensions/video_duplex/frontend/TaskFullDuplexAction.tsx');

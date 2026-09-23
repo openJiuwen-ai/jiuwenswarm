@@ -343,6 +343,7 @@ export class JoyAIProvider {
     const searchSessionId = this.callbacks.getSearchSessionId();
     if (!sessionId || !frameDataUrl) return null;
 
+    const commandId = crypto.randomUUID();
     const ttsGenerationAtRequest = this.ttsGeneration;
     this.queuedRequestCount += 1;
     const execute = async (): Promise<JoyAIFrameResult | null> => {
@@ -360,9 +361,10 @@ export class JoyAIProvider {
           'video.joyai.frame',
           {
             frame_data_url: frameDataUrl,
-            instruction: prompt.slice(0, 2_000),
-            question: originalQuestion.slice(0, 500),
+            instruction: prompt,
+            question: originalQuestion,
             request_kind: requestKind,
+            command_id: commandId,
             joyai_session_id: sessionId,
             search_session_id: searchSessionId,
             frame_time_range: frameTimeRange,

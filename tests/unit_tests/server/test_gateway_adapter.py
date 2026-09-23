@@ -333,6 +333,34 @@ class TestSessionAdapter:
         assert resp.ok is False
         assert resp.payload["code"] == "NOT_FOUND"
 
+    async def test_pin_keeps_event_loop_responsive(self, monkeypatch) -> None:
+        import asyncio
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        def slow_pin(sid, pinned):
+            started.set()
+            assert release.wait(3), "event loop could not release pin worker"
+            return True, 1
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.set_session_pinned",
+            slow_pin,
+        )
+        task = asyncio.create_task(SessionAdapter().handle(
+            _request(ReqMethod.SESSION_PIN, {"session_id": "sess-1", "pinned": True})
+        ))
+        try:
+            async with asyncio.timeout(2):
+                while not started.is_set():
+                    await asyncio.sleep(0.01)
+            assert not task.done()
+        finally:
+            release.set()
+            response = await task
+        assert response.ok is True
+
     async def test_pin(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.set_session_pinned",
@@ -1143,20 +1171,15 @@ async def test_config_adapter_command_model_forces_local_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The AgentServer-side command must not proxy to Gateway a second time."""
-    from jiuwenswarm.gateway.channel_manager.tui import tui_connect
+    from jiuwenswarm.common.config_panel import tui_models_handlers
 
-    def fake_register(bind) -> None:
-        assert bind.force_local_config is True
+    async def fake_handler(channel, ws, req_id, params, session_id, **kwargs):
+        _ = (params, session_id, kwargs)
+        await channel.send_response(
+            ws, req_id, ok=True, payload={"type": "switched", "current": "m1"}
+        )
 
-        async def handler(ws, req_id, params, session_id):
-            _ = (params, session_id)
-            await bind.channel.send_response(
-                ws, req_id, ok=True, payload={"type": "switched", "current": "m1"}
-            )
-
-        bind.channel.register_local_handler("/tui", ReqMethod.COMMAND_MODEL.value, handler)
-
-    monkeypatch.setattr(tui_connect, "register_cli_handlers", fake_register)
+    monkeypatch.setattr(tui_models_handlers, "command_model_handler", fake_handler)
 
     response = await ConfigAdapter().handle(
         _request(ReqMethod.COMMAND_MODEL, {"model": "m1"}, channel_id="tui")

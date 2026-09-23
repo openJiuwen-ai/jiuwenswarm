@@ -2,7 +2,7 @@
  * RSI 右栏画布区：子 Header + 提示 + 成本 + 画布（有向树渲染/节点/图例/缩放/交互）。
  * 树布局从左到右：根在左、子节点在右、同层兄弟纵向排开。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import bestIcon from '../../../assets/rsi/rsi-best.svg';
 import costIcon from '../../../assets/rsi/rsi-cost.svg';
@@ -24,6 +24,7 @@ import {
   nodeScoreLines,
   nodeStageLocalizedLabel,
   nodeStageSpec,
+  progressPercent,
   type RsiNodePresentation,
 } from '../rsiPresentation';
 import { layoutTree, type LayoutNode, type TreeLayout } from '../rsiTreeLayout';
@@ -290,7 +291,13 @@ function rsiArrowD(cl: number, cy: number): string {
   return 'M ' + cl + ' ' + cy + ' L ' + (cl - 6) + ' ' + (cy - 3) + ' L ' + (cl - 6) + ' ' + (cy + 3) + ' Z';
 }
 
-function TreeEdges({ layout, onHoverChange }: { layout: TreeLayout; onHoverChange: (id: string | null) => void }) {
+const TreeEdges = memo(function TreeEdges({
+  layout,
+  onHoverChange,
+}: {
+  layout: TreeLayout;
+  onHoverChange: (id: string | null) => void;
+}) {
   const groups = useMemo(() => {
     const map = new Map<string, { parent: LayoutNode; children: LayoutNode[] }>();
     for (const e of layout.edges) {
@@ -349,7 +356,7 @@ function TreeEdges({ layout, onHoverChange }: { layout: TreeLayout; onHoverChang
       })}
     </>
   );
-}
+});
 
 // 单个树节点卡片：上层(状态色 + 黑色徽章图标 + 名称 + 状态标签) + 下层(分数行/状态文本 + 展开/收起)
 interface RsiNodeCardProps {
@@ -364,7 +371,7 @@ interface RsiNodeCardProps {
   onToggleScore: (id: string) => void;
   onSelect: (id: string) => void;
 }
-function RsiNodeCard({
+const RsiNodeCard = memo(function RsiNodeCard({
   presentation,
   artifactType,
   ln,
@@ -498,7 +505,7 @@ function RsiNodeCard({
       )}
     </div>
   );
-}
+});
 
 export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
   const { t } = useTranslation();
@@ -514,6 +521,10 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
   const [scoreExpanded, setScoreExpanded] = useState<Set<string>>(new Set());
   const [hoveredEdgeParentId, setHoveredEdgeParentId] = useState<string | null>(null);
   const dragStart = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  /** 拖拽期间最新指针位置（rAF 节流读取）。 */
+  const dragPointerRef = useRef<{ x: number; y: number } | null>(null);
+  /** 待执行的拖拽帧 id，保证每帧最多一次 setTx/setTy。 */
+  const dragFrameRef = useRef<number | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const fullscreenCanvasRef = useRef<HTMLDivElement>(null);
 
@@ -535,6 +546,14 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
     }),
     [task.scenario, task.artifact_type, tree?.nodes, running],
   );
+  // 节点展示对象按 node_id 预计算缓存，拖拽重渲染时 props 引用稳定，React.memo 可跳过未变化卡片。
+  const presentationById = useMemo(() => {
+    const map = new Map<string, RsiNodePresentation>();
+    for (const ln of layout?.nodes ?? []) {
+      map.set(ln.node.node_id, presentRsiNode(ln.node, presentationContext));
+    }
+    return map;
+  }, [layout, presentationContext]);
   const layoutRef = useRef(layout);
   const centeredViewportKeyRef = useRef<string | null>(null);
   const viewportKey = `${task.task_id}:${fullscreen}`;
@@ -576,26 +595,43 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0) return;
+      // 捕获指针：移出画布/窗口仍能收到 move/up，避免拖拽状态丢失或持续卡在 dragging
+      e.currentTarget.setPointerCapture(e.pointerId);
       setDragging(true);
       dragStart.current = { x: e.clientX, y: e.clientY, tx, ty };
+      dragPointerRef.current = { x: e.clientX, y: e.clientY };
     },
     [tx, ty],
   );
 
+  const applyDrag = useCallback(() => {
+    dragFrameRef.current = null;
+    const start = dragStart.current;
+    const pointer = dragPointerRef.current;
+    if (!start || !pointer) return;
+    setTx(start.tx + (pointer.x - start.x));
+    setTy(start.ty + (pointer.y - start.y));
+  }, []);
+
   const handlePointerMove = useCallback(
     (e: React.PointerEvent) => {
-      if (!dragging || !dragStart.current) return;
-      const dx = e.clientX - dragStart.current.x;
-      const dy = e.clientY - dragStart.current.y;
-      setTx(dragStart.current.tx + dx);
-      setTy(dragStart.current.ty + dy);
+      if (!dragStart.current) return;
+      dragPointerRef.current = { x: e.clientX, y: e.clientY };
+      if (dragFrameRef.current === null) {
+        dragFrameRef.current = requestAnimationFrame(applyDrag);
+      }
     },
-    [dragging],
+    [applyDrag],
   );
 
   const handlePointerUp = useCallback(() => {
     setDragging(false);
     dragStart.current = null;
+    dragPointerRef.current = null;
+    if (dragFrameRef.current !== null) {
+      cancelAnimationFrame(dragFrameRef.current);
+      dragFrameRef.current = null;
+    }
   }, []);
 
   // 非被动监听滚轮缩放（capture 阶段阻止页面滚动）
@@ -635,6 +671,13 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
     };
     const cleanups = [attach(canvasRef.current), attach(fullscreenCanvasRef.current)];
     return () => cleanups.forEach((fn) => fn && fn());
+  }, []);
+
+  // 卸载时取消未执行的拖拽帧，避免卸载后 setState
+  useEffect(() => {
+    return () => {
+      if (dragFrameRef.current !== null) cancelAnimationFrame(dragFrameRef.current);
+    };
   }, []);
 
   const zoomIn = useCallback(() => setScale((s) => clampScale(s * 1.2)), [clampScale]);
@@ -701,7 +744,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
   const cost = liveProgress?.usageCost ?? task.usage?.cost_estimate ?? null;
   const progressIter = liveProgress?.iteration ?? task.progress?.iteration ?? 0;
   const progressTotal = liveProgress?.total ?? task.progress?.total_iterations ?? 0;
-  const progressPct = progressTotal > 0 ? Math.min(100, Math.round((progressIter / progressTotal) * 100)) : 0;
+  const progressPct = progressPercent(task.status, progressIter, progressTotal);
 
   return (
     <div className="rsi-canvas-area">
@@ -754,7 +797,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
-            onPointerLeave={handlePointerUp}
+            onPointerCancel={handlePointerUp}
           >
             {layout ? (
               <div
@@ -776,7 +819,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
                   return (
                     <RsiNodeCard
                       key={ln.node.node_id}
-                      presentation={presentRsiNode(ln.node, presentationContext)}
+                      presentation={presentationById.get(ln.node.node_id)!}
                       artifactType={task.artifact_type}
                       ln={ln}
                       selected={selected}
@@ -859,7 +902,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
-                onPointerLeave={handlePointerUp}
+                onPointerCancel={handlePointerUp}
               >
                 {layout ? (
                   <div
@@ -878,7 +921,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
                       return (
                         <RsiNodeCard
                           key={ln.node.node_id}
-                          presentation={presentRsiNode(ln.node, presentationContext)}
+                          presentation={presentationById.get(ln.node.node_id)!}
                           artifactType={task.artifact_type}
                           ln={ln}
                           selected={selected}

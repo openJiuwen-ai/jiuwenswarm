@@ -230,8 +230,7 @@ async def test_clawhub_download_records_owner_qualified_origin(tmp_path, monkeyp
     )
 
     assert result["success"] is True
-    # 内部标识名须与磁盘解析出的规范名一致（此处等于 slug），
-    # 否则会被自动扫描逻辑当作"未登记的本地技能"重复注册一条幽灵记录。
+    # 登记名与磁盘目录（slug）一致，避免多个包共用 frontmatter name 时互相覆盖。
     assert result["skill"]["name"] == "weather"
     assert result["skill"]["display_name"] == "Weather"
     local = manager.get_local_skills()
@@ -240,6 +239,52 @@ async def test_clawhub_download_records_owner_qualified_origin(tmp_path, monkeyp
         for item in local
     )
     assert any(item.get("display_name") == "Weather" for item in local)
+
+
+@pytest.mark.asyncio
+async def test_clawhub_download_registers_by_slug_when_frontmatter_name_collides(
+    tmp_path, monkeypatch
+):
+    """同 frontmatter name、不同 slug 的两次安装必须各自保留登记与 origin。"""
+    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    await manager.handle_skills_clawhub_set_token({"token": "test-token"})
+
+    shared_frontmatter = "---\nname: weather\ndescription: forecast\nversion: 1.0.0\n---\nbody\n"
+
+    async def _install(slug: str, owner: str, display: str, zip_root: str) -> dict:
+        zip_content = _zip_bytes({f"{zip_root}/SKILL.md": shared_frontmatter})
+        fake_client = _FakeDownloadClient(status_code=200, content=zip_content)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.skill.skill_manager.httpx.AsyncClient",
+            lambda timeout: fake_client,
+        )
+        return await manager.handle_skills_clawhub_download(
+            {"slug": slug, "owner_handle": owner, "display_name": display}
+        )
+
+    first = await _install("weather", "steipete", "Weather", "weather")
+    second = await _install(
+        "free-weather-api", "other", "WeatherCN", "free-weather-api"
+    )
+    third = await _install(
+        "shaojie66-weather", "shaojie66", "WeatherWttr", "shaojie66-weather"
+    )
+
+    assert first["success"] and second["success"] and third["success"]
+    assert first["skill"]["name"] == "weather"
+    assert second["skill"]["name"] == "free-weather-api"
+    assert third["skill"]["name"] == "shaojie66-weather"
+
+    local = {item["name"]: item for item in manager.get_local_skills()}
+    assert local["weather"]["origin"] == "clawhub:steipete/weather"
+    assert local["free-weather-api"]["origin"] == "clawhub:other/free-weather-api"
+    assert local["shaojie66-weather"]["origin"] == "clawhub:shaojie66/shaojie66-weather"
+
+    listed = await manager.handle_skills_list({"with_installed": False})
+    by_name = {item["name"]: item for item in listed["skills"] if item.get("origin")}
+    assert by_name["weather"]["origin"] == "clawhub:steipete/weather"
+    assert by_name["free-weather-api"]["origin"] == "clawhub:other/free-weather-api"
+    assert by_name["shaojie66-weather"]["origin"] == "clawhub:shaojie66/shaojie66-weather"
 
 
 @pytest.mark.asyncio

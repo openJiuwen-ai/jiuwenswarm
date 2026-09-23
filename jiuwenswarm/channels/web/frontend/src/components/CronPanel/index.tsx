@@ -443,7 +443,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 列宽调整状态：仅会话内有效，不持久化（刷新后恢复列配置默认值）
   const [colStates, setColStates] = useState<ColStates>(() => ({ ...DEFAULT_COL_STATE }));
   const [resizingColKey, setResizingColKey] = useState<ResizableColKey | null>(null);
-  const resizingCol = useRef<{ col: ResizableColKey; startX: number; startWidth: number } | null>(null);
+  const resizingCol = useRef<{ col: ResizableColKey; startX: number; startWidth: number; pendingWidth?: number } | null>(null);
   const tableRef = useRef<HTMLTableElement>(null);
 
   // Actions 列宽测量：fixed 布局下 auto 列会被平分剩余空间，需要量出按钮行实际内容宽度
@@ -477,14 +477,17 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           ? colStates[col].width
           : (colDef.width ?? minWidth);
       const startWidth = Math.max(minWidth, rendered > 0 ? rendered : configured);
-      if (!(colStates[col].hasResized && colStates[col].width === startWidth)) {
-        setColStates((prev) => ({ ...prev, [col]: { width: startWidth, hasResized: true } }));
-      }
-      resizingCol.current = { col, startX: e.clientX, startWidth };
+      const alreadyCommitted = colStates[col].hasResized && colStates[col].width === startWidth;
+      resizingCol.current = { col, startX: e.clientX, startWidth, pendingWidth: alreadyCommitted ? undefined : startWidth };
       setResizingColKey(col);
 
       const onMove = (move: MouseEvent) => {
         if (!resizingCol.current) return;
+        if (resizingCol.current.pendingWidth != null) {
+          const pw = resizingCol.current.pendingWidth;
+          resizingCol.current.pendingWidth = undefined;
+          setColStates((prev) => ({ ...prev, [col]: { width: pw, hasResized: true } }));
+        }
         const delta = move.clientX - resizingCol.current.startX;
         const newW = Math.max(minWidth, resizingCol.current.startWidth + delta);
         setColStates((prev) => {
@@ -874,7 +877,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         useCronStore.getState().setLastRunSessionId(confirmState.job.id, result.session_id);
         onSelectSession(result.session_id);
       }
-      setSuccess(t('cron.success.runNow'));
+      setSuccess(t(isProactiveJob ? 'cron.success.proactiveRunNow' : 'cron.success.runNow'));
       // 刷新左侧栏该定时任务下展开的 session 列表（project.get_cron_sessions）
       const { id: cronId, projectId } = confirmState.job;
       if (cronId && projectId) {
@@ -1138,6 +1141,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               )}
               <div ref={rowMenuJobId === job.id ? rowMenuRef : undefined}>
                 <button
+                  disabled={isProactive}
                   onClick={(e) => {
                     if (rowMenuJobId === job.id) {
                       closeRowMenu();
@@ -1149,11 +1153,13 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                     setRowMenuJobId(job.id);
                   }}
                   data-testid="cron-job-more-btn"
-                  className="flex items-center gap-0.5 text-sm text-cron-action-link hover:opacity-80"
+                  data-variant={isProactive ? 'disabled' : 'enabled'}
+                  className={`flex items-center gap-0.5 text-sm ${isProactive ? 'cursor-not-allowed text-text-muted/50' : 'text-cron-action-link hover:opacity-80'}`}
                 >
                   {t('cron.table.more')} <ChevronDown size={13} />
                 </button>
-                {rowMenuJobId === job.id &&
+                {!isProactive &&
+                  rowMenuJobId === job.id &&
                   rowMenuAnchor &&
                   createPortal(
                     <div

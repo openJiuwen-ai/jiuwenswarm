@@ -26,11 +26,7 @@ import {
 } from './modelAdapters';
 import { validateModelDraft } from './modelValidation';
 import { buildReasoningOptions, resolveModelReasoning } from './modelReasoning';
-import {
-  CONTEXT_WINDOW_1M_FIELD,
-  ONE_MILLION_CONTEXT_WINDOW_TOKENS,
-  formatContextWindowTokens,
-} from './contextWindow';
+import { ContextWindowField } from './ContextWindowField';
 
 type ConnectionFailure = {
   error: string;
@@ -117,7 +113,6 @@ export function ModelDialog({
   });
   const values = form.getValues();
   const errors = validateModelDraft(values, models, model?.origin_index, catalog, t);
-  const contextWindow1mEnabled = Boolean(values[CONTEXT_WINDOW_1M_FIELD]);
   const account = values.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
@@ -481,24 +476,22 @@ export function ModelDialog({
   formItems.push({
     name: 'context_window_tokens',
     label: t('settingsPanel.models.contextWindow'),
-    component: 'input',
-    type: 'text',
+    component: 'custom',
     required: true,
-    disabled: contextWindow1mEnabled,
-    placeholder: t('settingsPanel.models.contextWindowPlaceholder'),
     helpTips: t('settingsPanel.models.contextWindowHint'),
-  });
-  formItems.push({
-    name: CONTEXT_WINDOW_1M_FIELD,
-    label: t('settingsPanel.models.contextWindow1m'),
-    component: 'switch',
-    switchLabel: t('settingsPanel.models.contextWindow1m'),
-    helpTips: t('settingsPanel.models.contextWindow1mHint'),
-    description: t('settingsPanel.models.contextWindow1mWarning'),
-    onChange: (enabled) => {
-      if (enabled) form.setFieldValue('context_window_tokens', formatContextWindowTokens(ONE_MILLION_CONTEXT_WINDOW_TOKENS));
-      invalidateConnectionState();
-    },
+    onChange: invalidateConnectionState,
+    render: ({ id, value, error, disabled, onChange, onBlur }) => (
+      <ContextWindowField
+        id={id}
+        value={value}
+        error={error}
+        disabled={disabled}
+        placeholder={t('settingsPanel.models.contextWindowPlaceholder')}
+        presetLabel={t('settingsPanel.models.contextWindowPresets')}
+        onChange={onChange}
+        onBlur={onBlur}
+      />
+    ),
   });
   formItems.push({
     name: 'alias',

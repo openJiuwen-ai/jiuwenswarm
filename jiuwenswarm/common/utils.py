@@ -886,6 +886,14 @@ def ensure_config_migrated_from_template(
 
     版本号短路：用户 config.config_version == 程序 VERSION 时跳过迁移；
     不一致时迁移，迁移成功后由 migrate_config_from_template 把 config_version 写回程序版本。
+
+    合并为纯增量操作：只补齐模板新增项，不会删除用户 config.yaml 中
+    模板里没有的配置项（模板是示例文档而非 schema，其中本就包含留给
+    用户填写的开放式配置节）。因此本函数可以每次启动安全调用。
+
+    Merges newly added template keys into the user's config.yaml. The merge is
+    purely additive: keys the operator added that the template does not contain
+    are preserved, so this is safe to call on every start.
     """
     from jiuwenswarm.common.config import migrate_config_from_template, load_yaml_round_trip
     from jiuwenswarm.common._build_config import VERSION
@@ -2745,6 +2753,26 @@ def install_source_record_masking() -> None:
     _source_record_masking_installed = True
 
 
+def _reconfigure_stdio_utf8() -> None:
+    """把 ``sys.stdout`` / ``sys.stderr`` 原地重配置为 UTF-8。
+
+    Windows 控制台默认编码常为 cp1252，无法编码中文日志消息（例如扩展加载器的
+    ``[ExtensionLoader] 开始搜索扩展路径``），会导致 ``logging.StreamHandler.emit``
+    抛出 ``UnicodeEncodeError``；随后的 ``logging.handleError`` 想把异常栈打印到
+    ``sys.stderr``，又因同一编码问题二次失败，连锁中断启动。这里在日志体系初始化前
+    把标准流原地改为 UTF-8 + ``backslashreplace``，覆盖 emit / handleError / print 三个路径。
+    """
+    for _stream in (sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if not callable(_reconfigure):
+            continue
+        try:
+            _reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError, RuntimeError):
+            # 流已被使用 / 不支持重配置：忽略，保留原流，避免影响启动。
+            pass
+
+
 def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     """配置 ``jiuwenswarm`` 根日志：控制台 + 分组件文件 + 汇总 full.log（不含 gateway）。
 
@@ -2762,6 +2790,8 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
     （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
     """
+    # 必须在创建 StreamHandler 之前完成：cp1252 → UTF-8，否则中文日志会触发 UnicodeEncodeError。
+    _reconfigure_stdio_utf8()
     logs_root = get_logs_dir()
     logs_root.mkdir(parents=True, exist_ok=True)
 

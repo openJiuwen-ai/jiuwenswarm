@@ -218,7 +218,7 @@ def test_online_search_classifies_team_skills_hub_items():
     assert team_item["display_name"] == "research-team display"
 
 
-def test_online_search_keeps_ambiguous_clawhub_slugs_distinct():
+def test_online_search_collapses_ambiguous_clawhub_slugs():
     items = SkillManager._aggregate_online_search_results(
         "weather",
         {
@@ -231,11 +231,120 @@ def test_online_search_keeps_ambiguous_clawhub_slugs_distinct():
         10,
     )
 
-    assert len(items) == 2
-    assert {(item["identifier"], item["owner_handle"]) for item in items} == {
-        ("weather", "owner-a"),
-        ("weather", "owner-b"),
+    assert len(items) == 1
+    item = items[0]
+    assert item["identifier"] == "weather"
+    assert item["owner_handle"] == "owner-a"
+    assert item["description"] == "ClawHub first"
+    assert len(item["matched_sources"]) == 2
+    assert {entry.get("owner_handle") for entry in item["matched_sources"]} == {
+        "owner-a",
+        "owner-b",
     }
+
+
+def test_online_search_collapses_clawhub_slug_prefers_better_rank():
+    items = SkillManager._aggregate_online_search_results(
+        "weather",
+        {
+            "skillnet": [],
+            "clawhub": [
+                {**_clawhub_item("weather", "worse", owner_handle="owner-b"), "score": 1},
+                {**_clawhub_item("weather", "better", owner_handle="owner-a"), "score": 99},
+            ],
+        },
+        10,
+    )
+
+    # Enumerate assigns source_rank 1 then 2; lower rank wins regardless of native_score.
+    assert len(items) == 1
+    assert items[0]["owner_handle"] == "owner-b"
+    assert items[0]["description"] == "ClawHub worse"
+
+
+def test_online_search_collapses_clawhub_slug_prefers_higher_native_score_on_rank_tie():
+    first = SkillManager._normalize_online_search_item(
+        "clawhub",
+        {**_clawhub_item("weather", "low", owner_handle="owner-low"), "score": 1},
+        1,
+    )
+    second = SkillManager._normalize_online_search_item(
+        "clawhub",
+        {**_clawhub_item("weather", "high", owner_handle="owner-high"), "score": 50},
+        1,
+    )
+    assert SkillManager._online_search_item_preferred(second, first) is True
+    assert SkillManager._online_search_item_preferred(first, second) is False
+
+
+def test_online_search_collapses_same_presentation_across_slugs():
+    shared_summary = "Get current weather and forecasts (no API key required)."
+    items = SkillManager._aggregate_online_search_results(
+        "weather",
+        {
+            "skillnet": [],
+            "clawhub": [
+                {
+                    "slug": "weather",
+                    "display_name": "Weather",
+                    "summary": shared_summary,
+                    "version": "1.0.0",
+                    "updated_at": 1,
+                    "owner_handle": "steipete",
+                },
+                {
+                    "slug": "weather-fork",
+                    "display_name": "Weather",
+                    "summary": shared_summary,
+                    "version": "1.0.0",
+                    "updated_at": 1,
+                    "owner_handle": "other-owner",
+                },
+            ],
+        },
+        10,
+    )
+
+    assert len(items) == 1
+    assert items[0]["identifier"] == "weather"
+    assert items[0]["owner_handle"] == "steipete"
+    assert items[0]["display_name"] == "Weather"
+    assert items[0]["description"] == shared_summary
+    assert {entry.get("identifier") for entry in items[0]["matched_sources"]} == {
+        "weather",
+        "weather-fork",
+    }
+
+
+def test_online_search_keeps_same_title_when_descriptions_differ():
+    items = SkillManager._aggregate_online_search_results(
+        "weather",
+        {
+            "skillnet": [],
+            "clawhub": [
+                {
+                    "slug": "weather",
+                    "display_name": "Weather",
+                    "summary": "Get current weather and forecasts (no API key required).",
+                    "version": "1.0.0",
+                    "updated_at": 1,
+                    "owner_handle": "steipete",
+                },
+                {
+                    "slug": "weather-pro",
+                    "display_name": "Weather",
+                    "summary": "Premium weather alerts with radar.",
+                    "version": "1.0.0",
+                    "updated_at": 1,
+                    "owner_handle": "other-owner",
+                },
+            ],
+        },
+        10,
+    )
+
+    assert len(items) == 2
+    assert {item["identifier"] for item in items} == {"weather", "weather-pro"}
 
 
 def test_online_search_merges_identical_normalized_urls():

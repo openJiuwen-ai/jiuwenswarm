@@ -49,10 +49,10 @@ from jiuwenswarm.runtime.session_lifecycle import (
     SessionExecutionEvent,
     SessionExecutionFinishedEvent,
     SessionInactiveEvent,
+    SessionInputIntentDisposition,
+    SessionInputIntentEvent,
     SessionKind,
     SessionLifecycleTarget,
-    SessionPrepareDisposition,
-    SessionPrepareEvent,
 )
 from jiuwenswarm.runtime.session.model import SessionExecutionSnapshot
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
@@ -1721,6 +1721,22 @@ class AgentRuntime:
                 return
             if work_kind is SessionWorkKind.SESSION_INPUT:
                 async def idle_input():
+                    from jiuwenswarm.runtime.events import RuntimeEvent
+
+                    # Web stream clients need the idle disposition before ordinary output.
+                    # Unary clients must retain their single final response.
+                    if request.is_stream:
+                        yield RuntimeEvent(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id or "default",
+                            session_id=request.session_id,
+                            payload={
+                                "event_type": "runtime.accepted",
+                                "request_id": request.request_id,
+                                "session_id": request.session_id,
+                                "input_delivery": "chat",
+                            },
+                        )
                     if not request.is_stream:
                         for event in await self._invoke_started(
                             request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -1742,6 +1758,7 @@ class AgentRuntime:
                     lambda owner_channel: self._stream_session_input_started(request, owner_channel),
                     idle_input,
                     suspension_key=self._waiting_control_id,
+                    expected_execution_id=request.params.get("expected_execution_id"),
                 )
             else:
                 stream = self._session_coordinator.run_stream(
@@ -1767,6 +1784,7 @@ class AgentRuntime:
                 on_agent_ready=on_agent_ready,
                 agent_execution=_agent_execution,
             )
+        execution_id = None
         try:
             while True:
                 # Never keep a ContextVar token across a yield boundary.  An
@@ -1781,6 +1799,20 @@ class AgentRuntime:
                     return
                 finally:
                     reset_runtime_context(token)
+                if execution_id is None and work_kind is not None:
+                    snapshot = self._session_coordinator.snapshot_session(request.session_id or "default")
+                    executions = snapshot.executions if snapshot else ()
+                    execution = next(
+                        (item for item in reversed(executions) if item.request_id == request.request_id), None,
+                    )
+                    if execution is not None:
+                        execution_id = (
+                            execution.parent_execution_id
+                            if execution.work_kind is SessionWorkKind.SESSION_INPUT
+                            else execution.execution_id
+                        )
+                if execution_id is not None and isinstance(event.payload, dict):
+                    event.payload["execution_id"] = execution_id
                 yield event
         finally:
             token = set_runtime_context(self, self._agent_manager)
@@ -2281,6 +2313,25 @@ class AgentRuntime:
         from jiuwenswarm.agents.harness.team.team_manager import is_team_session_running
 
         return is_team_session_running(session_id)
+
+    def has_parked_team_streams(self, session_id: str) -> bool:
+        """Whether every pending chat request is parked on a released Team round.
+
+        A Team first-request handler stays alive for the whole persistent
+        leader stream; once its round was released it no longer owns team
+        work, only the parked response stream.  Lifecycle actions may pass
+        such handlers and leave that stream alone.  A request still
+        preparing or mid-round has no released-round marker, so mixed states
+        keep the Session running.
+        """
+        requests = getattr(self, "_pending_chat_requests", {}).get(session_id)
+        if not requests:
+            return False
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            team_session_has_parked_request,
+        )
+
+        return team_session_has_parked_request(session_id, requests)
 
     async def stop_session_for_archive(
         self, *, channel_id: str, session_id: str
@@ -2792,13 +2843,13 @@ class AgentRuntime:
                     exc,
                 )
 
-    async def record_session_prepare(
+    async def record_session_input_intent(
         self,
         request: AgentRequest,
         *,
         view_id: str = "default-view",
     ) -> str:
-        """Publish input intent and retain the established transport outcome."""
+        """Publish a transport-neutral user input intent to participants."""
         participants = self._participant_registry.snapshot_activity()
         if not participants:
             return "disabled"
@@ -2813,7 +2864,7 @@ class AgentRuntime:
             has_history = history_exists(target.descriptor.session_id)
         except Exception:
             has_history = False
-        event = SessionPrepareEvent(
+        event = SessionInputIntentEvent(
             target=target,
             has_history=has_history,
             view_id=view_id,
@@ -2829,11 +2880,11 @@ class AgentRuntime:
         failures = 0
         for participant in participants:
             try:
-                results.append(await participant.session_preparing(event))
+                results.append(await participant.session_input_intent(event))
             except Exception as exc:
                 failures += 1
-                logger.warning("Runtime activity session_preparing failed: %s", exc)
-        if SessionPrepareDisposition.SCHEDULED in results:
+                logger.warning("Runtime activity session_input_intent failed: %s", exc)
+        if SessionInputIntentDisposition.SCHEDULED in results:
             return "scheduled"
         if results:
             return "not_needed"

@@ -86,6 +86,12 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
     setRetrySeq((v) => v + 1);
   }
 
+  // 用户中途放弃连接/授权
+  function handleCancel() {
+    void useConnectorStore.getState().cancelConnectAction(name);
+    onCancel();
+  }
+
   const stepsTotal = step.stepsTotal ?? 1;
   const stepIndex = (step.stepIndex ?? 0) + 1;
   const hasUrl = !!step.authUrl;
@@ -100,7 +106,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
   return createPortal(
     <div data-connector-auth-modal="true" data-testid="connector-market-cli-auth-modal" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
       <div className="relative w-[420px] rounded-2xl bg-card p-6 shadow-xl">
-        <button type="button" onClick={onCancel} className="absolute right-5 top-5 text-text-muted hover:text-text" data-testid="connector-market-cli-auth-modal-close">
+        <button type="button" onClick={handleCancel} className="absolute right-5 top-5 text-text-muted hover:text-text" data-testid="connector-market-cli-auth-modal-close">
           <X size={18} />
         </button>
 
@@ -153,6 +159,16 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
             </button>
           </div>
         )}
+
+        <button
+          type="button"
+          onClick={handleCancel}
+          className="mt-4 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-border text-[13px] text-text hover:border-border-hover"
+          data-testid="connector-market-cli-auth-modal-cancel"
+        >
+          <X size={14} />
+          {t('connectorMarket.cliAuth.cancelConnect')}
+        </button>
       </div>
     </div>,
     document.body,

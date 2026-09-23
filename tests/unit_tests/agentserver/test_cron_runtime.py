@@ -1237,18 +1237,32 @@ class _FakeDispatchBackend:
     async def create_job(self, params: dict, *, context=None) -> dict:
         return {"id": "spawned", **params}
 
+    async def update_job(self, job_id: str, patch: dict, *, context=None) -> dict:
+        return {"id": job_id, **patch}
+
 
 class TestBuildToolsAllowCreate:
-    """cron 执行会话的受限工具集：创建能力必须下掉，管理能力保留。"""
+    """cron 执行会话的受限工具集：创建/修改能力必须下掉，管理能力保留。"""
 
-    def _build(self, allow_create: bool) -> list:
+    def _build(
+        self,
+        allow_create: bool,
+        language: str = "cn",
+        allow_update: bool = True,
+    ) -> list:
         bridge = CronRuntimeBridge()
         bridge.set_backend(_FakeDispatchBackend())
         return bridge.build_tools(
             context=CronToolContext(channel_id="web", session_id="sess-1"),
             agent_id="agent-1",
+            language=language,
             allow_create=allow_create,
+            allow_update=allow_update,
         )
+
+    @staticmethod
+    def _unified(tools: list):
+        return next(tool for tool in tools if tool.card.name == "cron")
 
     def test_allow_create_false_drops_cron_create_job(self) -> None:
         tools = self._build(allow_create=False)
@@ -1279,6 +1293,114 @@ class TestBuildToolsAllowCreate:
     @pytest.mark.asyncio
     async def test_unified_cron_tool_list_still_works_when_create_disabled(self) -> None:
         tools = self._build(allow_create=False)
+        unified = next(tool for tool in tools if tool.card.name == "cron")
+
+        result = await unified._func(action="list")
+
+        assert result == {"jobs": [{"id": "job-1"}]}
+
+    def test_allow_create_false_strips_add_from_unified_schema(self) -> None:
+        """统一 cron 工具的 schema 不再宣传 add：枚举摘除 + 描述声明不可用。"""
+        tools = self._build(allow_create=False)
+        unified = self._unified(tools)
+        action = unified.card.input_params["properties"]["action"]
+
+        assert "add" not in action["enum"]
+        assert {"status", "list", "update", "remove", "run", "runs", "wake"} <= set(
+            action["enum"]
+        )
+        assert "add（创建新定时任务）" in unified.card.description
+        # 描述里的 action 列表不再宣传 add，job 字段也不再以 add 为卖点。
+        assert "status、list、add、update" not in unified.card.description
+        assert "用于 add 的任务对象" not in unified.card.input_params["properties"]["job"]["description"]
+        assert "本会话不支持 add" in action["description"]
+
+    def test_allow_create_false_strips_add_from_unified_schema_en(self) -> None:
+        tools = self._build(allow_create=False, language="en")
+        unified = self._unified(tools)
+        action = unified.card.input_params["properties"]["action"]
+
+        assert "add" not in action["enum"]
+        assert "add (creating new cron jobs)" in unified.card.description
+        assert "status, list, add, update" not in unified.card.description
+        assert "Job object for add" not in unified.card.input_params["properties"]["job"]["description"]
+        assert "unavailable in this session: add" in action["description"]
+
+    def test_allow_create_true_keeps_add_in_unified_schema(self) -> None:
+        """普通会话的统一 cron 工具保持完整：add 仍在枚举与描述中。"""
+        tools = self._build(allow_create=True)
+        unified = self._unified(tools)
+        action = unified.card.input_params["properties"]["action"]
+
+        assert "add" in action["enum"]
+        assert "以下动作不可用" not in unified.card.description
+        assert "status、list、add、update" in unified.card.description
+
+    def test_cron_session_toolset_drops_update_tools_and_schema(self) -> None:
+        """cron 会话同时下架 update：独立工具、枚举值与描述宣传一并清除。"""
+        tools = self._build(allow_create=False, allow_update=False)
+        names = {tool.card.name for tool in tools}
+
+        assert "cron_create_job" not in names
+        assert "cron_update_job" not in names
+        assert {
+            "cron",
+            "cron_list_jobs",
+            "cron_get_job",
+            "cron_delete_job",
+            "cron_toggle_job",
+            "cron_preview_job",
+        } <= names
+        unified = self._unified(tools)
+        action = unified.card.input_params["properties"]["action"]
+
+        assert "add" not in action["enum"]
+        assert "update" not in action["enum"]
+        assert {"status", "list", "remove", "run", "runs", "wake"} <= set(action["enum"])
+        assert "add（创建新定时任务）" in unified.card.description
+        assert "update（修改定时任务）" in unified.card.description
+        assert "status、list、add、update" not in unified.card.description
+        props = unified.card.input_params["properties"]
+        assert "不支持 update" in props["patch"]["description"]
+        assert "不支持 add" in props["job"]["description"]
+
+    def test_cron_session_toolset_drops_update_schema_en(self) -> None:
+        tools = self._build(allow_create=False, language="en", allow_update=False)
+        unified = self._unified(tools)
+        action = unified.card.input_params["properties"]["action"]
+
+        assert "add" not in action["enum"]
+        assert "update" not in action["enum"]
+        assert "update (modifying cron jobs)" in unified.card.description
+        assert "status, list, add, update" not in unified.card.description
+        props = unified.card.input_params["properties"]
+        assert "update is unavailable" in props["patch"]["description"]
+
+    def test_allow_update_false_only_strips_update(self) -> None:
+        """只关 update 时 add 保持完整（创建/修改两个开关彼此独立）。"""
+        tools = self._build(allow_create=True, allow_update=False)
+        names = {tool.card.name for tool in tools}
+
+        assert "cron_create_job" in names
+        assert "cron_update_job" not in names
+        unified = self._unified(tools)
+        action = unified.card.input_params["properties"]["action"]
+
+        assert "add" in action["enum"]
+        assert "update" not in action["enum"]
+        assert "update（修改定时任务）" in unified.card.description
+
+    @pytest.mark.asyncio
+    async def test_unified_cron_tool_update_blocked_when_update_disabled(self) -> None:
+        tools = self._build(allow_create=False, allow_update=False)
+        unified = next(tool for tool in tools if tool.card.name == "cron")
+
+        with pytest.raises(ValueError, match="not allowed"):
+            await unified._func(action="update", jobId="job-1", patch={"name": "x"})
+
+    @pytest.mark.asyncio
+    async def test_unified_cron_tool_list_still_works_when_update_disabled(self) -> None:
+        tools = self._build(allow_create=False, allow_update=False)
         unified = next(tool for tool in tools if tool.card.name == "cron")
 
         result = await unified._func(action="list")

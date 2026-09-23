@@ -63,7 +63,7 @@ export function mergeSearchProgressJob(
   const incomingSequence = Math.max(0, ...incoming.map((entry) => entry.sequence));
   const keepStatus = existing && (
     incomingSequence < lastSequence
-    || existing.status === 'completed' || existing.status === 'failed'
+    || existing.status === 'completed' || existing.status === 'failed' || existing.status === 'cancelled'
     || (existing.status === 'running' && payload.status === 'queued')
   );
   const progressByKey = new Map(
@@ -100,6 +100,7 @@ export function selectSearchProgressJob(
 export function searchProgressOptionLabel(job: SearchProgressJob, position: number): string {
   const query = job.query.replace(/\s+/g, ' ').trim() || '未命名搜索';
   const summary = query.length > 26 ? `${query.slice(0, 26)}...` : query;
-  const status = job.status === 'queued' ? '排队中' : job.status === 'running' ? '进行中' : job.status === 'completed' ? '已完成' : '失败';
+  const status = { queued: '排队中', running: '进行中', completed: '已完成', failed: '失败',
+    waiting_user: '等待回答', cancelling: '停止中', cancelled: '已停止', unknown: '状态待核对' }[job.status];
   return `${position}. ${summary} (${status})`;
 }

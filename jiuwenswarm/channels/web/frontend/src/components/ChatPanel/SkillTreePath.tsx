@@ -15,6 +15,7 @@ import type {
 } from '../../types/skillTree';
 import './SkillTreePath.css';
 import { useProcessTreeCollapse } from './useProcessTreeCollapse';
+import { useTimelineRowState } from './timelineRowState';
 
 interface SkillTreePathProps {
   tree?: SkillTreePathData;
@@ -457,9 +458,10 @@ export function SkillTreePath({
   );
   const [collapsed, setCollapsed] = useProcessTreeCollapse(
     autoCollapse,
-    graph.queryLabel
+    graph.queryLabel,
+    'skill-tree-collapsed',
   );
-  const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(() => new Set());
+  const [expandedNodeIds, setExpandedNodeIds] = useTimelineRowState<Set<string>>('skill-expanded-nodes', () => new Set());
   const [newNodeIds, setNewNodeIds] = useState<Set<string>>(() => new Set());
   const previousNodeIdsRef = useRef<Set<string> | null>(null);
 

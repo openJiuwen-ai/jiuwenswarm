@@ -28,7 +28,7 @@ class HubInstallRecord:
     @classmethod
     def from_dict(cls, value: dict) -> "HubInstallRecord | None":
         raw_kind = value.get("kind")
-        if raw_kind not in {"agent_template", "plugin", "mcp"}:
+        if raw_kind not in {"agent_template", "agent_group", "plugin", "mcp"}:
             try:
                 raw_kind = resolve_hub_asset_kind(
                     str(value.get("plugin_type") or "")

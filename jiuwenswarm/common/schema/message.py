@@ -71,7 +71,7 @@ class ReqMethod(Enum):
     SESSION_CREATE = "session.create"
     SESSION_SWITCH = "session.switch"
     SESSION_DELETE = "session.delete"
-    SESSION_KVC_PREPARE = "session.kvc.prepare"
+    SESSION_INPUT_INTENT = "session.input.intent"
     SESSION_RENAME = "session.rename"
     SESSION_FORK = "session.fork"
     SESSION_REBIND_PROJECT = "session.rebind_project"
@@ -128,7 +128,8 @@ class ReqMethod(Enum):
     SESSION_UNARCHIVE = "session.unarchive"
     SESSION_ARCHIVED_LIST = "session.archived.list"
     CRON_SESSIONS_DELETE = "cron.sessions.delete"
-    PROJECT_DELETE = "project.delete"
+    PROJECT_REMOVE = "project.remove"
+    PROJECT_RESTORE = "project.restore"
     PROJECT_LIFECYCLE = "project.lifecycle"
     PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"
     PROJECT_SESSIONS_DELETE_ARCHIVED = "project.sessions.delete_archived"
@@ -175,6 +176,10 @@ class ReqMethod(Enum):
     CRON_COMMAND_ACK = "cron.command.ack"
     CRON_RUN_NOW_ACK = "cron.run_now.ack"
 
+    # Gateway owns voice task records; AgentServer returns execution facts/files.
+    VOICE_TASK_CHECKPOINT_ACK = "voice.task.checkpoint.ack"
+    VOICE_TASK_FILES = "voice.task.files"
+
     # HarmonyOS TUI DevEco bootstrap（Phase 3：用户态在目标 AgentServer 注入目录执行）
     HARMONYOS_PROJECT_INIT = "harmonyos.project_init"
     HARMONYOS_DEV_INIT = "harmonyos.dev_init"
@@ -207,6 +212,7 @@ class ReqMethod(Enum):
     MCP_UNINSTALL = "mcp.uninstall"
     MCP_CONNECT = "mcp.connect"
     MCP_WAIT_AUTH = "mcp.wait_auth"
+    MCP_CANCEL_CONNECT = "mcp.cancel_connect"
     MCP_DISCONNECT = "mcp.disconnect"
     MCP_REGISTER_CUSTOM = "mcp.register_custom"
     MCP_DELETE_CUSTOM = "mcp.delete_custom"
@@ -228,6 +234,7 @@ class ReqMethod(Enum):
     SKILLS_VISIBILITY_SET = "skills.visibility.set"
     SKILLS_VISIBILITY_UPDATE = "skills.visibility.update"
     SKILLS_INSTALL = "skills.install"
+    SKILLS_PACK_MEMBER_INSTALL = "skills.pack_member.install"
     SKILLS_IMPORT_LOCAL = "skills.import_local"
     SKILLS_IMPORT_UPLOAD = "skills.import_upload"
     SKILLS_CREATE_FROM_KNOWLEDGE = "skills.create_from_knowledge"
@@ -284,6 +291,9 @@ class ReqMethod(Enum):
         "personal_context.runtime.start_agent_use"
     )
     PERSONAL_CONTEXT_RUNTIME_STOP_AGENT_USE = "personal_context.runtime.stop_agent_use"
+    PERSONAL_CONTEXT_RUNTIME_SET_MASTER_ENABLED = (
+        "personal_context.runtime.set_master_enabled"
+    )
     PERSONAL_CONTEXT_RUNTIME_GET_CONFIG = "personal_context.runtime.get_config"
     PERSONAL_CONTEXT_RUNTIME_PATCH_CONFIG = "personal_context.runtime.patch_config"
     PERSONAL_CONTEXT_RUNTIME_SELECT_MODEL = "personal_context.runtime.select_model"
@@ -457,9 +467,12 @@ class EventType(Enum):
     SESSION_ARCHIVED = "session.archived"
     SESSION_UNARCHIVED = "session.unarchived"
     SESSION_DELETED = "session.deleted"
-    PROJECT_DELETED = "project.deleted"
     SESSION_LIFECYCLE_UPDATED = "session.lifecycle.updated"
     PROJECT_LIFECYCLE_UPDATED = "project.lifecycle.updated"
+    # 项目移除(软删除)/恢复：其会话与定时任务的可见性随之变化，
+    # 其他端必须据此刷新工作区、归档页与定时任务列表。
+    PROJECT_REMOVED = "project.removed"
+    PROJECT_RESTORED = "project.restored"
     CONNECTION_ACK = "connection.ack"
     HELLO = "hello"
     CHAT_DELTA = "chat.delta"

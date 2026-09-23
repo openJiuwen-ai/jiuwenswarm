@@ -72,12 +72,13 @@ import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveM
 import { webRequest } from './services/webClient';
 import { getArchiveErrorCode } from './features/workspace/archivedTaskClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
-import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
+import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import {
   AgentMode,
   MediaItem,
+  type ChatSendOptions,
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
@@ -402,9 +403,6 @@ function AppContent({
   );
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
-  const kvCacheAffinityEnabled = normalizeConfigBoolean(
-    serverConfig?.kv_cache_affinity_enabled,
-  );
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -452,29 +450,10 @@ function AppContent({
   const [missingSessionId, setMissingSessionId] = useState<string | null>(null);
   const startupUpdateCheckRef = useRef(false);
   const modelSetupGuideEvaluatedRef = useRef(false);
-  /** OAuth 回调恢复导航后标记，防止 fetchConfig 等后续逻辑覆盖 activeNav */
-  const oauthNavRestoredRef = useRef(false);
 
   useEffect(() => {
     tRef.current = t;
   }, [t]);
-
-  // OAuth 回调处理：页面加载时检测 URL 中的 code，自动换 token + 获取用户信息
-  useEffect(() => {
-    processOAuthCallback()
-      .finally(() => {
-        // 备份：OAuth 回调完成后再次确认导航（通常路由 effect 已设置）
-        const nav = sessionStorage.getItem('oauth_redirect_nav');
-        if (nav) {
-          sessionStorage.removeItem('oauth_redirect_nav');
-          oauthNavRestoredRef.current = true;
-          setActiveNav(nav as MainNavKey);
-          if (nav === 'skills') setHasVisitedSkills(true);
-        }
-        // 无论成功或失败都派发事件，SkillPanel 根据有无 oauth_error 决定显示错误或开抽屉
-        window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
-      });
-  }, []);
 
   useEffect(() => {
     if (activeNav === 'chat') {
@@ -540,8 +519,8 @@ function AppContent({
   const sideConversationRef = useRef<SideConversationState | null>(null);
   const sessionIdRef = useRef(sessionId);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const kvcViewIdRef = useRef(generateUuidV4());
-  const kvcPreparedInputSessionRef = useRef<string | null>(null);
+  const sessionViewIdRef = useRef(generateUuidV4());
+  const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
   const historyRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
   const subagentHistoryRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
@@ -583,9 +562,9 @@ function AppContent({
   useEffect(() => {
     sessionIdRef.current = sessionId;
     // A new foreground visit gets one fresh input-intent opportunity. Merely
-    // switching to the Session still does not prefetch; the first real editor
-    // insertion below does.
-    kvcPreparedInputSessionRef.current = null;
+    // switching to the Session does not publish input intent; the first real
+    // editor insertion below does.
+    inputIntentSessionRef.current = null;
     setHistoryLoadingMore(false);
     // Background cursor prefetch does not mutate the published timeline.  Treating
     // it as a visible prepend leaves a revisited Session unable to reveal batches
@@ -598,9 +577,9 @@ function AppContent({
     // Session is used elsewhere. In that case `sessionId` never changes, so
     // the per-visit input latch above would otherwise remain consumed by the
     // Session's initial turn. Re-arm only when this page returns to the
-    // foreground; focus/visibility alone still does not issue a prefetch.
+    // foreground; focus/visibility alone still does not publish input intent.
     const rearmInputIntent = () => {
-      kvcPreparedInputSessionRef.current = null;
+      inputIntentSessionRef.current = null;
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -640,21 +619,13 @@ function AppContent({
   } = useSingleAgentPanelState();
 
   useEffect(() => {
-    const oauthNav = sessionStorage.getItem('oauth_redirect_nav');
-    const targetNav = (oauthNav || 'chat') as MainNavKey;
-    if (oauthNav === 'skills') setHasVisitedSkills(true);
     if (route.kind === 'chat-session') {
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
-      setActiveNav(targetNav);
+      setActiveNav('chat');
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') {
-        if (oauthNav) {
-          // OAuth 重定向：用 replaceState 改 URL 但不触发 route 变化，避免 effect 重跑覆盖 activeNav
-          window.history.replaceState(null, '', '/chat/new');
-        } else {
-          navigate({ kind: 'chat-new' }, { replace: true });
-        }
+        navigate({ kind: 'chat-new' }, { replace: true });
       }
       pendingNewConversationRef.current = true;
       if (preserveSelectedProjectOnChatNewRef.current) {
@@ -664,26 +635,17 @@ function AppContent({
       }
       sessionIdRef.current = 'new';
       setSessionId('new');
-      setActiveNav(targetNav);
-      if (!oauthNav) {
-        setTeamAreaExpanded(false);
-        setSingleAgentPanelExpanded(false);
-      }
+      setActiveNav('chat');
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
     }
-  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded, setHasVisitedSkills]);
+  }, [navigate, route, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
     useChatStore.getState().setActiveSessionId(sessionId);
     useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
-
-  useEffect(() => {
-    if (!initialDataLoaded) {
-      return;
-    }
-    void loadProjects();
-  }, [initialDataLoaded, loadProjects]);
 
   const {
     setCurrentSession,
@@ -744,6 +706,7 @@ function AppContent({
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
+  const browserAgentActive = useBrowserAgentActivity(sessionId);
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
@@ -787,6 +750,20 @@ function AppContent({
     }
     setSingleAgentPanelExpanded(expanded);
   }, [mode, setSingleAgentPanelExpanded, setTeamAreaActiveTab, setTeamAreaExpanded, teamAreaActiveTab]);
+
+  const browserAutoExpandedSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!window.jiuwenDesktop?.isElectron || !browserAgentActive) return;
+    // Electron 内置浏览器页签只在浏览器 Agent 真正被调用后出现；每个会话只自动
+    // 展开一次，之后尊重用户手动收起的选择。team 模式不抢 tab，等回到单 agent
+    // 模式再展开。
+    if (mode === 'team') return;
+    if (browserAutoExpandedSessionRef.current === sessionId) return;
+    browserAutoExpandedSessionRef.current = sessionId;
+    setToolPanelHidden(false);
+    setSingleAgentPanelActiveTab('browser');
+    setSingleAgentPanelExpanded(true);
+  }, [browserAgentActive, mode, sessionId, setSingleAgentPanelActiveTab, setSingleAgentPanelExpanded, setToolPanelHidden]);
 
   const handleOpenCodeReview = useCallback((target: CodeReviewTarget) => {
     setHeartbeatPanelOpen(false);
@@ -971,7 +948,11 @@ function AppContent({
   const proactiveNotificationMessage = useHarnessStore((s) => s.proactiveNotificationMessage);
   const setProactiveNotification = useHarnessStore((s) => s.setProactiveNotification);
 
+  const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
   const toolPanelHasContent = useMemo(() => {
+    // Electron 下工具面板始终可达（内置浏览器页签等桌面能力），但新建会话首页
+    // 没有任何会话内容，悬浮收起条不应出现（tool-panel-collapsed 首页闪现 bug）。
+    if (isElectron) return sessionId !== NEW_CONVERSATION_ID;
     const hasMessages = messages.length > 0;
     const hasCodeEnvironment = sessionProject?.work_mode === 'code' && sessionId !== NEW_CONVERSATION_ID;
     switch (mode) {
@@ -985,7 +966,7 @@ function AppContent({
           || hasMessages
           || hasCodeEnvironment;
     }
-  }, [mode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
+  }, [isElectron, mode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
   // 单 agent 模式同样复用集群模式的展开布局（百分比宽度 + 可拖拽分割线），
   // 避免右侧面板与聊天面板平分空间导致宽度与集群模式不一致；auto_harness 走收起态分支。
   const panelExpanded = mode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
@@ -1332,8 +1313,10 @@ function AppContent({
             id: n.id,
             name: n.name,
             arguments: n.arguments,
+            outputOrder: n.outputOrder,
             description: n.description,
             formatted_args: n.formatted_args,
+            call_goal: n.call_goal,
             display_name: n.display_name,
             memberName: n.memberName,
             reviewer: n.reviewer,
@@ -1416,6 +1399,8 @@ function AppContent({
       const store = useChatStore.getState();
       const current = store.runtimes[sid]?.reasoningSegments ?? [];
       const currentItems = current.map((segment) => ({
+        // 后台逐批恢复会反复合并该列表；沿用 ID，避免已发布的折叠节点被重新挂载。
+        id: segment.id,
         at: new Date(segment.startedAt + 1).toISOString(),
         text: segment.text,
         agentTemplateName: segment.agentTemplateName,
@@ -1622,6 +1607,12 @@ function AppContent({
       const session = await request<Session>('session.get_metadata', {
         session_id: targetSessionId,
       });
+      if ((session as unknown as Record<string, unknown>).archived === true) {
+        if (sessionIdRef.current === targetSessionId) {
+          navigate({ kind: 'chat-new' }, { replace: true });
+        }
+        return null;
+      }
       const isSideConversation = Boolean(session.ephemeral && session.side_parent_session_id?.trim());
       if (isSideConversation) {
         useSessionStore.getState().removeSession(targetSessionId);
@@ -1705,7 +1696,7 @@ function AppContent({
       }
       return null;
     }
-  }, [registerSideConversation, request, setProcessing, setThinking, upsertSessionMetadata]);
+  }, [navigate, registerSideConversation, request, setProcessing, setThinking, upsertSessionMetadata]);
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
@@ -1718,7 +1709,7 @@ function AppContent({
       setConfigError(null);
       if (!modelSetupGuideEvaluatedRef.current) {
         modelSetupGuideEvaluatedRef.current = true;
-        if (!oauthNavRestoredRef.current && (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled))) {
+        if (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled)) {
           setActiveNav('chat');
           setModelSetupGuideStep(1);
         }
@@ -2046,6 +2037,34 @@ function AppContent({
     })();
   }, [fetchConfig, initialDataLoaded, isConnected]);
 
+  const initialProjectsLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (!initialDataLoaded || !isConnected || initialProjectsLoadedRef.current) {
+      return;
+    }
+    let cancelled = false;
+    const retryDelaysMs = [2000, 5000, 10000, 15000, 30000];
+    const run = async () => {
+      if (await loadProjects()) {
+        if (!cancelled) initialProjectsLoadedRef.current = true;
+        return;
+      }
+      for (const delayMs of retryDelaysMs) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (cancelled) return;
+        if (await loadProjects()) {
+          if (!cancelled) initialProjectsLoadedRef.current = true;
+          return;
+        }
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialDataLoaded, isConnected, loadProjects]);
+
   useEffect(() => {
     if (!isConnected || !routeSessionId) {
       setMissingSessionId(null);
@@ -2269,8 +2288,10 @@ function AppContent({
                 id: n.id,
                 name: n.name,
                 arguments: n.arguments,
+            outputOrder: n.outputOrder,
                 description: n.description,
                 formatted_args: n.formatted_args,
+                call_goal: n.call_goal,
                 display_name: n.display_name,
                 memberName: n.memberName,
                 reviewer: n.reviewer,
@@ -2613,7 +2634,10 @@ function AppContent({
     setCurrentSession(null);
     setTeamAreaExpanded(false);
     setSingleAgentPanelExpanded(false);
-    navigate({ kind: 'chat-new' });
+    navigate(
+      { kind: 'chat-new' },
+      options.replaceHistory ? { replace: true } : undefined,
+    );
     setActiveNav('chat');
     requestComposerFocus();
   }, [disposeInFlightHistoryHandles, mode, navigate, requestComposerFocus, setCurrentSession, setSelectedProject, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
@@ -2656,24 +2680,20 @@ function AppContent({
     enterNewConversation(targetMode);
   }, [enterNewConversation, setMode]);
 
-  const handleKVCInputIntent = useCallback((targetSessionId: string) => {
-    // OFF must remain the ordinary JiuwenSwarm path: do not emit even the
-    // best-effort prepare control request. AgentServer keeps its own gate as
-    // a fail-closed boundary for stale or non-Web clients.
-    if (!kvCacheAffinityEnabled) return;
+  const handleSessionInputIntent = useCallback((targetSessionId: string) => {
     if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return;
-    if (kvcPreparedInputSessionRef.current === targetSessionId) return;
+    if (inputIntentSessionRef.current === targetSessionId) return;
 
-    // Leading-edge intent: start prefetch on the first real insertion instead
-    // of waiting until the user stops typing. InputArea reports beforeinput,
-    // paste and input as browser-compatible fallbacks; this latch collapses
-    // them into one control request for the current foreground visit.
-    kvcPreparedInputSessionRef.current = targetSessionId;
+    // Publish on the first real insertion instead of waiting until the user
+    // stops typing. InputArea reports beforeinput, paste and input as browser-
+    // compatible fallbacks; this latch collapses them into one lifecycle
+    // notification for the current foreground visit.
+    inputIntentSessionRef.current = targetSessionId;
     const runtime = useSessionStore.getState().getRuntime(targetSessionId);
-    void request<{ scheduled?: boolean; outcome?: string }>('session.kvc.prepare', {
+    void request<{ scheduled?: boolean; outcome?: string }>('session.input.intent', {
       session_id: targetSessionId,
       intent_id: generateUuidV4(),
-      view_id: kvcViewIdRef.current,
+      view_id: sessionViewIdRef.current,
       mode: resolvePlanWireMode(
         runtime?.mode ?? mode,
         usePlanStore.getState().isActive(targetSessionId),
@@ -2681,18 +2701,18 @@ function AppContent({
       ),
     }).then((response) => {
       if (response?.outcome === 'failed'
-          && kvcPreparedInputSessionRef.current === targetSessionId) {
-        kvcPreparedInputSessionRef.current = null;
+          && inputIntentSessionRef.current === targetSessionId) {
+        inputIntentSessionRef.current = null;
       }
     }).catch((error) => {
       // Allow the next editor event to retry when the control request itself
-      // could not reach AgentServer. KVC remains an optional optimization.
-      if (kvcPreparedInputSessionRef.current === targetSessionId) {
-        kvcPreparedInputSessionRef.current = null;
+      // could not reach AgentServer. Lifecycle extensions remain optional.
+      if (inputIntentSessionRef.current === targetSessionId) {
+        inputIntentSessionRef.current = null;
       }
-      console.debug('session.kvc.prepare skipped:', error);
+      console.debug('session.input.intent skipped:', error);
     });
-  }, [kvCacheAffinityEnabled, mode, request]);
+  }, [mode, request]);
 
   const handleUseAgent = useCallback((agentId: string) => {
     enterNewConversation('agent', { forceMode: 'agent' });
@@ -2739,7 +2759,7 @@ function AppContent({
         is_swarm: runtimeSettings.mode === 'team',
         title: createConversationTitle(initialTitle).slice(0, 100),
         work_mode: workContext.work_mode,
-        view_id: kvcViewIdRef.current,
+        view_id: sessionViewIdRef.current,
         persist_session: false,
       };
       const previousSession = newConversationPreviousSessionRef.current;
@@ -2820,9 +2840,13 @@ function AppContent({
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: groupId });
   }, [enterNewConversation]);
 
-  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
+  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
+    if (options?.queuedTaskId) {
+      await sendMessage(content, currentSessionId, mediaItems, options);
+      return;
+    }
     if (currentSessionId === NEW_CONVERSATION_ID) {
       const persistCommand = parsePersistSessionCommand(content);
       if (persistCommand.persistSession && !persistCommand.content) {
@@ -2870,7 +2894,7 @@ function AppContent({
           is_swarm: runtimeSettings.mode === 'team',
           title: createConversationTitle(messageContent).slice(0, 100),
           work_mode: workContext.work_mode,
-          view_id: kvcViewIdRef.current,
+          view_id: sessionViewIdRef.current,
           persist_session: runtimeSettings.persistSession,
         };
         const previousSession = newConversationPreviousSessionRef.current;
@@ -3158,7 +3182,7 @@ function AppContent({
             previous_session_id: previousSessionId,
             previous_mode: previousMode,
             mode: resolvedMode,
-            view_id: kvcViewIdRef.current,
+            view_id: sessionViewIdRef.current,
           });
         } catch (error) {
           if (isTeamAgentMode(resolvedMode)) {
@@ -3740,7 +3764,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onStartSideConversation={handleStartSideConversation}
                         continuedFromSessionId={continuedFromSessionId}
                         onOpenContinuedFromSession={handleOpenContinuedFromSession}
-                        onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
+                        onInputIntent={handleSessionInputIntent}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}
                         onInterrupt={handleInterrupt}
@@ -4012,10 +4036,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-page-body">
             <div className="page-content">
               <ConnectorMarketPanel
-                applicationPlugins={applicationPlugins}
-                applicationPluginsLoading={applicationPluginState.loading}
-                applicationPluginsError={applicationPluginState.error}
-                onRefreshApplicationPlugins={applicationPluginState.refresh}
                 onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                   detail: {
                     skillName: 'plugin-creator',
@@ -4218,6 +4238,10 @@ function AppWithAuth({
   const [remote, setRemote] = useState(false);
 
   useEffect(() => {
+    if (window.jiuwenDesktop?.isElectron) {
+      setAuthStatus('noIam');
+      return;
+    }
     let cancelled = false;
     // 先拿 web-config: 如果 iam_enabled=false, 直接跳过鉴权探测
     fetch('/api/web-config', { credentials: 'same-origin' })

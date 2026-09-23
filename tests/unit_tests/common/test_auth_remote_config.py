@@ -230,9 +230,27 @@ def test_first_fetch_is_retried_after_the_cooldown(monkeypatch):
     assert get_config() is None, "冷却期内不再重试"
     assert calls["n"] == 1
 
-    remote_config._last_failure_at = time.time() - remote_config._RETRY_AFTER_FAILURE_S - 1
+    remote_config._last_failure_at = time.time() - remote_config._retry_after_s - 1
     _serve(monkeypatch, FULL)
     assert get_config() is not None, "冷却期过了要再试一次"
+
+
+def test_cooldown_backs_off_while_the_service_stays_down():
+    base = remote_config._RETRY_AFTER_FAILURE_S
+    jitter = remote_config._RETRY_JITTER
+    cap = remote_config._RETRY_BACKOFF_MAX_S
+
+    waits = []
+    for _ in range(12):
+        wait, base = remote_config._backoff(base)
+        waits.append(wait)
+
+    assert waits[0] <= remote_config._RETRY_AFTER_FAILURE_S * (1 + jitter), "第一次仍是 30 秒上下"
+    # 只比封顶之前的几次：到了封顶值，抖动会让后一次可能略短于前一次
+    assert all(waits[index] < waits[index + 1] for index in range(4)), "连续失败要越等越久"
+    assert all(wait <= cap * (1 + jitter) for wait in waits), "封顶 10 分钟"
+    assert waits[-1] >= cap * (1 - jitter), "一直失败下去会走到封顶值"
+    assert base == cap, "基准也停在封顶值，不会无限涨"
 
 
 def test_http_error_is_treated_as_a_failure(monkeypatch):

@@ -45,7 +45,7 @@ export type AgentDetail = AgentCatalogItem & {
   pendingConnectors: string[];
 };
 
-export type AgentGroupSource = 'builtin' | 'local';
+export type AgentGroupSource = 'builtin' | 'local' | 'hub';
 
 export type AgentGroupMember = {
   id: string;
@@ -122,13 +122,25 @@ export type DefinitionFileEntry = {
 
 export type AgentFileContent = {
   relativePath: string;
-  content: string;
+  content: string | null;
+  downloadUrl?: string | null;
 };
 
 export type SkillOption = {
   id: string;
   name: string;
   description: string;
+  source?: string;
+  installed?: boolean;
+  /** Raw SKILL.md frontmatter kind, including swarm-skill/team-skill. */
+  kind?: string;
+  skillType?: string;
+  /** SkillHub marketplace type, used for uninstalled market entries. */
+  pluginType?: string;
+  /** Stable TeamSkillsHub asset identity used by the marketplace install API. */
+  hubAssetId?: string;
+  marketplace?: string;
+  installSpec?: string;
 };
 
 export type McpOption = {
@@ -139,6 +151,10 @@ export type McpOption = {
   integrationType: string;
   connectionState: string;
   source: string;
+  runtimePackageName?: string;
+  hubAssetId?: string;
+  installed?: boolean;
+  icon?: string | null;
 };
 
 export type AgentDraft = {

@@ -8,6 +8,16 @@ export function getWebSlashCommandsForMode<T extends { name: string }>(commands:
   return supportsWebSlashCommands(mode) ? commands : commands.filter((command) => command.name.toLowerCase() === 'new');
 }
 
+/** 命令说明由后端维护；旧服务端或缺少当前语言时回退到原 description。 */
+export function resolveSlashCommandDescription(
+  command: { description: string; description_i18n?: Record<string, string> },
+  language: string,
+): string {
+  const locale = language.trim().toLowerCase().replace(/_/g, '-');
+  const descriptions = command.description_i18n;
+  return descriptions?.[locale] || descriptions?.[locale.split('-')[0]] || command.description;
+}
+
 type GoalWithStatus = { status: string };
 
 /** Plan 与 Goal 的共同互斥判定：只有已完成目标不阻止进入 Plan。 */

@@ -31,6 +31,8 @@ from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
 )
 from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import SshRelaySession
 
+from jiuwenswarm.extensions.yuanrong_frontend_client import YuanrongAgentApiError
+
 from tests.unit_tests.extensions.test_agentos_router import (
     FakeRegistryClient,
     FakeYuanRongClient,
@@ -1061,6 +1063,99 @@ async def test_ssh_relay_connect_auth_failure_keeps_sandbox() -> None:
         assert registry.unregistered == []
         agents = await agent_manager.list_user_agents("alice")
         assert len(agents) == 1
+    finally:
+        await client.shutdown()
+
+
+class _GateDeleteYuanRong(FakeYuanRongClient):
+    """delete_sandbox 卡住，模拟北向 cancel 打在清理链 await 上。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.delete_started = asyncio.Event()
+        self.delete_continue = asyncio.Event()
+
+    async def delete_sandbox(self, sandbox_id: str) -> None:
+        self.delete_started.set()
+        await self.delete_continue.wait()
+        await super().delete_sandbox(sandbox_id)
+
+
+@pytest.mark.asyncio
+async def test_ssh_relay_cleanup_survives_northbound_cancel() -> None:
+    """RELSSH-001b：北向取消 relay 不得打断南向不可达触发的强制清理。"""
+    yuanrong = _GateDeleteYuanRong()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    client = AgentOSRouterClient(
+        yuanrong,
+        registry,
+        agent_manager,
+        ssh_relay=ConnectFailsRelay(ConnectionRefusedError("SSH connection closed")),
+    )
+    session = _relay_session("ssh_cancel_cleanup")
+    try:
+        response = await client.send_request(
+            _ssh_envelope(session, agent_type="opencode")
+        )
+        assert response.ok
+        await asyncio.wait_for(session.done.wait(), timeout=5)
+        await asyncio.wait_for(yuanrong.delete_started.wait(), timeout=5)
+
+        relay_task = session.relay_task
+        assert relay_task is not None and not relay_task.done()
+        relay_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(relay_task, timeout=5)
+
+        yuanrong.delete_continue.set()
+        pending = [task for task in client._background_tasks if not task.done()]
+        if pending:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=5,
+            )
+
+        assert yuanrong.delete_calls == ["sbx-1"]
+        assert len(registry.unregistered) == 1
+        assert await agent_manager.list_user_agents("alice") == []
+    finally:
+        yuanrong.delete_continue.set()
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_thirdagent_switch_cleans_dead_runtime_on_instance_unavailable() -> None:
+    """wait_running 确认实例不存在时强制清残留 runtime，下次 switch 才能自愈。"""
+
+    class _MissingInstance(FakeYuanRongClient):
+        async def wait_until_running(self, instance_id: str) -> dict:
+            self.wait_running_calls.append(instance_id)
+            raise YuanrongAgentApiError(
+                f"agent instance not running after 60s: "
+                f"instance_id={instance_id}, last=instance not found"
+            )
+
+    yuanrong = _MissingInstance()
+    agent_manager = AgentManager()
+    client = AgentOSRouterClient(
+        yuanrong,
+        FakeRegistryClient(),
+        agent_manager,
+        ssh_relay=StubSshRelay(),
+        ssh_channel_endpoint=SshChannelEndpoint(ip="0.0.0.0", port=2222),
+    )
+    try:
+        response = await client.thirdagent_switch(
+            user_id="alice",
+            agent_type="opencode",
+            session_id="sess-1",
+        )
+        assert response["ok"] is False
+        assert response["code"] == "SSH_NOT_READY"
+        assert yuanrong.create_calls == 1
+        assert yuanrong.delete_calls == ["sbx-1"]
+        assert await agent_manager.list_user_agents("alice") == []
     finally:
         await client.shutdown()
 

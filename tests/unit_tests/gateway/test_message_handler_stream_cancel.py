@@ -121,13 +121,15 @@ def _chat_send_message(
     )
 
 
-def _team_transport_message(*, request_id: str, method: ReqMethod, ws_id: str) -> Message:
+def _team_transport_message(
+    *, request_id: str, method: ReqMethod, ws_id: str, mode: str = "team"
+) -> Message:
     return Message(
         id=request_id,
         type="req",
         channel_id="web",
         session_id="sess-godview",
-        params={"mode": "team"},
+        params={"mode": mode},
         timestamp=0.0,
         ok=True,
         req_method=method,
@@ -908,12 +910,36 @@ async def test_godview_registration_is_unique_per_websocket() -> None:
     assert len(subscriptions) == 2
 
 
+@pytest.mark.asyncio
+async def test_godview_registers_for_two_segment_team_work_mode() -> None:
+    """issue #4168: mode="team.work" must register GodView too."""
+    handler = _TestMessageHandler.create()
+
+    await handler._maybe_register_godview(
+        _team_transport_message(
+            request_id="web-team-work",
+            method=ReqMethod.CHAT_SEND,
+            ws_id="web-ws-team-work",
+            mode="team.work",
+        )
+    )
+
+    registry = handler.get_session_sharing_registry()
+    subscriptions = registry.lookup_member("sess-godview", SubRole.GODVIEW)
+    assert len(subscriptions) == 1
+    assert subscriptions[0].delivery.ws_id == "web-ws-team-work"
+
+
 @pytest.mark.parametrize(
     "mode,expected",
     [
         ("team", True),
         ("code.team", True),
         ("team.plan", True),
+        # issue #4168: shorthand names must count as team modes.
+        ("team.work", True),
+        ("team.normal", True),
+        ("team.code", True),
         ("agent.plan", False),
         ("agent.fast", False),
         ("code.plan", False),
@@ -933,6 +959,8 @@ def test_is_team_mode(mode: str, expected: bool) -> None:
         ("team", True),
         ("code.team", True),
         ("team.plan", True),
+        ("team.work", True),
+        ("team.code", True),
         ("agent.plan", False),
     ],
 )

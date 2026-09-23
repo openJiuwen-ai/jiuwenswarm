@@ -26,7 +26,7 @@ from jiuwenswarm.agents.harness.common.tools.web_file_download import (
 )
 from jiuwenswarm.channels.web import app_web
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
-from jiuwenswarm.gateway.routing import agent_http_bridge
+from jiuwenswarm.common.client import agent_http_bridge
 from jiuwenswarm.server.agent_ws_server import _parse_single_byte_range
 
 

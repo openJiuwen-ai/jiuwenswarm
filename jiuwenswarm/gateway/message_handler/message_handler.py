@@ -63,6 +63,7 @@ from jiuwenswarm.common.mode_matrix import (
     NEW_CANONICAL_MODES,
     NEW_TEAM_CODE_NORMAL,
     deprecate_mode,
+    is_team_mode,
 )
 from jiuwenswarm.gateway.hooks.handler import GatewayHookHandler
 from jiuwenswarm.gateway.routing.keys import RoutingKey, AgentRef, make_delivery_target
@@ -80,6 +81,16 @@ _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
 # 故白名单必须显式并入 MODE_ALIASES.keys()，否则会被前置校验判「非法指令」。
 _VALID_MODE_INPUTS: frozenset[str] = frozenset(
     NEW_CANONICAL_MODES | set(DEPRECATION_MAP.keys()) | set(MODE_ALIASES.keys())
+)
+# issue #4168: an unknown "team.*" mode is refused with the valid values
+# listed. The gateway would treat it as a plain chat while the AgentServer
+# runs it as a team round, leaving the client spinning forever.
+_KNOWN_TEAM_MODE_INPUTS: tuple[str, ...] = tuple(
+    sorted(mode for mode in _VALID_MODE_INPUTS if is_team_mode(mode))
+)
+_UNKNOWN_TEAM_MODE_NOTICE = (
+    "不支持的模式 '{mode}'：以 team 开头的 mode 必须是已知的 Team 模式"
+    "（{valid}）。请修正 mode 后重试。"
 )
 # ACP: one in-flight chat replaces any prior work on that channel.
 # TUI/CLI 已移除此列表：多窗口 TUI 各自维护独立 session，互不干扰。
@@ -185,8 +196,6 @@ class ChannelMode(str, Enum):
     @classmethod
     def is_team_mode(cls, mode: str) -> bool:
         """Return True if *mode* resolves to any team variant (case-insensitive)."""
-        from jiuwenswarm.common.mode_matrix import is_team_mode
-
         return is_team_mode(mode)
 
 
@@ -674,6 +683,56 @@ class MessageHandler(ABC):
         if not isinstance(msg.params, dict):
             return False
         return ChannelMode.is_team_mode(str(msg.params.get("mode") or ""))
+
+    @classmethod
+    def _is_unknown_team_mode_send(cls, msg: "Message") -> bool:
+        """True when a chat.send mode starts with "team" but is not a known team mode.
+
+        Only team.* is tightened; other unknown modes keep the lenient path.
+        """
+        if not cls._is_chat_send_message(msg):
+            return False
+        params = msg.params if isinstance(msg.params, dict) else {}
+        mode = str(params.get("mode") or "").strip().lower()
+        if not mode or mode.split(".", 1)[0] != "team":
+            return False
+        return not ChannelMode.is_team_mode(mode)
+
+    async def _reject_unknown_team_mode_send(self, msg: "Message") -> None:
+        """Reply with an error listing the known team modes."""
+        from jiuwenswarm.common.schema.message import EventType, Message
+
+        params = msg.params if isinstance(msg.params, dict) else {}
+        mode = str(params.get("mode") or "").strip()
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else None
+        out = Message(
+            id=msg.id,
+            type="event",
+            channel_id=msg.channel_id,
+            session_id=msg.session_id,
+            params={},
+            timestamp=time.time(),
+            ok=False,
+            payload={
+                "event_type": EventType.CHAT_ERROR.value,
+                "error": _UNKNOWN_TEAM_MODE_NOTICE.format(
+                    mode=mode, valid=", ".join(_KNOWN_TEAM_MODE_INPUTS)
+                ),
+                "code": "UNKNOWN_TEAM_MODE",
+                "is_complete": True,
+            },
+            event_type=EventType.CHAT_ERROR,
+            metadata=metadata,
+            enable_streaming=False,
+        )
+        await self.publish_robot_messages(out)
+        logger.warning(
+            "[MessageHandler] rejected unknown team.* chat.send: "
+            "channel_id=%s session_id=%s mode=%s",
+            msg.channel_id,
+            msg.session_id,
+            mode,
+        )
 
     @classmethod
     def _is_unsupported_non_stream_team_send(cls, msg: "Message") -> bool:
@@ -3168,6 +3227,11 @@ class MessageHandler(ABC):
         else:
             session_id = self._stream_sessions.get(rid)
 
+        from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import EVENT, handle_checkpoint_push
+
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == EVENT:
+            await handle_checkpoint_push(self.agent_client, chunk, session_id)
+            return
         if await self._handle_trajectory_update_push(chunk, session_id):
             return
         
@@ -4227,10 +4291,13 @@ class MessageHandler(ABC):
                     msg.params["input_mode"] = resolve_session_input_mode(msg.params).value
                     msg.params.pop("runtime_mode", None)
 
-                # mode is only known after _apply_channel_state, so the team /
-                # non-streaming combination is refused here — before GodView
-                # registration, which would otherwise subscribe for a round
-                # that never runs.
+                # mode is only known after _apply_channel_state, so the team
+                # guards (unknown team.* mode / non-streaming) refuse here —
+                # before GodView registration, which would otherwise subscribe
+                # for a round that never runs.
+                if self._is_unknown_team_mode_send(msg):
+                    await self._reject_unknown_team_mode_send(msg)
+                    continue
                 if self._is_unsupported_non_stream_team_send(msg):
                     await self._reject_non_stream_team_send(msg)
                     continue

@@ -38,12 +38,24 @@ logger = logging.getLogger(__name__)
 
 
 def _attribute_session_project(
-    metadata: dict[str, Any], visible_project_ids: set[str]
+    metadata: dict[str, Any],
+    visible_project_ids: set[str],
+    removed_project_ids: set[str] = frozenset(),
 ) -> str:
-    """Return the visible project ID, or the matching virtual default project."""
+    """Return the owning project ID, ``""`` for a removed project, or the default.
+
+    Removed (hidden) projects keep their sessions on disk, but those sessions
+    must not surface: returning ``""`` makes every caller skip them instead of
+    filing them under the virtual default project.  Sessions whose project
+    record is missing entirely, or that carry no ``project_id`` at all, still
+    fall back to the default project so legacy metadata stays readable.
+    """
     project_id = str(metadata.get("project_id") or "")
-    if project_id and project_id in visible_project_ids:
-        return project_id
+    if project_id:
+        if project_id in visible_project_ids:
+            return project_id
+        if project_id in removed_project_ids:
+            return ""
     return (
         DEFAULT_PROJECT_ID_CODE
         if str(metadata.get("work_mode") or "") == DEFAULT_TUI_WORK_MODE
@@ -85,6 +97,7 @@ def _project_info_payload(
             "pinned": False,
             "pin_order": 0,
             "is_default": True,
+            "hidden": False,
             "lifecycle_operation": None,
             "execution_blocked": False,
             "stop_pending": False,
@@ -107,6 +120,7 @@ def _project_info_payload(
         "pinned": project.pinned,
         "pin_order": project.pin_order,
         "is_default": False,
+        "hidden": project.hidden,
         **lifecycle_projection("project", project.project_id),
         "work_mode": getattr(project, "work_mode", "") or DEFAULT_WEB_WORK_MODE,
         "git": git,
@@ -118,13 +132,20 @@ def _project_info_payload(
     }
 
 
+def _split_project_ids(projects: list[Any]) -> tuple[set[str], set[str]]:
+    """Return ``(visible, removed)`` project ID sets from the registry."""
+    visible = {project.project_id for project in projects if not project.hidden}
+    removed = {project.project_id for project in projects if project.hidden}
+    return visible, removed
+
+
 def _load_project_info(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
     project_id = str(params.get("project_id") or "").strip()
     if not project_id:
         return None, "project_id is required", "BAD_REQUEST"
 
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects}
+    visible_project_ids, removed_project_ids = _split_project_ids(all_projects)
     stats: dict[str, Any] = {
         "session_count": 0,
         "last_message_at": None,
@@ -133,7 +154,9 @@ def _load_project_info(params: dict[str, Any]) -> tuple[dict[str, Any] | None, s
     for session in collect_all_sessions_metadata():
         if session.get("channel_id") != "web" or session.get("pinned") or session.get("cron_id"):
             continue
-        if _attribute_session_project(session, visible_project_ids) != project_id:
+        if _attribute_session_project(
+            session, visible_project_ids, removed_project_ids
+        ) != project_id:
             continue
         stats["session_count"] += 1
         for key in ("last_message_at", "last_user_message_at"):
@@ -146,21 +169,32 @@ def _load_project_info(params: dict[str, Any]) -> tuple[dict[str, Any] | None, s
         info = _project_info_payload(None, default_id=project_id, stats=stats)
         return {"project": info, **info}, None, None
 
+    include_hidden = bool(params.get("include_hidden"))
     project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None:
+    if project is None or (project.hidden and not include_hidden):
         return None, "project not found", "NOT_FOUND"
     info = _project_info_payload(project, stats=stats)
     return {"project": info, **info}, None, None
 
 
 def _load_pinned_sessions() -> dict[str, Any]:
-    """Return the Web projection of pinned sessions from this user's directory."""
+    """Return the Web projection of pinned sessions from this user's directory.
+
+    Sessions of a removed project are left out: removing a project hides its
+    content, pinned conversations included.  Their ``pinned`` flag stays in the
+    session metadata, so restoring the project puts them back in the pinned
+    area without any bookkeeping here.
+    """
+    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
+    _, removed_project_ids = _split_project_ids(all_projects)
     sessions = collect_all_sessions_metadata()
-    pinned = [
-        session
-        for session in sessions
-        if session.get("pinned") and session.get("channel_id") == "web"
-    ]
+    pinned = []
+    for session in sessions:
+        if not session.get("pinned") or session.get("channel_id") != "web":
+            continue
+        if str(session.get("project_id") or "") in removed_project_ids:
+            continue
+        pinned.append(session)
     pinned.sort(key=lambda session: int(session.get("pin_order", 0) or 0))
     return {"sessions": [to_session_info(session) for session in pinned]}
 
@@ -212,17 +246,19 @@ def _load_project_sessions(
         return None, "project_id is required", "BAD_REQUEST"
     limit, offset = _parse_page(params)
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects}
+    visible_project_ids, removed_project_ids = _split_project_ids(all_projects)
     if not is_default_project_id(project_id):
         project = project_store.get_project_by_id(project_id, cache_bust=True)
-        if project is None:
+        if project is None or project.hidden:
             return None, "project not found", "NOT_FOUND"
 
     matched: list[dict[str, Any]] = []
     for session in collect_all_sessions_metadata():
         if session.get("pinned") or session.get("cron_id") or session.get("channel_id") != "web":
             continue
-        if _attribute_session_project(session, visible_project_ids) != project_id:
+        if _attribute_session_project(
+            session, visible_project_ids, removed_project_ids
+        ) != project_id:
             continue
         matched.append(session)
     matched.sort(
@@ -252,16 +288,18 @@ def _load_project_cron_sessions(
     cron_id = str(params.get("cron_id") or "").strip()
     limit, offset = _parse_page(params)
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects}
+    visible_project_ids, removed_project_ids = _split_project_ids(all_projects)
     if not is_default_project_id(project_id):
         project = project_store.get_project_by_id(project_id, cache_bust=True)
-        if project is None:
+        if project is None or project.hidden:
             return None, "project not found", "NOT_FOUND"
     matched: list[dict[str, Any]] = []
     for session in collect_all_sessions_metadata():
         if session.get("pinned") or not session.get("cron_id"):
             continue
-        if _attribute_session_project(session, visible_project_ids) != project_id:
+        if _attribute_session_project(
+            session, visible_project_ids, removed_project_ids
+        ) != project_id:
             continue
         if cron_id and session.get("cron_id") != cron_id:
             continue
@@ -290,6 +328,7 @@ def _load_project_list(
     filter_value = str(params.get("filter") or "all").strip() or "all"
     if filter_value not in {"all", "pinned", "unpinned"}:
         filter_value = "all"
+    include_hidden = bool(params.get("include_hidden", False))
     raw_work_mode = params.get("work_mode")
     work_mode: str | None = None
     if isinstance(raw_work_mode, str) and raw_work_mode.strip():
@@ -300,7 +339,7 @@ def _load_project_list(
 
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
     projects = [p for p in all_projects if work_mode is None or (p.work_mode or DEFAULT_WEB_WORK_MODE) == work_mode]
-    visible_project_ids = {project.project_id for project in all_projects}
+    visible_project_ids, removed_project_ids = _split_project_ids(all_projects)
     stats: dict[str, dict[str, Any]] = {}
 
     def stats_for(project_id: str) -> dict[str, Any]:
@@ -312,7 +351,13 @@ def _load_project_list(
     for session in collect_all_sessions_metadata():
         if session.get("channel_id") != "web" or session.get("pinned") or session.get("cron_id"):
             continue
-        entry = stats_for(_attribute_session_project(session, visible_project_ids))
+        # 已移除项目的会话不计数：它们既不属于任何可见项目，也不归入默认项目。
+        owner = _attribute_session_project(
+            session, visible_project_ids, removed_project_ids
+        )
+        if not owner:
+            continue
+        entry = stats_for(owner)
         entry["session_count"] += 1
         for key in ("last_message_at", "last_user_message_at"):
             value = session.get(key)
@@ -327,7 +372,7 @@ def _load_project_list(
             return _project_info_payload(None, default_id=default_id, stats=stats.get(default_id, zero))
         return _project_info_payload(
             project,
-            stats=stats.get(project.project_id, zero),
+            stats=zero if project.hidden else stats.get(project.project_id, zero),
         )
 
     default_ids: list[str] = []
@@ -348,13 +393,18 @@ def _load_project_list(
         result = [item(project) for project in projects if project.pinned]
         result.sort(key=lambda info: info["pin_order"])
     elif filter_value == "unpinned":
-        result = [item(p) for p in projects if not p.pinned]
+        result = [item(p) for p in projects if not p.pinned and (include_hidden or not p.hidden)]
         result.sort(key=user_sort, reverse=True)
         result.extend(default_items)
     else:
-        pinned = [item(project) for project in projects if project.pinned]
+        # 与 unpinned/all 分支一致:默认不把已移除项目放回列表(含置顶区)。
+        pinned = [
+            item(project)
+            for project in projects
+            if project.pinned and (include_hidden or not project.hidden)
+        ]
         pinned.sort(key=lambda info: info["pin_order"])
-        unpinned = [item(p) for p in projects if not p.pinned]
+        unpinned = [item(p) for p in projects if not p.pinned and (include_hidden or not p.hidden)]
         unpinned.sort(key=user_sort, reverse=True)
         result = pinned + unpinned + default_items
     return {"projects": result}, None, None
@@ -398,7 +448,7 @@ def _pin_project(
     if is_default_project_id(project_id):
         return None, "default project cannot be pinned", "FORBIDDEN"
     project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None:
+    if project is None or project.hidden:
         return None, "project not found", "NOT_FOUND"
     project.pinned = pinned
     if not pinned:
@@ -474,6 +524,91 @@ def _create_project(
         "work_mode": project.work_mode or DEFAULT_WEB_WORK_MODE,
         "git": info["git"],
         "project": info,
+    }, None, None
+
+
+def _count_project_conversations(project_id: str) -> int:
+    """Count the active Web conversations a project remove/restore moves.
+
+    ``collect_all_sessions_metadata`` already excludes archived sessions, so
+    this is exactly the set that disappears from the workspace when the project
+    is removed and comes back when it is restored; archived sessions stay in
+    the archive page either way.  Pinned conversations are counted because
+    removal hides those too, keeping their ``pinned`` flag for the restore.
+    Cron execution sessions are excluded, as in every other conversation count
+    in this module.
+    """
+    count = 0
+    for session in collect_all_sessions_metadata():
+        if (
+            session.get("channel_id") == "web"
+            and not session.get("cron_id")
+            and str(session.get("project_id") or "") == project_id
+        ):
+            count += 1
+    return count
+
+
+def _remove_project(
+    params: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Hide a project, reporting how many active conversations it takes with it."""
+    project_id = str(params.get("project_id") or "").strip()
+    if not project_id:
+        return None, "project_id is required", "BAD_REQUEST"
+    if is_default_project_id(project_id):
+        return None, "default project cannot be removed", "FORBIDDEN"
+    project = project_store.get_project_by_id(project_id, cache_bust=True)
+    if project is None:
+        return None, "project not found", "NOT_FOUND"
+    if project.hidden:
+        return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
+
+    affected = _count_project_conversations(project_id)
+    hidden = project_store.hide_project(project_id)
+    if hidden is None:
+        return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
+    project_store.reindex_project_pin_orders()
+    return {
+        "project_id": project_id,
+        "hidden": True,
+        "affected_sessions": affected,
+    }, None, None
+
+
+def _restore_project(
+    params: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Restore a hidden project, reporting how many conversations come back."""
+    project_id = str(params.get("project_id") or "").strip()
+    if not project_id:
+        return None, "project_id is required", "BAD_REQUEST"
+    if is_default_project_id(project_id):
+        return None, "default project cannot be restored", "FORBIDDEN"
+    project = project_store.get_project_by_id(project_id, cache_bust=True)
+    if project is None:
+        return None, "project not found", "NOT_FOUND"
+    if not project.hidden:
+        return None, "project is not hidden", "CONFLICT"
+
+    affected = _count_project_conversations(project_id)
+    try:
+        restored = project_store.restore_project(project_id)
+    except project_store.ProjectNameConflict:
+        # 与撤销归档的连带恢复(session_archive._restore_hidden_project)同码,
+        # 前端用同一套 i18n 文案提示"先重命名占用方再重试"。
+        return (
+            None,
+            "a project with this name exists; rename it before restoring",
+            "PROJECT_NAME_CONFLICT",
+        )
+    if restored is None:
+        return None, "project is not hidden", "CONFLICT"
+    return {
+        "project_id": restored.project_id,
+        "restored": True,
+        "work_mode": restored.work_mode or DEFAULT_WEB_WORK_MODE,
+        "affected_sessions": affected,
     }, None, None
 
 
@@ -1311,6 +1446,8 @@ class ProjectAdapter(GatewayAdapter):
             ReqMethod.PROJECT_CREATE.value,
             ReqMethod.PROJECT_RENAME.value,
             ReqMethod.PROJECT_PIN.value,
+            ReqMethod.PROJECT_REMOVE.value,
+            ReqMethod.PROJECT_RESTORE.value,
             ReqMethod.PROJECT_GIT_STATUS.value,
             ReqMethod.PROJECT_GIT_PROBE.value,
             ReqMethod.PROJECT_GIT_INIT.value,
@@ -1394,6 +1531,10 @@ class ProjectAdapter(GatewayAdapter):
             return await _run_threaded(
                 request, "project.create", _create_project, params, request.channel_id,
             )
+        if method == ReqMethod.PROJECT_REMOVE:
+            return await _run_threaded(request, "project.remove", _remove_project, params)
+        if method == ReqMethod.PROJECT_RESTORE:
+            return await _run_threaded(request, "project.restore", _restore_project, params)
         if method == ReqMethod.PROJECT_PINNED_SESSIONS:
             return await _run_threaded(
                 request, "project.pinned_sessions", _load_pinned_sessions,

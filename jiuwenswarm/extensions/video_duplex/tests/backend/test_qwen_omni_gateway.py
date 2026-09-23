@@ -54,6 +54,8 @@ class _BrowserSocket:
 
 class _UpstreamSocket:
     def __init__(self) -> None:
+        self.close_code = 1000
+        self.close_reason = ""
         self.sent: list[str | bytes] = []
         self._sent = asyncio.Event()
         self._yielded = False
@@ -106,3 +108,20 @@ async def test_gateway_injects_authorization_and_relays_both_directions(monkeypa
     assert json.loads(upstream.sent[0]) == {"type": "session.update"}
     assert browser.sent == [{"type": "session.created"}]
     assert browser.closed == (1000, "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code,expected", [(1000, 1000), (1006, 1011), (1011, 1011)])
+async def test_gateway_preserves_upstream_close_and_redacts_reason(monkeypatch, code, expected):
+    monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://workspace.example/realtime")
+    monkeypatch.setenv("QWEN_OMNI_API_KEY", "private-key")
+    browser = _BrowserSocket()
+    upstream = _UpstreamSocket()
+    upstream.close_code = code
+    upstream.close_reason = "upstream private-key ended " + "关闭" * 100
+    monkeypatch.setattr(qwen_omni_gateway.websockets, "connect", lambda *_a, **_k: _UpstreamContext(upstream))
+    await qwen_omni_gateway.serve_qwen_omni_websocket(browser)
+    assert browser.closed[0] == expected
+    assert "private-key" not in browser.closed[1]
+    assert "upstream" in browser.closed[1]
+    assert len(browser.closed[1].encode("utf-8")) <= 123

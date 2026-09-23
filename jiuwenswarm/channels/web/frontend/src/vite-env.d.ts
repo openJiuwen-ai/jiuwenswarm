@@ -5,9 +5,6 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE?: string;
   readonly VITE_WS_BASE?: string;
   readonly VITE_PLATFORM?: string;
-  readonly VITE_GITCODE_OAUTH_CLIENT_ID?: string;
-  readonly VITE_GITCODE_OAUTH_CLIENT_SECRET?: string;
-  readonly VITE_GITHUB_OAUTH_CLIENT_ID?: string;
 }
 
 interface ImportMeta {
@@ -28,8 +25,10 @@ interface Window {
   __JIUWEN_DESKTOP__?: boolean;
   /** Set by desktop_app.py when OS file-drag accept handlers are injected. */
   __JIUWEN_DESKTOP_DND__?: boolean;
+  jiuwenDesktop?: import('./types/electron').JiuwenElectronDesktopApi;
   pywebview?: {
     api?: {
+      open_external_url?: (url: string) => Promise<boolean> | boolean;
       download_file?: (url: string, filename: string) => Promise<DesktopSaveResult> | DesktopSaveResult;
       begin_blob_save?: (filename: string, mimeType: string, totalSize: number) => Promise<DesktopBlobSaveStartResult> | DesktopBlobSaveStartResult;
       append_blob_save?: (transferId: string, encodedChunk: string) => Promise<boolean> | boolean;
@@ -52,6 +51,8 @@ interface Window {
       get_clipboard_files?: () =>
         | Promise<Array<Record<string, unknown>>>
         | Array<Record<string, unknown>>;
+      get_close_action?: () => Promise<'ask' | 'hide' | 'quit' | null> | 'ask' | 'hide' | 'quit' | null;
+      set_close_action?: (action: 'ask' | 'hide' | 'quit') => Promise<boolean> | boolean;
     };
   };
   /** Durable ingest hook invoked by desktop_app.py run_js on native file drops. */

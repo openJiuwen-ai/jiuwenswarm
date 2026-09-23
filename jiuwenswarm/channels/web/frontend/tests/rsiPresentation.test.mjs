@@ -8,6 +8,7 @@ import {
   nodeStageLocalizedLabel,
   nodeStageSpec,
   presentRsiNode,
+  progressPercent,
   scoreScale,
   actionsForStatus,
 } from '../node_modules/.cache/rsi-presentation/rsiPresentation.mjs';
@@ -17,6 +18,12 @@ const context = (scenario, artifactType, nodes, taskRunning = false) => ({
   artifactType,
   allNodes: nodes,
   taskRunning,
+});
+
+test('completed tasks display 100 percent regardless of iteration progress', () => {
+  assert.equal(progressPercent('COMPLETED', 4, 5), 100);
+  assert.equal(progressPercent('COMPLETED', 0, 0), 100);
+  assert.equal(progressPercent('RUNNING', 4, 5), 80);
 });
 
 test('paper nodes use a stable version title and expose the stage separately', () => {
@@ -147,16 +154,16 @@ test('paper score_overall is rendered and rejected reason is human-readable', ()
   assert.deepEqual(nodeScoreLines(rejected)[0], { value: '0.8', label: '分数' });
 });
 
-test('paper tasks can pause but do not expose an unsupported resume action', () => {
+test('running tasks stop and paused tasks resume across scenarios', () => {
   assert.deepEqual(actionsForStatus('RUNNING', 'ARTIFACT', false, null, 'PAPER'), [
     'config',
     'delete',
-    'pause',
+    'stop',
   ]);
   assert.deepEqual(actionsForStatus('PAUSED', 'ARTIFACT', false, null, 'PAPER'), [
     'config',
     'delete',
-    'stop',
+    'resume',
   ]);
   assert.deepEqual(actionsForStatus('PAUSED', 'ARTIFACT', false, null, 'PROGRAM'), [
     'config',

@@ -2193,7 +2193,7 @@
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: var(--color-tag-neutral-text);
+  color: var(--color-text-primary, #191919);
   padding: 0;
   cursor: pointer;
   opacity: 0;
@@ -2241,7 +2241,7 @@
 .chat-agent-tag__close:hover,
 .chat-agent-tag__close:focus-visible {
   background: var(--color-action-secondary);
-  color: var(--color-text-strong);
+  color: var(--color-text-primary, #191919);
   outline: 0;
 }
 
@@ -2455,14 +2455,13 @@
   outline: none;
 }
 
+/* 欢迎页放宽常态的 160px 上限、让项目名尽量展示完整，但不能放宽到无上限：
+   原来 max-width:none 且 span 覆盖为 overflow:visible，超长项目名会把触发按钮
+   撑出中间输入容器（816px）破版。改为以所在行为上限，span 恢复基础规则的
+   min-width:0 + ellipsis 截断（完整目录仍可通过按钮 data-tooltip 悬停查看）。 */
 .chat-input-container--work-home .chat-work-select__trigger {
   width: auto;
-  max-width: none;
-}
-
-.chat-input-container--work-home .chat-work-select__trigger>span {
-  overflow: visible;
-  text-overflow: clip;
+  max-width: 100%;
 }
 
 .chat-work-select__menu {

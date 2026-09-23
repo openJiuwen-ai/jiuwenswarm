@@ -9,6 +9,11 @@ import type { CrossSessionMessageMetadata } from '../utils/crossSessionMessage';
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
+export interface OutputOrder {
+  requestId: string;
+  sequence: number;
+}
+
 export interface MediaItem {
   type: 'image' | 'audio' | 'video' | 'document';
   mimeType: string;
@@ -88,6 +93,15 @@ export interface Message {
   role: MessageRole;
   content: string;
   timestamp: string;
+  /** A displayed supplement belongs to the existing execution, not a new user turn. */
+  supplementalInput?: {
+    executionId: string;
+    requestId?: string;
+    streamMessageId?: string;
+    streamOffset: number;
+  };
+  outputPhaseId?: string;
+  outputOrder?: OutputOrder;
   /** Full answer delivered by a delegated agent, distinct from spoken replies. */
   presentation?: 'tool_result';
   /** User-facing conversation output that must remain outside collapsed work. */
@@ -112,6 +126,8 @@ export interface Message {
   toolResult?: ToolResult;
   // 是否正在流式输出
   isStreaming?: boolean;
+  /** 未收到工具/final 分段边界的集群输出；暂停只关闭光标，不移除此关联。 */
+  teamStream?: { requestId?: string };
   usageSummary?: UsageSummary;
   // Harness message flag for special styling
   isHarnessMessage?: boolean;
@@ -155,6 +171,11 @@ export interface Message {
   crossSession?: CrossSessionMessageMetadata;
 }
 
+/** Selected queued message sent by the existing non-interrupting send button. */
+export interface ChatSendOptions {
+  queuedTaskId: string;
+}
+
 export interface MessageForkPoint {
   messageId: string;
   role: MessageRole;
@@ -163,12 +184,16 @@ export interface MessageForkPoint {
 }
 
 export interface ToolCall {
+  outputOrder?: OutputOrder;
   id: string;
   name: string;
   arguments: Record<string, unknown>;
   description?: string; // 操作描述，如 "创建 3 个任务"
   formatted_args?: string; // 格式化参数摘要
-  display_name?: string; // 后端下发的可读展示名，前端优先直接展示
+  /** 模型生成的自然语言目标，原样展示，不走 i18n */
+  call_goal?: string;
+  /** @deprecated 仅用于兼容旧事件，不参与标题渲染 */
+  display_name?: string;
   memberName?: string;
   reviewer?: AutoReviewerMetadata;
 }
@@ -194,6 +219,7 @@ export interface ToolResult {
 export type ToolExecutionStatus = 'pending' | 'timeout' | 'completed' | 'error';
 
 export interface ToolExecution {
+  outputOrder?: OutputOrder;
   toolCallId: string;
   toolCall: ToolCall;
   result?: ToolResult;

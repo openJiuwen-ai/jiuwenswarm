@@ -128,3 +128,9 @@
 .free-models-account__chevron {
   color: var(--color-text-meta);
 }
+
+.free-models-config-row__icon {
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-meta);
+}

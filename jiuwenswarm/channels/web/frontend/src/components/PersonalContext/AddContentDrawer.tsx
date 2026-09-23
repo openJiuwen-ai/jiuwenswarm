@@ -9,7 +9,7 @@
  * 后端 source 校验对齐 openjiuwen config.py:_normalize_service_source。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, Loader2, X } from 'lucide-react';
 import { usePersonalContextStore } from '../../stores';
@@ -42,6 +42,8 @@ import {
   validateZhihuColumnUrl,
 } from '../../services/personalContextApi';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
+import { selectProjectDirectory } from '../../features/workspace/projectDirectoryPicker';
+import { selectLocalFiles } from '../../features/workspace/localFilePicker';
 import { toast } from '../../components/ui/Toast/toastStore';
 import type { WebError } from '../../types/websocket';
 import localFilesIcon from '../../assets/settings/channels/local-files.svg';
@@ -141,6 +143,9 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [timeDropdownOpen, setTimeDropdownOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const timeDropdownRef = useRef<HTMLDivElement | null>(null);
+  // 点击时间范围下拉外部任意处自动收起
+  useOutsideDismiss(timeDropdownRef, timeDropdownOpen, () => setTimeDropdownOpen(false));
 
   // 分支字段
   const [rootDir, setRootDir] = useState(() => (editService?.provider === 'local_files' ? String(editService.source.root_dir ?? '') : ''));
@@ -518,7 +523,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
               {/* 采集时间 */}
               <div className="pc-drawer__field">
                 <label>{t('personalContext.addContent.timeRangeLabel')}</label>
-                <div className="pc-drawer__custom-select" >
+                <div className="pc-drawer__custom-select" ref={timeDropdownRef}>
                   <button
                     type="button"
                     className="pc-drawer__select-trigger"
@@ -932,11 +937,34 @@ interface MultiSelectDropdownProps<T extends string> {
   placeholder: string;
 }
 
+/** 下拉通用：open 时监听 document mousedown，点击容器外部任意处触发 onDismiss。 */
+function useOutsideDismiss(
+  containerRef: { current: HTMLElement | null },
+  open: boolean,
+  onDismiss: () => void,
+): void {
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onDismissRef.current();
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [containerRef, open]);
+}
+
 function MultiSelectDropdown<T extends string>({ options, selected, labelKey, onToggle, placeholder }: MultiSelectDropdownProps<T>) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // 点击多选下拉外部任意处自动收起（选项连续勾选时保持展开）
+  useOutsideDismiss(containerRef, open, () => setOpen(false));
   return (
-    <div className="pc-drawer__multi-select">
+    <div className="pc-drawer__multi-select" ref={containerRef}>
       <button
         type="button"
         className="pc-drawer__multi-select-trigger"
@@ -987,6 +1015,20 @@ function MultiSelectDropdown<T extends string>({ options, selected, labelKey, on
 
 function ProviderFields(props: ProviderFieldsProps) {
   const { t } = useTranslation();
+  /** 路径/文件选择器失败时给出反馈；取消选择保持静默。 */
+  const notifyPickerFailure = (result: {
+    ok: boolean;
+    reason?: 'unsupported' | 'cancelled' | 'failed';
+    message?: string;
+  }) => {
+    if (result.ok || result.reason === 'cancelled') return;
+    const content =
+      result.reason === 'unsupported'
+        ? t('chat.inputAttachment.filePickerUnsupported')
+        : result.message || t('chat.inputAttachment.filePickerFailed');
+    toast.open({ content, variant: 'error' });
+  };
+
   const { provider } = props;
 
   if (provider === 'feishu') {
@@ -1075,12 +1117,28 @@ function ProviderFields(props: ProviderFieldsProps) {
     return (
       <div className="pc-drawer__field">
         <label>{t('personalContext.addContent.localFiles.rootDirLabel')}</label>
-        <input
-          className="pc-drawer__input"
-          value={props.rootDir}
-          onChange={(e) => props.setRootDir(e.target.value)}
-          placeholder={t('personalContext.addContent.localFiles.rootDirPlaceholder')}
-        />
+        <div className="pc-drawer__path-input">
+          <input
+            className="pc-drawer__input"
+            value={props.rootDir}
+            readOnly
+            placeholder={t('personalContext.addContent.localFiles.rootDirPlaceholder')}
+          />
+          <button
+            type="button"
+            className="pc-drawer__path-btn"
+            onClick={async () => {
+              const result = await selectProjectDirectory({ initialDir: props.rootDir || undefined });
+              if (result.ok && result.path) props.setRootDir(result.path);
+              else notifyPickerFailure(result);
+            }}
+            aria-label="browse"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+            </svg>
+          </button>
+        </div>
       </div>
     );
   }
@@ -1118,23 +1176,60 @@ function ProviderFields(props: ProviderFieldsProps) {
       <div className="pc-drawer__fields-group">
         <div className="pc-drawer__field">
           <label>{t('personalContext.addContent.edge.profileLabel')}</label>
-          <select
-            className="pc-drawer__select"
-            value={props.edgeProfile}
-            onChange={(e) => props.setEdgeProfile(e.target.value)}
-          >
-            <option value="">{t('personalContext.addContent.edge.profilePlaceholder')}</option>
-            <option value="Default">{t('personalContext.addContent.edge.profileDefault')}</option>
-          </select>
+          <div className="pc-drawer__path-input">
+            <input
+              className="pc-drawer__input"
+              value={props.edgeProfile}
+              onChange={(e) => props.setEdgeProfile(e.target.value)}
+              placeholder={t('personalContext.addContent.edge.profilePlaceholder')}
+            />
+            <button
+              type="button"
+              className="pc-drawer__path-btn"
+              onClick={async () => {
+                const result = await selectProjectDirectory({});
+                if (result.ok && result.path) {
+                  const segments = result.path.replace(/\/+$/, '').split(/[\\/]/);
+                  const name = segments[segments.length - 1];
+                  if (name) props.setEdgeProfile(name);
+                } else {
+                  notifyPickerFailure(result);
+                }
+              }}
+              aria-label="browse"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+              </svg>
+            </button>
+          </div>
+          <div className="pc-drawer__field-hint">{t('personalContext.addContent.edge.profileHint')}</div>
         </div>
         <div className="pc-drawer__field">
           <label>{t('personalContext.addContent.edge.bookmarksPathLabel')}</label>
-          <input
-            className="pc-drawer__input"
-            value={props.edgeBookmarksPath}
-            onChange={(e) => props.setEdgeBookmarksPath(e.target.value)}
-            placeholder={t('personalContext.addContent.edge.bookmarksPathPlaceholder')}
-          />
+          <div className="pc-drawer__path-input">
+            <input
+              className="pc-drawer__input"
+              value={props.edgeBookmarksPath}
+              readOnly
+              placeholder={t('personalContext.addContent.edge.bookmarksPathPlaceholder')}
+            />
+            <button
+              type="button"
+              className="pc-drawer__path-btn"
+              onClick={async () => {
+                const result = await selectLocalFiles(false);
+                if (result.ok && result.files[0]?.path) props.setEdgeBookmarksPath(result.files[0].path);
+                else notifyPickerFailure(result);
+              }}
+              aria-label="browse"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.5 3H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7.5L15.5 3z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 3v5h5" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="pc-drawer__field">
           <label>{t('personalContext.addContent.edge.foldersLabel')}</label>

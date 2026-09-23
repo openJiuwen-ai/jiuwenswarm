@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
-from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from typing import Any, AsyncIterator
@@ -53,6 +52,22 @@ class AgentServerUnaryTimeout(RuntimeError):
         self.timeout = timeout
 
 
+class DuplicateRequestIdError(RuntimeError):
+    """同一连接上 request_id 撞号，第二个请求被拒绝注册响应队列。
+
+    该拒绝发生在**发送之前**：请求尚未写入 WebSocket，AgentServer 侧没有任何
+    副作用，因此调用方换一个新 request_id 重试是安全的。保留 RuntimeError 继承
+    关系，避免破坏既有 ``except RuntimeError`` 的调用方。
+    """
+
+    def __init__(self, request_id: str) -> None:
+        super().__init__(
+            f"WebSocketAgentServerClient: duplicate in-flight request_id={request_id!r}; "
+            "refusing to register queue (would mis-route responses, e.g. stream chunks to unary waiters)."
+        )
+        self.request_id = request_id
+
+
 class _ReceiverFailure:
     def __init__(self, exc: BaseException) -> None:
         self.exc = exc
@@ -87,53 +102,9 @@ def _build_ws_origin(uri: str) -> str | None:
     return f"{scheme}://{parsed.netloc}"
 
 
-class AgentServerClient(ABC):
-    """AgentServer WebSocket 客户端接口."""
-
-    @abstractmethod
-    async def connect(self, uri: str) -> None:
-        """建立与 AgentServer 的 WebSocket 连接."""
-        ...
-
-    @abstractmethod
-    async def disconnect(self) -> None:
-        """断开连接."""
-        ...
-
-    @abstractmethod
-    def set_or_update_server_config(
-        self,
-        *,
-        config: dict[str, Any],
-        env: dict[str, str] | None = None,
-    ) -> None:
-        """缓存或更新服务端配置快照，供自定义 client 后续使用."""
-        ...
-
-    @abstractmethod
-    async def send_request(
-        self,
-        envelope: E2AEnvelope,
-        *,
-        timeout: float | None = None,
-    ) -> AgentResponse:
-        """发送 E2A 信封，等待完整响应.
-
-        Args:
-            envelope: E2A 信封.
-            timeout: 等待响应的上限（秒）。``None`` 时使用客户端默认值
-                （``_UNARY_REQUEST_TIMEOUT_SECONDS``，600s）。调用方可传入
-                更大的值以覆盖默认上限（例如 cron 任务的 ``timeout_seconds``），
-                使任务自身的超时真正生效，而非被内层默认值提前截断.
-        """
-        ...
-
-    @abstractmethod
-    async def send_request_stream(
-        self, envelope: E2AEnvelope
-    ) -> AsyncIterator[AgentResponseChunk]:
-        """发送 E2A 信封，流式接收响应."""
-        ...
+# AgentServerClient 抽象契约已下沉 ``jiuwenswarm.common.client.agent_client``
+# （保留侧与 Gateway 仓共用契约）。此处 re-export 保持既有 import 路径兼容。
+from jiuwenswarm.common.client.agent_client import AgentServerClient  # noqa: F401
 
 
 def _e2a_to_wire(envelope: E2AEnvelope) -> dict[str, Any]:
@@ -510,10 +481,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         )
 
         if rid in self._message_queues:
-            raise RuntimeError(
-                f"WebSocketAgentServerClient: duplicate in-flight request_id={rid!r}; "
-                "refusing to register queue (would mis-route responses, e.g. stream chunks to unary waiters)."
-            )
+            raise DuplicateRequestIdError(rid)
 
         # 创建该请求的消息队列
         queue = asyncio.Queue()
@@ -565,10 +533,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         )
 
         if rid in self._message_queues:
-            raise RuntimeError(
-                f"WebSocketAgentServerClient: duplicate in-flight request_id={rid!r}; "
-                "refusing to register queue (would mis-route responses, e.g. stream chunks to unary waiters)."
-            )
+            raise DuplicateRequestIdError(rid)
 
         # 创建该请求的消息队列
         queue = asyncio.Queue()

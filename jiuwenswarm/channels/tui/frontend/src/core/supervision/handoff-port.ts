@@ -64,7 +64,11 @@ export class HandoffPortImpl implements HandoffPort {
     return { ok: true };
   }
 
-  async requestHandoff(target: HandoffTarget, switchContent: string): Promise<void> {
+  async requestHandoff(
+    target: HandoffTarget,
+    switchContent: string,
+    cmd?: string,
+  ): Promise<void> {
     // requestHandoff 在询问/取消任务之后才被调用；必须二次校验。
     const check = this.checkHandoff(target);
     if (!check.ok) {
@@ -80,12 +84,23 @@ export class HandoffPortImpl implements HandoffPort {
       }
       // 构造 handoff JSON，供 launcher 从 stdout 读取后发起 3rdagent.switch RPC。
       // content 是完整命令文本（如 "switch <agent_type>"），parsed 是目标名（如 "<agent_type>"）。
+      // cmd 是独立透传字段（如远端启动命令），非空时输出，不拼接进 content/parsed；
+      // 为空时不输出该字段，保持与旧协议格式兼容。
       const parsed = switchContent.replace(/^switch\s+/i, "").trim();
-      const handoffMessage = JSON.stringify({
+      const handoffPayload: {
+        action: string;
+        content: string;
+        parsed: string;
+        cmd?: string;
+      } = {
         action: "switch",
         content: switchContent,
         parsed,
-      });
+      };
+      if (cmd) {
+        handoffPayload.cmd = cmd;
+      }
+      const handoffMessage = JSON.stringify(handoffPayload);
       await this.lifecycle.closeUi({
         reason: "switch",
         exitCode,

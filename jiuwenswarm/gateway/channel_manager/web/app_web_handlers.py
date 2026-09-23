@@ -4,9 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.metadata
 import importlib.util
-import inspect
 import json
 import logging
 import math
@@ -32,9 +30,6 @@ except ImportError:
     _psutil = None  # type: ignore[assignment]
     _HAS_PSUTIL = False
 from openjiuwen.core.common.logging import LogManager
-from openjiuwen.core.foundation.llm import Model, ProviderType
-from openjiuwen.core.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
-from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_account_provider
 from openjiuwen.extensions.external_provider.openai_auth.openai_account_auth import (
     OpenAIAccountAuthError,
     OpenAIAccountAuthManager,
@@ -45,77 +40,56 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
     OpenAIAccountModelListError,
 )
 
-from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
-    DEFAULT_SWARMFLOW_ENABLED,
-    EXTERNAL_CLI_AGENTS_CONFIG_PATH,
-    SWARMFLOW_BUDGET_CONFIG_PATH,
-    SWARMFLOW_ENABLED_CONFIG_PATH,
     get_config,
     get_config_raw,
-    get_available_models,
-    get_default_models,
-    replace_teams_in_config,
-    update_default_models_in_config,
     update_health_check_in_config,
     update_channel_in_config,
     replace_channel_subsection_with_cleanup,
     update_browser_in_config,
     update_preferred_language_in_config,
-    update_context_engine_enabled_in_config,
-    update_default_model_provider_in_config,
-    update_kv_cache_affinity_enabled_in_config,
-    validate_persisted_kv_cache_affinity,
-    update_skill_retrieval_in_config,
-    update_symphony_in_config,
-    update_permissions_profile_in_config,
-    update_setup_guide_enabled_in_config,
-    update_rsi_enabled_in_config,
-    update_enable_free_models_in_config,
-    update_memory_forbidden_enabled_in_config,
-    update_memory_forbidden_description_in_config,
-    update_external_cli_agents_in_config,
-    update_swarmflow_enabled_in_config,
-    update_swarmflow_budget_in_config,
-    update_a2ui_in_config,
     update_updater_in_config,
-    update_proactive_recommendation_in_config,
-    update_trajectory_ui_in_config,
-    update_task_full_duplex_in_config,
-    update_skill_evolution_enabled_in_config,
 )
-from jiuwenswarm.common.kv_cache_affinity_config import (
-    ASCEND_AFFINITY_PROVIDER,
-    KVC_CONFIG_KEYS,
-    default_model_client_config_from_entries,
-    has_kv_cache_affinity_capability,
-    is_affinity_enabled,
-    normalize_affinity_request,
-    parse_bool as parse_kvc_bool,
-    set_default_model_provider_in_entries,
+from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
+from jiuwenswarm.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
+    ASR_ENV_KEYS as _ASR_ENV_KEYS,
+    CONFIG_KEYS,
+    CONFIG_SET_ENV_MAP as _CONFIG_SET_ENV_MAP,
+    CONFIG_YAML_KEYS as _CONFIG_YAML_KEYS,
+    ConfigApplyResult as _ConfigApplyResult,
+    ConfigChangeSet as _ConfigChangeSet,
+    EXTERNAL_CLI_AGENT_CONFIG_KEYS as _EXTERNAL_CLI_AGENT_CONFIG_KEYS,
+    EXTERNAL_CLI_AGENT_KINDS as _EXTERNAL_CLI_AGENT_KINDS,
+    MODEL_RELOAD_ENV_KEYS as _MODEL_RELOAD_ENV_KEYS,
+    MULTIMODAL_RELOAD_ENV_KEYS as _MULTIMODAL_RELOAD_ENV_KEYS,
+    PERMISSIONS_PROFILES as _PERMISSIONS_PROFILES,
+    SEARCH_RELOAD_ENV_KEYS as _SEARCH_RELOAD_ENV_KEYS,
+    SKILL_RETRIEVAL_CONFIG_KEYS as _SKILL_RETRIEVAL_CONFIG_KEYS,
+    SKILL_RETRIEVAL_CONFIG_SPECS as _SKILL_RETRIEVAL_CONFIG_SPECS,
+    SYMPHONY_CONFIG_KEYS as _SYMPHONY_CONFIG_KEYS,
+    SYMPHONY_CONFIG_SPECS as _SYMPHONY_CONFIG_SPECS,
+    build_external_cli_publish_url as _build_external_cli_publish_url,
+    canonical_permission_facade as _canonical_permission_facade,
+    detect_external_cli_agent as _detect_external_cli_agent,
+    external_cli_agent_effective_state as _external_cli_agent_effective_state,
+    external_cli_agents_from_switches as _external_cli_agents_from_switches,
+    flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
+    flatten_modes_team_for_config_panel as _flatten_modes_team_for_config_panel,
+    flatten_skill_retrieval_for_config_panel as _flatten_skill_retrieval_for_config_panel,
+    flatten_swarmflow_for_config_panel as _flatten_swarmflow_for_config_panel,
+    flatten_symphony_for_config_panel as _flatten_symphony_for_config_panel,
+    inject_external_cli_publish_url as _inject_external_cli_publish_url,
+    parse_config_switch_bool as _parse_config_switch_bool,
+    permission_profile as _permission_profile,
+    team_item_requests_codex as _team_item_requests_codex,
+    team_payload_requests_codex as _team_payload_requests_codex,
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
-from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
-    is_auto_permission_mode,
+from jiuwenswarm.common.config_panel.models_handlers import (  # noqa: F401  — 兼容别名
+    reasoning_level_display as _reasoning_level_display,
+    normalize_provider_value as _normalize_provider_value,
+    resolve_model_config_obj_for_validate as _resolve_model_config_obj_for_validate,
 )
-from jiuwenswarm.server.runtime.a2ui.integration import (
-    get_a2ui_config_payload,
-    get_default_a2ui_config_payload,
-    validate_a2ui_config_update,
-)
-from jiuwenswarm.common.reasoning_config import (
-    effective_endpoint_profile,
-    validate_reasoning_level_for_model,
-)
-from jiuwenswarm.common.reasoning_injector import (
-    build_reasoning_model_request_kwargs,
-    core_has_context_window_field,
-)
-from jiuwenswarm.common.context_window import (
-    DEFAULT_CONTEXT_WINDOW_TOKENS,
-    parse_positive_int,
-)
-from jiuwenswarm.common.model_config_validation import probe_model_connection
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_env_file,
@@ -124,13 +98,11 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
-    DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
     SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
-from jiuwenswarm.common.version import __version__
 from jiuwenswarm.gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
@@ -140,130 +112,6 @@ for _jiuwen_log in LogManager.get_all_loggers().values():
     _jiuwen_log.set_level(logging.INFO)
 
 logger = logging.getLogger(__name__)
-
-
-_WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
-_SEARCH_RELOAD_ENV_KEYS = {
-    "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
-}
-_MODEL_RELOAD_ENV_KEYS = {
-    "MODEL_PROVIDER",
-    "MODEL_NAME",
-    "API_BASE",
-    "API_KEY",
-}
-_MULTIMODAL_RELOAD_ENV_KEYS = {
-    "VIDEO_PROVIDER",
-    "VIDEO_MODEL_NAME",
-    "VIDEO_API_BASE",
-    "VIDEO_API_KEY",
-    "VIDEO_ENDPOINT_PROFILE",
-    "VIDEO_CONTEXT_WINDOW_TOKENS",
-    "AUDIO_PROVIDER",
-    "AUDIO_MODEL_NAME",
-    "AUDIO_API_BASE",
-    "AUDIO_API_KEY",
-    "AUDIO_ENDPOINT_PROFILE",
-    "AUDIO_CONTEXT_WINDOW_TOKENS",
-    "VISION_PROVIDER",
-    "VISION_MODEL_NAME",
-    "VISION_API_BASE",
-    "VISION_API_KEY",
-    "VISION_ENDPOINT_PROFILE",
-    "VISION_CONTEXT_WINDOW_TOKENS",
-    "VISION_ENABLED",
-    "AUDIO_ENABLED",
-    "VIDEO_ENABLED",
-    "VIDEO_GEN_ENABLED",
-    "VIDEO_GEN_API_BASE",
-    "VIDEO_GEN_API_KEY",
-    "VIDEO_GEN_MODEL_NAME",
-    "VIDEO_GEN_PROVIDER",
-    "VIDEO_GEN_PROTOCOL",
-    "VIDEO_GEN_CONTEXT_WINDOW_TOKENS",
-    "VISUAL_GEN_ENABLED",
-    "VISUAL_GEN_API_BASE",
-    "VISUAL_GEN_API_KEY",
-    "VISUAL_GEN_MODEL_NAME",
-    "VISUAL_GEN_PROVIDER",
-    "VISUAL_GEN_PROTOCOL",
-    "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
-}
-_ASR_ENV_KEYS = {
-    "ASR_API_BASE",
-    "ASR_API_KEY",
-    "ASR_MODEL_NAME",
-}
-
-
-@dataclass(frozen=True)
-class _ConfigChangeSet:
-    env_updates: dict[str, str]
-    yaml_updated: list[str]
-    force: bool = False
-
-    @property
-    def changed(self) -> bool:
-        return self.force or bool(self.env_updates or self.yaml_updated)
-
-    @property
-    def updated_keys(self) -> set[str]:
-        return set(self.env_updates.keys()) | set(self.yaml_updated)
-
-    @property
-    def reload_scopes(self) -> set[str]:
-        scopes: set[str] = set()
-        if _MODEL_RELOAD_ENV_KEYS & set(self.env_updates):
-            scopes.add("model")
-        if _MULTIMODAL_RELOAD_ENV_KEYS & set(self.env_updates):
-            scopes.add("multimodal")
-        if _ASR_ENV_KEYS & set(self.env_updates):
-            scopes.add("web_ui")
-        if _SEARCH_RELOAD_ENV_KEYS & set(self.env_updates):
-            scopes.add("search")
-        for key in self.yaml_updated:
-            key_text = str(key)
-            if key_text == "skill_retrieval_index_recommendation_shown":
-                scopes.add("web_ui")
-            elif key_text in {"models.defaults"} or key_text.startswith("models."):
-                scopes.add("model")
-            elif key_text in {"modes.team", "agents", "team"}:
-                scopes.add("team")
-            elif key_text.startswith("permissions"):
-                scopes.add("permissions")
-            elif key_text.startswith("proactive_recommendation"):
-                scopes.add("proactive")
-            elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
-                scopes.add("agent_runtime")
-            elif key_text == "trajectory_ui_enabled":
-                scopes.update({"agent_runtime", "web_ui"})
-            elif key_text == "task_full_duplex_enabled":
-                scopes.add("web_ui")
-            elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
-                scopes.add("web_ui")
-            else:
-                scopes.add("agent_runtime")
-        if self.force and not scopes:
-            scopes.add("agent_runtime")
-        return scopes
-
-    @property
-    def reload_options(self) -> dict[str, Any]:
-        return {
-            "target_channel_id": _WEB_CONFIG_RELOAD_CHANNEL_ID,
-            "reload_scopes": sorted(self.reload_scopes),
-        }
-
-
-@dataclass(frozen=True)
-class _ConfigApplyResult:
-    env_updates: dict[str, str]
-    yaml_updated: list[str]
-    codex_dependency_install: dict[str, Any] | None = None
-    external_cli_dependency_installs: dict[str, dict[str, Any]] | None = None
-    canonical_config: dict[str, str] | None = None
-    pending_permission_profile: str | None = None
-    pending_permission_key: str | None = None
 
 
 _CODEX_DEPENDENCY_INSTALL_LOCK = threading.Lock()
@@ -308,7 +156,31 @@ _ENV_FILE = get_env_file()
 load_dotenv_runtime(dotenv_path=_ENV_FILE, override=True)
 
 
-_ENV_VAR_PLACEHOLDER_RE = re.compile(r"^\$\{([^:}]+)(?::-([^}]*))?\}$")
+def _read_proc_meminfo() -> tuple[float, float, float]:
+    """Fallback for platforms without psutil: read /proc/meminfo.
+
+    Returns (rss_mb, total_mb, available_mb).  Returns (0, 0, 0) on failure.
+    """
+    try:
+        info: dict[str, int] = {}
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    info[parts[0].rstrip(":")] = int(parts[1])  # kB
+        total_mb = info.get("MemTotal", 0) / 1024
+        available_mb = info.get("MemAvailable", info.get("MemFree", 0)) / 1024
+        # RSS from /proc/self/status
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    rss_mb = int(line.split()[1]) / 1024  # kB → MB
+                    return rss_mb, total_mb, available_mb
+        return 0.0, total_mb, available_mb
+    except OSError:
+        return 0.0, 0.0, 0.0
+
+
 _OPENAI_ACCOUNT_LOGIN_MAX_TTL_SECONDS = 5 * 60
 _OPENAI_ACCOUNT_LOGIN_JOBS: dict[str, "_OpenAIAccountLoginJob"] = {}
 _OPENAI_ACCOUNT_LOGIN_JOBS_LOCK = threading.RLock()
@@ -515,205 +387,6 @@ def _openai_account_auth_error_payload(exc: OpenAIAccountAuthError) -> dict[str,
     }
 
 
-def _is_env_var_placeholder(value: Any) -> bool:
-    return isinstance(value, str) and bool(_ENV_VAR_PLACEHOLDER_RE.match(value.strip()))
-
-
-def _values_match(parsed_val: Any, resolved_val: Any) -> bool:
-    """Compare a frontend-sent value against the resolved value of a model entry.
-
-    Numeric and stringified env-var output (e.g. ``${TEMP:-0.95}`` resolves to ``"0.95"``)
-    are normalized so that ``0.95 == "0.95"`` is treated as "unchanged".
-    """
-    if isinstance(parsed_val, bool) or isinstance(resolved_val, bool):
-        return bool(parsed_val) == bool(resolved_val)
-    if parsed_val is None and resolved_val is None:
-        return True
-    try:
-        return float(parsed_val) == float(resolved_val)
-    except (TypeError, ValueError):
-        pass
-    return str(parsed_val if parsed_val is not None else "") == str(
-        resolved_val if resolved_val is not None else ""
-    )
-
-
-def _read_proc_meminfo() -> tuple[float, float, float]:
-    """Fallback for platforms without psutil: read /proc/meminfo.
-
-    Returns (rss_mb, total_mb, available_mb).  Returns (0, 0, 0) on failure.
-    """
-    try:
-        info: dict[str, int] = {}
-        with open("/proc/meminfo", "r") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 2:
-                    info[parts[0].rstrip(":")] = int(parts[1])  # kB
-        total_mb = info.get("MemTotal", 0) / 1024
-        available_mb = info.get("MemAvailable", info.get("MemFree", 0)) / 1024
-        # RSS from /proc/self/status
-        with open("/proc/self/status", "r") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    rss_mb = int(line.split()[1]) / 1024  # kB → MB
-                    return rss_mb, total_mb, available_mb
-        return 0.0, total_mb, available_mb
-    except OSError:
-        return 0.0, 0.0, 0.0
-
-
-def _serialize_reasoning_level(value: Any) -> Any:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
-    # Always emit a quoted YAML string so the same field never round-trips
-    # as a mix of plain scalars and quoted scalars.
-    return DoubleQuotedScalarString(text)
-
-
-def _reasoning_level_display(value: Any) -> str:
-    """Normalize a stored reasoning_level to its canonical string level.
-
-    Legacy YAML entries hold bare ``on``/``off`` scalars which YAML 1.1
-    loaders parse into booleans; map them back so the frontend and the
-    replace_all change detection never see raw booleans.
-    """
-    if value is True:
-        return "on"
-    if value is False:
-        return "off"
-    return str(value or "").strip()
-
-
-def _merge_models_for_replace_all(
-        parsed: list[dict[str, Any]],
-        raw_defaults: list[dict[str, Any]],
-        resolved_defaults: list[dict[str, Any]],
-        crypto: Any,
-) -> list[dict[str, Any]]:
-    """Merge the frontend draft with the persisted YAML so that env-var placeholders
-    (``${VAR:-default}``) survive when the user edits unrelated fields.
-
-    For each frontend entry that carries an ``origin_index`` pointing at a still-existing
-    persisted entry, we deep-copy the raw entry (preserving placeholders, custom_headers,
-    etc.) and only overwrite the fields whose value differs from the resolved snapshot
-    the frontend was originally shown. New entries (no ``origin_index``) fall back to
-    encrypting/storing the frontend payload verbatim.
-    """
-    import copy as _copy
-
-    out: list[dict[str, Any]] = []
-    for item in parsed:
-        origin_idx = item.get("origin_index")
-        raw_entry = None
-        resolved_entry = None
-        if isinstance(origin_idx, int) and 0 <= origin_idx < len(raw_defaults):
-            raw_entry = raw_defaults[origin_idx]
-            if 0 <= origin_idx < len(resolved_defaults):
-                resolved_entry = resolved_defaults[origin_idx]
-
-        if raw_entry is not None and isinstance(raw_entry, dict):
-            new_entry = _copy.deepcopy(raw_entry)
-            new_mcc = new_entry.setdefault("model_client_config", {})
-            new_mco = new_entry.setdefault("model_config_obj", {})
-            resolved_mcc = (resolved_entry or {}).get("model_client_config", {}) or {}
-            resolved_mco = (resolved_entry or {}).get("model_config_obj", {}) or {}
-
-            if not _values_match(item["model_name"], resolved_mcc.get("model_name")):
-                new_mcc["model_name"] = item["model_name"]
-            if not _values_match(item["api_base"], resolved_mcc.get("api_base")):
-                new_mcc["api_base"] = item["api_base"]
-            # client_provider: 当 YAML 仍是 ${MODEL_PROVIDER} 占位符时，其解析值会与前端
-            # 选择（如 OpenAI）一致而被误判为"未改"，导致首次配置后占位符残留。只要原值是
-            # 占位符就用前端值固化它。
-            if item["model_provider"] and (
-                _is_env_var_placeholder(new_mcc.get("client_provider"))
-                or not _values_match(item["model_provider"], resolved_mcc.get("client_provider"))
-            ):
-                new_mcc["client_provider"] = item["model_provider"]
-            if item["temperature"] is None:
-                new_mco.pop("temperature", None)
-            elif not _values_match(item["temperature"], resolved_mco.get("temperature")):
-                new_mco["temperature"] = item["temperature"]
-            reasoning_level = str(item.get("reasoning_level") or "").strip()
-            # 不能用 _values_match：legacy YAML 1.1 会把裸 on/off 读成布尔，
-            # 其布尔分支使 bool("")==bool(False) 成立，「清空档位」会被误判为
-            # 未修改而让旧值残留。按规范化后的字符串比较。
-            if reasoning_level != _reasoning_level_display(resolved_mco.get("reasoning_level")):
-                if reasoning_level:
-                    new_mco["reasoning_level"] = _serialize_reasoning_level(reasoning_level)
-                else:
-                    new_mco.pop("reasoning_level", None)
-            if item.get("context_window_tokens_provided"):
-                new_mco["context_window"] = item["context_window_tokens"]
-            if not _values_match(item["timeout"], resolved_mcc.get("timeout")):
-                new_mcc["timeout"] = item["timeout"]
-            if not _values_match(item["alias"], (resolved_entry or {}).get("alias")):
-                new_entry["alias"] = item["alias"]
-            # vendor_key + plan: persist the exact provider selection identity
-            # into model_client_config (or clear it).
-            if item.get("vendor_key"):
-                new_mcc["vendor_key"] = item["vendor_key"]
-            else:
-                new_mcc.pop("vendor_key", None)
-            if item.get("plan"):
-                new_mcc["plan"] = item["plan"]
-            else:
-                new_mcc.pop("plan", None)
-            # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...)。
-            # 前端透传则落库；不传则清掉(避免残留旧方言)。Anthropic 协议时此字段被 core 忽略。
-            if item.get("endpoint_profile"):
-                new_mcc["endpoint_profile"] = item["endpoint_profile"]
-            else:
-                new_mcc.pop("endpoint_profile", None)
-            new_entry["is_default"] = item["is_default"]
-            # api_key: resolved holds the decrypted plaintext shown to the frontend.
-            # Unchanged → keep raw (placeholder or ciphertext); changed → encrypt new value.
-            if not _values_match(item["api_key"], resolved_mcc.get("api_key")):
-                new_mcc["api_key"] = (
-                    crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"]
-                )
-        else:
-            # New entry — frontend payload is the source of truth.
-            new_entry = {
-                "model_client_config": {
-                    "api_base": item["api_base"],
-                    "api_key": (
-                        crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"]
-                    ),
-                    "model_name": item["model_name"],
-                    "client_provider": item["model_provider"],
-                    "timeout": item["timeout"],
-                    "verify_ssl": item["verify_ssl"],
-                    # vendor_key + plan identify the exact registry preset so
-                    # the UI can restore the provider selection after reload.
-                    **({"vendor_key": item["vendor_key"]} if item.get("vendor_key") else {}),
-                    **({"plan": item["plan"]} if item.get("plan") else {}),
-                    # endpoint_profile: OpenAI 协议端点方言(透传；Anthropic 时 core 忽略)。
-                    **({"endpoint_profile": item["endpoint_profile"]} if item.get("endpoint_profile") else {}),
-                },
-                "model_config_obj": {
-                    "context_window": (
-                        item["context_window_tokens"]
-                        if item.get("context_window_tokens_provided")
-                        else DEFAULT_CONTEXT_WINDOW_TOKENS
-                    ),
-                    **({"temperature": item["temperature"]} if item["temperature"] is not None else {}),
-                    **({"reasoning_level": _serialize_reasoning_level(item.get("reasoning_level"))}
-                       if item.get("reasoning_level") else {}),
-                },
-                "is_default": item["is_default"],
-                "alias": item["alias"],
-            }
-
-        out.append(new_entry)
-    return out
-
-
 # 仅满足 Channel 构造所需，不入队、不路由；仅用 channel_manager + message_handler 做入站/出站
 class _DummyBus:
     async def publish_user_messages(self, msg):  # noqa: ANN001, ARG002
@@ -757,6 +430,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.rebuild",
     "skills.toggle",
     "skills.install",
+    "skills.pack_member.install",
     "skills.import_local",
     "skills.import_upload",
     "skills.create_from_knowledge",
@@ -809,6 +483,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "personal_context.runtime.stop_collection",
     "personal_context.runtime.start_agent_use",
     "personal_context.runtime.stop_agent_use",
+    "personal_context.runtime.set_master_enabled",
     "personal_context.runtime.get_config",
     "personal_context.runtime.patch_config",
     "personal_context.runtime.select_model",
@@ -865,6 +540,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "mcp.uninstall",
     "mcp.connect",
     "mcp.wait_auth",
+    "mcp.cancel_connect",
     "mcp.disconnect",
     "mcp.register_custom",
     "mcp.delete_custom",
@@ -940,6 +616,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.rebuild",
     "skills.toggle",
     "skills.install",
+    "skills.pack_member.install",
     "skills.import_local",
     "skills.import_upload",
     "skills.create_from_knowledge",
@@ -992,6 +669,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "personal_context.runtime.stop_collection",
     "personal_context.runtime.start_agent_use",
     "personal_context.runtime.stop_agent_use",
+    "personal_context.runtime.set_master_enabled",
     "personal_context.runtime.get_config",
     "personal_context.runtime.patch_config",
     "personal_context.runtime.select_model",
@@ -1048,6 +726,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "mcp.uninstall",
     "mcp.connect",
     "mcp.wait_auth",
+    "mcp.cancel_connect",
     "mcp.disconnect",
     "mcp.register_custom",
     "mcp.delete_custom",
@@ -1069,159 +748,6 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "external_cli.codex_install_status",
     "proactive.feedback",
 })
-
-# 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
-# default 模型 + video/audio/vision 多模型
-_CONFIG_SET_ENV_MAP = {
-    # default 模型（主对话）
-    "model_provider": "MODEL_PROVIDER",
-    "model": "MODEL_NAME",
-    "api_base": "API_BASE",
-    "api_key": "API_KEY",
-    "endpoint_profile": "ENDPOINT_PROFILE",
-    # video 模型
-    "video_api_base": "VIDEO_API_BASE",
-    "video_api_key": "VIDEO_API_KEY",
-    "video_model": "VIDEO_MODEL_NAME",
-    "video_provider": "VIDEO_PROVIDER",
-    "video_endpoint_profile": "VIDEO_ENDPOINT_PROFILE",
-    "video_vendor_key": "VIDEO_VENDOR_KEY",
-    "video_plan": "VIDEO_PLAN",
-    "video_context_window_tokens": "VIDEO_CONTEXT_WINDOW_TOKENS",
-    "video_enabled": "VIDEO_ENABLED",
-    # video processing (generation) - dedicated slot, separate from the
-    # video-understanding fields above.
-    "video_gen_api_base": "VIDEO_GEN_API_BASE",
-    "video_gen_api_key": "VIDEO_GEN_API_KEY",
-    "video_gen_model": "VIDEO_GEN_MODEL_NAME",
-    "video_gen_provider": "VIDEO_GEN_PROVIDER",
-    "video_gen_protocol": "VIDEO_GEN_PROTOCOL",
-    "video_gen_context_window_tokens": "VIDEO_GEN_CONTEXT_WINDOW_TOKENS",
-    "video_gen_enabled": "VIDEO_GEN_ENABLED",
-    # visual processing (image generation) - dedicated slot, independent of
-    # both visual_question_answering's VISION_* slot and image_tools.py's
-    # DashScope-only generate_image (IMAGE_GEN_* slot).
-    "visual_gen_api_base": "VISUAL_GEN_API_BASE",
-    "visual_gen_api_key": "VISUAL_GEN_API_KEY",
-    "visual_gen_model": "VISUAL_GEN_MODEL_NAME",
-    "visual_gen_provider": "VISUAL_GEN_PROVIDER",
-    "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
-    "visual_gen_context_window_tokens": "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
-    "visual_gen_enabled": "VISUAL_GEN_ENABLED",
-    # audio 模型
-    "audio_api_base": "AUDIO_API_BASE",
-    "audio_api_key": "AUDIO_API_KEY",
-    "audio_model": "AUDIO_MODEL_NAME",
-    "audio_provider": "AUDIO_PROVIDER",
-    "audio_endpoint_profile": "AUDIO_ENDPOINT_PROFILE",
-    "audio_vendor_key": "AUDIO_VENDOR_KEY",
-    "audio_plan": "AUDIO_PLAN",
-    "audio_context_window_tokens": "AUDIO_CONTEXT_WINDOW_TOKENS",
-    "audio_enabled": "AUDIO_ENABLED",
-    # vision 模型
-    "vision_api_base": "VISION_API_BASE",
-    "vision_api_key": "VISION_API_KEY",
-    "vision_model": "VISION_MODEL_NAME",
-    "vision_provider": "VISION_PROVIDER",
-    "vision_endpoint_profile": "VISION_ENDPOINT_PROFILE",
-    "vision_vendor_key": "VISION_VENDOR_KEY",
-    "vision_plan": "VISION_PLAN",
-    "vision_context_window_tokens": "VISION_CONTEXT_WINDOW_TOKENS",
-    "vision_enabled": "VISION_ENABLED",
-    # 其他
-    "email_address": "EMAIL_ADDRESS",
-    "email_token": "EMAIL_TOKEN",
-    "embed_api_key": "EMBED_API_KEY",
-    "embed_api_base": "EMBED_API_BASE",
-    "embed_model": "EMBED_MODEL",
-    "jina_api_key": "JINA_API_KEY",
-    "bocha_api_key": "BOCHA_API_KEY",
-    "serper_api_key": "SERPER_API_KEY",
-    "perplexity_api_key": "PERPLEXITY_API_KEY",
-    "github_token": "GITHUB_TOKEN",
-    "teamskills_market_url": "TEAM_SKILLS_HUB_BASE_URL",
-    "teamskills_user_token": "TEAM_SKILLS_HUB_USER_TOKEN",
-    "teamskills_system_token": "TEAM_SKILLS_HUB_SYSTEM_TOKEN",
-    "teamskills_allowed_download_hosts": "TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS",
-    "free_search_ddg_enabled": "FREE_SEARCH_DDG_ENABLED",
-    "free_search_bing_enabled": "FREE_SEARCH_BING_ENABLED",
-    "free_search_proxy_url": "FREE_SEARCH_PROXY_URL",
-    # General ASR used by regular task chat. JoyAI keeps its VOICE_ASR_* settings.
-    "asr_api_base": "ASR_API_BASE",
-    "asr_api_key": "ASR_API_KEY",
-    "asr_model": "ASR_MODEL_NAME",
-    # agents
-    "skills": "SKILLS",
-    "max_iterations": "MAX_ITERATIONS",
-    "completion_timeout": "COMPLETION_TIMEOUT",
-    # team
-    "team_name": "TEAM_NAME",
-    "lifecycle": "LIFECYCLE",
-    "teammate_mode": "TEAMATE_MODE",
-    "spawn_mode": "SPAWN_MODE",
-    "member_name": "MEMBER_NAME",
-    "display_name": "DISPLAY_NAME",
-    "persona": "PERSONA",
-    "agent_key": "AGENT_KEY",
-    "role_type": "ROLE_TYPE",
-    "prompt_hint": "PROMPT_HINT",
-}
-# 配置项键名列表，用于日志等说明
-CONFIG_KEYS = tuple(_CONFIG_SET_ENV_MAP.keys())
-
-# 来自 config.yaml 的配置项（前端 param 名 -> config.yaml 路径）
-_CONFIG_YAML_KEYS = frozenset({
-    "context_engine_enabled",
-    "kv_cache_affinity_enabled",
-    "permissions_enabled",
-    "memory_forbidden_enabled",
-    "memory_forbidden_description",
-    "a2ui_enabled",
-    "rsi_enabled",
-    "trajectory_ui_enabled",
-    "task_full_duplex_enabled",
-    "proactive_recommendation_enabled",
-    "proactive_recommendation_max_recommend_per_day",
-    "proactive_recommendation_max_rounds_per_tick",
-    "swarmflow_enabled",
-    "swarmflow_budget",
-    "external_cli_agent_claude_enabled",
-    "external_cli_agent_claude_use_builtin",
-    "external_cli_agent_claude_cli_path",
-    "external_cli_agent_codex_enabled",
-    "external_cli_agent_codex_use_builtin",
-    "external_cli_agent_codex_cli_path",
-    "setup_guide_enabled",
-    "skill_evolution",
-    "enable_free_models",
-})
-_EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
-    "external_cli_agent_claude_enabled",
-    "external_cli_agent_claude_use_builtin",
-    "external_cli_agent_claude_cli_path",
-    "external_cli_agent_codex_enabled",
-    "external_cli_agent_codex_use_builtin",
-    "external_cli_agent_codex_cli_path",
-})
-_EXTERNAL_CLI_AGENT_KINDS = ("claude", "codex")
-_DEFAULT_EXTERNAL_CLI_PUBLISH_HOST = "127.0.0.1"
-_DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
-_EXTERNAL_CLI_PUBLISH_PATH = "/ws"
-_UNSUPPORTED_WINDOWS_CLI_SUFFIXES = {".bat", ".cmd", ".ps1"}
-_PERMISSIONS_PROFILES = frozenset({"default", "full_access"})
-
-
-def _permission_profile(permission_config: object) -> str:
-    if not isinstance(permission_config, dict) or permission_config.get("enabled") is not True:
-        return "full_access"
-    return "automatic" if is_auto_permission_mode(permission_config) else "default"
-
-
-def _canonical_permission_facade(profile: str) -> dict[str, str]:
-    return {
-        "permissions_profile": profile,
-        "permissions_enabled": "false" if profile == "full_access" else "true",
-    }
 
 # 微信通道数值参数的取值范围：(下限, 上限, 是否必须为整数)。均为秒，必须为有限正数。
 # 用于 channel.wechat.set_conf 写盘前校验，拒绝负数 / 0 / 极大值 / 浮点越界 / 非数字，
@@ -1265,558 +791,6 @@ def _validate_wechat_numeric_params(params: dict) -> str | None:
     if base is not None and mx is not None and mx < base:
         return "backoff_max_sec 不得小于 backoff_base_sec"
     return None
-
-
-_SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "symphony_enabled": (("enabled",), "bool", False),
-    "symphony_evolution_enabled": (("evolution", "enabled"), "bool", False),
-}
-_SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
-_SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "skill_retrieval_enabled": (("enabled",), "bool", False),
-    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
-    "skill_retrieval_index_recommendation_shown": (
-        ("index", "recommendation_shown"),
-        "bool",
-        False,
-    ),
-    "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
-    "skill_retrieval_max_output_chars": (
-        ("discovery", "max_output_chars"),
-        "output_chars",
-        12000,
-    ),
-    "skill_retrieval_max_list_entries": (
-        ("discovery", "max_list_entries"),
-        "int",
-        40,
-    ),
-    "skill_retrieval_incremental_notice_max_chars": (
-        ("discovery", "incremental_notice_max_chars"),
-        "int",
-        4000,
-    ),
-}
-_SKILL_RETRIEVAL_CONFIG_KEYS = tuple(_SKILL_RETRIEVAL_CONFIG_SPECS.keys())
-
-
-def _coerce_config_panel_value(value: Any, value_type: str, default: Any) -> Any:
-    if value_type == "bool":
-        return str(value).strip().lower() in ("true", "1", "yes", "on", "enabled")
-    if value_type == "int":
-        try:
-            return max(1, int(value))
-        except (TypeError, ValueError):
-            return default
-    if value_type == "non_negative_int":
-        try:
-            return max(0, int(value))
-        except (TypeError, ValueError):
-            return default
-    if value_type == "raw_int":
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-    if value_type == "float":
-        try:
-            return max(0.0, float(value))
-        except (TypeError, ValueError):
-            return default
-    if value_type == "ratio":
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError):
-            return default
-        return parsed if 0.0 < parsed <= 1.0 else default
-    if value_type == "output_chars":
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("max_output_chars must be an integer from 512 to 48000") from exc
-        if not 512 <= parsed <= 48_000:
-            raise ValueError("max_output_chars must be from 512 to 48000")
-        return parsed
-    return str(value if value is not None else default)
-
-
-def _set_nested_config_value(target: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
-    current = target
-    for segment in path[:-1]:
-        child = current.get(segment)
-        if not isinstance(child, dict):
-            child = {}
-            current[segment] = child
-        current = child
-    current[path[-1]] = value
-
-
-def _get_nested_config_value(source: dict[str, Any], path: tuple[str, ...], default: Any) -> Any:
-    current: Any = source
-    for segment in path:
-        if not isinstance(current, dict) or segment not in current:
-            return default
-        current = current.get(segment)
-    return default if current is None else current
-
-
-def _flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    symphony = raw.get("symphony") if isinstance(raw.get("symphony"), dict) else {}
-    flat: dict[str, str] = {}
-    for key, (path, value_type, default) in _SYMPHONY_CONFIG_SPECS.items():
-        value = _get_nested_config_value(symphony, path, default)
-        if value_type == "bool":
-            flat[key] = "true" if bool(value) else "false"
-        else:
-            flat[key] = str(value)
-    flat.update(_flatten_skill_retrieval_for_config_panel(raw))
-    return flat
-
-
-def _flatten_skill_retrieval_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    symphony = raw.get("symphony") if isinstance(raw.get("symphony"), dict) else {}
-    section = symphony.get("skill_retrieval") if isinstance(symphony.get("skill_retrieval"), dict) else {}
-    flat: dict[str, str] = {}
-    for key, (path, value_type, default) in _SKILL_RETRIEVAL_CONFIG_SPECS.items():
-        value = _get_nested_config_value(section, path, default)
-        if value_type == "bool":
-            flat[key] = "true" if bool(value) else "false"
-        else:
-            flat[key] = str(value)
-    return flat
-
-
-def _flatten_swarmflow_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    enabled = _get_nested_config_value(
-        raw,
-        SWARMFLOW_ENABLED_CONFIG_PATH,
-        DEFAULT_SWARMFLOW_ENABLED,
-    )
-    budget = _get_nested_config_value(raw, SWARMFLOW_BUDGET_CONFIG_PATH, None)
-    flat = {"swarmflow_enabled": "true" if enabled else "false"}
-    if budget is not None:
-        flat["swarmflow_budget"] = str(budget)
-    return flat
-
-
-def _flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    agents = _get_nested_config_value(raw, EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
-    configured: dict[str, dict[str, str]] = {}
-    if isinstance(agents, list):
-        for item in agents:
-            if isinstance(item, str):
-                cli_agent = item.strip()
-                cli_path = ""
-            elif isinstance(item, dict):
-                cli_agent = str(item.get("cli_agent") or "").strip()
-                cli_path = str(item.get("cli_path") or item.get("codex_bin") or "").strip()
-            else:
-                continue
-            if cli_agent:
-                configured[cli_agent] = {"cli_path": cli_path}
-    return {
-        "external_cli_agent_claude_enabled": "true" if "claude" in configured else "false",
-        "external_cli_agent_claude_use_builtin": (
-            "true" if "claude" in configured and not configured["claude"].get("cli_path") else "false"
-        ),
-        "external_cli_agent_claude_cli_path": configured.get("claude", {}).get("cli_path", ""),
-        "external_cli_agent_codex_enabled": "true" if "codex" in configured else "false",
-        "external_cli_agent_codex_use_builtin": (
-            "true" if "codex" in configured and not configured["codex"].get("cli_path") else "false"
-        ),
-        "external_cli_agent_codex_cli_path": configured.get("codex", {}).get("cli_path", ""),
-    }
-
-
-def _parse_config_switch_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _parse_version_tuple(version: str) -> tuple[int, int, int] | None:
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
-    if match is None:
-        return None
-    return int(match.group(1)), int(match.group(2)), int(match.group(3))
-
-
-def _external_cli_reference_version(cli_agent: str) -> str:
-    if cli_agent == "claude":
-        try:
-            from claude_agent_sdk._cli_version import __cli_version__
-
-            return str(__cli_version__)
-        except Exception:
-            return ""
-    if cli_agent == "codex":
-        try:
-            return importlib.metadata.version("openai-codex")
-        except importlib.metadata.PackageNotFoundError:
-            return ""
-    return ""
-
-
-def _resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
-    requested = cli_path.strip()
-    if requested:
-        resolved = shutil.which(requested)
-        if resolved:
-            return resolved, "", ""
-        candidate = Path(requested).expanduser()
-        if candidate.is_file():
-            return str(candidate), "", ""
-        if candidate.is_dir():
-            return "", f"{requested} is a directory", "directory"
-        return "", f"{requested} not found", "not_found"
-
-    resolved = shutil.which(cli_agent)
-    if resolved:
-        return resolved, "", ""
-    return "", f"{cli_agent} not found in PATH", "not_found"
-
-
-def _is_windows_platform() -> bool:
-    return os.name == "nt"
-
-
-def _run_external_cli_version_command(cli_agent: str, resolved_path: str) -> tuple[str, str]:
-    commands = [["-v"]] if cli_agent == "claude" else [["--version"], ["-V"]]
-    errors: list[str] = []
-    for args in commands:
-        try:
-            process = subprocess.run(
-                [resolved_path, *args],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-                shell=False,
-            )
-        except Exception as exc:  # noqa: BLE001
-            errors.append(str(exc))
-            continue
-        output = "\n".join(part for part in (process.stdout, process.stderr) if part).strip()
-        if process.returncode == 0:
-            return output, ""
-        errors.append(output or f"exit code {process.returncode}")
-    # Both flag variants usually fail with the same message (e.g. WinError 193
-    # for a non-executable path); show it once instead of repeating it.
-    unique_errors = list(dict.fromkeys(errors))
-    return "", "; ".join(unique_errors)
-
-
-def _detect_external_cli_agent(cli_agent: str, cli_path: str = "") -> dict[str, Any]:
-    normalized_agent = cli_agent.strip().lower()
-    if normalized_agent not in _EXTERNAL_CLI_AGENT_KINDS:
-        return {
-            "cli_agent": normalized_agent,
-            "status": "unavailable",
-            "path": "",
-            "version": "",
-            "reference_version": "",
-            "message": f"unsupported cli_agent: {cli_agent}",
-        }
-
-    resolved_path, path_error, path_reason = _resolve_external_cli_path(normalized_agent, cli_path)
-    reference_version = _external_cli_reference_version(normalized_agent)
-    if not resolved_path:
-        return {
-            "cli_agent": normalized_agent,
-            "status": "unsupported" if path_reason == "directory" else "missing",
-            "path": "",
-            "version": "",
-            "reference_version": reference_version,
-            "reason": path_reason,
-            "message": path_error,
-        }
-
-    suffix = Path(resolved_path).suffix.lower()
-    if _is_windows_platform() and suffix in _UNSUPPORTED_WINDOWS_CLI_SUFFIXES:
-        return {
-            "cli_agent": normalized_agent,
-            "status": "unsupported",
-            "path": resolved_path,
-            "version": "",
-            "reference_version": reference_version,
-            "reason": "windows_script",
-            "suffix": suffix,
-            "message": "windows_script",
-        }
-
-    version_output, version_error = _run_external_cli_version_command(normalized_agent, resolved_path)
-    version_match = re.search(r"(\d+\.\d+\.\d+)", version_output)
-    version = version_match.group(1) if version_match else ""
-    if not version_output:
-        return {
-            "cli_agent": normalized_agent,
-            "status": "unavailable",
-            "path": resolved_path,
-            "version": "",
-            "reference_version": reference_version,
-            "message": version_error or "version command failed",
-        }
-
-    status = "ok"
-    message = ""
-    version_tuple = _parse_version_tuple(version)
-    reference_tuple = _parse_version_tuple(reference_version)
-    has_detected_version = bool(version)
-    has_reference_version = bool(reference_version)
-    has_parsed_versions = version_tuple is not None and reference_tuple is not None
-    has_comparable_versions = has_detected_version and has_reference_version and has_parsed_versions
-    if has_comparable_versions:
-        if version_tuple < reference_tuple:
-            status = "warning"
-            message = f"version {version} may be incompatible with expected version {reference_version}"
-    elif not version:
-        status = "warning"
-        message = "version output could not be parsed"
-
-    return {
-        "cli_agent": normalized_agent,
-        "status": status,
-        "path": resolved_path,
-        "version": version,
-        "reference_version": reference_version,
-        "message": message,
-    }
-
-
-def _build_symphony_config_update(params: dict[str, Any]) -> dict[str, Any]:
-    updates: dict[str, Any] = {}
-    for key, (path, value_type, default) in _SYMPHONY_CONFIG_SPECS.items():
-        if key not in params:
-            continue
-        value = _coerce_config_panel_value(params[key], value_type, default)
-        _set_nested_config_value(updates, path, value)
-    return updates
-
-
-def _build_skill_retrieval_config_update(params: dict[str, Any]) -> dict[str, Any]:
-    updates: dict[str, Any] = {}
-    for key, (path, value_type, default) in _SKILL_RETRIEVAL_CONFIG_SPECS.items():
-        if key not in params:
-            continue
-        value = _coerce_config_panel_value(params[key], value_type, default)
-        _set_nested_config_value(updates, path, value)
-    return updates
-
-
-def _flatten_modes_team_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    """Return the legacy flat fields consumed by the web config panel."""
-    modes = raw.get("modes")
-    teams_raw = modes.get("team") if isinstance(modes, dict) else {}
-    if not isinstance(teams_raw, dict):
-        teams_raw = {}
-
-    flat: dict[str, str] = {}
-    agent_specs: dict[str, dict[str, Any]] = {}
-
-    panel_cfg = raw.get("web_config_panel")
-    if isinstance(panel_cfg, dict):
-        registry = panel_cfg.get("agent_team_agents")
-        if isinstance(registry, dict):
-            for agent_key, spec in registry.items():
-                if isinstance(agent_key, str) and isinstance(spec, dict):
-                    agent_specs[agent_key] = spec
-
-    def add_agent(agent_key: str, spec: Any) -> str:
-        if not agent_key:
-            return ""
-        if isinstance(spec, dict) and agent_key not in agent_specs:
-            agent_specs[agent_key] = spec
-        return agent_key
-
-    def model_name_from_spec(spec: dict[str, Any]) -> str:
-        model_cfg = spec.get("model")
-        if not isinstance(model_cfg, dict):
-            return ""
-        if model_cfg.get("model") is not None:
-            return str(model_cfg.get("model") or "")
-        request_cfg = model_cfg.get("model_request_config")
-        if isinstance(request_cfg, dict) and request_cfg.get("model") is not None:
-            return str(request_cfg.get("model") or "")
-        client_cfg = model_cfg.get("model_client_config")
-        if isinstance(client_cfg, dict) and client_cfg.get("model_name") is not None:
-            return str(client_cfg.get("model_name") or "")
-        return ""
-
-    for team_idx, (team_name, team_spec) in enumerate(teams_raw.items()):
-        if team_idx >= 10 or not isinstance(team_spec, dict):
-            continue
-        team_prefix = f"team_{team_idx}_"
-        flat[f"{team_prefix}name"] = str(team_spec.get("team_name") or team_name or "")
-        flat[f"{team_prefix}lifecycle"] = str(team_spec.get("lifecycle") or "")
-        flat[f"{team_prefix}teammate_mode"] = str(team_spec.get("teammate_mode") or "")
-        flat[f"{team_prefix}spawn_mode"] = str(team_spec.get("spawn_mode") or "")
-        flat[f"{team_prefix}enable_permissions"] = (
-            "true" if bool(team_spec.get("enable_permissions", False)) else "false"
-        )
-        external_cli_agents = team_spec.get("external_cli_agents")
-        flat[f"{team_prefix}external_cli_agents"] = (
-            json.dumps(external_cli_agents, ensure_ascii=False)
-            if isinstance(external_cli_agents, list)
-            else ""
-        )
-
-        agents = team_spec.get("agents")
-        if not isinstance(agents, dict):
-            agents = {}
-
-        leader = team_spec.get("leader")
-        if isinstance(leader, dict):
-            for key in ("member_name", "display_name", "persona"):
-                flat[f"{team_prefix}leader_{key}"] = str(leader.get(key) or "")
-        leader_key = str(leader.get("agent_key") or "") if isinstance(leader, dict) else ""
-        if not leader_key:
-            leader_key = f"{team_name}_leader"
-        flat[f"{team_prefix}leader_agent_key"] = add_agent(leader_key, agents.get("leader"))
-
-        teammate_spec = agents.get("teammate")
-        if isinstance(teammate_spec, dict):
-            teammate = team_spec.get("teammate")
-            teammate_key = str(teammate.get("agent_key") or "") if isinstance(teammate, dict) else ""
-            if not teammate_key:
-                teammate_key = f"{team_name}_teammate"
-            flat[f"{team_prefix}teammate_agent_key"] = add_agent(teammate_key, teammate_spec)
-        else:
-            flat[f"{team_prefix}teammate_agent_key"] = ""
-
-        members_out: list[dict[str, str]] = []
-        members = team_spec.get("predefined_members")
-        if isinstance(members, list):
-            for member in members:
-                if not isinstance(member, dict):
-                    continue
-                member_name = str(member.get("member_name") or "")
-                agent_key = str(member.get("agent_key") or "")
-                if not agent_key:
-                    agent_key = f"{team_name}_{member_name}" if member_name else ""
-                if agent_key:
-                    add_agent(agent_key, agents.get(member_name))
-                members_out.append({
-                    "member_name": member_name,
-                    "display_name": str(member.get("display_name") or ""),
-                    "persona": str(member.get("persona") or ""),
-                    "prompt_hint": str(member.get("prompt_hint") or ""),
-                    "agent_key": agent_key,
-                })
-        flat[f"{team_prefix}predefined_members"] = json.dumps(members_out, ensure_ascii=False)
-
-    for agent_idx, (agent_key, spec) in enumerate(agent_specs.items()):
-        if agent_idx >= 10:
-            break
-        flat[f"agent_name_{agent_idx}"] = agent_key
-        flat[f"agent_model_{agent_idx}"] = model_name_from_spec(spec)
-        skills = spec.get("skills")
-        flat[f"agent_skills_{agent_idx}"] = ",".join(str(item) for item in skills) if isinstance(skills, list) else ""
-        flat[f"agent_max_iterations_{agent_idx}"] = str(spec.get("max_iterations") or 200)
-        flat[f"agent_completion_timeout_{agent_idx}"] = str(spec.get("completion_timeout") or 600)
-
-    return flat
-
-
-def _team_payload_requests_codex(params: dict[str, Any]) -> bool:
-    teams_raw = params.get("team")
-    if not isinstance(teams_raw, list):
-        return False
-    for team_item in teams_raw:
-        if not isinstance(team_item, dict):
-            continue
-        external_cli_agents = team_item.get("external_cli_agents")
-        if not isinstance(external_cli_agents, list):
-            continue
-        for item in external_cli_agents:
-            if item == "codex":
-                return True
-            if isinstance(item, dict) and item.get("cli_agent") == "codex":
-                return True
-    return False
-
-
-def _team_item_requests_codex(team_item: dict[str, Any]) -> bool:
-    external_cli_agents = team_item.get("external_cli_agents")
-    if not isinstance(external_cli_agents, list):
-        return False
-    for item in external_cli_agents:
-        if item == "codex":
-            return True
-        if isinstance(item, dict) and item.get("cli_agent") == "codex":
-            return True
-    return False
-
-
-def _inject_external_cli_publish_url(params: dict[str, Any]) -> dict[str, Any]:
-    teams_raw = params.get("team")
-    if not isinstance(teams_raw, list):
-        return params
-
-    publish_url = _build_external_cli_publish_url()
-    teams: list[Any] = []
-    changed = False
-    for team_item in teams_raw:
-        if isinstance(team_item, dict) and _team_item_requests_codex(team_item):
-            item = dict(team_item)
-            item["external_cli_publish_url"] = publish_url
-            teams.append(item)
-            changed = True
-        else:
-            teams.append(team_item)
-
-    if not changed:
-        return params
-    return {**params, "team": teams}
-
-
-def _external_cli_agent_key(cli_agent: str, suffix: str) -> str:
-    return f"external_cli_agent_{cli_agent}_{suffix}"
-
-
-def _external_cli_agent_effective_state(
-    cli_agent: str,
-    current: dict[str, str],
-    params: dict[str, Any],
-) -> tuple[bool, bool, str]:
-    enabled_key = _external_cli_agent_key(cli_agent, "enabled")
-    use_builtin_key = _external_cli_agent_key(cli_agent, "use_builtin")
-    cli_path_key = _external_cli_agent_key(cli_agent, "cli_path")
-    enabled = _parse_config_switch_bool(params.get(enabled_key, current[enabled_key]))
-    use_builtin = _parse_config_switch_bool(params.get(use_builtin_key, current[use_builtin_key]))
-    if use_builtin:
-        return enabled, True, ""
-    return enabled, False, str(params.get(cli_path_key, current[cli_path_key]) or "").strip()
-
-
-def _external_cli_agents_from_switches(raw: dict[str, Any], params: dict[str, Any]) -> list[dict[str, str]]:
-    current = _flatten_external_cli_agents_for_config_panel(raw)
-    agents: list[dict[str, str]] = []
-    for cli_agent in _EXTERNAL_CLI_AGENT_KINDS:
-        enabled, use_builtin, requested_path = _external_cli_agent_effective_state(cli_agent, current, params)
-        if not enabled:
-            continue
-        entry = {"cli_agent": cli_agent}
-        if not use_builtin:
-            detection = _detect_external_cli_agent(cli_agent, requested_path)
-            if detection["status"] not in {"ok", "warning"}:
-                raise ValueError(
-                    f"{cli_agent} cli_path is not available: {detection.get('message') or detection.get('status')}"
-                )
-            entry["cli_path"] = str(detection.get("path") or "").strip()
-        agents.append(entry)
-    return agents
-
-
-def _build_external_cli_publish_url() -> str:
-    host = str(os.getenv("WEB_HOST") or _DEFAULT_EXTERNAL_CLI_PUBLISH_HOST).strip()
-    if host in {"", "0.0.0.0", "::", "[::]"}:
-        host = _DEFAULT_EXTERNAL_CLI_PUBLISH_HOST
-    if ":" in host and not (host.startswith("[") and host.endswith("]")):
-        host = f"[{host}]"
-
-    port = str(os.getenv("WEB_PORT") or _DEFAULT_EXTERNAL_CLI_PUBLISH_PORT).strip()
-    return f"ws://{host}:{port}{_EXTERNAL_CLI_PUBLISH_PATH}"
 
 
 def _snapshot_external_cli_dependency_install_status(cli_agent: str) -> dict[str, Any]:
@@ -2590,34 +1564,6 @@ def _supports_container_file_api(client: Any) -> bool:
     return all(callable(getattr(client, name, None)) for name in _CONTAINER_FILE_API_METHODS)
 
 
-def _attribute_session_project(
-    meta: dict[str, Any],
-    visible_by_id: set[str],
-) -> str:
-    """返回会话归属的 project_id(或按 work_mode 分桶的默认项目 ID)。
-
-    仅按 ``session.project_id`` 匹配可见项目;不命中(含无 project_id 的存量会话)
-    按会话自身的 ``work_mode`` 归入对应默认项目:
-      - ``work_mode == "code"`` → ``"default_code"``
-      - 其他(含 ``"work"`` / 空 / 非法) → ``"default"``
-
-    存量会话的 project_dir → project_id 解析由启动迁移完成。
-
-    Args:
-        meta: 会话元数据
-        visible_by_id: 可见(非隐藏)项目的 ``project_id`` 集合
-    """
-    sp_id = str(meta.get("project_id") or "")
-    if sp_id and sp_id in visible_by_id:
-        return sp_id
-    # 按会话 work_mode 分桶默认项目,使 code 模式孤立会话归 default_code,
-    # work 模式孤立会话归 default,与 project.list 默认项目拆分一致
-    s_work_mode = str(meta.get("work_mode") or "")
-    if s_work_mode == "code":
-        return DEFAULT_PROJECT_ID_CODE
-    return DEFAULT_PROJECT_ID_WORK
-
-
 def _project_info_payload(
     proj: Any | None,
     *,
@@ -2673,84 +1619,6 @@ def _project_info_payload(
         "created_at": proj.created_at,
         "updated_at": getattr(proj, "updated_at", 0),
     }
-
-
-def _normalize_provider_value(value: str) -> str:
-    """把任意大小写的 provider 值归一化为 ``ProviderType`` 规范大小写。
-
-    与 TUI 侧 ``gateway/channel_manager/tui/tui_connect.py:_normalize_provider_value``
-    保持一致：TUI 在写入/校验 model_provider 时会做大小写归一化，Web 侧此前没有做，
-    导致同一份配置（例如历史数据里 model_provider 大小写不规范）在 TUI 能正常识别，
-    但 Web 的"测试"/"保存"因大小写敏感的精确匹配而被误判为非法值。
-    """
-    normalized = value.strip()
-    if not normalized:
-        return normalized
-
-    available_model_providers = [provider.value for provider in ProviderType]
-    lookup = {provider.lower(): provider for provider in available_model_providers}
-    return lookup.get(normalized.lower(), normalized)
-
-
-def _resolve_model_config_obj_for_validate(model_name: str, params: dict[str, Any]) -> dict[str, Any]:
-    """从热更新后的配置中查找对应模型的 ``model_config_obj``。
-
-    按 ``model_name`` 或 ``alias`` 匹配 ``models.defaults`` 中的条目，
-    返回该条目的 ``model_config_obj``；找不到或读取失败时 fallback 到
-    空字典（让模型使用自身默认参数，避免 ``temperature=0`` 对部分
-    模型不兼容）。前端传入的 ``reasoning_level`` 可覆盖配置值。
-    """
-    model_config_obj: dict[str, Any] = {}
-    try:
-        _cfg = get_config()
-        _models = get_default_models(_cfg)
-        for entry in _models:
-            if not isinstance(entry, dict):
-                continue
-            mcc = entry.get("model_client_config") or {}
-            entry_model_name = str(mcc.get("model_name", "")).strip()
-            entry_alias = str(entry.get("alias", "")).strip()
-            if entry_model_name == model_name or entry_alias == model_name:
-                obj = entry.get("model_config_obj")
-                if isinstance(obj, dict):
-                    model_config_obj = dict(obj)
-                # context_window（模型支持的上下文总长度）可配在任意模型条目的
-                # model_config_obj 里（defaults / agentos / video / audio / vision /
-                # image_gen 均可），供 core 从 ModelRequestConfig 取值。是否在出口
-                # 清掉取决于 core 是否已把 context_window 加为 ModelRequestConfig
-                # 正式字段（见 reasoning_injector.core_has_context_window_field）：
-                # - core 未加字段（过渡期）：context_window 进 extra 会被
-                #   base_model_client 经 model_dump 透传给厂商 SDK 报 unexpected
-                #   keyword argument -> 需清。
-                # - core 已加字段：context_window 作正式字段，core 自行 exclude
-                #   不发厂商、可读 -> 不清（否则切掉 core 想读的值）。
-                # 不再守 _source=="agentos"：所有条目一视同仁，defaults 配了
-                # context_window 同样需要过渡期清防发厂商。_source 标记本身由
-                # reasoning_injector._build_model_request_kwargs 统一 pop；此处与
-                # 公共出口同口径，覆盖绕过 build_model_from_entry 的 validate 路径。
-                if not core_has_context_window_field():
-                    model_config_obj.pop("context_window", None)
-                logger.info(
-                    "[config.validate_model] loaded model_config_obj for '%s' "
-                    "(matched_by=%s): %s",
-                    model_name,
-                    "model_name" if entry_model_name == model_name else "alias",
-                    model_config_obj,
-                )
-                break
-        else:
-            logger.info(
-                "[config.validate_model] no model_config_obj found for '%s', using empty default",
-                model_name,
-            )
-    except Exception as exc:
-        logger.warning(
-            "[config.validate_model] failed to read model_config_obj from config, using default. %s",
-            exc,
-        )
-    if "reasoning_level" in params:
-        model_config_obj["reasoning_level"] = params.get("reasoning_level")
-    return model_config_obj
 
 
 def _persist_media_locally(
@@ -3183,102 +2051,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         register_disconnect(_on_disconnect)
 
     async def _config_get(ws, req_id, params, session_id):
-        # 返回 _CONFIG_SET_ENV_MAP 里所有键对应的环境变量当前值
-        payload = {
-            param_key: (os.getenv(env_key) or "")
-            for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
-        }
-        payload["app_version"] = __version__
-        runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
-        payload["runtime_platform"] = runtime_platform
-        payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
-        # 合并 config.yaml 中的配置项
-        try:
-            raw = get_config_raw()
-            setup_guide_cfg = raw.get("setup_guide") or {}
-            payload["setup_guide_enabled"] = (
-                "true" if setup_guide_cfg.get("enabled", True) else "false"
-            )
-            rsi_cfg = raw.get("rsi") or {}
-            payload["rsi_enabled"] = "true" if rsi_cfg.get("enabled", True) else "false"
-            for key, val in payload.items():
-                from jiuwenswarm.extensions.registry import ExtensionRegistry
-                if (("api_key" in key.lower() or "token" in key.lower())
-                        and ExtensionRegistry.get_instance().get_crypto_provider()):
-                    payload[key] = ExtensionRegistry.get_instance().get_crypto_provider().decrypt(val)
-            react_cfg = raw.get("react") or {}
-            ctx_cfg = react_cfg.get("context_engine_config") or {}
-            payload["context_engine_enabled"] = "true" if ctx_cfg.get("enabled", False) else "false"
-            payload["kv_cache_affinity_enabled"] = (
-                "true" if is_affinity_enabled(raw) else "false"
-            )
-            perm_cfg = raw.get("permissions") or {}
-            payload.update(_canonical_permission_facade(_permission_profile(perm_cfg)))
-            # Skill evolution is controlled solely by the canonical nested YAML key.
-            evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
-            payload["skill_evolution"] = "true" if evolution_cfg.get("skill_evolution", False) else "false"
-            memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
-            payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
-            memory_desc = memory_cfg.get("description") or {}
-            payload["memory_forbidden_description"] = memory_desc
-            payload.update(get_a2ui_config_payload(raw))
-            trajectory_cfg = raw.get("trajectory_ui") or {}
-            payload["trajectory_ui_enabled"] = (
-                "true" if trajectory_cfg.get("enabled", False) else "false"
-            )
-            experimental_cfg = raw.get("experimental") or {}
-            payload["task_full_duplex_enabled"] = (
-                "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
-            )
-            payload.update(_flatten_swarmflow_for_config_panel(raw))
-            payload.update(_flatten_external_cli_agents_for_config_panel(raw))
-            payload.update(_flatten_symphony_for_config_panel(raw))
-            if not payload.get("free_search_ddg_enabled"):
-                payload["free_search_ddg_enabled"] = "false"
-            if not payload.get("free_search_bing_enabled"):
-                payload["free_search_bing_enabled"] = "false"
-            payload.update(_flatten_modes_team_for_config_panel(raw))
-            # Proactive recommendation — use resolved config (env vars expanded)
-            resolved = get_config()
-            proactive_cfg = resolved.get("proactive_recommendation") or {}
-            payload["proactive_recommendation_enabled"] = "true" if proactive_cfg.get("enabled", False) else "false"
-            payload["proactive_recommendation_max_recommend_per_day"] = str(
-                proactive_cfg.get("max_recommend_per_day", 10))
-            payload["proactive_recommendation_max_rounds_per_tick"] = str(
-                proactive_cfg.get("max_rounds_per_tick", 20))
-            models_cfg = resolved.get("models") or {}
-            payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
-        except Exception:  # noqa: BLE001
-            payload.setdefault("context_engine_enabled", "false")
-            payload.setdefault("kv_cache_affinity_enabled", "false")
-            payload.setdefault("permissions_enabled", "false")
-            payload.setdefault("rsi_enabled", "true")
-            payload.setdefault("permissions_profile", "full_access")
-            payload.setdefault("setup_guide_enabled", "true")
-            payload.setdefault("skill_evolution", "false")
-            payload.setdefault("memory_forbidden_enabled", "false")
-            payload.setdefault("memory_forbidden_description", "")
-            payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")
-            for key, value in get_default_a2ui_config_payload().items():
-                payload.setdefault(key, value)
-            payload.setdefault("trajectory_ui_enabled", "false")
-            payload.setdefault("task_full_duplex_enabled", "false")
-            for key, (_, value_type, default) in {
-                **_SYMPHONY_CONFIG_SPECS,
-                **_SKILL_RETRIEVAL_CONFIG_SPECS,
-            }.items():
-                if value_type == "bool":
-                    default_text = "true" if default else "false"
-                else:
-                    default_text = str(default)
-                payload.setdefault(key, default_text)
-            payload.setdefault("free_search_ddg_enabled", "false")
-            payload.setdefault("free_search_bing_enabled", "false")
-            payload.setdefault("proactive_recommendation_enabled", "false")
-            payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
-            payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
-            payload.setdefault("enable_free_models", "false")
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
+        """config.get 实现已下沉 ``common.config_panel.config_set_handlers``。"""
+        await config_set_handlers.config_get_handler(
+            channel, ws, req_id, params, session_id
+        )
 
     async def _external_cli_detect(ws, req_id, params, session_id):
         if not isinstance(params, dict):
@@ -3306,964 +2082,45 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
-    def _persist_env_updates(updates: dict[str, str]) -> None:
-        """把已更新的环境变量写回 .env（仅覆盖或追加对应 KEY=value 行）。"""
-        env_path = _ENV_FILE
-        if not updates:
-            return
-        try:
-            lines: list[str] = []
-            if env_path.is_file():
-                with open(env_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-            new_lines: list[str] = []
-            for line in lines:
-                stripped = line.strip()
-                found = False
-                for env_key, value in updates.items():
-                    if stripped.startswith(env_key + "="):
-                        new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
-                        found = True
-                        break
-                if not found:
-                    new_lines.append(line)
-            for env_key, value in updates.items():
-                if not any(s.strip().startswith(env_key + "=") for s in new_lines):
-                    new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
-            env_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-        except OSError as e:
-            logger.warning("[config.set] 写回 .env 失败: %s", e)
-
-    class _ConfigBadRequest(ValueError):
-        pass
-
-    class _ConfigInternalError(RuntimeError):
-        pass
-
-    def _validate_proactive_int(
-        val: Any, *, name: str, lo: int = 1, hi: int = 50,
-    ) -> int:
-        """校验 proactive 数值配置项：必须是 [lo, hi] 的正整数字符串。
-
-        挡住负数、零、浮点数(3.5)、字符串(abc)、科学计数(1e5)、空值。
-        校验失败抛 _ConfigBadRequest（携带中文提示），由外层返回前端。
-        """
-        raw = str(val if val is not None else "").strip()
-        if not raw:
-            raise _ConfigBadRequest(f"{name} 不能为空，需为 {lo}-{hi} 的正整数")
-        # 正则一次挡住浮点、负数、科学计数、非数字
-        if not re.fullmatch(r"[0-9]+", raw):
-            raise _ConfigBadRequest(
-                f"{name} 必须是正整数（{lo}-{hi}），当前值无效：{raw!r}"
-            )
-        n = int(raw)
-        if n < lo or n > hi:
-            raise _ConfigBadRequest(f"{name} 需为 {lo}-{hi} 的正整数，当前：{n}")
-        return n
-
-    def _parse_config_bool(value: Any) -> bool:
-        return parse_kvc_bool(value)
-
-    def _encrypt_config_params(params: dict[str, Any]) -> dict[str, Any]:
-        encrypted = dict(params)
-        for key, val in list(encrypted.items()):
-            from jiuwenswarm.extensions.registry import ExtensionRegistry
-            if key.endswith("_context_window_tokens"):
-                continue
-            if (("api_key" in key.lower() or "token" in key.lower())
-                    and ExtensionRegistry.get_instance().get_crypto_provider()):
-                encrypted[key] = ExtensionRegistry.get_instance().get_crypto_provider().encrypt(val)
-        return encrypted
-
-    def _front_team_template_ids(params: dict[str, Any]) -> set[str] | None:
-        teams_raw = params.get("team")
-        if teams_raw is None:
-            return None
-        if not isinstance(teams_raw, list):
-            return set()
-        template_ids: set[str] = set()
-        for team_raw in teams_raw:
-            if not isinstance(team_raw, dict):
-                continue
-            template_id = str(team_raw.get("team_name") or "").strip()
-            if template_id:
-                template_ids.add(template_id)
-        return template_ids
-
-    def _preserve_deleted_team_entities(params: dict[str, Any]) -> None:
-        next_template_ids = _front_team_template_ids(params)
-        if next_template_ids is None:
-            return
-
-        from jiuwenswarm.agents.harness.team import list_team_template_summaries
-        from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
-        from jiuwenswarm.server.runtime.team_entity_store import ensure_team_entity_for_binding
-
-        config_base = get_config()
-        current_template_ids = {
-            str(item.get("template_id") or "").strip()
-            for item in list_team_template_summaries(config_base)
-            if str(item.get("source") or "").startswith("modes.team.")
-        }
-        deleted_template_ids = current_template_ids - next_template_ids
-        if not deleted_template_ids:
-            return
-
-        failed_team_names: list[str] = []
-        for binding in get_team_binding_store().list():
-            if binding.template_id not in deleted_template_ids:
-                continue
-            if ensure_team_entity_for_binding(binding, config_base=config_base) is None:
-                failed_team_names.append(binding.team_name)
-        if failed_team_names:
-            raise _ConfigInternalError(
-                "failed to preserve team entity config: " + ", ".join(sorted(failed_team_names))
-            )
-
-    def _apply_config_payload(params: dict[str, Any]) -> _ConfigApplyResult:
-        """Apply config.set-style payload to .env/config.yaml without triggering reload."""
-        if "permissions_mode" in params:
-            raise _ConfigBadRequest("permissions_mode is not writable")
-        if "permissions_profile" in params and "permissions_enabled" in params:
-            raise _ConfigBadRequest(
-                "permissions_profile and permissions_enabled are mutually exclusive"
-            )
-        params = _encrypt_config_params(params)
-        env_updates: dict[str, str] = {}
-        yaml_updated: list[str] = []
-        codex_dependency_install: dict[str, Any] | None = None
-        external_cli_dependency_installs: dict[str, dict[str, Any]] = {}
-        canonical_config: dict[str, str] | None = None
-        available_model_providers = [provider.value for provider in ProviderType]
-        raw = get_config_raw()
-        preferred_lang = raw.get("preferred_language", "zh")
-
-        pending_permission_profile: str | None = None
-        if "permissions_profile" in params:
-            pending_permission_profile = str(params["permissions_profile"]).strip()
-            if pending_permission_profile not in _PERMISSIONS_PROFILES:
-                raise _ConfigBadRequest("invalid permissions_profile")
-            canonical_config = _canonical_permission_facade(pending_permission_profile)
-        elif "permissions_enabled" in params:
-            pending_permission_profile = (
-                "default" if _parse_config_bool(params["permissions_enabled"]) else "full_access"
-            )
-            canonical_config = _canonical_permission_facade(pending_permission_profile)
-
-        try:
-            normalize_affinity_request(params)
-        except ValueError as exc:
-            raise _ConfigBadRequest(str(exc)) from exc
-
-        for param_key, env_key in _CONFIG_SET_ENV_MAP.items():
-            if param_key not in params:
-                continue
-            val = params[param_key]
-            if param_key.endswith("_context_window_tokens") and val not in (None, ""):
-                parsed_context_window = parse_positive_int(val)
-                if parsed_context_window is None:
-                    raise _ConfigBadRequest(
-                        f"{param_key} must be a positive integer or a value such as 256K or 1M"
-                    )
-                val = str(parsed_context_window)
-            if param_key.endswith("_provider") and val and val not in available_model_providers:
-                raise _ConfigBadRequest(f"Model provider must in: {available_model_providers} ")
-            if val is None:
-                env_updates[env_key] = ""
-            else:
-                env_updates[env_key] = str(val).strip()
-
-        raw = get_config_raw()
-        preferred_lang = raw.get("preferred_language", "zh")
-
-        if "agents" in params or "team" in params:
-            try:
-                skip_team_update = False
-                if _team_payload_requests_codex(params):
-                    codex_dependency_install = _ensure_codex_dependency_available_or_start_install()
-                    if codex_dependency_install is not None:
-                        skip_team_update = True
-                if "team" in params and not skip_team_update:
-                    _preserve_deleted_team_entities(params)
-                if not skip_team_update:
-                    replace_teams_in_config(_inject_external_cli_publish_url(params))
-                    yaml_updated.append("modes.team")
-            except ValueError as exc:
-                raise _ConfigBadRequest(str(exc)) from exc
-            except _ConfigInternalError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[config.set] 写回 modes.team 失败: %s", exc)
-                raise _ConfigInternalError("failed to update modes.team") from exc
-
-        external_cli_agents_updated = False
-        for param_key in _CONFIG_YAML_KEYS:
-            if param_key not in params:
-                continue
-            val = params[param_key]
-            parsed = _parse_config_bool(val)
-            try:
-                if param_key == "context_engine_enabled":
-                    update_context_engine_enabled_in_config(parsed)
-                elif param_key == "kv_cache_affinity_enabled":
-                    update_kv_cache_affinity_enabled_in_config(parsed)
-                elif param_key == "permissions_enabled":
-                    continue
-                elif param_key == "setup_guide_enabled":
-                    update_setup_guide_enabled_in_config(parsed)
-                elif param_key == "rsi_enabled":
-                    update_rsi_enabled_in_config(parsed)
-                elif param_key == "enable_free_models":
-                    update_enable_free_models_in_config(parsed)
-                elif param_key == "memory_forbidden_enabled":
-                    update_memory_forbidden_enabled_in_config(parsed)
-                elif param_key == "memory_forbidden_description":
-                    desc_val = str(val).strip()
-                    update_memory_forbidden_description_in_config({preferred_lang: desc_val})
-                elif param_key == "swarmflow_enabled":
-                    update_swarmflow_enabled_in_config(parsed)
-                elif param_key == "swarmflow_budget":
-                    update_swarmflow_budget_in_config(str(val).strip())
-                elif param_key in _EXTERNAL_CLI_AGENT_CONFIG_KEYS:
-                    if not external_cli_agents_updated:
-                        try:
-                            external_cli_agents = _external_cli_agents_from_switches(raw, params)
-                        except ValueError as exc:
-                            raise _ConfigBadRequest(str(exc)) from exc
-                        if any(item.get("cli_agent") == "codex" for item in external_cli_agents):
-                            codex_dependency_install = _ensure_codex_dependency_available_or_start_install()
-                            if codex_dependency_install is not None:
-                                external_cli_dependency_installs["codex"] = codex_dependency_install
-                                external_cli_agents = [
-                                    item for item in external_cli_agents if item.get("cli_agent") != "codex"
-                                ]
-                        if any(item.get("cli_agent") == "claude" for item in external_cli_agents):
-                            claude_install = _ensure_claude_dependency_available_or_start_install()
-                            if claude_install is not None:
-                                external_cli_dependency_installs["claude"] = claude_install
-                                external_cli_agents = [
-                                    item for item in external_cli_agents if item.get("cli_agent") != "claude"
-                                ]
-                        update_external_cli_agents_in_config(
-                            external_cli_agents,
-                            _build_external_cli_publish_url(),
-                        )
-                        external_cli_agents_updated = True
-                elif param_key == "skill_evolution":
-                    update_skill_evolution_enabled_in_config(parsed)
-                elif param_key.startswith("a2ui_"):
-                    ok, update, error = validate_a2ui_config_update(param_key, val)
-                    if not ok:
-                        raise _ConfigBadRequest(error or "invalid A2UI config")
-                    update_a2ui_in_config(update)
-                elif param_key == "trajectory_ui_enabled":
-                    update_trajectory_ui_in_config(parsed)
-                elif param_key == "task_full_duplex_enabled":
-                    update_task_full_duplex_in_config(parsed)
-                elif param_key == "proactive_recommendation_enabled":
-                    update_proactive_recommendation_in_config({"enabled": parsed})
-                elif param_key == "proactive_recommendation_max_recommend_per_day":
-                    n = _validate_proactive_int(val, name="每日推荐上限(max_recommend_per_day)")
-                    update_proactive_recommendation_in_config({"max_recommend_per_day": n})
-                elif param_key == "proactive_recommendation_max_rounds_per_tick":
-                    n = _validate_proactive_int(val, name="每次检查对话轮数(max_rounds_per_tick)")
-                    update_proactive_recommendation_in_config({"max_rounds_per_tick": n})
-                yaml_updated.append(param_key)
-            except _ConfigBadRequest:
-                # proactive 数值校验等：直接返回前端，不被外层吞成 warning
-                raise
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[config.set] 写回 config.yaml 失败 %s: %s", param_key, e)
-                if param_key == "swarmflow_enabled":
-                    raise _ConfigInternalError("failed to update enable_swarmflow") from e
-                if param_key in _EXTERNAL_CLI_AGENT_CONFIG_KEYS:
-                    raise _ConfigInternalError("failed to update external_cli_agents") from e
-
-        if params.get("model_provider") == ASCEND_AFFINITY_PROVIDER:
-            try:
-                if update_default_model_provider_in_config(
-                    ASCEND_AFFINITY_PROVIDER
-                ):
-                    yaml_updated.append("models.default_provider")
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[config.set] 写回默认模型 provider 失败: %s", e)
-
-        symphony_updates = _build_symphony_config_update(params)
-        if symphony_updates:
-            try:
-                update_symphony_in_config(symphony_updates)
-                yaml_updated.extend(k for k in _SYMPHONY_CONFIG_KEYS if k in params)
-            except Exception as e:
-                logger.warning("[config.set] 写回 symphony 失败: %s", e)
-
-        try:
-            skill_retrieval_updates = _build_skill_retrieval_config_update(params)
-        except ValueError as exc:
-            raise _ConfigBadRequest(str(exc)) from exc
-        if skill_retrieval_updates:
-            try:
-                update_skill_retrieval_in_config(skill_retrieval_updates)
-                yaml_updated.extend(k for k in _SKILL_RETRIEVAL_CONFIG_KEYS if k in params)
-            except Exception as e:
-                logger.warning("[config.set] 写回 skill_retrieval 失败: %s", e)
-
-        for env_key, value in env_updates.items():
-            os.environ[env_key] = value
-        if env_updates:
-            _persist_env_updates(env_updates)
-            logger.info("[config.set] 已更新 .env: %s", list(env_updates.keys()))
-        if yaml_updated:
-            logger.info("[config.set] 已更新 config.yaml: %s", yaml_updated)
-
-        kvc_config_changed = any(key in params for key in KVC_CONFIG_KEYS)
-        if kvc_config_changed:
-            valid, failures = validate_persisted_kv_cache_affinity()
-            if not valid:
-                # Do not leave a persisted half-success state active. This is a
-                # narrow fail-closed correction, not a cross-file transaction.
-                update_kv_cache_affinity_enabled_in_config(False)
-                raise _ConfigInternalError(
-                    "KV cache affinity saved but not applied: " + "; ".join(failures)
-                )
-
-        return _ConfigApplyResult(
-            env_updates=env_updates,
-            yaml_updated=yaml_updated,
-            codex_dependency_install=codex_dependency_install,
-            external_cli_dependency_installs=external_cli_dependency_installs or None,
-            canonical_config=canonical_config,
-            pending_permission_profile=pending_permission_profile,
-            pending_permission_key=(
-                "permissions_profile"
-                if "permissions_profile" in params
-                else "permissions_enabled"
-                if "permissions_enabled" in params
-                else None
-            ),
-        )
-
-    def _commit_pending_permission_profile(apply_result: _ConfigApplyResult) -> None:
-        profile = apply_result.pending_permission_profile
-        if profile is None:
-            return
-        try:
-            update_permissions_profile_in_config(profile)
-        except (OSError, ValueError) as exc:
-            raise _ConfigInternalError("failed to update permissions profile") from exc
-        if apply_result.pending_permission_key is not None:
-            apply_result.yaml_updated.append(apply_result.pending_permission_key)
-
-    async def _apply_config_change_set(change_set: _ConfigChangeSet) -> bool:
-        """Synchronously apply only the runtime scope affected by a saved config change."""
-        if not change_set.changed:
-            return True
-        if on_config_saved:
-            config_payload = get_config()
-            callback_result = on_config_saved(
-                change_set.updated_keys,
-                env_updates=dict(change_set.env_updates),
-                config_payload=config_payload,
-                reload_options=change_set.reload_options,
-            )
-            if inspect.isawaitable(callback_result):
-                return bool(await callback_result)
-            return bool(callback_result)
-        await _clear_agent_config_cache(_resolve(agent_client))
-        return True
-
-    def _build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]:
-        if not isinstance(raw_models, list):
-            raise _ConfigBadRequest("models must be a non-empty list")
-        # 登录送的模型是运行时叠加的，前端回传时要去掉，不能写进 config.yaml：
-        # 它们的凭据会过期，换账号后模型也该跟着变。
-        raw_models = [item for item in raw_models if not is_login_model(item)]
-        if not raw_models:
-            raise _ConfigBadRequest("models must be a non-empty list")
-
-        available_model_providers = [p.value for p in ProviderType]
-        parsed: list[dict] = []
-        aliases_seen: dict[str, int] = {}
-        for idx, item in enumerate(raw_models):
-            if not isinstance(item, dict):
-                raise _ConfigBadRequest(f"models[{idx}] must be object")
-            # agentos 备份模型条目不参与 defaults 替换：前端置灰只读展示 agentos，
-            # 提交的列表里不应含 agentos；此防御性过滤确保即便误传也不会把
-            # agentos 当 defaults 写回 models.defaults（污染 config 结构、丢 _source 标记）
-            if item.get("is_agentos") is True:
-                continue
-            model_name = str(item.get("model_name") or "").strip()
-            if not model_name:
-                raise _ConfigBadRequest(f"models[{idx}].model_name is required")
-            origin_index_raw = item.get("origin_index")
-            if origin_index_raw is None:
-                origin_index = None
-            else:
-                try:
-                    origin_index = int(origin_index_raw)
-                except (TypeError, ValueError):
-                    origin_index = None
-            api_key = str(item.get("api_key") or "").strip()
-            api_base = str(item.get("api_base") or "").strip()
-            model_provider = _normalize_provider_value(str(item.get("model_provider") or ""))
-            # OpenAIAccount uses the token store managed by core OAuth, so it does not
-            # carry a user-entered api_key in config.
-            if not api_key and origin_index is None and not is_openai_account_provider(model_provider):
-                raise _ConfigBadRequest(f"models[{idx}].api_key is required")
-            if model_provider and model_provider not in available_model_providers:
-                raise _ConfigBadRequest(f"models[{idx}].model_provider must be one of: {available_model_providers}")
-            raw_temperature = item.get("temperature")
-            if raw_temperature is None or raw_temperature == "":
-                temperature = None
-            else:
-                try:
-                    temperature = float(raw_temperature)
-                except (ValueError, TypeError) as exc:
-                    raise _ConfigBadRequest(
-                        f"models[{idx}].temperature must be a number or empty"
-                    ) from exc
-            try:
-                timeout = int(item.get("timeout", 1800))
-            except (ValueError, TypeError):
-                timeout = 1800
-            verify_ssl = bool(item.get("verify_ssl", False))
-            is_default = bool(item.get("is_default", False))
-            alias = str(item.get("alias") or "").strip()
-            # 原样透传给共享校验函数：不要用 `or ""` 压平，否则布尔 False
-            # （legacy YAML 裸 off / 非前端客户端传的 JSON false）会被当成清空。
-            raw_reasoning_level = item.get("reasoning_level")
-            context_window_tokens_provided = "context_window_tokens" in item
-            context_window_tokens = None
-            if context_window_tokens_provided:
-                context_window_tokens = parse_positive_int(item.get("context_window_tokens"))
-                if context_window_tokens is None:
-                    raise _ConfigBadRequest(
-                        f"models[{idx}].context_window_tokens must be a positive integer or a value such as 256K or 1M"
-                    )
-            vendor_key = str(item.get("vendor_key") or "").strip() or None
-            plan = str(item.get("plan") or "").strip() or None
-            if plan:
-                from jiuwenswarm.common.model_vendor_registry import PlanKind
-
-                try:
-                    plan = PlanKind(plan).value
-                except ValueError as exc:
-                    raise _ConfigBadRequest(
-                        f"models[{idx}].plan must be one of: token_plan, coding_plan, custom_api"
-                    ) from exc
-                if not vendor_key:
-                    raise _ConfigBadRequest(f"models[{idx}].vendor_key is required when plan is set")
-
-            try:
-                reasoning_level = validate_reasoning_level_for_model(
-                    raw_level=raw_reasoning_level,
-                    model_name=model_name,
-                    model_provider=model_provider,
-                    api_base=api_base,
-                    endpoint_profile=item.get("endpoint_profile"),
-                )
-            except ValueError as reasoning_err:
-                raise _ConfigBadRequest(f"models[{idx}].{reasoning_err}") from reasoning_err
-
-            if alias:
-                if alias in aliases_seen:
-                    prev_idx = aliases_seen[alias]
-                    raise _ConfigBadRequest(f"Alias '{alias}' is used by both models[{prev_idx}] and models[{idx}]")
-                aliases_seen[alias] = idx
-
-            parsed.append({
-                "model_name": model_name,
-                "api_base": api_base,
-                "api_key": api_key,
-                "model_provider": model_provider,
-                "temperature": temperature,
-                "is_default": is_default,
-                "timeout": timeout,
-                "verify_ssl": verify_ssl,
-                "alias": alias,
-                "reasoning_level": reasoning_level or "",
-                "context_window_tokens": context_window_tokens,
-                "context_window_tokens_provided": context_window_tokens_provided,
-                "origin_index": origin_index,
-                # vendor_key is an opaque hint
-                # selector; not validated (the selector only ever emits keys
-                # present in jiuwenswarm.common.model_vendor_registry). It is
-                # persisted so the UI can match a configured entry back to its
-                # preset for icon display / re-selection. Not required.
-                "vendor_key": vendor_key,
-                # plan is the other half of the provider-selection identity.
-                # Older entries may have vendor_key only; do not infer a plan.
-                "plan": plan,
-                # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...);
-                # opaque passthrough, not validated. Anthropic 协议时 core 忽略此字段。
-                # 前端未传时按 api_base host 推断已知自建网关方言(如 vllm)并落库,
-                # 否则该类端点的思考开关只会发官方 thinking.type 而被网关忽略。
-                "endpoint_profile": effective_endpoint_profile(api_base, item.get("endpoint_profile")),
-            })
-
-        # alias 与其他条目的 model_name 冲突校验
-        for i, p in enumerate(parsed):
-            a = p["alias"]
-            if not a:
-                continue
-            for j, q in enumerate(parsed):
-                if i == j:
-                    continue
-                if q["model_name"] == a:
-                    raise _ConfigBadRequest(f"Alias '{a}' on models[{i}] conflicts with model_name on models[{j}]")
-
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
-        crypto = ExtensionRegistry.get_instance().get_crypto_provider()
-
-        raw_cfg = get_config_raw()
-        raw_defaults = raw_cfg.get("models", {}).get("defaults") if isinstance(raw_cfg, dict) else None
-        if not isinstance(raw_defaults, list):
-            raw_defaults = []
-        resolved_defaults = get_default_models()
-
-        new_models = _merge_models_for_replace_all(parsed, raw_defaults, resolved_defaults, crypto)
-        from jiuwenswarm.common.config import _infer_is_default
-        return _infer_is_default(new_models)
-
     async def _config_set(ws, req_id, params, session_id):
-        """根据前端消息内容更新配置（支持 .env 与 config.yaml 中的键），并写回对应文件。"""
-        if not isinstance(params, dict):
-            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
-            return
-        try:
-            apply_result = _apply_config_payload(params)
-            _commit_pending_permission_profile(apply_result)
-        except _ConfigBadRequest as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
-            return
-        except _ConfigInternalError as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
-            return
-        env_updates = apply_result.env_updates
-        yaml_updated = apply_result.yaml_updated
-        change_set = _ConfigChangeSet(env_updates, yaml_updated)
-        try:
-            applied_without_restart = await _apply_config_change_set(change_set)
-        except Exception as exc:
-            logger.warning("[config.set] on_config_saved failed: %s", exc)
-            applied_without_restart = False
-
-        if "enable_free_models" in apply_result.yaml_updated:
-            try:
-                from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
-                await warm_zen_free_models(reason="config-toggle")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[config.set] warm_zen_free_models failed: %s", exc)
-
-        updated_param_keys = [k for k, e in _CONFIG_SET_ENV_MAP.items() if e in env_updates] + yaml_updated
-        payload = {"updated": updated_param_keys, "applied_without_restart": applied_without_restart}
-        if apply_result.codex_dependency_install is not None:
-            payload["codex_dependency_install"] = apply_result.codex_dependency_install
-        if apply_result.external_cli_dependency_installs is not None:
-            payload["external_cli_dependency_installs"] = apply_result.external_cli_dependency_installs
-        if apply_result.canonical_config is not None:
-            payload["canonical_config"] = apply_result.canonical_config
-        await channel.send_response(
-            ws, req_id, ok=True,
-            payload=payload,
+        """config.set 实现已下沉 ``common.config_panel.config_set_handlers``。"""
+        await config_set_handlers.config_set_handler(
+            channel, ws, req_id, params, session_id,
+            on_config_saved=on_config_saved,
+            agent_client=_resolve(agent_client),
+            ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
+            ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
         )
 
     async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
-        """Send a minimal chat completion (user message \"Hi\") using draft default-model fields.
-
-        Tries ``max_tokens=infimum_max_tokens`` first to limit cost. If the API
-        rejects it or returns no content, retries with
-        ``max_tokens=supremum_max_tokens``.
-        """
-        if max_tokens_bounds is None:
-            max_tokens_bounds = {
-                "infimum_max_tokens": 3,
-                "supremum_max_tokens": 16,
-            }
-
-        if isinstance(max_tokens_bounds, dict):
-            infimum_max_tokens = max_tokens_bounds.get("infimum_max_tokens")
-            supremum_max_tokens = max_tokens_bounds.get("supremum_max_tokens")
-        else:
-            infimum_max_tokens = 3
-            supremum_max_tokens = 16
-        infimum_max_tokens = max(infimum_max_tokens, 3)
-
-        if not isinstance(params, dict):
-            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
-            return
-        api_base = str(params.get("api_base") or "").strip()
-        api_key = str(params.get("api_key") or "").strip()
-        model = str(params.get("model") or "").strip()
-        model_provider = _normalize_provider_value(str(params.get("model_provider") or ""))
-        needs_api_key = not is_openai_account_provider(model_provider)
-        if not all([api_base, model, model_provider]) or (needs_api_key and not api_key):
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error="api_base, model, model_provider, and api_key for non-OAuth providers are required",
-                code="BAD_REQUEST",
-            )
-            return
-        available_model_providers = [provider.value for provider in ProviderType]
-        if model_provider not in available_model_providers:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error=f"Model provider must be one of: {available_model_providers}",
-                code="BAD_REQUEST",
-            )
-            return
-        api_base = api_base.rstrip("/")
-
-        verify_ssl = bool(params.get("verify_ssl", False))
-        # 未显式传方言时按 api_base host 推断已知自建网关(如 vllm)，
-        # 保证“测试连接”与保存后的真实运行走同一条 core 路由。
-        endpoint_profile = effective_endpoint_profile(api_base, params.get("endpoint_profile"))
-
-        model_config_obj = _resolve_model_config_obj_for_validate(model, params)
-
-        reasoning_mcc = {
-            "client_provider": model_provider,
-            "endpoint_profile": endpoint_profile,
-            "api_base": api_base,
-        }
-        model_request_config = ModelRequestConfig(
-            **build_reasoning_model_request_kwargs(
-                model_client_config=reasoning_mcc,
-                model_config_obj=model_config_obj,
-                model_name=model,
-            )
-        )
-        logger.info(
-            "[config.validate_model] final model_request_config for '%s': %s",
-            model,
-            model_request_config.model_dump(),
-        )
-        model_client_config = ModelClientConfig(
-            client_id="config-validate",
-            client_provider=model_provider,
-            endpoint_profile=endpoint_profile,
-            api_key=api_key,
-            api_base=api_base,
-            timeout=25.0,
-            max_retries=0,
-            verify_ssl=verify_ssl,
-        )
-        # Anthropic-compatible endpoints that send thinking.budget_tokens
-        # require max_tokens > budget. Use the actual budget core would emit
-        # (effort-mapped or explicit), not a stale 1024 default: many wires
-        # (qwen38_anthropic, dashscope_budget) no longer pin 1024, while
-        # anthropic_manual maps high → 16384.
-        try:
-            from openjiuwen.core.foundation.llm.reasoning import resolve_reasoning_plan
-
-            _plan = resolve_reasoning_plan(
-                model_client_config,
-                model_request_config,
-                request_model=model,
-            )
-            _thinking = (_plan.sdk_params or {}).get("thinking")
-            if isinstance(_thinking, dict):
-                _budget = _thinking.get("budget_tokens")
-                if isinstance(_budget, int) and _budget > 0:
-                    supremum_max_tokens = max(supremum_max_tokens, _budget + 16)
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "[config.validate_model] skip budget floor from reasoning plan",
-                exc_info=True,
-            )
-        llm = Model(model_config=model_request_config, model_client_config=model_client_config)
-
-        try:
-            await probe_model_connection(
-                llm,
-                token_limits=(infimum_max_tokens, supremum_max_tokens),
-                log_context="config.validate_model",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[config.validate_model] LLM probe failed: %s", exc)
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error=str(exc).strip() or "LLM request failed",
-                code="LLM_ERROR",
-            )
-            return
-
-        await channel.send_response(
-            ws, req_id, ok=True,
-            payload={"ok": True, "model_provider": model_provider},
+        """models/config 域实现已下沉 ``jiuwenswarm.common.config_panel.models_handlers``。"""
+        await models_handlers.config_validate_model_handler(
+            channel, ws, req_id, params, max_tokens_bounds
         )
 
     # ── models.* handlers ────────────────────────────────────────
 
     async def _models_list(ws, req_id, params, session_id):
-        """返回已配置的所有默认模型列表（与 config.get 一致，返回解密后的完整值）。
-
-        每条带 ``origin_index`` 指向 ``models.defaults`` 中的位置，配合 replace_all
-        在保存时识别"未编辑字段"并保留原 YAML 占位符（如 ``${API_KEY}``）。
-
-        **登录会话 id 必须从这条连接上取。** 免费模型是「这个登录用户」的模型，
-        不传的话 ``get_available_models`` 只能退回「当前唯一登录会话」的假设——
-        一旦机器上存在两个活跃会话（换个浏览器再登一次就够了），那个假设会拒绝
-        猜是谁，于是登录了却一个免费模型都列不出来。
-        """
-        try:
-            config = get_config()
-            auth_session = getattr(ws, "_jiuwen_auth_session", "") or None
-            # 放到线程池里跑：目录缓存过期或凭据要续期时这里会同步请求 APIG（超时 10～15 秒），
-            # 在事件循环上跑会让整个 Gateway 的连接陪着等。
-            models = await asyncio.to_thread(get_available_models, config, auth_session)
-            result = []
-            active_model = ""
-            for idx, entry in enumerate(models):
-                mcc = entry.get("model_client_config", {})
-                mco = entry.get("model_config_obj", {})
-                is_default = entry.get("is_default", False)
-                model_name = str(mcc.get("model_name", "") or "").strip()
-                result_entry = {
-                    # 模型稳定 ID（模型组路由依据）；由 _ensure_model_business_ids
-                    # 迁移/校验后注入，前端据此关联模型组与路由。
-                    "model_id": entry.get("model_id", ""),
-                    "model_name": model_name,
-                    "api_base": mcc.get("api_base", ""),
-                    # 凭据绝不能随列表下发到浏览器
-                    "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
-                    "model_provider": mcc.get("client_provider", ""),
-                    "temperature": mco.get("temperature"),
-                    "reasoning_level": _reasoning_level_display(mco.get("reasoning_level")),
-                    "is_default": is_default,
-                    # agentos 备份模型标记：由 get_default_models 经 _source=="agentos"
-                    # 注入。前端据此区分 defaults / agentos，置灰只读展示 agentos、
-                    # 并让 agentos 进 ModelSelector 下拉（is_default!==false || is_agentos）
-                    "is_agentos": bool(mco.get("_source") == "agentos"),
-                    # 免费模型标记：前端据此归进「免费模型」分组、并从设置页的模型配置里滤掉。
-                    # 下面追加 Zen 模型那段设的是同一个字段，**两处必须一致**。
-                    "is_free": bool(entry.get("is_free")),
-                    "alias": entry.get("alias", ""),
-                    "origin_index": idx,
-                    "vendor_key": mcc.get("vendor_key") or entry.get("vendor_key") or "",
-                    "plan": mcc.get("plan") or entry.get("plan") or "",
-                    "endpoint_profile": mcc.get("endpoint_profile") or "",
-                }
-                # An empty template entry is not a configured model yet; do
-                # not surface a synthetic context window until the user saves
-                # the model configuration.
-                if model_name:
-                    result_entry["context_window_tokens"] = (
-                        parse_positive_int(mco.get("context_window"))
-                        or DEFAULT_CONTEXT_WINDOW_TOKENS
-                    )
-                if is_login_model(entry):
-                    # 登录送的模型：前端据此置灰编辑
-                    result_entry.update(source=entry.get("source"), read_only=True)
-                result.append(result_entry)
-            # Zen 免费模型仅存在于进程内缓存，不能写回 models.defaults；但需要
-            # 与普通模型一同出现在会话选择器中。is_default 保持 None（而不是
-            # False），使前端把它视为可选模型，同时不会改变首个配置模型作为
-            # active_model 的既有语义。
-            try:
-                from jiuwenswarm.server.runtime.opencode_zen import (
-                    get_zen_free_model_entries,
-                )
-
-                existing_names = {str(item.get("model_name") or "") for item in result}
-                for entry in get_zen_free_model_entries():
-                    mcc = entry.get("model_client_config") or {}
-                    mco = entry.get("model_config_obj") or {}
-                    model_name = str(mcc.get("model_name") or "").strip()
-                    if not model_name or model_name in existing_names:
-                        continue
-                    result.append({
-                        "model_name": model_name,
-                        "api_base": mcc.get("api_base", ""),
-                        "api_key": mcc.get("api_key", ""),
-                        "model_provider": mcc.get("client_provider", ""),
-                        "temperature": mco.get("temperature"),
-                        "reasoning_level": _reasoning_level_display(mco.get("reasoning_level")),
-                        "is_default": entry.get("is_default"),
-                        "is_agentos": False,
-                        "is_free": True,
-                        "alias": entry.get("alias", ""),
-                        # Zen model metadata is intentionally not used for
-                        # context-window resolution; free models use the same
-                        # fixed default as every other unconfigured model.
-                        "context_window_tokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
-                    })
-                    existing_names.add(model_name)
-            except Exception:
-                logger.warning("[models.list] append Zen free models failed", exc_info=True)
-
-            # active_model 为列表首位的模型（主对话默认）
-            active_model = result[0]["model_name"] if result else ""
-            await channel.send_response(ws, req_id, ok=True, payload={
-                "models": result,
-                "model_groups": ModelCatalog(config).list_public_groups(),
-                "active_model": active_model,
-            })
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[models.list] %s", exc)
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+        await models_handlers.models_list_handler(channel, ws, req_id, params, session_id)
 
     async def _models_replace_all(ws, req_id, params, session_id):
-        """原子地用提交的列表整体替换 models.defaults。
+        """原子地用提交的列表整体替换 models.defaults（实现见下沉模块）。"""
+        await models_handlers.models_replace_all_handler(
+            channel, ws, req_id, params, session_id,
+            on_config_saved=on_config_saved,
+            agent_client=_resolve(agent_client),
+        )
 
-        前端在保存配置时一次性提交完整的最终列表，避免按 model_name/index 分多步
-        save+remove 在同 model_name 多条目场景下出现的位置覆写、漏删等问题。
-
-        每条 entry 可携带 ``origin_index`` 指向 ``models.defaults`` 中的原始位置；
-        命中后 raw YAML 中的占位符（如 ``${API_KEY}``）以及 custom_headers 等未在
-        前端暴露的字段会被保留，仅当字段值与前端最初看到的解析值不一致时才覆写。
-        """
-        if not isinstance(params, dict):
-            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
-            return
-        try:
-            new_models = _build_models_defaults_from_frontend(params.get("models"))
-            if (
-                is_affinity_enabled(get_config_raw())
-                and not has_kv_cache_affinity_capability(
-                    default_model_client_config_from_entries(new_models)
-                )
-            ):
-                update_kv_cache_affinity_enabled_in_config(False)
-            # Replace only defaults inside a complete candidate so stable IDs,
-            # AgentOS entries and model groups are validated and preserved.
-            from jiuwenswarm.common.config import _ensure_model_business_ids
-            from jiuwenswarm.common.model_config_validation import raise_if_invalid
-            candidate_models = dict((get_config_raw().get("models") or {}))
-            candidate_models["defaults"] = new_models
-            _ensure_model_business_ids(candidate_models)
-            raise_if_invalid(candidate_models)
-            update_default_models_in_config(candidate_models["defaults"])
-
-            applied_without_restart = await _apply_config_change_set(
-                _ConfigChangeSet({}, ["models.defaults"], force=True)
-            )
-
-            await channel.send_response(ws, req_id, ok=True, payload={
-                "count": len(new_models),
-                "applied_without_restart": applied_without_restart,
-            })
-        except _ConfigBadRequest as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[models.replace_all] %s", exc)
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
     async def _config_save_all(ws, req_id, params, session_id):
-        """Batch-save config panel changes and trigger a single hot reload.
-
-        Accepted payload keys:
-        - config: config.set-style key/value updates
-        - models: complete models.defaults draft list
-        - agents/team: team editor payload
-        """
-        if not isinstance(params, dict):
-            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
-            return
-
-        env_updates: dict[str, str] = {}
-        yaml_updated: list[str] = []
-        models_count: int | None = None
-
-        try:
-            new_models: list[dict[str, Any]] | None = None
-            if "models" in params:
-                new_models = _build_models_defaults_from_frontend(params.get("models"))
-
-            config_params: dict[str, Any] = {}
-            raw_config_params = params.get("config")
-            if raw_config_params is not None:
-                if not isinstance(raw_config_params, dict):
-                    raise _ConfigBadRequest("config must be object")
-                config_params.update(raw_config_params)
-
-            if "agents" in params:
-                config_params["agents"] = params.get("agents")
-            if "team" in params:
-                config_params["team"] = params.get("team")
-
-            affinity_requested = _parse_config_bool(config_params.get("kv_cache_affinity_enabled"))
-            if affinity_requested and new_models is not None:
-                if set_default_model_provider_in_entries(
-                    new_models,
-                    ASCEND_AFFINITY_PROVIDER,
-                ):
-                    yaml_updated.append("models.default_provider")
-
-            if config_params:
-                apply_result = _apply_config_payload(config_params)
-                applied_env = apply_result.env_updates
-                env_updates.update(applied_env)
-            else:
-                apply_result = _ConfigApplyResult({}, [])
-
-            if new_models is not None:
-                if (
-                    is_affinity_enabled(get_config_raw())
-                    and not has_kv_cache_affinity_capability(
-                        default_model_client_config_from_entries(new_models)
-                    )
-                ):
-                    update_kv_cache_affinity_enabled_in_config(False)
-                    yaml_updated.append("kv_cache_affinity_enabled")
-                update_default_models_in_config(new_models)
-                yaml_updated.append("models.defaults")
-                models_count = len(new_models)
-
-            kvc_config_changed = new_models is not None or any(
-                key in config_params for key in KVC_CONFIG_KEYS
-            )
-            if kvc_config_changed:
-                valid, failures = validate_persisted_kv_cache_affinity()
-                if not valid:
-                    update_kv_cache_affinity_enabled_in_config(False)
-                    raise _ConfigInternalError(
-                        "KV cache affinity saved but not applied: " + "; ".join(failures)
-                    )
-
-            _commit_pending_permission_profile(apply_result)
-            yaml_updated.extend(apply_result.yaml_updated)
-
-            change_set = _ConfigChangeSet(
-                env_updates,
-                yaml_updated,
-                force=bool(env_updates or yaml_updated),
-            )
-            applied_without_restart = await _apply_config_change_set(change_set)
-
-            if "enable_free_models" in yaml_updated:
-                try:
-                    from jiuwenswarm.server.runtime.opencode_zen import warm_zen_free_models
-                    await warm_zen_free_models(reason="config-toggle")
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[config.save_all] warm_zen_free_models failed: %s", exc)
-
-            payload = {
-                "updated": [k for k, e in _CONFIG_SET_ENV_MAP.items() if e in env_updates] + yaml_updated,
-                "applied_without_restart": applied_without_restart,
-                "models_count": models_count,
-            }
-            if apply_result.codex_dependency_install is not None:
-                payload["codex_dependency_install"] = apply_result.codex_dependency_install
-            if apply_result.external_cli_dependency_installs is not None:
-                payload["external_cli_dependency_installs"] = apply_result.external_cli_dependency_installs
-            if apply_result.canonical_config is not None:
-                payload["canonical_config"] = apply_result.canonical_config
-
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=True,
-                payload=payload,
-            )
-        except _ConfigBadRequest as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
-        except _ConfigInternalError as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[config.save_all] %s", exc)
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+        """config.save_all 实现已下沉 ``common.config_panel.config_set_handlers``。"""
+        await config_set_handlers.config_save_all_handler(
+            channel, ws, req_id, params, session_id,
+            on_config_saved=on_config_saved,
+            agent_client=_resolve(agent_client),
+            ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
+            ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
+        )
 
     async def _models_validate(ws, req_id, params, session_id):
         """测试指定模型配置是否可用（复用 config.validate_model 逻辑）。"""
@@ -4960,7 +2817,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 return
             from jiuwenswarm.server.runtime.session.session_metadata import set_session_pinned
 
-            result = set_session_pinned(sid.strip(), pinned)
+            result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
             if result is None:
                 await channel.send_response(ws, req_id, ok=False, error="session not found", code="NOT_FOUND")
                 return
@@ -5051,6 +2908,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
 
+        async def after_create(ok, payload):
+            if ok:
+                _schedule_agent_prewarm_sync("project.create")
+                if payload.get("restored"):
+                    await _broadcast_project_event("project.restored", payload["project_id"], user_id)
+
         await proxy_unary_request(
             channel=channel,
             agent_client=_resolve(agent_client),
@@ -5063,9 +2926,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="project.create",
             # 保留 AgentServer 返回的结构化错误明细。
             preserve_error_payload=True,
-            on_done=lambda ok, _payload: (
-                _schedule_agent_prewarm_sync("project.create") if ok else None
-            ),
+            on_done=after_create,
         )
 
     async def _project_rename(ws, req_id, params, session_id, user_id=None):
@@ -5108,6 +2969,99 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_PIN,
             label="project.pin",
+        )
+
+    async def _broadcast_project_event(event: str, project_id: str, user_id) -> None:
+        """Notify every connection of ``user_id`` that a project was hidden/restored.
+
+        The project's conversations and cron jobs change visibility with it, so
+        other tabs (and the archive page) must refresh; a response to the
+        originating socket alone would leave them stale.  Broadcast is scoped
+        to the owner's connections to avoid making unrelated users refetch.
+        """
+        if not project_id:
+            return
+        payload = {"project_id": project_id}
+        for client_ws in list(getattr(channel, "clients", ()) or ()):
+            try:
+                if str(channel.connection_user_id(client_ws) or "") != str(user_id or ""):
+                    continue
+                await channel.send_event(client_ws, event, payload)
+            except Exception:  # noqa: BLE001 - 单条连接异常不得影响其他连接
+                logger.debug("project event broadcast failed: %s", event, exc_info=True)
+
+    async def _project_remove(ws, req_id, params, session_id, user_id=None):
+        """Forward project soft-deletion; stop its cron jobs, clean Git watchers."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        project_id = str((params or {}).get("project_id") or "").strip()
+
+        if not project_id or project_id in {"default", "default_code"}:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="project_id is required" if not project_id else "default project cannot be removed",
+                code="BAD_REQUEST" if not project_id else "FORBIDDEN",
+            )
+            return
+
+        async def _after_remove(ok: bool, _payload: object) -> None:
+            if not ok:
+                return
+            registry = getattr(channel, "git_watcher_registry", None)
+            if registry is not None and project_id:
+                registry.cleanup_project(project_id)
+            _schedule_agent_prewarm_sync("project.remove")
+            await _broadcast_project_event("project.removed", project_id, user_id)
+
+        async def commit():
+            await proxy_unary_request(
+                channel=channel,
+                agent_client=_resolve(agent_client),
+                ws=ws,
+                req_id=req_id,
+                params=params if isinstance(params, dict) else {},
+                session_id=session_id,
+                user_id=user_id,
+                req_method=ReqMethod.PROJECT_REMOVE,
+                label="project.remove",
+                on_done=_after_remove,
+            )
+
+        cc = _get_cron()
+        if cc is None:
+            await channel.send_response(ws, req_id, ok=False, error="cron service unavailable", code="CRON_STOP_FAILED")
+            return
+        try:
+            await cc.hide_project_jobs(project_id, commit=commit)
+        except Exception as exc:
+            logger.warning("project remove failed: %s", exc, exc_info=True)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CRON_STOP_FAILED")
+
+    async def _project_restore(ws, req_id, params, session_id, user_id=None):
+        """Forward project restoration to the target AgentServer."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        project_id = str((params or {}).get("project_id") or "").strip()
+
+        async def _after_restore(ok: bool, _payload: object) -> None:
+            if not ok:
+                return
+            _schedule_agent_prewarm_sync("project.restore")
+            await _broadcast_project_event("project.restored", project_id, user_id)
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.PROJECT_RESTORE,
+            label="project.restore",
+            on_done=_after_restore,
         )
 
     async def _project_info(ws, req_id, params, session_id, user_id=None):
@@ -7011,6 +4965,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("project.create", _project_create)
     channel.register_method("project.rename", _project_rename)
     channel.register_method("project.pin", _project_pin)
+    channel.register_method("project.remove", _project_remove)
+    channel.register_method("project.restore", _project_restore)
     from jiuwenswarm.gateway.channel_manager.web.lifecycle_handlers import register_lifecycle_handlers
     register_lifecycle_handlers(channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller))
     channel.register_method("project.pinned_sessions", _project_pinned_sessions)
@@ -7502,8 +5458,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             owner_scopes = params.get("owner_scopes", {})
             deny_guidance = params.get("deny_guidance_message")
             update_permissions_owner_scopes_in_config(owner_scopes, deny_guidance)
-            applied_without_restart = await _apply_config_change_set(
-                _ConfigChangeSet({}, ["permissions"], force=True)
+            applied_without_restart = await config_set_handlers.apply_config_change_set(
+                config_set_handlers.ConfigChangeSet({}, ["permissions"], force=True),
+                on_config_saved=on_config_saved,
+                agent_client=_resolve(agent_client),
             )
             await channel.send_response(
                 ws,

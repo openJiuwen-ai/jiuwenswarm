@@ -1,15 +1,32 @@
-import { createPortal } from 'react-dom';
-import { useMemo, useRef, useState, type RefObject } from 'react';
-import { Check, Search, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Check, LoaderCircle, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   getAgentAvatarUrl,
+  isAgentGroupAgentCompatibilityLoading,
   isAgentGroupAgentSelectable,
   resolveAgentGroupSelectionId,
+  sortAgentGroupOptions,
   type AgentCatalogItem,
+  type RequestStatus,
 } from '../../features/agentManagement';
-import { PageCard } from '../ui';
-import { useDialogFocusTrap } from './useDialogFocusTrap';
+import { FormDrawer, PageCard, Tabs } from '../ui';
+
+type AgentGroupMemberPickerProps = {
+  mode: 'leader' | 'member';
+  agents: AgentCatalogItem[];
+  agentsStatus: RequestStatus;
+  agentsError: string | null;
+  selectedLeaderId: string;
+  selectedMemberIds: string[];
+  onCancel: () => void;
+  onConfirm: (ids: string[]) => void;
+  onReloadAgents: () => void;
+  selectionError?: string | null;
+  onInstallAgent?: (id: string) => void | Promise<void>;
+  installingAgentId?: string | null;
+  restoreFocusRef?: { current: HTMLElement | null };
+};
 
 export function AgentOptionAvatar({ agent }: { agent: AgentCatalogItem }) {
   const [imageFailed, setImageFailed] = useState(false);
@@ -25,52 +42,38 @@ export function AgentOptionAvatar({ agent }: { agent: AgentCatalogItem }) {
   );
 }
 
-type AgentGroupMemberPickerProps = {
-  mode: 'leader' | 'member';
-  agents: AgentCatalogItem[];
-  selectedLeaderId: string;
-  selectedMemberIds: string[];
-  onCancel: () => void;
-  onConfirm: (ids: string[]) => void;
-  restoreFocusRef?: RefObject<HTMLElement | null>;
-};
-
 export function AgentGroupMemberPicker({
   mode,
   agents,
+  agentsStatus,
+  agentsError,
   selectedLeaderId,
   selectedMemberIds,
   onCancel,
   onConfirm,
-  restoreFocusRef,
+  onReloadAgents,
+  selectionError,
+  onInstallAgent,
+  installingAgentId,
 }: AgentGroupMemberPickerProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
+  const [sourceTab, setSourceTab] = useState<'local' | 'market'>('market');
   const [selection, setSelection] = useState<string[]>(
     mode === 'leader' ? (selectedLeaderId ? [selectedLeaderId] : []) : selectedMemberIds,
   );
-  const dialogRef = useRef<HTMLElement>(null);
   const filteredAgents = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    return agents.filter((agent) => {
-      const selectionId = resolveAgentGroupSelectionId(agent);
-      const selectable = isAgentGroupAgentSelectable(agent, mode);
-      const selected =
-        mode === 'leader'
-          ? selection.includes(selectionId) || selection.includes(agent.id)
-          : selection.includes(selectionId) ||
-            selection.includes(agent.id) ||
-            selectionId === selectedLeaderId ||
-            agent.id === selectedLeaderId;
-      if (!selectable && !selected) return false;
+    const sourceAgents = agents.filter((agent) =>
+      sourceTab === 'market' ? agent.source !== 'local' : agent.source === 'local' || agent.installed === true,
+    );
+    return sortAgentGroupOptions(sourceAgents, agentsStatus).filter((agent) => {
       if (!normalized) return true;
       return `${agent.id} ${agent.runtimePackageName} ${agent.displayName} ${agent.description} ${agent.category} ${agent.tags.map((tag) => tag.label).join(' ')}`
         .toLocaleLowerCase()
         .includes(normalized);
     });
-  }, [agents, mode, query, selectedLeaderId, selection]);
-
-  useDialogFocusTrap({ dialogRef, restoreFocusRef, onEscape: onCancel });
+  }, [agents, agentsStatus, query, sourceTab]);
 
   const toggle = (id: string, legacyId?: string) => {
     if (mode === 'leader') {
@@ -88,137 +91,160 @@ export function AgentGroupMemberPicker({
 
   const title =
     mode === 'leader' ? t('agentManagement.group.picker.leaderTitle') : t('agentManagement.group.picker.memberTitle');
-  const selectedCount = selection.length;
 
-  return createPortal(
-    <div
-      className="agent-management-selection-overlay"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onCancel();
-      }}
+  const normalizeSelection = () =>
+    Array.from(
+      new Set(
+        selection.map((id) => {
+          const agent = agents.find((item) => resolveAgentGroupSelectionId(item) === id || item.id === id);
+          return agent ? resolveAgentGroupSelectionId(agent) : id;
+        }),
+      ),
+    );
+
+  return (
+    <FormDrawer
+      title={title}
+      onClose={onCancel}
+      onConfirm={() => onConfirm(normalizeSelection())}
+      confirmDisabled={mode === 'leader' && selection.length === 0}
+      testId="agent-group-member-picker"
+      width={900}
     >
-      <section
-        ref={dialogRef}
-        className="agent-management-selection-dialog"
-        data-testid="agent-group-member-picker"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="agent-group-picker-title"
-        tabIndex={-1}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header>
-          <h2 id="agent-group-picker-title">{title}</h2>
-          <button
-            type="button"
-            aria-label={t('common.close')}
-            data-testid="agent-group-member-picker-close"
-            onClick={onCancel}
-          >
-            <X size={18} aria-hidden="true" />
-          </button>
-        </header>
-        <label className="agent-management-selection-search">
-          <Search size={16} aria-hidden="true" />
-          <input
-            type="search"
-            data-testid="agent-group-member-picker-search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t('agentManagement.form.selectionSearchPlaceholder')}
-            autoFocus
-          />
-        </label>
+      <div className="relative mb-4 shrink-0">
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={t('agentManagement.form.selectionSearchPlaceholder')}
+          className="h-8 w-full rounded-lg border border-border bg-bg pl-8 pr-3 text-[12px] leading-[18px] text-text outline-none focus:border-border-hover"
+          data-testid="agent-group-member-picker-search"
+        />
+      </div>
+      <Tabs
+        className="mb-4"
+        items={[
+          {
+            value: 'market',
+            label: t('agentManagement.tabs.catalog'),
+            testId: 'agent-group-member-picker-tab-market',
+          },
+          {
+            value: 'local',
+            label: t('agentManagement.tabs.mine'),
+            testId: 'agent-group-member-picker-tab-local',
+          },
+        ]}
+        value={sourceTab}
+        onChange={(value) => {
+          setSourceTab(value);
+        }}
+        wrapperTestId="agent-group-member-picker-tabs"
+        role="tablist"
+        ariaLabel={t('agentManagement.group.picker.sourceTabsLabel')}
+      />
+      {selectionError ? (
         <div
-          className={`agent-management-selection-dialog__body${filteredAgents.length === 0 ? ' is-empty' : ''}`}
-          role="group"
-          aria-label={title}
+          className="agent-management-form-error mb-4"
+          role="alert"
+          data-testid="agent-group-member-picker-selection-error"
         >
-          {filteredAgents.length === 0 ? (
-            <div className="agent-management-selection-empty-state">
-              <p>{t('agentManagement.group.picker.empty')}</p>
-            </div>
-          ) : (
-            <div className="agent-management-selection-grid">
-              {filteredAgents.map((agent) => {
-                const selectionId = resolveAgentGroupSelectionId(agent);
-                const selected = selection.includes(selectionId) || selection.includes(agent.id);
-                const selectable = isAgentGroupAgentSelectable(agent, mode);
-                const disabled =
-                  !selectable ||
-                  (mode === 'member'
-                    ? selectionId === selectedLeaderId || agent.id === selectedLeaderId
-                    : selectedMemberIds.includes(selectionId) || selectedMemberIds.includes(agent.id));
-                const categoryTags = agent.tags.length > 0 ? agent.tags.map((tag) => tag.label) : undefined;
-                const description = agent.description || t('agentManagement.unknownDescription');
-                return (
-                  <PageCard
-                    key={agent.id}
-                    className={`agent-management-selection-card agent-management-selection-card--expert${selected ? ' is-selected' : ''}${disabled ? ' is-disabled' : ''}`}
-                    testId="agent-group-member-picker-item"
-                    variant={selectionId}
-                    interactive
-                    selected={selected}
-                    disabled={disabled}
-                    ariaLabel={agent.displayName}
-                    onClick={() => toggle(selectionId, agent.id)}
-                    avatar={{
-                      name: agent.displayName,
-                      iconUrl: getAgentAvatarUrl(agent),
-                      testId: 'agent-group-member-picker-avatar',
-                    }}
-                    title={agent.displayName}
-                    label={categoryTags}
-                    description={description}
-                    actionSlot={(
-                      <span className="agent-management-selection-card__action" aria-hidden="true">
-                        {selected ? <Check size={12} strokeWidth={2.5} /> : null}
-                      </span>
-                    )}
-                  />
-                );
-              })}
-            </div>
-          )}
+          {selectionError}
         </div>
-        <footer>
-          <span>{t('agentManagement.group.picker.selectedCount', { count: selectedCount })}</span>
-          <div>
-            <button
-              type="button"
-              data-testid="agent-group-member-picker-cancel"
-              className="agent-management-button agent-management-button--secondary"
-              onClick={onCancel}
-            >
-              {t('common.cancel')}
-            </button>
-            <button
-              type="button"
-              data-testid="agent-group-member-picker-confirm"
-              className="agent-management-button agent-management-button--primary"
-              disabled={mode === 'leader' && selection.length === 0}
-              onClick={() =>
-                onConfirm(
-                  Array.from(
-                    new Set(
-                      selection.map((id) => {
-                        const agent = agents.find(
-                          (item) => resolveAgentGroupSelectionId(item) === id || item.id === id,
-                        );
-                        return agent ? resolveAgentGroupSelectionId(agent) : id;
-                      }),
-                    ),
-                  ),
-                )
-              }
-            >
-              {t('common.confirm')}
+      ) : null}
+      <div className="flex-1 overflow-y-auto">
+        {agentsStatus === 'error' ? (
+          <div className="agent-management-form-error" role="alert" data-testid="agent-group-member-picker-error">
+            <span>{agentsError || t('agentManagement.states.loadError')}</span>
+            <button type="button" onClick={onReloadAgents}>
+              {t('common.retry')}
             </button>
           </div>
-        </footer>
-      </section>
-    </div>,
-    document.body,
+        ) : agentsStatus === 'loading' && agents.length === 0 ? (
+          <div className="py-10 text-center text-[13px] text-text-muted">
+            {t('agentManagement.group.picker.loading')}
+          </div>
+        ) : filteredAgents.length === 0 ? (
+          <div className="py-10 text-center text-[13px] text-text-muted">
+            <p>{t('agentManagement.group.picker.empty')}</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4" data-testid="agent-group-member-picker-list">
+            {filteredAgents.map((agent) => {
+              const selectionId = resolveAgentGroupSelectionId(agent);
+              const selected = selection.includes(selectionId) || selection.includes(agent.id);
+              const compatibilityLoading = isAgentGroupAgentCompatibilityLoading(agent, agentsStatus);
+              const selectable = !compatibilityLoading && isAgentGroupAgentSelectable(agent, mode);
+              const disabled =
+                !selectable ||
+                (mode === 'member'
+                  ? selectionId === selectedLeaderId || agent.id === selectedLeaderId
+                  : selectedMemberIds.includes(selectionId) || selectedMemberIds.includes(agent.id));
+              const installed = agent.installed === true;
+              const categoryTags = agent.tags.length > 0 ? agent.tags.map((tag) => tag.label) : undefined;
+              const description = agent.description || t('agentManagement.unknownDescription');
+              const cardDisabled = !compatibilityLoading && disabled;
+              return (
+                <PageCard
+                  key={agent.id}
+                  className={`${selected ? ' is-selected' : ''}${compatibilityLoading ? ' is-loading' : cardDisabled ? ' is-disabled' : ''}`}
+                  testId="agent-group-member-picker-item"
+                  variant={selectionId}
+                  interactive={installed && !compatibilityLoading}
+                  selected={selected}
+                  disabled={cardDisabled && installed}
+                  onClick={
+                    installed && !compatibilityLoading && !disabled ? () => toggle(selectionId, agent.id) : undefined
+                  }
+                  avatar={{
+                    name: agent.displayName,
+                    iconUrl: getAgentAvatarUrl(agent),
+                    testId: 'agent-group-member-picker-avatar',
+                  }}
+                  title={agent.displayName}
+                  label={categoryTags}
+                  description={description}
+                  actionSlot={
+                    compatibilityLoading ? (
+                      <span className="animate-spin" aria-label={t('agentManagement.group.picker.loading')}>
+                        <LoaderCircle size={16} />
+                      </span>
+                    ) : !agent.installed && onInstallAgent ? (
+                      <button
+                        type="button"
+                        className="agent-management-inline-action"
+                        data-testid="agent-group-member-picker-install"
+                        data-variant={agent.id}
+                        disabled={installingAgentId === agent.id}
+                        aria-busy={installingAgentId === agent.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void onInstallAgent(agent.id);
+                        }}
+                      >
+                        {installingAgentId === agent.id
+                          ? t('agentManagement.group.picker.installing')
+                          : t('agentManagement.group.picker.install')}
+                      </button>
+                    ) : (
+                      <span className="shrink-0" aria-hidden="true">
+                        {selected ? (
+                          <Check size={14} className="text-[color:var(--color-chat-accent)]" />
+                        ) : (
+                          <Plus size={14} className="text-text-muted" />
+                        )}
+                      </span>
+                    )
+                  }
+                />
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div className="mt-4 flex items-center justify-between text-[13px] text-text-muted">
+        <span>{t('agentManagement.group.picker.selectedCount', { count: selection.length })}</span>
+      </div>
+    </FormDrawer>
   );
 }

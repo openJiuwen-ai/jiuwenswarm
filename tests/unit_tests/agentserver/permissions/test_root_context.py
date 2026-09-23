@@ -73,8 +73,7 @@ def _envelope(text: str, *, prefix: str) -> str:
     return prefix + json.dumps(
         {
             "source": "web",
-            "timezone": "Asia/Taipei",
-            "timestamp": "2026-08-20 12:00:00",
+            "timestamp": "2026-08-20 12:00:00 (UTC+08:00, Asia/Taipei)",
             "preferred_response_language": "zh",
             "content": text,
             "files_updated_by_user": "{}",

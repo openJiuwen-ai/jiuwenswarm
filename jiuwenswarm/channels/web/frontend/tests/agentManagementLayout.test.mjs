@@ -43,6 +43,14 @@ const memberPickerSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupMemberPicker.tsx', import.meta.url),
   'utf8',
 );
+const agentEditorSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/AgentEditor.tsx', import.meta.url),
+  'utf8',
+);
+const selectionPaginationSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/SelectionPagination.tsx', import.meta.url),
+  'utf8',
+);
 const pageCardSource = readFileSync(new URL('../src/components/ui/PageCard/PageCard.tsx', import.meta.url), 'utf8');
 const groupUploadSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/AgentGroupUploadDialog.tsx', import.meta.url),
@@ -108,11 +116,18 @@ test('expert catalog renders inside the standard page shell and toolbar', async 
 
 for (const detailStatus of ['loading', 'error']) {
   test(`expert ${detailStatus} keeps the back bar outside the centered content`, async () => {
-    const { DefinitionDetailPage } = await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+    const { DefinitionDetailPage } =
+      await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
     const { JSDOM } = await import('jsdom');
-    const markup = renderToStaticMarkup(React.createElement(DefinitionDetailPage, {
-      detail: null, detailStatus, detailError: 'Unavailable', onBack() {}, onRetry() {},
-    }));
+    const markup = renderToStaticMarkup(
+      React.createElement(DefinitionDetailPage, {
+        detail: null,
+        detailStatus,
+        detailError: 'Unavailable',
+        onBack() {},
+        onRetry() {},
+      }),
+    );
     const document = new JSDOM(markup).window.document;
     const shell = document.querySelector('[data-testid="agent-detail"]');
     assert.ok(shell, 'Loading and errors must reuse the normal detail shell');
@@ -123,27 +138,168 @@ for (const detailStatus of ['loading', 'error']) {
     assert.ok(content);
     assert.equal(content.contains(back), false);
     assert.equal(content.getAttribute('role'), detailStatus === 'loading' ? 'status' : 'alert');
-    assert.equal(content.querySelector('[data-testid="agent-management-detail-retry"]') !== null, detailStatus === 'error');
+    assert.equal(
+      content.querySelector('[data-testid="agent-management-detail-retry"]') !== null,
+      detailStatus === 'error',
+    );
   });
 }
 
-for (const [source, installed, expected] of [['local', true, 'delete'], ['local', false, 'delete'], ['hub', true, 'uninstall'], ['builtin', true, 'uninstall']]) {
+for (const [source, installed, expected] of [
+  ['local', true, 'delete'],
+  ['local', false, 'delete'],
+  ['hub', true, 'uninstall'],
+  ['builtin', true, 'uninstall'],
+]) {
   test(`expert ${source} installed=${installed} uses ${expected}`, async () => {
-    const { DefinitionDetailPage } = await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+    const { DefinitionDetailPage } =
+      await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
     const { JSDOM } = await import('jsdom');
-    const detail = { id: 'test', runtimePackageName: 'test', displayName: 'Test', description: '', source, installed, connectionState: 'connected', tags: [], avatarUrl: null, skills: [], tools: [], rails: [], mcps: [], suggestedPrompts: [], pendingConnectors: [], details: '', prompt: '' };
-    const markup = renderToStaticMarkup(React.createElement(DefinitionDetailPage, { detail, detailStatus: 'ready', detailTab: 'content', fileEntries: [], onBack() {}, onUninstall() {} }));
+    const detail = {
+      id: 'test',
+      runtimePackageName: 'test',
+      displayName: 'Test',
+      description: '',
+      source,
+      installed,
+      connectionState: 'connected',
+      tags: [],
+      avatarUrl: null,
+      skills: [],
+      tools: [],
+      rails: [],
+      mcps: [],
+      suggestedPrompts: [],
+      pendingConnectors: [],
+      details: '',
+      prompt: '',
+    };
+    const markup = renderToStaticMarkup(
+      React.createElement(DefinitionDetailPage, {
+        detail,
+        detailStatus: 'ready',
+        detailTab: 'content',
+        fileEntries: [],
+        onBack() {},
+        onUninstall() {},
+      }),
+    );
     const button = new JSDOM(markup).window.document.querySelector('.agent-management-detail-action--uninstall');
     assert.equal(button.textContent, expected === 'delete' ? '删除' : '卸载');
   });
 }
 
+test('unsupported expert files remain selectable and show the unsupported preview state', async () => {
+  const { DefinitionDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const detail = {
+    id: 'test',
+    runtimePackageName: 'test',
+    displayName: 'Test',
+    description: '',
+    source: 'local',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+    skills: [],
+    tools: [],
+    rails: [],
+    mcps: [],
+    suggestedPrompts: [],
+    pendingConnectors: [],
+    details: '',
+    prompt: '',
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(DefinitionDetailPage, {
+      detail,
+      detailStatus: 'success',
+      detailTab: 'files',
+      files: [{ relativePath: 'runtime.bin', kind: 'file', previewable: false }],
+      filesStatus: 'success',
+      selectedFilePath: 'runtime.bin',
+      fileContent: null,
+      fileStatus: 'success',
+      onBack() {},
+      onSelectFile() {},
+    }),
+  );
+  const document = new JSDOM(markup).window.document;
+  const fileButton = document.querySelector('[data-testid="agent-management-file-tree-item"]');
+  assert.equal(fileButton.getAttribute('data-variant'), 'runtime.bin');
+  assert.equal(fileButton.disabled, false);
+  assert.equal(fileButton.textContent, 'runtime.bin');
+  assert.equal(fileButton.querySelector('[data-testid="agent-management-file-tree-item-unsupported"]'), null);
+  assert.ok(
+    document.querySelector('[data-testid="agent-management-file-preview-content-state"][data-variant="unsupported"]'),
+  );
+});
+
+test('expert PDF files render through the shared browser preview', async () => {
+  const { DefinitionDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+  const { JSDOM } = await import('jsdom');
+  const detail = {
+    id: 'test',
+    runtimePackageName: 'test',
+    displayName: 'Test',
+    description: '',
+    source: 'local',
+    installed: true,
+    connectionState: 'connected',
+    tags: [],
+    avatarUrl: null,
+    skills: [],
+    tools: [],
+    rails: [],
+    mcps: [],
+    suggestedPrompts: [],
+    pendingConnectors: [],
+    details: '',
+    prompt: '',
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(DefinitionDetailPage, {
+      detail,
+      detailStatus: 'success',
+      detailTab: 'files',
+      files: [{ relativePath: 'guide.pdf', kind: 'file', previewable: true }],
+      filesStatus: 'success',
+      selectedFilePath: 'guide.pdf',
+      fileContent: { relativePath: 'guide.pdf', content: null, downloadUrl: '/file-api/download?token=pdf' },
+      fileStatus: 'success',
+      onBack() {},
+      onSelectFile() {},
+    }),
+  );
+  const document = new JSDOM(markup).window.document;
+  const pdf = document.querySelector('[data-testid="agent-management-file-preview-content-pdf"]');
+  assert.equal(pdf.getAttribute('src'), '/file-api/download?token=pdf&inline=1');
+});
+
 for (const name of ['MarketCard', 'MyMarketCard']) {
-  for (const [state, quickAction, label] of [['connected', 'install', '使用'], ['idle', 'install', '安装'], ['idle', 'connect', '连接']]) {
+  for (const [state, quickAction, label] of [
+    ['connected', 'install', '使用'],
+    ['idle', 'install', '安装'],
+    ['idle', 'connect', '连接'],
+  ]) {
     test(`${name} ${state}/${quickAction} exposes one text action`, async () => {
       const module = await import(`../node_modules/.cache/agent-management-layout/${name}.mjs`);
       const { JSDOM } = await import('jsdom');
-      const html = renderToStaticMarkup(React.createElement(module[name], { title: 'Test', tags: ['变更审查', '行为覆盖', '合入就绪'], description: '', state, quickAction, onUse() {}, onQuickAdd() {}, onQuickInstall() {} }));
+      const html = renderToStaticMarkup(
+        React.createElement(module[name], {
+          title: 'Test',
+          tags: ['变更审查', '行为覆盖', '合入就绪'],
+          description: '',
+          state,
+          quickAction,
+          onUse() {},
+          onQuickAdd() {},
+          onQuickInstall() {},
+        }),
+      );
       const document = new JSDOM(html).window.document;
       assert.ok(document.querySelector('.entity-header__tags').textContent.includes('变更审查'));
       assert.ok(document.querySelector('.entity-header__tags').textContent.includes('行为覆盖'));
@@ -165,10 +321,10 @@ test('Expert and Expert Team management keep the shared page shell and field lim
   assert.match(groupCardSource, /interactive\s*\n?\s*ariaLabel/);
   assert.match(groupCardSource, /className="agent-management-card__actions"/);
   assert.doesNotMatch(groupCardSource, /<article/);
-  assert.match(groupEditorSource, /id="agent-management-group-name"[\s\S]*maxLength=\{AGENT_NAME_MAX_LENGTH\}/);
+  assert.match(groupEditorSource, /data-testid="agent-group-editor-name"[\s\S]*maxLength=\{AGENT_NAME_MAX_LENGTH\}/);
   assert.match(
     groupEditorSource,
-    /id="agent-management-group-description"[\s\S]*maxLength=\{AGENT_DESCRIPTION_MAX_LENGTH\}/,
+    /data-testid="agent-group-editor-description"[\s\S]*maxLength=\{AGENT_DESCRIPTION_MAX_LENGTH\}/,
   );
   assert.doesNotMatch(groupEditorSource, /detail-back mb-\[35px\]/);
 });
@@ -190,8 +346,13 @@ test('group card actions keep uninstall in the detail page and install created g
   assert.doesNotMatch(groupCardSource, /onUninstall|data-variant=\{item\.installed \? 'uninstall'/);
   assert.doesNotMatch(groupCatalogSource, /onUninstall/);
   assert.match(groupDetailSource, /data-variant="uninstall"/);
-  assert.match(panelSource, /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/);
+  assert.match(
+    panelSource,
+    /groupClient\.createGroup\([\s\S]*groupClient\.installGroup\(result\.id\)[\s\S]*loadGroups\('mine'\)/,
+  );
   assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
+  assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id\)/);
 });
 
 test('primary management tabs retain tab semantics and chat picker enforces mode locks', () => {
@@ -234,17 +395,14 @@ test('single-mode picker removes its redundant title and More routes to the matc
 });
 
 test('leader and member picker cards include the shared Expert description', () => {
-  assert.match(memberPickerSource, /import \{ PageCard \} from '\.\.\/ui';/);
-  assert.match(memberPickerSource, /<PageCard[\s\S]*className=\{`agent-management-selection-card agent-management-selection-card--expert/);
+  assert.match(memberPickerSource, /import \{ FormDrawer, PageCard, Tabs \} from '\.\.\/ui';/);
+  assert.match(memberPickerSource, /<PageCard[\s\S]*testId="agent-group-member-picker-item"/);
   assert.match(memberPickerSource, /description=\{description\}/);
   assert.match(
     memberPickerSource,
     /const description = agent\.description \|\| t\('agentManagement\.unknownDescription'\);/,
   );
-  assert.match(
-    pageCardSource,
-    /selected\?: boolean;[\s\S]*disabled\?: boolean;/,
-  );
+  assert.match(pageCardSource, /selected\?: boolean;[\s\S]*disabled\?: boolean;/);
   assert.match(
     agentManagementCss,
     /\.agent-management-selection-card\.page-card \.entity-header\s*\{\s*width: 100%;\s*min-width: 0;/,
@@ -252,6 +410,91 @@ test('leader and member picker cards include the shared Expert description', () 
   assert.match(
     agentManagementCss,
     /\.agent-management-selection-card\.page-card \.page-card__body\s*\{[\s\S]*overflow-wrap: anywhere;[\s\S]*text-align: left;/,
+  );
+});
+
+test('management pickers expose source tabs and preserve install/connect actions', () => {
+  assert.match(
+    panelSource,
+    /scheduleCatalogRefresh\('agent-catalog', marketplaceCatalog\.cache, \(\) => \{ void loadCatalog\(options\); \}/,
+  );
+  assert.match(panelSource, /const skillsRevisionRef = useRef\(0\)/);
+  assert.match(panelSource, /if \(revision !== skillsRevisionRef\.current\) return;/);
+  assert.match(panelSource, /onTeamMarketplaceLoaded:/);
+  assert.match(panelSource, /scheduleCatalogRefresh\(\s*'agent-team-skill-marketplace'/);
+  assert.match(
+    panelSource,
+    /void loadCatalog\(view === 'group-create' \? \{ includeTeamCompatibility: true \} : \{\}\);/,
+  );
+  assert.match(panelSource, /catalog\.compatibility\.loading/);
+  assert.match(panelSource, /catalog\.compatibility\.error/);
+  assert.match(panelSource, /agentsStatus=\{state\.catalogCompatibilityStatus\}/);
+  assert.match(groupEditorSource, /agentsError=\{agentsError\}/);
+  assert.match(groupEditorSource, /onReloadAgents=\{onReloadAgents\}/);
+  assert.match(memberPickerSource, /agent-group-member-picker-tabs/);
+  assert.match(memberPickerSource, /agent-group-member-picker-install/);
+  assert.match(memberPickerSource, /agent-group-member-picker-error/);
+  assert.match(memberPickerSource, /onReloadAgents/);
+  assert.match(memberPickerSource, /agent-group-member-picker-tab-market/);
+  assert.match(memberPickerSource, /agent-group-member-picker-tab-local/);
+  assert.match(memberPickerSource, /sortAgentGroupOptions\(sourceAgents, agentsStatus\)/);
+  assert.match(memberPickerSource, /isAgentGroupAgentCompatibilityLoading\(agent, agentsStatus\)/);
+  assert.match(memberPickerSource, /className=.*is-loading/);
+  assert.match(
+    memberPickerSource,
+    /sourceTab === 'market' \? agent\.source !== 'local' : agent\.source === 'local' \|\| agent\.installed === true/,
+  );
+  assert.match(memberPickerSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.match(groupEditorSource, /isTeamSkillOption\(skill, skillSourceTab\)/);
+  assert.match(groupEditorSource, /isSkillVisibleInSourceTab\(skill, skillSourceTab\)/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-install/);
+  assert.match(groupEditorSource, /skillSourceTab/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tabs/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-market/);
+  assert.match(groupEditorSource, /agent-group-editor-skill-picker-tab-local/);
+  assert.match(groupEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-tabs/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-pagination/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-tabs/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-connect/);
+  assert.match(agentEditorSource, /sortMcpOptions\(\s*mcpOptions\.filter\([\s\S]*?mcpSourceTab/);
+  assert.match(agentEditorSource, /const selectable = isMcpSelectable\(mcp\)/);
+  assert.match(agentEditorSource, /interactive=\{selectable\}/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-market/);
+  assert.match(agentEditorSource, /agent-editor-skill-picker-tab-local/);
+  assert.match(agentEditorSource, /isTeamSkillOption\(skill, skillSourceTab\)/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-market/);
+  assert.match(agentEditorSource, /agent-editor-mcp-picker-tab-installed/);
+  assert.match(agentEditorSource, /useState<\s*'local' \| 'market'\s*>\('market'\)/);
+  assert.doesNotMatch(agentEditorSource, /MCP_TYPE_OPTIONS|mcpTypeFilter|mcpTypeAll/);
+  assert.match(panelSource, /const \[busySkillId, setBusySkillId\] = useState<string \| null>\(null\)/);
+  assert.match(panelSource, /const \[busyMcpId, setBusyMcpId\] = useState<string \| null>\(null\)/);
+  assert.match(panelSource, /setBusySkillId\(skill\.id\)/);
+  assert.match(panelSource, /setBusyMcpId\(mcp\.id\)/);
+  assert.match(panelSource, /installingSkillId=\{busySkillId\}/);
+  assert.match(panelSource, /installingMcpId=\{busyMcpId\}/);
+  assert.match(selectionPaginationSource, /SELECTION_PAGE_SIZE = 10/);
+  assert.match(agentManagementCss, /agent-management-selection-card\.page-card\.is-disabled[\s\S]*opacity: 1;/);
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card\.page-card\.is-disabled \.entity-header__tag[\s\S]*border: 1px solid var\(--color-border-default\);/,
+  );
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card\.page-card\.is-loading[\s\S]*cursor: wait[\s\S]*opacity: 1;/,
+  );
+  assert.match(agentManagementCss, /agent-management-selection-card__loading-icon[\s\S]*animation:/);
+  assert.match(
+    agentManagementCss,
+    /agent-management-selection-card__install[\s\S]*color: var\(--color-action-primary\);/,
+  );
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card\.is-selected\s*\{[\s\S]*box-shadow: inset/,
+  );
+  assert.doesNotMatch(
+    agentManagementCss,
+    /\.agent-management-selection-card\.page-card:hover,[\s\S]*\.agent-management-selection-card\.page-card:focus-within/,
   );
 });
 
@@ -271,7 +514,10 @@ test('Expert and Expert Team content details use the same full-width markdown la
 });
 
 test('Expert Team cards and details reuse the Expert visual primitives', () => {
-  assert.match(catalogPageSource, /<PageCard[\s\S]*className="agent-management-page-card agent-definition-card(?:\s|")/);
+  assert.match(
+    catalogPageSource,
+    /<PageCard[\s\S]*className="agent-management-page-card agent-definition-card(?:\s|")/,
+  );
   assert.match(groupCardSource, /import \{ PageCard \} from '\.\.\/ui';/);
   assert.match(groupCardSource, /className="agent-management-page-card agent-group-card"/);
   assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
@@ -285,10 +531,6 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
   assert.match(
     agentManagementCss,
     /\.agent-management-page-card \.agent-management-card__actions\s*\{[\s\S]*position: absolute;/,
-  );
-  assert.match(
-    agentManagementCss,
-    /@media \(max-width: 800px\)[\s\S]*\.agent-management-page-card \.agent-management-card__actions\s*\{[\s\S]*top: auto;/,
   );
   assert.match(agentManagementCss, /\.agent-management-page-card:focus-within \.agent-management-card__actions/);
   assert.match(entityHeaderCss, /\.entity-header__tags\s*\{[\s\S]*width: 100%;/);
@@ -307,6 +549,37 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
   assert.doesNotMatch(groupDetailSource, /detail-back mb-\[35px\]/);
   assert.doesNotMatch(groupDetailSource, /overflow-y-auto pb-\[72px\]/);
   assert.doesNotMatch(groupDetailSource, /<header className="agent-management-detail__header">/);
+  assert.match(groupDetailSource, /<PublicationDetailStatus kind="agent_group"/);
+  assert.match(groupDetailSource, /openAssetPublish\(\{\s*kind: 'agent_group',\s*local_id: detail\.id/);
+});
+
+test('installed Expert Team cards offer use while uninstall stays in detail', async () => {
+  const { GroupCard } = await import('../node_modules/.cache/agent-management-layout/GroupCard.mjs');
+  const { JSDOM } = await import('jsdom');
+  const item = {
+    id: 'group-1',
+    displayName: '测试专家团',
+    description: '测试',
+    category: '',
+    tags: [],
+    avatarUrl: null,
+    installed: true,
+    capabilities: { canUse: true, canInstall: false, canUninstall: true },
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(GroupCard, {
+      item,
+      busy: false,
+      onOpen: () => {},
+      onUse: () => {},
+      onInstall: () => {},
+    }),
+  );
+  const card = new JSDOM(markup).window.document;
+  assert.equal(card.querySelectorAll('[data-testid="agent-group-card-action"]').length, 1);
+  assert.equal(card.querySelector('[data-testid="agent-group-card-action"]').getAttribute('data-variant'), 'use');
+  assert.equal(card.querySelector('[data-variant="uninstall"]'), null);
+  assert.match(groupDetailSource, /data-variant="uninstall"/);
 });
 
 test('Expert Team leader badge does not add a redundant status icon', () => {
@@ -340,10 +613,32 @@ for (const status of ['success', 'loading', 'error']) {
   test(`expert catalog keeps page two cards during ${status}`, async () => {
     const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
     const { JSDOM } = await import('jsdom');
-    const items = Array.from({ length: 20 }, (_, i) => ({ id: `expert-${i}`, runtimePackageName: `expert-${i}`, displayName: `Expert ${i}`, description: '', source: 'local', installed: true, connectionState: 'connected', tags: [], avatarUrl: null }));
-    const document = new JSDOM(renderToStaticMarkup(React.createElement(CatalogPage, {
-      scope: 'mine', items, totalItems: items.length, page: 2, query: '', category: '', status, error: 'Refresh failed', onPageChange() {},
-    }))).window.document;
+    const items = Array.from({ length: 20 }, (_, i) => ({
+      id: `expert-${i}`,
+      runtimePackageName: `expert-${i}`,
+      displayName: `Expert ${i}`,
+      description: '',
+      source: 'local',
+      installed: true,
+      connectionState: 'connected',
+      tags: [],
+      avatarUrl: null,
+    }));
+    const document = new JSDOM(
+      renderToStaticMarkup(
+        React.createElement(CatalogPage, {
+          scope: 'mine',
+          items,
+          totalItems: items.length,
+          page: 2,
+          query: '',
+          category: '',
+          status,
+          error: 'Refresh failed',
+          onPageChange() {},
+        }),
+      ),
+    ).window.document;
     const cards = document.querySelectorAll('[data-testid="agent-card"]');
     assert.equal(cards.length, 5);
     assert.equal(cards[0].getAttribute('data-variant'), 'expert-15');
