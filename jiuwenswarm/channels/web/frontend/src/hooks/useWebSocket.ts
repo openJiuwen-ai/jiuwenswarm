@@ -1353,7 +1353,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     pendingAgentGroupBindingRef.current.delete(sessionId);
   }, []);
 
-  const markPendingAgentGroupBinding = useCallback((sessionId: string, groupId: string) => {
+  const markPendingAgentGroupBinding = useCallback(function markPendingAgentGroupBinding(sessionId: string, groupId: string) {
     clearPendingAgentGroupBinding(sessionId);
     useSessionStore.getState().setAgentGroupBindingPending(sessionId, groupId);
     const timer = window.setTimeout(() => {
@@ -1369,7 +1369,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       void reconcile.finally(() => {
         const runtime = useSessionStore.getState().getRuntime(sessionId);
         if (runtime?.agentGroupBinding !== groupId && runtime?.agentGroupBindingPending === groupId) {
-          useSessionStore.getState().setAgentGroupBindingPending(sessionId, null);
+          // 首次 Team 绑定要先生成名称，可能超过 30 秒；执行尚未结束时继续读回绑定，不能仅因
+          // 一次 metadata 为空就让输入区的专家团标签和乐观锁消失。
+          if (useChatStore.getState().getRuntime(sessionId)?.isProcessing) {
+            markPendingAgentGroupBinding(sessionId, groupId);
+          } else {
+            useSessionStore.getState().setAgentGroupBindingPending(sessionId, null);
+          }
         }
       });
     }, 30_000);
