@@ -1961,7 +1961,7 @@
         "bookmarksPathLabel": "书签文件路径",
         "bookmarksPathPlaceholder": "留空使用 Edge 默认 Bookmarks 路径",
         "foldersLabel": "需采集的书签文件夹",
-        "foldersPlaceholder": "如 收藏栏/技术，多个用逗号分隔",
+        "foldersPlaceholder": "如 收藏夹栏/技术，多个用逗号分隔",
         "foldersHint": "可选，留空采集全部"
       },
       "github": {
