@@ -52,9 +52,14 @@
 .ui-select__option {
   flex: none;
 }
-/* 选项行铺满面板宽度，去掉圆角（双类提高特异性，不影响 DropdownMenu 自身选项） */
+/* 选项行铺满面板宽度，去掉圆角（双类提高特异性，不影响 DropdownMenu 自身选项）；
+   字体与触发器 .ui-select 保持一致（14px/400/主文字色），不再继承 DropdownMenu 的 12px */
 .ui-dropdown-menu__item.ui-select__option {
   border-radius: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  color: var(--color-text-primary);
 }
 .ui-dropdown-menu__item.ui-select__option--selected {
   /* 对应 --color-chat-accent (#1476ff) */
