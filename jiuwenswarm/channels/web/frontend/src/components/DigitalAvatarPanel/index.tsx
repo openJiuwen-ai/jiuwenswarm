@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, RefreshCw } from 'lucide-react';
 import { webRequest } from '../../services/webClient';
@@ -8,6 +8,31 @@ type ChannelId = 'feishu' | 'dingtalk' | 'welink';
 type KindFilter = 'all' | 'group' | 'user' | 'hosted';
 
 const CHANNEL_STORAGE_KEY = 'jiuwenswarm.digitalAvatar.channelId';
+const SEEN_STORAGE_KEY = 'jiuwenswarm.digitalAvatar.seenInbound';
+const LIVE_POLL_MS = 5000;
+
+function readSeenMap(): Record<string, number> {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(SEEN_STORAGE_KEY) || '{}') as unknown;
+    if (!raw || typeof raw !== 'object') return {};
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      const count = Number(value);
+      if (key && Number.isFinite(count) && count >= 0) out[key] = count;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeSeenMap(map: Record<string, number>) {
+  try {
+    window.localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    /* private mode */
+  }
+}
 
 function readLastChannel(): ChannelId {
   try {
@@ -61,6 +86,7 @@ type HostedTarget = {
   expert_service_id?: string | null;
   expert_agent_id?: string | null;
   expert_persona?: string | null;
+  inbound_total?: number;
 };
 
 type ChannelPolicy = {
@@ -240,6 +266,8 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   const [channelPolicy, setChannelPolicy] = useState<ChannelPolicy | null>(null);
   const [ruleOpen, setRuleOpen] = useState(false);
   const [ruleKey, setRuleKey] = useState<string | null>(null);
+  const [ruleKeys, setRuleKeys] = useState<string[]>([]);
+  const [checkedKeys, setCheckedKeys] = useState<string[]>([]);
   const [globalOpen, setGlobalOpen] = useState(false);
   const [globalSaving, setGlobalSaving] = useState(false);
   const [gUsers, setGUsers] = useState(false);
@@ -251,6 +279,11 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   const [gGroupMode, setGGroupMode] = useState<HostingRule['match_mode']>('keyword');
   const [gGroupKeywords, setGGroupKeywords] = useState('');
   const [gPersona, setGPersona] = useState('');
+  const [seenMap, setSeenMap] = useState<Record<string, number>>(readSeenMap);
+  const [pendingNew, setPendingNew] = useState(0);
+  const chatBodyRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
+  const timelineCountRef = useRef(0);
 
   const currentChannel = channels.find((item) => item.id === channelId);
   const channelOptions = CHANNEL_ORDER.map((id) => {
@@ -331,7 +364,8 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
       });
     }
 
-    return out.filter((row) => {
+    const ranked = [...out].sort((a, b) => Number(a.hosted) - Number(b.hosted));
+    return ranked.filter((row) => {
       if (kindFilter === 'hosted') return row.hosted;
       if (kindFilter === 'group' || kindFilter === 'user') return row.target_kind === kindFilter;
       return true;
@@ -339,35 +373,128 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   }, [discoverItems, kindFilter, targets]);
 
   const selectedRow = rows.find((row) => row.key === selectedKey) || null;
-  const ruleRow = rows.find((row) => row.key === ruleKey) || null;
+  const unhostedRows = useMemo(() => rows.filter((row) => !row.hosted), [rows]);
+  const checkedUnhosted = useMemo(
+    () => unhostedRows.filter((row) => checkedKeys.includes(row.key)),
+    [checkedKeys, unhostedRows],
+  );
+  const ruleRows = useMemo(() => {
+    const keys = ruleKeys.length ? ruleKeys : ruleKey ? [ruleKey] : [];
+    return keys
+      .map((key) => rows.find((row) => row.key === key))
+      .filter((row): row is SessionRow => Boolean(row));
+  }, [ruleKey, ruleKeys, rows]);
+  const ruleRow = ruleRows[0] || null;
+  const batchRule = ruleRows.length > 1;
   const selectedTargetId = selectedRow?.target?.id || null;
   const timeline = useMemo(() => historyLines(historyRecords), [historyRecords]);
 
-  const loadHistory = useCallback(async (targetId: string | null) => {
+  const loadHistory = useCallback(async (targetId: string | null, options?: { silent?: boolean }) => {
     if (!isConnected || !targetId) {
       setHistoryRecords([]);
       return;
     }
-    setHistoryLoading(true);
+    if (!options?.silent) setHistoryLoading(true);
     try {
       const payload = await webRequest<{ messages?: HistoryRecord[] }>('im.hosting.history', { id: targetId });
       setHistoryRecords(payload.messages || []);
     } catch {
-      setHistoryRecords([]);
+      if (!options?.silent) setHistoryRecords([]);
     } finally {
-      setHistoryLoading(false);
+      if (!options?.silent) setHistoryLoading(false);
     }
   }, [isConnected]);
 
+  const refreshTargets = useCallback(async () => {
+    if (!isConnected) return;
+    try {
+      const listed = await webRequest<{ targets?: HostedTarget[] }>('im.hosting.targets.list', {
+        channel_id: channelId,
+      });
+      setTargets(listed.targets || []);
+    } catch {
+      /* 保留当前列表 */
+    }
+  }, [channelId, isConnected]);
+
+  const markSeen = useCallback((targetId: string | null, total: number) => {
+    if (!targetId) return;
+    const nextTotal = Math.max(0, Number(total) || 0);
+    setSeenMap((prev) => {
+      if ((prev[targetId] || 0) >= nextTotal) return prev;
+      const next = { ...prev, [targetId]: nextTotal };
+      writeSeenMap(next);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
+    stickToBottomRef.current = true;
+    timelineCountRef.current = 0;
+    setPendingNew(0);
+    setHistoryRecords([]);
     void loadHistory(selectedTargetId);
   }, [loadHistory, selectedTargetId]);
+
+  useEffect(() => {
+    if (!isConnected) return undefined;
+    const timer = window.setInterval(() => {
+      void refreshTargets();
+      if (selectedRow?.hosted && selectedTargetId) {
+        void loadHistory(selectedTargetId, { silent: true });
+      }
+    }, LIVE_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [isConnected, loadHistory, refreshTargets, selectedRow?.hosted, selectedTargetId]);
+
+  const selectedInbound = Number(selectedRow?.target?.inbound_total || 0);
+
+  useEffect(() => {
+    const el = chatBodyRef.current;
+    const prev = timelineCountRef.current;
+    const next = timeline.length;
+    const grew = next > prev;
+    timelineCountRef.current = next;
+    if (!el || !selectedTargetId) return;
+    if (stickToBottomRef.current || prev === 0) {
+      el.scrollTop = el.scrollHeight;
+      setPendingNew(0);
+      if (!historyLoading) markSeen(selectedTargetId, selectedInbound);
+      return;
+    }
+    if (grew) setPendingNew((count) => count + (next - prev));
+  }, [historyLoading, markSeen, selectedInbound, selectedTargetId, timeline]);
+
+  const revealLatest = () => {
+    const el = chatBodyRef.current;
+    stickToBottomRef.current = true;
+    setPendingNew(0);
+    if (el) el.scrollTop = el.scrollHeight;
+    markSeen(selectedTargetId, selectedInbound);
+  };
+
+  const unreadCount = (row: SessionRow) => {
+    if (!row.hosted || !row.target || row.key === selectedKey) return 0;
+    const total = Number(row.target.inbound_total || 0);
+    const seen = seenMap[row.target.id] || 0;
+    return Math.max(0, total - seen);
+  };
 
   useEffect(() => {
     setSelectedKey(null);
     setRuleOpen(false);
     setRuleKey(null);
+    setRuleKeys([]);
+    setCheckedKeys([]);
   }, [channelId]);
+
+  useEffect(() => {
+    const allowed = new Set(unhostedRows.map((row) => row.key));
+    setCheckedKeys((prev) => {
+      const next = prev.filter((key) => allowed.has(key));
+      return next.length === prev.length && next.every((key, index) => key === prev[index]) ? prev : next;
+    });
+  }, [unhostedRows]);
 
   const inheritedRule = (kind: SessionRow['target_kind']): HostingRule => {
     const raw = kind === 'user' ? channelPolicy?.default_user_rule : channelPolicy?.default_group_rule;
@@ -401,23 +528,50 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   };
 
   useEffect(() => {
-    if (!ruleOpen || !ruleRow) return;
+    if (!ruleOpen || !ruleRow || batchRule) return;
     fillSessionDraft(ruleRow);
-  }, [ruleOpen, ruleRow?.key, ruleRow?.target?.id, ruleRow?.target_kind, channelPolicy, t]);
+  }, [ruleOpen, batchRule, ruleRow?.key, ruleRow?.target?.id, ruleRow?.target_kind, channelPolicy, t]);
 
   const openChat = (row: SessionRow) => {
     setSelectedKey(row.key);
   };
 
+  const fillBatchDraft = (first: SessionRow) => {
+    setInheritGlobal(true);
+    const rule = inheritedRule(first.target_kind);
+    setDraftMode(rule.match_mode);
+    setDraftKeywords(keywordsToText(rule.keywords));
+    setDraftPersona(
+      (channelPolicy?.expert_persona || '').trim() || t('digitalAvatar.avatarProfileTemplate'),
+    );
+  };
+
   const openRuleModal = (row: SessionRow) => {
     setRuleKey(row.key);
+    setRuleKeys([row.key]);
     fillSessionDraft(row);
+    setRuleOpen(true);
+  };
+
+  const openBatchRuleModal = () => {
+    if (!checkedUnhosted.length) return;
+    setRuleKey(null);
+    setRuleKeys(checkedUnhosted.map((row) => row.key));
+    fillBatchDraft(checkedUnhosted[0]);
     setRuleOpen(true);
   };
 
   const closeRuleModal = () => {
     setRuleOpen(false);
     setRuleKey(null);
+    setRuleKeys([]);
+  };
+
+  const toggleChecked = (key: string, checked: boolean) => {
+    setCheckedKeys((prev) => {
+      if (checked) return prev.includes(key) ? prev : [...prev, key];
+      return prev.filter((item) => item !== key);
+    });
   };
 
   const applyInherit = (next: boolean) => {
@@ -480,22 +634,26 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
   });
 
   const confirmHost = async () => {
-    if (!ruleRow) return;
+    const pending = ruleRows.filter((row) => !row.hosted);
+    if (!pending.length) return;
     const rule = currentRule();
     setSaving(true);
     setError(null);
     try {
-      await webRequest('im.hosting.targets.add', {
-        channel_id: ruleRow.channel_id,
-        target_kind: ruleRow.target_kind,
-        external_id: ruleRow.external_id,
-        title: ruleRow.title,
-        rule_override: inheritGlobal ? null : rule,
-        expert_service_id: PERSONAL_EXPERT.serviceId,
-        expert_agent_id: PERSONAL_EXPERT.agentId,
-        expert_persona: inheritGlobal ? '' : draftPersona.trim(),
-      });
-      setSelectedKey(ruleRow.key);
+      for (const row of pending) {
+        await webRequest('im.hosting.targets.add', {
+          channel_id: row.channel_id,
+          target_kind: row.target_kind,
+          external_id: row.external_id,
+          title: row.title,
+          rule_override: inheritGlobal ? null : rule,
+          expert_service_id: PERSONAL_EXPERT.serviceId,
+          expert_agent_id: PERSONAL_EXPERT.agentId,
+          expert_persona: inheritGlobal ? '' : draftPersona.trim(),
+        });
+      }
+      setSelectedKey(pending[0].key);
+      setCheckedKeys((prev) => prev.filter((key) => !pending.some((row) => row.key === key)));
       closeRuleModal();
       await refresh();
     } catch (err) {
@@ -606,15 +764,27 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
                 <h2>{t('digitalAvatar.listTitle')}</h2>
                 <p>{t('digitalAvatar.listMeta', { channel: channelLabel, count: rows.length })}</p>
               </div>
-              <button
-                type="button"
-                className="da-panel__icon-btn"
-                onClick={() => void refresh()}
-                disabled={!isConnected || loading}
-              >
-                <RefreshCw size={14} />
-                {loading ? t('common.refreshing') : t('common.refresh')}
-              </button>
+              <div className="da-panel__row-actions">
+                {checkedUnhosted.length ? (
+                  <button
+                    type="button"
+                    className="da-panel__host-btn"
+                    disabled={!isConnected}
+                    onClick={openBatchRuleModal}
+                  >
+                    {t('digitalAvatar.batchHost', { count: checkedUnhosted.length })}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="da-panel__icon-btn"
+                  onClick={() => void refresh()}
+                  disabled={!isConnected || loading}
+                >
+                  <RefreshCw size={14} />
+                  {loading ? t('common.refreshing') : t('common.refresh')}
+                </button>
+              </div>
             </div>
             <div className="da-panel__tile-body">
               {loading && rows.length === 0 ? (
@@ -628,10 +798,21 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
                   {rows.map((row) => (
                     <li
                       key={row.key}
-                      className={`da-panel__row is-clickable${selectedKey === row.key ? ' is-selected' : ''}`}
+                      className={`da-panel__row is-clickable${selectedKey === row.key ? ' is-selected' : ''}${checkedKeys.includes(row.key) ? ' is-checked' : ''}`}
                       onClick={() => openChat(row)}
                     >
                       <div className="da-panel__row-main">
+                        {!row.hosted ? (
+                          <label className="da-panel__check da-panel__check--row" onClick={(event) => event.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={checkedKeys.includes(row.key)}
+                              onChange={(event) => toggleChecked(row.key, event.target.checked)}
+                              disabled={!isConnected}
+                              aria-label={row.title}
+                            />
+                          </label>
+                        ) : null}
                         <span className="da-panel__name">{row.title}</span>
                         <span className={`da-panel__tag${row.target_kind === 'group' ? ' is-group' : ''}`}>
                           {row.target_kind === 'group' ? t('digitalAvatar.group') : t('digitalAvatar.user')}
@@ -641,6 +822,11 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
                         ) : null}
                         {row.target?.source === 'auto' ? (
                           <span className="da-panel__tag is-auto">{t('digitalAvatar.sourceAuto')}</span>
+                        ) : null}
+                        {unreadCount(row) > 0 ? (
+                          <span className="da-panel__unread" aria-label={t('digitalAvatar.unread', { count: unreadCount(row) })}>
+                            {unreadCount(row) > 99 ? '99+' : unreadCount(row)}
+                          </span>
                         ) : null}
                       </div>
                       <div className="da-panel__row-actions">
@@ -720,7 +906,19 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
                     ) : null}
                   </div>
                 </div>
-                <div className="da-panel__tile-body da-panel__chat">
+                <div
+                  className="da-panel__tile-body da-panel__chat"
+                  ref={chatBodyRef}
+                  onScroll={(event) => {
+                    const el = event.currentTarget;
+                    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+                    stickToBottomRef.current = atBottom;
+                    if (atBottom) {
+                      setPendingNew(0);
+                      markSeen(selectedTargetId, selectedInbound);
+                    }
+                  }}
+                >
                   {!selectedRow.hosted ? (
                     <p className="da-panel__empty">{t('digitalAvatar.historyNeedHost')}</p>
                   ) : historyLoading && timeline.length === 0 ? (
@@ -749,6 +947,11 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
                       ))}
                     </ol>
                   )}
+                  {pendingNew > 0 ? (
+                    <button type="button" className="da-panel__new-chip" onClick={revealLatest}>
+                      {t('digitalAvatar.newMessages', { count: pendingNew })}
+                    </button>
+                  ) : null}
                 </div>
               </>
             ) : (
@@ -767,11 +970,16 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
             <div className="da-panel__tile-head">
               <div>
                 <h2 id="da-rule-title">
-                  {ruleRow.title}
-                  {ruleRow.target_kind === 'group' ? ` · ${t('digitalAvatar.group')}` : ` · ${t('digitalAvatar.user')}`}
+                  {batchRule
+                    ? t('digitalAvatar.batchHostTitle', { count: ruleRows.length })
+                    : `${ruleRow.title}${ruleRow.target_kind === 'group' ? ` · ${t('digitalAvatar.group')}` : ` · ${t('digitalAvatar.user')}`}`}
                 </h2>
                 <p>
-                  {ruleRow.hosted ? t('digitalAvatar.editHostedHint') : t('digitalAvatar.draftHostHint')}
+                  {batchRule
+                    ? t('digitalAvatar.batchHostHint')
+                    : ruleRow.hosted
+                      ? t('digitalAvatar.editHostedHint')
+                      : t('digitalAvatar.draftHostHint')}
                 </p>
               </div>
               <button type="button" className="da-panel__text-btn" onClick={closeRuleModal}>
@@ -779,6 +987,14 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
               </button>
             </div>
             <div className="da-panel__modal-body">
+              {batchRule ? (
+                <p className="da-panel__batch-names">
+                  {ruleRows.slice(0, 8).map((row) => row.title).join('、')}
+                  {ruleRows.length > 8
+                    ? ` ${t('digitalAvatar.batchHostMore', { count: ruleRows.length - 8 })}`
+                    : ''}
+                </p>
+              ) : null}
               <label className="da-panel__check">
                 <input
                   type="checkbox"
@@ -787,7 +1003,13 @@ export function DigitalAvatarPanel({ isConnected }: DigitalAvatarPanelProps) {
                 />
                 <span>{t('digitalAvatar.inheritGlobal')}</span>
               </label>
-              <p className="da-panel__note">{t('digitalAvatar.inheritGlobalHint')}</p>
+              <p className="da-panel__note">
+                {batchRule
+                  ? inheritGlobal
+                    ? t('digitalAvatar.inheritGlobalHintBatch')
+                    : t('digitalAvatar.inheritOverrideBatch')
+                  : t('digitalAvatar.inheritGlobalHint')}
+              </p>
               <details className="da-panel__fold" open={!inheritGlobal}>
                 <summary>{t('digitalAvatar.gateSection')}</summary>
                 <p className="da-panel__note">{t('digitalAvatar.gateHint')}</p>

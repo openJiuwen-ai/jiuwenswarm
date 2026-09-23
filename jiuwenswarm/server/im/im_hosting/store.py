@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS im_hosting_targets (
   expert_service_id TEXT,
   expert_agent_id TEXT,
   expert_persona TEXT,
+  inbound_total INTEGER NOT NULL DEFAULT 0,
   UNIQUE(channel_id, target_kind, external_id)
 );
 
@@ -76,6 +77,10 @@ def _ensure_target_expert_columns(conn: sqlite3.Connection) -> None:
     # 个人版 UI 叫「分身」说明，整段 markdown 存在 expert_persona。
     if "expert_persona" not in cols:
         conn.execute("ALTER TABLE im_hosting_targets ADD COLUMN expert_persona TEXT")
+    if "inbound_total" not in cols:
+        conn.execute(
+            "ALTER TABLE im_hosting_targets ADD COLUMN inbound_total INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
 
 
@@ -114,6 +119,7 @@ def _row_to_target(row: sqlite3.Row) -> dict[str, Any]:
         "expert_service_id": _row_get(row, "expert_service_id"),
         "expert_agent_id": _row_get(row, "expert_agent_id"),
         "expert_persona": _row_get(row, "expert_persona"),
+        "inbound_total": int(_row_get(row, "inbound_total") or 0),
     }
 
 
@@ -350,6 +356,23 @@ class HostingStore:
             if self.delete_target(str(target["id"])):
                 dropped += 1
         return dropped
+
+    def bump_inbound_total(self, target_id: str, *, by: int = 1) -> None:
+        """对方原话写入代回 history 后累加，供列表未读。只增不减。"""
+        step = int(by)
+        if step <= 0 or not target_id:
+            return
+        now = _now_ms()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE im_hosting_targets
+                SET inbound_total = COALESCE(inbound_total, 0) + ?, updated_at_ms=?
+                WHERE id=?
+                """,
+                (step, now, target_id),
+            )
+            conn.commit()
 
     def record_poll(
         self,

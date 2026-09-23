@@ -111,6 +111,7 @@ async def _try_auto_reply(
             return False
         if not reply_text.strip():
             return False
+        store.bump_inbound_total(str(target["id"]))
         send = await plugin.send_message(
             conv,
             reply_text,

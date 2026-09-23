@@ -187,6 +187,7 @@ async def test_auto_host_first_poll_replies_recent_trigger_messages(tmp_path: Pa
     )
     assert summary["gated_in"] == 2
     assert summary["replied"] == 2
+    assert store.get_target(target["id"])["inbound_total"] == 2
     gated = {item["msg_id"]: item for item in summary["preview"]}
     assert gated["old"].get("gated") is None
     assert gated["hi1"].get("gated") is True

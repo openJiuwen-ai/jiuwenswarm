@@ -144,3 +144,17 @@ def test_release_target_stays_in_hosted_keys_until_manual_add(tmp_path: Path):
     assert revived["id"] == target["id"]
     assert revived["enabled"] is True
     assert revived["source"] == "manual"
+
+
+def test_bump_inbound_total_only_increases(tmp_path: Path):
+    store = HostingStore(tmp_path / "hosting.db")
+    target = store.add_target(
+        channel_id="dingtalk",
+        target_kind="user",
+        external_id="ou_xk",
+        title="许康",
+    )
+    assert target["inbound_total"] == 0
+    store.bump_inbound_total(target["id"])
+    store.bump_inbound_total(target["id"], by=2)
+    assert store.get_target(target["id"])["inbound_total"] == 3
