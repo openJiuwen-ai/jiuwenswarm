@@ -13,6 +13,7 @@ npm run test:trajectory-projector    # projector + v2 replay vectors
 npm run test:trajectory-window       # window/subjects/team grouping
 npm run test:trajectory-retention    # checkpoint 续跑
 npm run test:trajectory-sequences    # 内容寻址重建
+npm run test:trajectory-turn-gaps    # 未记录 turn 区间
 npm run test:trajectory-frames       # 流式增量帧
 npm run test:trajectory-host         # SingleAgentSurface / featureConfig / tool schema
 npm run test:trajectory-timeline
@@ -55,6 +56,8 @@ make check-genai-semconv
    - `otel-trajectory-projector.ts` 是入口 `projectOtelTrajectory()`，合并 v1 span 投影与 v2 reduction，产出 `TrajectorySnapshot`。失败的呈现按记录归属：原生 run 把错误记在撞上它的那条记录上（inference / tool 的 span），对应行自然渲染成 error；外部 CLI 被网关限流时那次调用没有响应体、压根没产生记录，错误只落在 turn span 上，于是由 `failedTurnCells()` + `withTurnFailure()` 在该 turn 末尾补一行错误态 ASSISTANT（`startedAt` 取 span 结束时间，否则会排到整轮最前）。若这一轮连第一次模型调用都没成功（没有任何 group），再用 span 的 `openjiuwen.span.input` 补一行 USER —— 否则它没有任何行、整个 turn 不会被画出来，只留下看起来跳号的 Turn 编号。
 7. **`trajectory/`** — 读模型与展示投影：`model.ts`（`TrajectorySnapshot` / `TrajectoryTurnModel` / `TrajectoryRequest`）、`record.ts`（`TrajectoryCell`）、`timeline.ts`、`search-index.ts`、`virtual-rows.ts`、`preview.ts`、`compaction.ts`。
 8. **`client/`** — 展示组件 `TrajectoryExplorer` / `TrajectoryTable` / `TrajectoryTimeline` / `TrajectoryToolbar`，纯 props，不依赖任何应用级 context。
+
+`trajectoryTurnGaps.ts` 从主 Agent 的 turn 编号推出未留下记录的 turn 区间：后端 turn 计数器不论是否录制都会逐轮递增（`jiuwenswarm/observability/turn.py`），而录制开启时每轮根 span 都会落库，所以编号缺口就是轨迹开关关闭期间跑过的 turn；retention 删掉的 turn 由 checkpoint 的 `turns.maxNumber` 兜底，不算缺口。只对单 Agent 模式的主 Agent 生效，子 Agent 和 Team 泳道的编号不跟这个计数器走。
 
 `trajectoryArchive.ts` 是同一条流水线的离线入口：把 zip 内 `trajectory.jsonl`（v3，content-addressed JSONL）流式解开后喂给 `applyTrajectoryDetailRecords`，供回放已归档 session。
 
