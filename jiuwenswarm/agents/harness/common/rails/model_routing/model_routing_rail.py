@@ -17,16 +17,16 @@ from .types import (
 
 
 # 四档模式（先写死）：模式名 → 固定 (模型名, 思考深度)。
-#   fast      → deepseek-v4-flash-0731 关闭思考
-#   balanced  → deepseek-v4-flash-0731 中等思考
-#   extreme   → glm-5.2                 深度思考
-#   auto      → deepseek-v4-flash-0731 中等思考
+#   fast      → deepseek-v4-flash 关闭思考
+#   balanced  → deepseek-v4-flash 中等思考
+#   extreme   → glm-5.2           深度思考
+#   auto      → deepseek-v4-flash 中等思考
 # 具体模型名不在此表内（走 skip 分支，保留 adapter 已应用的具体/默认模型）。
 _MODE_MODEL_MAP: dict[str, str] = {
-    "fast": "deepseek-v4-flash-0731",
-    "balanced": "deepseek-v4-flash-0731",
+    "fast": "deepseek-v4-flash",
+    "balanced": "deepseek-v4-flash",
     "extreme": "glm-5.2",
-    "auto": "deepseek-v4-flash-0731",
+    "auto": "deepseek-v4-flash",
 }
 
 _MODE_THINKING_MAP: dict[str, str] = {
