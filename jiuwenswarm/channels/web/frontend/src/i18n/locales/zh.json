@@ -3477,6 +3477,7 @@
       "renamePlaceholder": "输入新名称",
       "archiveConversation": "归档",
       "conversationArchived": "已归档任务会话",
+      "conversationDeleted": "对话已删除",
       "archiveView": "查看",
       "archiveUndo": "撤销",
       "removeProject": "移除项目",
@@ -3514,7 +3515,9 @@
     },
     "deleteDialog": {
       "title": "删除",
-      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+      "attention": "注意",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。",
+      "permanentConfirm": "确定要永久删除该任务吗？"
     },
     "notFound": {
       "title": "对话不存在或已删除",
