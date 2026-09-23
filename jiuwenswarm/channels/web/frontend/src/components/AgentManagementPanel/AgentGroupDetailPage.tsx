@@ -307,7 +307,7 @@ export function AgentGroupDetailPage({
               ariaLabel={t('agentManagement.group.detail.tabsLabel')}
               wrapperTestId="agent-group-detail-tabs"
               itemTestId="agent-group-detail-tab"
-              className="text-base"
+              className="page-tabs"
               value={detailTab}
               onChange={onTabChange}
               items={[

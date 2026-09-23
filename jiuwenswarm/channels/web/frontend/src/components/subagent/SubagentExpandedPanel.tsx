@@ -1,7 +1,7 @@
 import { AlertCircle, CircleEllipsis, Lightbulb, ListTodo, Search, SquareTerminal, Wrench } from 'lucide-react';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import LoadingIcon from '../../assets/subagent/loading.svg?react';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import BackIcon from '../../assets/back.svg?react';
 import { getSubagentStatusLabelKey } from '../../features/subagent/subagentStatusPresentation';
 import {
@@ -185,9 +185,9 @@ function ActivityRow({
             {timestamp}
           </span>
         ) : null}
-        <span className="shrink-0 text-muted">
+        <span className="shrink-0 text-text-meta">
           {isRunning ? (
-            <LoadingIcon className="h-4 w-4 shrink-0 animate-spin" aria-label={t('subagent.running')} role="img" />
+            <LoadingSpinner />
           ) : (
             <Chevron expanded={expanded} />
           )}

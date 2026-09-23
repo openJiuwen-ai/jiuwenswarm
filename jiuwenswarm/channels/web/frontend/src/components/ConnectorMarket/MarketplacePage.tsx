@@ -500,7 +500,7 @@ export function MarketplacePage({
               role="tablist"
               wrapperTestId="connector-market-tabs"
               itemTestId="connector-market-tab"
-              className="text-base"
+              className="page-tabs"
               value={topTab}
               onChange={onTopTabChange}
               items={[
