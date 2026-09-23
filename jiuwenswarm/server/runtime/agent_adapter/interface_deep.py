@@ -5037,10 +5037,6 @@ class JiuWenSwarmDeepAdapter:
             return
         deep_cfg = getattr(instance, "_deep_config", None)
         specs = getattr(deep_cfg, "subagents", None) or []
-        try:
-            from openjiuwen.harness.schema.config import SubAgentConfig
-        except Exception:  # noqa: BLE001
-            return
         # Dedup by server_name (first wins), mirroring AbilityManager.add's
         # duplicate-name skip for MCP server abilities.
         live: list[McpServerConfig] = []
