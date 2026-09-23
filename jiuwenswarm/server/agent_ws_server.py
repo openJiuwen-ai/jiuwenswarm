@@ -4688,6 +4688,16 @@ class AgentWebSocketServer:
                     team_name = str(metadata.get("team_name") or "").strip()
                     channel_id = str(metadata.get("channel_id") or request.channel_id or "").strip() or None
                     if not is_team_mode:
+                        # session.delete must also stop what the session *does*, not
+                        # just erase its records: an in-flight round keeps streaming
+                        # and re-persists the session dir right after rmtree(), which
+                        # is exactly why session.list resurrects a "deleted" session
+                        # and the chat stream never ends. Cancel the round first via
+                        # the same chat.interrupt routing used by _handle_cancel.
+                        # Team sessions own their teardown through
+                        # team_manager.delete_session_runtime below — skip to avoid
+                        # double cancellation.
+                        await self._cancel_inflight_round_for_delete(request, target)
                         from jiuwenswarm.server.runtime.session.kv_cache_product_hooks import (
                             evict_plan_session,
                         )
@@ -4791,6 +4801,48 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+
+    async def _cancel_inflight_round_for_delete(
+        self, request: AgentRequest, target: str
+    ) -> None:
+        """Best-effort cancel of the session's in-flight chat round before delete.
+
+        Mirrors _handle_cancel's session reverse-lookup (no mode-based fallback:
+        hitting an unrelated agent would spin without reaching this session's
+        round). Never raises — a failed cancel must not block the user's delete;
+        it only degrades back to the old behavior.
+        """
+        channel_id = request.channel_id or "default"
+        lookup = getattr(self._agent_manager, "get_agent_for_session", None)
+        agent = lookup(channel_id, target) if callable(lookup) else None
+        if agent is None:
+            logger.info(
+                "[AgentWebSocketServer] session.delete: no live agent for "
+                "session=%s, nothing to cancel",
+                target,
+            )
+            return
+        cancel_request = AgentRequest(
+            request_id=f"session.delete-cancel-{target[:16]}",
+            channel_id=channel_id,
+            session_id=target,
+            req_method=ReqMethod.CHAT_CANCEL,
+            params={"session_id": target, "intent": "cancel"},
+        )
+        try:
+            await agent.process_message(cancel_request)
+            logger.info(
+                "[AgentWebSocketServer] session.delete: cancelled in-flight "
+                "round session=%s",
+                target,
+            )
+        except Exception:
+            logger.warning(
+                "[AgentWebSocketServer] session.delete: cancel in-flight round "
+                "failed, proceeding with delete session=%s",
+                target,
+                exc_info=True,
+            )
 
     async def _resolve_rewind_agent(
         self,
