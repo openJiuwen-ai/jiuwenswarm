@@ -306,8 +306,8 @@ export function PersonalContextServicesPanel({
             <span className="pc-services__stat-number">{graph?.nodes.length ?? 0}</span>
           </div>
           <div className="pc-services__stat-card">
-            <span className="pc-services__stat-label">{t('personalContext.services.statCollecting')}</span>
-            <span className="pc-services__stat-number">{Object.values(status?.fetch_run_progress ?? {}).filter((p) => p.run_state === 'running').length}</span>
+            <span className="pc-services__stat-label" data-testid="personal-context-active-fetch-label">{t('personalContext.services.statCollecting')}</span>
+            <span className="pc-services__stat-number" data-testid="personal-context-active-fetch-count">{Object.values(status?.fetch_run_progress ?? {}).filter((p) => p.run_state === 'running' || p.run_state === 'stopping').length}</span>
           </div>
         </div>
 

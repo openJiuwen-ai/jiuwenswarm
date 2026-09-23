@@ -1757,6 +1757,7 @@
       "enable": "采集个人上下文内容",
       "enableHint": "支持自动周期性采集上下文内容并自动构建图谱。",
       "strategyProfile": "上下文采集模式",
+      "strategyLockedByFetch": "采集任务正在运行或停止中，结束后可切换模式。",
       "strategy_agent": "智能体处理",
       "strategy_balanced": "大模型处理",
       "strategy_rules": "规则处理",
@@ -1895,10 +1896,10 @@
       "collectAll": "全部开始采集",
       "statSources": "来源",
       "statKnowledge": "上下文节点数",
-      "statCollecting": "正在采集",
+      "statCollecting": "进行中的采集任务",
       "knowledgeSource": "上下文来源",
       "lastRun": "上次采集",
-      "fetchTaskRunning": "当前有采集任务正在运行，请等待完成后再修改配置"
+      "fetchTaskRunning": "当前有采集任务正在运行或停止中，请等待结束后再修改配置"
     },
     "addContent": {
       "title": "添加内容",

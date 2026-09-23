@@ -55,6 +55,7 @@ export function PersonalContextSettingsPanel({
     pendingWrites,
     configNeedsReconciliation,
     loadAll,
+    loadStatus,
     setMasterEnabled,
     setEnabled,
     setStrategyProfile,
@@ -80,6 +81,7 @@ export function PersonalContextSettingsPanel({
   // 后端 stored_config 落盘后不带 configured 字段，只有 PersonalContextStatus 稳定带。
   // 因此"是否已配置"以 status.configured 为准，而非 config.configured。
   const isConfigured = status?.configured === true || config.collection_enabled === true;
+  const fetchActive = hasRunningFetchTask(status);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -93,6 +95,12 @@ export function PersonalContextSettingsPanel({
       });
     }
   }, [isConnected, loadAll, loadAuthStatus]);
+
+  useEffect(() => {
+    if (!isConnected) return;
+    const id = window.setInterval(() => void loadStatus().catch(() => {}), 5000);
+    return () => window.clearInterval(id);
+  }, [isConnected, loadStatus]);
 
   // 请求超时后由 store 核对实际配置；核对期间开关保持请求态。
   const runWrite = useCallback(
@@ -173,13 +181,14 @@ export function PersonalContextSettingsPanel({
       }
       void setStrategyProfile(profile).catch((e: unknown) => {
         if (isFetchTaskRunningError(e)) {
+          void loadStatus().catch(() => {});
           toast.open({ content: t('personalContext.services.fetchTaskRunning'), variant: 'warning' });
           return;
         }
         setError(e instanceof Error ? e.message : String(e));
       });
     },
-    [config.model_index, setStrategyProfile, t],
+    [config.model_index, loadStatus, setStrategyProfile, t],
   );
 
   const handleModel = useCallback(
@@ -356,13 +365,16 @@ export function PersonalContextSettingsPanel({
             {/* 上下文采集模式 */}
             <SettingRow
               title={t('personalContext.settings.strategyProfile')}
-              description={t('personalContext.settings.subtitle')}
+              description={t(fetchActive
+                ? 'personalContext.settings.strategyLockedByFetch'
+                : 'personalContext.settings.subtitle')}
             >
               <select
                 className="pc-settings__select"
+                data-testid="personal-context-strategy-select"
                 value={config.strategy_profile}
                 onChange={(e) => handleStrategy(e.target.value as 'rules' | 'balanced' | 'agent')}
-                disabled={!isConnected || !!pendingWrites.strategy_profile}
+                disabled={!isConnected || fetchActive || !!pendingWrites.strategy_profile}
               >
                 {STRATEGY_OPTIONS.map((s) => (
                   <option key={s} value={s}>{t('personalContext.settings.strategy_' + s)}</option>

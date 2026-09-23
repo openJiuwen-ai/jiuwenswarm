@@ -133,7 +133,10 @@ async function renderStatus({ runState, completed = 0, failed = 0, pending = fal
         }),
       ),
     );
-    return dom.window.document.querySelector('.pc-services__status-text')?.textContent;
+    return {
+      card: dom.window.document.querySelector('.pc-services__status-text')?.textContent,
+      activeCount: dom.window.document.querySelector('.pc-services__stat-card:last-child .pc-services__stat-number')?.textContent,
+    };
   } finally {
     await act(async () => root.unmount());
     delete globalThis.__pcServiceStore;
@@ -147,22 +150,30 @@ async function renderStatus({ runState, completed = 0, failed = 0, pending = fal
 
 test('a new request does not display the previous completed run', async () => {
   assert.equal(
-    await renderStatus({ runState: 'succeeded', pending: true }),
+    (await renderStatus({ runState: 'succeeded', pending: true })).card,
     'personalContext.services.stateCollecting',
   );
 });
 
 test('a genuinely completed empty run still displays completion', async () => {
-  assert.equal(await renderStatus({ runState: 'succeeded' }), 'personalContext.services.stateCompleted');
+  assert.equal((await renderStatus({ runState: 'succeeded' })).card, 'personalContext.services.stateCompleted');
 });
 
 test('a partial run reports completed and failed item counts', async () => {
   assert.equal(
-    await renderStatus({ runState: 'partial_succeeded', completed: 1, failed: 1 }),
+    (await renderStatus({ runState: 'partial_succeeded', completed: 1, failed: 1 })).card,
     'personalContext.services.statePartial:1/2/1',
   );
 });
 
 test('a system failure still displays failure', async () => {
-  assert.equal(await renderStatus({ runState: 'failed', failed: 1 }), 'personalContext.services.stateFailed');
+  assert.equal((await renderStatus({ runState: 'failed', failed: 1 })).card, 'personalContext.services.stateFailed');
+});
+
+test('a stopping fetch remains visible in the active task count', async () => {
+  assert.equal((await renderStatus({ runState: 'stopping' })).activeCount, '1');
+});
+
+test('a terminal fetch is absent from the active task count', async () => {
+  assert.equal((await renderStatus({ runState: 'cancelled' })).activeCount, '0');
 });
