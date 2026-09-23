@@ -2480,7 +2480,7 @@ _KV_SENSITIVE_PATTERN = re.compile(
     r"auth[_-]?code|auth[_-]?token|"
     r"user[_-]?id|userid|project[_-]?id|"
     r"amap[_-]?key|map[_-]?ak)"
-    r"(?![A-Za-z0-9])(\s*[:=]\s*)([\"']?)([^,\s\"'\]\}]+)([\"']?)"
+    r"(?![A-Za-z0-9])(\s*[:=]\s*)([\"']?)([^,\s\"'\]\}]{0,8192})([\"']?)"
 )
 # 匹配“键名包含敏感关键词”且“值被引号包裹”的场景，覆盖:
 # - 'CAT_CAFE_CALLBACK_TOKEN': 'xxxx'
@@ -2491,14 +2491,20 @@ _KV_SENSITIVE_PATTERN = re.compile(
 # 2) 值的起始引号（' 或 "）
 # 3) 值内容（非贪婪）
 # 4) 结束引号（通过 (\2) 强制与起始引号一致）
+#
+# ponytail: value 长度限 2048 + key 前后缀限 64，防止长 JSON 日志产生灾难性回溯。
 _NAMED_SENSITIVE_KV_PATTERN = re.compile(
-    r"(?i)([\"']?[A-Za-z0-9_.-]*"
+    r"(?i)"
+    r"([\"']?[A-Za-z0-9_.-]{0,64}"                        # key 前缀（限长 64，可选开引号）
     r"(?:token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|"
     r"secret[_-]?key|authorization|auth[_-]?code|auth[_-]?token|"
     r"credential|private[_-]?key|"
     r"user[_-]?id|userid|project[_-]?id|"
     r"amap[_-]?key|map[_-]?ak)"
-    r"[A-Za-z0-9_.-]*[\"']?\s*[:=]\s*)([\"'])(.*?)(\2)"
+    r"[A-Za-z0-9_.-]{0,64}[\"']?\s*[:=]\s*)"              # key 后缀（限长 64，可选闭引号）
+    r"([\"'])"                                            # 值的起始引号
+    r"((?!\2).{0,8192}?)"                                 # 值: 非贪婪采样，限 8192
+    r"(\2)"                                               # 值的结束引号
 )
 # 匹配 Authorization Bearer 令牌，保留 "Bearer " 前缀，仅掩码后面的令牌值。
 # 分组：1) "Bearer " 前缀；2) 令牌值本体（用于算指纹）。
@@ -2537,6 +2543,78 @@ _SENSITIVE_CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(_SENSITIVE_P
 _SAFE_AUTHORIZATION_OUTCOME_PATTERN = re.compile(
     r'"authorization_outcome":"(?:allow|deny|block|cancel)"'
 )
+
+# ── Fast-path pre-screen ──────────────────────────────────────────────────
+# `_sanitize_log_text` runs 8 regexes over the whole line. On large payloads
+# (workflow.updated JSON is often 30-60KB) that costs 100ms+. The pre-screen
+# decides in microseconds whether any sensitive content is present, so clean
+# lines skip the regex chain entirely.
+#
+# Keyword lists live here as module constants so they can later move to
+# config.yaml without touching the logic. Everything is matched against the
+# lowercased text, and the compiled trie regex (no `(?i)`, which would defeat
+# sre's prefix-sharing optimization) makes the scan O(n) and near-instant.
+
+# Key names that mark a key=value pair as sensitive, e.g. ``token=``,
+# ``"secret":``, ``Authorization: Bearer``. Include hyphen spellings since the
+# KV masker accepts `[_-]?` variants.
+_SENSITIVE_KV_KEYS = (
+    "password", "passwd", "pwd", "secret", "token",
+    "api_key", "api-key", "apikey",
+    "access_key", "access-key",
+    "secret_key", "secret-key",
+    "access_token", "access-token",
+    "refresh_token", "refresh-token",
+    "authorization",
+    "auth_code", "auth-code",
+    "auth_token", "auth-token",
+    "credential", "private_key", "private-key",
+    "user_id", "user-id", "userid",
+    "project_id", "project-id",
+    "amap_key", "amap-key", "map_ak", "map-ak",
+    "bearer",
+)
+
+# Credential value prefixes that are secrets on their own even without a
+# key= wrapper: sk- API keys, JWT (eyJ...), GitHub/GitLab PATs, base64 data
+# URIs.
+_SENSITIVE_VALUE_PREFIXES = (
+    "sk-", "eyj", "ghp_", "glpat-", "data:image/",
+)
+
+_SENSITIVE_KW_TRIE = re.compile(
+    "|".join(re.escape(k) for k in _SENSITIVE_KV_KEYS)
+)
+
+# PII pre-screen: 11+ consecutive digits (phone, CN ID).
+_LONG_DIGIT_RUN = re.compile(r"[0-9]{11}")
+
+
+def _sensitive_content_present(text: str) -> bool:
+    """Cheap pre-screen: does this log line carry data the masker redacts?
+
+    Scans for a sensitive key (trie regex) and checks whether it is followed
+    by a value separator (``:`` / ``=`` / ``Bearer ``), then falls back to
+    credential value prefixes and PII signals. Returns False quickly on clean
+    large payloads so ``_sanitize_log_text`` can skip the regex chain.
+    """
+    lower = text.lower()
+    for m in _SENSITIVE_KW_TRIE.finditer(lower):
+        kw = m.group()
+        rest = lower[m.end():m.end() + 15]
+        if kw == "bearer":
+            # bare "Bearer <token>" — no key= wrapper, no colon
+            if rest[:1] in (" ", ":"):
+                return True
+            continue
+        # Allow optional whitespace/quotes between key and separator:
+        # "token":  token =  token:
+        stripped = rest.lstrip('"\' ')
+        if stripped[:1] in (":", "="):
+            return True
+    if any(p in lower for p in _SENSITIVE_VALUE_PREFIXES):
+        return True
+    return "@" in lower or _LONG_DIGIT_RUN.search(lower) is not None
 
 
 def _fingerprint(value: str) -> str:
@@ -2583,8 +2661,36 @@ def _masked_with_fp(value: Any) -> str:
     return f"{_SENSITIVE_MASK}(fp:{fp})"
 
 
+def _mask_sensitive_enabled() -> bool:
+    """Whether log desensitization is active.
+
+    Controlled by ``config.yaml`` ``logging.mask_sensitive`` (default true).
+    Set to ``false`` to disable — intended for local debugging only; secrets
+    are then written to log files in plaintext.
+    """
+    try:
+        cfg = _load_logging_config_from_yaml()
+        return bool(cfg.get("mask_sensitive", True))
+    except Exception:
+        return True
+
+
+_MASK_SENSITIVE_ACTIVE = True  # resolved lazily since yaml loads after init
+_MASK_SENSITIVE_RESOLVED = False
+
+
 def _sanitize_log_text(text: str) -> str:
-    if not text:
+    global _MASK_SENSITIVE_ACTIVE, _MASK_SENSITIVE_RESOLVED
+    if not _MASK_SENSITIVE_RESOLVED:
+        _MASK_SENSITIVE_ACTIVE = _mask_sensitive_enabled()
+        _MASK_SENSITIVE_RESOLVED = True
+    if not text or not _MASK_SENSITIVE_ACTIVE:
+        return text
+
+    # Fast path: if the line is large but carries no sensitive content
+    # (sensitive key+separator, credential prefix, or PII), skip the whole
+    # masking regex chain. token_count in workflow JSON won't trigger it.
+    if len(text) > 4096 and not _sensitive_content_present(text):
         return text
 
     protected = text
@@ -2642,7 +2748,13 @@ def mask_sensitive(text: Any) -> str:
 class SensitiveDataFilter(logging.Filter):
     """Mask sensitive data in all log messages and tracebacks."""
 
+    _MARK = "_jiuwen_masked"
+
     def filter(self, record: logging.LogRecord) -> bool:
+        # Source factory (install_source_record_masking) already ran
+        # _sanitize_log_text and set this marker; skip the redundant pass.
+        if record.__dict__.get(self._MARK):
+            return True
         try:
             message = record.getMessage()
             record.msg = _sanitize_log_text(message)
@@ -2747,30 +2859,11 @@ def install_source_record_masking() -> None:
                     "exposed in logs; check _source_masking_failures counter",
                     file=sys.stderr,
                 )
+        record.__dict__["_jiuwen_masked"] = True
         return record
 
     logging.setLogRecordFactory(_sanitizing_record_factory)
     _source_record_masking_installed = True
-
-
-def _reconfigure_stdio_utf8() -> None:
-    """把 ``sys.stdout`` / ``sys.stderr`` 原地重配置为 UTF-8。
-
-    Windows 控制台默认编码常为 cp1252，无法编码中文日志消息（例如扩展加载器的
-    ``[ExtensionLoader] 开始搜索扩展路径``），会导致 ``logging.StreamHandler.emit``
-    抛出 ``UnicodeEncodeError``；随后的 ``logging.handleError`` 想把异常栈打印到
-    ``sys.stderr``，又因同一编码问题二次失败，连锁中断启动。这里在日志体系初始化前
-    把标准流原地改为 UTF-8 + ``backslashreplace``，覆盖 emit / handleError / print 三个路径。
-    """
-    for _stream in (sys.stdout, sys.stderr):
-        _reconfigure = getattr(_stream, "reconfigure", None)
-        if not callable(_reconfigure):
-            continue
-        try:
-            _reconfigure(encoding="utf-8", errors="backslashreplace")
-        except (ValueError, OSError, RuntimeError):
-            # 流已被使用 / 不支持重配置：忽略，保留原流，避免影响启动。
-            pass
 
 
 def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
@@ -2790,8 +2883,6 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
     （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
     """
-    # 必须在创建 StreamHandler 之前完成：cp1252 → UTF-8，否则中文日志会触发 UnicodeEncodeError。
-    _reconfigure_stdio_utf8()
     logs_root = get_logs_dir()
     logs_root.mkdir(parents=True, exist_ok=True)
 
