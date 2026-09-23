@@ -311,7 +311,12 @@ def test_artifact_delivery_task_id_keeps_active_sticky() -> None:
     assert channel._artifact_delivery_task_id(session_id, task_id, msg) == "xiaoyi-task-1"
 
 
-def test_artifact_delivery_task_id_falls_back_when_sticky_completed() -> None:
+def test_artifact_delivery_task_id_keeps_task_id_when_sticky_completed() -> None:
+    """Sticky 已收尾（final 已发、active 已清）的同轮产物仍沿用原 taskId。
+
+    切换 taskId 会被端侧判为新流（streamType=start）并重置渲染，把已
+    流式输出的正文截断——文件上传/派发晚于 chat.final 时必然触发。
+    """
     channel, _ = _build_channel()
     channel._mark_session_active("xiaoyi-session-1", "xiaoyi-task-1")
     channel._mark_session_completed("xiaoyi-session-1", "xiaoyi-task-1")
@@ -323,11 +328,36 @@ def test_artifact_delivery_task_id_falls_back_when_sticky_completed() -> None:
     session_id, task_id = channel._extract_platform_receive_info(msg)
     assert session_id == "xiaoyi-session-1"
     assert task_id == "xiaoyi-task-1"
+    assert channel._artifact_delivery_task_id(session_id, task_id, msg) == "xiaoyi-task-1"
+
+
+def test_artifact_delivery_task_id_falls_back_for_stale_cached_task() -> None:
+    """消息携带的 xiaoyi_task_id 与会话最新登记任务不一致（工具单例 stale
+    缓存，产物挂到旧回复的场景）→ 仍回退本轮 msg.id（39d752995 语义）。"""
+    channel, _ = _build_channel()
+    channel._remember_active_platform_task("xiaoyi-session-1", "xiaoyi-task-2")
+    msg = Message(
+        id="pc-turn-uuid",
+        type="event",
+        channel_id="xiaoyi",
+        session_id="jiuwen-session-1",
+        params={},
+        timestamp=time.time(),
+        ok=True,
+        payload={"event_type": "chat.file", "files": []},
+        event_type=EventType.CHAT_FILE,
+        metadata={
+            "xiaoyi_session_id": "xiaoyi-session-1",
+            "xiaoyi_task_id": "xiaoyi-task-1",
+        },
+    )
+    session_id, task_id = channel._extract_platform_receive_info(msg)
+    assert task_id == "xiaoyi-task-1"
     assert channel._artifact_delivery_task_id(session_id, task_id, msg) == "pc-turn-uuid"
 
 
 @pytest.mark.asyncio
-async def test_file_on_completed_sticky_uses_message_id() -> None:
+async def test_file_on_completed_sticky_keeps_task_id() -> None:
     channel, _ = _build_channel()
     captured: list[tuple[str, str]] = []
 
@@ -347,7 +377,7 @@ async def test_file_on_completed_sticky_uses_message_id() -> None:
             message_id="pc-turn-uuid",
         )
     )
-    assert captured == [("xiaoyi-session-1", "pc-turn-uuid")]
+    assert captured == [("xiaoyi-session-1", "xiaoyi-task-1")]
 
 
 @pytest.mark.asyncio
@@ -374,7 +404,7 @@ async def test_file_on_active_sticky_keeps_task_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_html_card_on_completed_sticky_uses_message_id() -> None:
+async def test_html_card_on_completed_sticky_keeps_task_id() -> None:
     channel, _ = _build_channel()
     captured: list[tuple[str, str, str]] = []
 
@@ -391,4 +421,4 @@ async def test_html_card_on_completed_sticky_uses_message_id() -> None:
             message_id="pc-turn-uuid",
         )
     )
-    assert captured == [("xiaoyi-session-1", "pc-turn-uuid", "pc-turn-uuid")]
+    assert captured == [("xiaoyi-session-1", "xiaoyi-task-1", "pc-turn-uuid")]

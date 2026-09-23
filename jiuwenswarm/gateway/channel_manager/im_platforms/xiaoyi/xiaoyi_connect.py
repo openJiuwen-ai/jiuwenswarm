@@ -757,10 +757,25 @@ class XiaoyiChannel(BaseChannel):
     ) -> str:
         """file / html_card / reference 的 A2A taskId。
 
-        sticky task 仍开着时沿用（同轮气泡可展示）。已 ``_finalize_session`` 的
-        sticky 再贴产物手机会丢，改挂本轮 ``msg.id``，``xiaoyi_session_id`` 不变。
+        同轮产物恒沿用该轮手机 taskId（消息 metadata 的 ``xiaoyi_task_id``）：
+        切换 taskId 会被端侧判为新流（streamType=start）并重置当前渲染，
+        把已流式输出的正文截断——文件上传/派发晚于 chat.final、active 窗口
+        已清时，此前的 ``_is_session_active`` 回退必然触发。sticky 是否
+        finalize 不再作为回退条件。
+
+        仅当消息携带的 xiaoyi_task_id 与会话最新登记任务不一致（工具单例
+        stale 缓存，即产物挂到旧回复的场景）时，才回退本轮 ``msg.id``。
         """
-        if session_id and task_id and self._is_session_active(session_id, task_id):
+        meta = getattr(msg, "metadata", None)
+        meta_task = ""
+        if isinstance(meta, dict):
+            meta_task = str(meta.get("xiaoyi_task_id") or "").strip()
+        latest_task_id = str(self._latest_platform_tasks.get(session_id) or "").strip()
+        if (
+            task_id
+            and meta_task == task_id
+            and (not latest_task_id or latest_task_id == task_id)
+        ):
             return task_id
         turn_id = str(getattr(msg, "id", None) or "").strip()
         if turn_id:
