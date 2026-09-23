@@ -91,6 +91,29 @@ class WorkflowProgress(BaseModel):
     nested_phase: Optional[str] = None
     parent_phase: Optional[str] = None
     phase_iteration: Optional[int] = None
+    parent_session_id: Optional[str] = None
+    # the session's avatar member name (agent_started, session nodes); the
+    # join key a UI uses to resolve parent_session_id to a session card
+    member_name: Optional[str] = None
+    # verify round fields (verify_started / verify_settled)
+    verify_reviewers: Optional[int] = None
+    verify_verdict: Optional[str] = None
+    verify_threshold: Optional[float] = None
+    verify_votes: Optional[list[dict]] = None
+    # reviewer label roster in fan-out order (verify_started); unique across rounds
+    verify_reviewer_labels: Optional[list[str]] = None
+    # reviewer business role roster (verify_started), same fan-out order;
+    # display-only — judgement never reads it
+    verify_reviewer_roles: Optional[list[Optional[str]]] = None
+    # engine round identity (structural call position) — pairs started/settled
+    # of the SAME round among concurrent same-label verify() calls
+    verify_id: Optional[str] = None
+    # prompt-cache-hit tokens of the call (agent_completed); subset of tokens
+    cache_tokens: Optional[int] = None
+    # prompt / completion split of tokens (agent_completed); None when the
+    # provider reported no split
+    token_input: Optional[int] = None
+    token_output: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -151,12 +174,72 @@ class WorkflowAgentState(BaseModel):
     completed_at: Optional[str] = None
     # reserved — pending upstream token accounting
     token_count: Optional[int] = None
+    # prompt-cache-hit tokens (agent_completed); subset of token_count, None
+    # when the provider reported none (old runs / non-reporting providers)
+    cache_token_count: Optional[int] = None
+    # prompt / completion split of token_count; None when the provider
+    # reported no split (old runs keep only the total)
+    input_token_count: Optional[int] = None
+    output_token_count: Optional[int] = None
     duration_ms: Optional[int] = None
     kind: str = "agent"  # "agent" | "human" — derived: node_type in {"human","human_session"} -> "human"
     node_type: Optional[str] = None
     correlation_id: Optional[str] = None
+    # Fork child (node_type=agent_session_fork): the parent session's avatar
+    # member name (unique per session), carried on every AGENT_STARTED turn so
+    # a UI can draw the fork edge and resolve the exact parent even for
+    # chained / same-label forks.
+    parent_session_id: Optional[str] = None
+    # This session's avatar member name (constant across its turns); the
+    # join key for parent_session_id. None on one-shot agent()/human() nodes.
+    member_name: Optional[str] = None
     human_prompt: Optional[str] = None
     human_reply: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to dict for event payload."""
+        return self.model_dump(exclude_none=True)
+
+
+class WorkflowVerifyGroupState(BaseModel):
+    """One ``verify()`` round folded under a phase.
+
+    Created on ``verify_started`` (reviewer count + threshold), settled on
+    ``verify_completed`` (``verify_settled`` compat alias — verdict + per-reviewer
+    votes + full ``outcome``). ``verdict=None`` after settling means undecided
+    (a reviewer did not vote) — never a silent pass. ``votes`` entries mirror
+    the engine's shape: ``{name, kind, role, decision, score, feedback, voted}``
+    where ``name`` matches the reviewer agent node's label in the same phase.
+
+    Concurrent same-label rounds: each round is one card entry carrying its
+    engine ``verify_id`` (the verify analog of an agent node's agent_id —
+    parallel rounds differ structurally even under a shared label). The
+    frontend folds same-label entries into one visual container ×N rounds,
+    exactly like same-name agents. Legacy events without ``verify_id`` fall
+    back to the label-matching folding below.
+    """
+
+    id: str
+    label: str
+    # engine round identity (structural call position); None on legacy events
+    verify_id: Optional[str] = None
+    status: str = "running"  # running / settled
+    threshold: Optional[float] = None
+    reviewers: Optional[int] = None
+    # reviewer label roster in fan-out order (verify_started); same default
+    # label repeats across same-label rounds — rounds are told apart by
+    # verify_id, not by label uniqueness
+    reviewer_labels: list[str] = []
+    # reviewer business role roster (verify_started), same fan-out order;
+    # display-only — judgement never reads it
+    reviewer_roles: list[Optional[str]] = []
+    verdict: Optional[str] = None  # "pass" / "fail" / None = undecided
+    votes: list[dict] = []
+    # complete round output as a JSON string (engine _preview(VerifyResult));
+    # None on legacy events — frontend falls back to votes aggregation
+    outcome: Optional[str] = None
+    started_at: Optional[str] = None
+    settled_at: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for event payload."""
@@ -173,6 +256,7 @@ class WorkflowPhaseState(BaseModel):
     agent_count: int = 0
     completed_agent_count: int = 0
     agents: list[WorkflowAgentState] = []
+    verify_groups: list[WorkflowVerifyGroupState] = []
     phase_type: Optional[str] = None
     parent_phase: Optional[str] = None
     iteration: Optional[int] = None
@@ -255,6 +339,9 @@ class WorkflowRunState(BaseModel):
         "agent_failed": "_on_agent_failed",
         "human_prompt": "_on_human_prompt",
         "human_replied": "_on_human_replied",
+        "verify_started": "_on_verify_started",
+        "verify_completed": "_on_verify_settled",
+        "verify_settled": "_on_verify_settled",
         "workflow_completed": "_on_workflow_completed",
         "workflow_failed": "_on_workflow_failed",
         "workflow_paused": "_on_workflow_paused",
@@ -796,6 +883,12 @@ class WorkflowRunState(BaseModel):
             if updated:
                 if progress.tokens is not None:
                     agent.token_count = progress.tokens
+                if progress.cache_tokens is not None:
+                    agent.cache_token_count = progress.cache_tokens
+                if progress.token_input is not None:
+                    agent.input_token_count = progress.token_input
+                if progress.token_output is not None:
+                    agent.output_token_count = progress.token_output
                 if progress.budget is not None:
                     self.budget = progress.budget
                 if progress.workflow_budget is not None:
@@ -818,6 +911,12 @@ class WorkflowRunState(BaseModel):
         """Refresh phase counters, write tokens / budget, refresh run totals."""
         if progress.tokens is not None:
             agent.token_count = progress.tokens
+        if progress.cache_tokens is not None:
+            agent.cache_token_count = progress.cache_tokens
+        if progress.token_input is not None:
+            agent.input_token_count = progress.token_input
+        if progress.token_output is not None:
+            agent.output_token_count = progress.token_output
         if progress.budget is not None:
             self.budget = progress.budget
         if progress.workflow_budget is not None:
@@ -1069,6 +1168,127 @@ class WorkflowRunState(BaseModel):
                          caller, progress.phase, progress.nested_phase)
             progress.phase = progress.nested_phase
 
+    # -- verify round folding (verify_started / verify_settled) --------------
+    def _resolve_verify_phase(self, progress: WorkflowProgress) -> tuple[WorkflowPhaseState, Optional[WorkflowPhaseState]]:
+        """Locate (or create) the phase a verify round belongs to.
+
+        Reuses the agent-flow resolution: child phases match by name, top-level
+        phases go through ``_switch_to_phase`` so the previous phase is sealed
+        at the moment the verify round begins (a true boundary in the run's
+        timeline — the reviewers follow in the same phase).
+        """
+        phase_name = progress.phase or _UNNAMED_PHASE
+        child = self._find_child_phase_by_name(phase_name)
+        if child is not None:
+            return child, None
+        return self._switch_to_phase(phase_name, iteration=progress.phase_iteration)
+
+    def _on_verify_started(self, progress: WorkflowProgress) -> dict[str, Any]:
+        """Open a verify round card under the round's phase (reviewers + threshold).
+
+        Round-keyed folding: one card per engine round (``verify_id`` = the
+        verify analog of an agent node's agent_id — concurrent same-label
+        rounds differ structurally). Legacy events without a verify_id keep the
+        label+running folding (a rework loop re-verifying under one label in
+        one phase still yields one card per round).
+        """
+        self._apply_nested_phase(progress, "verify_started")
+        label = progress.label or "verify"
+        phase, sealed = self._resolve_verify_phase(progress)
+        if progress.verify_id:
+            group = next(
+                (g for g in phase.verify_groups if g.verify_id == progress.verify_id),
+                None,
+            )
+            if group is None:
+                group = WorkflowVerifyGroupState(
+                    id=f"{phase.id}-verify-{len(phase.verify_groups) + 1}",
+                    label=label,
+                    verify_id=progress.verify_id,
+                    started_at=WorkflowRunState._now_iso(),
+                )
+                phase.verify_groups.append(group)
+        else:
+            group = next(
+                (g for g in reversed(phase.verify_groups)
+                 if g.label == label and g.status != "settled"),
+                None,
+            )
+            if group is None:
+                group = WorkflowVerifyGroupState(
+                    id=f"{phase.id}-verify-{len(phase.verify_groups) + 1}",
+                    label=label,
+                    started_at=WorkflowRunState._now_iso(),
+                )
+                phase.verify_groups.append(group)
+        group.status = "running"
+        group.reviewers = progress.verify_reviewers
+        group.threshold = progress.verify_threshold
+        if progress.verify_reviewer_labels is not None:
+            group.reviewer_labels = list(progress.verify_reviewer_labels)
+        if progress.verify_reviewer_roles is not None:
+            group.reviewer_roles = list(progress.verify_reviewer_roles)
+        if sealed is not None:
+            return self._build_phases_delta([sealed, phase])
+        return self._build_phase_delta(phase)
+
+    def _on_verify_settled(self, progress: WorkflowProgress) -> dict[str, Any]:
+        """Settle the round's verify group: verdict + per-reviewer votes.
+
+        Idempotent: re-settling the same round overwrites its card (journal
+        replay). verdict=None is undecided — kept explicit so the frontend can
+        render a "did not adjudicate, retry" hint.
+
+        Round-keyed match first (exact, engine-guaranteed); legacy events fall
+        back to label matching (roster/vote-name intersection, then the plain
+        latest same-label card).
+        """
+        self._apply_nested_phase(progress, "verify_settled")
+        label = progress.label or "verify"
+        phase, sealed = self._resolve_verify_phase(progress)
+        group = None
+        if progress.verify_id:
+            group = next(
+                (g for g in phase.verify_groups if g.verify_id == progress.verify_id),
+                None,
+            )
+        if group is None:
+            vote_names = {v.get("name") for v in (progress.verify_votes or []) if v.get("name")}
+            if vote_names:
+                group = next(
+                    (g for g in reversed(phase.verify_groups)
+                     if g.label == label
+                     and (set(g.reviewer_labels) & vote_names
+                          or {v.get("name") for v in g.votes if v.get("name")} & vote_names)),
+                    None,
+                )
+        if group is None:
+            group = next(
+                (g for g in reversed(phase.verify_groups) if g.label == label),
+                None,
+        )
+        if group is None:
+            # Defensive: settled without a started card (partial replay) —
+            # materialize the card directly with the settled data.
+            group = WorkflowVerifyGroupState(
+                id=f"{phase.id}-verify-{len(phase.verify_groups) + 1}",
+                label=label,
+                verify_id=progress.verify_id,
+                started_at=WorkflowRunState._now_iso(),
+            )
+            phase.verify_groups.append(group)
+        group.status = "settled"
+        group.reviewers = progress.verify_reviewers
+        group.threshold = progress.verify_threshold
+        group.verdict = progress.verify_verdict
+        group.votes = list(progress.verify_votes or [])
+        if progress.outcome is not None:
+            group.outcome = progress.outcome
+        group.settled_at = WorkflowRunState._now_iso()
+        if sealed is not None:
+            return self._build_phases_delta([sealed, phase])
+        return self._build_phase_delta(phase)
+
     def _on_agent_started(self, progress: WorkflowProgress) -> dict[str, Any]:
         """Add a new agent, entering its phase and sealing the previous one."""
         self._apply_nested_phase(progress, "agent_started")
@@ -1097,6 +1317,8 @@ class WorkflowRunState(BaseModel):
                 kind="human" if progress.node_type in ("human", "human_session") else "agent",
                 node_type=progress.node_type,
                 correlation_id=progress.correlation_id,
+                parent_session_id=progress.parent_session_id,
+                member_name=progress.member_name,
             )
 
         def _reuse_existing(existing: WorkflowAgentState) -> None:
@@ -1112,6 +1334,8 @@ class WorkflowRunState(BaseModel):
             existing.status = "running"
             existing.prompt = progress.prompt
             existing.model = progress.model
+            existing.parent_session_id = progress.parent_session_id
+            existing.member_name = progress.member_name
             existing.completed_at = None
             existing.duration_ms = None
 
