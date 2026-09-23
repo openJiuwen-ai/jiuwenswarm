@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
 from jiuwenswarm.common.utils import get_agent_root_dir
+from jiuwenswarm.common.audit_emit import audit_data_error, emit_audit_ua
 from jiuwenswarm.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
@@ -229,6 +230,7 @@ def _write_disk_locked(path: Path, projects: list[dict[str, Any]]) -> None:
 _T = TypeVar("_T")
 
 
+@audit_data_error("agent", "project_store_mutate")
 def _mutate(fn: Callable[[list[dict[str, Any]]], _T]) -> _T:
     """在文件锁保护下: 重读磁盘 → 应用变更 → 原子写回 → 刷新缓存。
 
@@ -245,6 +247,7 @@ def _mutate(fn: Callable[[list[dict[str, Any]]], _T]) -> _T:
         return result
 
 
+@audit_data_error("agent", "project_store_load")
 def _load_cache(cache_bust: bool = False) -> list[dict[str, Any]]:
     """读取缓存;``cache_bust=True`` 强制读盘(跨进程同步场景)。"""
     global _CACHE
@@ -902,7 +905,17 @@ def create_or_restore_project(
         projects.append(proj.to_dict())
         return proj, False
 
-    return _mutate(_do)
+    proj, restored = _mutate(_do)
+    try:
+        emit_audit_ua(
+            SUBMDL="agent",
+            PROC="create_or_restore_project",
+            UA="project created" if not restored else "project restored",
+            DETAIL=f"name={name};project_id={proj.project_id};work_mode={mode};restored={restored}",
+        )
+    except Exception as _emit_exc:  # noqa: BLE001
+        logger.debug("audit emit failed: %s", _emit_exc)
+    return proj, restored
 
 
 def save_project(project: Project) -> Project:

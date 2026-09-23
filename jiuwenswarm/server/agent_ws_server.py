@@ -344,6 +344,9 @@ class AgentWebSocketServer:
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
         self._server: Any = None
+        # 审计用：本次进程里是否已发出"agentserver started"。listen=False 时没有 WS 监听
+        # 对象（_server 恒为 None），不能拿 _server 判启动与否，否则停止事件会漏记。
+        self._audit_started = False
         # 事件循环饥饿观测（非保活）：测量 sleep(1) 唤醒延迟，便于对齐 pong 超时。
         self._loop_lag_task: asyncio.Task[None] | None = None
         # send_push的推送订阅者统一由PushRegistry持有，本类不持有当前连接；
@@ -473,33 +476,60 @@ class AgentWebSocketServer:
 
         if listen:
             try:
-                from websockets.legacy.server import serve as legacy_serve
-                self._server = await legacy_serve(
-                    self._connection_handler,
-                    self._host,
-                    self._port,
-                    process_request=self._process_request,
-                    ping_interval=self._ping_interval,
-                    ping_timeout=self._ping_timeout,
-                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-                    max_queue=None,
-                )
-            except ImportError:
-                import websockets
-                self._server = await websockets.serve(
-                    self._connection_handler,
-                    self._host,
-                    self._port,
-                    process_request=self._process_request,
-                    ping_interval=self._ping_interval,
-                    ping_timeout=self._ping_timeout,
-                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-                )
+                try:
+                    from websockets.legacy.server import serve as legacy_serve
+                    self._server = await legacy_serve(
+                        self._connection_handler,
+                        self._host,
+                        self._port,
+                        process_request=self._process_request,
+                        ping_interval=self._ping_interval,
+                        ping_timeout=self._ping_timeout,
+                        max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                        max_queue=None,
+                    )
+                except ImportError:
+                    import websockets
+                    self._server = await websockets.serve(
+                        self._connection_handler,
+                        self._host,
+                        self._port,
+                        process_request=self._process_request,
+                        ping_interval=self._ping_interval,
+                        ping_timeout=self._ping_timeout,
+                        max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                    )
+            except Exception as exc:
+                try:
+                    from jiuwenswarm.common.audit_emit import emit_audit_evt
+                    emit_audit_evt(
+                        SUBMDL="agent",
+                        PROC="agentserver_start",
+                        RSPCD="E005",
+                        EVT="agentserver start failed",
+                        MSG=str(exc),
+                    )
+                except Exception as _emit_exc:  # noqa: BLE001
+                    logger.debug("audit emit failed: %s", _emit_exc)
+                raise
             logger.info(
                 "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
             )
         else:
             logger.info("[AgentServer] handler initialized without an unauthenticated WS listener")
+        # 两类分支都算"已启动"（listen=False 时由 HTTP/SSE 入口提供服务），
+        # 先置标志再打点：即使打点本身失败，stop 侧的停止审计也要成对出现。
+        self._audit_started = True
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            emit_audit_ua(
+                SUBMDL="agent",
+                PROC="agentserver_start",
+                RSPCD="0000",
+                UA="agentserver started",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
         # 启动端到端预热：interface_deep import → checkpointer → 临时 DeepAgent → query。
         # 拆成两个 task：
         #   - _startup_warmup_task 承载阶段1/2（import+checkpointer），快速有界，
@@ -1017,9 +1047,14 @@ class AgentWebSocketServer:
     async def stop(self) -> None:
         """停止 WebSocket 服务端."""
         try:
-            await self._stop_main_services()
+            try:
+                await self._stop_main_services()
+            finally:
+                await self._stop_personal_context_best_effort()
         finally:
-            await self._stop_personal_context_best_effort()
+            # 停止审计放最外层 finally：_stop_main_services 在 listen=False 时提前返回，
+            # 或清理过程抛异常时，停止事件都不会漏。
+            self._emit_stopped_audit()
 
     async def _stop_main_services(self) -> None:
         """Run the unchanged AgentServer shutdown before optional PersonalContext cleanup."""
@@ -1062,6 +1097,27 @@ class AgentWebSocketServer:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[AgentWebSocketServer] jiuwenbox_runner.stop failed: %s", exc)
         logger.info("[AgentWebSocketServer] 已停止")
+
+    def _emit_stopped_audit(self) -> None:
+        """打一条"agentserver stopped"。
+
+        只在确实发过"agentserver started"时打，保持启动/停止成对——
+        listen=False 的部署（mTLS 强制模式）没有 WS 监听对象，
+        不能拿 ``self._server`` 判断是否启动过。
+        """
+        if not self._audit_started:
+            return
+        self._audit_started = False
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            emit_audit_ua(
+                SUBMDL="agent",
+                PROC="agentserver_stop",
+                RSPCD="0000",
+                UA="agentserver stopped",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
 
     # ---------- 连接处理 ----------
 

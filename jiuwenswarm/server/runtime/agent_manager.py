@@ -827,6 +827,17 @@ class AgentManager:
             channel_key,
             session_id,
         )
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+
+            emit_audit_ua(
+                SUBMDL="agent",
+                PROC="session_create",
+                RSPCD="0000",
+                UA=f"session created: channel={channel_key} id={session_id}",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
         return session_id
 
     async def sync_prewarm_channels(
