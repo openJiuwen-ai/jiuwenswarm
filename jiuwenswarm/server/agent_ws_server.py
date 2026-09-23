@@ -8225,8 +8225,12 @@ class AgentWebSocketServer:
             filter_val = str(params.get("filter") or "builtin").strip().lower() or "builtin"
             if filter_val not in ("builtin", "local"):
                 filter_val = "builtin"
-            items = await list_mcps_with_hub(filter_val, cache_mode=params.get("cache_mode"),
-                                              refresh=params.get("refresh") is True)
+            items = await list_mcps_with_hub(
+                filter_val,
+                cache_mode=params.get("cache_mode"),
+                refresh=params.get("refresh") is True,
+                query=str(params.get("query") or ""),
+            )
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,

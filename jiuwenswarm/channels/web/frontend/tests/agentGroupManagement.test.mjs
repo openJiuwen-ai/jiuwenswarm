@@ -148,7 +148,15 @@ test('only an unbound Team selection creates the first group payload', () => {
 });
 
 test('group view model separates catalog and mine scopes and searches tags', () => {
-  const local = normalizeAgentGroupListItem({ ...rawGroup, id: 'local-team', source: 'local', installed: false }, 'zh');
+  const local = normalizeAgentGroupListItem({
+    ...rawGroup,
+    id: 'local-team',
+    name: 'local-team',
+    displayName: { zh: '本地团队', en: 'Local Team' },
+    tags: [{ id: 'local-only', zh: '本地专属', en: 'Local only' }],
+    source: 'local',
+    installed: false,
+  }, 'zh');
   const item = normalizeAgentGroupListItem(rawGroup, 'zh');
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
@@ -164,12 +172,37 @@ test('group view model separates catalog and mine scopes and searches tags', () 
     buildGroupCatalogViewModel([item, local], {
       scope: 'mine',
       category: '',
-      query: 'local-team',
+      query: '本地专属',
       page: 1,
       pageSize: 15,
     }).totalItems,
     1,
   );
+});
+
+test('ordinary Expert Team search does not match an internal Hub asset id', () => {
+  const result = buildGroupCatalogViewModel(
+    [
+      {
+        id: '93e6e963-0896-4473-8655-09f611bcddc8',
+        name: 'research-team',
+        displayName: '研究专家团',
+        description: '面向行业研究',
+        category: 'research',
+        source: 'hub',
+        installed: false,
+        memberCount: 0,
+        members: [],
+        skills: [],
+        tags: [],
+        avatarUrl: null,
+        capabilities: { canUse: false, canInstall: true, canUninstall: false, canPreviewFiles: true, canEdit: false, canPublish: false },
+      },
+    ],
+    { scope: 'catalog', category: '', query: '6', page: 1, pageSize: 20 },
+  );
+
+  assert.equal(result.totalItems, 0);
 });
 
 test('detail merge preserves detail data and authoritative list capability state', () => {
