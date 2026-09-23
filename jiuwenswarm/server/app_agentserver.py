@@ -43,13 +43,6 @@ from jiuwenswarm.common.utils import (
     get_env_file,
     logger,
 )
-# Persist missing model/model-group/route IDs before any session or agent is
-# restored. Validation happens against the complete candidate before writing.
-from jiuwenswarm.common.config import migrate_model_business_ids
-migrate_model_business_ids()
-from jiuwenswarm.common.model_migration import migrate_legacy_model_selections
-migrate_legacy_model_selections()
-_mark_startup_import_phase("core_runtime_imports_loaded")
 
 _env_file = get_env_file()
 load_dotenv_runtime(dotenv_path=_env_file, override=True)
@@ -220,6 +213,15 @@ def _preload_runtime_backend() -> None:
         from jiuwenswarm.common.utils import prepare_runtime_workspace
 
         prepare_runtime_workspace(cleanup_stale_descs=True, migrate_config=True)
+    # Persist missing model/model-group/route IDs before any session or agent is
+    # restored. Validation happens against the complete candidate before writing.
+    # Runs here, not at import time: Front must listen without loading config.
+    from jiuwenswarm.common.config import migrate_model_business_ids
+
+    migrate_model_business_ids()
+    from jiuwenswarm.common.model_migration import migrate_legacy_model_selections
+
+    migrate_legacy_model_selections()
     _configure_openjiuwen_logging()
     _apply_runtime_entry_patches()
     import openjiuwen.core.runner  # noqa: F401
