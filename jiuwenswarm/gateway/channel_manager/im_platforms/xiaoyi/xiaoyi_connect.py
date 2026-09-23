@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 from urllib.parse import urlsplit
 
@@ -180,6 +180,23 @@ class DataEvent:
     status: str
     session_id: str = ""
     task_id: str = ""
+
+
+# 顺序屏障超时：产物（chat.file 的 OSMS 上传/派发）等待上限。超时后照常发
+# completed 收尾帧——不能让上传故障卡死整轮收尾；降级后果仅是"晚到产物可能
+# 被端侧丢弃"（沿用 aad950560 的原 taskId 投递，不会引发正文截断）。
+ARTIFACT_DRAIN_TIMEOUT_SECONDS: float = 30.0
+
+
+@dataclass
+class _PendingArtifactGate:
+    """一轮产物的在途计数与完成事件（顺序屏障用）."""
+
+    count: int = 0
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        self.done.set()  # 初始无在途产物，直接放行
 
 
 @dataclass
@@ -456,6 +473,10 @@ class XiaoyiChannel(BaseChannel):
         # stream. Keep the current platform task for each stable session so
         # those responses reach the user's latest A2A request.
         self._latest_platform_tasks: dict[str, str] = {}
+        # 顺序屏障：每轮在途产物（chat.file 的 OSMS 上传/派发）计数。
+        # completed 收尾帧发出前须等对应 (session, task) 的计数归零，防晚到
+        # artifact-update 被端侧按已完结任务丢帧（文件静默不可见）。
+        self._pending_artifacts: dict[tuple[str, str], _PendingArtifactGate] = {}
         self._session_heartbeat_tasks: dict[str, asyncio.Task] = {}  # Response heartbeat tasks for each session
         self._stream_text_buffers: dict[str, str] = {}
         self._task_last_activity: dict[str, float] = {}
@@ -629,6 +650,7 @@ class XiaoyiChannel(BaseChannel):
         self._active_tasks.clear()
         self._canceled_platform_tasks.clear()
         self._latest_platform_tasks.clear()
+        self._pending_artifacts.clear()
         self._sessions_waiting_for_push.clear()
         self._team_sessions.clear()
         self._team_tasks.clear()
@@ -791,6 +813,81 @@ class XiaoyiChannel(BaseChannel):
                 )
             return turn_id
         return task_id
+
+    # ── 产物顺序屏障 ─────────────────────────────────────────────────
+    # 背景：Gateway 对每条 server_push 以独立 task 并发派发（agent_client.py
+    # _on_server_push → asyncio.create_task），chat.file 的 OSMS 上传（大文件
+    # 可达数十秒）与轮次收尾帧（status-update completed）天然竞速。产物帧晚于
+    # completed 到达时，端侧按已完结任务丢帧——文件生成成功却不可见。
+    # 屏障：产物在途登记计数；completed 发出前等计数归零（带超时降级）。
+
+    def _mark_artifacts_pending(self, session_id: str, task_id: str) -> None:
+        """登记一轮产物在途（chat.file 开始派发时调用）."""
+        if not session_id or not task_id:
+            return
+        task_key = (session_id, task_id)
+        gate = self._pending_artifacts.get(task_key)
+        if gate is None:
+            gate = _PendingArtifactGate()
+            self._pending_artifacts[task_key] = gate
+        gate.count += 1
+        gate.done.clear()
+
+    def _release_artifacts(self, session_id: str, task_id: str) -> None:
+        """产物派发结束（无论成败）：计数归零时唤醒收尾等待者."""
+        gate = self._pending_artifacts.get((session_id, task_id))
+        if gate is None:
+            return
+        gate.count = max(0, gate.count - 1)
+        if gate.count == 0:
+            gate.done.set()
+
+    async def _drain_pending_artifacts(
+        self, session_id: str, task_id: str, timeout: float | None = None
+    ) -> None:
+        """顺序屏障：等待该轮产物全部派发完（或超时降级放行）。
+
+        completed 收尾帧发出前调用。超时后照常放行——不能让上传故障卡死
+        整轮收尾；降级后果仅是"晚到产物可能被端侧丢弃"（产物仍按原
+        taskId 投递，不会引发正文截断）。
+        """
+        gate = self._pending_artifacts.get((session_id, task_id))
+        if gate is None or gate.count <= 0 or gate.done.is_set():
+            return
+        wait_timeout = (
+            ARTIFACT_DRAIN_TIMEOUT_SECONDS if timeout is None else timeout
+        )
+        logger.info(
+            "[GUI_AGENT_DIAG] phase=XIAOYI_ARTIFACT_DRAIN_WAIT "
+            "session_id=%s task_id=%s pending=%d timeout=%.1fs",
+            session_id,
+            task_id,
+            gate.count,
+            wait_timeout,
+        )
+        try:
+            await asyncio.wait_for(gate.done.wait(), timeout=wait_timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[GUI_AGENT_DIAG] phase=XIAOYI_ARTIFACT_DRAIN_TIMEOUT "
+                "session_id=%s task_id=%s pending=%d timeout=%.1fs "
+                "reason=release_completed_anyway",
+                session_id,
+                task_id,
+                gate.count,
+                wait_timeout,
+            )
+
+    def _drop_pending_artifacts(self, session_id: str, task_id: str | None = None) -> None:
+        """收尾/清理时移除屏障登记（task_id 为空时清整个 session）."""
+        if task_id:
+            self._pending_artifacts.pop((session_id, task_id), None)
+            return
+        self._pending_artifacts = {
+            key: gate
+            for key, gate in self._pending_artifacts.items()
+            if key[0] != session_id
+        }
 
     async def send(self, msg: Message, *, routing_target: RoutingTarget | None = None) -> None:
         """发送消息到小艺服务端（A2A 格式，双通道发送）.
@@ -1001,6 +1098,7 @@ class XiaoyiChannel(BaseChannel):
                 )
             self._latest_platform_tasks.pop(session_id, None)
             self._session_task_map.pop(task_id, None)
+            self._drop_pending_artifacts(session_id)
             self._clear_task_timeout(session_id)
             self._clear_session_timeout(session_id)
             self._sessions_waiting_for_push.pop(session_id, None)
@@ -1056,28 +1154,33 @@ class XiaoyiChannel(BaseChannel):
             task_id = self._artifact_delivery_task_id(session_id, task_id, msg)
             files = msg.payload.get("files", {}) if isinstance(msg.payload, dict) else {}
             if files:
-                for file_info in files:
-                    # Convert file path to file info dict if it's a string
-                    if isinstance(file_info, dict):
-                        file_path = file_info.get("path", "")
-                        file_name = file_info.get("name", os.path.basename(file_path))
-                    else:
-                        file_path = str(file_info)
-                        file_name = os.path.basename(file_path)
-                    file_info = {
-                        "success": True,
-                        "result_type": "file_created",
-                        "fullPath": file_path,
-                        "fileName": file_name
-                    }
+                # 顺序屏障：登记在途，completed 收尾帧须等产物派发完再发
+                self._mark_artifacts_pending(session_id, task_id)
+                try:
+                    for file_info in files:
+                        # Convert file path to file info dict if it's a string
+                        if isinstance(file_info, dict):
+                            file_path = file_info.get("path", "")
+                            file_name = file_info.get("name", os.path.basename(file_path))
+                        else:
+                            file_path = str(file_info)
+                            file_name = os.path.basename(file_path)
+                        file_info = {
+                            "success": True,
+                            "result_type": "file_created",
+                            "fullPath": file_path,
+                            "fileName": file_name
+                        }
 
-                    # Send file response
-                    for url_key, ws in self._ws_connections.items():
-                        if ws:
-                            try:
-                                await self._send_file_response(session_id, task_id, file_info, url_key)
-                            except Exception as e:
-                                logger.warning(f"XiaoyiChannel 发送文件响应失败 ({url_key}): {e}")
+                        # Send file response
+                        for url_key, ws in self._ws_connections.items():
+                            if ws:
+                                try:
+                                    await self._send_file_response(session_id, task_id, file_info, url_key)
+                                except Exception as e:
+                                    logger.warning(f"XiaoyiChannel 发送文件响应失败 ({url_key}): {e}")
+                finally:
+                    self._release_artifacts(session_id, task_id)
             return
 
         # Handle chat.reference（手机参考来源卡片；须在 non_user_visible SKIPPED 之前）
@@ -1244,6 +1347,11 @@ class XiaoyiChannel(BaseChannel):
             status_state = get_status_state_for_event(msg.event_type, msg.payload)
             # 工具事件：附带结构化 data part（status-update 的 message.parts 里）
             _tool_part = build_tool_call_part(msg.event_type, msg.payload)
+            if status_state == "completed" and session_id:
+                # 顺序屏障：产物（OSMS 上传）未派发完不发 completed——晚到的
+                # artifact-update 会被端侧按已完结任务丢帧（文件静默不可见）。
+                # 超时降级放行，避免上传故障卡死整轮收尾。
+                await self._drain_pending_artifacts(session_id, task_id)
             for url_key in list(self._ws_connections.keys()):
                 await self._send_status_update_with_state(
                     task_id, session_id, status_text, status_state, url_key, extra_part=_tool_part
@@ -3411,6 +3519,9 @@ class XiaoyiChannel(BaseChannel):
         """Finish one A2A task and emit a deferred push exactly once."""
         self._clear_task_timeout(session_id, task_id)
         self._clear_session_timeout(session_id, task_id)
+        # 收尾即移除产物屏障登记：该轮 completed 已发（或不再等待），残留的
+        # 在途上传按降级语义投递；晚到的 release 找不到登记是安全空操作。
+        self._drop_pending_artifacts(session_id, task_id)
         self._mark_session_completed(session_id, task_id)
         if not self._is_session_active(session_id):
             await self._stop_session_heartbeat(session_id)
@@ -3452,6 +3563,7 @@ class XiaoyiChannel(BaseChannel):
         self._session_task_map.pop(session_id, None)
         self._mark_session_completed(session_id)
         self._latest_platform_tasks.pop(session_id, None)
+        self._drop_pending_artifacts(session_id)
         self._clear_team_session(session_id)
         self._clear_task_timeout(session_id)
         self._clear_session_timeout(session_id)

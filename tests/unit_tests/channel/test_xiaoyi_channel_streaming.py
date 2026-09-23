@@ -1,9 +1,11 @@
+import asyncio
 import json
 import time
 from typing import Any
 
 import pytest
 
+import jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect as xiaoyi_connect_module
 from jiuwenswarm.common.schema.message import EventType, Message
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
@@ -422,3 +424,188 @@ async def test_html_card_on_completed_sticky_keeps_task_id() -> None:
         )
     )
     assert captured == [("xiaoyi-session-1", "xiaoyi-task-1", "pc-turn-uuid")]
+
+
+@pytest.mark.asyncio
+async def test_completed_status_waits_for_pending_file_upload() -> None:
+    """顺序屏障：OSMS 上传慢于收尾帧时，completed 须等产物派发完再发。
+
+    Gateway 对每条 server_push 独立 create_task 并发派发，chat.file 的
+    OSMS 上传与 processing_status completed 竞速——产物帧晚于 completed
+    到达会被端侧按已完结任务丢帧（文件生成成功却不可见）。
+    """
+    channel, sent = _build_channel()
+    channel._mark_session_active("xiaoyi-session-1", "xiaoyi-task-1")
+    release_upload = asyncio.Event()
+
+    async def slow_send_file(session_id, task_id, file_info, url_key):
+        # 模拟 OSMS 大文件上传耗时：挂起直到外部放行
+        await release_upload.wait()
+        await channel._safe_ws_send(
+            url_key,
+            {
+                "msgType": "agent_response",
+                "sessionId": session_id,
+                "taskId": task_id,
+                "msgDetail": json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "file-1",
+                        "result": {
+                            "taskId": task_id,
+                            "kind": "artifact-update",
+                        },
+                    }
+                ),
+            },
+        )
+
+    channel._send_file_response = slow_send_file
+
+    file_task = asyncio.create_task(
+        channel.send(
+            _artifact_message(
+                EventType.CHAT_FILE,
+                {
+                    "event_type": "chat.file",
+                    "files": [{"path": "/tmp/a.pdf", "name": "a.pdf"}],
+                },
+            )
+        )
+    )
+    status_task = asyncio.create_task(
+        channel.send(
+            _message(
+                EventType.CHAT_PROCESSING_STATUS,
+                {
+                    "event_type": "chat.processing_status",
+                    "is_processing": False,
+                    "is_complete": True,
+                },
+            )
+        )
+    )
+
+    await asyncio.sleep(0.05)
+    # 屏障生效：产物在途，completed 收尾帧不得先发
+    assert sent == [], f"completed 不应在产物派发完成前发出: {sent}"
+
+    release_upload.set()
+    await asyncio.gather(file_task, status_task)
+
+    kinds = [_result(wrapper)["kind"] for wrapper in sent]
+    assert kinds == ["artifact-update", "status-update"]
+    assert _result(sent[1])["status"]["state"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_completed_status_drain_times_out_and_releases(monkeypatch) -> None:
+    """超时降级：上传卡死时屏障放行 completed（不卡死整轮收尾），
+    晚到的产物帧仍按原 taskId 投递（不丢弃）。"""
+    monkeypatch.setattr(
+        xiaoyi_connect_module, "ARTIFACT_DRAIN_TIMEOUT_SECONDS", 0.2
+    )
+    channel, sent = _build_channel()
+    channel._mark_session_active("xiaoyi-session-1", "xiaoyi-task-1")
+    release_upload = asyncio.Event()
+
+    async def stuck_send_file(session_id, task_id, file_info, url_key):
+        # 上传卡死超过屏障超时；放行后仍补发产物帧（降级不丢弃）
+        await release_upload.wait()
+        await channel._safe_ws_send(
+            url_key,
+            {
+                "msgType": "agent_response",
+                "sessionId": session_id,
+                "taskId": task_id,
+                "msgDetail": json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "file-1",
+                        "result": {
+                            "taskId": task_id,
+                            "kind": "artifact-update",
+                        },
+                    }
+                ),
+            },
+        )
+
+    channel._send_file_response = stuck_send_file
+
+    file_task = asyncio.create_task(
+        channel.send(
+            _artifact_message(
+                EventType.CHAT_FILE,
+                {
+                    "event_type": "chat.file",
+                    "files": [{"path": "/tmp/a.pdf", "name": "a.pdf"}],
+                },
+            )
+        )
+    )
+    status_task = asyncio.create_task(
+        channel.send(
+            _message(
+                EventType.CHAT_PROCESSING_STATUS,
+                {
+                    "event_type": "chat.processing_status",
+                    "is_processing": False,
+                    "is_complete": True,
+                },
+            )
+        )
+    )
+
+    # 屏障超时（0.2s）后 completed 照常发出
+    await status_task
+    status = _result(sent[-1])
+    assert status["kind"] == "status-update"
+    assert status["status"]["state"] == "completed"
+
+    # 晚到的产物帧仍发出（降级不丢弃），且沿用原 taskId
+    release_upload.set()
+    await file_task
+    assert len(sent) == 2
+    artifact = _result(sent[1])
+    assert artifact["kind"] == "artifact-update"
+    assert artifact["taskId"] == "xiaoyi-task-1"
+
+
+@pytest.mark.asyncio
+async def test_finalize_drops_pending_artifact_gate() -> None:
+    """收尾即清理屏障登记（防串轮/泄漏）；晚到的 release 是安全空操作。"""
+    channel, _ = _build_channel()
+    channel._mark_artifacts_pending("xiaoyi-session-1", "xiaoyi-task-1")
+    assert ("xiaoyi-session-1", "xiaoyi-task-1") in channel._pending_artifacts
+
+    await channel._finalize_session("xiaoyi-session-1", "xiaoyi-task-1")
+
+    assert ("xiaoyi-session-1", "xiaoyi-task-1") not in channel._pending_artifacts
+    # 晚到的 release（上传超时后才结束）不抛错、不复活登记
+    channel._release_artifacts("xiaoyi-session-1", "xiaoyi-task-1")
+    assert ("xiaoyi-session-1", "xiaoyi-task-1") not in channel._pending_artifacts
+
+
+@pytest.mark.asyncio
+async def test_completed_status_without_pending_artifacts_skips_drain() -> None:
+    """无在途产物时 completed 不等待（常规轮次零开销）。"""
+    channel, sent = _build_channel()
+    channel._mark_session_active("xiaoyi-session-1", "xiaoyi-task-1")
+
+    async def never_called(session_id, task_id, file_info, url_key):
+        raise AssertionError("不应有文件派发")
+
+    channel._send_file_response = never_called
+    await channel.send(
+        _message(
+            EventType.CHAT_PROCESSING_STATUS,
+            {
+                "event_type": "chat.processing_status",
+                "is_processing": False,
+                "is_complete": True,
+            },
+        )
+    )
+    assert len(sent) == 1
+    assert _result(sent[0])["status"]["state"] == "completed"
