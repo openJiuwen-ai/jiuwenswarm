@@ -27,10 +27,8 @@ class ModelCapability:
     model_type: str = ""  # 模型类型（vision / audio / video / "" = 普通）
 
     # 框架扩展字段（set_llm 用，不在能力表内）
-    model_id: Optional[str] = None  # 唯一标识=client_id；token 统计 key，同模型多 API 靠它区分
+    model_id: Optional[str] = None  # 唯一标识=client_id（同模型多 API 区分）
     model: Optional[Any] = None  # openjiuwen Model 实例引用
-    # 持久化累积 token 用量（加载时由 _load_persisted_table 从 model_routing_list.json 合并）
-    token_used: dict[str, Any] = field(default_factory=dict)
 
 
 def _build_cap_from_entry(

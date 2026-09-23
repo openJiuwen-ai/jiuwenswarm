@@ -1614,8 +1614,6 @@ flash:
 model_routing:
   # 总开关：true 启用模型路由，false 禁用
   enabled: false
-  # stats_path: 自定义统计文件路径；空则用默认 ~/.jiuwenswarm/config/routing_state/model_routing_list.json
-  stats_path: ""
   health_check:
     enabled: true
     # 健康检查间隔（秒），TTL 缓存过期后重新检查

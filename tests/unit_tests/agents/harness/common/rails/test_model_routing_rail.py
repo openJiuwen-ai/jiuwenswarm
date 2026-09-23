@@ -25,19 +25,6 @@ from jiuwenswarm.agents.harness.common.rails.model_routing import (
 )
 
 
-class _FakeStats:
-    """Minimal stats store — avoids the process-wide singleton + filesystem writes."""
-
-    def snapshot(self) -> dict:
-        return {"models": {}}
-
-    def record(self, *args, **kwargs) -> None:
-        pass
-
-    def persist_table(self, caps) -> None:
-        pass
-
-
 class _FakeModel:
     """Fake openjiuwen Model — only the attributes the rail touches on switch."""
 
@@ -84,7 +71,7 @@ def _rail() -> ModelRoutingRail:
         model_id="glm-52",
         model=_FakeModel("glm-5.2"),
     )
-    return ModelRoutingRail(capability_table=[flash_cap, glm_cap], stats=_FakeStats())
+    return ModelRoutingRail(capability_table=[flash_cap, glm_cap])
 
 
 # ---- selection resolution ---- #
@@ -195,9 +182,65 @@ async def test_extreme_switches_to_glm():
 
 @pytest.mark.asyncio
 async def test_mode_model_missing_keeps_current_but_sets_thinking():
-    rail = ModelRoutingRail(capability_table=[], stats=_FakeStats())
+    rail = ModelRoutingRail(capability_table=[])
     agent = _FakeAgent("gpt-5.4")
     ctx = _ctx("fast", agent=agent)
     await rail.before_invoke(ctx)
     assert agent.model_name == "gpt-5.4"
     assert rail._request_thinking == "off"
+
+
+# ---- 优先 maas 官方模型（避免撞用户自定义同名模型）---- #
+
+
+def test_find_cap_prefers_marked_provider():
+    """同名 cap 里带 maas 标的（即使排后面）优先命中，不撞用户自定义同名模型。"""
+    rail = ModelRoutingRail(
+        capability_table=[
+            ModelCapability(model_name="deepseek-v4-flash-0731", model_id="custom", model_provider="openai"),
+            ModelCapability(model_name="deepseek-v4-flash-0731", model_id="maas", model_provider="huawei_maas"),
+        ],
+    )
+    cap = rail._find_cap_by_name("deepseek-v4-flash-0731", prefer_provider="huawei_maas")
+    assert cap is not None
+    assert cap.model_id == "maas"
+
+
+def test_find_cap_falls_back_to_first_when_no_mark():
+    """无标能力表（现状/向后兼容）：退回第一个同名，行为与旧实现一致。"""
+    rail = ModelRoutingRail(
+        capability_table=[
+            ModelCapability(model_name="deepseek-v4-flash-0731", model_id="first"),
+            ModelCapability(model_name="deepseek-v4-flash-0731", model_id="second"),
+        ],
+    )
+    cap = rail._find_cap_by_name("deepseek-v4-flash-0731", prefer_provider="huawei_maas")
+    assert cap is not None
+    assert cap.model_id == "first"
+
+
+@pytest.mark.asyncio
+async def test_mode_switch_prefers_marked_model_even_when_later():
+    """四档 before_invoke 端到端：同名自定义模型排前、maas 排后，仍切到 maas。"""
+    rail = ModelRoutingRail(
+        capability_table=[
+            ModelCapability(
+                model_name="deepseek-v4-flash-0731",
+                model_id="custom",
+                model=_FakeModel("deepseek-v4-flash-0731"),
+                model_provider="openai",
+            ),
+            ModelCapability(
+                model_name="deepseek-v4-flash-0731",
+                model_id="maas",
+                model=_FakeModel("deepseek-v4-flash-0731"),
+                model_provider="huawei_maas",
+            ),
+        ],
+    )
+    agent = _FakeAgent("gpt-5.4")
+    ctx = _ctx("balanced", agent=agent)
+    await rail.before_invoke(ctx)
+    used = ctx.extra.get("_model_routing_used_cap")
+    assert used is not None
+    assert used.model_id == "maas"

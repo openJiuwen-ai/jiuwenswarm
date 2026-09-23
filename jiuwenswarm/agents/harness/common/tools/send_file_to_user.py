@@ -373,6 +373,7 @@ class SendFileToolkit:
                 PROC="send_file_to_user",
                 MSG=msg_parts[0],
                 EVT="send_file_failed",
+                session_id=route.session_id,
             )
             return "\n".join(msg_parts)
 

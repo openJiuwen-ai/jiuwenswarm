@@ -5214,12 +5214,18 @@ class JiuWenSwarmDeepAdapter:
             if isinstance(vision_from_json, dict):
                 vmcc = vision_from_json.get("model_client_config", {}) or {}
                 if isinstance(vmcc, dict) and str(vmcc.get("api_base") or "").strip():
-                    import os
-                    if str(vmcc.get("api_key") or "").strip():
-                        os.environ["VISION_API_KEY"] = str(vmcc.get("api_key"))
-                    os.environ["VISION_API_BASE"] = str(vmcc.get("api_base", ""))
-                    if str(vmcc.get("model_name") or "").strip():
-                        os.environ["VISION_MODEL_NAME"] = str(vmcc.get("model_name"))
+                    # models.json 是 sidecar 模式唯一权威来源：逐字段覆盖 env，缺失字段
+                    # 一并清除，避免 hot reload / 多适配器切换时残留过期 VISION_* 密钥。
+                    for env_key, cfg_key in (
+                        ("VISION_API_KEY", "api_key"),
+                        ("VISION_API_BASE", "api_base"),
+                        ("VISION_MODEL_NAME", "model_name"),
+                    ):
+                        value = str(vmcc.get(cfg_key) or "").strip()
+                        if value:
+                            os.environ[env_key] = value
+                        else:
+                            os.environ.pop(env_key, None)
         except Exception as exc:
             logger.debug("[JiuWenSwarmDeepAdapter] models.json vision inject skipped: %s", exc)
 
@@ -5615,8 +5621,9 @@ class JiuWenSwarmDeepAdapter:
                 len(ext_config),
             )
 
+    @staticmethod
     def _inject_model_selection_into_inputs(
-        self, request: AgentRequest, inputs: dict[str, Any]
+        request: AgentRequest, inputs: dict[str, Any]
     ) -> None:
         """把请求的模型选择值注入 ``inputs["run"]["context"]["extra"]["model_selection"]``，供 ModelRoutingRail 每请求读取。
 
@@ -9003,7 +9010,6 @@ class JiuWenSwarmDeepAdapter:
           + ``models.vision``（后者作 model_type="vision" 候选）；model_builder 传
           _build_model_from_entry 使能力表带 Model 对象（真切换前置）。
         """
-        mr_cfg = (config or {}).get("model_routing") or {}
         if not _model_routing_enabled(config):
             return None
 
@@ -9013,7 +9019,6 @@ class JiuWenSwarmDeepAdapter:
                 build_capability_table_from_config,
             )
 
-            stats_path = str(mr_cfg.get("stats_path") or "").strip() or None
             caps = build_capability_table_from_config(
                 config,
                 model_builder=JiuWenSwarmDeepAdapter._build_model_from_entry,
@@ -9021,13 +9026,10 @@ class JiuWenSwarmDeepAdapter:
             rail = ModelRoutingRail(
                 caps,
                 apply_routing=True,
-                stats_path=stats_path,
             )
             logger.info(
-                "[JiuWenSwarmDeepAdapter] ModelRoutingRail create success, "
-                "%d models, stats_path=%s",
+                "[JiuWenSwarmDeepAdapter] ModelRoutingRail create success, %d models",
                 len(caps),
-                stats_path or "(default)",
             )
             return rail
         except Exception as exc:

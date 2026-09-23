@@ -9,7 +9,6 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.common.utils import logger
 from .capability import ModelCapability, build_capability_table_from_config
-from .stats import _ModelUsageStats, get_stats_store
 from .types import (
     PriorModelCall, TaskAnalysis, RoutingDecision,
     _agent_model_name, _extract_agent_info, _new_trace_id,
@@ -37,6 +36,11 @@ _MODE_THINKING_MAP: dict[str, str] = {
     "auto": "medium",   # 中等思考
 }
 
+# 四档写死映射里的「官方模型」标记：relay 写 models.json 时给 maas binding 打
+# model_provider='huawei_maas'（config.yaml 手工配时也可在条目顶层写同名字段）。
+# 四档查找优先命中此标，避免撞到用户自定义的同名模型；无标则退回第一个同名。
+_MODE_PREFERRED_PROVIDER = "huawei_maas"
+
 # 思考深度 → 直接注入的 llm_call_kwargs（不经 vendor 白名单 / 语义适配层，短路）。
 #   off    → extra_body.thinking.type=disabled（DeepSeek/GLM 通用“关闭思考”）
 #   medium → extra_body.thinking.type=enabled（开启思考，默认深度）
@@ -50,7 +54,7 @@ _THINKING_KWARGS: dict[str, dict[str, Any]] = {
 
 
 class ModelRoutingRail(DeepAgentRail):
-    """模型路由 Rail —— 产出推荐模型 + 任务分析 + token 统计；按请求的模型选择路由。
+    """模型路由 Rail —— 产出推荐模型 + 任务分析；按请求的模型选择路由。
 
     请求模型选择（前端下拉框，经 relay frame ``params.model_name`` → request.params →
     ``run_context.extra["model_selection"]``）取值决定行为：
@@ -68,52 +72,16 @@ class ModelRoutingRail(DeepAgentRail):
         self,
         capability_table: Optional[list[ModelCapability]] = None,
         *,
-        stats: Optional[_ModelUsageStats] = None,
-        stats_path: Optional[str] = None,
         apply_routing: bool = True,
     ) -> None:
         super().__init__()
         self._capability_table: list[ModelCapability] = capability_table or []
         self._call_history: list[PriorModelCall] = []
         self._token_counter = TiktokenCounter()
-        self._stats: _ModelUsageStats = stats or get_stats_store(stats_path)
         self._apply_routing: bool = apply_routing
         self._request_thinking: str = "default"
         self._request_mode: str = ""
         self._trace_id: str = _new_trace_id()
-        self._load_persisted_table(persist=False)
-
-    # ---- 生命周期钩子 ---- #
-    def _load_persisted_table(self, *, persist: bool = True) -> None:
-        """加载持久化模型表（含 token_used）合并进能力表；persist=True 时回写整表。
-
-        启动时调 persist=False（只读合并，不写文件——避免 env 未解析的默认模型覆盖真实统计）；
-        reload 时调 persist=True（合并 + 回写整表，sync config 模型 + 保留 token_used）。
-        """
-        try:
-            models = self._stats.snapshot().get("models", {})
-        except Exception as exc:
-            logger.debug("[ModelRouting] stats snapshot failed: %s", exc)
-            return
-        for cap in self._capability_table:
-            key = cap.model_id or cap.model_name
-            entry = models.get(key) or models.get(cap.model_name)
-            if not isinstance(entry, dict):
-                continue
-            tu = entry.get("token_used") if isinstance(entry.get("token_used"), dict) else entry
-            cap.token_used = {
-                "input_tokens": int(tu.get("input_tokens", 0) or 0),
-                "output_tokens": int(tu.get("output_tokens", 0) or 0),
-                "call_count": int(tu.get("call_count", 0) or 0),
-                "last_used": tu.get("last_used"),
-            }
-        # 回写整表（仅在 reload 时；启动 persist=False 不写，避免默认值覆盖 + 保留文件里已有但不在当前 caps 的模型统计）
-        if not persist:
-            return
-        try:
-            self._stats.persist_table(self._capability_table)
-        except Exception as exc:
-            logger.debug("[ModelRouting] persist_table failed: %s", exc)
 
     # ---- 路由 ---- #
 
@@ -134,13 +102,26 @@ class ModelRoutingRail(DeepAgentRail):
                 return raw.strip()
         return ""
 
-    def _find_cap_by_name(self, name: str) -> Optional[ModelCapability]:
-        """按 model_name（忽略大小写/空白）在能力表中查找。"""
+    def _find_cap_by_name(
+        self, name: str, *, prefer_provider: Optional[str] = None
+    ) -> Optional[ModelCapability]:
+        """按 model_name（忽略大小写/空白）在能力表中查找。
+
+        ``prefer_provider`` 非空时，在所有同名 cap 里优先返回 ``model_provider``
+        匹配的条目（四档写死映射用，优先 maas 官方模型）；找不到标才退回第一个
+        同名（向后兼容：无标能力表行为不变）。
+        """
         key = (name or "").strip().lower()
+        preferred = (prefer_provider or "").strip().lower()
+        fallback: Optional[ModelCapability] = None
         for cap in self._capability_table:
-            if (cap.model_name or "").strip().lower() == key:
+            if (cap.model_name or "").strip().lower() != key:
+                continue
+            if fallback is None:
+                fallback = cap
+            if preferred and (cap.model_provider or "").strip().lower() == preferred:
                 return cap
-        return None
+        return fallback
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         """invoke 开始时：重置 trace_id / call_history，执行路由决策。"""
@@ -163,10 +144,11 @@ class ModelRoutingRail(DeepAgentRail):
                 thinking = _MODE_THINKING_MAP.get(selection, "medium")
                 self._request_thinking = thinking
                 self._request_mode = selection
-                cap = self._find_cap_by_name(mode_model)
+                cap = self._find_cap_by_name(mode_model, prefer_provider=_MODE_PREFERRED_PROVIDER)
                 if cap is None:
                     logger.warning(
-                        "[ModelRouting] mode=%s model=%s not in capability table (%d models); keep current model, thinking=%s",
+                        "[ModelRouting] mode=%s model=%s not in capability table (%d models); "
+                        "keep current model, thinking=%s",
                         selection, mode_model, len(self._capability_table), thinking,
                     )
                     self._emit_decision(
@@ -176,12 +158,16 @@ class ModelRoutingRail(DeepAgentRail):
                         difficulty=thinking,
                         input_tokens=input_tokens,
                         agent_info=agent_info,
-                        reasoning=f"mode={selection} model={mode_model} not found; keep current model, thinking={thinking}",
+                        reasoning=(
+                            f"mode={selection} model={mode_model} not found; "
+                            f"keep current model, thinking={thinking}"
+                        ),
                     )
                     return
                 if cap.model is None:
                     logger.warning(
-                        "[ModelRouting] mode=%s model=%s has no Model object (builder missing); cannot switch, thinking=%s",
+                        "[ModelRouting] mode=%s model=%s has no Model object (builder missing); "
+                        "cannot switch, thinking=%s",
                         selection, mode_model, thinking,
                     )
                     self._emit_decision(
@@ -191,7 +177,10 @@ class ModelRoutingRail(DeepAgentRail):
                         difficulty=thinking,
                         input_tokens=input_tokens,
                         agent_info=agent_info,
-                        reasoning=f"mode={selection} model={mode_model} has no Model object; keep current, thinking={thinking}",
+                        reasoning=(
+                            f"mode={selection} model={mode_model} has no Model object; "
+                            f"keep current, thinking={thinking}"
+                        ),
                     )
                     return
                 self._emit_decision(
@@ -272,19 +261,6 @@ class ModelRoutingRail(DeepAgentRail):
                     end_time=end_time,
                 )
             )
-            # 2) 持久化 per-model token 用量（按 client_id；优先用实际切到的 cap，回退 model_name 查）
-            used_cap = ctx.extra.get("_model_routing_used_cap") if isinstance(ctx.extra, dict) else None
-            cap = used_cap or next((c for c in self._capability_table if c.model_name == model_name), None)
-            mid = (cap.model_id if cap and cap.model_id else model_name) or model_name
-            self._stats.record(
-                mid,
-                model_name,
-                input_tokens,
-                output_tokens,
-                model_provider=cap.model_provider if cap else "unknown",
-                model_group=cap.model_group if cap else "unknown",
-                is_trusted=cap.is_trusted if cap else False,
-            )
         except Exception as exc:
             logger.debug("[ModelRouting] after_model_call failed: %s", exc)
 
@@ -317,7 +293,7 @@ class ModelRoutingRail(DeepAgentRail):
             try:
                 react_agent = _resolve_react_agent(ctx.agent)
                 react_agent.set_llm(recommended_cap.model)
-                # 记下实际切到的 cap，供 after_model_call 按 client_id 记 token（同模型多 API 场景）
+                # 记下实际切到的 cap（同模型多 API 场景靠 model_id 区分）
                 if isinstance(ctx.extra, dict):
                     ctx.extra["_model_routing_used_cap"] = recommended_cap
                 mname = (
@@ -372,9 +348,9 @@ class ModelRoutingRail(DeepAgentRail):
             ),
             reasoning=reasoning,
             prior_calls_otel=[c.to_otel_span() for c in self._call_history],
-            model_usage_stats=self._stats.snapshot(),
         )
-        ctx.extra["model_routing_decision"] = asdict(decision)
+        if isinstance(ctx.extra, dict):
+            ctx.extra["model_routing_decision"] = asdict(decision)
 
     def _count_text_tokens(self, text: str) -> int:
         """独立计算文本 token（tiktoken），不依赖模型上报。"""
@@ -401,7 +377,6 @@ class ModelRoutingRail(DeepAgentRail):
             "[ModelRouting] capability table reloaded: %d models",
             len(self._capability_table),
         )
-        self._load_persisted_table()
 
 
 # ---- Helpers ---- #

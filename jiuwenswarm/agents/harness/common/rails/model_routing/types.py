@@ -72,7 +72,6 @@ class RoutingDecision:
     analysis: TaskAnalysis
     reasoning: str
     prior_calls_otel: list[dict] = field(default_factory=list)
-    model_usage_stats: dict[str, Any] = field(default_factory=dict)
 
 
 def _unwrap_user_message(text: str) -> str:
