@@ -86,6 +86,22 @@ export function isTrajectoryArchiveLimitError(error: unknown): error is Trajecto
   return error instanceof TrajectoryArchiveLimitError;
 }
 
+/**
+ * The imported bytes are not a trajectory archive this reader can replay:
+ * not JSONL or a zip holding it, malformed lines, an unsupported header or a
+ * truncated body. Its message names the first defect found.
+ */
+export class TrajectoryArchiveFormatError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TrajectoryArchiveFormatError';
+  }
+}
+
+export function isTrajectoryArchiveFormatError(error: unknown): error is TrajectoryArchiveFormatError {
+  return error instanceof TrajectoryArchiveFormatError;
+}
+
 export interface TrajectoryArchiveHeader {
   format: typeof TRAJECTORY_ARCHIVE_FORMAT;
   archive_version: typeof TRAJECTORY_ARCHIVE_VERSION;
@@ -165,8 +181,8 @@ function decodeBase64(value: unknown): Uint8Array | null {
   }
 }
 
-function invalidLine(lineNumber: number, reason: string): Error {
-  return new Error(`Trajectory archive line ${lineNumber} ${reason}`);
+function invalidLine(lineNumber: number, reason: string): TrajectoryArchiveFormatError {
+  return new TrajectoryArchiveFormatError(`Trajectory archive line ${lineNumber} ${reason}`);
 }
 
 function parseHeader(value: unknown): TrajectoryArchiveHeader {
@@ -174,7 +190,7 @@ function parseHeader(value: unknown): TrajectoryArchiveHeader {
     && value.format === TRAJECTORY_ARCHIVE_FORMAT
     && typeof value.archive_version === 'number'
     && value.archive_version !== TRAJECTORY_ARCHIVE_VERSION) {
-    throw new Error(
+    throw new TrajectoryArchiveFormatError(
       `Trajectory archive version ${value.archive_version} is no longer supported; `
       + 'export the session again to replay it',
     );
@@ -191,7 +207,7 @@ function parseHeader(value: unknown): TrajectoryArchiveHeader {
     || typeof value.exported_at !== 'string'
     || !Number.isFinite(Date.parse(value.exported_at))
     || value.stream_frames !== false) {
-    throw new Error('Trajectory archive format or version is not supported');
+    throw new TrajectoryArchiveFormatError('Trajectory archive format or version is not supported');
   }
   return {
     format: TRAJECTORY_ARCHIVE_FORMAT,
@@ -395,7 +411,7 @@ function createArchiveLineReader(limits: TrajectoryArchiveLimits): ArchiveLineRe
     }
     const identity = parsed.record.record_id as string;
     if (recordIds.has(identity)) {
-      throw new Error('Trajectory archive contains duplicate record identities');
+      throw new TrajectoryArchiveFormatError('Trajectory archive contains duplicate record identities');
     }
     lastChangeSeq = parsed.changeSeq;
     recordIds.add(identity);
@@ -450,7 +466,7 @@ function createArchiveLineReader(limits: TrajectoryArchiveLimits): ArchiveLineRe
           throw invalidLine(lineNumber, 'is an invalid end');
         }
         if (value.records !== recordCount || value.lines !== lineCount) {
-          throw new Error('Trajectory archive does not match the counts its end line states');
+          throw new TrajectoryArchiveFormatError('Trajectory archive does not match the counts its end line states');
         }
         ended = true;
         return;
@@ -468,7 +484,7 @@ function createArchiveLineReader(limits: TrajectoryArchiveLimits): ArchiveLineRe
       try {
         value = JSON.parse(text) as unknown;
       } catch {
-        if (header === null) throw new Error('Trajectory archive format or version is not supported');
+        if (header === null) throw new TrajectoryArchiveFormatError('Trajectory archive format or version is not supported');
         throw invalidLine(lineNumber, 'is not valid JSON');
       }
       if (header === null) {
@@ -483,8 +499,8 @@ function createArchiveLineReader(limits: TrajectoryArchiveLimits): ArchiveLineRe
     },
     records: () => recordCount,
     finish: (container) => {
-      if (header === null) throw new Error('Trajectory archive is empty');
-      if (!ended) throw new Error('Trajectory archive is truncated: it has no end line');
+      if (header === null) throw new TrajectoryArchiveFormatError('Trajectory archive is empty');
+      if (!ended) throw new TrajectoryArchiveFormatError('Trajectory archive is truncated: it has no end line');
       flush();
       const bucketList = [...buckets.values()];
       return {
@@ -601,7 +617,7 @@ function createZipSink(
     file.ondata = (error, data, final) => {
       if (failure !== null) return;
       if (error !== null) {
-        failure = new Error('Trajectory archive entry could not be inflated');
+        failure = new TrajectoryArchiveFormatError('Trajectory archive entry could not be inflated');
         return;
       }
       try {
@@ -618,14 +634,14 @@ function createZipSink(
       try {
         unzip.push(chunk, final);
       } catch {
-        failure ??= new Error('Trajectory archive is truncated or is not a valid zip');
+        failure ??= new TrajectoryArchiveFormatError('Trajectory archive is truncated or is not a valid zip');
       }
       if (failure !== null) throw failure;
       if (!final) return;
       if (!entryFound) {
-        throw new Error(`Trajectory archive zip has no ${TRAJECTORY_ARCHIVE_ENTRY_NAME} entry`);
+        throw new TrajectoryArchiveFormatError(`Trajectory archive zip has no ${TRAJECTORY_ARCHIVE_ENTRY_NAME} entry`);
       }
-      if (!entryDone) throw new Error('Trajectory archive is truncated');
+      if (!entryDone) throw new TrajectoryArchiveFormatError('Trajectory archive is truncated');
     },
   };
 }
@@ -659,7 +675,7 @@ export async function readTrajectoryArchive(
     try {
       text = decodeChunk();
     } catch {
-      throw new Error('Trajectory archive is not valid UTF-8 text');
+      throw new TrajectoryArchiveFormatError('Trajectory archive is not valid UTF-8 text');
     }
     splitter.push(text);
   };

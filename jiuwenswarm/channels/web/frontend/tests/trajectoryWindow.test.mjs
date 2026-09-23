@@ -150,6 +150,8 @@ import {
 } from '../node_modules/.cache/trajectory-window/trajectoryClient.mjs';
 import {
   exitTrajectoryReplay,
+  isTrajectoryArchiveFormatError,
+  isTrajectoryArchiveLimitError,
   readTrajectoryArchive,
   shouldCatchUpTrajectory,
   TrajectoryArchiveLimitError,
@@ -403,6 +405,24 @@ test('archive reader refuses earlier versions, foreign headers and non-string cu
     readTrajectoryArchive(chunkedSource(new TextEncoder().encode('not json\n'))),
     /not supported/,
   );
+});
+
+test('archive reader reports files that are not trajectory archives as format errors', async () => {
+  const encoder = new TextEncoder();
+  const invalidFiles = [
+    encoder.encode('{"broken": \n'),
+    encoder.encode('plain text notes\nsecond line\n'),
+    new Uint8Array(0),
+    new Uint8Array([0xff, 0xfe, 0xfd, 0x0a]),
+    zipSync({ 'notes.txt': encoder.encode('hello') }),
+  ];
+
+  for (const bytes of invalidFiles) {
+    await assert.rejects(
+      readTrajectoryArchive(chunkedSource(bytes)),
+      error => isTrajectoryArchiveFormatError(error) && !isTrajectoryArchiveLimitError(error),
+    );
+  }
 });
 
 test('archive reader rejects records out of commit order and unknown line types', async () => {

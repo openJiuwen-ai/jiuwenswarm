@@ -57,6 +57,7 @@ import {
 } from './trajectorySequences';
 import {
   exitTrajectoryReplay,
+  isTrajectoryArchiveFormatError,
   isTrajectoryArchiveLimitError,
   readTrajectoryArchive,
   shouldCatchUpTrajectory,
@@ -302,6 +303,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     exitReplay: '退出复现',
     replay: (sourceSession: string) => `只读复现 · ${sourceSession}`,
     archiveTooLarge: '轨迹归档超出浏览器导入上限，无法导入。',
+    archiveInvalid: (detail: string) => (
+      `无法导入：所选文件不是有效的轨迹归档（.trajectory.jsonl / .trajectory.zip）。详情：${detail}`
+    ),
     exportBrowserStarted: '轨迹归档下载已开始；请在浏览器下载列表确认文件。',
     exportBrowserSaved: '轨迹归档已保存到本地。',
     exportDesktopSaved: '轨迹归档已保存到本地。',
@@ -363,6 +367,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     exitReplay: 'Exit replay',
     replay: (sourceSession: string) => `Read-only replay · ${sourceSession}`,
     archiveTooLarge: 'The trajectory archive exceeds the browser import limits.',
+    archiveInvalid: (detail: string) => (
+      'Cannot import: the selected file is not a valid trajectory archive '
+      + `(.trajectory.jsonl / .trajectory.zip). Details: ${detail}`
+    ),
     exportBrowserStarted: 'Trajectory archive download started; confirm it in the browser downloads list.',
     exportBrowserSaved: 'Trajectory archive saved locally.',
     exportDesktopSaved: 'Trajectory archive saved locally.',
@@ -1185,13 +1193,17 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       setRawError(null);
     } catch (importError) {
       if (importGenerationRef.current !== generation) return;
-      setArchiveError(isTrajectoryArchiveLimitError(importError)
-        ? copy.archiveTooLarge
-        : errorMessage(importError, chinese));
+      if (isTrajectoryArchiveLimitError(importError)) {
+        setArchiveError(copy.archiveTooLarge);
+      } else if (isTrajectoryArchiveFormatError(importError)) {
+        setArchiveError(copy.archiveInvalid(importError.message));
+      } else {
+        setArchiveError(errorMessage(importError, chinese));
+      }
     } finally {
       if (importGenerationRef.current === generation) setImportProgress(null);
     }
-  }, [chinese, copy.archiveTooLarge]);
+  }, [chinese, copy]);
 
   const exitReplay = useCallback(() => {
     const transition = exitTrajectoryReplay(replayArchive);
