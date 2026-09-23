@@ -2351,6 +2351,21 @@ class AgentWebSocketServer:
                 preview_text(_request_query_text(request)),
             )
 
+        # HELIX 花费归因（2026-09-21 起；2026-09-23 改为**本仓原生接线**）：把本请求的
+        # **会话**写进请求级上下文，使同一任务内的所有 LLM 调用都带上
+        # `X-Helix-Line`/`X-Helix-Session`（关口据此把用量记到线与会话）。
+        # 为什么必须在这里做：LLM 调用发生在 agentserver 进程内（共享长驻进程），而按线
+        # 注入的 env 只给了 CLI 子进程 ⇒ 启动期静态配置只能给出**一个**线/会话值。
+        # 注入点在 `jiuwenswarm.common.llm_attribution`（transform 回调，每次调用取头）——
+        # 不再依赖 `patches/openjiuwen/0003` 打进安装包的 `openjiuwen...attribution` 模块。
+        # `_handle_message` 是**每消息**入口，下一请求会在任何 LLM 调用之前覆盖该值，
+        # 故不 reset（无跨会话泄漏窗口）。
+        try:
+            from jiuwenswarm.common.llm_attribution import set_current as _set_attr
+            _set_attr(request.session_id)
+        except Exception:  # noqa: BLE001 - 归因失败绝不影响主流程
+            pass
+
         pending_chat_request: tuple[AgentRuntime, str, str] | None = None
         try:
             if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
