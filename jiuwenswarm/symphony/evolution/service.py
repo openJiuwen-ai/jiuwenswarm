@@ -39,7 +39,6 @@ from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
 _EVOLUTION_FILES = (
     "events.jsonl",
     "dynamic_graph_overlay.json",
-    "session_feedback_state.json",
 )
 
 
@@ -151,17 +150,6 @@ def evolution_status(graph_dir: str | Path) -> dict[str, Any]:
         ),
         "top_edges": _top_overlay_edges(overlay),
     }
-    try:
-        from jiuwenswarm.symphony.evolution.session_consumer import (
-            session_feedback_status,
-        )
-
-        payload["session_feedback"] = session_feedback_status(graph_dir)
-    except Exception:  # noqa: BLE001
-        payload["session_feedback"] = {
-            "source": "session_history",
-            "available": False,
-        }
     return payload
 
 

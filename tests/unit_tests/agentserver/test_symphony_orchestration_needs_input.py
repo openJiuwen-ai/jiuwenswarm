@@ -629,7 +629,7 @@ async def test_invalid_ask_user_answers_do_not_claim_paused_state(
         {"planned_graph": {"graph": {"metadata": {"status": "invalid"}}}},
     ],
 )
-async def test_resumed_nonready_compose_keeps_skill_gate(result: Any) -> None:
+async def test_resumed_nonready_compose_does_not_block_skill_tool(result: Any) -> None:
     rail, resumed = await _resumed_state_for_test()
     compose = _inner_tool_ctx(
         resumed,
@@ -644,13 +644,13 @@ async def test_resumed_nonready_compose_keeps_skill_gate(result: Any) -> None:
     )
     await rail.before_tool_call(skill)
 
-    assert skill.inputs.tool_result["reason"] == "symphony_plan_not_ready"
-    assert skill.extra["_skip_tool_calls"] == {"skill": True}
+    assert skill.inputs.tool_result is None
+    assert skill.extra.get("_skip_tool_calls") is None
     assert rail._active_state_for_ctx(skill).pending_recompose
 
 
 @pytest.mark.asyncio
-async def test_resumed_compose_exception_keeps_skill_gate() -> None:
+async def test_resumed_compose_exception_does_not_block_skill_tool() -> None:
     rail, resumed = await _resumed_state_for_test()
     compose = _inner_tool_ctx(
         resumed,
@@ -665,48 +665,9 @@ async def test_resumed_compose_exception_keeps_skill_gate() -> None:
     skill = _inner_tool_ctx(resumed, name="skill_tool", call_id="skill-exception")
     await rail.before_tool_call(skill)
 
-    assert skill.inputs.tool_result["reason"] == "symphony_plan_not_ready"
+    assert skill.inputs.tool_result is None
+    assert skill.extra.get("_skip_tool_calls") is None
     assert rail._active_state_for_ctx(skill).pending_recompose
-
-
-@pytest.mark.asyncio
-async def test_parallel_skill_gates_are_keyed_by_each_tool_call_id() -> None:
-    rail, resumed = await _resumed_state_for_test()
-    shared_extra = {"run_context": resumed.inputs.run_context}
-    first = _inner_tool_ctx(
-        resumed,
-        name="skill_tool",
-        call_id="skill-one",
-        extra=shared_extra,
-    )
-    second = _inner_tool_ctx(
-        resumed,
-        name="skill_tool",
-        call_id="skill-two",
-        extra=shared_extra,
-    )
-    await asyncio.gather(rail.before_tool_call(first), rail.before_tool_call(second))
-
-    assert shared_extra.get("_skip_tool") is None
-    assert shared_extra["_skip_tool_calls"] == {"skill-one": True, "skill-two": True}
-    assert first.inputs.tool_result["reason"] == second.inputs.tool_result["reason"]
-
-
-@pytest.mark.asyncio
-async def test_pending_skill_without_provider_id_gets_its_own_skip_key() -> None:
-    rail, resumed = await _resumed_state_for_test()
-    skill = _inner_tool_ctx(
-        resumed,
-        name="skill_tool",
-        call_id="",
-        args={"skill_name": "old-skill"},
-    )
-    await rail.before_tool_call(skill)
-
-    tool_call_id = skill.inputs.tool_call.id
-    assert tool_call_id.startswith("symphony-skip-")
-    assert skill.extra["_skip_tool_calls"] == {tool_call_id: True}
-    assert skill.inputs.tool_msg.tool_call_id == tool_call_id
 
 
 @pytest.mark.asyncio
