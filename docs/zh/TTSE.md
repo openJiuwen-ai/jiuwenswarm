@@ -14,6 +14,8 @@ react:
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（静默整理经验库，不劫持用户回合）
     dream_enabled: true     # 是否启用 Auto-dream
+    consult_top_k: 8        # ttse_consult 每轨（FACT/TIP）返回条数
+    consult_retrieve_mode: hybrid  # hybrid | embed | bm25；池子不够仍 dump
     # 语义 dedup / Auto-dream / ttse_consult 混合召回；三段齐全时 BM25+embedding，否则 BM25 兜底
     # 环境变量名与 embed.* 一致，勿硬编码内部端点
     embedding:
@@ -26,4 +28,4 @@ react:
 
 Auto-dream 的 `dream_interval` / `dream_min_hours` / `dream_ttl_days` 由 Host 实现固定为 `50` / `24.0` / `90`，**不对用户开放**。开启 `dream_enabled` 后会对已有 FACT/TIP bank 做卫生（TTL 剪枝、近重合并、低质量 TIP 清洗），与在线 `induce`/`blame` 独立。
 
-`embedding` 可选；变量名以环境变量为准（`EMBED_API_KEY` / `EMBED_API_BASE` / `EMBED_MODEL`）。三段齐全且解析非空时 consult 做 BM25+embedding 混合召回，否则 BM25 兜底。模型应调用 `ttse_consult(category=…, query=经验语义检索句)`；只传 `category` 仍可打开整类。正文不灌进 system。
+`embedding` 可选；变量名以环境变量为准（`EMBED_API_KEY` / `EMBED_API_BASE` / `EMBED_MODEL`）。`consult_retrieve_mode` 选打分路径（`hybrid` / `embed` / `bm25`）；向量缺失或失败走 BM25，池子不够仍 dump。模型应调用 `ttse_consult(category=…, query=处境短句)`；`category` 与 `query` 都必须填，查全集用 `category=all`。正文不灌进 system。

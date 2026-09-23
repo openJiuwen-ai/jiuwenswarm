@@ -101,7 +101,13 @@ async def test_work_and_code_normal_stream_use_session_registry(
     )
 
     async def stream_started(request: AgentRequest, **_kwargs: Any):
-        yield request.request_id
+        yield RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={"event_type": "chat.final", "content": "done"},
+            is_complete=True,
+        )
 
     runtime._stream_started = stream_started  # type: ignore[method-assign]
     request = AgentRequest(
@@ -112,11 +118,17 @@ async def test_work_and_code_normal_stream_use_session_registry(
         params={"mode": mode, "work_mode": work_mode},
         is_stream=True,
     )
-    assert [item async for item in runtime.stream(request)] == [request.request_id]
+    events = [item async for item in runtime.stream(request)]
+    assert [item.request_id for item in events] == [request.request_id]
     snapshot = runtime._session_coordinator.snapshot_session(session_id)
     assert snapshot is not None
     assert snapshot.executions[-1].state is SessionExecutionState.SUCCEEDED
     assert snapshot.executions[-1].work_kind is SessionWorkKind.CHAT_STREAM
+    assert events[0].payload == {
+        "event_type": "chat.final",
+        "content": "done",
+        "execution_id": snapshot.executions[-1].execution_id,
+    }
     await runtime.close()
 
 

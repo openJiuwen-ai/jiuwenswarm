@@ -7,6 +7,7 @@ import FileCopyIcon from '../../../assets/agent-management/file-copy.svg?react';
 import {
   downloadPreviewFile,
   formatJsonContent,
+  getPreviewCopyText,
   getPreviewFileLabel,
   isJsonFilePath,
   isMarkdownFilePath,
@@ -82,7 +83,7 @@ export function FilePreviewContent({
   const handleCopy = async () => {
     if (!file?.content) return;
     try {
-      await navigator.clipboard.writeText(file.content);
+      await navigator.clipboard.writeText(getPreviewCopyText(file.path, file.content));
       setCopyState('copied');
     } catch {
       setCopyState('failed');

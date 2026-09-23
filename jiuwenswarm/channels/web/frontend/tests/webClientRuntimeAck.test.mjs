@@ -122,6 +122,44 @@ test('abort keeps runtime-ack request rejected without waiting for Host event', 
   await Promise.resolve();
 });
 
+test('request identity is bound before send and runtime errors preserve their code and payload', async () => {
+  let boundId;
+  const socket = FakeWebSocket.instance;
+  const originalSend = socket.send;
+  socket.send = function (raw) {
+    const outgoing = JSON.parse(raw);
+    assert.equal(boundId, outgoing.id);
+    originalSend.call(this, raw);
+  };
+  try {
+    const pending = webClient.request('chat.send', { input_mode: 'steer' }, {
+      awaitRuntimeAccepted: true,
+      onRequestId: (id) => { boundId = id; },
+    });
+    await Promise.resolve();
+    runtimeEvent('chat.error', boundId, { code: 'SESSION_INPUT_DELIVERY_UNKNOWN', error: 'uncertain' });
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.code, 'SESSION_INPUT_DELIVERY_UNKNOWN');
+      assert.equal(error.payload.error, 'uncertain');
+      assert.equal(error.requestId, boundId);
+      return true;
+    });
+  } finally { socket.send = originalSend; }
+});
+
+test('legacy content wrapping an acceptance is routed as ACK, not final output', async () => {
+  let finalCount = 0;
+  const unsubscribe = webClient.on('chat.final', () => { finalCount += 1; });
+  try {
+    const pending = webClient.request('chat.send', { input_mode: 'steer' }, { awaitRuntimeAccepted: true });
+    await Promise.resolve();
+    const requestId = FakeWebSocket.instance.lastRequest.id;
+    FakeWebSocket.instance.receive({ type: 'content', payload: { event_type: 'runtime.accepted', request_id: requestId } });
+    assert.equal((await pending).request_id, requestId);
+    assert.equal(finalCount, 0);
+  } finally { unsubscribe(); }
+});
+
 test('timeout and disconnect reject runtime-ack requests after gateway acceptance', async () => {
   const timedOut = webClient.request(
     'chat.send',

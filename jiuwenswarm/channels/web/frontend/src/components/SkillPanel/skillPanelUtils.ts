@@ -3,7 +3,7 @@
  *
  * 从 index.tsx 抽取，内容保持不变。
  */
-import type { SkillItem } from './types';
+import type { MarketplacePluginItem, SkillItem } from './types';
 
 /** 刷新会 git pull marketplace，略放宽；普通进页单次 RPC 一般很快。 */
 export const SKILLS_FETCH_TIMEOUT_REFRESH_MS = 60_000;
@@ -71,6 +71,16 @@ export const MARKETPLACE_CATEGORIES = [
   'lifestyle-health',
   'finance-wealth',
 ] as const;
+
+/** 广场搜索结果列表 key：ClawHub 带 owner，避免同 slug 重复 key。 */
+export function hubMarketplaceItemKey(skill: MarketplacePluginItem): string {
+  const source = skill.source || 'teamskillshub';
+  const identifier = skill.identifier || skill.asset_id;
+  if (source === 'clawhub' && skill.owner_handle) {
+    return `${source}:${skill.owner_handle}/${identifier}`;
+  }
+  return `${source}:${identifier}`;
+}
 
 /**
  * 将技能内容中的图片路径转换为 /file-api/raw-file 可访问的 URL。

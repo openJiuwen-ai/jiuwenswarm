@@ -1,10 +1,22 @@
-import type { CSSProperties, MouseEventHandler, ReactNode, RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import type { CSSProperties, MouseEventHandler, MutableRefObject, ReactNode, RefObject } from 'react';
 import clsx from 'clsx';
 import MoreIcon from '../../assets/agent-management/more.svg?react';
 
 /** 内容列表一次最多可见的行数，超出行数靠列表自身 overflow-y:auto 内部滚动 */
 const DEFAULT_MAX_VISIBLE_ROWS = 5;
 const DEFAULT_ROW_GAP = 4;
+
+/** 面板视口钳制的安全间距：屏幕高度不够时面板整体上移、底边至少离视口 24px（2026-09-20 需求值）；
+ * 顶边兜底 8px，防 direction='up' 向上生长时顶出视口上沿 */
+const VIEWPORT_BOTTOM_GAP = 24;
+const VIEWPORT_TOP_GAP = 8;
 
 function listContentHeight(itemCount: number, rowHeight: number, rowGap: number): number {
   if (itemCount <= 0) return 0;
@@ -50,6 +62,11 @@ export interface PickerPanelProps {
  * 底部"更多"。列表高度按条目数 × 行高显式计算、封顶 maxVisibleRows 行，超出靠列表内部滚动；
  * 显式 height（而不是只给容器 max-height）是刻意为之，规避 flex-basis: auto 与 max-height
  * 容器组合的历史塌缩/溢出坑（详见 ChatPanel.css .chat-picker-panel__list 注释）。
+ *
+ * 视口钳制：面板在触发项旁 absolute 弹出（top:0 或 --up 的 bottom:0），屏幕高度不够时
+ * 会整个伸到视口外被截断。这里在挂载后/窗口缩放/自身尺寸变化时实测面板矩形，超出安全区
+ * 就用 translateY 整体平移回视口内——优先保证底边离视口至少 24px（上移），只有底边不超
+ * 但顶边被裁时才下移回兜。
  */
 export function PickerPanel({
   className,
@@ -73,11 +90,73 @@ export function PickerPanel({
   const listBoxHeight: CSSProperties | undefined =
     contentHeight > 0 ? { height: Math.min(contentHeight, visibleHeight) } : undefined;
 
+  const innerPanelRef = useRef<HTMLDivElement | null>(null);
+  /** 已应用的 translateY 偏移：getBoundingClientRect 含 transform，测量时要减掉它还原原始位置 */
+  const appliedShiftRef = useRef(0);
+  const [viewportShift, setViewportShift] = useState(0);
+
+  // 面板根节点同时挂调用方的 panelRef（outside-click 判断用）和内部 ref（钳制测量用）
+  const setPanelRefs = useCallback(
+    (node: HTMLDivElement | null) => {
+      innerPanelRef.current = node;
+      if (panelRef) {
+        (panelRef as MutableRefObject<HTMLDivElement | null>).current = node;
+      }
+    },
+    [panelRef],
+  );
+
+  const measureViewportShift = useCallback(() => {
+    const el = innerPanelRef.current;
+    if (!el || !el.isConnected) return;
+    const rect = el.getBoundingClientRect();
+    const rawTop = rect.top - appliedShiftRef.current;
+    const rawBottom = rect.bottom - appliedShiftRef.current;
+    const bottomLimit = window.innerHeight - VIEWPORT_BOTTOM_GAP;
+    let next = 0;
+    if (rawBottom > bottomLimit) {
+      // 下方空间不够：整体上移，保证底边离视口至少 24px。极矮视口下面板比可用空间还高时
+      // 仍以此为准（顶边允许被裁），三张面板都有 max-height 封顶，正常窗口到不了这一步
+      next = bottomLimit - rawBottom;
+    } else if (rawTop < VIEWPORT_TOP_GAP) {
+      // 底边没超但顶边被裁（direction='up' 向上生长、或贴近视口顶端）：往下挪回安全区
+      next = VIEWPORT_TOP_GAP - rawTop;
+    }
+    appliedShiftRef.current = next;
+    setViewportShift((prev) => (prev === next ? prev : next));
+  }, []);
+
+  // 挂载与方向切换后先钳一次；列表显式高度让挂载时就有最终尺寸，实测不会拿到中间态
+  useLayoutEffect(() => {
+    measureViewportShift();
+  }, [measureViewportShift, direction]);
+
+  // 自身尺寸变化（加载态→列表、tab 切换、条目增减）后重钳；transform 不改布局尺寸，
+  // 不会反过来触发 ResizeObserver 造成循环
+  useLayoutEffect(() => {
+    const el = innerPanelRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measureViewportShift);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measureViewportShift]);
+
+  // 窗口缩放会改变视口可用空间（锚点跟随布局变化、innerHeight 变化），同步重钳
+  useEffect(() => {
+    window.addEventListener('resize', measureViewportShift);
+    return () => window.removeEventListener('resize', measureViewportShift);
+  }, [measureViewportShift]);
+
+  const rootStyle: CSSProperties | undefined =
+    viewportShift !== 0
+      ? { ...style, transform: `translateY(${viewportShift}px)` }
+      : style;
+
   return (
     <div
-      ref={panelRef}
+      ref={setPanelRefs}
       className={clsx('chat-picker-panel', className, direction === 'up' && 'chat-picker-panel--up')}
-      style={style}
+      style={rootStyle}
       role="menu"
       aria-label={ariaLabel}
       data-testid={testId}

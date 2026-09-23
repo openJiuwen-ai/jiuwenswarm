@@ -199,6 +199,7 @@ export interface RsiTrainingStatusChangedPayload {
   status: RsiTaskStatus;
   old_status?: RsiTaskStatus;
   new_status?: RsiTaskStatus;
+  failure_reason?: string | null;
 }
 
 // P2 rsi.training.progress —— 迭代进度 + score + 累计开销

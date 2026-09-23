@@ -222,6 +222,11 @@ class ProactiveEngine:
         except Exception as exc:
             logger.debug("[ProactiveEngine] maintenance failed: %s", exc)
 
+        # 本 tick 的语言基准：config.yaml preferred_language，决策/指令/梯度渲染共用，
+        # 与正常聊天的回复语言同源（改设置即时生效）。
+        from jiuwenswarm.common.config import get_config
+        preferred_language = str(get_config().get("preferred_language") or "zh")
+
         # Step 0: 检查目标 channel 是否有活跃 agent——agent 被 evict 后白调 LLM 是浪费 token。
         if self._check_agent_available_callback is not None:
             try:
@@ -302,11 +307,15 @@ class ProactiveEngine:
         from jiuwenswarm.agents.harness.common.recommendation.gradient_updater import (
             render_decision_rules,
         )
-        decision_rules_text = render_decision_rules(state.strategy_gradients)
+        decision_rules_text = render_decision_rules(
+            state.strategy_gradients,
+            language=preferred_language,
+        )
 
         result = await _analyze_and_decide(
             report_text, available_skills, self._proactive_agent,
             decision_rules_text=decision_rules_text,
+            language=preferred_language,
         )
 
         # ── Step 3: Check if we have a recommendation ───────────
@@ -357,7 +366,10 @@ class ProactiveEngine:
         from jiuwenswarm.agents.harness.common.recommendation.gradient_updater import (
             render_style_rules,
         )
-        style_rules_section = render_style_rules(state.strategy_gradients)
+        style_rules_section = render_style_rules(
+            state.strategy_gradients,
+            language=preferred_language,
+        )
 
         # Generate unique recommendation ID BEFORE triggering (so frontend can use it for feedback)
         # rec_id 加 uuid 后缀避免碰撞：纯毫秒时间戳在并发（cron 到点 + 手动"立即执行"

@@ -59,6 +59,7 @@ export default {
           strong: color('--color-border-strong'),
           hover: color('--color-border-hover'),
           accent: translucentColor('--color-border-accent'),
+          'input-strong': color('--color-border-input-strong'),
         },
         accent: {
           DEFAULT: color('--color-action-primary'),

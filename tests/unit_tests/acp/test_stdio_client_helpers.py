@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-from jiuwenswarm.acp.stdio_client import _consume_one_json, _extract_session_update_text
+from jiuwenswarm.common.acp.stdio_client import _consume_one_json, _extract_session_update_text
 
 
 def test_consume_one_json_multiline_whitespace_between():

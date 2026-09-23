@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from jiuwenswarm.common.auth.remote_config import get_config as get_remote_config
 from jiuwenswarm.common.auth.service import (
@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 #: 登录模型条目上的来源标记。写配置时据此过滤，前端据此置灰编辑。
 LOGIN_MODEL_SOURCE = "huawei-maas-login"
+#: 用户给登录模型的设置，在 config.yaml 的 ``models.login_model_settings.<模型名>`` 下。
+#: 模型条目本身不落盘（见模块说明），用户能改的那部分单独存，造条目时再合进去。
+LOGIN_MODEL_SETTINGS_KEY = "login_model_settings"
 
 _CACHE_FILE_NAME = "model_catalog.json"
 _CACHE_TTL_S = 30 * 60.0
@@ -249,6 +252,31 @@ def get_models(session_id: str | None = None, allow_refresh: bool = True) -> lis
     return list(cached_models)
 
 
+def login_model_settings(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    if config is None:
+        from jiuwenswarm.common.config import get_config
+
+        try:
+            config = get_config()
+        except Exception:  # noqa: BLE001 — 读不到配置就按没设置处理，不能挡住模型
+            logger.debug("[Auth] 读取登录模型设置失败", exc_info=True)
+            return {}
+    models = config.get("models") if isinstance(config, Mapping) else None
+    settings = models.get(LOGIN_MODEL_SETTINGS_KEY) if isinstance(models, Mapping) else None
+    return dict(settings) if isinstance(settings, Mapping) else {}
+
+
+def _login_model_config_obj(model_name: str, settings: Mapping[str, Any]) -> dict[str, Any]:
+    from jiuwenswarm.common.context_window import parse_positive_int
+
+    config_obj: dict[str, Any] = {"temperature": 0.95}
+    own = settings.get(model_name)
+    context_window = parse_positive_int(own.get("context_window")) if isinstance(own, Mapping) else None
+    if context_window is not None:
+        config_obj["context_window"] = context_window
+    return config_obj
+
+
 def build_model_entry(
     *,
     model_name: str,
@@ -256,6 +284,7 @@ def build_model_entry(
     api_key: str,
     display_name: str = "",
     description: str = "",
+    settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """按给定的接入点和 api_key 造一个登录模型条目。
 
@@ -264,8 +293,12 @@ def build_model_entry(
     ``Authorization: Bearer <占位值>``，发请求时由钩子换成真 token，见 ``login_credentials``）。
     两处都不放真 id_token。条目形状必须一致，否则同一个模型"列表里能看到、真跑起来配置不一样"。
 
-    ``source`` 标记让写入侧能把这些条目过滤掉，不落进 config.yaml。
+    ``source`` 标记让写入侧能把这些条目过滤掉，不落进 config.yaml。用户能改的部分
+    （上下文长度）从 ``settings`` 合进来，不传就现读 config.yaml。列表展示和请求级构建
+    各自现读一次，是最终一致而非同一时刻的同一份快照：保存改动后各路径下次读到的即新值。
     """
+    if settings is None:
+        settings = login_model_settings()
     return {
         "model_client_config": {
             "model_name": model_name,
@@ -273,7 +306,7 @@ def build_model_entry(
             "api_key": api_key,
             "client_provider": "OpenAI",
         },
-        "model_config_obj": {"temperature": 0.95},
+        "model_config_obj": _login_model_config_obj(model_name, settings),
         "alias": display_name if display_name and display_name != model_name else "",
         # 必须是 True。这个字段不是"我是那个默认模型"的意思，而是"进不进聊天窗口的
         # 模型下拉"——前端按 `is_default !== false` 过滤（sessionStore.ts）。写 False
@@ -311,6 +344,7 @@ def list_login_model_entries(
     except ModelAuthRequired as exc:
         logger.debug("[Auth] 登录模型凭据不可用: %s", exc)
         return []
+    settings = login_model_settings()
     return [
         build_model_entry(
             model_name=model.model_name,
@@ -321,6 +355,7 @@ def list_login_model_entries(
             api_key="",
             display_name=model.display_name,
             description=model.description,
+            settings=settings,
         )
         for model in get_models(session_id, allow_refresh)
     ]

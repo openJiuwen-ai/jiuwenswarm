@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import email.parser
 import email.policy
+import json
 import logging
 import os
 import shutil
@@ -14,10 +15,14 @@ import tempfile
 import uuid
 from pathlib import Path, PureWindowsPath
 from typing import Any
+from urllib.parse import urlsplit
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     ERROR_SKILL_INVALID_PACKAGE,
     ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT,
@@ -133,6 +138,84 @@ def _parse_overwrite(raw: Any) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def _build_ws_origin(uri: str) -> str | None:
+    """将 ws/wss URI 转为标准浏览器 Origin（与 AgentServer 握手校验对齐）。"""
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return None
+    if not parsed.netloc:
+        return None
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    return f"{scheme}://{parsed.netloc}"
+
+
+class _AgentServerSkillWsClient:
+    """``skills.*`` 专用最小 WebSocket 客户端（单连接、单次非流式请求）。
+
+    仅覆盖本模块实际使用的能力：``connect``（含 ``connection.ack`` 首帧容错）、
+    单次 ``send_request``（按 ``request_id`` 关联响应）、``disconnect``。
+    不引入流式接收、server_push、断线重连与取消登记等北向客户端特性。
+    """
+
+    #: 等待 AgentServer ``connection.ack`` 的上限（秒）。
+    _ACK_TIMEOUT_S = 5.0
+
+    def __init__(self) -> None:
+        self._ws: Any = None
+
+    async def connect(self, uri: str) -> None:
+        try:
+            from websockets.legacy.client import connect as connect_fn
+        except ImportError:
+            import websockets
+
+            connect_fn = websockets.connect
+        self._ws = await connect_fn(
+            uri,
+            origin=_build_ws_origin(uri),
+            ping_interval=None,
+            ping_timeout=None,
+            close_timeout=5.0,
+            max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+        )
+        # AgentServer 建连后必发 connection.ack 事件帧；须先消费掉，
+        # 否则会被当作首个响应而错位。
+        raw = await asyncio.wait_for(self._ws.recv(), timeout=self._ACK_TIMEOUT_S)
+        data = json.loads(raw)
+        if not (data.get("type") == "event" and data.get("event") == "connection.ack"):
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_PACKAGE, "AgentServer 未就绪（未收到 connection.ack）"
+            )
+
+    async def send_request(self, envelope: E2AEnvelope) -> AgentResponse:
+        """发送非流式 E2A 信封，返回按 ``request_id`` 关联的响应。"""
+        request_id = str(envelope.request_id)
+        await self._ws.send(json.dumps(envelope.to_dict(), ensure_ascii=False))
+        while True:
+            data = json.loads(await self._ws.recv())
+            if data.get("type") == "event":
+                # connection.ack 等事件帧不承载请求响应。
+                continue
+            if str(data.get("request_id") or "") != request_id:
+                logger.warning(
+                    "[skills_multipart_http] 丢弃 request_id 不匹配的响应: %s",
+                    data.get("request_id"),
+                )
+                continue
+            return parse_agent_server_wire_unary(data)
+
+    async def disconnect(self) -> None:
+        if self._ws is None:
+            return
+        try:
+            await self._ws.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[skills_multipart_http] 关闭 AgentServer 连接异常: %s", exc)
+        finally:
+            self._ws = None
+
+
 def _agent_server_ws_uri() -> str:
     url = (os.getenv("AGENT_SERVER_URL") or "").strip()
     if url:
@@ -153,7 +236,7 @@ async def _call_agent_skill_rpc(
     timeout_s: float = 600.0,
 ) -> dict[str, Any]:
     """经 AgentServer WebSocket 调用 skills.*，返回 payload 或抛 SkillRpcError."""
-    client = WebSocketAgentServerClient(ping_interval=None, ping_timeout=None)
+    client = _AgentServerSkillWsClient()
     uri = _agent_server_ws_uri()
     request_id = f"file-api-{uuid.uuid4().hex}"
     try:

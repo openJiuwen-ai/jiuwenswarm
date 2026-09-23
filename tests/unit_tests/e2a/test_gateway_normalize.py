@@ -1,6 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 import time
+import pytest
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_PLAN_APPROVAL_REQUIRED
@@ -17,6 +18,48 @@ from jiuwenswarm.common.e2a.gateway_normalize import (
 )
 from jiuwenswarm.common.e2a.models import E2AEnvelope, E2AResponse
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+
+
+@pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final", "runtime.accepted"])
+def test_execution_binding_survives_agent_wire_and_web_payload(event_type):
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+
+    chunk = AgentResponseChunk(
+        request_id="request-A", channel_id="web", is_complete=event_type == "chat.final",
+        payload={"event_type": event_type, "execution_id": "execution-A", "content": "text"},
+    )
+    wire = e2a_response_from_agent_chunk(chunk, response_id="request-A", sequence=1)
+    restored = e2a_response_to_agent_chunk(wire)
+    message = Message(
+        id=restored.request_id, type="event", channel_id="web", session_id="session-A",
+        params={}, timestamp=1, ok=True, payload=restored.payload,
+    )
+    payload = WebChannel._build_event_payload(message, event_type)
+    assert payload["execution_id"] == "execution-A"
+    assert payload["session_id"] == "session-A"
+
+
+@pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final", "chat.tool_call", "chat.input_received", "chat.output_phase"])
+def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+    from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+
+    fields = {"output_phase_id": "phase-1", "output_suppressed": True,
+              "output_order": {"request_id": "original", "sequence": 42}, "timestamp": 1800000000042}
+    if event_type == "chat.input_received":
+        fields["input_request_id"] = "input-1"
+    if event_type == "chat.output_phase":
+        fields["applied_input_ids"] = ["input-1", "input-2"]
+    chunk = AgentResponseChunk(request_id="original", channel_id="web", is_complete=False,
+                               payload={"event_type": event_type, "content": "text", **fields})
+    restored = e2a_response_to_agent_chunk(e2a_response_from_agent_chunk(chunk, response_id="original", sequence=42))
+    message = Message(id="original", type="event", channel_id="web", session_id="session",
+                      params={}, timestamp=1, ok=True, payload=restored.payload)
+    payload = WebChannel._build_event_payload(message, event_type)
+    assert {key: payload.get(key) for key in fields} == fields
 
 
 def test_message_to_e2a_or_fallback_basic():

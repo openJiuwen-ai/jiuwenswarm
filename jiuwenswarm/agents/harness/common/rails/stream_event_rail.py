@@ -67,7 +67,6 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
 )
 from jiuwenswarm.common.tool_display import (
-    build_tool_display_name,
     extract_call_goal,
     inject_call_goal_schema,
 )
@@ -984,7 +983,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if session is not None and isinstance(ctx.inputs, ToolCallInputs):
             # 主模型随 tool_call 产出的目标文案（call_goal）：取出后剥掉，避免 schema 拒收。
             # 绝不碰 display_name（team 成员名等业务字段）。
-            model_display, cleaned_args = extract_call_goal(
+            call_goal, cleaned_args = extract_call_goal(
                 getattr(tc, "arguments", {}) if tc else {}
             )
             # 无论是否填了 call_goal，都写回清洗后的 arguments，避免执行侧拿到该字段。
@@ -1006,7 +1005,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 tool_call_emitted = await self._emit_tool_call(
                     session,
                     tc,
-                    model_display_name=model_display,
+                    call_goal=call_goal,
                 )
                 in_progress_emitted = await self._emit_tool_update(
                     session,
@@ -1132,7 +1131,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         session: Session,
         tool_call: Any,
         *,
-        model_display_name: str = "",
+        call_goal: str = "",
     ) -> bool:
         try:
             name = getattr(tool_call, "name", "")
@@ -1142,12 +1141,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "arguments": arguments,
                 "tool_call_id": getattr(tool_call, "id", ""),
             }
-            # 优先用主模型随 tool_call 产出的目标文案；未填时再规则兜底。
-            display_name = (model_display_name or "").strip() or build_tool_display_name(
-                name, arguments
-            )
-            if display_name:
-                tool_call_payload["display_name"] = display_name
+            # 模型自然语言目标；前端原样作副标题，不再生成 display_name。
+            goal = (call_goal or "").strip()
+            if goal:
+                tool_call_payload["call_goal"] = goal
             await session.write_stream(
                 OutputSchema(
                     type="tool_call",

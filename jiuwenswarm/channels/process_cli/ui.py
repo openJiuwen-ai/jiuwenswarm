@@ -184,6 +184,18 @@ class ProcessCliUI:
     def notice(self, message: str) -> None:
         self._write(self._styled(f"\n! {message}\n\n", _ANSI_YELLOW))
 
+    def live_execution_layout(self, request_text: str) -> None:
+        """Render the stable sections above a parent-owned input prompt."""
+
+        request = request_text.strip() or "（空请求）"
+        self._write("\n")
+        self._write(self._styled("请求\n", _ANSI_BOLD_CYAN))
+        self._write("\n".join(f"  {line}" for line in request.splitlines()))
+        self._write("\n\n")
+        self._write(self._styled("处理\n", _ANSI_BOLD_CYAN))
+        self._write(self._styled("  已提交，worker 与 Agent 正在处理…\n\n", _ANSI_DIM))
+        self._write(self._styled("模型输出\n", _ANSI_BOLD_CYAN))
+
     def blank_line(self) -> None:
         self._write("\n")
 
@@ -368,6 +380,24 @@ class HumanRunUI:
     def interrupted(self) -> None:
         self.clear_status()
         self.stderr.write(self._styled("\n! 已中断\n", _ANSI_YELLOW))
+        self.stderr.flush()
+
+    def live_input_ready(self, request_text: str) -> None:
+        self.clear_status()
+        ProcessCliUI(self.stderr).live_execution_layout(request_text)
+
+    def live_input_receipt(self, *, status: str, message: str) -> None:
+        marker = {
+            "accepted": "✓" if self.unicode else "+",
+            "rejected": "×" if self.unicode else "x",
+            "unknown": "!",
+        }.get(status, "!")
+        style = {
+            "accepted": _ANSI_GREEN,
+            "rejected": _ANSI_RED,
+            "unknown": _ANSI_YELLOW,
+        }.get(status, _ANSI_YELLOW)
+        self.stderr.write(self._styled(f"\n{marker} {message}\n", style))
         self.stderr.flush()
 
     def reasoning(self, text: str) -> None:

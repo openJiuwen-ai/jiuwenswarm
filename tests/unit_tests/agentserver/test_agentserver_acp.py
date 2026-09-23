@@ -162,8 +162,8 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
     async def handle_session_switch_for_test(self, ws, request, send_lock):
         await self._handle_session_switch(ws, request, send_lock)
 
-    async def handle_session_kvc_prepare_for_test(self, ws, request, send_lock):
-        await self._handle_session_kvc_prepare(ws, request, send_lock)
+    async def handle_session_input_intent_for_test(self, ws, request, send_lock):
+        await self._handle_session_input_intent(ws, request, send_lock)
 
     async def handle_team_delete_for_test(self, ws, request, send_lock):
         await self._handle_team_delete(ws, request, send_lock)
@@ -3012,13 +3012,15 @@ async def test_handle_session_switch_records_foreground_before_ack(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def legacy_handle_session_kvc_prepare_is_best_effort(monkeypatch):
+async def test_handle_session_input_intent_uses_transport_neutral_runtime_api(
+    monkeypatch,
+):
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     calls = []
 
-    def _prepare(**kwargs):
-        calls.append(kwargs)
+    async def _record_input_intent(request, *, view_id):
+        calls.append((request.session_id, request.params["intent_id"], view_id))
         return "scheduled"
 
     monkeypatch.setattr(
@@ -3027,33 +3029,34 @@ async def legacy_handle_session_kvc_prepare_is_best_effort(monkeypatch):
         fake_encode_agent_response_for_wire,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks."
-        "record_session_prepare",
-        _prepare,
+        server,
+        "_execution_runtime",
+        lambda: types.SimpleNamespace(
+            record_session_input_intent=_record_input_intent,
+        ),
     )
-
     request = AgentRequest(
-        request_id="req-kvc-prepare",
+        request_id="req-input-intent",
         channel_id="web",
-        req_method=ReqMethod.SESSION_KVC_PREPARE,
+        session_id="sess_002",
+        req_method=ReqMethod.SESSION_INPUT_INTENT,
         params={
             "session_id": "sess_002",
             "intent_id": "intent-1",
-            "mode": "code.normal",
+            "view_id": "view-1",
         },
     )
 
-    await server.handle_session_kvc_prepare_for_test(
+    await server.handle_session_input_intent_for_test(
         fake_ws,
         request,
         asyncio.Lock(),
     )
 
-    assert calls[0]["session_id"] == "sess_002"
-    assert calls[0]["intent_id"] == "intent-1"
+    assert calls == [("sess_002", "intent-1", "view-1")]
     assert fake_ws.sent == [
         {
-            "response_id": "req-kvc-prepare",
+            "response_id": "req-input-intent",
             "payload": {
                 "session_id": "sess_002",
                 "scheduled": True,

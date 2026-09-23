@@ -767,7 +767,7 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
   };
 
   const isFree = (m: ModelEntry) => m.is_free === true;
-  const freeModels = availableModels.filter(isFree);
+  // 免费模型由网关按会话注入凭据，RSI 实验配置无法持久化保存，这里不展示。
   const configuredModels = availableModels.filter((m) => !isFree(m));
 
   const renderGroup = (label: string, models: ModelEntry[]) =>
@@ -843,13 +843,10 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
 
       {open && (
         <div className="chat-mode-select__menu model-select__menu rsi-model-select__menu" role="listbox">
-          {availableModels.length === 0 ? (
+          {configuredModels.length === 0 ? (
             <div className="model-select__section-header">{t('rsi.createDialog.modelPlaceholder')}</div>
           ) : (
-            <>
-              {renderGroup(t('chat.modelSelector.configured'), configuredModels)}
-              {renderGroup(t('chat.modelSelector.free'), freeModels)}
-            </>
+            renderGroup(t('chat.modelSelector.configured'), configuredModels)
           )}
         </div>
       )}

@@ -1,3 +1,5 @@
+import { readOutputOrder, isSuppressedOutput } from './sessionOutput';
+import type { OutputOrder } from '../types/message';
 import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution } from '../types';
 import { webClient } from '../services/webClient';
 import { normalizeFinalContent } from '../utils/finalContent';
@@ -414,6 +416,7 @@ export function recoverSubagentToolHistory(
 
 /** 历史中随 chat.final / chat.tool_call 落盘的模型思考（reasoning_content），用于刷新后重建思考块。 */
 export interface HistoryReasoningReplayItem {
+  outputOrder?: OutputOrder;
   at: string;
   text: string;
   /** Web 单 Agent reasoning 所属的专家；Team/旧 history 缺失时为空。 */
@@ -467,7 +470,7 @@ type HistoryTimelineEntry =
   | { kind: 'harness_message'; at: string; content: string; stage?: string }
   | { kind: 'harness_stage_result'; at: string; stage: string; status: string; error: string; messages: string[]; metrics: Record<string, unknown> }
   | { kind: 'compaction'; at: string; summary: string }
-  | { kind: 'reasoning'; at: string; text: string; agentTemplateName?: string; updatedAt?: number }
+  | { kind: 'reasoning'; outputOrder?: OutputOrder; at: string; text: string; agentTemplateName?: string; updatedAt?: number }
   | { kind: 'subagent_update'; at: string; payload: Record<string, unknown> }
   | { kind: 'subagent_message'; at: string; payload: Record<string, unknown> }
   | { kind: 'subagent_activity'; at: string; payload: Record<string, unknown> };
@@ -563,7 +566,7 @@ function isProactiveRecommendationRecord(record: Record<string, unknown>): boole
  * 重建后会污染上一条用户消息的思考状态（"已完成" → "已完成 N 次思考"），故跳过。
  */
 function extractHistoryReasoningText(record: Record<string, unknown>): string {
-  if (isProactiveRecommendationRecord(record)) return '';
+  if (isProactiveRecommendationRecord(record) || isSuppressedOutput(record) || isSuppressedOutput(buildEventPayloadForRecord(record))) return '';
   const direct = record.reasoning_content;
   if (typeof direct === 'string' && direct.trim()) {
     return direct.trim();
@@ -924,6 +927,42 @@ function isTruthyHistoryFlag(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
 }
 
+function extractHistorySupplementalInput(
+  record: Record<string, unknown>
+): Message['supplementalInput'] | undefined {
+  const payload = buildEventPayloadForRecord(record);
+  const raw = isRecord(record.supplemental_input)
+    ? record.supplemental_input
+    : isRecord(payload.supplemental_input)
+      ? payload.supplemental_input
+      : null;
+  const marked =
+    isTruthyHistoryFlag(record.is_supplemental_input) ||
+    isTruthyHistoryFlag(payload.is_supplemental_input) ||
+    Boolean(raw);
+  if (!marked) return undefined;
+
+  const executionId = raw ? pickFirstString(raw, ['execution_id', 'executionId']) ?? '' : '';
+  const streamMessageId = raw
+    ? pickFirstString(raw, ['stream_message_id', 'streamMessageId'])
+    : undefined;
+  const rawOffset = raw?.stream_offset ?? raw?.streamOffset;
+  const numericOffset =
+    typeof rawOffset === 'number'
+      ? rawOffset
+      : typeof rawOffset === 'string' && rawOffset.trim()
+        ? Number(rawOffset)
+        : 0;
+  // Older records nested the input ID; new records use the ordinary request_id.
+  const requestId = raw?.request_id ?? record.request_id ?? payload.request_id;
+  return {
+    executionId,
+    ...(typeof requestId === 'string' ? { requestId } : {}),
+    ...(streamMessageId ? { streamMessageId } : {}),
+    streamOffset: Number.isFinite(numericOffset) && numericOffset >= 0 ? numericOffset : 0,
+  };
+}
+
 function compactTokenCount(value: number): string {
   const abs = Math.abs(value);
   if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
@@ -975,6 +1014,8 @@ function parseHistoryTimelineEntry(
   sessionId: string,
   subagentId?: string,
 ): HistoryTimelineEntry | null {
+  const eventPayload = buildEventPayloadForRecord(record);
+  if ((isSuppressedOutput(record) || isSuppressedOutput(eventPayload)) && record.event_type !== 'chat.tool_result') return null;
   const role = normalizeHistoryRole(record.role);
   const at = recordTimestampIso(record) ?? '';
   const forkedFromSessionId = readForkSourceSessionId(record);
@@ -1005,6 +1046,7 @@ function parseHistoryTimelineEntry(
     const userCrossSession =
       extractCrossSessionMessage(record) ??
       extractCrossSessionMessage(buildEventPayloadForRecord(record));
+    const supplementalInput = extractHistorySupplementalInput(record);
     const id = userCrossSession
       ? crossSessionUserMessageId(userCrossSession.messageId)
       : restoredId;
@@ -1013,6 +1055,7 @@ function parseHistoryTimelineEntry(
       message: {
         id,
         role: 'user',
+        outputOrder: readOutputOrder(record) ?? readOutputOrder(eventPayload),
         content,
         timestamp: at,
         ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
@@ -1021,6 +1064,7 @@ function parseHistoryTimelineEntry(
         ...(skills && skills.length > 0 ? { skills } : {}),
         ...(userAutomation ? { automation: userAutomation } : {}),
         ...(userCrossSession ? { crossSession: userCrossSession } : {}),
+        ...(supplementalInput ? { supplementalInput } : {}),
       },
     };
   }
@@ -1165,6 +1209,8 @@ function parseHistoryTimelineEntry(
       message: {
         id,
         role: 'assistant',
+        outputOrder: readOutputOrder(record) ?? readOutputOrder(payload),
+        outputPhaseId: typeof record.output_phase_id === 'string' ? record.output_phase_id : undefined,
         content,
         timestamp: at,
         ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
@@ -1487,6 +1533,7 @@ function materializeHistoryTimeline(
       reasoningReplay.push({
         at: e.at,
         text: e.text,
+        outputOrder: e.outputOrder,
         agentTemplateName: e.agentTemplateName,
         updatedAt: e.updatedAt,
       });
@@ -1543,6 +1590,7 @@ export interface HistoryTimelinePreview {
   messages: Message[];
   executions: ToolExecution[];
   reasoningSegments: {
+    outputOrder?: OutputOrder;
     id: string;
     text: string;
     startedAt: number;
@@ -1584,6 +1632,7 @@ export function parseHistoryJsonFileToTimelinePreview(
     if (reasoningText) {
       entries.push({
         kind: 'reasoning',
+        outputOrder: readOutputOrder(item, 'reasoning_output_order'),
         at: recordTimestampIso(item) ?? '',
         text: reasoningText,
         agentTemplateName: readHistoryAgentTemplateName(item),
@@ -1620,10 +1669,11 @@ function buildReasoningSegmentsFromReplay(
   const seen = new Set<string>();
   items.forEach((item, index) => {
     const text = item.text?.trim();
-    if (!text || seen.has(text)) {
+    const identity = item.outputOrder ? `${item.outputOrder.requestId}:${item.outputOrder.sequence}` : text;
+    if (!text || seen.has(identity)) {
       return;
     }
-    seen.add(text);
+    seen.add(identity);
     const parsed = parseTimestampToMs(item.at);
     // 解析失败时跳过该段，勿用 index 当 epoch（会让 startMs≈0，耗时爆炸）
     if (!Number.isFinite(parsed)) {
@@ -1640,6 +1690,7 @@ function buildReasoningSegmentsFromReplay(
     segments.push({
       id: `hist-preview-rsn-${sessionId}-${index}`,
       text,
+      outputOrder: item.outputOrder,
       startedAt,
       closed: true,
       ...(item.agentTemplateName ? { agentTemplateName: item.agentTemplateName } : {}),
@@ -1673,12 +1724,14 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       const agentTemplateName = readAgentTemplateName(item.payload);
       byId.set(n.id, {
         toolCallId: n.id,
+        outputOrder: n.outputOrder,
         toolCall: {
           id: n.id,
           name: n.name,
           arguments: n.arguments,
           description: n.description,
           formatted_args: n.formatted_args,
+          call_goal: n.call_goal,
           display_name: n.display_name,
           memberName: n.memberName,
           reviewer: n.reviewer,
@@ -1918,6 +1971,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       if (reasoningText) {
         entries.unshift({
           kind: 'reasoning',
+          outputOrder: readOutputOrder(full, 'reasoning_output_order'),
           at: recordTimestampIso(full) ?? '',
           text: reasoningText,
           agentTemplateName: readHistoryAgentTemplateName(full),
@@ -2122,6 +2176,7 @@ export function fetchHistoryCursorBatch(
       if (reasoningText) {
         entries.unshift({
           kind: 'reasoning',
+          outputOrder: readOutputOrder(full, 'reasoning_output_order'),
           at: recordTimestampIso(full) ?? '',
           text: reasoningText,
           agentTemplateName: readHistoryAgentTemplateName(full),

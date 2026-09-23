@@ -12,8 +12,6 @@ from pathlib import Path
 from typing import Any
 import uuid
 
-from jiuwenswarm.server.runtime.session.history_io import run_history_io
-
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_provider,
     video_search,
@@ -24,6 +22,7 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_gateway import (
     QwenOmniRealtimeConfig,
 )
 from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import qwen_omni_tools
+from jiuwenswarm.extensions.video_duplex.backend.tasks.prompts import task_receipt_followup
 from jiuwenswarm.extensions.video_duplex.backend.video_files import normalize_file_items
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
 from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -149,6 +148,16 @@ def _append_joyai_log(event: dict[str, Any]) -> None:
     _append_jsonl(raw_path, raw_record)
 
 
+def _validate_joyai_result(result: Any) -> None:
+    """Reject broken internal action results before using them for task control."""
+    if (
+        not isinstance(result, dict)
+        or any(not isinstance(result.get(key), str) for key in ("decision", "response", "delegation"))
+        or result.get("decision") not in {"silence", "response", "delegation"}
+    ):
+        raise ValueError("JoyAI returned an invalid action result")
+
+
 def _is_allowed_image_data_url(value: str) -> bool:
     header, separator, _ = value.partition(",")
     if not separator or not header.lower().startswith("data:"):
@@ -181,7 +190,7 @@ def register_video_live_handler(
     *,
     agent_client: Any = None,
     normalize_media_attachments: Any = None,
-) -> None:
+) -> video_search.VideoSearchManager:
     search_manager = video_search.VideoSearchManager(
         channel,
         agent_client,
@@ -335,6 +344,7 @@ def register_video_live_handler(
             if frame_time_range:
                 request_args.append(frame_time_range)
             result = await joyai_provider.request_frame(*request_args)
+            _validate_joyai_result(result)
         except Exception as exc:  # noqa: BLE001
             error = str(exc) or "JoyAI frame request failed"
             error_code = (
@@ -342,58 +352,123 @@ def register_video_live_handler(
                 if isinstance(exc, joyai_provider.JoyAIRateLimitError)
                 else "JOYAI_ERROR"
             )
-            await asyncio.to_thread(_append_joyai_log, {
-                **request_log,
-                "stage": "failed",
-                "error": error,
-                "error_code": error_code,
-            })
+            await asyncio.to_thread(
+                _append_joyai_log,
+                {
+                    **request_log,
+                    "stage": "failed",
+                    "error": error,
+                    "error_code": error_code,
+                },
+            )
             await channel.send_response(
                 ws, req_id, ok=False, error=error, code=error_code
             )
             return
 
+        # JoyAI has a delegation marker rather than native function calls. Only
+        # explicit schema-validated JSON is a control; no text intent classifier.
+        scheduling = None
+        for operation_index in range(3):
+            delegation = str(result.get("delegation") or "").strip()
+            if result.get("decision") != "delegation" or not delegation.startswith("{"):
+                break
+            try:
+                from .qwen_omni_tools import parse_qwen_omni_tool_call
+
+                value = json.loads(delegation)
+                if not isinstance(value, dict) or set(value) != {"name", "arguments"}:
+                    raise ValueError("Invalid task operation")
+                if value["name"] not in {
+                    "jiuwen_delegate",
+                    "jiuwen_task_query",
+                    "jiuwen_task_modify",
+                    "jiuwen_task_cancel",
+                }:
+                    raise ValueError("Unsupported task operation")
+                owner, scope = await search_manager.scope(
+                    ws, {"search_session_id": search_session_id}
+                )
+                call = parse_qwen_omni_tool_call(
+                    {
+                        **value,
+                        "call_id": f"{params.get('command_id') or req_id}:{operation_index}",
+                    }
+                )
+                if call.name == "jiuwen_delegate":
+                    scheduling = {
+                        k: call.arguments[k]
+                        for k in ("independent", "depends_on", "resources")
+                        if k in call.arguments
+                    }
+                    result = {**result, "delegation": call.task}
+                    break
+                receipt = await search_manager.operate(owner, scope, call)
+                # Feed facts through the same provider conversation, including ids
+                # needed for query -> modify. A receipt cannot manufacture a task.
+                followup = task_receipt_followup(receipt)
+                result = await joyai_provider.request_frame(
+                    frame_data_url, followup, upstream_session_id
+                )
+                _validate_joyai_result(result)
+            except Exception as exc:
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
+                )
+                return
+        else:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="Task operation limit reached; query current state",
+                code="TASK_REQUEST_REJECTED",
+            )
+            return
+
         search_job = None
         tools_used: list[str] = []
-        delegation = str(result.get("delegation") or "").strip()[:500]
-        if (
-            result.get("decision") == "delegation"
-            and delegation
-        ):
-            search_question = question[:500] or delegation
-            search_job = search_manager.find_running(
-                query=delegation,
-                search_session_id=search_session_id,
-            )
-            if search_job is None:
-                search_job = search_manager.start(
+        delegation = str(result.get("delegation") or "").strip()
+        if result.get("decision") == "delegation" and delegation:
+            try:
+                search_job = await search_manager.start(
                     ws,
-                    question=search_question,
+                    question=question or delegation,
                     query=delegation,
                     search_session_id=search_session_id,
                     visual_context=str(result.get("response") or ""),
                     frame_data_url=frame_data_url,
+                    command_id=str(params.get("command_id") or req_id),
+                    **({"scheduling": scheduling} if scheduling is not None else {}),
                 )
-            tools_used.append("jiuwen_research")
-        await asyncio.to_thread(_append_joyai_log, {
-            **request_log,
-            "stage": "completed",
-            "decision": result["decision"],
-            "response": result["response"],
-            "delegation": result["delegation"],
-            "raw_content": result["raw_content"],
-            "model_raw_content": result.get("model_raw_content"),
-            "latency_ms": result["latency_ms"],
-            "timing": result["timing"],
-            "tools_used": tools_used,
-            "search_job": search_job,
-        })
+            except ValueError as exc:
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
+                )
+                return
+            tools_used.append("jiuwen_delegate")
+        await asyncio.to_thread(
+            _append_joyai_log,
+            {
+                **request_log,
+                "stage": "completed",
+                "decision": result.get("decision"),
+                "response": result.get("response"),
+                "delegation": result.get("delegation"),
+                "raw_content": result.get("raw_content"),
+                "model_raw_content": result.get("model_raw_content"),
+                "latency_ms": result.get("latency_ms"),
+                "timing": result.get("timing"),
+                "tools_used": tools_used,
+                "search_job": search_job,
+            },
+        )
         await channel.send_response(
             ws,
             req_id,
             ok=True,
             payload={
-                "response": result["response"],
+                "response": result.get("response"),
                 "search_job": search_job,
             },
         )
@@ -550,12 +625,12 @@ def register_video_live_handler(
         previous_title: str | None = None
         if role == "user" and content.strip():
             # Refresh before history writes so a rename by AgentServer is respected.
-            metadata = await run_history_io(get_session_metadata, visible_session_id, cache_bust=True)
+            metadata = get_session_metadata(visible_session_id, cache_bust=True)
             previous_title = str(metadata.get("title") or "")
             if previous_title == "Full-duplex conversation":
                 # Older plugin versions persisted this placeholder as a real title.
                 # Reuse Jiuwen's auto-title policy when that conversation resumes.
-                await run_history_io(update_session_metadata,
+                update_session_metadata(
                     session_id=visible_session_id,
                     clear_title=True,
                     user_content=content,
@@ -563,7 +638,7 @@ def register_video_live_handler(
                     sync_write=True,
                 )
 
-        await run_history_io(append_history_record,
+        append_history_record(
             session_id=visible_session_id,
             request_id=f"video-duplex-{event_id}",
             channel_id="video_duplex",
@@ -575,8 +650,7 @@ def register_video_live_handler(
             mode="agent",
         )
         if previous_title is not None:
-            metadata = await run_history_io(get_session_metadata, visible_session_id)
-            title = str(metadata.get("title") or "")
+            title = str(get_session_metadata(visible_session_id).get("title") or "")
             if title and title != previous_title:
                 # The native listener updates both the header and workspace sidebar.
                 await channel.send_event(ws, "session.updated", {
@@ -599,6 +673,7 @@ def register_video_live_handler(
         **voice_handlers,
         "video.qwen.tool": search_manager.handle_qwen_tool,
         "video.search.status": search_manager.handle_status,
+        "video.search.list": search_manager.handle_list,
         "video.search.control": search_manager.handle_control,
     }
     for method, handler in handlers.items():
@@ -613,3 +688,5 @@ def register_video_live_handler(
         "module_path": __file__,
         "search_status_enabled": True,
     })
+
+    return search_manager

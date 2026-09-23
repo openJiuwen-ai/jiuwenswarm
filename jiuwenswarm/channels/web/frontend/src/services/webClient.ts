@@ -327,7 +327,14 @@ class WebClient {
         messageType: 'req',
         data: message,
       });
-      this.ws?.send(JSON.stringify(message));
+      try {
+        options.onRequestId?.(id);
+        this.ws!.send(JSON.stringify(message));
+      } catch (error) {
+        window.clearTimeout(timeoutId);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -434,10 +441,12 @@ class WebClient {
       if (!eventName) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
-        event: eventName,
-        payload: this.normalizePayload(msg.payload),
+        // Older gateways wrap control ACKs in chat.final; an ACK must never close a turn.
+        event: eventName === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : eventName,
+        payload,
         seq: typeof msg.seq === 'number' ? msg.seq : undefined,
         stream_id: typeof msg.stream_id === 'string' ? msg.stream_id : undefined,
       };
@@ -448,10 +457,11 @@ class WebClient {
       if (!mappedEvent) {
         return null;
       }
+      const payload = this.normalizePayload(msg.payload);
       return {
         type: 'event',
-        event: mappedEvent,
-        payload: this.normalizePayload(msg.payload),
+        event: mappedEvent === 'chat.final' && payload.event_type === 'runtime.accepted' ? 'runtime.accepted' : mappedEvent,
+        payload,
       };
     }
 
@@ -514,7 +524,8 @@ class WebClient {
       typeof message.payload.error === 'string'
         ? message.payload.error
         : i18n.t('network.requestFailed');
-    pending.reject(this.createWebError(error, undefined, requestId, true));
+    const code = typeof message.payload.code === 'string' ? message.payload.code : undefined;
+    pending.reject(this.createWebError(error, code, requestId, true, message.payload));
   }
 
   private dispatchEvent(event: WsEvent): void {

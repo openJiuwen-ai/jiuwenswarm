@@ -56,6 +56,14 @@ export function formatJsonContent(content: string): string {
 }
 
 /**
+ * Clipboard text for the file-preview Copy button.
+ * JSON copies the pretty-printed view shown in the panel; other types copy the source.
+ */
+export function getPreviewCopyText(path: string, content: string): string {
+  return isJsonFilePath(path) ? formatJsonContent(content) : content;
+}
+
+/**
  * 下载预览文件：优先走 pywebview 桌面接口（download_file），否则回退浏览器 <a> 下载。
  * - downloadUrl：二进制/图片等由后端提供的下载地址
  * - content：文本内容，桌面端会转为 dataURL 保存

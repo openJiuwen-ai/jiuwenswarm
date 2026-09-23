@@ -1,7 +1,7 @@
 /**
  * RSI 详情 Header：实验名称 + Tag 信息区 + 右侧操作按钮（状态切换）。
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../../utils/desktopSave';
 import completeIcon from '../../../assets/rsi/rsi-complete.svg';
@@ -65,6 +65,69 @@ export function RsiDetailHeader({
   const [confirmAction, setConfirmAction] = useState<'delete' | 'pause' | 'stop' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [failureReasonOpen, setFailureReasonOpen] = useState(false);
+  const failureReasonAnchorRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!failureReasonOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!failureReasonAnchorRef.current?.contains(event.target as Node)) {
+        setFailureReasonOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFailureReasonOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [failureReasonOpen]);
+
+  useEffect(() => {
+    setFailureReasonOpen(false);
+  }, [task.task_id, task.failure_reason]);
+
+  const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 错误/成功提示 1 秒后自动消失，避免残留
+  const clearActionMessages = useCallback(() => {
+    if (clearTimerRef.current) {
+      clearTimeout(clearTimerRef.current);
+      clearTimerRef.current = null;
+    }
+    setActionError(null);
+    setActionSuccess(null);
+  }, []);
+
+  const showActionMessage = useCallback((kind: 'error' | 'success', message: string) => {
+    if (clearTimerRef.current) {
+      clearTimeout(clearTimerRef.current);
+      clearTimerRef.current = null;
+    }
+    if (kind === 'error') {
+      setActionError(message);
+    } else {
+      setActionSuccess(message);
+    }
+    clearTimerRef.current = setTimeout(() => {
+      clearTimerRef.current = null;
+      setActionError(null);
+      setActionSuccess(null);
+    }, 1000);
+  }, []);
+
+  // 卸载时清理定时器
+  useEffect(() => {
+    return () => {
+      if (clearTimerRef.current) {
+        clearTimeout(clearTimerRef.current);
+        clearTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const runAction = useCallback(
     async (action: RsiActionKind) => {
@@ -73,8 +136,7 @@ export function RsiDetailHeader({
         return;
       }
       setBusy(true);
-      setActionError(null);
-      setActionSuccess(null);
+      clearActionMessages();
       try {
         if (action === 'pause') {
           const res = await rsiTrainingPause(task.task_id);
@@ -106,7 +168,21 @@ export function RsiDetailHeader({
             const outcome = await executeDesktopSave(() => pywebviewApi.download_file!(downloadUrl, artifact.filename));
             if (outcome === 'failed') window.alert(t('artifacts.downloadFailed', { name: artifact.filename }));
           } else {
-            window.open(downloadUrl, '_blank', 'noopener,noreferrer');
+            // 同源时用隐藏 <a download> 触发下载：桌面 WebView 中 window.open 到后端
+            // HTTP URL 会直接导航覆盖应用页面，<a download> 则保持下载不导航；
+            // 跨源时 download 属性会被浏览器忽略，仍保留 window.open 的网页版行为。
+            const sameOrigin =
+              new URL(downloadUrl, window.location.href).origin === window.location.origin;
+            if (sameOrigin) {
+              const link = document.createElement('a');
+              link.href = downloadUrl;
+              link.download = artifact.filename;
+              document.body.appendChild(link);
+              link.click();
+              link.remove();
+            } else {
+              window.open(downloadUrl, '_blank', 'noopener,noreferrer');
+            }
           }
         } else if (action === 'install') {
           // Harness artifacts are refs, not archives; the RSI installer resolves and registers the package.
@@ -115,7 +191,8 @@ export function RsiDetailHeader({
           await usePluginPackageStore.getState().loadList('mine', { silent: true });
           const snapshotName =
             report?.best_artifact?.name || task.best_artifact?.name;
-          setActionSuccess(
+          showActionMessage(
+            'success',
             t('rsi.detail.actionInstallSuccess', {
               taskName: task.name,
               snapshotName,
@@ -124,7 +201,7 @@ export function RsiDetailHeader({
         }
       } catch (e) {
         const message = e instanceof Error && e.message ? e.message : t('rsi.detail.actionUnknownError');
-        setActionError(t('rsi.detail.actionFailed', { message }));
+        showActionMessage('error', t('rsi.detail.actionFailed', { message }));
         console.error('[rsi] action failed', action, e);
       } finally {
         setBusy(false);
@@ -139,6 +216,8 @@ export function RsiDetailHeader({
       markTaskInstalled,
       onOpenConfig,
       onOpenArtifact,
+      clearActionMessages,
+      showActionMessage,
     ],
   );
 
@@ -191,7 +270,34 @@ export function RsiDetailHeader({
         <div className="rsi-detail__tags">
           {badge.kind ? (
             <span className="rsi-detail__tag rsi-detail__tag--status">
-              <StatusIcon kind={badge.kind} title={failureReason ?? undefined} />
+              {failureReason ? (
+                <span className="rsi-detail__failure-anchor" ref={failureReasonAnchorRef}>
+                  <button
+                    type="button"
+                    className="rsi-detail__failure-trigger"
+                    onClick={() => setFailureReasonOpen((open) => !open)}
+                    aria-label={t('rsi.detail.failureReason', { defaultValue: '失败原因' })}
+                    aria-expanded={failureReasonOpen}
+                    aria-controls="rsi-failure-reason-popover"
+                    data-testid="rsi-failure-reason-trigger"
+                  >
+                    <StatusIcon kind={badge.kind} title={failureReason} />
+                  </button>
+                  {failureReasonOpen && (
+                    <div
+                      id="rsi-failure-reason-popover"
+                      className="rsi-detail__failure-popover"
+                      role="dialog"
+                      aria-label={t('rsi.detail.failureReason', { defaultValue: '失败原因' })}
+                      data-testid="rsi-failure-reason-popover"
+                    >
+                      {failureReason}
+                    </div>
+                  )}
+                </span>
+              ) : (
+                <StatusIcon kind={badge.kind} />
+              )}
               {t('rsi.detail.' + badge.labelKey)}
             </span>
           ) : (

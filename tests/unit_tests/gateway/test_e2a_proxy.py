@@ -9,7 +9,10 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from jiuwenswarm.gateway.routing.agent_client import (
+    DuplicateRequestIdError,
+    WebSocketAgentServerClient,
+)
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
@@ -17,6 +20,8 @@ from jiuwenswarm.gateway.routing.agent_request_timeout import (
 )
 from jiuwenswarm.gateway.routing.e2a_proxy import (
     SERVICE_UNAVAILABLE_CODE,
+    _new_fetch_request_id,
+    fetch_agent_unary,
     proxy_unary_request,
 )
 
@@ -211,3 +216,67 @@ async def test_proxy_agent_error_response_passthrough() -> None:
     assert resp["error"] == "boom"
     assert resp["code"] == "SESSION_LIST_FAILED"
     assert resp["payload"] is None
+
+
+def test_new_fetch_request_id_is_unique_in_process() -> None:
+    """request_id 撞号会让客户端拒绝注册队列（请求根本发不出去），必须唯一。
+
+    历史上只用 ``time.time_ns()``：Windows 上墙钟只有 100ns 步进，密集调用
+    会重复；归档等长耗时 RPC 与 2s 生命周期轮询共用连接时表现为偶发失败。
+    """
+    generated = [_new_fetch_request_id() for _ in range(20000)]
+    assert len(set(generated)) == len(generated)
+    assert all(rid.startswith("fetch-") for rid in generated)
+
+
+class DuplicateRidAgentClient:
+    """前 ``fail_times`` 次 send_request 抛出 request_id 撞号错误。"""
+
+    def __init__(self, fail_times: int = 1) -> None:
+        self.server_ready = True
+        self.fail_times = fail_times
+        self.request_ids: list[str] = []
+
+    async def send_request(self, envelope, *, timeout=None):
+        self.request_ids.append(envelope.request_id)
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise DuplicateRequestIdError(envelope.request_id)
+        return type("Resp", (), {"ok": True, "payload": {"archived": 3}})()
+
+
+@pytest.mark.asyncio
+async def test_fetch_agent_unary_retries_with_new_request_id_on_duplicate() -> None:
+    agent = DuplicateRidAgentClient(fail_times=1)
+
+    ok, payload = await fetch_agent_unary(
+        agent_client=agent,
+        req_method=ReqMethod.PROJECT_SESSIONS_ARCHIVE,
+        params={"project_id": "p1"},
+        session_id=None,
+        user_id="u1",
+        channel_id="web",
+    )
+
+    assert ok is True
+    assert payload == {"archived": 3}
+    assert len(agent.request_ids) == 2
+    assert agent.request_ids[0] != agent.request_ids[1]
+
+
+@pytest.mark.asyncio
+async def test_fetch_agent_unary_gives_up_after_single_retry() -> None:
+    agent = DuplicateRidAgentClient(fail_times=5)
+
+    ok, payload = await fetch_agent_unary(
+        agent_client=agent,
+        req_method=ReqMethod.PROJECT_SESSIONS_ARCHIVE,
+        params={"project_id": "p1"},
+        session_id=None,
+        user_id="u1",
+        channel_id="web",
+    )
+
+    assert ok is False
+    assert payload["code"] == SERVICE_UNAVAILABLE_CODE
+    assert len(agent.request_ids) == 2

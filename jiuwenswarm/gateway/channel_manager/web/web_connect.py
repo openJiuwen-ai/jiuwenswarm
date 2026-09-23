@@ -785,6 +785,7 @@ class WebChannel(BaseWsChannel):
     def _should_preserve_full_payload(event_name: str) -> bool:
         return (
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
+            or event_name in {"chat.input_received", "chat.output_phase"}
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
             or event_name.startswith("personal_context.context.")
@@ -847,7 +848,8 @@ class WebChannel(BaseWsChannel):
                 "role", "member_name", "member_action", "source_channel", "user_id", "display_name",
                 # 后台跨会话轮必须保留请求边界和来源。前端据此创建独立 turn，
                 # 不能把它的流式输出复用到上一轮用户消息上。
-                "request_id", "turn_request_id", "final_mode", "segment_id",
+                "request_id", "turn_request_id", "execution_id", "final_mode", "segment_id",
+                "output_phase_id", "output_suppressed", "output_order", "timestamp",
                 "message_origin", "session_message_id", "cross_session",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
                 # 否则前端无法按 source 短路：proactive 的 chat.reasoning 会被当作

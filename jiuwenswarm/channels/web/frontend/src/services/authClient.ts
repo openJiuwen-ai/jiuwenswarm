@@ -7,7 +7,12 @@
 
 import { getApiBase } from '../utils/env';
 
-/** 没有 cookie 的环境回落到请求头带会话 id。 */
+/**
+ * 没有 cookie 的环境回落到请求头带会话 id。
+ *
+ * 存 `localStorage` 而不是 `sessionStorage`：桌面 WebView 拿不到种在系统浏览器里的 cookie，
+ * 只剩这一条路，而 `sessionStorage` 关掉窗口就清空——重开应用会显示未登录，其实网关那边会话还在
+ */
 const SESSION_HEADER = 'X-Auth-Session';
 const SESSION_STORAGE_KEY = 'jiuwenswarm.auth.sessionId';
 
@@ -67,7 +72,7 @@ export class AuthApiError extends Error {
 
 function readStoredSessionId(): string {
   try {
-    return sessionStorage.getItem(SESSION_STORAGE_KEY) || '';
+    return localStorage.getItem(SESSION_STORAGE_KEY) || '';
   } catch {
     return '';
   }
@@ -75,10 +80,10 @@ function readStoredSessionId(): string {
 
 function writeStoredSessionId(sessionId: string): void {
   try {
-    if (sessionId) sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
-    else sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    if (sessionId) localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+    else localStorage.removeItem(SESSION_STORAGE_KEY);
   } catch {
-    /* 隐私模式下 sessionStorage 可能抛错，忽略即可——cookie 仍然生效 */
+    /* 隐私模式下 localStorage 可能抛错，忽略即可——cookie 仍然生效 */
   }
 }
 
@@ -193,7 +198,11 @@ export async function status(): Promise<AuthStatus> {
     headers: authHeaders({ Accept: 'application/json' }),
   });
   if (!response.ok) throw await readError(response, '获取登录状态失败');
-  return (await response.json()) as AuthStatus;
+  const data = (await response.json()) as AuthStatus;
+  // 会话确实过期了才丢掉本地句柄：它的优先级高于 cookie，留着会把还能用的 cookie 挡住。
+  // 未登录状态不算，活动下线时也是未登录，那时清掉，活动恢复后还需要重登一次
+  if (data.expired) writeStoredSessionId('');
+  return data;
 }
 
 export interface LoginModelInfo {

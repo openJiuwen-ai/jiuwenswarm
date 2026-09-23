@@ -7,6 +7,7 @@
   border-radius: var(--radius-xl);
   background: var(--color-surface-card);
   min-height: 620px;
+  max-height: 800px;
   flex: 1 1 0%;
 }
 

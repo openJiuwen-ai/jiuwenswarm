@@ -114,7 +114,7 @@ python3 <skill_dir>/scripts/validate_plugin.py <plugin-name>
 
 ### 第五步：注册
 
-`create` 与 `update` 均必须执行（register 对 marketplace 做 upsert；已安装插件会保留 `installed=true`）。命令按 mode 分派：
+`create` 与 `update` 均必须执行（register 对 marketplace 做 upsert，登记为已安装；已安装插件会保留 `installed=true`）。命令按 mode 分派：
 
 ```bash
 # create
@@ -138,8 +138,8 @@ python3 <skill_dir>/scripts/register_plugin.py <plugin-name> --bump
 2. **产物位置**：包路径（`create` 用 init 脚本输出；`update` 用已定位的 `local/<plugin-name>/`）
 3. **推荐提问**：直接引用 manifest 的 `quick_inputs`（3 条），强调是**能力触发语**而非人设介绍
 4. **如何启用**：
-  - `create`：打开扩展 → 找到该插件 → 安装 → **启用** → 新对话输入区勾选插件 chip
-  - `update`：若原本已启用，建议重开对话或切换装备以加载新版本；若未安装，同 `create` 先安装并启用
+  - `create`：打开扩展能看到该插件已安装；新对话输入区勾选插件 chip
+  - `update`：建议重开对话或切换装备以加载新版本
 
 ---
 

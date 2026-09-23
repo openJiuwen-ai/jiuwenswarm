@@ -10,8 +10,6 @@ import { RegisterMcpPage } from './RegisterMcpPage';
 import { UploadFileCreateModal } from './UploadFileCreateModal';
 import { Toast } from './Toast';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
-import { ApplicationPluginsPanel } from '../../applicationPlugins/ApplicationPluginsPanel';
-import type { ApplicationPluginContribution } from '../../applicationPlugins/types';
 
 // "管理我的插件/MCP" 一次性跳转握手：调用方（InputArea.tsx 的扩展面板）先把目标 tab 存进这个
 // 模块级变量，再触发 `jiuwen:nav` 切到 connectorMarket——ConnectorMarketPanel 挂载是这次导航
@@ -27,7 +25,6 @@ export function requestManageView(myKind: MarketKind) {
 
 type View =
   | { name: 'market' }
-  | { name: 'application-plugins' }
   | { name: 'plugin-detail'; id: string; fromMy: boolean }
   | { name: 'mcp-detail'; connectorName: string }
   | { name: 'create-manual' }
@@ -72,10 +69,6 @@ interface ConnectorMarketPanelProps {
    * 不传这个 prop 就退化成原来的"尚未接入"提示（同款可选 prop 处理）。
    */
   onCreateViaChat?: () => void;
-  applicationPlugins?: ApplicationPluginContribution[];
-  applicationPluginsLoading?: boolean;
-  applicationPluginsError?: string;
-  onRefreshApplicationPlugins?: () => Promise<void>;
 }
 
 export function ConnectorMarketPanel({
@@ -83,10 +76,6 @@ export function ConnectorMarketPanel({
   onUsePluginExample,
   onUseExtension,
   onCreateViaChat,
-  applicationPlugins = [],
-  applicationPluginsLoading = false,
-  applicationPluginsError = '',
-  onRefreshApplicationPlugins = async () => {},
 }: ConnectorMarketPanelProps = {}) {
   const { t } = useTranslation();
   const [view, setView] = useState<View>({ name: 'market' });
@@ -228,17 +217,6 @@ export function ConnectorMarketPanel({
             setUploadModalOpen(true);
           }}
           onRegisterCustomMcp={() => setView({ name: 'register-mcp' })}
-          onOpenApplicationPlugins={() => setView({ name: 'application-plugins' })}
-        />
-      )}
-
-      {view.name === 'application-plugins' && (
-        <ApplicationPluginsPanel
-          plugins={applicationPlugins}
-          loading={applicationPluginsLoading}
-          error={applicationPluginsError}
-          onRefresh={onRefreshApplicationPlugins}
-          onBack={() => setView({ name: 'market' })}
         />
       )}
 

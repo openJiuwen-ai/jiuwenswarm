@@ -1,5 +1,5 @@
 import type { Plugin } from 'vite'
-import { defineConfig } from 'vite'
+import { defineConfig, searchForWorkspaceRoot } from 'vite'
 import react from '@vitejs/plugin-react'
 import svgr from 'vite-plugin-svgr'
 import { spawn, spawnSync, type ChildProcess } from 'child_process'
@@ -1435,7 +1435,7 @@ export default defineConfig({
   base: isElectronBuild ? './' : '/',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   optimizeDeps: {
-    include: ['exceljs', 'jszip', 'saxes', 'ssf'],
+    include: ['exceljs', 'jszip', 'saxes', 'ssf', 'onnxruntime-web/wasm'],
   },
   resolve: {
     dedupe: ['react', 'react-dom'],
@@ -1444,10 +1444,18 @@ export default defineConfig({
       'lucide-react': path.resolve(__dirname, './node_modules/lucide-react'),
       react: path.resolve(__dirname, './node_modules/react'),
       'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
+      'react-i18next': path.resolve(__dirname, './node_modules/react-i18next'),
     },
   },
   server: {
     host: true,
+    fs: {
+      allow: [
+        searchForWorkspaceRoot(__dirname),
+        // Full-duplex audio worklets live outside the web frontend root.
+        path.resolve(__dirname, '../../../extensions/video_duplex/frontend'),
+      ],
+    },
     allowedHosts: ['127.0.0.1'],
     port: frontendPort,
     strictPort: true,

@@ -2975,3 +2975,45 @@ class TestRebindSessionProjectConcurrency:
         assert ch.get("cwd") == "/new/dir"
         # 陈旧快照的非 project 字段 (message_count) 应被保留
         assert after["message_count"] == 1
+
+
+class TestSessionPinOptimization:
+    def test_repeated_pin_skips_scan_and_write(self, sessions_dir, monkeypatch):
+        from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+        sm.init_session_metadata(session_id="repeat")
+        assert sm.set_session_pinned("repeat", True) == (True, 1)
+        original_read = sm._read_metadata
+        reads = []
+
+        def read(sid, **kwargs):
+            reads.append(sid)
+            return original_read(sid, **kwargs)
+
+        monkeypatch.setattr(sm, "_read_metadata", read)
+        def unexpected_write(**kwargs):
+            pytest.fail("unchanged pin must not write metadata")
+        monkeypatch.setattr(sm, "update_session_metadata", unexpected_write)
+        assert sm.set_session_pinned("repeat", True) == (True, 1)
+        assert reads == ["repeat"]
+
+    def test_pin_order_and_unpin_only_write_changed_sessions(self, sessions_dir, monkeypatch):
+        from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+        for sid in ("a", "b", "c"):
+            sm.init_session_metadata(session_id=sid)
+            sm.set_session_pinned(sid, True)
+        before = {sid: _read_json(sessions_dir / sid / "metadata.json") for sid in ("a", "b", "c")}
+        assert [before[sid]["pin_order"] for sid in ("c", "b", "a")] == [1, 2, 3]
+        original_update = sm.update_session_metadata
+        writes = []
+        def update(**kwargs):
+            writes.append(kwargs["session_id"])
+            return original_update(**kwargs)
+        monkeypatch.setattr(sm, "update_session_metadata", update)
+        assert sm.set_session_pinned("b", False) == (False, 0)
+        assert writes == ["b", "a"]
+        for sid, order in (("c", 1), ("a", 2), ("b", 0)):
+            after = _read_json(sessions_dir / sid / "metadata.json")
+            assert after["pin_order"] == order
+            assert after["last_message_at"] == before[sid]["last_message_at"]

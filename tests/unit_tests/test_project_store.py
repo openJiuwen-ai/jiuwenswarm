@@ -38,7 +38,7 @@ class TestCreateProject:
         assert proj.project_id.startswith("proj_")
         assert proj.name == "我的应用"
         assert proj.project_dir == "E:\\projA"
-        assert "hidden" not in proj.to_dict()
+        assert proj.hidden is False
         assert proj.pinned is False
         assert proj.pin_order == 0
 
@@ -169,8 +169,6 @@ class TestCronProjectResolution:
         )
 
         assert resolve_cron_project_id(project_dir) == "proj_external"
-
-
 
 
 class TestPinReindex:
@@ -366,8 +364,6 @@ class TestRenameProject:
         assert rename_project("proj_nope", "X") is None
 
 
-
-
 class TestCrossModeCoexistence:
     """work/code 双模式隔离:同名同路径可在两模式各自独立存在,同模式内仍冲突。"""
 
@@ -398,7 +394,7 @@ class TestCrossModeCoexistence:
         """按 (dir, mode) 查询 / 重命名 / 删除 均不跨模式影响。"""
         from jiuwenswarm.server.runtime.session.project_store import (
             create_project_checked, get_project_by_dir_and_mode,
-            rename_project, get_project_by_id, delete_project,
+            rename_project, get_project_by_id, hide_project,
             save_project, create_project, ProjectNameConflict,
         )
 
@@ -418,8 +414,8 @@ class TestCrossModeCoexistence:
             rename_project(proj_code_c.project_id, "AppB")
 
         # Deleting one mode leaves the project in the other mode untouched.
-        delete_project(proj_work.project_id)
-        assert get_project_by_id(proj_work.project_id, cache_bust=True) is None
+        hide_project(proj_work.project_id)
+        assert get_project_by_id(proj_work.project_id, cache_bust=True).hidden is True
         assert get_project_by_id(proj_code.project_id, cache_bust=True) is not None
 
     @staticmethod

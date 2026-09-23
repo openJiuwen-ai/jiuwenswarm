@@ -492,13 +492,14 @@ body.workspace-resize-active iframe {
   /* 页面通栏容器：flex 列，自身不限宽也不加横向 padding——
      滚动条由内层滚动列渲染，始终贴 viewport 最右缘 */
   .page-content {
+    --page-content-padding-top: 32px;
     display: flex;
     flex: 1 1 0%;
     flex-direction: column;
     min-height: 0;
     overflow: hidden;
     background: var(--color-surface-card);
-    padding-top: 32px;
+    padding-top: var(--page-content-padding-top);
   }
 
   /* 限宽骨架：页面不滚动的固定区（header/toolbar 等）使用，
@@ -543,15 +544,28 @@ body.workspace-resize-active iframe {
     scrollbar-gutter: stable;
     scrollbar-gutter: stable both-edges;
     padding-top: 16px;
+    margin-bottom: 16px;
   }
 
   .detail-body>* {
     flex-shrink: 0;
   }
 
-  /* skill 详情加载中的整区域状态视图：参考 agent-management-detail--state，
-     但用 flex:1 + min-height:0 真正撑满详情可用区域，数据到达前后外层结构不位移，避免页面抖动。
-     返回按钮贴容器顶部，文案区 flex:1 占满剩余空间并在其中水平垂直居中 */
+  /* 加载层覆盖整个详情页，返回按钮保留原有顶部内边距。 */
+  .detail-loading-shell {
+    position: relative;
+    margin-top: calc(-1 * var(--page-content-padding-top));
+    padding-top: var(--page-content-padding-top);
+  }
+
+  .detail-loading-center {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+  }
+
   .skill-detail-state {
     flex: 1;
     min-height: 0;
@@ -561,11 +575,6 @@ body.workspace-resize-active iframe {
   }
 
   .skill-detail-state p {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
     margin: 0;
   }
 
@@ -1026,20 +1035,36 @@ body.workspace-resize-active iframe {
     width: 100%;
     min-width: 28rem;
     margin: 0;
-    border-collapse: collapse;
-    border-color: var(--color-border-default);
+    border-collapse: separate;
+    border-spacing: 0;
     font-size: 0.875em;
     line-height: 1.5;
   }
 
   .chat-markdown-table-wrap :where(th, td) {
-    border: 1px solid var(--color-border-default);
-    border-color: var(--color-border-default);
+    border-right: 1px solid var(--color-border-default);
+    border-bottom: 1px solid var(--color-border-default);
     padding: 0.5em 0.75em;
     vertical-align: top;
     text-align: start;
     overflow-wrap: anywhere;
     word-break: break-word;
+  }
+
+  .chat-markdown-table-wrap :where(th, td):last-child {
+    border-right: 0;
+  }
+
+  .chat-markdown-table-wrap :where(tbody tr:last-child th, tbody tr:last-child td) {
+    border-bottom: 0;
+  }
+
+  .chat-markdown-table-wrap :where(thead) {
+    border-bottom: 0;
+  }
+
+  .chat-markdown-table-wrap :where(tbody tr, tfoot) {
+    border: 0;
   }
 
   .chat-markdown-table-wrap :where(th) {
@@ -1671,15 +1696,14 @@ body.workspace-resize-active iframe {
     position: relative;
   }
 
-  .chat-timeline>* {
-    margin-top: 0;
-    margin-bottom: 0;
+  [data-timeline-scroll-root] {
+    overflow-anchor: none;
   }
 
-  .chat-timeline__history-sentinel {
-    height: 1px;
-    margin-bottom: -9px;
-    pointer-events: none;
+  .chat-timeline > *,
+  .chat-timeline-row > * {
+    margin-top: 0;
+    margin-bottom: 0;
   }
 
   /* ====== Tool Tree ====== */
@@ -1776,8 +1800,8 @@ body.workspace-resize-active iframe {
   }
 
   .tool-tree__cat-icon {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
@@ -1786,14 +1810,15 @@ body.workspace-resize-active iframe {
   }
 
   .tool-tree__cat-icon svg {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
   }
 
   .tool-tree__header-line-text {
+    flex: 0 1 auto;
     min-width: 0;
     color: var(--tool-muted, var(--color-text-secondary));
-    font-size: var(--font-size-xs);
+    font-size: var(--font-size-base, 14px);
     font-weight: 500;
     line-height: 1.3;
     white-space: nowrap;
@@ -1802,10 +1827,26 @@ body.workspace-resize-active iframe {
   }
 
   .tool-tree__header-text {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
     min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+
+  .tool-tree__header-goal {
+    flex: 1 1 0;
+    min-width: 0;
+    color: var(--tool-muted, var(--color-text-secondary));
+    font-size: var(--font-size-xs);
+    font-weight: 400;
+    line-height: 1.3;
+    opacity: 0.75;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .tool-tree__header-title-row {
@@ -1886,7 +1927,7 @@ body.workspace-resize-active iframe {
   }
 
   .completed-work-col--nested .completed-work-chip--streak {
-    font-size: var(--font-size-2xs, 11px);
+    font-size: var(--font-size-base, 14px);
     color: var(--color-text-meta);
   }
 
@@ -1900,7 +1941,7 @@ body.workspace-resize-active iframe {
     border: 0;
     background: transparent;
     color: var(--color-text-meta);
-    font-size: var(--font-size-sm, 13px);
+    font-size: var(--font-size-base, 14px);
     line-height: 1.4;
     cursor: pointer;
     text-align: left;
@@ -1909,15 +1950,15 @@ body.workspace-resize-active iframe {
 
   .completed-work-chip__icon {
     display: inline-flex;
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     flex-shrink: 0;
     color: var(--color-text-meta);
   }
 
   .completed-work-chip__icon svg {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
   }
 
   .completed-work-chip__label {
@@ -2126,8 +2167,8 @@ body.workspace-resize-active iframe {
 
   /* 紧贴工具名的展开箭头：默认隐藏，hover 才浮现为「>」，展开后转成向下「v」。 */
   .tool-tree-item__disclosure {
-    width: 12px;
-    height: 12px;
+    width: 16px;
+    height: 16px;
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
@@ -2140,8 +2181,8 @@ body.workspace-resize-active iframe {
   }
 
   .tool-tree-item__disclosure svg {
-    width: 12px;
-    height: 12px;
+    width: 16px;
+    height: 16px;
   }
 
   .tool-tree-item__button:hover .tool-tree-item__disclosure,
@@ -2380,13 +2421,13 @@ body.workspace-resize-active iframe {
   }
 
   .tool-tree-item__status {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
   }
 
   .tool-tree-item__status svg {
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
   }
 
   .tool-tree-item__name {

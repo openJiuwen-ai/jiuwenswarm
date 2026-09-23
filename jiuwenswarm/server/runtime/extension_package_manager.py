@@ -914,12 +914,15 @@ def _read_marketplace_entries(marketplace_path: Path) -> list[dict]:
 
 
 def _slim_marketplace_entry(entry: dict) -> dict:
-    """Keep only the runtime marketplace contract: id, source, installed."""
+    """Keep only the runtime marketplace contract."""
     slim: dict[str, Any] = {"id": entry.get("id")}
     source = entry.get("source")
     if isinstance(source, str) and source:
         slim["source"] = source
     slim["installed"] = bool(entry.get("installed", False))
+    updated_at_ns = entry.get("updated_at_ns")
+    if isinstance(updated_at_ns, int):
+        slim["updated_at_ns"] = updated_at_ns
     return slim
 
 
@@ -1027,7 +1030,11 @@ def upsert_agent_group_marketplace_entry(
     _upsert_marketplace_entry(
         _AGENT_GROUP_KIND,
         package_id,
-        fields={"installed": installed, "source": source},
+        fields={
+            "installed": installed,
+            "source": source,
+            "updated_at_ns": time.time_ns(),
+        },
     )
 
 
@@ -1944,8 +1951,19 @@ def list_agent_groups(params: dict | None = None) -> list[dict]:
     candidates.extend(("local", package_dir) for package_dir in local.values())
 
     market = _marketplace_index(read_agent_group_marketplace_entries())
+
+    def newest_first(item: tuple[str, Path]) -> tuple[int, str]:
+        package_dir = item[1]
+        updated_at_ns = (market.get(package_dir.name) or {}).get("updated_at_ns")
+        if not isinstance(updated_at_ns, int):
+            try:
+                updated_at_ns = (package_dir / "manifest.json").stat().st_mtime_ns
+            except OSError:
+                updated_at_ns = 0
+        return -updated_at_ns, package_dir.name
+
     cards: list[dict] = []
-    for source, package_dir in sorted(candidates, key=lambda item: item[1].name):
+    for source, package_dir in sorted(candidates, key=newest_first):
         try:
             card = _build_agent_group_card(
                 package_dir,
@@ -3774,13 +3792,15 @@ def import_agent_template(params: dict) -> dict:
 
 
 def import_agent_group(params: dict) -> dict:
-    """Import one AgentGroup definition into .agent_teams/agent_groups/local."""
-    return _import_package_from_path(
+    """Import and install one AgentGroup definition."""
+    result = _import_package_from_path(
         params,
         kind=_AGENT_GROUP_KIND,
         kind_label="agent_group",
         package_type="agent_group",
     )
+    install_agent_group(result)
+    return result
 
 
 def import_plugin_package(params: dict) -> dict:

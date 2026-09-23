@@ -3,7 +3,7 @@
  *
  * 从 index.tsx 抽取，内容保持不变。
  */
-import { useCallback, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight } from 'lucide-react';
@@ -88,34 +88,6 @@ export function TopAnchorTooltip({ pos, text }: { pos: { left: number; top: numb
     >
       {text}
     </div>
-  );
-}
-
-/** 弹窗右上角关闭按钮（24px，可传 size 覆盖） */
-export function ModalCloseButton({
-  onClick,
-  label,
-  testId,
-  size = 24,
-}: {
-  onClick: () => void;
-  label: string;
-  testId?: string;
-  size?: number;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      data-testid={testId}
-      className="flex items-center justify-center rounded-md hover:bg-secondary text-text-meta hover:text-text"
-      style={{ width: size, height: size }}
-    >
-      <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-      </svg>
-    </button>
   );
 }
 
@@ -247,7 +219,6 @@ export function FilterDropdown<T extends string>({
   value,
   onChange,
   options,
-  style,
   testId,
 }: {
   open: boolean;
@@ -256,16 +227,15 @@ export function FilterDropdown<T extends string>({
   value: T;
   onChange: (value: T) => void;
   options: { value: T; label: string }[];
-  style?: CSSProperties;
   testId?: string;
 }) {
   const selected = options.find((o) => o.value === value);
   return (
-    <div className="relative" style={style}>
+    <div className="relative">
       <button
         type="button"
         onClick={() => onToggle(!open)}
-        className="flex items-center justify-between w-full h-[32px] text-xs text-text bg-transparent"
+        className="flex items-center gap-1 h-[32px] text-xs text-text bg-transparent"
         data-testid={testId}
       >
         <span className="truncate">{selected ? selected.label : ''}</span>

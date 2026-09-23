@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronRight, Loader2 } from 'lucide-react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import { CategoryTabs, type PageCardActionProps } from '../ui';
-import { MARKETPLACE_CATEGORIES } from './skillPanelUtils';
+import { MARKETPLACE_CATEGORIES, hubMarketplaceItemKey } from './skillPanelUtils';
 import { HubSkillCard } from './SkillPanelWidgets';
 import type { MarketplaceSubView } from './useHubMarketplace';
 import type { MarketplacePluginItem } from './types';
@@ -152,7 +152,7 @@ export function MarketplaceView({
             <div className="card-grid-auto">
               {hubSkills.map((skill) => (
                 <HubSkillCard
-                  key={skill.asset_id}
+                  key={hubMarketplaceItemKey(skill)}
                   skill={skill}
                   onSelect={() => onSelectHubSkill(skill)}
                   action={renderHubSkillAction(skill)}

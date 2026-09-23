@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, net, session, shell, WebContentsView } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const { randomBytes, randomUUID } = require('node:crypto');
 const { inspect } = require('node:util');
@@ -41,6 +41,10 @@ const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024;
 const MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991;
+const DESKTOP_WINDOW_PREFERENCES_FILENAME = 'desktop-window.json';
+const CLOSE_ACTION_ASK = 'ask';
+const CLOSE_ACTION_HIDE = 'hide';
+const CLOSE_ACTION_QUIT = 'quit';
 // 桌面锁定: 每次启动生成一次性 token(对齐 desktop_app 的 token_urlsafe(32)),
 // 仅注入 web 静态服务子进程; 首导航 URL 携带 ?dt=<token> 换取 HttpOnly Cookie,
 // 本机浏览器直开对话页时返回 403。
@@ -173,6 +177,9 @@ if (app.isPackaged) {
 installMainConsoleTee();
 
 let mainWindow = null;
+let tray = null;
+let closePromptPromise = null;
+let quitRequested = false;
 // Pages are isolated by conversation/member; their persistent login profile is shared.
 const browserViews = new Map();
 const browserPanelIdentities = new Map();
@@ -511,6 +518,38 @@ function userWorkspaceDir() {
   return path.join(app.getPath('home'), '.jiuwenswarm');
 }
 
+function desktopWindowPreferencesPath() {
+  const workspaceDir = process.env.JIUWENSWARM_DATA_DIR || userWorkspaceDir();
+  return path.join(workspaceDir, 'config', DESKTOP_WINDOW_PREFERENCES_FILENAME);
+}
+
+function loadCloseAction() {
+  try {
+    const payload = JSON.parse(fsSync.readFileSync(desktopWindowPreferencesPath(), 'utf8'));
+    return payload?.close_action === CLOSE_ACTION_ASK
+      || payload?.close_action === CLOSE_ACTION_HIDE
+      || payload?.close_action === CLOSE_ACTION_QUIT
+      ? payload.close_action
+      : null;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.error('[electron] failed to load window preferences', error);
+    return null;
+  }
+}
+
+function saveCloseAction(action) {
+  if (action !== CLOSE_ACTION_ASK && action !== CLOSE_ACTION_HIDE && action !== CLOSE_ACTION_QUIT) return false;
+  try {
+    const target = desktopWindowPreferencesPath();
+    fsSync.mkdirSync(path.dirname(target), { recursive: true });
+    fsSync.writeFileSync(target, `${JSON.stringify({ close_action: action }, null, 2)}\n`, 'utf8');
+    return true;
+  } catch (error) {
+    console.error('[electron] failed to save window preferences', error);
+    return false;
+  }
+}
+
 function isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
@@ -796,6 +835,7 @@ function forceStopServices() {
 
 function requestShutdown(exitCode = 0) {
   requestedExitCode = Math.max(requestedExitCode, exitCode);
+  quitRequested = true;
   stopBrowserEndpointsPublisher();
   app.quit();
 }
@@ -824,6 +864,112 @@ function resolveIconPath() {
   if (fsSync.existsSync(publicIcon)) return publicIcon;
   const fallback = path.join(__dirname, '..', '..', 'web', 'frontend', 'public', 'logo.ico');
   return fsSync.existsSync(fallback) ? fallback : undefined;
+}
+
+function showAndMaximizeMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.maximize();
+  mainWindow.focus();
+  return true;
+}
+
+function ensureTray() {
+  if (tray && !tray.isDestroyed()) return true;
+  const iconPath = resolveIconPath();
+  if (!iconPath) return false;
+  try {
+    tray = new Tray(iconPath);
+    tray.setToolTip('WorkSwarm');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: '显示并最大化', click: showAndMaximizeMainWindow },
+      { type: 'separator' },
+      { label: '退出', click: () => requestShutdown(0) },
+    ]));
+    tray.on('double-click', showAndMaximizeMainWindow);
+    return true;
+  } catch (error) {
+    console.error('[electron] failed to create tray icon', error);
+    tray = null;
+    return false;
+  }
+}
+
+function destroyTray() {
+  if (tray && !tray.isDestroyed()) tray.destroy();
+  tray = null;
+}
+
+async function promptCloseAction() {
+  if (!mainWindow || mainWindow.isDestroyed()) return { action: null, remember: false };
+  const promptWindow = new BrowserWindow({
+    parent: mainWindow,
+    modal: true,
+    show: false,
+    width: 430,
+    height: 310,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    autoHideMenuBar: true,
+    title: '关闭 WorkSwarm',
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><style>
+    *{box-sizing:border-box}body{margin:0;padding:24px;font:14px/1.5 system-ui,sans-serif;color:CanvasText;background:Canvas}
+    h1{margin:0 0 16px;font-size:16px}fieldset{margin:0;padding:0;border:0}label{display:block;margin:12px 0}
+    .remember{margin-top:20px}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:24px}
+    button{min-width:80px;padding:6px 16px;color:ButtonText;background:ButtonFace;border:1px solid ButtonBorder;border-radius:4px}
+  </style></head><body><h1>关闭窗口后，您希望执行什么操作？</h1>
+  <form action="jiuwenswarm-close-choice://submit" method="get"><fieldset>
+    <label><input type="radio" name="action" value="hide" checked> 最小化到托盘</label>
+    <label><input type="radio" name="action" value="quit"> 退出应用</label>
+    <label class="remember"><input type="checkbox" name="remember" value="1"> 记住我的选择</label>
+  </fieldset><div class="actions"><button type="button" onclick="location.href='jiuwenswarm-close-choice://cancel'">取消</button><button type="submit">确认</button></div></form>
+  </body></html>`;
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+      if (!promptWindow.isDestroyed()) promptWindow.destroy();
+    };
+    promptWindow.webContents.on('will-navigate', (event, targetUrl) => {
+      const target = new URL(targetUrl);
+      if (target.protocol !== 'jiuwenswarm-close-choice:') return;
+      event.preventDefault();
+      if (target.hostname !== 'submit') {
+        finish({ action: null, remember: false });
+        return;
+      }
+      const action = target.searchParams.get('action') === CLOSE_ACTION_QUIT
+        ? CLOSE_ACTION_QUIT
+        : CLOSE_ACTION_HIDE;
+      finish({ action, remember: target.searchParams.get('remember') === '1' });
+    });
+    promptWindow.on('closed', () => finish({ action: null, remember: false }));
+    promptWindow.once('ready-to-show', () => promptWindow.show());
+    void promptWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
+  });
+}
+
+async function handleMainWindowCloseRequest() {
+  let action = loadCloseAction();
+  if (action === null || action === CLOSE_ACTION_ASK) {
+    const choice = await promptCloseAction();
+    action = choice.action;
+    if (choice.remember) saveCloseAction(action);
+  }
+  if (action === null) return;
+  if (action === CLOSE_ACTION_QUIT) {
+    requestShutdown(0);
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (ensureTray()) mainWindow.hide();
+  else mainWindow.minimize();
 }
 
 function loadingHtml() {
@@ -2090,9 +2236,15 @@ function registerIpcHandlers() {
     return true;
   });
   registerHandler('desktop:close-window', () => {
-    mainWindow.close();
+    requestShutdown();
     return true;
   });
+  registerHandler('desktop:get-close-action', () => (
+    process.platform === 'win32' ? loadCloseAction() || CLOSE_ACTION_ASK : null
+  ));
+  registerHandler('desktop:set-close-action', action => (
+    process.platform === 'win32' && saveCloseAction(action)
+  ));
   registerHandler('desktop:open-external-url', async url => {
     const hubBase = (
       process.env.SKILLHUB_OAUTH_BASE_URL
@@ -2159,6 +2311,24 @@ function registerIpcHandlers() {
       : Array.isArray(paths) ? paths.filter(item => typeof item === 'string' && item.trim())
         : [];
     return describeLocalPaths(list);
+  });
+  // 切换账号需要清掉华为账号在应用内浏览器里的登录态
+  registerHandler('auth:clear-huawei-sign-in', async () => {
+    const all = await session.defaultSession.cookies.get({});
+    const cookies = all.filter(cookie => /(^|\.)huawei\.com$/i.test(cookie.domain.replace(/^\./, '')));
+    let removed = 0;
+    for (const cookie of cookies) {
+      const host = cookie.domain.replace(/^\./, '');
+      const url = `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path || '/'}`;
+      try {
+        await session.defaultSession.cookies.remove(url, cookie.name);
+        removed += 1;
+      } catch (error) {
+        console.warn('[electron] failed to remove cookie', cookie.name, error);
+      }
+    }
+    console.log('[electron] cleared huawei sign-in cookies', removed);
+    return removed;
   });
   registerHandler('desktop:get-clipboard-files', async () => {
     const paths = await clipboardFilePaths();
@@ -2332,7 +2502,7 @@ function registerIpcHandlers() {
         // directly (dev-equivalent behavior) instead of leaving the app
         // running with no update at all.
         void shell.openPath(target).then(errorMessage => {
-          if (!errorMessage) setTimeout(() => app.quit(), 250);
+          if (!errorMessage) setTimeout(() => requestShutdown(0), 250);
         });
       });
       helper.once('spawn', () => {
@@ -2343,7 +2513,7 @@ function registerIpcHandlers() {
     }
     const errorMessage = await shell.openPath(target);
     if (errorMessage) return false;
-    setTimeout(() => app.quit(), 250);
+    setTimeout(() => requestShutdown(0), 250);
     return true;
   });
 
@@ -2416,6 +2586,22 @@ async function createMainWindow() {
     },
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.on('close', event => {
+    if (process.platform === 'darwin') {
+      if (shuttingDown) return;
+      event.preventDefault();
+      mainWindow.hide();
+      return;
+    }
+    if (process.platform === 'win32' && !quitRequested) {
+      event.preventDefault();
+      if (closePromptPromise === null) {
+        closePromptPromise = handleMainWindowCloseRequest()
+          .catch(error => console.error('[electron] close behavior failed', error))
+          .finally(() => { closePromptPromise = null; });
+      }
+    }
+  });
   mainWindow.webContents.on('zoom-changed', () => {
     setTimeout(emitLayoutInvalidated, 0);
   });
@@ -2531,13 +2717,19 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => {
     if (!mainWindow) return;
+    if (process.platform === 'win32') {
+      showAndMaximizeMainWindow();
+      return;
+    }
     if (mainWindow.isMinimized()) mainWindow.restore();
+    if (process.platform === 'darwin') mainWindow.show();
     mainWindow.focus();
   });
 
   app.whenReady().then(async () => {
     // 共享浏览器 partition 的 permission handler 在 ensureBrowserView 内按需注册。
     // 先读回上次运行保存的会话页面 URL（重启还原），再进入启动流程。
+    Menu.setApplicationMenu(null);
     loadSessionLastUrls();
     if (cdpPortPending) {
       cdpPortResolution = resolveCdpPortFromDevToolsActivePort();
@@ -2568,15 +2760,28 @@ process.on('message', message => {
 });
 
 app.on('before-quit', event => {
+  quitRequested = true;
   if (shutdownComplete) return;
   event.preventDefault();
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
   saveSessionLastUrls();
   void Promise.all([abortAllBlobSaves(), stopServices()]).finally(() => {
     shutdownComplete = true;
+    destroyTray();
     app.exit(requestedExitCode);
   });
 });
-app.on('window-all-closed', () => app.quit());
-app.on('will-quit', () => stopBrowserEndpointsPublisher());
+app.on('activate', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+app.on('will-quit', () => {
+  stopBrowserEndpointsPublisher();
+  destroyTray();
+});
 process.once('exit', forceStopServices);

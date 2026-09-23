@@ -837,6 +837,7 @@ def build_mock_artifact_adapters(
             ),
             model_resolver=model_resolver,
             requires_model=requires_model,
+            tasks_root=tasks_root,
         ),
         "ARTIFACT:PAPER": ArtifactEngineAdapter(
             "PAPER",
@@ -849,6 +850,7 @@ def build_mock_artifact_adapters(
             ),
             model_resolver=model_resolver,
             requires_model=requires_model,
+            tasks_root=tasks_root,
         ),
     }
 

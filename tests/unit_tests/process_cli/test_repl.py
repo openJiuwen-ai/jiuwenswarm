@@ -48,6 +48,34 @@ def test_parser_enters_interactive_mode_without_prompt() -> None:
     assert args.output == "human"
 
 
+def test_forwarded_worker_stdio_is_forced_to_utf8(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Stream:
+        def reconfigure(self, *, encoding: str, errors: str) -> None:
+            calls.append((encoding, errors))
+
+    monkeypatch.setattr(main_module.sys, "stdin", Stream())
+    monkeypatch.setattr(main_module.sys, "stdout", Stream())
+    monkeypatch.setattr(main_module.sys, "stderr", Stream())
+
+    main_module._configure_forwarded_stdio(
+        argparse.Namespace(_forwarded_live_input=True)
+    )
+
+    assert calls == [("utf-8", "replace")] * 3
+
+
+def test_worker_environment_declares_utf8_pipe_encoding(monkeypatch) -> None:
+    monkeypatch.setenv("PROCESS_CLI_PARENT_VALUE", "preserved")
+
+    env = repl._worker_environment()
+
+    assert env["PROCESS_CLI_PARENT_VALUE"] == "preserved"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["PYTHONUTF8"] == "1"
+
+
 def test_process_cli_applies_requested_cwd_before_runtime_imports(
     monkeypatch,
     tmp_path: Path,
@@ -142,6 +170,7 @@ def test_worker_command_uses_a_fresh_process_entry_and_runtime_session() -> None
         "jiuwenswarm.channels.process_cli.main",
     ]
     assert "--_interactive-worker" in command
+    assert "--_forwarded-live-input" in command
     assert command[command.index("--session") + 1] == "process_cli_session_1"
     assert command[command.index("--mode") + 1] == "code.normal"
     assert command[command.index("--work-mode") + 1] == "code"
@@ -248,6 +277,220 @@ async def test_runtime_log_drain_accepts_a_line_larger_than_stream_limit() -> No
 
     assert tail[-1] == "last line"
     assert tail[-2].endswith("x" * 100)
+
+
+@pytest.mark.asyncio
+async def test_runtime_log_drain_routes_receipt_out_of_model_output() -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        (
+            repl.FORWARDED_RECEIPT_PREFIX
+            + '{"status":"accepted","message":"accepted"}\n'
+            + "ordinary worker log\n"
+        ).encode()
+    )
+    reader.feed_eof()
+    receipts: list[str] = []
+
+    tail = await repl._drain_runtime_logs(
+        reader,
+        on_receipt=receipts.append,
+    )
+
+    assert receipts == ["accepted"]
+    assert list(tail) == ["ordinary worker log"]
+
+
+@pytest.mark.asyncio
+async def test_parent_repl_forwards_steer_before_worker_runtime_is_ready(
+    monkeypatch,
+) -> None:
+    forwarded = asyncio.Event()
+    prompts: list[str] = []
+
+    class FakeWriter:
+        def __init__(self) -> None:
+            self.data = bytearray()
+            self.closed = False
+
+        def write(self, data: bytes) -> None:
+            self.data.extend(data)
+            forwarded.set()
+
+        async def drain(self) -> None:
+            return
+
+        def is_closing(self) -> bool:
+            return self.closed
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            return
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = FakeWriter()
+            self.returncode = None
+
+    reads = 0
+
+    async def fake_read_live_prompt(_session, _layout) -> str:
+        nonlocal reads
+        reads += 1
+        prompts.append("live")
+        if reads == 1:
+            return "worker 启动前的补充要求"
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(repl, "_read_live_prompt", fake_read_live_prompt)
+    process = FakeProcess()
+    layout = repl.LiveTurnLayout("initial")
+    task = asyncio.create_task(
+        repl._forward_live_input(
+            process,
+            prompt_session=object(),
+            layout=layout,
+        )
+    )
+    await asyncio.wait_for(forwarded.wait(), timeout=1)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert prompts[0] == "live"
+    assert bytes(process.stdin.data) == "worker 启动前的补充要求\n".encode()
+    assert process.stdin.closed
+    assert layout.supplements[0].text == "worker 启动前的补充要求"
+
+
+@pytest.mark.asyncio
+async def test_worker_output_is_relayed_above_the_parent_prompt() -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_data("模型输出".encode())
+    reader.feed_eof()
+    layout = repl.LiveTurnLayout("request")
+
+    await repl._relay_worker_output(reader, layout=layout)
+
+    assert layout.output_text == "模型输出"
+
+
+@pytest.mark.asyncio
+async def test_run_worker_owns_prompt_and_pipes_from_spawn_until_exit(
+    monkeypatch,
+    capsys,
+) -> None:
+    prompt_session = object()
+    read_count = 0
+    observed_kwargs: dict[str, object] = {}
+    observed_layout: list[repl.LiveTurnLayout] = []
+
+    class ObservedLayout(repl.LiveTurnLayout):
+        def __init__(self, request_text: str) -> None:
+            super().__init__(request_text)
+            observed_layout.append(self)
+
+    class FakeWriter:
+        def __init__(self) -> None:
+            self.data = bytearray()
+            self.received = asyncio.Event()
+            self.closed = False
+
+        def write(self, data: bytes) -> None:
+            self.data.extend(data)
+            self.received.set()
+
+        async def drain(self) -> None:
+            return
+
+        def is_closing(self) -> bool:
+            return self.closed
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            return
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = FakeWriter()
+            self.stdout = asyncio.StreamReader()
+            self.stderr = asyncio.StreamReader()
+            self.returncode = None
+
+        async def wait(self) -> int:
+            await self.stdin.received.wait()
+            self.stdout.feed_data("worker model output\n".encode())
+            self.stdout.feed_eof()
+            self.stderr.feed_data(
+                (
+                    repl.FORWARDED_RECEIPT_PREFIX
+                    + '{"status":"accepted","message":"accepted"}\n'
+                ).encode()
+            )
+            self.stderr.feed_eof()
+            self.returncode = 0
+            return 0
+
+    process = FakeProcess()
+
+    async def fake_create_subprocess_exec(*command, **kwargs):
+        observed_kwargs.update(kwargs)
+        command_list = list(command)
+        result_path = Path(
+            command_list[command_list.index("--_session-result-file") + 1]
+        )
+        result_path.write_text("runtime-session", encoding="utf-8")
+        return process
+
+    class FakeApp:
+        is_running = False
+
+    class FakePromptSession:
+        app = FakeApp()
+
+    live_prompt_session = FakePromptSession()
+
+    async def fake_read_live_prompt(session, layout) -> str:
+        nonlocal read_count
+        assert session is live_prompt_session
+        assert layout.request_text == "initial request"
+        read_count += 1
+        if read_count == 1:
+            return "spawn window steer"
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(repl, "LiveTurnLayout", ObservedLayout)
+    monkeypatch.setattr(repl, "_read_live_prompt", fake_read_live_prompt)
+    monkeypatch.setattr(
+        repl,
+        "_create_live_prompt_session",
+        lambda: live_prompt_session,
+    )
+
+    result = await repl._run_worker(
+        _args(),
+        prompt="initial request",
+        session_id=None,
+        prompt_session=prompt_session,
+    )
+
+    assert result == (0, "runtime-session")
+    assert bytes(process.stdin.data) == b"spawn window steer\n"
+    assert process.stdin.closed
+    assert observed_kwargs["stdin"] is asyncio.subprocess.PIPE
+    assert observed_kwargs["stdout"] is asyncio.subprocess.PIPE
+    assert observed_kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert observed_layout[0].request_text == "initial request"
+    assert observed_layout[0].supplements[0].text == "spawn window steer"
+    assert observed_layout[0].supplements[0].status == "accepted"
+    assert observed_layout[0].output_text == "worker model output\n"
+    assert capsys.readouterr().out.count("worker model output") == 1
 
 
 @pytest.mark.asyncio
@@ -490,9 +733,7 @@ async def test_repl_mode_switch_is_local_and_next_worker_uses_canonical_mode(
     monkeypatch,
     capsys,
 ) -> None:
-    prompts = iter(
-        ("/mode", "/mode team.code", "hello", "/mode plan", "/exit")
-    )
+    prompts = iter(("/mode", "/mode team.code", "hello", "/mode plan", "/exit"))
     calls: list[tuple[str, str, str]] = []
 
     async def fake_read_prompt(_session) -> str:

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests for the injected ``call_goal`` schema description.
+"""Tests for ``call_goal`` schema injection and argument extraction.
 
 ``call_goal`` is produced by the model and rendered by every channel, so the
 description injected into the tool schema must not pin its language: it has to
@@ -9,7 +9,9 @@ follow the conversation instead of mandating one language.
 
 from __future__ import annotations
 
-from jiuwenswarm.common.tool_display import inject_call_goal_schema
+import json
+
+from jiuwenswarm.common.tool_display import extract_call_goal, inject_call_goal_schema
 
 
 def _injected_description() -> str:
@@ -61,3 +63,49 @@ class TestCallGoalSchemaLanguage:
         parameters: dict = {"type": "object", "properties": {"call_goal": own}}
         inject_call_goal_schema(parameters)
         assert parameters["properties"]["call_goal"] is own
+
+
+class TestExtractCallGoal:
+
+    @staticmethod
+    def test_strips_call_goal_from_dict_arguments():
+        goal, cleaned = extract_call_goal(
+            {"path": "/workspace/foo.py", "call_goal": "调研 openJiuwen 官网信息"}
+        )
+        assert goal == "调研 openJiuwen 官网信息"
+        assert cleaned == {"path": "/workspace/foo.py"}
+        assert "call_goal" not in cleaned
+
+    @staticmethod
+    def test_accepts_camel_case_call_goal():
+        goal, cleaned = extract_call_goal({"path": "a.py", "callGoal": "Read file"})
+        assert goal == "Read file"
+        assert cleaned == {"path": "a.py"}
+
+    @staticmethod
+    def test_empty_call_goal_returns_empty_string():
+        goal, cleaned = extract_call_goal({"path": "a.py"})
+        assert goal == ""
+        assert cleaned == {"path": "a.py"}
+
+    @staticmethod
+    def test_preserves_business_display_name():
+        """工具业务参数里的 display_name 不受影响。"""
+        goal, cleaned = extract_call_goal(
+            {
+                "display_name": "研究专家",
+                "call_goal": "创建调研成员",
+            }
+        )
+        assert goal == "创建调研成员"
+        assert cleaned == {"display_name": "研究专家"}
+
+    @staticmethod
+    def test_strips_call_goal_from_json_string_arguments():
+        raw = json.dumps(
+            {"path": "/tmp/x", "call_goal": "读文件"},
+            ensure_ascii=False,
+        )
+        goal, cleaned = extract_call_goal(raw)
+        assert goal == "读文件"
+        assert json.loads(cleaned) == {"path": "/tmp/x"}

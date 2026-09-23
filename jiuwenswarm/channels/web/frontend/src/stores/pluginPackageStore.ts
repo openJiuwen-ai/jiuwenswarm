@@ -249,16 +249,12 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
   // "假装成功"——后端没实现这个接口时（backend-requests.md 需求2），这里如实失败，让调用方给
   // 用户看错误提示，而不是伪造一条本地数据后刷新就消失。
   //
-  // 2026-08-21：create_plugin_package 落盘时固定 installed=False，手动创建的插件永远是"已创建
-  // 但未安装"。这里一度改成创建成功后自动串联调用 install(id)（照抄 MCP 侧 registerCustom 自动
-  // connect 的模式），但用户跟同事对齐产品方案后明确要求撤回——创建这一步只管创建，不自动安装，
-  // 用户需要自己再点一次安装。
+  // 创建落盘仍是 installed=False（与专家团 create_agent_group 相同）。对齐专家团前端：
+  // 创建成功后立刻 install，用户回到「我的」即可使用；依赖未就绪则记进 installPendingMap。
   create: async (params) => {
     try {
       await pluginPackagesApi.create(params);
-      // 新建的包必然是 source==='local'，刷新 localPackages（'我的插件'桶）即可；2026-08-19
-      // loadList() 的 filter 语义改成跟 MCP 侧对齐后，裸调 loadList()（等价于 filter='builtin'）
-      // 会用只含 builtin 的结果覆盖 packages，刷不出刚创建的这条、还会短暂污染"插件广场"数据。
+      await get().install(params.id);
       await usePluginPackageStore.getState().loadList('mine');
       return true;
     } catch (error) {
@@ -267,12 +263,11 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
     }
   },
 
-  // 上传文件创建插件（plugin_packages.import_local，见 pluginPackagesApi.ts 头注释）：跟 create
-  // 一样是产出全新实体，没法安全地本地模拟成功，如实报错。成功后刷新 localPackages（'我的插件'
-  // 桶，导入的包必然是 source==='local'）。
+  // 上传文件创建插件：对齐专家团 import + install。导入成功后立刻 install，再刷新「我的插件」。
   importLocal: async (params) => {
     try {
-      await pluginPackagesApi.importLocal(params);
+      const created = await pluginPackagesApi.importLocal(params);
+      if (created?.id) await get().install(created.id);
       await usePluginPackageStore.getState().loadList('mine');
       return { ok: true };
     } catch (error) {

@@ -1,3 +1,5 @@
+import { readOutputOrder } from '../sessionOutput';
+import type { OutputOrder } from '../../types/message';
 import { parseSkillTreePath, type SkillTreePath } from '../../types/skillTree';
 import { parseBeamSearchProgress, type BeamSearchProgress } from '../../types/beamSearch';
 import type { AutoReviewerMetadata } from '../../types';
@@ -218,12 +220,15 @@ export function plannedGraphToMermaid(rawOutput: unknown): string | undefined {
 }
 
 export interface NormalizedToolCall {
+  outputOrder?: OutputOrder;
   id: string;
   name: string;
   arguments: Record<string, unknown>;
   description?: string;
   formatted_args?: string;
-  /** 后端下发的可读展示名（部分工具带），前端优先直接展示，省去本地推断。 */
+  /** 模型生成的自然语言目标，原样展示，不走 i18n。 */
+  call_goal?: string;
+  /** @deprecated 仅用于兼容旧事件，不参与标题渲染 */
   display_name?: string;
   memberName?: string;
   reviewer?: AutoReviewerMetadata;
@@ -259,6 +264,13 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
   const name = (typeof toolCallPayload.name === 'string' && toolCallPayload.name) || (typeof payload.tool_name === 'string' && payload.tool_name) || 'unknown';
   const description = typeof toolCallPayload.description === 'string' ? toolCallPayload.description : undefined;
   const formatted_args = typeof toolCallPayload.formatted_args === 'string' ? toolCallPayload.formatted_args : undefined;
+  const callGoalRaw =
+    typeof toolCallPayload.call_goal === 'string'
+      ? toolCallPayload.call_goal
+      : typeof toolCallPayload.callGoal === 'string'
+        ? toolCallPayload.callGoal
+        : '';
+  const call_goal = callGoalRaw.trim() || undefined;
   const displayNameRaw =
     (typeof toolCallPayload.display_name === 'string' && toolCallPayload.display_name) ||
     (typeof toolCallPayload.displayName === 'string' && toolCallPayload.displayName) ||
@@ -267,11 +279,13 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
   const memberName = resolveMemberName(toolCallPayload, payload);
 
   return {
+    outputOrder: readOutputOrder(payload),
     id,
     name,
     arguments: parseArguments(toolCallPayload.arguments),
     description,
     formatted_args,
+    call_goal,
     display_name,
     memberName,
     reviewer: normalizeReviewerMetadata(payload),

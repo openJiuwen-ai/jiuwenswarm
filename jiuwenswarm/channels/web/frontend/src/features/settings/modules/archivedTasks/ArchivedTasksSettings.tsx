@@ -31,6 +31,9 @@ function actionErrorKey(error: unknown): string {
   const code = getArchiveErrorCode(error);
   if (code === 'FORBIDDEN') return 'settingsPanel.archivedTasks.errors.forbidden';
   if (code === 'NOT_FOUND') return 'settingsPanel.archivedTasks.errors.notFound';
+  // 撤销归档会连带恢复被移除的项目；项目名被占用时给出可操作的提示，
+  // 而不是笼统的"操作失败"。
+  if (code === 'PROJECT_NAME_CONFLICT') return 'settingsPanel.archivedTasks.errors.projectNameConflict';
   return 'settingsPanel.archivedTasks.errors.requestFailed';
 }
 
@@ -106,7 +109,11 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
       clearPendingAction(actionKey);
     }
     refreshLists();
-    void useWorkspaceStore.getState().refreshWorkspaceData();
+    // 撤销一个属于已移除项目的归档会连带恢复该项目，其定时任务随之重新可见
+    // （默认保持停用），cron 列表必须一起刷，否则停留在隐藏前的状态。
+    void (session.project_hidden
+      ? useWorkspaceStore.getState().refreshWorkspaceAndCron()
+      : useWorkspaceStore.getState().refreshWorkspaceData());
   };
 
   const handleConfirmDelete = async () => {
@@ -353,6 +360,15 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
                     </span>
                   ) : null}
                 </div>
+                {group.projectHidden ? (
+                  <p
+                    className="archived-tasks__removed-project-note"
+                    data-testid="archived-tasks-removed-project-note"
+                    data-variant={group.key}
+                  >
+                    {t('settingsPanel.archivedTasks.removedProjectNote')}
+                  </p>
+                ) : null}
                 <ul className="archived-tasks__session-list" data-testid="archived-tasks-session-list">
                   {group.sessions.map(renderSessionRow)}
                 </ul>

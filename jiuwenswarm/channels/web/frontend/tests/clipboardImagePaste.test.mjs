@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  canRetryAttachmentDraft,
   ensureClipboardImageFilename,
   getClipboardImageFiles,
   inspectClipboardImageFiles,
   IMAGE_INPUT_DISABLED_ALERT_KEY,
   isImageInputDisabled,
+  resolveImageMimeType,
   shouldAlertImagePasteDisabled,
 } from '../node_modules/.cache/clipboard-image-paste/clipboardImagePaste.js';
 
@@ -159,6 +161,23 @@ test('readClipboardImageFilesFromClipboardApi maps clipboard PNG blobs', async (
   assert.equal(files.length, 1);
   assert.equal(files[0].name, 'clipboard-image.png');
   assert.equal(files[0].type, 'image/png');
+});
+
+test('webp octet-stream from the desktop exe is corrected to image/webp', () => {
+  assert.equal(resolveImageMimeType('sample.webp', 'application/octet-stream'), 'image/webp');
+  assert.equal(resolveImageMimeType('sample.WEBP', ''), 'image/webp');
+  assert.equal(resolveImageMimeType('sample.webp'), 'image/webp');
+  assert.equal(resolveImageMimeType('photo.png', 'image/png'), 'image/png');
+  assert.equal(resolveImageMimeType('sample.webp', 'image/webp'), 'image/webp');
+  assert.equal(resolveImageMimeType('pic.png', 'image/x-png'), 'image/x-png');
+});
+
+test('desktop attachment drafts can retry without a browser File', () => {
+  assert.equal(canRetryAttachmentDraft({ base64Data: 'abc', localPath: 'C:/sample.webp' }), true);
+  assert.equal(canRetryAttachmentDraft({ localPath: 'C:/notes.txt' }), true);
+  assert.equal(canRetryAttachmentDraft({ file: {} }), true);
+  assert.equal(canRetryAttachmentDraft({}), false);
+  assert.equal(canRetryAttachmentDraft({ base64Data: '', localPath: '  ' }), false);
 });
 
 test('readClipboardImageFilesFromClipboardApi returns empty when clipboard.read unavailable', async () => {

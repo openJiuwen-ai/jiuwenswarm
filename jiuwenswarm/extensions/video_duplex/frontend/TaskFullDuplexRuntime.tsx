@@ -23,6 +23,12 @@ import {
   stopTaskFullDuplex,
 } from "./taskFullDuplexRuntimeStore";
 
+const WAIT_REASON_LABELS: Record<string, string> = {
+  dependency_failed_or_cancelled: "前置任务已失败或取消，本任务暂不能执行",
+  dependency_pending: "等待前置任务完成",
+  capacity_order_or_resource: "等待执行名额、队列顺序或资源释放",
+};
+
 type PersistedTimelineEvent = Record<string, unknown> & {
   kind:
     "user" | "assistant" | "reasoning" | "tool_call" | "tool_result" | "file";
@@ -259,10 +265,11 @@ export function TaskFullDuplexRuntime({
           payload.query?.trim() ||
           previousTask?.title ||
           "Jiuwen Core Agent",
-        status,
-        sequence: latest?.sequence || 0,
+        status: status === "waiting_user" ? "running" : status,
+        sequence: payload.sequence ?? latest?.sequence ?? 0,
         detail:
-          payload.error ||
+          (status === "waiting_user" ? "等待回答：" + (payload.interaction?.questions.map(q => q.question).join("；") || "") : "") ||
+          WAIT_REASON_LABELS[payload.wait_reason || ""] || payload.error || payload.display_result || payload.result ||
           [latest?.title, latest?.detail].filter(Boolean).join("\n"),
         createdAt: (entries[0]?.timestamp || Date.now() / 1000) * 1000,
         steps: plan,
@@ -270,6 +277,7 @@ export function TaskFullDuplexRuntime({
         queuePosition: payload.queue_position ?? previousTask?.queuePosition,
         queueVersion: payload.queue_version ?? previousTask?.queueVersion,
       });
+      if (payload.replay) return;
       const processed =
         processedCoreProgressRef.current.get(jobId) || new Set<number>();
       processedCoreProgressRef.current.set(jobId, processed);
@@ -478,6 +486,32 @@ export function TaskFullDuplexRuntime({
       unsubscribe.forEach((off) => off());
     };
   }, [handleCoreAgentProgress]);
+
+  useEffect(() => {
+    if (!sessionId || sessionId === "new") return;
+    let disposed = false;
+    let loading = false;
+    const scope = conversationJobsRef.current.bind(sessionId);
+    const recover = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        let offset: number | null = 0;
+        while (offset !== null && !disposed) {
+          const page: { jobs: SearchJobPayload[]; next_offset: number | null } =
+            await webRequest("video.search.list", { search_session_id: scope, offset });
+          for (const job of page.jobs) {
+            if (!disposed) handleCoreAgentProgress("progress", { ...job, replay: true });
+          }
+          offset = page.next_offset;
+        }
+      } catch { /* Next connection/poll retries the persisted snapshot. */ }
+      finally { loading = false; }
+    };
+    void recover();
+    const timer = window.setInterval(() => void recover(), 10000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [sessionId, handleCoreAgentProgress]);
 
   const setPanelRef = useCallback((panel: VideoLivePanelHandle | null) => {
     panelRef.current = panel;

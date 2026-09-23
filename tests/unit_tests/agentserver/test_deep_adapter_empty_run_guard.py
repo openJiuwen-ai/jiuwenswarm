@@ -5,8 +5,8 @@
 A corrupted upstream interruption state makes every chat request return
 instantly with 0 tokens, no output and no error. The guard must surface that
 as chat.error + WARNING instead of completing silently, while legitimate
-0-token exits (user cancel, HITL ask_user pending, active goal) must not be
-flagged.
+0-token exits (user cancel, HITL ask_user pending, active goal, forwarded
+tool events such as a Web plan-execute resume) must not be flagged.
 """
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -226,3 +226,57 @@ async def test_ask_user_interrupt_does_not_trigger_guard(monkeypatch):
     ]
     assert ask_user, "ask_user interrupt should still reach the client"
     assert not any(event.get("error_type") == "EmptyLLMRun" for event in events)
+
+
+@pytest.mark.anyio
+async def test_tool_only_zero_token_round_does_not_trigger_guard(monkeypatch):
+    """A 0-token round that still forwarded tool events is not a dead session.
+
+    Web plan-execute resume runs ``exit_plan_mode`` and force-finishes without
+    calling the LLM. That must complete as a normal tool-only turn, not
+    EmptyLLMRun.
+    """
+    adapter = _adapter_ready(monkeypatch)
+    _install_stream(
+        adapter,
+        [
+            SimpleNamespace(
+                type="tool_call",
+                payload={
+                    "tool_call": {
+                        "name": "exit_plan_mode",
+                        "tool_call_id": "call_1",
+                        "arguments": {},
+                    }
+                },
+            ),
+            SimpleNamespace(
+                type="tool_update",
+                payload={"tool_update": {"content": "running"}},
+            ),
+            SimpleNamespace(
+                type="tool_result",
+                payload={
+                    "tool_result": {
+                        "tool_name": "exit_plan_mode",
+                        "tool_call_id": "call_1",
+                        "result": "Plan mode ended.",
+                    }
+                },
+            ),
+        ],
+    )
+
+    chunks = [
+        chunk
+        async for chunk in adapter.process_message_stream_impl(
+            _chat_request(),
+            {"query": "你好"},
+        )
+    ]
+    events = _payload_events(chunks)
+
+    assert any(event.get("event_type") == "chat.tool_call" for event in events)
+    assert any(event.get("event_type") == "chat.tool_result" for event in events)
+    assert not any(event.get("error_type") == "EmptyLLMRun" for event in events)
+    assert any(event.get("event_type") == "chat.final" for event in events)

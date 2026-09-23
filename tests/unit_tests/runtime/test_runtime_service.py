@@ -412,7 +412,7 @@ async def test_runtime_activity_tracking_off_skips_target_and_history(monkeypatc
 
     started = await runtime._record_session_execution_started(request)
     runtime._record_session_execution_finished(request, succeeded=True)
-    prepare_result = await runtime.record_session_prepare(request)
+    prepare_result = await runtime.record_session_input_intent(request)
     await runtime.record_session_inactive(request)
 
     assert started is False
@@ -1594,7 +1594,8 @@ async def test_interrupt_answer_resumes_session_execution_after_stream_ends(
         plan_controller=FakePlanController(),
     )
     runtime._trigger_before_chat_request_hook = AsyncMock()
-    session_id = "ask-user-stream-session"
+    # Keep parameter cases separate from asynchronous metadata writes.
+    session_id = f"ask-user-stream-session-{expected_work_kind}"
     original = AgentRequest(
         request_id="original",
         channel_id="web",

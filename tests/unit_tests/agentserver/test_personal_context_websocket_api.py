@@ -503,11 +503,11 @@ PERSONAL_CONTEXT_HOST_CALLS = [
 ]
 
 
-def test_agentserver_registers_exact_25_personal_context_methods() -> None:
+def test_agentserver_registers_exact_26_personal_context_methods() -> None:
     assert server_module._PERSONAL_CONTEXT_REQ_METHODS == {
         item for item in ReqMethod if item.value.startswith("personal_context.")
     }
-    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 25
+    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 26
 
 
 @pytest.mark.asyncio

@@ -793,6 +793,15 @@ class SessionMessageService:
                         "is uncertain: message_id=%s",
                         claimed.message_id,
                     )
+                    # Release the target admission before publishing the
+                    # terminal ``unknown`` state.  Otherwise consumers that
+                    # observe that state can still see the target as busy
+                    # until the outer finally block gets scheduled.
+                    if acquired:
+                        await self._admission.end_session_message(
+                            target_session_id, run_id
+                        )
+                        acquired = False
                     result = SessionMessageExecutionResult(
                         status="unknown",
                         error_code="EXECUTION_WATCHDOG_TIMEOUT",

@@ -8,24 +8,29 @@
  * **标题也在这里自己渲染**，不交给模块定义的 `titleKey`，否则不渲染时会剩一个空标题。
  */
 
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { ChevronRight, LogIn, RefreshCw } from 'lucide-react';
+import { ChevronRight, LogIn } from 'lucide-react';
 
 import { Tag } from '../../../../components/ui';
+import { settingsActionIcons } from '../../../../assets/settings';
 import type { ModelQuota } from '../../../../services/authClient';
 import { requestLogin, useAuthStore } from '../../../../stores/authStore';
+import { useSessionStore } from '../../../../stores/sessionStore';
 import { useFreeModelsCampaign } from '../../../free-models/campaign';
 import { formatPoints, usedRatio } from '../../../free-models/points';
 import { describeQuotaExhausted, describeQuotaReset } from '../../../free-models/quotaReset';
 import { SettingRow, SettingsSection } from '../../components';
+import { FreeModelSettingsDialog } from './FreeModelSettingsDialog';
+import { LOGIN_MODEL_SOURCE } from './modelListOperations';
 import './FreeModelsSettings.css';
 
 interface QuotaView {
   islogin: boolean;
   quota: ModelQuota | null;
   loading: boolean;
+  failed: boolean;
   locale: string;
 }
 
@@ -70,8 +75,9 @@ function PointsHeadline({ islogin, quota, loading, locale }: QuotaView) {
  * 积分行的说明，回答"积分会不会回来、什么时候回来"：用完了说何时恢复；平时有周期就说周期
  * （每周一 08:00 刷新），没有周期就说清楚按用量扣减、用完即止。
  */
-function PointsHint({ islogin, quota, locale }: QuotaView) {
+function PointsHint({ islogin, quota, failed, locale }: QuotaView) {
   const { t } = useTranslation();
+  if (failed) return <>{t('auth.huawei.quota.fetchFailedHint')}</>;
   if (!islogin || quota === null) return <>{t('auth.huawei.quota.meteringHint')}</>;
   const reset = quota.exhausted
     ? describeQuotaExhausted(quota.reset_at, locale)
@@ -79,12 +85,7 @@ function PointsHint({ islogin, quota, locale }: QuotaView) {
   if (!reset) {
     return <>{quota.exhausted ? t('auth.huawei.quota.exhaustedHint') : t('auth.huawei.quota.meteringHint')}</>;
   }
-  return (
-    <span className="free-models-quota__hint">
-      <RefreshCw size={13} aria-hidden />
-      {t(reset.key, reset.params)}
-    </span>
-  );
+  return <>{t(reset.key, reset.params)}</>;
 }
 
 /** 有没有可画的用量明细：进度条或已用数至少知道一个。没有时整个明细区（连同分隔线）都不出现。 */
@@ -147,8 +148,15 @@ export function FreeModelsSettings() {
   const userId = useAuthStore((state) => state.userId);
   const quota = useAuthStore((state) => state.quota);
   const quotaAvailable = useAuthStore((state) => state.quotaAvailable);
+  const quotaError = useAuthStore((state) => state.quotaError);
   const quotaLoading = useAuthStore((state) => state.quotaLoading);
   const refreshQuota = useAuthStore((state) => state.refreshQuota);
+  const availableModels = useSessionStore((state) => state.availableModels);
+  const loginModels = useMemo(
+    () => availableModels.filter((model) => model.source === LOGIN_MODEL_SOURCE),
+    [availableModels],
+  );
+  const [configOpen, setConfigOpen] = useState(false);
 
   // 进设置页时查一次，登录态变了再查一次。积分会被对话消耗，缓着显示不如现查。
   useEffect(() => {
@@ -172,8 +180,15 @@ export function FreeModelsSettings() {
 
   const accountName = userName || userId || '';
   // 这套部署没接额度服务时整行不出现：显示"用量未知"只会让人以为出了问题。
-  const showQuotaRow = !islogin || quotaAvailable;
-  const view: QuotaView = { islogin, quota, loading: quotaLoading, locale: i18n.language || 'zh-CN' };
+  // 但"这次没查到"要显示成额度未知——整行凭空消失，用户只会以为功能坏了
+  const showQuotaRow = !islogin || quotaAvailable || quotaError;
+  const view: QuotaView = {
+    islogin,
+    quota,
+    loading: quotaLoading,
+    failed: quotaError,
+    locale: i18n.language || 'zh-CN',
+  };
   const lowBalance = islogin && quota !== null && quota.low_balance && !quota.exhausted;
 
   return (
@@ -235,7 +250,30 @@ export function FreeModelsSettings() {
             <PointsHeadline {...view} />
           </SettingRow>
         )}
+
+        {islogin && loginModels.length > 0 && (
+          <div className="setting-row">
+            <button
+              type="button"
+              className="setting-row__main free-models-account"
+              onClick={() => setConfigOpen(true)}
+              data-testid="settings-free-models-config"
+            >
+              <span className="setting-row__copy">
+                <span className="setting-row__title-line">
+                  <span className="setting-row__title">{t('settingsPanel.freeModels.configTitle')}</span>
+                </span>
+                <span className="setting-row__description">{t('settingsPanel.freeModels.configDescription')}</span>
+              </span>
+              <span className="setting-row__control">
+                <settingsActionIcons.edit className="free-models-config-row__icon" aria-hidden />
+              </span>
+            </button>
+          </div>
+        )}
       </div>
+
+      <FreeModelSettingsDialog open={configOpen} models={loginModels} onClose={() => setConfigOpen(false)} />
     </SettingsSection>
   );
 }

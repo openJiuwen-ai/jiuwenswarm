@@ -298,18 +298,21 @@ Toggles project pin state and compacts pin order.
 
 ---
 
-### Session lifecycle and project deletion
+### Session lifecycle and project removal
 
 - `session.archive` / `session.unarchive`: `{session_ids:string[]}`, 1–100 IDs; returns `{succeeded_count, failed_count, results}`. Running sessions return `SESSION_BUSY` without stopping work. Cron/heartbeat execution sessions cannot be archived individually.
-- `session.archived.list`: optional `project_id`, `work_mode`, `keyword`, `limit` (default 20, maximum 200), `offset`; returns `{sessions,total,limit,offset,has_more}`. Sorts by `archived_at DESC, session_id ASC`.
+- `session.archived.list`: optional `project_id`, `work_mode`, `keyword`, `limit` (default 20, maximum 200), `offset`; returns `{sessions,total,limit,offset,has_more}`. Sorts by `archived_at DESC, session_id ASC`. Each item carries `project_hidden`, marking whether its project has been removed.
 - `session.delete`: accepts `session_id` or batch `session_ids`; both active and archived sessions can be permanently deleted. Running work is stopped before cleanup.
-- `project.delete`: `{project_id:string}`; directly deletes all owned cron jobs, active/archived sessions and the project record. No archive prerequisite. Returns `{project_id,deleted:true,deleted_sessions,deleted_cron_jobs}`. Keeps the user's working directory. Partial failures retain progress and retry the same operation.
+- `project.remove`: `{project_id:string}`; hide the project without deleting sessions, cron jobs or the working directory. The Gateway first stops the project's cron jobs (disables them and cancels in-flight runs; the job records are kept) and aborts the removal if that fails, so a hidden project never has running or firing cron jobs. Returns `{project_id,hidden:true,affected_sessions}`, where `affected_sessions` counts the active conversations hidden with the project (pinned conversations included, cron execution sessions excluded).
+- `project.restore`: `{project_id:string}`; restore a hidden project. Returns `{project_id,restored:true,work_mode,affected_sessions}`. Stopped cron jobs stay stopped after the restore and must be re-enabled manually. `project.list` / `project.info` accept `include_hidden:true`.
 - `project.sessions.archive`: `{project_id:string}`; archives a snapshot of all eligible active sessions. Busy sessions fail individually; cron jobs stay unchanged.
 - `project.sessions.delete_archived`: `{project_id:string}`; permanently deletes only archived sessions in the project.
 
 Both project session operations return `{project_id,succeeded_count,failed_count,results}`. Each result contains `session_id`, `ok`, and `code/error` on failure. An empty selection succeeds with zero counts. Default projects support these batch operations but cannot themselves be deleted.
 
-Projects have no archive or restore state. The old project archive, unarchive and archived-list methods have been removed. Legacy hidden projects become visible during migration; explicitly archived sessions and cron enabled values are preserved. Lifecycle state/events remain for session management and project deletion.
+Project removal sets `hidden=true` and clears its pin. The project's active sessions disappear from the workspace with it: they are listed under neither the project nor the default project (default project lists and session counts exclude them), and pinned conversations leave the pinned area as well. Stored project IDs are unchanged. Archived sessions are unaffected and stay in the archive page under the real project name, flagged with `project_hidden` so the page can explain that the project was removed. Restoring the project, or creating it again with the same directory and work mode, brings those sessions back, pinned ones included. The project's cron jobs are stopped when it is removed — disabled, with in-flight runs cancelled — and remain in the store invisible to the cron list; after a restore they stay stopped by default. The working directory is preserved.
+
+Archiving and pinning are independent: archiving keeps the session's pinned state, and unarchiving restores it and renumbers the pinned ordering. Undoing the archive of a session whose project was removed restores that project too; when another project already holds the name, the call fails with `PROJECT_NAME_CONFLICT` and the session stays archived until the user resolves the clash.
 
 ---
 ### project.pinned_sessions - List pinned sessions

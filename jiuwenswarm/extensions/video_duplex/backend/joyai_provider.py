@@ -17,9 +17,10 @@ import wave
 
 import httpx
 
+from .tasks.prompts import JOYAI_TASK_INSTRUCTIONS
 
 MAX_FRAME_CHARS = 4_000_000
-MAX_INSTRUCTION_CHARS = 2_000
+MAX_INSTRUCTION_CHARS = 16_000
 MAX_TOOL_CONTEXT_CHARS = 4_000
 _TTS_VOICE = "vivian"
 _TTS_INSTRUCTIONS = (
@@ -123,6 +124,7 @@ def ground_user_instruction(instruction: str, tool_context: str = "") -> str:
     return (
         f"{confirmed_context}【用户原话】{instruction}\n\n"
         f"{_USER_KNOWLEDGE_GUARD}"
+        f"{JOYAI_TASK_INSTRUCTIONS}"
     )
 
 

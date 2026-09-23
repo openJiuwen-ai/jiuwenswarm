@@ -6,14 +6,156 @@ import { runInNewContext } from 'node:vm';
 import { RealtimeDuplexSession } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/realtimeDuplex.mjs';
 import { SpeechGate } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/speechGate.mjs';
 
-test('manual task cancellation closes its function call silently and rejects a late result', () => {
+test('accepted delegation returns its ID before completion and never sends two outputs for one call', () => {
+  const {session,sent}=createSession();
+  session.enqueueOperationResult('create-a',{state:'accepted',job_id:'a'});
+  assert.equal(JSON.parse(sent[0].item.output).job_id,'a');
+  assert.equal(typeof sent[1].response.instructions, 'string', 'operation receipt carries response-level guidance');
+  session.handleEvent({type:'response.created',response:{id:'ack'}});
+  session.handleEvent({type:'response.done',response:{id:'ack'}});
+  session.enqueueToolResult({jobId:'a',callId:'create-a',question:'杭州',brief:realtimeBrief('完成')});
+  assert.equal(sent.filter(e=>e.item?.type==='function_call_output').length,1);
+  assert.equal(sent.filter(e=>e.type==='response.create').length,2);
+  assert.equal(sent.at(-1).response, undefined, 'completion notice uses its own existing presentation path');
+  assert.match(sent.at(-2).item.content[0].text,/杭州/);
+});
+
+test('provider speech and its pending automatic answer exclude notification responses', () => {
+  const {session,sent}=createSession();
+  session.handleEvent({type:'input_audio_buffer.speech_started'});
+  session.enqueueOperationResult('op',{state:'accepted'});
+  session.handleEvent({type:'input_audio_buffer.speech_stopped'});
+  session.dispatchQueuedToolResult();
+  assert.equal(sent.length,0);
+  session.handleEvent({type:'response.created',response:{id:'voice'}});
+  session.handleEvent({type:'response.done',response:{id:'voice'}});
+  assert.equal(sent.filter(e=>e.type==='response.create').length,1);
+  session.handleEvent({type:'response.done',response:{id:'voice'}});
+  assert.equal(session.responseActive,true, 'late done cannot release a reserved response');
+});
+
+test('cancel request does not free a response slot before cancellation acknowledgement', () => {
+  const {session,sent}=createSession();
+  session.handleEvent({type:'response.created',response:{id:'old'}});
+  session.interruptQwenResponse('turn',300,1000,80);
+  session.enqueueOperationResult('op',{state:'accepted'});
+  assert.equal(sent.filter(e=>e.type==='response.create').length,0);
+  session.handleEvent({type:'response.done',response:{id:'old',status:'cancelled'}});
+  assert.equal(sent.filter(e=>e.type==='response.create').length,1);
+});
+
+test('active-response conflict retries only response creation after done, without replaying receipts', () => {
+  const {session,sent}=createSession();
+  session.enqueueOperationResult('op',{state:'accepted'});
+  session.handleEvent({type:'error',error:{message:'Conversation already has an active response'}});
+  assert.equal(sent.length,2);
+  session.handleEvent({type:'response.done',response:{id:'server-active'}});
+  assert.deepEqual(sent.map(e=>e.type),['conversation.item.create','response.create','response.create']);
+  assert.deepEqual(sent[2], sent[1], 'retry preserves the operation response instructions');
+});
+
+test('three failures stop new call IDs and new speech opens a fresh operation budget', () => {
+  const {session,functionCalls,sent}=createSession();
+  const call=(id,version)=>({type:'response.function_call_arguments.done',name:'jiuwen_task_reorder',call_id:id,arguments:JSON.stringify({job_id:'a',action:'next',queue_version:version})});
+  for(let i=0;i<3;i++){
+    session.handleEvent(call('c'+i,i));
+    session.enqueueOperationResult('c'+i,{state:'rejected',error:'Queue changed'});
+  }
+  session.handleEvent(call('c3',3));
+  assert.equal(functionCalls.length,3);
+  assert.equal(JSON.parse(sent.at(-1).item.output).retryable,false);
+  session.handleEvent({type:'conversation.item.input_audio_transcription.completed',transcript:'重新查询后调整'});
+  session.handleEvent(call('fresh',4));
+  assert.equal(functionCalls.length,4);
+});
+
+test('identical rejected arguments are not retried with another call ID', () => {
+  const {session,functionCalls}=createSession();
+  const args={type:'response.function_call_arguments.done',name:'jiuwen_task_reorder',arguments:'{"job_id":"a","action":"wrong","queue_version":1}'};
+  session.handleEvent({...args,call_id:'one'});
+  session.enqueueOperationResult('one',{state:'rejected',error:'Invalid queue action'});
+  session.handleEvent({...args,call_id:'two'});
+  assert.equal(functionCalls.length,1);
+});
+
+test('failed control budget does not block queries or another task answer', () => {
+  const {session,functionCalls}=createSession();
+  const call=(id,name,args)=>session.handleEvent({type:'response.function_call_arguments.done',name,call_id:id,arguments:JSON.stringify(args)});
+  for(let i=0;i<3;i++) {
+    call(`failed-${i}`,'jiuwen_task_modify',{job_id:'a',revision:i,instruction:'update'});
+    session.enqueueOperationResult(`failed-${i}`,{state:'rejected'});
+  }
+  call('query','jiuwen_task_query',{status:'unfinished'});
+  call('answer-b','jiuwen_task_answer',{job_id:'b',interaction_id:'budget-b',answers:['3000']});
+  assert.equal(functionCalls.length,5);
+});
+
+test('late and partial tool calls from an interrupted response cannot start work or report parser errors', () => {
+  const errors = [];
+  const { session, functionCalls } = createSession(null, { onError: e => errors.push(e) });
+  session.handleEvent({ type: 'response.created', response: { id: 'interrupted' } });
+  session.interruptQwenResponse('new-input', 300, 1000, 80);
+  session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'interrupted',
+    name: 'jiuwen_delegate', call_id: 'stale', arguments: '{"task":"outdated request"}' });
+  assert.equal(functionCalls.length, 0);
+  session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'interrupted',
+    name: 'jiuwen_delegate', call_id: 'partial', arguments: '{"task":"unfinished' });
+  assert.deepEqual(errors, []);
+});
+
+test('pending information questions are announced once without completing their task', () => {
+  const { session, sent, dispatchedToolResults } = createSession();
+  const question = { id: 'interaction-a', request_id: 'budget', state: 'pending', questions: [{ question: '预算是多少？' }] };
+  session.enqueueQuestion('trip', question);
+  session.enqueueQuestion('trip', question);
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
+  assert.match(sent[0].item.content[0].text, /预算是多少/);
+  assert.match(sent[0].item.content[0].text, /jiuwen_task_answer/);
+  assert.deepEqual(dispatchedToolResults, []);
+  assert.equal(session.acceptedToolResultIds.has('trip'), false);
+  session.handleEvent({ type: 'response.created', response: { id: 'question-notice' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'question-notice' } });
+  session.enqueueQuestion('trip', { ...question, id: 'interaction-b' });
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 2);
+  assert.deepEqual(dispatchedToolResults, []);
+});
+
+test('delegation retains valid scheduling arguments and dispatches only once', () => {
+  const errors = [];
+  const { session, functionCalls } = createSession(null, { onError: (message) => errors.push(message) });
+  const args = { task: '查询杭州天气', independent: true, depends_on: [], resources: [] };
+  const event = { type: 'response.function_call_arguments.done', name: 'jiuwen_delegate', call_id: 'parallel-weather', arguments: JSON.stringify(args) };
+  session.handleEvent(event);
+  session.handleEvent(event);
+  assert.equal(functionCalls.length, 1);
+  assert.deepEqual(JSON.parse(functionCalls[0].arguments), args);
+  assert.deepEqual(errors, []);
+});
+
+test('invalid scheduling and ambiguous task fields never dispatch work', () => {
+  for (const args of [
+    { task: 'weather', independent: 'true' },
+    { task: 'weather', resources: 'file' },
+    { task: 'weather', depends_on: [''] },
+    { task: 'weather', resources: Array(33).fill('x') },
+    { task: 'weather', query: 'other' },
+    { task: 'weather', unexpected: true },
+  ]) {
+    const errors = [];
+    const { session, functionCalls } = createSession(null, { onError: (message) => errors.push(message) });
+    session.handleEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_delegate', call_id: 'invalid', arguments: JSON.stringify(args) });
+    assert.equal(functionCalls.length, 0);
+    assert.equal(errors.length, 1);
+  }
+});
+
+test('confirmed cancellation sends one terminal notice and rejects a late result', () => {
   const { session, sent } = createSession();
   session.cancelToolTask('stopped-job', 'stopped-call');
   session.cancelToolTask('stopped-job', 'stopped-call');
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].item.call_id, 'stopped-call');
-  assert.equal(JSON.parse(sent[0].item.output).status, 'cancelled');
-  assert.equal(sent.some(event => event.type === 'response.create'), false);
+  assert.equal(sent.length, 2);
+  assert.match(sent[0].item.content[0].text, /Task stop confirmed/);
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
   assert.equal(session.enqueueToolResult({ jobId: 'stopped-job', callId: 'stopped-call', question: '已取消任务', brief: { summary: '迟到的成功结果' } }), false);
 });
 
@@ -281,6 +423,53 @@ test('text input uses a native conversation item and response request', async ()
     },
     { type: 'response.create' },
   ]);
+});
+
+test('busy text turns keep their order ahead of task notifications without competing responses', async () => {
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'speaking' } });
+  session.enqueueToolResult({ jobId: 'a', question: 'report', brief: realtimeBrief('Done') });
+  await session.sendTextTurn('First instruction');
+  await session.sendTextTurn('Second instruction');
+  assert.deepEqual(sent, []);
+  session.handleEvent({ type: 'response.done', response: { id: 'speaking' } });
+  assert.equal(sent[0].item.content[0].text, 'First instruction');
+  assert.equal(sent.length, 2);
+  session.handleEvent({ type: 'response.created', response: { id: 'first' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'first' } });
+  assert.equal(sent[2].item.content[0].text, 'Second instruction');
+  assert.equal(sent.length, 4);
+  session.handleEvent({ type: 'response.created', response: { id: 'second' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'second' } });
+  assert.match(sent[4].item.content[0].text, /report/);
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 3);
+});
+
+test('text waits through provider speech and its automatic response', async () => {
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_started' });
+  await session.sendTextTurn('A typed instruction');
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped' });
+  assert.deepEqual(sent, []);
+  session.handleEvent({ type: 'response.created', response: { id: 'voice' } });
+  assert.deepEqual(sent, []);
+  session.handleEvent({ type: 'response.done', response: { id: 'voice' } });
+  assert.equal(sent[0].item.content[0].text, 'A typed instruction');
+  assert.equal(sent.length, 2);
+});
+
+test('stopping the connection discards queued text before a new media session', async () => {
+  const { session, sent } = createSession();
+  session.socket.close = () => {};
+  session.handleEvent({ type: 'response.created', response: { id: 'old' } });
+  await session.sendTextTurn('Old queued instruction');
+  session.stop();
+  sent.length = 0;
+  session.socket = { readyState: 1, send: message => sent.push(JSON.parse(message)) };
+  session.sessionReady = true;
+  await session.sendTextTurn('New instruction');
+  assert.equal(sent[0].item.content[0].text, 'New instruction');
+  assert.equal(sent.length, 2);
 });
 
 test('function calls are emitted once with parsed arguments', () => {
@@ -596,8 +785,8 @@ test('session update includes Gateway-provided tools', async () => {
   await opening;
 
   assert.deepEqual(socket.sent[0].session.tools, tools);
-  assert.match(socket.sent[0].session.instructions, /MUST call jiuwen_delegate in the same turn/);
-  assert.match(socket.sent[0].session.instructions, /brief, natural acknowledgement that you are handling the request/);
+
+  assert.match(socket.sent[0].session.instructions, /call the required tool before giving a spoken acknowledgement/);
   assert.match(socket.sent[0].session.instructions, /acknowledgement describes work in progress only/);
   assert.match(
     socket.sent[0].session.instructions,
@@ -661,6 +850,39 @@ test('session.closed before session.created rejects startup with the backend rea
   assert.equal(diagnostics.at(-1).event, 'realtime_websocket_error');
 });
 
+test('upstream startup error is not overwritten by the relay normal close', async () => {
+  let socket;
+  const errors = [];
+  class StartupSocket {
+    static OPEN = 1;
+    constructor() { socket = this; this.readyState = 1; }
+    close() { this.readyState = 3; }
+    send() {}
+  }
+  globalThis.window = globalThis;
+  globalThis.WebSocket = StartupSocket;
+  const session = new RealtimeDuplexSession(
+    { url: 'ws://example.test/realtime' },
+    {
+      getVideoFrame: () => null,
+      onAssistantText: () => undefined,
+      onUserText: () => undefined,
+      onState: () => undefined,
+      onError: (message) => errors.push(message),
+    },
+  );
+  const opening = session.openSocket();
+  socket.onopen();
+  await opening;
+  socket.onmessage({ data: JSON.stringify({
+    type: 'error', error: { code: 'qwen_gateway_upstream_error', message: 'HTTP 403: Workspace endpoint access denied.' },
+  }) });
+  socket.onclose({ code: 1000, reason: '' });
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /403/);
+  assert.doesNotMatch(errors[0], /主动关闭/);
+});
+
 test('remote disconnect releases media resources and pending receipts without losing received text', async () => {
   let socket;
   class ClosingSocket {
@@ -708,3 +930,53 @@ test('remote disconnect releases media resources and pending receipts without lo
   assert.equal(texts.at(-1), '已经收到的回答');
   assert.equal(states.at(-1), 'closed');
 });
+
+
+test('task operation receipts wait for the active response and retain accepted semantics', () => {
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'speaking' } });
+  session.enqueueOperationResult('modify-call', { task_id: 'task-a', state: 'pending' });
+  assert.equal(sent.length, 0);
+  session.handleEvent({ type: 'response.done', response_id: 'speaking' });
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.equal(sent[0].item.call_id, 'modify-call');
+  assert.equal(JSON.parse(sent[0].item.output).state, 'pending');
+  session.enqueueOperationResult('modify-call', { state: 'pending' });
+  assert.equal(sent.length, 2);
+  assert.equal(sent.filter(e => e.item?.type === 'message').length, 0, 'no completion notice is fabricated');
+});
+
+
+test('late tool call retains its input item instead of a newer transcript', () => {
+  const {session,functionCalls}=createSession();
+  session.handleEvent({type:'input_audio_buffer.speech_started',item_id:'input-a'});
+  session.handleEvent({type:'conversation.item.input_audio_transcription.completed',item_id:'input-a',transcript:'生成沈阳行程'});
+  session.handleEvent({type:'response.created',response:{id:'response-a'}});
+  session.handleEvent({type:'input_audio_buffer.speech_started',item_id:'input-b'});
+  session.handleEvent({type:'conversation.item.input_audio_transcription.completed',item_id:'input-b',transcript:'生成杭州行程'});
+  session.handleEvent({type:'response.function_call_arguments.done',response_id:'response-a',name:'jiuwen_delegate',call_id:'call-a',arguments:JSON.stringify({task:'生成长春行程'})});
+  assert.equal(functionCalls[0].originalInstruction,'生成沈阳行程');
+  assert.equal(functionCalls[0].inputId,'input-a');
+});
+
+
+test('successor completion is a notification without an invented function call', () => {
+  const {session,sent}=createSession();
+  assert.equal(session.enqueueToolResult({jobId:'child',question:'杭州两日修订',brief:realtimeBrief('两日文件已生成')}),true);
+  assert.equal(sent.filter(e=>e.item?.type==='function_call_output').length,0);
+  assert.equal(sent.filter(e=>e.type==='response.create').length,1);
+  assert.match(sent[0].item.content[0].text,/杭州两日修订/);
+});
+
+
+const contractCases = JSON.parse(readFileSync(new URL('../task_tool_contract.json', import.meta.url), 'utf8'));
+for (const sample of contractCases) {
+  test(`shared tool transport contract: ${sample.id}`, () => {
+    const { session, functionCalls } = createSession();
+    session.handleEvent({ type: 'response.function_call_arguments.done', name: sample.name,
+      call_id: sample.id, arguments: JSON.stringify(sample.arguments) });
+    assert.equal(functionCalls.length, sample.client_accepts ? 1 : 0);
+    if (sample.client_accepts) assert.deepEqual(JSON.parse(functionCalls[0].arguments), sample.arguments);
+    // The browser transports control arguments; the server owns their validation.
+  });
+}

@@ -163,6 +163,9 @@ function getFriendlyErrorMessage(
   if (/^agent_group package (?:missing\/corrupt manifest\.json|wrong package_type|conflict):/i.test(normalizedMessage)) {
     return translate('agentManagement.group.states.definitionUnavailable');
   }
+  if (/^(?:agent_group manifest|AgentGroup|AgentTemplate|agent directory not found:|shared skill |failed to extract archive|archive )/i.test(normalizedMessage)) {
+    return translate('agentManagement.group.states.packageValidationError', { reason: normalizedMessage });
+  }
   if (/^(?:missing or invalid leaderId|missing or invalid memberIds|invalid memberId|leaderId must not appear|duplicate memberId|memberId 'leader')/i.test(normalizedMessage)) {
     return translate('agentManagement.group.states.membersInvalid');
   }
@@ -1058,7 +1061,9 @@ export function AgentManagementPanel({
       if (editingId) {
         await client.updateAgent({ ...draft, id: editingId });
       } else {
-        await client.createAgent({ ...draft, id: draft.id || deriveAgentId(draft.name) });
+        const id = draft.id || deriveAgentId(draft.name);
+        await client.createAgent({ ...draft, id });
+        await handleInstall(id);
       }
       await loadCatalog();
       setEditingId(null);
@@ -1078,7 +1083,7 @@ export function AgentManagementPanel({
     setActionError(null);
     setActionNotice(null);
     try {
-      const existingGroups = await groupClient.listGroups();
+      const existingGroups = await groupClient.listGroups({ filter: 'local' });
       const normalizedName = groupDraft.name.trim().toLocaleLowerCase();
       if (existingGroups.some(group => group.displayName.trim().toLocaleLowerCase() === normalizedName)) {
         setGroupCreateError(t('agentManagement.group.states.duplicateName'));
@@ -1155,6 +1160,7 @@ export function AgentManagementPanel({
         setGroupMineQuery('');
         setGroupMinePage(1);
       } else {
+        await handleInstall(result.id);
         await loadCatalog();
         setMineKind('agent');
         setMineQuery('');

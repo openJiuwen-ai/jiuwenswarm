@@ -570,13 +570,18 @@ jiuwenswarm decides **whether the sandbox is on, which jiuwenbox to talk to, whe
 ```yaml
 sandbox:
   # -- Endpoint & type --
-  url: "http://<HTTP_IP_ADDRESS>:<PORT>"      # jiuwenbox HTTP endpoint; TCP uses http://, UDS uses unix:///abs/socket/path
+  url: "http://127.0.0.1:8321"      # jiuwenbox HTTP endpoint; TCP uses http://, UDS uses unix:///abs/socket/path
+                                    # When host is omitted, internal spawn defaults to 127.0.0.1; an explicit host (incl. 0.0.0.0) is kept as-is
   type: "jiuwenbox"                 # sandbox provider name; currently only "jiuwenbox"
 
   # -- Startup & policy --
   startup_mode: "internal"          # internal = agent-server spawns jiuwenbox-server; external = you start it yourself
   policy_file: "code-agent-policy.yaml"   # bare name -> jiuwenbox/configs/<name>; otherwise an absolute / explicit path
   preserve_file_sharing_mode: "mount"     # only `mount` is supported; any other value is rejected
+
+  # -- API auth (optional; mutually exclusive) --
+  token: ""                         # fixed Bearer token; injected via JIUWENBOX_API_TOKEN
+  use_random_token: false           # true = generate one random token per agent-server process (not persisted); internal only
 
   # -- Runtime (also managed by the /sandbox TUI command) --
   enabled: true                     # whether sandbox mode is on
@@ -591,11 +596,13 @@ Field reference:
 
 | Field | Values | Default | Notes |
 | --- | --- | --- | --- |
-| `sandbox.url` | URL string | `http://<HTTP_IP_ADDRESS>:<PORT>` | jiuwenbox management API endpoint. TCP: `http://host:port`; UDS: `unix:///abs/socket/path` (mirrors `JIUWENBOX_LISTEN`). |
+| `sandbox.url` | URL string | `http://127.0.0.1:8321` | jiuwenbox management API endpoint. TCP: `http://host:port`; UDS: `unix:///abs/socket/path` (mirrors `JIUWENBOX_LISTEN`). **No explicit host** (missing/empty url or unparseable hostname) → internal spawn binds `127.0.0.1`. **Explicit host** (including `0.0.0.0` or a LAN IP) is used as-is and never rewritten. |
 | `sandbox.type` | string | `jiuwenbox` | Sandbox provider name. Currently jiuwenswarm only wires up `jiuwenbox`. |
 | `sandbox.startup_mode` | `internal` / `external` | `internal` | `internal`: agent-server spawns `jiuwenbox-server` at boot and persists the effective `url` (auto-picks a free port if the configured one is busy). `external`: agent-server never touches jiuwenbox; you must start it yourself per the top of this README. |
 | `sandbox.policy_file` | filename or path | `code-agent-policy.yaml` | Bare filename → resolved relative to `jiuwenbox/configs/`; otherwise expanded (`~`, `$VAR`) and used verbatim. **Only honored under `startup_mode=internal`**; in `external` mode the policy is chosen by whoever started jiuwenbox-server (via `JIUWENBOX_DEFAULT_POLICY_PATH`). |
 | `sandbox.preserve_file_sharing_mode` | `mount` | `mount` | Intrinsic files (`AGENT.md` etc.) and `project_dir` are bind-mounted, with `project_dir/config/config.yaml` auto-added to `deny_write`. Writing any other value is rejected. |
+| `sandbox.token` | string | `""` | Fixed Bearer token between jiuwenswarm and jiuwenbox. When non-empty, injected via `JIUWENBOX_API_TOKEN`; clients must send `Authorization: Bearer <token>`. **Mutually exclusive** with `use_random_token`. |
+| `sandbox.use_random_token` | bool | `false` | When `true`, generates one random token for the agent-server process lifetime (**not written back** to `sandbox.token`) and injects it into both parent and child. Only valid with `startup_mode=internal`; configuring both this and `token` raises an error. |
 | `sandbox.enabled` | bool | `false` | When true, agent rebuilds route tools through the sandbox provider; toggled by `/sandbox enable`. |
 | `sandbox.excluded_commands` | list[str] | `[]` | Shell globs matched per **simple-command leaf**. All matches → whole command on host; no matches → whole command in sandbox; mixed → local bash orchestrates control flow and wraps remote leaves with `jiuwenbox sandbox exec` (CLI required). Unsafe mixed forms run the whole original command in the sandbox. |
 | `sandbox.files.allow` / `sandbox.files.deny` | list | `[]` | User-configured write policy. The effective set shown by `/sandbox status` is `auto_managed ∪ user_configured`; see [the `/sandbox` command reference](../docs/en/SlashCommands.md). |
@@ -608,7 +615,7 @@ Good for local development and single-host deployments. Drop this into `config.y
 
 ```yaml
 sandbox:
-  url: "http://<HTTP_IP_ADDRESS>:<PORT>"
+  url: "http://127.0.0.1:8321"
   type: "jiuwenbox"
   startup_mode: "internal"
   policy_file: "code-agent-policy.yaml"   # picked up from jiuwenbox/configs/
@@ -618,8 +625,9 @@ sandbox:
 At boot the agent-server will:
 
 1. Resolve `policy_file` to a host absolute path (bare name → `jiuwenbox/configs/<name>`; otherwise expand `~` / `$VAR` and use as-is).
-2. Probe the port in `url`; if taken, switch to a free one and persist the new `url` back into `config.yaml`, so `/sandbox status` shows the real port.
-3. Spawn `jiuwenbox-server` with the resolved policy path. On failure, agent-server logs the last 10 lines of stderr; you can retry from the TUI via `/sandbox enable`.
+2. Probe the port in `url`; if taken, switch to a free one and persist the new `url` back into `config.yaml`, so `/sandbox status` shows the real port. When no host is configured, bind defaults to `127.0.0.1`.
+3. Resolve `sandbox.token` / `sandbox.use_random_token`, inject the Bearer token via `JIUWENBOX_API_TOKEN` into the child, and sync it onto the agent-server process env (so provider / CLI clients send `Authorization`).
+4. Spawn `jiuwenbox-server` with the resolved policy path and `JIUWENBOX_LISTEN`. On failure, agent-server logs the last 10 lines of stderr; you can retry from the TUI via `/sandbox enable`.
 
 #### Shape B: `startup_mode: external` (you start jiuwenbox-server yourself)
 

@@ -32,6 +32,7 @@ HOST_API_PATH = (
 # 需要默认值的用例一律用下面两个 helper 把模型列表钉死。
 UNCONFIGURED_PROJECTION = {
     "configured": False,
+    "master_enabled": False,
     "collection_enabled": False,
     "agent_use_enabled": False,
     "strategy_profile": "rules",
@@ -504,7 +505,7 @@ def test_locked_core_supports_live_fetch_service_updates() -> None:
 def test_boolean_switches_use_isinstance_guards() -> None:
     source = HOST_API_PATH.read_text(encoding="utf-8")
 
-    assert source.count("if not isinstance(enabled, bool):") == 3
+    assert source.count("if not isinstance(enabled, bool):") == 4
     assert "type(enabled) is not bool" not in source
 
 
@@ -1379,6 +1380,7 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
     assert [name for name, _value in core.calls] == ["set_configuration"]
     saved = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
     assert saved == {
+        "master_enabled": False,
         "collection_enabled": False,
         "agent_use_enabled": False,
         "strategy_profile": "rules",

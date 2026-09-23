@@ -270,6 +270,7 @@ class ArtifactEngineAdapter:
         *,
         model_resolver: Callable[[str | None], Any] | None = None,
         requires_model: bool = True,
+        tasks_root: str | Path | None = None,
     ) -> None:
         normalized = str(artifact_type or "").strip().upper()
         if normalized not in {"PROGRAM", "PAPER"}:
@@ -278,8 +279,40 @@ class ArtifactEngineAdapter:
         self.provider = provider
         self._model_resolver = model_resolver
         self._requires_model = requires_model
+        self._tasks_root = Path(tasks_root).expanduser() if tasks_root is not None else None
         self.supports_pause = bool(getattr(provider, "supports_pause", normalized == "PROGRAM"))
         self.supports_resume = bool(getattr(provider, "supports_resume", normalized == "PROGRAM"))
+
+    def _task_run_dir(
+        self,
+        task_id: str,
+        persisted_run_dir: str | Path | None = None,
+    ) -> Path | None:
+        """Resolve the current task run directory after a workspace move."""
+
+        if self._tasks_root is not None:
+            return self._tasks_root / task_id / "run"
+        if persisted_run_dir:
+            return Path(persisted_run_dir).expanduser()
+        return None
+
+    def _register_program_run_dir(
+        self,
+        task_id: str,
+        persisted_run_dir: str | Path | None = None,
+    ) -> None:
+        """Reconnect agent-core's process-local snapshot index after restart."""
+
+        if self.artifact_type != "PROGRAM" or not task_id:
+            return
+        run_dir = self._task_run_dir(task_id, persisted_run_dir)
+        if run_dir is None or not run_dir.is_dir():
+            return
+        try:
+            from openjiuwen.rsi.artifact_rsi.program_opt.state import register_run_dir
+        except (ImportError, AttributeError):
+            return
+        register_run_dir(task_id, run_dir)
 
     def build_request(self, task: RsiTaskView, *, resume: bool = False) -> Any:
         """Build the current agent-core request without Provider-side policy."""
@@ -297,9 +330,10 @@ class ArtifactEngineAdapter:
         from openjiuwen.rsi.artifact_rsi.request import ArtifactEngineRequest
 
         request_fields = {item.name for item in fields(ArtifactEngineRequest)}
+        run_dir = self._task_run_dir(task.task_id, task.run_dir)
         kwargs: dict[str, Any] = {
             "task_id": task.task_id,
-            "run_dir": task.run_dir,
+            "run_dir": str(run_dir) if run_dir is not None else task.run_dir,
             "artifact_path": task.artifact_path or task.config.get("artifact_path"),
             "max_iterations": task.max_iterations,
             "optimization_instruction": (
@@ -364,9 +398,17 @@ class ArtifactEngineAdapter:
         return RsiDatasetResult(valid=bool(raw.get("valid")), sample_count=sample_count, errors=errors)
 
     async def run(self, request: Any, *, on_event: Any = None) -> Any:
+        self._register_program_run_dir(
+            str(getattr(request, "task_id", "") or ""),
+            getattr(request, "run_dir", None),
+        )
         return await self.provider.run(request, on_event=on_event)
 
     async def resume(self, request: Any, *, on_event: Any = None) -> Any:
+        self._register_program_run_dir(
+            str(getattr(request, "task_id", "") or ""),
+            getattr(request, "run_dir", None),
+        )
         return await self.provider.resume(request, on_event=on_event)
 
     async def pause(self, task_id: str, *, on_event: Any = None) -> Any:
@@ -376,15 +418,19 @@ class ArtifactEngineAdapter:
         return await self.provider.terminate(task_id, on_event=on_event)
 
     def read_state(self, task_id: str) -> Any:
+        self._register_program_run_dir(task_id)
         return self.provider.read_state(task_id)
 
     def read_report(self, task_id: str) -> Any:
+        self._register_program_run_dir(task_id)
         return self.provider.read_report(task_id)
 
     def get_tree(self, task_id: str) -> Any:
+        self._register_program_run_dir(task_id)
         return self.provider.get_tree(task_id)
 
     def locate_artifact(self, task_id: str, artifact_id: str | None = None) -> Any:
+        self._register_program_run_dir(task_id)
         return self.provider.locate_artifact(task_id, artifact_id)
 
 

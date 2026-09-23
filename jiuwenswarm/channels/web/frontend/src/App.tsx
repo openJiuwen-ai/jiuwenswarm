@@ -78,6 +78,7 @@ import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import {
   AgentMode,
   MediaItem,
+  type ChatSendOptions,
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
@@ -402,9 +403,6 @@ function AppContent({
   );
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
-  const kvCacheAffinityEnabled = normalizeConfigBoolean(
-    serverConfig?.kv_cache_affinity_enabled,
-  );
   const trajectoryUiEnabled = useTrajectoryUiEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -521,8 +519,8 @@ function AppContent({
   const sideConversationRef = useRef<SideConversationState | null>(null);
   const sessionIdRef = useRef(sessionId);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const kvcViewIdRef = useRef(generateUuidV4());
-  const kvcPreparedInputSessionRef = useRef<string | null>(null);
+  const sessionViewIdRef = useRef(generateUuidV4());
+  const inputIntentSessionRef = useRef<string | null>(null);
   const historyLoadingSessionsRef = useRef(new Set<string>());
   const historyRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
   const subagentHistoryRestoreHandlesRef = useRef(new Map<string, HistoryRestoreHandle>());
@@ -564,9 +562,9 @@ function AppContent({
   useEffect(() => {
     sessionIdRef.current = sessionId;
     // A new foreground visit gets one fresh input-intent opportunity. Merely
-    // switching to the Session still does not prefetch; the first real editor
-    // insertion below does.
-    kvcPreparedInputSessionRef.current = null;
+    // switching to the Session does not publish input intent; the first real
+    // editor insertion below does.
+    inputIntentSessionRef.current = null;
     setHistoryLoadingMore(false);
     // Background cursor prefetch does not mutate the published timeline.  Treating
     // it as a visible prepend leaves a revisited Session unable to reveal batches
@@ -579,9 +577,9 @@ function AppContent({
     // Session is used elsewhere. In that case `sessionId` never changes, so
     // the per-visit input latch above would otherwise remain consumed by the
     // Session's initial turn. Re-arm only when this page returns to the
-    // foreground; focus/visibility alone still does not issue a prefetch.
+    // foreground; focus/visibility alone still does not publish input intent.
     const rearmInputIntent = () => {
-      kvcPreparedInputSessionRef.current = null;
+      inputIntentSessionRef.current = null;
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -1006,6 +1004,7 @@ function AppContent({
     request,
     persistMedia,
     persistDocuments,
+    discardMedia,
     sendMessage,
     sendStructuredChatContent,
     pause,
@@ -1315,8 +1314,10 @@ function AppContent({
             id: n.id,
             name: n.name,
             arguments: n.arguments,
+            outputOrder: n.outputOrder,
             description: n.description,
             formatted_args: n.formatted_args,
+            call_goal: n.call_goal,
             display_name: n.display_name,
             memberName: n.memberName,
             reviewer: n.reviewer,
@@ -1607,6 +1608,12 @@ function AppContent({
       const session = await request<Session>('session.get_metadata', {
         session_id: targetSessionId,
       });
+      if ((session as unknown as Record<string, unknown>).archived === true) {
+        if (sessionIdRef.current === targetSessionId) {
+          navigate({ kind: 'chat-new' }, { replace: true });
+        }
+        return null;
+      }
       const isSideConversation = Boolean(session.ephemeral && session.side_parent_session_id?.trim());
       if (isSideConversation) {
         useSessionStore.getState().removeSession(targetSessionId);
@@ -1690,7 +1697,7 @@ function AppContent({
       }
       return null;
     }
-  }, [registerSideConversation, request, setProcessing, setThinking, upsertSessionMetadata]);
+  }, [navigate, registerSideConversation, request, setProcessing, setThinking, upsertSessionMetadata]);
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
@@ -2282,8 +2289,10 @@ function AppContent({
                 id: n.id,
                 name: n.name,
                 arguments: n.arguments,
+            outputOrder: n.outputOrder,
                 description: n.description,
                 formatted_args: n.formatted_args,
+                call_goal: n.call_goal,
                 display_name: n.display_name,
                 memberName: n.memberName,
                 reviewer: n.reviewer,
@@ -2626,7 +2635,10 @@ function AppContent({
     setCurrentSession(null);
     setTeamAreaExpanded(false);
     setSingleAgentPanelExpanded(false);
-    navigate({ kind: 'chat-new' });
+    navigate(
+      { kind: 'chat-new' },
+      options.replaceHistory ? { replace: true } : undefined,
+    );
     setActiveNav('chat');
     requestComposerFocus();
   }, [disposeInFlightHistoryHandles, mode, navigate, requestComposerFocus, setCurrentSession, setSelectedProject, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
@@ -2669,24 +2681,20 @@ function AppContent({
     enterNewConversation(targetMode);
   }, [enterNewConversation, setMode]);
 
-  const handleKVCInputIntent = useCallback((targetSessionId: string) => {
-    // OFF must remain the ordinary JiuwenSwarm path: do not emit even the
-    // best-effort prepare control request. AgentServer keeps its own gate as
-    // a fail-closed boundary for stale or non-Web clients.
-    if (!kvCacheAffinityEnabled) return;
+  const handleSessionInputIntent = useCallback((targetSessionId: string) => {
     if (!targetSessionId || targetSessionId === NEW_CONVERSATION_ID) return;
-    if (kvcPreparedInputSessionRef.current === targetSessionId) return;
+    if (inputIntentSessionRef.current === targetSessionId) return;
 
-    // Leading-edge intent: start prefetch on the first real insertion instead
-    // of waiting until the user stops typing. InputArea reports beforeinput,
-    // paste and input as browser-compatible fallbacks; this latch collapses
-    // them into one control request for the current foreground visit.
-    kvcPreparedInputSessionRef.current = targetSessionId;
+    // Publish on the first real insertion instead of waiting until the user
+    // stops typing. InputArea reports beforeinput, paste and input as browser-
+    // compatible fallbacks; this latch collapses them into one lifecycle
+    // notification for the current foreground visit.
+    inputIntentSessionRef.current = targetSessionId;
     const runtime = useSessionStore.getState().getRuntime(targetSessionId);
-    void request<{ scheduled?: boolean; outcome?: string }>('session.kvc.prepare', {
+    void request<{ scheduled?: boolean; outcome?: string }>('session.input.intent', {
       session_id: targetSessionId,
       intent_id: generateUuidV4(),
-      view_id: kvcViewIdRef.current,
+      view_id: sessionViewIdRef.current,
       mode: resolvePlanWireMode(
         runtime?.mode ?? mode,
         usePlanStore.getState().isActive(targetSessionId),
@@ -2694,18 +2702,18 @@ function AppContent({
       ),
     }).then((response) => {
       if (response?.outcome === 'failed'
-          && kvcPreparedInputSessionRef.current === targetSessionId) {
-        kvcPreparedInputSessionRef.current = null;
+          && inputIntentSessionRef.current === targetSessionId) {
+        inputIntentSessionRef.current = null;
       }
     }).catch((error) => {
       // Allow the next editor event to retry when the control request itself
-      // could not reach AgentServer. KVC remains an optional optimization.
-      if (kvcPreparedInputSessionRef.current === targetSessionId) {
-        kvcPreparedInputSessionRef.current = null;
+      // could not reach AgentServer. Lifecycle extensions remain optional.
+      if (inputIntentSessionRef.current === targetSessionId) {
+        inputIntentSessionRef.current = null;
       }
-      console.debug('session.kvc.prepare skipped:', error);
+      console.debug('session.input.intent skipped:', error);
     });
-  }, [kvCacheAffinityEnabled, mode, request]);
+  }, [mode, request]);
 
   const handleUseAgent = useCallback((agentId: string) => {
     enterNewConversation('agent', { forceMode: 'agent' });
@@ -2752,7 +2760,7 @@ function AppContent({
         is_swarm: runtimeSettings.mode === 'team',
         title: createConversationTitle(initialTitle).slice(0, 100),
         work_mode: workContext.work_mode,
-        view_id: kvcViewIdRef.current,
+        view_id: sessionViewIdRef.current,
         persist_session: false,
       };
       const previousSession = newConversationPreviousSessionRef.current;
@@ -2833,9 +2841,13 @@ function AppContent({
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: groupId });
   }, [enterNewConversation]);
 
-  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
+  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
+    if (options?.queuedTaskId) {
+      await sendMessage(content, currentSessionId, mediaItems, options);
+      return;
+    }
     if (currentSessionId === NEW_CONVERSATION_ID) {
       const persistCommand = parsePersistSessionCommand(content);
       if (persistCommand.persistSession && !persistCommand.content) {
@@ -2883,7 +2895,7 @@ function AppContent({
           is_swarm: runtimeSettings.mode === 'team',
           title: createConversationTitle(messageContent).slice(0, 100),
           work_mode: workContext.work_mode,
-          view_id: kvcViewIdRef.current,
+          view_id: sessionViewIdRef.current,
           persist_session: runtimeSettings.persistSession,
         };
         const previousSession = newConversationPreviousSessionRef.current;
@@ -3025,6 +3037,13 @@ function AppContent({
     }
     return persistMedia(content, currentSessionId, mediaItems);
   }, [persistMedia]);
+
+  const handleDiscardMedia = useCallback((sessionId: string, path: string) => {
+    if (!sessionId || sessionId === NEW_CONVERSATION_ID || !path) {
+      return Promise.resolve();
+    }
+    return discardMedia(sessionId, path);
+  }, [discardMedia]);
 
   const handlePersistDocuments = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -3171,7 +3190,7 @@ function AppContent({
             previous_session_id: previousSessionId,
             previous_mode: previousMode,
             mode: resolvedMode,
-            view_id: kvcViewIdRef.current,
+            view_id: sessionViewIdRef.current,
           });
         } catch (error) {
           if (isTeamAgentMode(resolvedMode)) {
@@ -3753,9 +3772,10 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onStartSideConversation={handleStartSideConversation}
                         continuedFromSessionId={continuedFromSessionId}
                         onOpenContinuedFromSession={handleOpenContinuedFromSession}
-                        onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
+                        onInputIntent={handleSessionInputIntent}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}
+                        onDiscardMedia={handleDiscardMedia}
                         onInterrupt={handleInterrupt}
                         onCancel={handleCancel}
                         onSwitchMode={handleSwitchMode}
@@ -4025,10 +4045,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-page-body">
             <div className="page-content">
               <ConnectorMarketPanel
-                applicationPlugins={applicationPlugins}
-                applicationPluginsLoading={applicationPluginState.loading}
-                applicationPluginsError={applicationPluginState.error}
-                onRefreshApplicationPlugins={applicationPluginState.refresh}
                 onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                   detail: {
                     skillName: 'plugin-creator',

@@ -245,11 +245,11 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
-test('registry definition preserves the registered module order and fails invalid registrations', () => {
+test('registry definition preserves the fixed six-module order and fails invalid registrations', () => {
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
+    /generalModule,\s*modelsModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*experimentalModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
   for (const removedPath of [
@@ -1073,26 +1073,11 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     ...findSettingDefinitionKeys(agentDefinition),
     ...findVariableArrayStrings(agentFile, 'keyFields'),
     ...findVariableArrayStrings(agentFile, 'modalities').flatMap((modality) => [
-      ...[
-        'api_base',
-        'api_key',
-        'model',
-        'provider',
-        'endpoint_profile',
-        'vendor_key',
-        'plan',
-        'context_window_tokens',
-      ].map(
+      ...['api_base', 'api_key', 'model', 'provider', 'endpoint_profile', 'vendor_key', 'plan'].map(
         (suffix) => `${modality}_${suffix}`,
       ),
       `${modality}_enabled`,
     ]),
-    ...findVariableArrayStrings(agentFile, 'videoGenFields'),
-    'video_gen_context_window_tokens',
-    'video_gen_enabled',
-    ...findVariableArrayStrings(agentFile, 'visualGenFields'),
-    'visual_gen_context_window_tokens',
-    'visual_gen_enabled',
   ]);
   assert.deepEqual(
     [...agentVisible].sort(),
@@ -1110,7 +1095,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'asr_api_base',
     'asr_api_key',
     'asr_model',
-    'symphony_evolution_enabled',
     'kv_cache_affinity_enabled',
     'proactive_recommendation_enabled',
   ]);
@@ -1129,8 +1113,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
-    'rsi_enabled',
-    'symphony_evolution_enabled',
     'task_full_duplex_enabled',
     'trajectory_ui_enabled',
   ]);
@@ -1143,6 +1125,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'telegram',
     'discord',
     'slack',
+    'whatsapp',
   ]);
   const channelAdaptersFile = parseTsx('src/features/settings/modules/channels/channelAdapters.ts');
   const channelPayloadKeys = {
@@ -1212,15 +1195,16 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   }
 });
 
-test('free-model Opencode Zen switch is removed; login models refresh via auth-changed', () => {
-  const modelsDefinition = source('src/features/settings/modules/models/definition.ts');
-  const settingsContract = source('src/features/settings/services/settingsContract.ts');
+test('saving the free-model switch refreshes the shared model catalog after persistence', () => {
+  const settingsConfig = source('src/features/settings/services/useSettingsConfig.ts');
+  const settingsPage = source('src/features/settings/SettingsPage.tsx');
+  const settingsServices = source('src/features/settings/services/SettingsServicesProvider.tsx');
   const app = source('src/App.tsx');
-  assert.doesNotMatch(modelsDefinition, /id: 'free-models'|enable_free_models|enable-free-models/);
-  assert.doesNotMatch(settingsContract, /enable_free_models/);
-  assert.doesNotMatch(app, /enable_free_models|handleSettingsConfigSaved/);
-  assert.match(app, /jiuwen:auth-changed/);
-  assert.match(app, /handleModelsRefresh/);
+  assert.match(settingsServices, /onConfigSaved\?: \(updatedKeys: readonly string\[\]\) => Promise<void> \| void/);
+  assert.match(settingsConfig, /setConfig\([\s\S]{0,120}await onConfigSaved\?\.\(Object\.keys\(updates\)\)/);
+  assert.match(settingsPage, /onConfigSaved=\{onConfigSaved\}/);
+  assert.match(app, /updatedKeys\.includes\('enable_free_models'\)\) await handleModelsRefresh\(\)/);
+  assert.match(app, /onConfigSaved=\{handleSettingsConfigSaved\}/);
 });
 
 test('Settings form dialogs share the same dirty-close contract without disabling save', () => {
@@ -1281,7 +1265,7 @@ test('Settings form dialogs share the same dirty-close contract without disablin
 test('Agent configuration entry points are disabled while the backend is connecting', () => {
   const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
   assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected\}/g)?.length, 2);
-  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 9);
+  assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 3);
   assert.match(agentSettings, /<FormDialog[\s\S]*confirmDisabled=\{!isConnected\}/);
 });
 
@@ -1308,7 +1292,6 @@ test('media capability configuration and hot-apply state use exact fields', () =
     'vision_endpoint_profile',
     'vision_vendor_key',
     'vision_plan',
-    'vision_context_window_tokens',
   ]);
   assert.equal(isMediaCapabilityConfigured(values, 'vision'), true);
   assert.equal(isMediaCapabilityConfigured({ ...values, vision_provider: '  ' }, 'vision'), false);
@@ -1363,8 +1346,6 @@ test('legacy multimodal configuration remains custom while provider selections p
   assert.equal(legacyDraft.api_key, legacy.vision_api_key);
   assert.equal(legacyDraft.model_name, legacy.vision_model);
   assert.equal(legacyDraft.provider, legacy.vision_provider);
-  assert.equal(legacyDraft.context_window_tokens, '256K');
-  assert.equal('context_window_1m_enabled' in legacyDraft, false);
 
   const preset = {
     vendor_key: 'example',
@@ -1403,7 +1384,6 @@ test('legacy multimodal configuration remains custom while provider selections p
     vision_endpoint_profile: 'example-profile',
     vision_vendor_key: 'example',
     vision_plan: 'token_plan',
-    vision_context_window_tokens: '262144',
     vision_enabled: 'true',
   });
   const editedDraft = createMediaModelDraft(updates, 'vision');
@@ -1411,35 +1391,6 @@ test('legacy multimodal configuration remains custom while provider selections p
   assert.equal(editedDraft.model_input_mode, 'options');
   assert.equal(editedDraft.vendor_key, 'example');
   assert.equal(editedDraft.plan, 'token_plan');
-});
-
-test('multimodal context windows accept mixed-case units and remain editable', () => {
-  const draft = createMediaModelDraft(
-    {
-      vision_api_base: 'https://legacy.example/v1',
-      vision_api_key: 'legacy-key',
-      vision_model: 'legacy-model',
-      vision_provider: 'OpenAI',
-      vision_context_window_tokens: '200k',
-    },
-    'vision',
-  );
-  assert.equal(draft.context_window_tokens, '200K');
-
-  const updates = buildMediaModelConfigUpdates(
-    { ...draft, context_window_tokens: '200 k' },
-    { reasoning: null, token_plan: [], coding_plan: [], custom_api: [] },
-    'vision',
-    false,
-  );
-  assert.equal(updates.vision_context_window_tokens, '204800');
-
-  const dialog = source('src/features/settings/modules/agent/MediaModelConfigDialog.tsx');
-  const agentSettings = source('src/features/settings/modules/agent/AgentSettings.tsx');
-  assert.match(dialog, /<ContextWindowField/);
-  assert.doesNotMatch(dialog, /contextWindow1mEnabled/);
-  assert.match(agentSettings, /<ContextWindowField/);
-  assert.doesNotMatch(agentSettings, /contextWindow1mEnabled/);
 });
 
 test('SettingRow exposes a business-agnostic subSettings slot for dependent rows', () => {
@@ -1507,11 +1458,11 @@ test('Settings tags use the shared UI Tag component and semantic variants', () =
   const modelsSettings = source('src/features/settings/modules/models/ModelsSettings.tsx');
   const settingRow = source('src/features/settings/components/SettingRow.tsx');
 
-  assert.match(generalSettings, /<Tag\s+variant=\{connectionVariant\}\s+role="status"[^>]*>/s);
+  assert.match(generalSettings, /<Tag\s+variant=\{connectionVariant\}\s+role="status">/s);
   assert.match(generalSettings, /const connectionVariant:\s*TagVariant/);
-  assert.match(modelsSettings, /<Tag\s+variant="info"[^>]*>\{t\('settingsPanel\.models\.primary'\)\}<\/Tag>/s);
-  assert.match(modelsSettings, /<Tag\s+variant="neutral"[^>]*>\{t\('settingsPanel\.models\.groupDefault'\)\}<\/Tag>/s);
-  assert.match(modelsSettings, /<Tag\s+variant="neutral"[^>]*>\{t\('settingsPanel\.models\.agentOsReadonly'\)\}<\/Tag>/s);
+  assert.match(modelsSettings, /<Tag\s+variant="info">\{t\('settingsPanel\.models\.primary'\)\}<\/Tag>/);
+  assert.match(modelsSettings, /<Tag\s+variant="neutral">\{t\('settingsPanel\.models\.groupDefault'\)\}<\/Tag>/);
+  assert.match(modelsSettings, /<Tag\s+variant="neutral">\{t\('settingsPanel\.models\.agentOsReadonly'\)\}<\/Tag>/);
   assert.match(uiIndex, /export \{ Tag, type TagProps, type TagVariant \} from '\.\/Tag\/Tag'/);
   assert.match(tagSource, /export type TagVariant = 'success' \| 'info' \| 'warning' \| 'danger' \| 'neutral'/);
   assert.match(
@@ -1615,7 +1566,10 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   );
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
-  assert.doesNotMatch(modelsDefinition, /id: 'free-models'|enable_free_models/);
+  assert.ok(
+    modelsDefinition.indexOf("id: 'model-manager'") < modelsDefinition.indexOf("id: 'free-models'"),
+    'free models should render after the chat model manager',
+  );
   assert.match(channelsDefinition, /id: 'channels',[\s\S]{0,80}separatedRows: true/);
   assert.match(modelsSettings, /<SettingsSection[\s\S]{0,120}separatedRows/);
   assert.match(channelList, /<SettingsSection separatedRows>/);
@@ -1694,6 +1648,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.doesNotMatch(modelsSettings, /getConfiguredProviderLogoUrl/);
   assert.match(providerAssets, /VENDOR_ICON_KEYS/);
   assert.match(providerAssets, /\['openrouter', 'openrouter'\]/);
+  assert.match(providerAssets, /model\.is_free === true/);
   assert.match(providerAssets, /model\.model_provider === 'OpenAIAccount'/);
   assert.match(providerAssets, /model\.vendor_key\?\.trim\(\)/);
   assert.match(modelProviderIcon, /return getModelLogoUrl\(model\)/);
@@ -1774,8 +1729,8 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.match(channelList, /className="settings-channels-panel__add-configuration"/);
   assert.match(channelList, /className="settings-channels-panel__account-actions"/);
   assert.match(channelList, /import \{ Button, Tag \} from '[^']*components\/ui'/);
-  assert.match(channelList, /<Tag\s+variant=\{account\.configured \? 'success' : 'neutral'\}[^>]*>/s);
-  assert.match(channelList, /<Tag\s+variant=\{account\.enabled \? 'success' : 'neutral'\}[^>]*>/s);
+  assert.match(channelList, /<Tag variant=\{account\.configured \? 'success' : 'neutral'\}>/);
+  assert.match(channelList, /<Tag variant=\{account\.enabled \? 'success' : 'neutral'\}>/);
   assert.match(channelList, /t\('common\.modify'\)/);
   assert.match(channelList, /t\('channels\.unbind'\)/);
   assert.match(channelList, /title=\{t\(account\.enabled \? 'channels\.disable' : 'channels\.enable'\)\}/);
@@ -1883,7 +1838,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
     /<a[\s\S]*href=\{getSettingsChannelGuideUrl\(channel\.channel_id, guideLanguage\)\}[\s\S]*target="_blank"[\s\S]*rel="noopener noreferrer"/,
   );
   const catalog = source('src/features/settings/modules/channels/channelCatalog.ts');
-  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack'])
+  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack', 'whatsapp'])
     assert.match(catalog, new RegExp(`'${channelId}'`));
 });
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -12,16 +13,41 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import (
 )
 
 
-def test_qwen_tool_definition_exposes_only_jiuwen_delegate() -> None:
+def test_qwen_tool_definition_exposes_delegate_and_task_controls() -> None:
     tools = qwen_omni_tools()
 
-    assert len(tools) == 1
-    function = tools[0]["function"]
+    assert {t["function"]["name"] for t in tools} == {
+        "jiuwen_delegate",
+        "jiuwen_task_query",
+        "jiuwen_task_cancel",
+        "jiuwen_task_modify",
+        "jiuwen_task_reorder",
+        "jiuwen_task_answer",
+    }
+    function = next(
+        t["function"]
+        for t in tools
+        if t["function"]["name"] == QWEN_OMNI_DELEGATE_TOOL_NAME
+    )
     assert tools[0]["type"] == "function"
     assert function["name"] == QWEN_OMNI_DELEGATE_TOOL_NAME
     assert function["parameters"]["required"] == ["task"]
     assert function["parameters"]["additionalProperties"] is False
-    assert "all of its available capabilities" in function["description"]
+    required = {
+        "jiuwen_delegate": {"task"}, "jiuwen_task_query": set(),
+        "jiuwen_task_cancel": {"job_id"},
+        "jiuwen_task_modify": {"job_id", "revision", "instruction"},
+        "jiuwen_task_reorder": {"job_id", "queue_version", "action"},
+        "jiuwen_task_answer": {"job_id", "interaction_id", "answers"},
+    }
+    schemas = {t["function"]["name"]: t["function"]["parameters"] for t in tools}
+    for name, schema in schemas.items():
+        assert set(schema["required"]) == required.get(name)
+        assert schema["additionalProperties"] is False
+    assert schemas["jiuwen_task_answer"]["properties"]["answers"]["items"]["type"] == "string"
+    assert schemas["jiuwen_task_reorder"]["properties"]["action"]["enum"] == ["next", "before"]
+    for name, field in [("jiuwen_task_modify", "revision"), ("jiuwen_task_reorder", "queue_version")]:
+        assert schemas[name]["properties"][field]["type"] == "integer"
 
 
 def test_parse_qwen_delegate_accepts_complete_task() -> None:
@@ -83,3 +109,16 @@ def test_parse_qwen_delegate_accepts_model_argument_aliases(argument_name) -> No
 def test_parse_qwen_tool_call_rejects_invalid_requests(value) -> None:
     with pytest.raises(ValueError):
         parse_qwen_omni_tool_call(value)
+
+
+CONTRACT_CASES = json.loads((Path(__file__).parents[1] / "task_tool_contract.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", CONTRACT_CASES, ids=lambda case: case["id"])
+def test_shared_task_tool_contract(case):
+    value = {"name": case["name"], "call_id": case["id"], "arguments": json.dumps(case["arguments"])}
+    if case["server_accepts"]:
+        assert parse_qwen_omni_tool_call(value).arguments == case["arguments"]
+    else:
+        with pytest.raises(ValueError):
+            parse_qwen_omni_tool_call(value)

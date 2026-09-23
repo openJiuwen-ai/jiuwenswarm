@@ -143,3 +143,11 @@ def test_max_iterations_still_honoured_when_enabled():
     explore = next(spec for spec in specs if spec.agent_card.name == "explore_agent")
 
     assert explore.factory_kwargs["max_iterations"] == 50
+
+
+def test_unconfigured_explore_and_plan_inherit_former_generic_cap():
+    specs = build_member_subagent_specs(_config({}), CODE_TEAM_MODE, "leader")
+    by_name = {spec.agent_card.name: spec for spec in specs}
+
+    assert by_name["explore_agent"].factory_kwargs["max_iterations"] == 100
+    assert by_name["plan_agent"].factory_kwargs["max_iterations"] == 100

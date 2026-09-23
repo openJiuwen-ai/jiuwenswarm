@@ -9,7 +9,7 @@
  * 采集来源的创建统一在「上下文内容」页的添加内容抽屉完成，本页不再承担创建。
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, X } from 'lucide-react';
 import { Switch } from '../Switch';
@@ -17,7 +17,12 @@ import { SettingRow } from '../../features/settings/components/SettingRow';
 import ModelPicker from '../ModelPicker';
 import { usePersonalContextStore } from '../../stores';
 import { useSessionStore } from '../../stores';
-import { STRATEGY_OPTIONS, isFetchTaskRunningError } from '../../services/personalContextApi';
+import {
+  STRATEGY_OPTIONS,
+  hasRunningFetchTask,
+  isFetchTaskRunningError,
+  pcApi,
+} from '../../services/personalContextApi';
 import { toast } from '../../components/ui/Toast/toastStore';
 import './SettingsPanel.css';
 import feishuLogo from '../../assets/settings/channels/feishu.svg';
@@ -25,6 +30,18 @@ import githubLogo from '../../assets/settings/channels/GitHub.svg';
 import gitcodeLogo from '../../assets/settings/channels/gitcode.png';
 interface PersonalContextSettingsPanelProps {
   isConnected: boolean;
+}
+
+/** webClient 请求超时错误（code=REQUEST_TIMEOUT）。 */
+function isRequestTimeoutError(error: unknown): boolean {
+  return String((error as { code?: unknown })?.code ?? '') === 'REQUEST_TIMEOUT';
+}
+
+/** 后端 PAT 校验失败类错误（token 无效 / 校验超时 / 请求失败），统一转友好提示。 */
+function isRepositoryCredentialError(error: unknown): boolean {
+  return /repository provider credential validation/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
 }
 
 export function PersonalContextSettingsPanel({
@@ -46,9 +63,14 @@ export function PersonalContextSettingsPanel({
     authByProvider,
   } = usePersonalContextStore();
   const availableModels = useSessionStore((s) => s.availableModels);
+  // 上下文整理模型只允许选择已配置模型，登录/免费模型由网关按会话注入凭据，
+  // 无法被 personal_context 持久化保存，选中会触发后端下标越界，这里直接过滤掉。
+  const visibleModels = availableModels.filter((m) => m.is_free !== true);
+  const currentModelName =
+    config.model_index != null ? availableModels[config.model_index]?.model_name ?? null : null;
 
-  // 总开关为派生状态：任一子开关开启即视为开启。
-  const masterEnabled = config.collection_enabled || config.agent_use_enabled;
+  // 总开关为独立持久化状态；兼容旧配置缺失时按子开关派生兜底。
+  const masterEnabled = config.master_enabled ?? (config.collection_enabled || config.agent_use_enabled);
 
   const [error, setError] = useState<string | null>(null);
   const [githubModalOpen, setGithubModalOpen] = useState(false);
@@ -71,24 +93,67 @@ export function PersonalContextSettingsPanel({
     }
   }, [isConnected, loadAll, loadAuthStatus]);
 
-  const handleEnabled = useCallback(
-    (enabled: boolean) => {
-      setError(null);
-      void setEnabled(enabled).catch((e: unknown) => {
+  // 写操作统一处理：请求超时用 toast 提示。关闭/开启都可能等后端最长 30s 停任务，
+  // 超时后开关会回弹，直接提示比挂一条持久错误条更友好。
+  const runWrite = useCallback(
+    (op: () => Promise<void>): Promise<void> =>
+      op().catch((e: unknown) => {
+        if (isRequestTimeoutError(e)) {
+          toast.open({ content: t('personalContext.settings.operationTimeout'), variant: 'warning' });
+          return;
+        }
         setError(e instanceof Error ? e.message : String(e));
-      });
+      }),
+    [t],
+  );
+
+  // 开启采集前确认任务已真正停完：若后端还在跑/停，start 会排在 _operation_lock 后面干等
+  // （stop 最长 30s），两个请求串行容易触发前端 60s 超时，这里提前拦截。
+  const isFetchStillRunning = useCallback(async (): Promise<boolean> => {
+    try {
+      const fresh = await pcApi.getStatus();
+      return hasRunningFetchTask(fresh);
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const handleEnabled = useCallback(
+    async (enabled: boolean) => {
+      setError(null);
+      if (!enabled) {
+        if (hasRunningFetchTask(status)) {
+          toast.open({ content: t('personalContext.settings.collectionStopPending'), variant: 'warning' });
+        }
+        await runWrite(() => setEnabled(false));
+        return;
+      }
+      if (await isFetchStillRunning()) {
+        toast.open({ content: t('personalContext.settings.collectionStoppingRetry'), variant: 'warning' });
+        return;
+      }
+      await runWrite(() => setEnabled(true));
     },
-    [setEnabled],
+    [isFetchStillRunning, runWrite, setEnabled, status, t],
   );
 
   const handleMasterEnabled = useCallback(
-    (enabled: boolean) => {
+    async (enabled: boolean) => {
       setError(null);
-      void setMasterEnabled(enabled).catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
-      });
+      if (!enabled) {
+        if (hasRunningFetchTask(status)) {
+          toast.open({ content: t('personalContext.settings.collectionStopPending'), variant: 'warning' });
+        }
+        await runWrite(() => setMasterEnabled(false));
+        return;
+      }
+      if (await isFetchStillRunning()) {
+        toast.open({ content: t('personalContext.settings.collectionStoppingRetry'), variant: 'warning' });
+        return;
+      }
+      await runWrite(() => setMasterEnabled(true));
     },
-    [setMasterEnabled],
+    [isFetchStillRunning, runWrite, setMasterEnabled, status, t],
   );
 
   const handleStrategy = useCallback(
@@ -124,22 +189,96 @@ export function PersonalContextSettingsPanel({
     [selectModel, t],
   );
 
-  const handleFeishuAuthorize = useCallback(() => {
-    setError(null);
-    void authorizeProvider('feishu').then((result) => {
-      // 收到 verification_url 后在新窗口打开飞书授权页
-      if (result?.verification_url) {
-        window.open(result.verification_url, '_blank', 'noopener,noreferrer');
-      }
-    }).catch((e: unknown) => {
-      setError(e instanceof Error ? e.message : String(e));
-    });
-  }, [authorizeProvider]);
-
   const feishuAuth = authByProvider.feishu;
   const feishuState = feishuAuth?.state ?? 'not_authorized';
   const githubState = authByProvider.github?.state ?? 'not_authorized';
   const gitcodeState = authByProvider.gitcode?.state ?? 'not_authorized';
+
+  // 飞书授权流程标记：step1=首次应用配置中，step2=第 1 步完成/第 2 步授权中，
+  // null=非首次单步授权或无进行中的流程（不显示分步徽标）。
+  const [feishuFlowStep, setFeishuFlowStep] = useState<'step1' | 'step2' | null>(null);
+
+  const handleFeishuAuthorize = useCallback(() => {
+    setError(null);
+    // 第 1 步（config_init）完成后的再次点击即第 2 步，保留流程标记；
+    // 其余场景（含非首次单步授权）重置为 null，不再显示分步徽标。
+    const resumingStep2 = feishuFlowStep === 'step2';
+    if (!resumingStep2) setFeishuFlowStep(null);
+    void authorizeProvider('feishu', undefined, feishuState === 'authorized')
+      .then((result) => {
+        if (result?.state === 'authorizing' && result.verification_url) {
+          if (result.authorization_step === 'config_init') {
+            setFeishuFlowStep('step1');
+          } else if (!resumingStep2) {
+            // 非首次授权：只有一次登录授权，不显示「第 2 步」徽标
+            setFeishuFlowStep(null);
+          }
+          const win = window.open(result.verification_url, '_blank', 'noopener,noreferrer');
+          // 弹窗被拦截时，卡片提示条里的兜底链接可手动打开授权页
+          if (!win) {
+            toast.open({ content: t('personalContext.authorization.feishuOpenLink'), variant: 'warning' });
+          }
+        } else if (result?.state === 'authorized') {
+          setFeishuFlowStep(null);
+          toast.open({ content: t('personalContext.authorization.feishuAuthSuccess'), variant: 'success' });
+        } else {
+          setFeishuFlowStep(null);
+          // 发起即失败（如 lark-cli 缺失/不可用）：直接提示，不留空白页
+          toast.open({
+            content:
+              result?.authorization_step === 'config_init'
+                ? t('personalContext.authorization.feishuConfigInitFailed')
+                : t('personalContext.authorization.feishuAuthFailed'),
+            variant: 'error',
+          });
+        }
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e));
+      });
+  }, [authorizeProvider, feishuFlowStep, feishuState, t]);
+
+  // 授权链接有效期倒计时（仅授权中显示）
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (feishuState !== 'authorizing') return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [feishuState]);
+
+  const feishuExpiresInText = useMemo(() => {
+    const expiresAt = feishuAuth?.expires_at;
+    if (!expiresAt) return null;
+    const remainingSec = Math.max(0, Math.round((new Date(expiresAt).getTime() - now) / 1000));
+    if (remainingSec <= 0) return t('personalContext.authorization.feishuAuthExpiredShort');
+    if (remainingSec < 60) return t('personalContext.authorization.feishuExpiresInSeconds', { count: remainingSec });
+    return t('personalContext.authorization.feishuExpiresInMinutes', { count: Math.ceil(remainingSec / 60) });
+  }, [feishuAuth?.expires_at, now, t]);
+
+  // 飞书授权完成/失败的一次性反馈 + 第 1 步完成标记（authorizing → authorized / failed / not_authorized）
+  const prevFeishuAuth = useRef({ state: feishuState, step: feishuAuth?.authorization_step ?? null });
+  useEffect(() => {
+    const prev = prevFeishuAuth.current;
+    if (prev.state === 'authorizing' && feishuState === 'authorized') {
+      toast.open({ content: t('personalContext.authorization.feishuAuthSuccess'), variant: 'success' });
+      setFeishuFlowStep(null);
+    } else if (prev.state === 'authorizing' && feishuState === 'authorization_failed') {
+      const expired = feishuAuth?.expires_at ? Date.now() > new Date(feishuAuth.expires_at).getTime() : false;
+      toast.open({
+        content: expired ? t('personalContext.authorization.feishuAuthExpired') : t('personalContext.authorization.feishuAuthFailed'),
+        variant: 'error',
+      });
+      setFeishuFlowStep(null);
+    } else if (
+      prev.state === 'authorizing' &&
+      prev.step === 'config_init' &&
+      feishuState === 'not_authorized'
+    ) {
+      // 第 1 步（应用配置）已完成，保留提示引导第 2 步登录授权
+      setFeishuFlowStep('step2');
+    }
+    prevFeishuAuth.current = { state: feishuState, step: feishuAuth?.authorization_step ?? null };
+  }, [feishuState, feishuAuth?.expires_at, feishuAuth?.authorization_step, t]);
 
   // 飞书授权中（设备流需用户在浏览器完成）时轮询状态，直到变 authorized/failed
   useEffect(() => {
@@ -218,12 +357,13 @@ export function PersonalContextSettingsPanel({
             >
               <ModelPicker
                 testIdPrefix="personal-context-model"
-                value={config.model_index != null ? availableModels[config.model_index]?.model_name ?? null : null}
+                excludeFreeModels
+                value={currentModelName}
                 onChange={(modelName) => {
                   const idx = availableModels.findIndex((m) => m.model_name === modelName);
                   if (idx >= 0) handleModel(idx);
                 }}
-                disabled={!isConnected || !!pendingWrites.model_index || availableModels.length === 0}
+                disabled={!isConnected || !!pendingWrites.model_index || visibleModels.length === 0}
               />
             </SettingRow>
 
@@ -253,6 +393,45 @@ export function PersonalContextSettingsPanel({
                         : t('personalContext.authorization.authorize')}
                   </button>
                 </div>
+                {(() => {
+                  const authorizing = feishuState === 'authorizing' && !!feishuAuth?.verification_url;
+                  const step2Pending = feishuFlowStep === 'step2' && feishuState === 'not_authorized';
+                  const configInitActive = authorizing && feishuAuth?.authorization_step === 'config_init';
+                  if (!authorizing && !step2Pending) return null;
+                  return (
+                    <div className="pc-settings__auth-hint" role="status">
+                      {(configInitActive || feishuFlowStep !== null) && (
+                        <span className="pc-settings__auth-step">
+                          {configInitActive
+                            ? t('personalContext.authorization.feishuStep1')
+                            : t('personalContext.authorization.feishuStep2')}
+                        </span>
+                      )}
+                      <span>
+                        {configInitActive
+                          ? t('personalContext.authorization.feishuConfigInitHint')
+                          : step2Pending
+                            ? t('personalContext.authorization.feishuStep1Done')
+                            : t('personalContext.authorization.feishuVerifyHint')}
+                      </span>
+                      {authorizing && (
+                        <>
+                          <a
+                            className="pc-settings__auth-link"
+                            href={feishuAuth?.verification_url ?? undefined}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {t('personalContext.authorization.feishuOpenLink')}
+                          </a>
+                          {feishuExpiresInText && (
+                            <span className="pc-settings__auth-expires">{feishuExpiresInText}</span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
                 {/* GitHub */}
                 <div className="pc-settings__auth-card">
                   <div className="pc-settings__auth-icon pc-settings__auth-icon--github"><img src={githubLogo} alt="GitHub" /></div>
@@ -339,7 +518,13 @@ function GithubTokenModal({
       await onSave(trimmed);
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(
+        isRepositoryCredentialError(e)
+          ? t('personalContext.authorization.tokenInvalid')
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
     } finally {
       setSaving(false);
     }
@@ -410,7 +595,13 @@ function GitcodeTokenModal({
       await onSave(trimmed);
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(
+        isRepositoryCredentialError(e)
+          ? t('personalContext.authorization.tokenInvalid')
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
     } finally {
       setSaving(false);
     }

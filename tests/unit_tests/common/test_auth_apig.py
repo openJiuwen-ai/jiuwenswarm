@@ -264,6 +264,7 @@ _SDK = "[181001] model call failed, reason: openAI API async stream error: "
          "'APIG.0202', 'request_id': 'b3844ae0aacba00b6e5187c8ee14982f'}", apig.SERVICE_UNAVAILABLE_CODE),
         ("Error code: 504 - {'error_code': 'APIG.0203', 'error_msg': 'Backend timeout'}", apig.SERVICE_UNAVAILABLE_CODE),
         ("Error code: 404 - {'error_code': 'APIG.0101'}", apig.SERVICE_UNAVAILABLE_CODE),
+        ("Error code: 404 - {'detail': 'Not Found'}", apig.SERVICE_UNAVAILABLE_CODE),
         ("Error code: 401 - {'error_code': 'APIG.0301'}", apig.SERVICE_UNAVAILABLE_CODE),
         ("Error code: 405 - {'error_code': 'APIG.0501', 'error_msg': 'App quota exhausted'}", apig.SERVICE_UNAVAILABLE_CODE),
         ("Error code: 429 - {'error_code': 'APIG.0308'}", apig.RATE_LIMITED_CODE),

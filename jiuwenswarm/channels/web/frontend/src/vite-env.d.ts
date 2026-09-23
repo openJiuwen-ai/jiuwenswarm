@@ -51,6 +51,8 @@ interface Window {
       get_clipboard_files?: () =>
         | Promise<Array<Record<string, unknown>>>
         | Array<Record<string, unknown>>;
+      get_close_action?: () => Promise<'ask' | 'hide' | 'quit' | null> | 'ask' | 'hide' | 'quit' | null;
+      set_close_action?: (action: 'ask' | 'hide' | 'quit') => Promise<boolean> | boolean;
     };
   };
   /** Durable ingest hook invoked by desktop_app.py run_js on native file drops. */

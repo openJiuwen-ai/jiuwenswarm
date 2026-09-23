@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowUp, GitFork, LoaderCircle, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores';
@@ -22,11 +22,24 @@ export function SideConversationPanel({ sessionId, parentTitle, onSendMessage, o
   const [sendFailed, setSendFailed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  const followBottomRef = useRef(true);
+
+  useLayoutEffect(() => {
+    followBottomRef.current = true;
+  }, [sessionId]);
+
+  useLayoutEffect(() => {
     const viewport = scrollRef.current;
     if (!viewport) return;
-    viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' });
-  }, [isProcessing, messages, toolExecutionCount]);
+    const followBottom = () => {
+      if (followBottomRef.current) viewport.scrollTop = viewport.scrollHeight;
+    };
+    followBottom();
+    const observer = new ResizeObserver(followBottom);
+    observer.observe(viewport);
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
+    return () => observer.disconnect();
+  }, [sessionId, isProcessing, messages, toolExecutionCount]);
 
   const submit = async () => {
     const content = draft.trim();
@@ -82,7 +95,19 @@ export function SideConversationPanel({ sessionId, parentTitle, onSendMessage, o
         </button>
       </header>
 
-      <div className="side-conversation-panel__messages" ref={scrollRef}>
+      <div
+        className="side-conversation-panel__messages"
+        ref={scrollRef}
+        data-timeline-scroll-root
+        data-testid="side-conversation-panel-messages"
+        onScroll={(event) => {
+          const viewport = event.currentTarget;
+          followBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 1;
+        }}
+        onWheel={(event) => {
+          if (event.deltaY < 0) followBottomRef.current = false;
+        }}
+      >
         {messages.length > 0 || toolExecutionCount > 0 ? (
           <MessageList messages={messages} sessionId={sessionId} />
         ) : (

@@ -22,6 +22,17 @@ from jiuwenswarm.channels.process_cli.display_context import resolve_cli_work_mo
 logger = logging.getLogger(__name__)
 
 
+def _configure_forwarded_stdio(args: argparse.Namespace) -> None:
+    """Keep the internal REPL worker pipe contract UTF-8 on Windows."""
+
+    if not getattr(args, "_forwarded_live_input", False):
+        return
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 class _WindowsWorkerInterruptController:
     """Turn the REPL worker's CTRL_BREAK into cancellable async cleanup."""
 
@@ -181,6 +192,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--_forwarded-live-input",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--_session-result-file",
         help=argparse.SUPPRESS,
     )
@@ -229,6 +245,7 @@ def _activate_requested_cwd(
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    _configure_forwarded_stdio(args)
     if args.query_json is not None:
         from jiuwenswarm.channels.process_cli.query_entry import execute_query_source
 

@@ -17,17 +17,6 @@ export const agentModule: SettingsModuleDefinition = {
           id: 'skill-retrieval',
           component: 'switch',
           key: 'skill_retrieval_enabled',
-          subItems: {
-            show: 'always',
-            disabled: 'when-parent-unchecked',
-            items: [
-              {
-                id: 'skill-retrieval-index',
-                component: 'switch',
-                key: 'skill_retrieval_index_enabled',
-              },
-            ],
-          },
         },
       ],
     },

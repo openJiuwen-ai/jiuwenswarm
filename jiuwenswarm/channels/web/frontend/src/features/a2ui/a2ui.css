@@ -160,3 +160,30 @@ body .a2ui-surface .a2ui-list[data-direction="horizontal"] > section::-webkit-sc
   font-family: 'password';
   letter-spacing: 0.125em;
 }
+
+/* ─── Modal dialog overrides ─── */
+/* Library sets background: none; border: none; padding: 0 which makes the
+   dialog transparent and unusable. Override with a visible panel.
+   Use !important because the library injects styles at runtime via JS
+   which can override static CSS imports. */
+body .a2ui-surface .a2ui-modal dialog {
+  background: var(--color-surface-card, #ffffff) !important;
+  border: 1px solid var(--color-border-default, #e0e0e0) !important;
+  border-radius: 12px !important;
+  padding: 24px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18) !important;
+  max-width: 640px !important;
+  width: calc(100% - 48px) !important;
+  max-height: 80vh !important;
+  overflow-y: auto !important;
+}
+
+body .a2ui-surface .a2ui-modal dialog::backdrop {
+  background: rgba(0, 0, 0, 0.4) !important;
+}
+
+body .a2ui-surface .a2ui-modal dialog section #controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}

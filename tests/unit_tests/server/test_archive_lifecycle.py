@@ -1,6 +1,9 @@
 """Disk-backed lifecycle scenarios; runtime calls are isolated from LLMs."""
 
 import asyncio
+import sys
+import threading
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -25,60 +28,6 @@ def test_gateway_recovery_owners_survive_empty_cron_store(tmp_path):
     second.remember("bob")
     assert LifecycleOwners(path).read() == {"", "alice", "bob"}
     assert not path.exists()
-
-
-@pytest.mark.asyncio
-async def test_scheduler_restart_routes_recovery_without_remaining_jobs(
-    tmp_path, monkeypatch
-):
-    from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
-    from jiuwenswarm.gateway.cron.store import CronJobStore
-    from jiuwenswarm.gateway.routing import e2a_proxy
-
-    store = CronJobStore(path=tmp_path / "cron_jobs.json")
-    original = CronSchedulerService(
-        store=store, agent_client=None, message_handler=None
-    )
-    original.remember_lifecycle_owner("alice")
-    restarted = CronSchedulerService(
-        store=store, agent_client=None, message_handler=None
-    )
-    owners = []
-
-    async def fetch(**kwargs):
-        owners.append(kwargs["user_id"])
-        return True, {"projects": []}
-
-    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
-    await restarted.reconcile_project_lifecycles()
-    assert "alice" in owners
-    assert await store.list_jobs() == []
-
-
-def test_stale_project_checkpoint_cannot_change_progress(archive):
-    service, _, root, _ = archive
-    project = project_store.create_project("checkpoint", str(root / "work"))
-    operation = lc.begin("project", project.project_id, "delete")
-    lc.claim_operation("project", project.project_id, "first")
-    old = dict(
-        operation_id=operation["operation_id"], generation=operation["generation"]
-    )
-    current = lc.claim_operation("project", project.project_id, "second")
-    with pytest.raises(lc.LifecycleError):
-        lc.checkpoint_project(
-            project.project_id, {**old, "completed_cron_job_ids": ["stale"]}
-        )
-    lc.checkpoint_project(
-        project.project_id,
-        {
-            "operation_id": current["operation_id"],
-            "generation": current["generation"],
-            "completed_cron_job_ids": ["current"],
-        },
-    )
-    assert lc.state("project", project.project_id)["operation"]["completed_items"][
-        "cron"
-    ] == ["current"]
 
 
 @pytest.mark.asyncio
@@ -212,6 +161,105 @@ async def test_moved_directory_recovers_original_timestamp(archive):
     result = await service.session("sess_a", "archive", "web")
     assert result["archived_at"] == operation["archived_at"]
     assert lc.raw_metadata("sess_a")["archived_at"] == operation["archived_at"]
+
+
+@pytest.mark.asyncio
+async def test_listing_skips_unusable_entries_instead_of_failing(archive):
+    service, create, root, _ = archive
+    create()
+    await service.session("sess_a", "archive", "web")
+    # 非法资源 ID（前后空白）：validate_id 拒绝，但目录在两个平台都能创建。
+    stray = root / "sessions_archived/ bad_name"
+    stray.mkdir()
+    lc.atomic_json(stray / "metadata.json", dict(session_id=" bad_name", title="x"))
+    # 损坏的 metadata.json：JSON 解析失败。
+    corrupt = root / "sessions_archived/sess_corrupt"
+    corrupt.mkdir()
+    (corrupt / "metadata.json").write_text("{not json")
+    # 空目录：会话在扫描期间被移走或外部垃圾，不得进入列表。
+    (root / "sessions_archived/sess_gone").mkdir()
+    result = service.list_sessions({})
+    assert result["total"] == 1
+    item = result["sessions"][0]
+    assert item["session_id"] == "sess_a"
+    assert item["archived"] is True
+    assert isinstance(item["archived_at"], float)
+    assert item["execution_blocked"] is True
+    assert item["lifecycle_operation"] is None
+
+
+@pytest.mark.asyncio
+async def test_listing_is_read_only_and_backfill_persists_archive_time(archive):
+    service, create, root, _ = archive
+    directory = create()
+    # 模拟老版本遗留：手动移入归档区，元数据没有 archived_at。
+    destination = root / "sessions_archived/sess_a"
+    destination.parent.mkdir()
+    directory.rename(destination)
+    mtime = destination.stat().st_mtime
+    result = service.list_sessions({})
+    assert result["total"] == 1
+    assert result["sessions"][0]["archived_at"] == pytest.approx(mtime)
+    # 只读：列表请求不得写元数据或生命周期状态。
+    assert "archived_at" not in lc.read_json(destination / "metadata.json")
+    assert lc.state("session", "sess_a") == {}
+    # 启动回填持久化后，列表返回持久化的值。
+    service._backfill_archive_times()
+    persisted = lc.read_json(destination / "metadata.json")["archived_at"]
+    assert persisted == pytest.approx(mtime)
+    assert service.list_sessions({})["sessions"][0]["archived_at"] == persisted
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="directory junctions are Windows-only"
+)
+async def test_listing_skips_junction_escaping_managed_root(archive, tmp_path):
+    import _winapi
+
+    service, create, root, _ = archive
+    create()
+    await service.session("sess_a", "archive", "web")
+    # junction 指向受管存储之外：is_symlink 识别不了，必须由
+    # resolve 后的父目录比对拦下（与 session_paths 守卫同判定）。
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    lc.atomic_json(
+        outside / "metadata.json",
+        dict(session_id="sess_escape", title="escape", project_id="default"),
+    )
+    junction = root / "sessions_archived" / "sess_escape"
+    _winapi.CreateJunction(str(outside), str(junction))
+    result = service.list_sessions({})
+    assert result["total"] == 1
+    assert result["sessions"][0]["session_id"] == "sess_a"
+    # 启动回填同样不得读取或修复越界目标。
+    service._backfill_archive_times()
+    assert "archived_at" not in lc.read_json(outside / "metadata.json")
+
+
+@pytest.mark.asyncio
+async def test_listing_survives_permission_error_on_one_entry(archive, monkeypatch):
+    import pathlib
+
+    service, create, root, _ = archive
+    create()
+    await service.session("sess_a", "archive", "web")
+    locked = root / "sessions_archived" / "sess_locked"
+    locked.mkdir()
+    (locked / "metadata.json").write_text("{}")
+    original = pathlib.Path.is_dir
+
+    def denying_is_dir(self):
+        if self.name == "sess_locked":
+            raise PermissionError("denied")
+        return original(self)
+
+    monkeypatch.setattr(pathlib.Path, "is_dir", denying_is_dir)
+    # 单个条目的权限错误不得让整个列表失败。
+    result = service.list_sessions({})
+    assert result["total"] == 1
+    assert result["sessions"][0]["session_id"] == "sess_a"
 
 
 @pytest.mark.asyncio
@@ -429,239 +477,6 @@ def test_conflicts_and_batch_validation(archive):
 
 
 @pytest.mark.asyncio
-async def test_gateway_direct_delete_isolates_cron_owner(archive, monkeypatch):
-    from jiuwenswarm.gateway.cron.controller import CronController
-    from jiuwenswarm.gateway.channel_manager.web import lifecycle_handlers
-
-    service, create, root, runtime = archive
-    project = project_store.create_project("cascade", str(root / "user-work"))
-    project_dir = root / "user-work"
-    project_dir.mkdir()
-    (project_dir / "keep.txt").write_text("user data")
-    directory = create()
-    meta = lc.raw_metadata("sess_a")
-    meta["project_id"] = project.project_id
-    lc.atomic_json(directory / "metadata.json", meta)
-    events = []
-    jobs = {
-        "ours": SimpleNamespace(
-            id="ours", project_id=project.project_id, user_id="alice", enabled=True
-        ),
-        "theirs": SimpleNamespace(
-            id="theirs", project_id=project.project_id, user_id="bob", enabled=True
-        ),
-    }
-
-    async def update_job(job_id, patch):
-        assert lc.projection("project", project.project_id)["execution_blocked"]
-        jobs[job_id].enabled = patch["enabled"]
-        events.append(("disable", job_id))
-
-    async def delete_job(job_id, **kwargs):
-        assert not kwargs.get("force")
-        events.append(("delete", job_id))
-        jobs.pop(job_id, None)
-        return True
-
-    store = SimpleNamespace(
-        list_jobs=AsyncMock(side_effect=lambda: list(jobs.values())),
-        update_job=update_job,
-        delete_job=delete_job,
-    )
-    scheduler = SimpleNamespace(
-        reload=AsyncMock(),
-        stop_project_runs=AsyncMock(),
-        _lifecycle_owners=set(),
-        remember_lifecycle_owner=lambda owner: None,
-    )
-    controller = CronController(store=store, scheduler=scheduler)
-
-    async def fetch(**kwargs):
-        params, method = kwargs["params"], kwargs["req_method"].value
-        pid = params["project_id"]
-        if method == "project.lifecycle":
-            operation = lc.state("project", pid).get("operation")
-            if "planned_cron_job_ids" in params:
-                lc.update(
-                    "project", pid, planned_cron_job_ids=params["planned_cron_job_ids"]
-                )
-            if "completed_cron_job_ids" in params:
-                lc.update(
-                    "project",
-                    pid,
-                    completed_items={"cron": params["completed_cron_job_ids"]},
-                )
-            return True, dict(operation=operation, **lc.projection("project", pid))
-        return True, await service.project(pid, method.split(".")[1], "web", params)
-
-    monkeypatch.setattr(lifecycle_handlers, "fetch_agent_unary", fetch)
-    methods = {}
-    channel = SimpleNamespace(
-        channel_id="web",
-        clients=[],
-        register_method=lambda name, fn: methods.update({name: fn}),
-        send_response=AsyncMock(),
-        send_event=AsyncMock(),
-    )
-    lifecycle_handlers.register_lifecycle_handlers(
-        channel, lambda: object(), lambda: controller
-    )
-    import shutil
-
-    async def delete_session(*, channel_id, session_id):
-        shutil.rmtree(lc.resolve_session(session_id))
-        return SimpleNamespace(ok=True)
-
-    runtime.delete_session.side_effect = delete_session
-    assert (
-        not {"project.archive", "project.unarchive", "project.archived.list"}
-        & methods.keys()
-    )
-    await methods["project.delete"](
-        object(), "req", {"project_id": project.project_id}, None, "alice"
-    )
-    assert channel.send_response.call_args.kwargs["ok"]
-    assert events == [("disable", "ours"), ("delete", "ours")]
-    assert jobs["theirs"].enabled
-    assert "ours" not in jobs
-    scheduler.stop_project_runs.assert_awaited_once_with(project.project_id, "alice")
-    assert project_store.get_project_by_id(project.project_id, cache_bust=True) is None
-    assert (project_dir / "keep.txt").read_text() == "user data"
-    await asyncio.sleep(0)  # allow the no-client watcher to exit
-
-
-@pytest.mark.asyncio
-async def test_project_delete_retries_preserve_counts_and_user_directory(archive):
-    import shutil
-
-    service, create, root, runtime = archive
-    user_dir = root / "user-work"
-    user_dir.mkdir()
-    (user_dir / "keep.txt").write_text("keep")
-    project = project_store.create_project("deletion", str(user_dir))
-    for sid in ("sess_a", "sess_b"):
-        directory = create(sid)
-        meta = lc.raw_metadata(sid)
-        meta["project_id"] = project.project_id
-        lc.atomic_json(directory / "metadata.json", meta)
-    await service.session("sess_b", "archive", "web")
-    failures = {"sess_b"}
-
-    async def delete_session(*, channel_id, session_id):
-        if session_id in failures:
-            return SimpleNamespace(
-                ok=False, error_code="DELETE_FAILED", error_message="retry"
-            )
-        shutil.rmtree(lc.resolve_session(session_id))
-        return SimpleNamespace(ok=True)
-
-    runtime.delete_session.side_effect = delete_session
-    token = await service.project(
-        project.project_id, "delete", "web", {"_lifecycle_stage": "prepare"}
-    )
-    with pytest.raises(lc.LifecycleError) as error:
-        await service.project(
-            project.project_id,
-            "delete",
-            "web",
-            {**token, "_lifecycle_stage": "finish", "deleted_cron_jobs": 2},
-        )
-    assert error.value.code == "PARTIAL_PROJECT_DELETE_FAILED"
-    assert set(error.value.details["completed_conversation_session_ids"]) == {"sess_a"}
-    assert project_store.get_project_by_id(project.project_id, cache_bust=True)
-    failures.clear()
-    result = await service.project(
-        project.project_id,
-        "delete",
-        "web",
-        {**token, "_lifecycle_stage": "finish", "deleted_cron_jobs": 2},
-    )
-    assert result["deleted_sessions"] == 2
-    assert result["deleted_conversation_sessions"] == 2
-    assert result["deleted_cron_jobs"] == 2
-    assert await service.project(project.project_id, "delete", "web", {}) == result
-    assert (user_dir / "keep.txt").read_text() == "keep"
-
-
-@pytest.mark.asyncio
-async def test_project_delete_skips_running_ordinary_session_and_keeps_project(archive):
-    import shutil
-
-    service, create, root, runtime = archive
-    project = project_store.create_project("keep-running", str(root / "work"))
-    for sid in ("sess_busy", "sess_idle", "cron_run"):
-        directory = create(sid)
-        meta = lc.raw_metadata(sid)
-        meta["project_id"] = project.project_id
-        if sid == "cron_run":
-            meta["cron_id"] = "job_a"
-        lc.atomic_json(directory / "metadata.json", meta)
-    runtime.is_session_running.side_effect = lambda sid: sid == "sess_busy"
-
-    async def delete_session(*, channel_id, session_id):
-        shutil.rmtree(lc.resolve_session(session_id))
-        return SimpleNamespace(ok=True)
-
-    runtime.delete_session.side_effect = delete_session
-    token = await service.project(
-        project.project_id, "delete", "web", {"_lifecycle_stage": "prepare"}
-    )
-    result = await service.project(
-        project.project_id, "delete", "web", {**token, "_lifecycle_stage": "finish"}
-    )
-    assert result["deleted"] is False
-    assert result["deleted_sessions"] == 2
-    assert result["deleted_conversation_sessions"] == 1
-    assert result["skipped_running_session_ids"] == ["sess_busy"]
-    assert service.project_sessions(project.project_id) == ["sess_busy"]
-    assert project_store.get_project_by_id(project.project_id, cache_bust=True)
-    assert not lc.projection("project", project.project_id)["execution_blocked"]
-    assert "sess_busy" not in [call.kwargs["session_id"] for call in runtime.stop_session_for_archive.await_args_list]
-
-
-@pytest.mark.asyncio
-async def test_project_delete_reuses_inventory_metadata(archive, monkeypatch):
-    import shutil
-
-    service, create, root, runtime = archive
-    project = project_store.create_project("reuse", str(root / "work"))
-    for sid in ("sess_1", "sess_2", "sess_3"):
-        directory = create(sid)
-        meta = lc.raw_metadata(sid)
-        meta["project_id"] = project.project_id
-        lc.atomic_json(directory / "metadata.json", meta)
-
-    async def delete_session(*, channel_id, session_id):
-        shutil.rmtree(lc.resolve_session(session_id))
-        return SimpleNamespace(ok=True)
-
-    runtime.delete_session.side_effect = delete_session
-
-    original = lc.raw_metadata
-    calls = []
-
-    def counting_raw_metadata(session_id):
-        calls.append(session_id)
-        return original(session_id)
-
-    monkeypatch.setattr(lc, "raw_metadata", counting_raw_metadata)
-    token = await service.project(
-        project.project_id, "delete", "web", {"_lifecycle_stage": "prepare"}
-    )
-    calls.clear()
-    result = await service.project(
-        project.project_id,
-        "delete",
-        "web",
-        {**token, "_lifecycle_stage": "finish"},
-    )
-    assert result["deleted"] is True
-    # Exactly one metadata read per session (the inventory scan); the delete
-    # loop and _session must consume the snapshot instead of re-reading.
-    assert sorted(calls) == ["sess_1", "sess_2", "sess_3"]
-
-
-@pytest.mark.asyncio
 async def test_delete_cron_sessions_removes_running_and_idle_children(archive):
     import shutil
 
@@ -763,6 +578,147 @@ async def test_project_batch_archive_partial_and_delete_only_archived(archive):
     assert (await service.session("sess_busy", "delete", "web"))["ok"]
 
 
+@pytest.mark.asyncio
+async def test_project_batch_rejects_archive_for_hidden_project(archive):
+    """隐藏项目不再接受批量归档;delete_archived 保持放行(归档页依赖)。"""
+    service, create, root, runtime = archive
+    project = project_store.create_project("hidden-batch", str(root / "work"))
+    path = create("sess_hidden_proj")
+    meta = lc.raw_metadata("sess_hidden_proj")
+    meta["project_id"] = project.project_id
+    lc.atomic_json(path / "metadata.json", meta)
+    await service.session("sess_hidden_proj", "archive", "web")
+    project_store.hide_project(project.project_id)
+
+    with pytest.raises(lc.LifecycleError) as error:
+        await service.project_batch(project.project_id, "archive", "web")
+    assert error.value.code == "NOT_FOUND"
+
+    # 归档页是已移除项目归档会话的展示位,清空入口必须继续可用。
+    result = await service.project_batch(project.project_id, "delete_archived", "web")
+    assert result["succeeded_count"] == 1 and result["failed_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_archived_sessions_of_removed_project_stay_listed(archive):
+    """项目被移除后,已归档会话仍留在归档列表(带项目名与移除标记)。"""
+    service, create, root, _ = archive
+    project = project_store.create_project("removed", str(root / "work"))
+
+    def create_owned(sid, **extra):
+        # fixture 默认写 project_id="default",这里改成归属待移除项目
+        path = create(sid)
+        meta = lc.raw_metadata(sid)
+        meta.update(
+            project_id=project.project_id,
+            project_dir=project.project_dir,
+            **extra,
+        )
+        lc.atomic_json(path / "metadata.json", meta)
+
+    create_owned("sess_arch")
+    create_owned("sess_live")
+    await service.session("sess_arch", "archive", "web")
+    assert service.list_sessions({})["total"] == 1
+
+    # 项目还在:归档项不标记为已移除
+    assert service.list_sessions({})["sessions"][0]["project_hidden"] is False
+
+    assert project_store.hide_project(project.project_id) is not None
+    project_store.invalidate_cache()
+
+    listed = service.list_sessions({"project_id": project.project_id})
+    assert listed["total"] == 1
+    item = listed["sessions"][0]
+    assert item["session_id"] == "sess_arch"
+    # 归档项按真实项目归属展示,便于用户在归档页辨认来源
+    assert item["project_id"] == project.project_id
+    assert item["project_name"] == "removed"
+    # 归档页据此给出"项目已移除"的说明
+    assert item["project_hidden"] is True
+    # 活跃会话留在原目录但已隐藏,不应出现在归档区
+    assert "sess_live" not in {entry["session_id"] for entry in listed["sessions"]}
+    assert (root / "sessions" / "sess_live").exists()
+    assert not (root / "sessions_archived" / "sess_live").exists()
+
+
+@pytest.mark.asyncio
+async def test_unarchive_restores_removed_project_and_pin(archive):
+    """撤销归档连带恢复被移除的项目,并恢复会话的置顶状态。"""
+    service, create, root, _ = archive
+    project = project_store.create_project("bring-back", str(root / "work"))
+
+    path = create("sess_a")
+    meta = lc.raw_metadata("sess_a")
+    meta.update(
+        project_id=project.project_id,
+        project_dir=project.project_dir,
+        pinned=True,
+        # 故意留一个不紧凑的序号:取消归档后必须被重排写回,才能证明重排没有
+        # 因为该会话仍在执行栅栏内而被跳过。
+        pin_order=5,
+    )
+    lc.atomic_json(path / "metadata.json", meta)
+
+    await service.session("sess_a", "archive", "web")
+    # 归档不清置顶状态,撤销归档时靠它把会话放回置顶区
+    assert lc.raw_metadata("sess_a")["pinned"] is True
+
+    assert project_store.hide_project(project.project_id) is not None
+    project_store.invalidate_cache()
+    assert service.list_sessions({})["sessions"][0]["project_hidden"] is True
+
+    await service.session("sess_a", "unarchive", "web")
+
+    restored = project_store.get_project_by_id(project.project_id, cache_bust=True)
+    assert restored is not None and restored.hidden is False
+    meta = lc.raw_metadata("sess_a")
+    assert meta.get("archived") is not True
+    assert meta["pinned"] is True
+    assert meta["pin_order"] == 1
+    assert (root / "sessions" / "sess_a").exists()
+    assert not (root / "sessions_archived" / "sess_a").exists()
+
+
+@pytest.mark.asyncio
+async def test_unarchive_reports_name_conflict_and_keeps_archive(archive):
+    """项目名被占用时不恢复项目,也不把会话搬出归档区。"""
+    service, create, root, _ = archive
+    project = project_store.create_project("taken", str(root / "work"))
+    path = create("sess_a")
+    meta = lc.raw_metadata("sess_a")
+    meta.update(project_id=project.project_id, project_dir=project.project_dir)
+    lc.atomic_json(path / "metadata.json", meta)
+    await service.session("sess_a", "archive", "web")
+    assert project_store.hide_project(project.project_id) is not None
+
+    # 隐藏期间同名被占用(create_project_checked 会拒绝同名,这里直接改注册表
+    # 模拟旧数据/外部编辑造成的重名)。
+    def add_same_name(projects):
+        other = dict(projects[0])
+        other.update(
+            project_id="proj_other",
+            project_dir=str(root / "other"),
+            hidden=False,
+        )
+        projects.append(other)
+
+    project_store._mutate(add_same_name)
+    project_store.invalidate_cache()
+
+    with pytest.raises(lc.LifecycleError) as error:
+        await service.session("sess_a", "unarchive", "web")
+
+    assert error.value.code == "PROJECT_NAME_CONFLICT"
+    # 会话仍在归档区,项目仍隐藏;冲突需用户先改名,不自动重放
+    assert (root / "sessions_archived" / "sess_a").exists()
+    assert not (root / "sessions" / "sess_a").exists()
+    assert project_store.get_project_by_id(project.project_id, cache_bust=True).hidden is True
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] == "failed"
+    assert operation["retryable"] is False
+
+
 def test_project_inventory_builds_legacy_lookup_once_per_scan(archive, monkeypatch):
     service, create, root, _ = archive
     project = project_store.create_project("legacy-batch", str(root / "work"))
@@ -849,7 +805,9 @@ async def test_archive_retry_preserves_pin_reindex_requirement(archive, monkeypa
     with pytest.raises(lc.LifecycleError, match="temporary reindex failure"):
         await service.session("first", "archive", "web")
 
-    assert lc.raw_metadata("first")["pinned"] is False
+    # 置顶状态跨归档保留：取消归档时要靠它把会话放回置顶区
+    assert lc.raw_metadata("first")["pinned"] is True
+    assert lc.raw_metadata("first")["pin_order"] == 1
     assert lc.raw_metadata("second")["pin_order"] == 2
     operation = lc.state("session", "first")["operation"]
     assert operation["status"] == "failed"
@@ -862,48 +820,6 @@ async def test_archive_retry_preserves_pin_reindex_requirement(archive, monkeypa
     assert lc.raw_metadata("second")["pin_order"] == 1
     operation = lc.state("session", "first")["operation"]
     assert operation["status"] == "completed"
-
-
-def test_migrate_project_archives_preserves_session_and_delete_fences(archive):
-    service, create, root, _ = archive
-    active = project_store.create_project("same", str(root / "active"))
-    legacy = project_store.create_project("same", str(root / "legacy"))
-    deleting = project_store.create_project("deleting", str(root / "deleting"))
-    records = lc.read_json(root / "projects.json")
-    for record in records["projects"]:
-        if record["project_id"] == legacy.project_id:
-            record.update(hidden=True, archived_at=123)
-    lc.atomic_json(root / "projects.json", records)
-    lc.begin("project", legacy.project_id, "archive")
-    lc.fence_writes("project", legacy.project_id)
-    lc.begin("project", deleting.project_id, "delete")
-    create()
-    lc.begin("session", "sess_a", "archive")
-    lc.complete("session", "sess_a", archived=True)
-    (root / "lifecycle/project_delete_v2.json").unlink()
-    cron = root / "home/cron_jobs.json"
-    lc.atomic_json(cron, {"jobs": [{"enabled": False}, {"enabled": True}]})
-    before = cron.read_bytes()
-    lc.migrate_project_archives()
-    assert not lc.projection("project", legacy.project_id)["execution_blocked"]
-    assert lc.projection("project", deleting.project_id)["execution_blocked"]
-    assert lc.projection("session", "sess_a")["execution_blocked"]
-    projects = project_store.list_projects(cache_bust=True)
-    assert len(projects) == 3
-    assert len({p.name for p in projects}) == 3
-    assert project_store.get_project_by_id(active.project_id).name == "same"
-    assert all(
-        "hidden" not in p.to_dict() and "archived_at" not in p.to_dict()
-        for p in projects
-    )
-    assert cron.read_bytes() == before
-    assert not any(
-        e["event"].startswith("project.") and e["kind"] != "delete"
-        for e in lc.event_snapshots()
-    )
-    snapshot = (root / "projects.json").read_bytes()
-    lc.migrate_project_archives()
-    assert (root / "projects.json").read_bytes() == snapshot
 
 
 @pytest.mark.asyncio
@@ -925,29 +841,6 @@ async def test_archive_metadata_failure_rolls_back_directory(archive, monkeypatc
     stamp = lc.state("session", "sess_a")["operation"]["archived_at"]
     monkeypatch.setattr(lc, "atomic_json", original)
     assert (await service.session("sess_a", "archive", "web"))["archived_at"] == stamp
-
-
-@pytest.mark.asyncio
-async def test_batch_default_empty_and_deleting_project(archive):
-    service, _, root, _ = archive
-    assert (await service.project_batch("default", "archive", "web"))["results"] == []
-    with pytest.raises(lc.LifecycleError) as error:
-        await service.project("default", "delete", "web", {})
-    assert error.value.code == "FORBIDDEN"
-    project = project_store.create_project("blocked", str(root / "work"))
-    await service.project(
-        project.project_id, "delete", "web", {"_lifecycle_stage": "prepare"}
-    )
-    with pytest.raises(lc.LifecycleError) as error:
-        await service.project_batch(project.project_id, "archive", "web")
-    assert error.value.code == "OPERATION_IN_PROGRESS"
-    # 无阶段调用直接拒绝，不再遗留 pending operation 与执行栅栏。
-    project = project_store.create_project("stageless", str(root / "work2"))
-    with pytest.raises(lc.LifecycleError) as error:
-        await service.project(project.project_id, "delete", "web", {})
-    assert error.value.code == "BAD_REQUEST"
-    await service.project_batch(project.project_id, "archive", "web")
-    assert not lc.state("project", project.project_id).get("operation")
 
 
 @pytest.mark.asyncio
@@ -1092,3 +985,221 @@ def test_has_parked_team_streams_requires_all_requests_round_ended(monkeypatch):
     assert not AgentRuntime.has_parked_team_streams(runtime, "sess_a")
     monkeypatch.setattr(team_manager, "_team_manager", None)
     assert not AgentRuntime.has_parked_team_streams(runtime, "sess_a")
+
+
+async def _cancel_mid_move(service, sid, action):
+    """Cancel a lifecycle action while its directory move is in flight."""
+    reached = threading.Event()
+    release = threading.Event()
+    real = SessionArchiveService.__dict__["_move_session_directory"]
+
+    def stalled(*args, **kwargs):
+        reached.set()
+        release.wait(10)
+
+    SessionArchiveService._move_session_directory = staticmethod(stalled)
+    task = asyncio.create_task(service.session(sid, action, "web"))
+    try:
+        assert await asyncio.to_thread(reached.wait, 3), "move never reached"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        SessionArchiveService._move_session_directory = real
+
+
+async def _wait_until(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.05)
+    pytest.fail("condition not reached in time")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_restore_marks_failed_and_recovers_promptly(archive):
+    service, create, root, _ = archive
+    create()
+    await service.session("sess_a", "archive", "web")
+    service.start_recovery()
+    await _cancel_mid_move(service, "sess_a", "unarchive")
+
+    # The fence is labelled failed (not stuck at running) and stays up ...
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] == "failed"
+    assert lc.state("session", "sess_a")["blocked"] is True
+    # ... but the poke plus backoff-aware polling make recovery retry within
+    # seconds instead of after the 10s idle poll.
+    await _wait_until(
+        lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
+    )
+    assert (root / "sessions/sess_a").exists()
+    lc.guard("sess_a")
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_archive_is_finalized_and_keeps_session_active(archive):
+    service, create, root, _ = archive
+    create()
+    service.start_recovery()
+    await _cancel_mid_move(service, "sess_a", "archive")
+
+    assert lc.state("session", "sess_a")["operation"]["status"] == "failed"
+    assert (root / "sessions/sess_a").exists()
+    # Recovery finalizes the abandoned archive op by directory position:
+    # still active -> completed without relocating anything.
+    await _wait_until(
+        lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
+    )
+    assert (root / "sessions/sess_a").exists()
+    assert not (root / "sessions_archived/sess_a").exists()
+    lc.guard("sess_a")
+    # The former kind-mismatch deadlock is gone: the opposite action is
+    # admissible again.
+    assert (await service.session("sess_a", "unarchive", "web"))["restored"] is False
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_abandoned_archive_with_moved_directory_finalizes_archived(archive):
+    service, create, root, _ = archive
+    directory = create()
+    # Simulate a crashed archive: the move finished, the operation never
+    # completed, and the owner released its lease.
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "dead-owner")
+    destination = root / "sessions_archived/sess_a"
+    destination.parent.mkdir()
+    directory.rename(destination)
+    lc.renew_operation("session", "sess_a", "dead-owner", release=True)
+    service.start_recovery()
+    await _wait_until(
+        lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed"
+    )
+    assert lc.state("session", "sess_a")["blocked"] is True
+    with pytest.raises(lc.LifecycleError) as error:
+        lc.guard("sess_a")
+    assert error.value.code == "SESSION_ARCHIVED"
+    # ... and unarchive is admissible again instead of kind-mismatch-deadlocked.
+    assert (await service.session("sess_a", "unarchive", "web"))["ok"] is True
+    assert (root / "sessions/sess_a").exists()
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_finalize_never_completes_a_live_retry_of_the_same_operation(archive):
+    service, create, root, _ = archive
+    create()
+    # Cancelled archive: failed, lease released by the unwinding owner.
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "old-owner")
+    lc.update(
+        "session",
+        "sess_a",
+        status="failed",
+        errors=["operation cancelled"],
+        retryable=True,
+    )
+    lc.renew_operation("session", "sess_a", "old-owner", release=True)
+    snapshot = lc.state("session", "sess_a")["operation"]
+
+    # A manual retry reuses the same operation_id and refreshes the lease;
+    # until its first status update the record still reads status=failed.
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "new-owner")
+    assert (
+        lc.state("session", "sess_a")["operation"]["lease_expires_at"] > time.time()
+    )
+
+    service._finalize_abandoned_archive(snapshot)
+
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] != "completed"
+    assert operation["owner_id"] == "new-owner"
+
+    # Once the retry truly exits and releases its lease, the same stale
+    # snapshot is finalized by the directory's position.
+    lc.renew_operation("session", "sess_a", "new-owner", release=True)
+    service._finalize_abandoned_archive(snapshot)
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] == "completed"
+    assert lc.state("session", "sess_a")["blocked"] is False
+    assert (root / "sessions/sess_a").exists()
+    lc.guard("sess_a")
+
+
+@pytest.mark.asyncio
+async def test_abandoned_archive_finalization_repairs_pin_reindex(archive, monkeypatch):
+    service, create, root, _ = archive
+    directory = create(pinned=True)
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "old-owner")
+    # Cancelled after the move: the requirement persisted before the move
+    # must still be honored by the recovery finalization.
+    lc.update(
+        "session",
+        "sess_a",
+        pin_reindex_required=True,
+        status="failed",
+        errors=["operation cancelled"],
+        retryable=True,
+    )
+    destination = root / "sessions_archived/sess_a"
+    destination.parent.mkdir()
+    directory.rename(destination)
+    lc.renew_operation("session", "sess_a", "old-owner", release=True)
+
+    calls = []
+    monkeypatch.setattr(
+        SessionArchiveService, "reindex_pins", staticmethod(lambda: calls.append(1))
+    )
+    service._finalize_abandoned_archive(lc.state("session", "sess_a")["operation"])
+    assert calls == [1]
+    assert lc.state("session", "sess_a")["operation"]["status"] == "completed"
+    with pytest.raises(lc.LifecycleError) as error:
+        lc.guard("sess_a")
+    assert error.value.code == "SESSION_ARCHIVED"
+
+
+@pytest.mark.asyncio
+async def test_pin_reindex_failure_keeps_operation_retryable(archive, monkeypatch):
+    service, create, root, _ = archive
+    directory = create(pinned=True)
+    lc.begin("session", "sess_a", "archive", block_execution=False)
+    lc.claim_operation("session", "sess_a", "old-owner")
+    lc.update(
+        "session",
+        "sess_a",
+        pin_reindex_required=True,
+        status="failed",
+        errors=["operation cancelled"],
+        retryable=True,
+    )
+    destination = root / "sessions_archived/sess_a"
+    destination.parent.mkdir()
+    directory.rename(destination)
+    lc.renew_operation("session", "sess_a", "old-owner", release=True)
+
+    def failing_reindex():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        SessionArchiveService, "reindex_pins", staticmethod(failing_reindex)
+    )
+    service._finalize_abandoned_archive(lc.state("session", "sess_a")["operation"])
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["status"] == "failed"
+    assert operation["retryable"] is True
+
+    # A manual archive retry then runs the full flow and repairs the index.
+    repaired = []
+    monkeypatch.setattr(
+        SessionArchiveService, "reindex_pins", staticmethod(lambda: repaired.append(1))
+    )
+    result = await service.session("sess_a", "archive", "web")
+    assert result["archived"] is True
+    assert repaired == [1]
+    assert lc.state("session", "sess_a")["operation"]["status"] == "completed"

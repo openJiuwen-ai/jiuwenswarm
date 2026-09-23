@@ -33,7 +33,18 @@ def test_non_streaming_team_send_is_rejected():
     assert MessageHandler._is_unsupported_non_stream_team_send(msg) is True
 
 
-@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "team",
+        "code.team",
+        "team.plan",
+        # issue #4168: shorthand names (incl. team.code) hit the team guard too
+        "team.work",
+        "team.normal",
+        "team.code",
+    ],
+)
 def test_every_team_mode_variant_is_rejected(mode: str):
     msg = _chat_send(mode=mode, enable_streaming=False)
 

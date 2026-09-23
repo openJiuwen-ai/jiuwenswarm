@@ -1,5 +1,4 @@
 import { webRequest } from '../../services/webClient';
-import type { WebError } from '../../types';
 import type { WorkMode } from './projectTypes';
 
 /**
@@ -7,7 +6,7 @@ import type { WorkMode } from './projectTypes';
  *
  * 归档协议以《会话与项目归档删除设计》为准：项目不再有归档状态，
  * `project.archive` / `project.unarchive` / `project.archived.list` 已移除，
- * 禁止再调用；项目级操作只剩 `project.delete`（直接级联删除），
+ * 禁止再调用；项目隐藏/恢复使用 `project.remove` / `project.restore`，
  * 项目维度的批量会话操作由 projectRegistryClient 承担。
  * 请求通过注入的 request 函数发出（默认 `webRequest`），便于测试替换；
  * 请求失败由页面呈现错误态，不伪造空数据。
@@ -18,6 +17,8 @@ export interface ArchivedSession {
   title: string;
   project_id: string;
   project_name: string | null;
+  /** 会话所属项目已被移除：归档页仍展示，撤销归档会连带恢复该项目。 */
+  project_hidden?: boolean;
   work_mode: WorkMode;
   archived: true;
   archived_at: number;
@@ -76,38 +77,6 @@ export interface BatchSessionArchiveResponse {
   results: BatchSessionResultEntry[];
 }
 
-/**
- * `project.delete` 的部分失败响应。
- * 后端可能已完成部分阶段（如 cron 删除成功、会话删除失败），
- * payload 会通过 WebError.payload 透传到这里；不能当“全部失败”处理。
- */
-export interface ProjectOperationFailurePayload {
-  operation_id?: string;
-  project_id?: string;
-  phase?: string;
-  retryable?: boolean;
-  completed_session_ids?: string[];
-  completed_conversation_session_ids?: string[];
-  completed_cron_job_ids?: string[];
-  failed_items?: Array<{
-    resource_type: 'session' | 'cron' | 'project';
-    resource_id: string;
-    code: string;
-    error: string;
-  }>;
-}
-
-export interface ProjectOperationFailure {
-  /** `PARTIAL_PROJECT_DELETE_FAILED` 错误码，仅用于分支判断。 */
-  code: string;
-  phase: string;
-  retryable: boolean;
-  /** 后端提供的安全错误文本，可作为辅助详情展示。 */
-  detail: string | null;
-  deletedConversations: number;
-  deletedCronJobs: number;
-}
-
 type ArchiveRequest = <T = unknown>(
   method: string,
   params?: Record<string, unknown>,
@@ -118,37 +87,6 @@ export function getArchiveErrorCode(error: unknown): string | null {
   if (!error || typeof error !== 'object' || !('code' in error)) return null;
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' && code ? code : null;
-}
-
-function isArchiveErrorRetriable(error: unknown): boolean {
-  if (!error || typeof error !== 'object' || !('retriable' in error)) return false;
-  return (error as { retriable?: unknown }).retriable === true;
-}
-
-function getArchiveErrorDetail(error: unknown): string | null {
-  if (error instanceof Error && error.message) return error.message;
-  return null;
-}
-
-/** 解析 `project.delete` 的部分失败 payload；非部分失败返回 null。 */
-export function parseProjectOperationFailure(error: unknown): ProjectOperationFailure | null {
-  const code = getArchiveErrorCode(error);
-  if (code !== 'PARTIAL_PROJECT_DELETE_FAILED') {
-    return null;
-  }
-  const webError = error as WebError;
-  const payload = webError.payload as ProjectOperationFailurePayload | undefined;
-  const detail = payload?.failed_items?.find((item) => typeof item?.error === 'string')?.error
-    || getArchiveErrorDetail(error)
-    || null;
-  return {
-    code,
-    phase: (payload && typeof payload.phase === 'string' && payload.phase) || '',
-    retryable: (payload && payload.retryable === true) || isArchiveErrorRetriable(error),
-    detail,
-    deletedConversations: payload?.completed_conversation_session_ids?.length ?? 0,
-    deletedCronJobs: payload?.completed_cron_job_ids?.length ?? 0,
-  };
 }
 
 /** 批量会话恢复/归档响应中取单个会话的结果；信封 ok 不代表该会话成功。 */
@@ -162,6 +100,8 @@ export function findBatchSessionResult(
 
 export function createArchivedTaskClient(request: ArchiveRequest) {
   return {
+    // 归档列表是服务端全量扫描后的分页,慢环境(杀软扫描/冷缓存/大量归档)
+    // 可能超过 webRequest 15s 默认超时;给足预算避免"偶现加载失败"。
     listArchivedSessions: (params: ArchivedListParams) =>
       request<ArchivedSessionListResponse>('session.archived.list', {
         ...(params.work_mode ? { work_mode: params.work_mode } : {}),
@@ -169,7 +109,7 @@ export function createArchivedTaskClient(request: ArchiveRequest) {
         ...(params.keyword ? { keyword: params.keyword } : {}),
         ...(params.limit !== undefined ? { limit: params.limit } : {}),
         ...(params.offset !== undefined ? { offset: params.offset } : {}),
-      }),
+      }, { timeoutMs: 30000 }),
     archiveSession: (sessionId: string) =>
       request<BatchSessionArchiveResponse>('session.archive', { session_ids: [sessionId] }),
     unarchiveSession: (sessionId: string) =>

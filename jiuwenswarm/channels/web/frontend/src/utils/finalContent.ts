@@ -47,7 +47,7 @@ export function resolveStreamFinalContent(
  * 优先 exact；其次「一方以另一方为前缀」且长度比 ≥ 0.85（不再用宽松 includes）。
  */
 export function findAssistantSegmentIdForFinal(
-  messages: { role: string; id?: string; content?: string }[],
+  messages: { role: string; id?: string; content?: string; supplementalInput?: unknown }[],
   finalContent: string,
   preferredSegmentId?: string | null
 ): string | null {
@@ -56,7 +56,7 @@ export function findAssistantSegmentIdForFinal(
 
   let turnStart = 0;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i].role === 'user') {
+    if (messages[i].role === 'user' && !messages[i].supplementalInput) {
       turnStart = i + 1;
       break;
     }

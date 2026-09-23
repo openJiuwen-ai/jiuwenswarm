@@ -1989,7 +1989,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 language=resolved_language,
                 max_iterations=parse_int(
                     explore_agent_cfg.get("max_iterations") if isinstance(explore_agent_cfg, dict) else None,
-                    react_cfg.get("max_iterations", 15),
+                    parse_int(react_cfg.get("max_iterations"), 100),
                 ),
             )
             explore_spec.factory_kwargs = {"auto_create_workspace": False}
@@ -2007,7 +2007,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 language=resolved_language,
                 max_iterations=parse_int(
                     plan_agent_cfg.get("max_iterations") if isinstance(plan_agent_cfg, dict) else None,
-                    react_cfg.get("max_iterations", 15),
+                    parse_int(react_cfg.get("max_iterations"), 100),
                 ),
             )
             plan_spec.factory_kwargs = {"auto_create_workspace": False}
@@ -2032,7 +2032,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     rails=code_agent_rails,
                     max_iterations=parse_int(
                         code_agent_cfg.get("max_iterations"),
-                        react_cfg.get("max_iterations", 15),
+                        parse_int(react_cfg.get("max_iterations"), 100),
                     ),
                 )
                 code_spec.factory_kwargs = {"auto_create_workspace": False}

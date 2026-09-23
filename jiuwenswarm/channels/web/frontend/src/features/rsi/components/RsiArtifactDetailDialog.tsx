@@ -255,7 +255,10 @@ export function RsiArtifactDetailDialog({ source, title, onClose }: RsiArtifactD
     const anchor = document.createElement('a');
     anchor.href = preview.url;
     anchor.download = selectedEntry.name;
+    // 挂载到 DOM 再点击，确保 WebView2/Electron 中按下载处理而非导航
+    document.body.appendChild(anchor);
     anchor.click();
+    anchor.remove();
   }, [preview, selectedEntry]);
 
   const renderTreeNode = useCallback(

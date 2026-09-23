@@ -7,6 +7,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import (
+    empty_task_file_query,  # noqa: F401 -- pytest fixture
+)
+
 from jiuwenswarm.extensions.video_duplex.backend import video_live, video_search
 from jiuwenswarm.extensions.video_duplex.backend.video_files import normalize_file_items
 from jiuwenswarm.server.runtime.session import session_history, session_metadata
@@ -41,7 +46,7 @@ def test_file_bridge_preserves_resources_and_ignores_malformed_entries():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("file_in_final", [False, True])
-async def test_streamed_files_remain_in_job_status_after_missed_delivery(file_in_final):
+async def test_streamed_files_remain_in_job_status_after_missed_delivery(file_in_final, tmp_path):
     async def stream(_request):
         if not file_in_final:
             yield SimpleNamespace(payload={"event_type": "chat.file", "files": [FILE]})
@@ -53,19 +58,39 @@ async def test_streamed_files_remain_in_job_status_after_missed_delivery(file_in
     channel = SimpleNamespace(send_event=AsyncMock(side_effect=ConnectionError("client unavailable")),
                               send_response=AsyncMock())
     manager = video_search.VideoSearchManager(
-        channel, SimpleNamespace(send_request_stream=stream), log_event=lambda _: None, qwen_active=lambda: True,
+        channel,
+        SimpleNamespace(send_request_stream=stream, send_request=AsyncMock(
+            return_value=SimpleNamespace(ok=True, payload={"user_id": "local-test"})
+        )),
+        log_event=lambda _: None,
+        qwen_active=lambda: True,
+        path=tmp_path / "tasks.sqlite",
+        authorize=lambda ws, scope: ("local-test", scope),
     )
-    job = manager.start(None, question="生成文件", query="生成文件", search_session_id="task-duplex:visible")
-    await asyncio.wait_for(asyncio.gather(*list(manager._tasks)), 5)
-    await manager.handle_status(None, "status", {
-        "job_id": job["id"], "search_session_id": "task-duplex:visible",
-    }, None)
+    job = await manager.start(
+        None,
+        question="生成文件",
+        query="生成文件",
+        search_session_id="task-duplex:visible",
+        command_id="create-file",
+    )
+    await asyncio.wait_for(asyncio.gather(*list(manager.service.workers.values())), 5)
+    await manager.handle_status(
+        None,
+        "status",
+        {
+            "job_id": job["id"],
+            "search_session_id": "task-duplex:visible",
+        },
+        None,
+    )
     recovered = channel.send_response.call_args.kwargs["payload"]
     assert recovered["status"] == "completed"
     files = [entry for entry in recovered["progress_history"] if entry["stage"] == "file"]
     assert len(files) == 1
     assert files[0]["files"] == [FILE]
     assert files[0]["sequence"] > 0
+    await manager.close()
 
 
 @pytest.mark.asyncio

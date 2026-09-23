@@ -443,7 +443,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 列宽调整状态：仅会话内有效，不持久化（刷新后恢复列配置默认值）
   const [colStates, setColStates] = useState<ColStates>(() => ({ ...DEFAULT_COL_STATE }));
   const [resizingColKey, setResizingColKey] = useState<ResizableColKey | null>(null);
-  const resizingCol = useRef<{ col: ResizableColKey; startX: number; startWidth: number } | null>(null);
+  const resizingCol = useRef<{ col: ResizableColKey; startX: number; startWidth: number; pendingWidth?: number } | null>(null);
   const tableRef = useRef<HTMLTableElement>(null);
 
   // Actions 列宽测量：fixed 布局下 auto 列会被平分剩余空间，需要量出按钮行实际内容宽度
@@ -477,14 +477,17 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           ? colStates[col].width
           : (colDef.width ?? minWidth);
       const startWidth = Math.max(minWidth, rendered > 0 ? rendered : configured);
-      if (!(colStates[col].hasResized && colStates[col].width === startWidth)) {
-        setColStates((prev) => ({ ...prev, [col]: { width: startWidth, hasResized: true } }));
-      }
-      resizingCol.current = { col, startX: e.clientX, startWidth };
+      const alreadyCommitted = colStates[col].hasResized && colStates[col].width === startWidth;
+      resizingCol.current = { col, startX: e.clientX, startWidth, pendingWidth: alreadyCommitted ? undefined : startWidth };
       setResizingColKey(col);
 
       const onMove = (move: MouseEvent) => {
         if (!resizingCol.current) return;
+        if (resizingCol.current.pendingWidth != null) {
+          const pw = resizingCol.current.pendingWidth;
+          resizingCol.current.pendingWidth = undefined;
+          setColStates((prev) => ({ ...prev, [col]: { width: pw, hasResized: true } }));
+        }
         const delta = move.clientX - resizingCol.current.startX;
         const newW = Math.max(minWidth, resizingCol.current.startWidth + delta);
         setColStates((prev) => {

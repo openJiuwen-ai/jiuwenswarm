@@ -897,10 +897,14 @@ function RunNode({
       : run.budget?.total != null && run.budget?.exhausted
         ? 'session'
         : null);
-  // 机械按钮只在 team 活着（方块亮）时可用：灰飞机 = 无 leader harness 可宿主 run；
-  // recovered = 冷启动后 controller 无票据。两种情况恢复都只能由 Leader 经 ask_user 裁决。
-  const teamRunning = useChatStore((s) => s.runtimes[sessionId]?.isProcessing ?? false);
-  const controlsDisabled = !teamRunning || run.recovered === true;
+  // 机械按钮只在整队被暂停（输入框暂停按钮 → chat.interrupt intent=pause，
+  // 前端唯一置 isPaused=true 的路径）或冷启动恢复（recovered = controller
+  // 无票据）时不可用。不能用 !isProcessing 判：看板暂停单个 run 后后端会
+  // 释放 held idle 把 isProcessing 置 false（小飞机变灰 = idle，团队在 pool
+  // 里仍是 RUNNING、resume 闸门放行），拿它当判据会让看板暂停后按钮自我
+  // 锁死，唯一的恢复入口就没了。
+  const teamPaused = useChatStore((s) => s.runtimes[sessionId]?.isPaused ?? false);
+  const controlsDisabled = teamPaused || run.recovered === true;
   // Two reasons to disable: team asleep / cold start (grey, not-allowed) or a
   // control request in flight (spinner, wait cursor). The in-flight look wins
   // while a request is pending.

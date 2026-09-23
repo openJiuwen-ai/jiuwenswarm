@@ -9,19 +9,18 @@
   padding: 24px;
   gap: 18px;
   background: var(--color-surface-card);
-  border: none;
   border-radius: 16px;
-  box-shadow: inset 0 0 0 1px var(--color-border-default);
+  border: 1px solid var(--color-border-default);
   cursor: pointer;
   text-align: left;
-  transition: box-shadow var(--duration-fast) ease;
+  transition:
+    box-shadow var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
 }
 
-.page-card:hover {
-  box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
-}
-
+.page-card:hover,
 .page-card:focus-within {
+  border-color: transparent;
   box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
 }
 
@@ -36,7 +35,18 @@
 
 .page-card--disabled:hover,
 .page-card--disabled:focus-within {
-  box-shadow: inset 0 0 0 1px var(--color-border-default);
+  box-shadow: none;
+}
+
+.page-card--selected {
+  background: var(--color-chat-accent-subtle);
+  border-color: var(--color-chat-accent);
+}
+
+.page-card--selected:hover,
+.page-card--selected:focus-within {
+  border-color: var(--color-chat-accent);
+  box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
 }
 
 @media (min-width: 1600px) {

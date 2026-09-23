@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, ImagePlus, Trash2, Plus } from 'lucide-react';
+import { ImagePlus, Trash2, Plus } from 'lucide-react';
 import { webRequest } from '../../services/webClient';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { computeMySkills, buildInstalledSkillNames, filterEnabledMySkills } from '../../utils/mySkills';
-import { EntityAvatar } from './EntityAvatar';
+import { Input } from '../ui/Input/Input';
+import { Textarea } from '../ui/Textarea/Textarea';
+import { PageCard } from '../ui';
 import { PickerModal, type PickerItem } from './PickerModal';
+import { FormPageLayout } from './FormPageLayout';
 
 const DESCRIPTION_MAX = 512;
 
@@ -61,38 +63,25 @@ interface CreatePluginPageProps {
 function toSkillPickerItems(items: SkillItem[]): PickerItem[] {
   return items.map((skill): PickerItem => {
     const label = skill.display_name || skill.name;
-    const avatar = getSkillAvatar(label);
     return {
       id: skill.name,
       name: label,
       description: skill.description,
-      render: () => (
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-[14px] font-semibold text-text-inverse" style={avatar.style}>
-          {avatar.firstChar}
-        </span>
-      ),
     };
   });
 }
 
-function toMcpPickerItem(mcp: { name: string; displayName: string; description: string; icon?: string | null }): PickerItem {
-  const avatar = getSkillAvatar(mcp.displayName);
+function toMcpPickerItem(mcp: {
+  name: string;
+  displayName: string;
+  description: string;
+  icon?: string | null;
+}): PickerItem {
   return {
     id: mcp.name,
     name: mcp.displayName,
-    // mcp.list 恒下发 description（需求14已解决，见 types/connector.ts），之前这里漏接、硬编码成
-    // 空字符串，导致 MCP 选择卡片一直没有描述文字。
     description: mcp.description,
-    // 2026-08-19：MCP 有真实图标时（connector.icon）要优先展示，之前这里没接 iconUrl，恒渲染成
-    // 生成的字母头像——跟广场卡片/详情页（都走 EntityAvatar + iconUrl）不一致。改用 EntityAvatar
-    // 复用同一套"有真图标优先、没有/加载失败才回退字母色块"的逻辑。
-    render: () => (
-      <EntityAvatar
-        iconUrl={mcp.icon ?? undefined}
-        avatar={avatar}
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold"
-      />
-    ),
+    iconUrl: mcp.icon ?? undefined,
   };
 }
 
@@ -180,7 +169,7 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
   // utils/mySkills.ts 头注释。
   const myPickerSkills = useMemo(
     () => filterEnabledMySkills(computeMySkills(skills, installedSkillNames), installedSkillNames),
-    [skills, installedSkillNames]
+    [skills, installedSkillNames],
   );
 
   async function handleSubmit() {
@@ -212,20 +201,23 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
   }
 
   return (
-    <div className="relative h-full overflow-y-auto bg-card px-8 py-6" data-testid="connector-market-create-plugin-page">
-      {/* 返回样式跟详情页（McpDetailPage.tsx/PluginDetailPage.tsx）保持一致：ChevronLeft
-          纯尖角图标 + 黑色文字，用户明确要求这个页面也照这个样式改。 */}
-      <button type="button" onClick={onBack} className="mb-4 flex items-center gap-1 text-[14px] leading-[22px] text-text hover:opacity-70" data-testid="connector-market-create-plugin-back">
-        <ChevronLeft size={16} />
-        {t('connectorMarket.common.back')}
-      </button>
-
-      <h1 className="mb-6 text-[18px] font-semibold leading-7 text-text" data-testid="connector-market-create-plugin-title">{t('connectorMarket.create.manual')}</h1>
-
+    <>
+      <FormPageLayout
+        onBack={onBack}
+        title={t('connectorMarket.create.manual')}
+        testId="connector-market-create-plugin-page"
+        onConfirm={handleSubmit}
+        cancelLabel={t('connectorMarket.common.cancel')}
+        confirmLabel={t('connectorMarket.common.confirm')}
+        confirmLoading={submitting}
+      >
       <Section title={t('connectorMarket.create.basicInfo')}>
         {AVATAR_UPLOAD_ENABLED && (
           <div className="mb-4 flex items-center gap-3">
-            <label className="flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl bg-bg-muted text-text-muted hover:bg-bg" data-testid="connector-market-create-plugin-avatar">
+            <label
+              className="flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl bg-bg-muted text-text-muted hover:bg-bg"
+              data-testid="connector-market-create-plugin-avatar"
+            >
               {avatarPreviewUrl ? (
                 <img src={avatarPreviewUrl} alt="" className="h-full w-full object-cover" />
               ) : (
@@ -250,14 +242,10 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
         )}
 
         <div className="mb-4">
-          <label className="mb-1.5 block text-[13px] font-medium text-text">
-            {t('connectorMarket.create.name')}
-            <span className="text-danger"> *</span>
-          </label>
-          <input
+          <label className="mb-1.5 block text-[13px] font-medium text-text">{t('connectorMarket.create.name')}</label>
+          <Input
             value={name}
-            onChange={(event) => {
-              const nextName = event.target.value;
+            onChange={(nextName) => {
               setName(nextName);
               clearFieldError('name');
               if (!idTouched) {
@@ -266,65 +254,72 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
                 if (nextId) clearFieldError('id');
               }
             }}
-            className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none focus:border-border-hover ${
-              fieldErrors.name ? 'border-danger' : 'border-border'
-            }`}
+            invalid={fieldErrors.name}
             data-testid="connector-market-create-plugin-name"
           />
           {fieldErrors.name && (
-            <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="connector-market-create-plugin-field-error" data-variant="name">{t('connectorMarket.create.fieldRequired')}</p>
+            <p
+              className="mt-1 text-[11px] leading-4 text-danger"
+              data-testid="connector-market-create-plugin-field-error"
+              data-variant="name"
+            >
+              {t('connectorMarket.create.fieldRequired')}
+            </p>
           )}
         </div>
 
         <div className="mb-4">
-          <label className="mb-1.5 block text-[13px] font-medium text-text">
-            {t('connectorMarket.create.id')}
-            <span className="text-danger"> *</span>
-          </label>
-          <input
+          <label className="mb-1.5 block text-[13px] font-medium text-text">{t('connectorMarket.create.id')}</label>
+          <Input
             value={id}
-            onChange={(event) => {
+            onChange={(nextId) => {
               setIdTouched(true);
-              setId(event.target.value);
+              setId(nextId);
               clearFieldError('id');
             }}
             placeholder={t('connectorMarket.create.idPlaceholder')}
-            className={`mb-1.5 h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none focus:border-border-hover ${
-              fieldErrors.id ? 'border-danger' : 'border-border'
-            }`}
+            invalid={fieldErrors.id}
             data-testid="connector-market-create-plugin-id"
           />
-          <p className="text-[11px] leading-4 text-[color:var(--color-text-placeholder)]">{t('connectorMarket.create.idHint')}</p>
+          <p className="text-[11px] leading-4 text-[color:var(--color-text-placeholder)]">
+            {t('connectorMarket.create.idHint')}
+          </p>
           {fieldErrors.id && (
-            <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="connector-market-create-plugin-field-error" data-variant="id">{t('connectorMarket.create.fieldRequired')}</p>
+            <p
+              className="mt-1 text-[11px] leading-4 text-danger"
+              data-testid="connector-market-create-plugin-field-error"
+              data-variant="id"
+            >
+              {t('connectorMarket.create.fieldRequired')}
+            </p>
           )}
         </div>
 
         <div className="mb-4">
           <label className="mb-1.5 block text-[13px] font-medium text-text">
             {t('connectorMarket.create.description')}
-            <span className="text-danger"> *</span>
           </label>
-          <div className="relative">
-            <textarea
-              value={description}
-              maxLength={DESCRIPTION_MAX}
-              onChange={(event) => {
-                setDescription(event.target.value);
-                clearFieldError('description');
-              }}
-              rows={3}
-              className={`w-full resize-none rounded-lg border bg-card px-3 py-2 text-[13px] leading-5 text-text outline-none focus:border-border-hover ${
-                fieldErrors.description ? 'border-danger' : 'border-border'
-              }`}
-              data-testid="connector-market-create-plugin-description"
-            />
-            <span className="absolute bottom-2 right-3 text-[11px] text-text-muted">
-              {description.length}/{DESCRIPTION_MAX}
-            </span>
-          </div>
+          <Textarea
+            value={description}
+            maxLength={DESCRIPTION_MAX}
+            onChange={(nextDescription) => {
+              setDescription(nextDescription);
+              clearFieldError('description');
+            }}
+            rows={3}
+            invalid={fieldErrors.description}
+            data-testid="connector-market-create-plugin-description"
+            showCounter
+            counterTestId="connector-market-create-plugin-description-counter"
+          />
           {fieldErrors.description && (
-            <p className="mt-1 text-[11px] leading-4 text-danger" data-testid="connector-market-create-plugin-field-error" data-variant="description">{t('connectorMarket.create.fieldRequired')}</p>
+            <p
+              className="mt-1 text-[11px] leading-4 text-danger"
+              data-testid="connector-market-create-plugin-field-error"
+              data-variant="description"
+            >
+              {t('connectorMarket.create.fieldRequired')}
+            </p>
           )}
         </div>
       </Section>
@@ -349,20 +344,20 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {selectedSkills.map((skill) => {
             const label = skill.display_name || skill.name;
-            const avatar = getSkillAvatar(label);
             return (
-              <div key={skill.name} className="relative rounded-xl border border-border bg-card p-4" data-testid="connector-market-create-plugin-skill-item" data-variant={skill.name}>
-                <button type="button" onClick={() => setSkillIds((prev) => prev.filter((id) => id !== skill.name))} className="absolute right-4 top-4 text-text-muted hover:text-danger" data-testid="connector-market-create-plugin-skill-remove" data-variant={skill.name}>
-                  <Trash2 size={15} />
-                </button>
-                <div className="mb-1.5 flex items-center gap-2.5 pr-6">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-black text-text-inverse" style={avatar.style}>
-                    {avatar.firstChar}
-                  </span>
-                  <span className="text-[14px] font-semibold leading-[22px] text-text">{label}</span>
-                </div>
-                <p className="line-clamp-2 min-h-[40px] text-[13px] leading-5 text-[color:var(--color-text-placeholder)]">{skill.description}</p>
-              </div>
+              <PageCard
+                key={skill.name}
+                testId="connector-market-create-plugin-skill-item"
+                variant={skill.name}
+                avatar={{ name: label }}
+                title={label}
+                description={skill.description}
+                actionsHover
+                action={{
+                  icon: <Trash2 size={15} />,
+                  onClick: () => setSkillIds((prev) => prev.filter((id) => id !== skill.name)),
+                }}
+              />
             );
           })}
         </div>
@@ -386,69 +381,59 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
         }
       >
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {selectedMcps.map((mcp) => {
-            const avatar = getSkillAvatar(mcp.displayName);
-            return (
-              <div key={mcp.name} className="relative rounded-xl border border-border bg-card p-4" data-testid="connector-market-create-plugin-mcp-item" data-variant={mcp.name}>
-                <button type="button" onClick={() => setMcpIds((prev) => prev.filter((id) => id !== mcp.name))} className="absolute right-4 top-4 text-text-muted hover:text-danger" data-testid="connector-market-create-plugin-mcp-remove" data-variant={mcp.name}>
-                  <Trash2 size={15} />
-                </button>
-                <div className="mb-1.5 flex items-center gap-2.5 pr-6">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold text-text-inverse" style={avatar.style}>
-                    {avatar.firstChar}
-                  </span>
-                  <span className="text-[14px] font-semibold leading-[22px] text-text">{mcp.displayName}</span>
-                </div>
-                {/* 之前这里漏渲染了描述——上面技能卡片有 <p>，MCP 卡片当时照抄整个 div 结构时
-                    少拷了这一行，导致 MCP 卡片只有 icon+名字（2026-08-21 用户反馈）。min-h-[40px]
-                    跟技能卡片同一个值（text-[13px] leading-5 两行 = 20px*2），描述不管几行/有没有
-                    卡片高度都固定，不会有的高有的矮。 */}
-                <p className="line-clamp-2 min-h-[40px] text-[13px] leading-5 text-[color:var(--color-text-placeholder)]">{mcp.description}</p>
-              </div>
-            );
-          })}
+          {selectedMcps.map((mcp) => (
+            <PageCard
+              key={mcp.name}
+              testId="connector-market-create-plugin-mcp-item"
+              variant={mcp.name}
+              avatar={{ name: mcp.displayName }}
+              title={mcp.displayName}
+              description={mcp.description}
+              actionsHover
+              action={{
+                icon: <Trash2 size={15} />,
+                onClick: () => setMcpIds((prev) => prev.filter((id) => id !== mcp.name)),
+              }}
+            />
+          ))}
         </div>
       </Section>
 
-      {submitError && <p className="mb-3 text-[12px] text-danger" data-testid="connector-market-create-plugin-submit-error">{submitError}</p>}
-
-      <div className="flex justify-end gap-2 border-t border-border pt-4">
-        <button type="button" onClick={onBack} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover" data-testid="connector-market-create-plugin-cancel">
-          {t('connectorMarket.common.cancel')}
-        </button>
-        <button type="button" onClick={handleSubmit} disabled={submitting} className="rounded-lg bg-text px-4 py-1.5 text-[13px] text-text-inverse disabled:opacity-60" data-testid="connector-market-create-plugin-confirm">
-          {t('connectorMarket.common.confirm')}
-        </button>
-      </div>
-
-      {picker === 'skill' && (
-        <PickerModal
-          title={t('connectorMarket.create.pickSkillTitle')}
-          initialSelectedIds={skillIds}
-          items={toSkillPickerItems(myPickerSkills)}
-          loading={skillsLoading}
-          onCancel={() => setPicker(null)}
-          onConfirm={(ids) => {
-            setSkillIds(ids);
-            setPicker(null);
-          }}
-        />
+      {submitError && (
+        <p className="mb-3 text-[12px] text-danger" data-testid="connector-market-create-plugin-submit-error">
+          {submitError}
+        </p>
       )}
+    </FormPageLayout>
 
-      {picker === 'mcp' && (
-        <PickerModal
-          title={t('connectorMarket.create.pickMcpTitle')}
-          initialSelectedIds={mcpIds}
-          items={myConnectors.map(toMcpPickerItem)}
-          loading={connectorLoading}
-          onCancel={() => setPicker(null)}
-          onConfirm={(ids) => {
-            setMcpIds(ids);
-            setPicker(null);
-          }}
-        />
-      )}
-    </div>
+    {picker === 'skill' && (
+      <PickerModal
+        title={t('connectorMarket.create.pickSkillTitle')}
+        initialSelectedIds={skillIds}
+        items={toSkillPickerItems(myPickerSkills)}
+        loading={skillsLoading}
+        onCancel={() => setPicker(null)}
+        onConfirm={(ids) => {
+          setSkillIds(ids);
+          setPicker(null);
+        }}
+      />
+    )}
+
+    {picker === 'mcp' && (
+      <PickerModal
+        title={t('connectorMarket.create.pickMcpTitle')}
+        initialSelectedIds={mcpIds}
+        items={myConnectors.map(toMcpPickerItem)}
+        loading={connectorLoading}
+        onCancel={() => setPicker(null)}
+        onConfirm={(ids) => {
+          setMcpIds(ids);
+          setPicker(null);
+        }}
+      />
+    )}
+    </>
   );
 }
 

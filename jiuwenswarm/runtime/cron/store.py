@@ -251,6 +251,18 @@ class FileCronJobStore:
 
         return await self._run_locked(_body)
 
+    async def disable_project_jobs(self, project_id: str) -> None:
+        def body():
+            data = self._read_json_unlocked()
+            changed = False
+            for job in data.get("jobs", []):
+                if job.get("project_id") == project_id and job.get("enabled", True):
+                    job["enabled"] = False
+                    changed = True
+            if changed:
+                self._write_json_unlocked(data)
+        await self._run_locked(body)
+
     async def _upsert_job(self, job: CronJob) -> None:
         def _body() -> None:
             data = self._read_json_unlocked()

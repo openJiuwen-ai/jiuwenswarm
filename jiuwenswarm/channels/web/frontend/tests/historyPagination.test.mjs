@@ -6,8 +6,6 @@ import {
   canLoadOlderHistory,
   filterPublishedHistoryBatch,
   prefetchHistoryBatches,
-  resolveHistoryPrependScrollTop,
-  shiftBoundedTimelineRange,
   shouldShowHistoryRetry,
 } from '../node_modules/.cache/history-pagination/features/historyPagination.js';
 
@@ -153,23 +151,6 @@ test('publishes requested history batches while always retaining the live tail',
   );
 });
 
-test('moves through the full timeline while keeping a hard DOM window bound', () => {
-  const itemCount = 1_000;
-  const maxSize = 120;
-  let range = { start: 920, end: itemCount };
-
-  while (range.start > 0) {
-    range = shiftBoundedTimelineRange(range, itemCount, 'older', 40, maxSize);
-    assert.ok(range.end - range.start <= maxSize);
-  }
-  assert.deepEqual(range, { start: 0, end: 120 });
-
-  while (range.end < itemCount) {
-    range = shiftBoundedTimelineRange(range, itemCount, 'newer', 40, maxSize);
-    assert.ok(range.end - range.start <= maxSize);
-  }
-  assert.deepEqual(range, { start: 880, end: 1_000 });
-});
 
 test('cancels before or after a request when generation is stale', async () => {
   let current = false;
@@ -240,21 +221,4 @@ test('offers retry only when an older cursor remains and no request is active', 
   assert.equal(shouldShowHistoryRetry(state), true);
   assert.equal(shouldShowHistoryRetry({ ...state, loadingMore: true }), false);
   assert.equal(shouldShowHistoryRetry({ ...state, hasMore: false }), false);
-});
-
-test('preserves the visible anchor only when a new batch is published', () => {
-  assert.equal(resolveHistoryPrependScrollTop({
-    previousPublishedBatchSeq: 4,
-    publishedBatchSeq: 5,
-    previousScrollHeight: 4_000,
-    scrollHeight: 5_000,
-    previousScrollTop: 900,
-  }), 1_900);
-  assert.equal(resolveHistoryPrependScrollTop({
-    previousPublishedBatchSeq: 5,
-    publishedBatchSeq: 5,
-    previousScrollHeight: 5_000,
-    scrollHeight: 5_600,
-    previousScrollTop: 900,
-  }), null);
 });

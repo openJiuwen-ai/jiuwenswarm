@@ -549,6 +549,106 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
 
 
 @pytest.mark.asyncio
+async def test_handle_command_compact_pushes_and_persists_usage_event(server, fake_ws, monkeypatch):
+    request = AgentRequest(
+        request_id="req-compact-usage",
+        channel_id="web",
+        session_id="session-1",
+        req_method=ReqMethod.COMMAND_COMPACT,
+        params={"mode": "agent"},
+    )
+
+    usage_payload = {
+        "event_type": "context.usage",
+        "schema_version": "context-usage.v1",
+        "phase": "post_compact",
+        "request_id": "req-compact-usage",
+        "product_session_id": "session-1",
+        "role": None,
+        "depth": 0,
+        "team_id": None,
+        "member_name": None,
+        "context_window": {
+            "limit_tokens": 1_000,
+            "input_tokens": 300,
+            "occupancy_rate": 0.3,
+        },
+        "parts": {
+            "system_prompt": {
+                "category": "system_prompt",
+                "tokens": 100,
+                "percentage_of_window": 0.1,
+            },
+            "skills": {"category": "skills", "tokens": 0, "percentage_of_window": 0.0},
+            "tools": {"category": "tools", "tokens": 50, "percentage_of_window": 0.05},
+            "messages": {"category": "messages", "tokens": 150, "percentage_of_window": 0.15},
+        },
+        "session_kv_cache_hit_rate": None,
+    }
+
+    class MockAgent:
+        async def ensure_instance(self):
+            return None
+
+        async def compress_context(self, session_id, *, return_state=False, processor_types=None):
+            return {
+                "result": "compressed",
+                "stats": {"raw_total_tokens": 1_000, "total_tokens": 300},
+            }
+
+        async def get_context_usage_event(self, session_id, *, request_id):
+            assert session_id == "session-1"
+            assert request_id == "req-compact-usage"
+            return usage_payload
+
+    pushed = []
+    persisted = []
+
+    async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
+        return MockAgent()
+
+    async def mock_send_push(msg):
+        pushed.append(msg)
+
+    monkeypatch.setattr(
+        server.get_agent_manager_for_test(),
+        "get_agent",
+        mock_get_agent,
+    )
+    monkeypatch.setattr(server, "send_push", mock_send_push)
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "append_history_record",
+        lambda **kwargs: persisted.append(kwargs),
+    )
+
+    await server.handle_command_compact_for_test(fake_ws, request, asyncio.Lock())
+
+    usage_pushes = [
+        item for item in pushed
+        if item.get("payload", {}).get("event_type") == "context.usage"
+    ]
+    assert usage_pushes == [{
+        "channel_id": "web",
+        "session_id": "session-1",
+        "payload": usage_payload,
+    }]
+    assert len(persisted) == 1
+    record = persisted[0]
+    assert record["session_id"] == "session-1"
+    assert record["request_id"] == "req-compact-usage"
+    assert record["channel_id"] == "web"
+    assert record["role"] == "assistant"
+    assert record["event_type"] == "context.usage"
+    assert record["content"] == ""
+    assert isinstance(record["timestamp"], float)
+    assert record["extra"] == {
+        key: value for key, value in usage_payload.items() if key != "event_type"
+    }
+    assert record["mode"] == "agent"
+
+
+@pytest.mark.asyncio
 async def test_handle_command_compact_attributes_team_work_to_live_leader(server, fake_ws, monkeypatch):
     from openjiuwen.harness import observability as harness_observability
     from jiuwenswarm.agents.harness import agent_observability

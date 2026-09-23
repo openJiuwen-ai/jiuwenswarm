@@ -45,6 +45,7 @@ from openjiuwen.rsi.schema import (
     RsiTreeNode,
     TreeResponse,
 )
+from openjiuwen.rsi.usage import usage_snapshot
 
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiBadRequest,
@@ -264,7 +265,7 @@ class HarnessProvider:
             best_node_id=_best_node_id(state),
             score=_number(state.get("best_score")),
             baseline=baseline,
-            usage=None,
+            usage=usage_snapshot(state.get("usage")),
             updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             error_code=None,
             error_message=None,
@@ -282,7 +283,7 @@ class HarnessProvider:
             task_id=task_id,
             status=str(report.get("status") or state.get("status") or "created").lower(),
             best_node_id=_best_node_id(state or report),
-            usage=None,
+            usage=usage_snapshot(report.get("usage")) or usage_snapshot(state.get("usage")),
             artifact_index=self._artifact_index(task_id, state or report),
             summary=_report_summary(report or state),
         )

@@ -44,7 +44,7 @@ function modelIdentity(model: ModelEntry, index: number): string {
   return `${model.origin_index ?? `new-${index}`}:${model.model_name}:${model.alias ?? ''}`;
 }
 
-function parseModelsPayload(payload: unknown): { models: ModelEntry[]; activeModel?: string } {
+export function parseModelsPayload(payload: unknown): { models: ModelEntry[]; activeModel?: string } {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('INVALID_MODELS_LIST');
   const models = (payload as { models?: unknown }).models;
   if (!Array.isArray(models)) throw new Error('INVALID_MODELS_LIST');

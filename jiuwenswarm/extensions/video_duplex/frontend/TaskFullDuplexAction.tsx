@@ -3,6 +3,7 @@ import { AudioWaveform, LoaderCircle, Square } from 'lucide-react';
 
 import type { ApplicationPluginTaskInputActionProps } from '../../../channels/web/frontend/src/applicationPlugins/types';
 import { useTaskFullDuplexEnabled, setTaskFullDuplexEnabled } from '../../../channels/web/frontend/src/features/taskFullDuplex/featureFlag';
+import { setTaskAsrEnabled } from '../../../channels/web/frontend/src/features/taskAsr/featureFlag';
 import { webRequest } from '../../../channels/web/frontend/src/services/webClient';
 import {
   startTaskFullDuplex,
@@ -31,7 +32,13 @@ export function TaskFullDuplexAction({
     const load = () => {
       void webRequest<Record<string, unknown>>('config.get', {})
         .then((config) => {
-          if (!cancelled) setTaskFullDuplexEnabled(parseEnabled(config.task_full_duplex_enabled));
+          if (!cancelled) {
+            setTaskFullDuplexEnabled(parseEnabled(config.task_full_duplex_enabled));
+            setTaskAsrEnabled(
+              config.task_asr_enabled !== undefined &&
+                parseEnabled(config.task_asr_enabled),
+            );
+          }
         })
         .catch(() => {
           if (!cancelled) retryTimer = window.setTimeout(load, 2_000);

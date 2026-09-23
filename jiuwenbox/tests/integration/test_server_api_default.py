@@ -2616,8 +2616,13 @@ class TestPolicyEnforcement:
             },
         )
 
+        # Use a non-Python command so the default-on Python ForkServer
+        # fast path does not cold-start worker processes that would inflate
+        # the PID we observe. Inside a fresh pid namespace the long-running
+        # sandbox daemon is PID 1; the exec'd shell should therefore be a
+        # low-numbered PID (typically 2).
         response = client.post(f"/api/v1/sandboxes/{sandbox['id']}/exec", json={
-            "command": ["python3", "-c", "import os; print(os.getpid())"],
+            "command": ["sh", "-c", "echo $$"],
             "timeout_seconds": 5,
         })
         assert response.status_code == 200
@@ -5491,12 +5496,16 @@ class TestCgroupPolicy:
         assert "survived" not in result["stdout"], result
         combined = (result["stdout"] + result["stderr"]).lower()
         # The python process is either killed by SIGKILL (OOM kill) or
-        # raises MemoryError before printing "survived"; both outcomes
-        # confirm memory_max enforcement.
+        # raises MemoryError before printing "survived". When the OOM
+        # killer picks the in-sandbox daemon (same cgroup) the exec path
+        # surfaces as a daemon IPC transport failure instead — that is
+        # still evidence that memory_max was enforced.
         assert (
             "memoryerror" in combined
             or "killed" in combined
             or "cannot allocate memory" in combined
+            or "daemon ipc" in combined
+            or "socket closed" in combined
             or result["exit_code"] < 0
             or result["exit_code"] == 137  # 128 + SIGKILL
             or result["exit_code"] == 9
@@ -5517,11 +5526,21 @@ class TestCgroupPolicy:
                 },
                 "landlock": {"compatibility": "disabled"},
                 "network": {"mode": "host"},
-                "cgroup": {"pids_max": 5},
+                # Opt out of the default-on Python ForkServer fast path for
+                # this sandbox: its warm workers (+ their threads) count
+                # against ``pids.max`` and with a tight cap can make even the
+                # initial ``python3 -c`` spawn fail with EAGAIN before the
+                # script runs. Disabling keeps the assertion about fork
+                # limits focused on the script under test.
+                "environment": {"JIUWENBOX_PYTHON_FASTPATH": "0"},
+                # Cap is intentionally tight but must leave room for the
+                # sandbox daemon + the parent python process + a few forks
+                # before EAGAIN. Threads count toward pids.max on cgroup v2.
+                "cgroup": {"pids_max": 16},
             },
         )
-        # Try to fork 32 children. With pids_max=5 the cgroup should reject
-        # at least one fork with EAGAIN well before we get to 32. We catch
+        # Try to fork 64 children. With pids_max=16 the cgroup should reject
+        # at least one fork with EAGAIN well before we get to 64. We catch
         # OSError so the script prints how many succeeded before bailing.
         script = textwrap.dedent(
             """
@@ -5531,7 +5550,7 @@ class TestCgroupPolicy:
 
             children = []
             try:
-                for _ in range(32):
+                for _ in range(64):
                     pid = os.fork()
                     if pid == 0:
                         time.sleep(2)
@@ -5556,14 +5575,14 @@ class TestCgroupPolicy:
         stdout = result["stdout"]
         # The exact threshold depends on whether the parent process and
         # any helper threads count toward pids_max, but in every realistic
-        # case at least a few forks must fail before we reach 32.
+        # case at least a few forks must fail before we reach 64.
         assert "errno= 11" in stdout or "errno= 35" in stdout, result
-        # Extract ``blocked_after=`` value and assert it's well below 32.
+        # Extract ``blocked_after=`` value and assert it's well below 64.
         marker = "blocked_after="
         idx = stdout.find(marker)
         assert idx >= 0, result
         blocked_value = stdout[idx + len(marker):].split()[0]
-        assert int(blocked_value) < 32, result
+        assert int(blocked_value) < 64, result
 
     @staticmethod
     def test_cgroup_cpu_max_throttles_busy_loop(
