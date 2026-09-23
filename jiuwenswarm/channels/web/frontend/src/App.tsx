@@ -2575,7 +2575,7 @@ function AppContent({
       currentMode: currentRuntime?.mode ?? mode,
       pending: newConversationPreviousSessionRef.current,
       newConversationId: NEW_CONVERSATION_ID,
-      clear: lifecycle.clearPreviousSession,
+      clear: lifecycle.clearPreviousSession || options.clearPreviousSession,
     });
     // 返回尚未发送的新建任务时，恢复该临时会话自己的模式和模型；真正开始一个新任务时，
     // 仍固定使用配置的默认模型，不继承当前正式会话手动切换过的模型。
@@ -2648,9 +2648,10 @@ function AppContent({
     setCurrentSession(null);
     setTeamAreaExpanded(false);
     setSingleAgentPanelExpanded(false);
+    // 删除/归档当前会话后 replace，避免后退回到已失效的 /chat/session/:id
     navigate(
       { kind: 'chat-new' },
-      options.replaceHistory ? { replace: true } : undefined,
+      (lifecycle.clearPreviousSession || options.clearPreviousSession) ? { replace: true } : undefined,
     );
     setActiveNav('chat');
     requestComposerFocus();
@@ -3500,7 +3501,10 @@ function AppContent({
   }, [deleteSideConversation, sessionId]);
 
   const requestSessionNavigation = useCallback((target: Session | 'new', options?: NewConversationOptions) => {
-    if (target === 'new') { enterNewConversation(mode, options); return; }
+    if (target === 'new') {
+      enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
+      return;
+    }
     if (isToolPanelAutoHideViewport) {
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
