@@ -866,6 +866,154 @@ class TestReloadGhostTaskCleanup:
         assert len(push_update_events_after) == 0
 
 
+class TestReloadKeepsDueUnconsumedEvents:
+    """reload() 不得丢弃已到点但尚未被主循环消费的 wake/push 事件。
+
+    回归背景：每次 run 成功后 _mark_last_session_ready 写 last_session_id 会
+    bump store revision，5s 轮询触发 reload。reload 原先清空整个事件堆、只按
+    now 向未来重排——若 reload 恰好落在触发边界之后、wake 事件被消费之前，
+    该轮被静默吞掉（无 session、无推送、无日志；现场实测每 2 分钟的任务在
+    11:00 边界丢过一轮，用户看到侧边栏缺一个 cron-session）。
+    """
+
+    @pytest.mark.asyncio
+    async def test_reload_keeps_due_unconsumed_wake_and_push(self, tmp_path):
+        """已到点未消费的 wake/push 在 reload 后必须留在事件堆里。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store)
+        await svc.reload()
+
+        # 模拟现场：11:00 边界已到，wake/push 已排入但主循环尚未消费
+        due_dt = datetime.now(tz=ZoneInfo("Asia/Shanghai")) - timedelta(seconds=1)
+        due_run_id = f"{job.id}:{int(due_dt.timestamp())}"
+        svc.schedule_event(due_dt, "wake", job.id, due_run_id)
+        svc.schedule_event(due_dt, "push", job.id, due_run_id)
+
+        await svc.reload()
+
+        kept = [ev for _, _, ev in svc.events if ev.run_id == due_run_id]
+        assert sorted(ev.kind for ev in kept) == ["push", "wake"]
+
+    @pytest.mark.asyncio
+    async def test_preserved_due_wake_still_triggers_run_after_reload(self, tmp_path):
+        """保留下来的到点 wake 交由主循环消费后应正常触发执行。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+        await svc.reload()
+
+        due_dt = datetime.now(tz=ZoneInfo("Asia/Shanghai")) - timedelta(seconds=1)
+        due_run_id = f"{job.id}:{int(due_dt.timestamp())}"
+        svc.schedule_event(due_dt, "wake", job.id, due_run_id)
+
+        await svc.reload()
+
+        kept_wake = next(
+            ev for _, _, ev in svc.events
+            if ev.run_id == due_run_id and ev.kind == "wake"
+        )
+        await svc.handle_event(kept_wake)
+        assert due_run_id in svc.run_tasks
+        await svc.run_tasks[due_run_id]
+        # 执行走通：会话分配请求已发出，且记录了 last_session_id
+        assert any(
+            env.method == "session.create" for env in agent.unary_requests
+        )
+        stored = await store.get_job(job.id)
+        assert stored.last_session_id
+
+    @pytest.mark.asyncio
+    async def test_reload_drops_future_events_recomputed_from_store(self, tmp_path):
+        """未到点的事件不保留：未来调度以 reload 按表达式重排的结果为准。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store)
+        await svc.reload()
+
+        future_dt = datetime.now(tz=ZoneInfo("Asia/Shanghai")) + timedelta(hours=2)
+        stale_run_id = f"{job.id}:{int(future_dt.timestamp())}"
+        svc.schedule_event(future_dt, "wake", job.id, stale_run_id)
+        svc.schedule_event(future_dt, "push", job.id, stale_run_id)
+
+        await svc.reload()
+
+        assert all(ev.run_id != stale_run_id for _, _, ev in svc.events)
+
+    @pytest.mark.asyncio
+    async def test_reload_drops_due_events_for_removed_job(self, tmp_path):
+        """已删除 job 的到点事件不保留（防幽灵任务，与 push_update 同口径）。"""
+        store_file = tmp_path / "cron_jobs.json"
+        store = CronJobStore(path=store_file)
+        job = await _create_one_job(store)
+        svc = _make_scheduler(store)
+        await svc.reload()
+
+        due_dt = datetime.now(tz=ZoneInfo("Asia/Shanghai")) - timedelta(seconds=1)
+        ghost_run_id = f"{job.id}:{int(due_dt.timestamp())}"
+        svc.schedule_event(due_dt, "wake", job.id, ghost_run_id)
+        svc.schedule_event(due_dt, "push", job.id, ghost_run_id)
+
+        store_file.unlink()
+        await svc.reload()
+
+        assert all(ev.run_id != ghost_run_id for _, _, ev in svc.events)
+
+    @pytest.mark.asyncio
+    async def test_disabled_proactive_tick_does_not_run_preserved_wake(self):
+        job = _make_job(mode="proactive.tick")
+        store = _MemoryCronStore([job])
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+        await svc.reload()
+
+        due_dt = datetime.now(tz=ZoneInfo("Asia/Shanghai")) - timedelta(seconds=1)
+        run_id = f"{job.id}:{int(due_dt.timestamp())}"
+        svc.schedule_event(due_dt, "wake", job.id, run_id)
+        # The config switch deletes the auto job. An external store can still
+        # contain a disabled proactive job, which the scheduler must not run.
+        job.enabled = False
+        await svc.reload()
+
+        wake = next(ev for _, _, ev in svc.events if ev.run_id == run_id and ev.kind == "wake")
+        await svc.handle_event(wake)
+        assert run_id not in svc.runs
+        assert all(env.method != "proactive.tick" for env in agent.unary_requests)
+
+    @pytest.mark.asyncio
+    async def test_due_oneshot_past_missed_window_runs_before_expiring(self, tmp_path):
+        clock = _Clock(time.time())
+        due_dt = datetime.fromtimestamp(clock.t + 30, tz=ZoneInfo("Asia/Shanghai"))
+        expr = (
+            f"{due_dt.second} {due_dt.minute} {due_dt.hour} "
+            f"{due_dt.day} {due_dt.month} ? {due_dt.year}"
+        )
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await store.create_job(
+            name="one-shot", cron_expr=expr, timezone="Asia/Shanghai",
+            description="reminder", targets="tui", wake_offset_seconds=0,
+        )
+        svc = _make_scheduler(store, now_fn=clock)
+        await svc.reload()
+        run_id = f"{job.id}:{int(due_dt.timestamp())}"
+
+        clock.advance(50)
+        await svc.reload()
+        due_events = sorted(
+            (item for item in svc.events if item[2].run_id == run_id),
+            key=lambda item: (item[0], item[1]),
+        )
+        assert [ev.kind for _, _, ev in due_events] == ["wake", "push"]
+        assert (await store.get_job(job.id)).enabled
+
+        await svc.handle_event(due_events[0][2])
+        await svc.run_tasks[run_id]
+        await svc.handle_event(due_events[1][2])
+        stored = await store.get_job(job.id)
+        assert stored.expired and not stored.enabled
+
+
 # ── Ghost task CancelledError: no push_update scheduling ──────────────────────────
 
 
