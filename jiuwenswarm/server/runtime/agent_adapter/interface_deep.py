@@ -28,7 +28,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from pathlib import Path
 from shutil import which
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, ClassVar, List, Optional, Tuple, cast
 from urllib.parse import quote_plus
 
 import yaml
@@ -351,11 +351,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
     setup_permissions_session_scope,
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
-from jiuwenswarm.server.runtime.session.session_history import (
-    append_history_record,
-    flush_session_history,
-    load_history_records,
-)
+from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.prompt_attachment_loader import PromptAttachmentLoader
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
@@ -16570,8 +16566,6 @@ class JiuWenSwarmDeepAdapter:
         """Return True when this session already persisted a completion card for goal_id."""
         message_id = f"goal-completed-{goal_id}"
         try:
-            # 落盘为异步队列，去重检查前先排空，防止重复写完成卡
-            flush_session_history(session_id)
             for rec in load_history_records(session_id):
                 if not isinstance(rec, dict):
                     continue
@@ -16587,6 +16581,9 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
         return False
+
+    # 进程内已完成卡一次性守卫：同 (session, goal) 只落盘一次；跨进程重复由磁盘检查兜底
+    _GOAL_COMPLETED_PERSISTED: ClassVar[set[tuple[str, str]]] = set()
 
     @staticmethod
     def _record_goal_completed_history_if_needed(
@@ -16608,6 +16605,8 @@ class JiuWenSwarmDeepAdapter:
         if not goal_id:
             return
         sid = (session_id or "default").strip() or "default"
+        if (sid, goal_id) in JiuWenSwarmDeepAdapter._GOAL_COMPLETED_PERSISTED:
+            return
         if JiuWenSwarmDeepAdapter._goal_completed_history_exists(sid, goal_id):
             return
 
@@ -16635,6 +16634,7 @@ class JiuWenSwarmDeepAdapter:
                 "evidence": evidence,
             },
         )
+        JiuWenSwarmDeepAdapter._GOAL_COMPLETED_PERSISTED.add((sid, goal_id))
 
     @staticmethod
     def _interaction_goal_updated_payload(payload: Any) -> dict[str, Any]:

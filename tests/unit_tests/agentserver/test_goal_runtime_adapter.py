@@ -653,6 +653,7 @@ def test_record_goal_set_history_writes_objective_flags(monkeypatch: pytest.Monk
 
 def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict] = []
+    monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_GOAL_COMPLETED_PERSISTED", set())
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.append_history_record",
         lambda **kwargs: captured.append(kwargs),
@@ -677,6 +678,22 @@ def test_record_goal_completed_history_is_idempotent(monkeypatch: pytest.MonkeyP
     assert captured[0]["extra"]["id"] == "goal-completed-g1"
     assert captured[0]["content"].startswith("goal.completed:")
 
+    # 异步落盘未完成（磁盘仍为空）时同 goal 再次触发，由进程内守卫去重
+    JiuWenSwarmDeepAdapter._record_goal_completed_history_if_needed(
+        session_id="s1",
+        channel_id="web",
+        channel_metadata=None,
+        mode="agent",
+        goal_payload={
+            "goal_id": "g1",
+            "status": "completed",
+            "last_assessment": {"evidence": "all done"},
+        },
+    )
+    assert len(captured) == 1
+
+    # 跨进程场景：守卫为空、完成卡已在磁盘，由磁盘检查去重
+    monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_GOAL_COMPLETED_PERSISTED", set())
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.load_history_records",
         lambda _sid: [
