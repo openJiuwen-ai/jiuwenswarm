@@ -875,6 +875,9 @@ class OfficeClawMcpRegistration:
     # Relay callback invocation id pinned into the MCP subprocess env for this
     # request (OFFICE_CLAW_INVOCATION_ID). Empty when unknown / not office-claw.
     invocation_id: str = ""
+    # Owning chat session. Request-scoped Team rails use this stable key to
+    # discover the current registration without serializing tools into TeamSpec.
+    session_id: str = ""
 
 
 # Request-scoped long-lived MCP worker pool
@@ -1330,6 +1333,9 @@ _live_office_claw_registration_count_by_tool_name: dict[str, int] = {}
 _live_office_claw_tool_instances: weakref.WeakKeyDictionary[Any, frozenset[str]] = (
     weakref.WeakKeyDictionary()
 )
+_live_request_scoped_mcp_registrations_by_session: dict[
+    str, OfficeClawMcpRegistration
+] = {}
 _live_office_claw_allowlist_lock = threading.Lock()
 
 
@@ -1426,6 +1432,61 @@ def get_live_office_claw_allowlist_for_tool_instance(
         return _live_office_claw_tool_instances.get(tool)
 
 
+def publish_request_scoped_mcp_registration(
+    registration: OfficeClawMcpRegistration,
+) -> None:
+    """Expose the current request's MCP tools to in-process Team members."""
+
+    session_id = str(registration.session_id or "").strip()
+    if not session_id:
+        return
+    with _live_office_claw_allowlist_lock:
+        _live_request_scoped_mcp_registrations_by_session[session_id] = registration
+
+
+def get_request_scoped_mcp_registration(
+    session_id: str,
+) -> OfficeClawMcpRegistration | None:
+    """Return the current in-process request-scoped MCP registration for a session."""
+
+    normalized = str(session_id or "").strip()
+    if not normalized:
+        return None
+    with _live_office_claw_allowlist_lock:
+        return _live_request_scoped_mcp_registrations_by_session.get(normalized)
+
+
+def replace_request_scoped_mcp_registration(
+    expected: OfficeClawMcpRegistration,
+    replacement: OfficeClawMcpRegistration,
+) -> bool:
+    """Replace one session state only while *expected* still owns it."""
+
+    session_id = str(expected.session_id or "").strip()
+    replacement_session_id = str(replacement.session_id or "").strip()
+    if not session_id or replacement_session_id != session_id:
+        return False
+    with _live_office_claw_allowlist_lock:
+        if _live_request_scoped_mcp_registrations_by_session.get(session_id) is not expected:
+            return False
+        _live_request_scoped_mcp_registrations_by_session[session_id] = replacement
+        return True
+
+
+def revoke_request_scoped_mcp_registration(
+    registration: OfficeClawMcpRegistration,
+) -> None:
+    """Revoke *registration* without clearing a newer request for the session."""
+
+    session_id = str(registration.session_id or "").strip()
+    if not session_id:
+        return
+    with _live_office_claw_allowlist_lock:
+        current = _live_request_scoped_mcp_registrations_by_session.get(session_id)
+        if current is registration:
+            _live_request_scoped_mcp_registrations_by_session.pop(session_id, None)
+
+
 def _office_claw_invocation_id_from_params(params: Mapping[str, Any] | None) -> str:
     """Extract OFFICE_CLAW_INVOCATION_ID from MCP connect params, if present."""
 
@@ -1470,6 +1531,7 @@ def _clear_live_office_claw_allowlists_for_tests() -> None:
         _live_office_claw_allowlists_by_tool_id.clear()
         _live_office_claw_registration_count_by_tool_name.clear()
         _live_office_claw_tool_instances.clear()
+        _live_request_scoped_mcp_registrations_by_session.clear()
 
 
 def _office_claw_tool_ids_carrier(agent: Any) -> Any:
@@ -1528,12 +1590,22 @@ def set_agent_office_claw_tool_ids(agent: Any, tool_ids: Iterable[str] | None) -
             pass
 
 
-def clear_agent_office_claw_tool_ids(agent: Any) -> None:
-    """Remove the request-scoped allowlist from the shared ability_manager."""
+def clear_agent_office_claw_tool_ids(
+    agent: Any,
+    expected_tool_ids: Iterable[str] | None = None,
+) -> None:
+    """Remove the allowlist, optionally only when it still matches expected ids."""
 
     carrier = _office_claw_tool_ids_carrier(agent)
     if carrier is None:
         return
+    if expected_tool_ids is not None:
+        expected = frozenset(
+            str(tool_id) for tool_id in expected_tool_ids if str(tool_id)
+        )
+        current = getattr(carrier, _OFFICE_CLAW_TOOL_IDS_ATTR, None)
+        if current != expected:
+            return
     try:
         delattr(carrier, _OFFICE_CLAW_TOOL_IDS_ATTR)
     except AttributeError:
@@ -2316,18 +2388,22 @@ __all__ = [
     "get_active_office_claw_mcp_tool_ids",
     "get_live_office_claw_allowlist_for_tool_id",
     "get_live_office_claw_allowlist_for_tool_instance",
+    "get_request_scoped_mcp_registration",
     "invalidate_office_claw_mcp_schema_cache",
     "is_office_claw_tool_name_live_concurrent",
     "list_office_claw_mcp_tools",
     "list_request_mcp_server_tools",
     "preflight_mcp_server_reachable",
     "publish_live_office_claw_allowlist",
+    "publish_request_scoped_mcp_registration",
     "register_live_office_claw_tool_instance",
     "release_request_scoped_mcp_sessions",
+    "replace_request_scoped_mcp_registration",
     "shutdown_pooled_mcp_worker",
     "resolve_active_office_claw_invocation_id",
     "resolve_active_office_claw_tool_id",
     "revoke_live_office_claw_allowlist",
+    "revoke_request_scoped_mcp_registration",
     "unregister_live_office_claw_tool_instance",
     "validate_office_claw_mcp_config",
     "_is_blocked_host",

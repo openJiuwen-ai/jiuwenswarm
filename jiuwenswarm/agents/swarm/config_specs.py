@@ -86,6 +86,7 @@ def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
 # provider name re-exported from the registry (no hard-coded strings).
 _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RUNTIME_PROMPT,
+    registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.TEAM_SKILL_STORAGE_POLICY,
     registry.TEAM_SHARED_SKILL_LINK_REFRESH,
     registry.RESPONSE_PROMPT,
@@ -131,6 +132,7 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
 # carry params and are appended separately.
 _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_RUNTIME_PROMPT,
+    registry.REQUEST_SCOPED_MCP_TOOLS,
     registry.RESPONSE_PROMPT,
     registry.STREAM_EVENT,
     registry.SECURITY,

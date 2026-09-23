@@ -57,6 +57,9 @@ from jiuwenswarm.agents.harness.team.rails.team_shared_skill_link_refresh_rail i
 from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail import (
     TeamWorkspaceReportPathRail,
 )
+from jiuwenswarm.agents.harness.team.rails.request_scoped_mcp_tools_rail import (
+    RequestScopedMcpToolsRail,
+)
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
@@ -75,6 +78,7 @@ SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
 A2A_OUTBOUND_TOOLKIT = "swarm.a2a_outbound_toolkit"
 TEAM_PERMISSION_POLICY = "swarm.team_permission_policy"
 DISABLED_TOOLS = "swarm.disabled_tools"
+REQUEST_SCOPED_MCP_TOOLS = "swarm.request_scoped_mcp_tools"
 
 
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:
@@ -100,6 +104,33 @@ def _runtime_scope_from_context(ctx: SwarmBuildContext) -> RuntimeScopeKey:
             getattr(ctx, "session_id", None),
         )
     return RuntimeScopeKey.from_ids(session_id=getattr(ctx, "session_id", None))
+
+
+class RequestScopedMcpToolsInput(ConstructionInput):
+    """Stable session key used to resolve the current in-process registration."""
+
+    session_id: str = context_field(
+        attr="session_id",
+        default="",
+        description="Originating Team session id.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=REQUEST_SCOPED_MCP_TOOLS,
+    description="Mounts the current request's MCP tools on one in-process Team member.",
+    input_model=RequestScopedMcpToolsInput,
+)
+def _build_request_scoped_mcp_tools_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> RequestScopedMcpToolsRail | None:
+    inp = RequestScopedMcpToolsInput.resolve(params, context)
+    session_id = str(inp.session_id or "").strip()
+    if not session_id:
+        return None
+    return RequestScopedMcpToolsRail(session_id)
 
 
 class SkillRetrievalPromptInput(ConstructionInput):

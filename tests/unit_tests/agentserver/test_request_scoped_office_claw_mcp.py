@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -367,6 +368,11 @@ async def test_registers_exact_tool_names_and_cleans_them_up(
     assert get_live_office_claw_allowlist_for_tool_instance(
         registration.tool_instances[0]
     ) == frozenset(registration.tool_ids)
+    from jiuwenswarm.common.mcp_config import (
+        get_request_scoped_mcp_registration,
+    )
+
+    assert get_request_scoped_mcp_registration("session-456") is registration
 
     await adapter.cleanup_request_scoped_office_claw_mcp(registration)
 
@@ -375,6 +381,162 @@ async def test_registers_exact_tool_names_and_cleans_them_up(
     assert resource_manager.removed == list(registration.tool_ids)
     assert adapter._active_office_claw_mcp is None
     assert get_live_office_claw_allowlist_for_tool_id(registration.tool_ids[0]) is None
+    assert get_request_scoped_mcp_registration("session-456") is None
+
+
+@pytest.mark.asyncio
+async def test_no_mcp_payload_replaces_stale_session_registration() -> None:
+    from jiuwenswarm.common.mcp_config import (
+        _clear_live_office_claw_allowlists_for_tests,
+        get_request_scoped_mcp_registration,
+        publish_request_scoped_mcp_registration,
+    )
+
+    _clear_live_office_claw_allowlists_for_tests()
+    adapter = _bare_session_adapter()
+    stale = OfficeClawMcpRegistration(
+        request_id="req-old",
+        tool_ids=("office-claw-request-old.cos.cos_get_object",),
+        tool_names=("cos_get_object",),
+        session_id="session-456",
+    )
+    publish_request_scoped_mcp_registration(stale)
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request(request_id="req-new")
+    )
+
+    assert registration is not None
+    assert registration.request_id == "req-new"
+    assert registration.tool_ids == ()
+    assert get_request_scoped_mcp_registration("session-456") is registration
+
+    await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+    assert get_request_scoped_mcp_registration("session-456") is None
+    _clear_live_office_claw_allowlists_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_delayed_registration_cannot_overwrite_newer_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common.mcp_config import (
+        _clear_live_office_claw_allowlists_for_tests,
+        get_request_scoped_mcp_registration,
+    )
+
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    discovery_started = asyncio.Event()
+    finish_discovery = asyncio.Event()
+
+    async def _delayed_tool_list(params: object) -> list[dict[str, object]]:
+        env = params.get("env", {}) if isinstance(params, dict) else {}
+        if env.get("OFFICE_CLAW_INVOCATION_ID") == "inv-old":
+            discovery_started.set()
+            await finish_discovery.wait()
+        return _tool_list()
+
+    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", _delayed_tool_list)
+    _clear_live_office_claw_allowlists_for_tests()
+    adapter = _bare_session_adapter()
+    old_task = asyncio.create_task(
+        adapter.register_request_scoped_office_claw_mcp(
+            _request(
+                _valid_config(invocation_id="inv-old"),
+                request_id="req-old",
+            )
+        )
+    )
+    await discovery_started.wait()
+
+    new_registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request(
+            _valid_config(invocation_id="inv-new"),
+            request_id="req-new",
+        )
+    )
+    finish_discovery.set()
+    old_registration = await old_task
+
+    assert new_registration is not None
+    assert old_registration is not None
+    assert get_request_scoped_mcp_registration("session-456") is new_registration
+    assert adapter._active_office_claw_mcp is new_registration
+    assert set(resource_manager.tools) == set(new_registration.tool_ids)
+    assert {
+        str(card.id) for card in adapter._instance.ability_manager.cards.values()
+    } == set(new_registration.tool_ids)
+
+    await adapter.cleanup_request_scoped_office_claw_mcp(old_registration)
+    await adapter.cleanup_request_scoped_office_claw_mcp(new_registration)
+    _clear_live_office_claw_allowlists_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_partial_connector_discovery_cannot_block_newer_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common.mcp_config import (
+        _clear_live_office_claw_allowlists_for_tests,
+        get_request_scoped_mcp_registration,
+    )
+
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    second_connector_started = asyncio.Event()
+    finish_second_connector = asyncio.Event()
+
+    async def _interleaved_discovery(
+        server_name: str,
+        config: object,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        owner = config.get("owner") if isinstance(config, dict) else None
+        if owner == "old" and server_name == "slow":
+            second_connector_started.set()
+            await finish_second_connector.wait()
+        tool_name = "cos_get_object" if server_name == "cos" else "slow_tool"
+        return ([{"name": tool_name, "description": owner or "", "input_params": {}}], {})
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        _interleaved_discovery,
+    )
+    _clear_live_office_claw_allowlists_for_tests()
+    adapter = _bare_session_adapter()
+    old_request = _request(request_id="req-old")
+    old_request.params["request_mcp_servers"] = {
+        "mcpServers": {
+            "cos": {"owner": "old"},
+            "slow": {"owner": "old"},
+        }
+    }
+    new_request = _request(request_id="req-new")
+    new_request.params["request_mcp_servers"] = {
+        "mcpServers": {"cos": {"owner": "new"}}
+    }
+
+    old_task = asyncio.create_task(
+        adapter.register_request_scoped_office_claw_mcp(old_request)
+    )
+    await second_connector_started.wait()
+    new_registration = await adapter.register_request_scoped_office_claw_mcp(new_request)
+    finish_second_connector.set()
+    old_registration = await old_task
+
+    assert new_registration.tool_names == ("cos_get_object",)
+    assert get_request_scoped_mcp_registration("session-456") is new_registration
+    assert set(resource_manager.tools) == set(new_registration.tool_ids)
+    assert {
+        str(card.id) for card in adapter._instance.ability_manager.cards.values()
+    } == set(new_registration.tool_ids)
+
+    await adapter.cleanup_request_scoped_office_claw_mcp(old_registration)
+    await adapter.cleanup_request_scoped_office_claw_mcp(new_registration)
+    _clear_live_office_claw_allowlists_for_tests()
 
 
 @pytest.mark.asyncio
@@ -445,8 +607,10 @@ async def test_foreign_short_name_conflict_fails_closed(
         _request(_valid_config())
     )
 
-    assert registration is None
+    assert registration is not None
+    assert registration.tool_ids == ()
     assert adapter._instance.ability_manager.get("office_claw_multi_mention") is foreign
+    await adapter.cleanup_request_scoped_office_claw_mcp(registration)
 
 
 @pytest.mark.asyncio
@@ -497,14 +661,22 @@ async def test_legacy_ability_manager_post_add_mismatch_fails_closed(
         _request(_valid_config())
     )
 
-    assert registration is None
+    assert registration is not None
+    assert registration.tool_ids == ()
     assert sticky.cards == {}
+    await adapter.cleanup_request_scoped_office_claw_mcp(registration)
 
 
 @pytest.mark.asyncio
 async def test_registration_failure_is_non_blocking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from jiuwenswarm.common.mcp_config import (
+        _clear_live_office_claw_allowlists_for_tests,
+        get_request_scoped_mcp_registration,
+        publish_request_scoped_mcp_registration,
+    )
+
     for key, value in _startup_env().items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(
@@ -512,14 +684,74 @@ async def test_registration_failure_is_non_blocking(
         "list_office_claw_mcp_tools",
         AsyncMock(side_effect=RuntimeError("MCP unavailable")),
     )
+    _clear_live_office_claw_allowlists_for_tests()
     adapter = _bare_session_adapter()
+    stale = OfficeClawMcpRegistration(
+        request_id="req-old",
+        tool_ids=("office-claw-request-old.cos.cos_get_object",),
+        tool_names=("cos_get_object",),
+        session_id="session-456",
+    )
+    publish_request_scoped_mcp_registration(stale)
 
     registration = await adapter.register_request_scoped_office_claw_mcp(
-        _request(_valid_config())
+        _request(_valid_config(), request_id="req-new")
     )
 
-    assert registration is None
+    assert registration is not None
+    assert registration.request_id == "req-new"
+    assert registration.tool_ids == ()
+    assert get_request_scoped_mcp_registration("session-456") is registration
     assert adapter._instance.ability_manager.cards == {}
+
+    await adapter.cleanup_request_scoped_office_claw_mcp(registration)
+    assert get_request_scoped_mcp_registration("session-456") is None
+    _clear_live_office_claw_allowlists_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_delayed_registration_failure_cannot_overwrite_newer_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.common.mcp_config import (
+        _clear_live_office_claw_allowlists_for_tests,
+        get_request_scoped_mcp_registration,
+    )
+
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    discovery_started = asyncio.Event()
+    fail_discovery = asyncio.Event()
+
+    async def _delayed_failure(_params: object) -> list[dict[str, object]]:
+        discovery_started.set()
+        await fail_discovery.wait()
+        raise RuntimeError("MCP unavailable")
+
+    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", _delayed_failure)
+    _clear_live_office_claw_allowlists_for_tests()
+    adapter = _bare_session_adapter()
+    old_task = asyncio.create_task(
+        adapter.register_request_scoped_office_claw_mcp(
+            _request(_valid_config(), request_id="req-old")
+        )
+    )
+    await discovery_started.wait()
+
+    new_registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request(request_id="req-new")
+    )
+    fail_discovery.set()
+    old_registration = await old_task
+
+    assert new_registration is not None
+    assert old_registration is not None
+    assert get_request_scoped_mcp_registration("session-456") is new_registration
+    assert adapter._active_office_claw_mcp is new_registration
+
+    await adapter.cleanup_request_scoped_office_claw_mcp(old_registration)
+    await adapter.cleanup_request_scoped_office_claw_mcp(new_registration)
+    _clear_live_office_claw_allowlists_for_tests()
 
 
 @pytest.mark.asyncio
@@ -933,9 +1165,13 @@ async def test_connector_foreign_short_name_conflict_still_fails_closed(monkeypa
         )
     )
 
-    # Fail-closed: registration rolled back, foreign card preserved.
-    assert registration is None
+    # Fail-closed: tools are rolled back, the foreign card is preserved, and
+    # this request still owns an empty registration so stale Team tools cannot
+    # be revived from the previous request.
+    assert registration is not None
+    assert registration.tool_ids == ()
     assert (adapter._instance.ability_manager.get("office_claw_multi_mention") is foreign)
+    await adapter.cleanup_request_scoped_office_claw_mcp(registration)
 
 
 def test_clear_agent_office_claw_tool_ids_unbinds() -> None:

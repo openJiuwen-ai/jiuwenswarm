@@ -207,6 +207,7 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.SKILL_RETRIEVAL_PROMPT,
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
         registry.A2A_OUTBOUND_TOOLKIT,
+        registry.REQUEST_SCOPED_MCP_TOOLS,
         registry.MEMBER_SKILL_TOOLKIT,
         registry.DISABLED_TOOLS,
     }
@@ -523,7 +524,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 17
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 18
     assert rail_names == expected
     disabled_tools = next(
         spec for spec in rails_specs if spec.type == registry.DISABLED_TOOLS
@@ -1154,8 +1155,8 @@ def test_enrich_skips_absent_roles_gracefully() -> None:
     assert registry.TEAM_SKILL_EVOLUTION in leader_rail_names
 
 
-def test_enrich_mounts_stream_events_only_on_named_llm_teammates() -> None:
-    """Named predefined LLM teammates emit canonical UI tool events."""
+def test_enrich_mounts_runtime_rails_on_named_llm_teammates() -> None:
+    """Named predefined LLM teammates receive request runtime capabilities."""
     spec = TeamAgentSpec(
         agents={
             "leader": DeepAgentSpec(),
@@ -1189,8 +1190,14 @@ def test_enrich_mounts_stream_events_only_on_named_llm_teammates() -> None:
     analyst_rails = [rail.type for rail in (spec.agents["analyst"].rails or [])]
     reviewer_rails = [rail.type for rail in (spec.agents["reviewer"].rails or [])]
     human_rails = [rail.type for rail in (spec.agents["human"].rails or [])]
-    assert analyst_rails == [registry.STREAM_EVENT]
-    assert reviewer_rails == [registry.STREAM_EVENT]
+    assert analyst_rails == [
+        registry.STREAM_EVENT,
+        registry.REQUEST_SCOPED_MCP_TOOLS,
+    ]
+    assert reviewer_rails == [
+        registry.STREAM_EVENT,
+        registry.REQUEST_SCOPED_MCP_TOOLS,
+    ]
     assert human_rails == []
     assert not spec.agents["analyst"].tools
 
@@ -1772,6 +1779,7 @@ _EXPECTED_CODE_RAIL_NAMES_LEADER: frozenset[str] = frozenset(
         registry.SKILL_RETRIEVAL_PROMPT,
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
         registry.A2A_OUTBOUND_TOOLKIT,
+        registry.REQUEST_SCOPED_MCP_TOOLS,
         registry.CODE_CONFIRM_INTERRUPT,
         registry.MEMBER_SKILL_TOOLKIT,
         registry.TEAM_WORKSPACE_REPORT_PATH,
