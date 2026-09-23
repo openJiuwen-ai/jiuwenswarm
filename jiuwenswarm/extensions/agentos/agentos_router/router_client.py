@@ -236,8 +236,7 @@ def _first_nonempty(*values: Any) -> str:
 def _extract_placement_ips(instance_info: Mapping[str, Any] | None) -> tuple[str, str]:
     """Read node / sandbox IP from YuanRong GET, including jiuwenbox aliases.
 
-    Register writes a placeholder ``address`` (instance_id) because the
-    registry rejects empty address. Placement must be PATCHed once the
+    Register leaves ``address`` empty. Placement must be PATCHed once the
     actual IPs exist. YuanRong may use ``node_ip`` / ``sandbox_ip`` or
     pass through jiuwenbox ``ip_address``.
     """
@@ -2846,7 +2845,7 @@ class AgentOSRouterClient(AgentServerClient):
             ):
                 return
 
-            # create 返回时沙箱通常还在探针中：placeholder address=instance_id。
+            # create 返回时沙箱通常还在探针中：address 留空。
             # 等到 status=running 后再读 node_ip / sandbox_ip（含 jiuwenbox
             # ip_address），PATCH 注册中心 placement，供调度/路由使用。
             sandbox_id = str(agent_info.sandbox_id or "").strip()

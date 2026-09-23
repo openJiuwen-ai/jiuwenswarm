@@ -399,7 +399,7 @@ async def test_http_register_agent_maps_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_register_agent_address_falls_back_to_instance_id() -> None:
+async def test_http_register_agent_empty_address() -> None:
     transport = _FakeRegistryTransport()
     client = RegistryClient(RegistryConfig(endpoint="http://registry.test"))
     client._http = httpx.AsyncClient(  # noqa: SLF001
@@ -410,14 +410,14 @@ async def test_http_register_agent_address_falls_back_to_instance_id() -> None:
     agent = AgentInfo(
         user_id="user-02",
         agent_type="jiuwenswarm",
-        sandbox_id="sbx-pending-ip",
+        sandbox_id="sbx-empty-placement",
         status=AgentStatus.READY,
     )
     await client.register_agent(agent)
     post = next(call for call in transport.calls if call[0] == "POST")
     assert post[2] is not None
-    assert post[2]["instance_id"] == "sbx-pending-ip"
-    assert post[2]["address"] == "sbx-pending-ip"
+    assert post[2]["instance_id"] == "sbx-empty-placement"
+    assert post[2]["address"] == ""
     await client.close()
 
 
