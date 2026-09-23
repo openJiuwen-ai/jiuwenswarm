@@ -15535,13 +15535,15 @@ class JiuWenSwarmDeepAdapter:
             sdk_input_mode,
         )
 
+        from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
         instance = self._instance
         if instance is None or instance.active_round is None:
             return False
         if not instance.has_output_stream():
             return False
         if self._stream_completion_state(had_interaction=False) == "suspended":
-            raise RuntimeError(
+            raise SessionInputRejectedError(
                 "session is waiting for an interaction answer; "
                 "supplemental input was not sent"
             )
@@ -15556,7 +15558,7 @@ class JiuWenSwarmDeepAdapter:
                 else:
                     accepting = guard.accepting
                 if not accepting:
-                    raise RuntimeError(
+                    raise SessionInputRejectedError(
                         "session is finishing or changing execution state; "
                         "supplemental input was not sent, "
                         "retry after it settles"

@@ -2081,14 +2081,15 @@ class AgentRuntime:
     ) -> AsyncIterator[RuntimeEvent]:
         """Borrow the actual owner; an ingress channel is not an Agent identity."""
         from jiuwenswarm.runtime.events import RuntimeEvent
+        from jiuwenswarm.runtime.session_input import SessionInputRejectedError
 
         lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
         agent = lookup(owner_channel, request.session_id) if callable(lookup) else None
         if agent is None:
-            raise RuntimeError(f"session has no active agent: {request.session_id}")
+            raise SessionInputRejectedError(f"session has no active agent: {request.session_id}")
         deliver = getattr(agent, "deliver_session_input", None)
         if not callable(deliver):
-            raise RuntimeError("active agent does not support supplemental input")
+            raise SessionInputRejectedError("active agent does not support supplemental input")
         async with aclosing(deliver(request)) as stream:
             async for chunk in stream:
                 event = RuntimeEvent.from_agent_message(

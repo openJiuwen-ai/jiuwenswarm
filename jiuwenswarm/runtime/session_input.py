@@ -12,7 +12,13 @@ class SessionInputMode(str, Enum):
     FOLLOW_UP = "follow_up"
 
 
-class SessionInputTargetError(RuntimeError):
+class SessionInputRejectedError(RuntimeError):
+    """A known refusal before input reaches the SDK queue."""
+
+    code = "SESSION_INPUT_REJECTED"
+
+
+class SessionInputTargetError(SessionInputRejectedError):
     """A supplemental input must never become work for a different execution."""
 
     code = "SESSION_INPUT_TARGET_CHANGED"

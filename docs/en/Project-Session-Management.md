@@ -604,3 +604,14 @@ Symmetric to `discard_turn_changes`: re-applies the file changes that were disca
 | `project.git.diff_unwatch` | `/ws/git` | Cancel watches |
 | `project.git.discard_turn_changes` | `/ws/git` | Discard the current session's last turn code changes |
 | `project.git.redo_turn_changes` | `/ws/git` | Redo the current session's last turn discarded changes |
+
+## Cross-session Agent messages and steering
+
+Non-cron Web/TUI single-Agent Sessions belonging to the same user on the same AgentServer can exchange messages through the existing tools:
+
+- Use `session_list` to find a target. `session_send_message(target_session_id, message)` retains ordinary independent-task queueing.
+- Explicit `input_mode="steer"` delivers supplemental input through the public Session input entry point without waiting for independent-task admission. An idle target executes it as an ordinary message and can receive further steering once that execution starts.
+- Use `session_message_list` to inspect the existing mailbox. `accepted: true` means persisted; `delivered` means supplemental input was accepted, not that the model consumed it or the target task succeeded. `succeeded` requires actual completion of an independent execution.
+- Known rejection becomes `failed`. Interrupted or uncertain delivery becomes `unknown`, retaining the existing explicit resolution workflow without automatic replay.
+
+Source Session, message ID, chain and Agent provenance are retained in delivery, UI and history. Agent input grants no new user authorization. Existing ownership, idempotency, capacity and hop limits remain in force. This adds no reply protocol and does not change the default delivery of existing calls.

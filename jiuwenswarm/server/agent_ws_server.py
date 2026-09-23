@@ -3571,6 +3571,7 @@ class AgentWebSocketServer:
                     "chain_id": record.chain_id,
                     "hop_count": record.hop_count,
                     "status": record.status,
+                    "input_mode": record.input_mode,
                     "created_at": record.created_at,
                     "started_at": record.started_at,
                     "finished_at": record.finished_at,
@@ -3624,6 +3625,8 @@ class AgentWebSocketServer:
         cross_session = {
             "message_id": record.message_id,
             "source_session_id": record.source_session_id,
+            "source_request_id": record.source_request_id,
+            "source_tool_call_id": record.source_tool_call_id,
             "source_title": record.source_title_snapshot,
             "chain_id": record.chain_id,
             "parent_message_id": record.parent_message_id,
@@ -3635,6 +3638,8 @@ class AgentWebSocketServer:
             "mode": mode,
             SESSION_MESSAGE_INTERNAL_KEY: cross_session,
         }
+        if record.input_mode:
+            params["input_mode"] = record.input_mode
         for key in ("project_id", "project_dir", "work_mode"):
             value = metadata.get(key)
             if value is not None and str(value).strip():
@@ -3665,6 +3670,10 @@ class AgentWebSocketServer:
             *,
             request_id: str,
         ) -> dict[str, Any]:
+            if payload.get("event_type") == "chat.input_received":
+                # This input has its own author and message association, even
+                # when the receiving task was started by another mailbox item.
+                return payload
             return {
                 **payload,
                 # ask_user 等事件的 request_id 是交互关联 ID，不能覆盖；
@@ -3676,30 +3685,44 @@ class AgentWebSocketServer:
                 "cross_session": public_cross_session,
             }
 
-        await self.send_push(
-            build_server_push_message(
-                session_id=record.target_session_id,
-                request_id=request.request_id,
-                payload=_with_cross_session_marker(
-                    {
-                        "event_type": "chat.processing_status",
-                        "session_id": record.target_session_id,
-                        "is_processing": True,
-                        "is_complete": False,
-                        "content": record.content,
-                    },
+        async def start_processing() -> None:
+            await self.send_push(
+                build_server_push_message(
+                    session_id=record.target_session_id,
                     request_id=request.request_id,
-                ),
-                fallback_channel_id=channel_id,
+                    payload=_with_cross_session_marker(
+                        {
+                            "event_type": "chat.processing_status",
+                            "session_id": record.target_session_id,
+                            "is_processing": True,
+                            "is_complete": False,
+                            "content": record.content,
+                        },
+                        request_id=request.request_id,
+                    ),
+                    fallback_channel_id=channel_id,
+                )
             )
-        )
+
+        supplemental_delivery = record.input_mode == "steer"
+        delivered = False
+        delivery_error_code = ""
+        if not supplemental_delivery:
+            await start_processing()
 
         outcome_tracker = _TurnOutcomeTracker()
         processing_finished = False
-        runtime_stream = self._execution_runtime().stream(
+        runtime = self._execution_runtime()
+        if supplemental_delivery:
+            # Resume persisted idle Sessions through the public lifecycle API.
+            await runtime.start()
+            await runtime.create_or_resume_session(
+                channel_id=channel_id, session_id=record.target_session_id,
+            )
+        runtime_stream = runtime.stream(
             request,
             trigger_hook=False,
-            background=True,
+            background=not supplemental_delivery,
         )
         try:
             async for event in runtime_stream:
@@ -3713,6 +3736,17 @@ class AgentWebSocketServer:
                     if isinstance(payload, dict)
                     else ""
                 )
+                if supplemental_delivery and event.ok and event_type == "runtime.accepted":
+                    if payload.get("input_delivery") == "chat":
+                        supplemental_delivery = False
+                        await start_processing()
+                    elif payload.get("input_boundary") == "stream":
+                        delivered = True
+                        continue
+                elif record.input_mode == "steer" and event.ok and event_type == "runtime.accepted":
+                    service = getattr(self, "_session_message_service", None)
+                    if service is not None:
+                        service.on_steering_fallback_started(record)
                 outcome_tracker.observe(event)
                 if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
                     error_payload = dict(payload or {})
@@ -3723,7 +3757,13 @@ class AgentWebSocketServer:
                         or "Runtime execution failed"
                     )
                     payload = error_payload
+                    delivery_error_code = str(error_payload.get("code") or "")
                     outcome_tracker.fail(str(error_payload.get("error") or ""))
+                if supplemental_delivery:
+                    # Receipt-only delivery does not own target task output or
+                    # its processing/history completion. The original stream
+                    # publishes the ordered, source-tagged input boundary.
+                    continue
                 if (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.ask_user_question"
@@ -3769,7 +3809,7 @@ class AgentWebSocketServer:
             try:
                 await runtime_stream.aclose()
             finally:
-                if not processing_finished:
+                if not supplemental_delivery and not processing_finished:
                     await self.send_push(
                         build_server_push_message(
                             session_id=record.target_session_id,
@@ -3786,6 +3826,20 @@ class AgentWebSocketServer:
                             fallback_channel_id=channel_id,
                         )
                     )
+
+        if supplemental_delivery:
+            if outcome_tracker.outcome() == "failed":
+                return SessionMessageExecutionResult(
+                    status="unknown" if delivery_error_code == "SESSION_INPUT_DELIVERY_UNKNOWN" else "failed",
+                    error_code=delivery_error_code or "DELIVERY_FAILED",
+                    error=outcome_tracker.error or "Runtime rejected supplemental input",
+                )
+            if delivered:
+                return SessionMessageExecutionResult(status="delivered")
+            return SessionMessageExecutionResult(
+                status="unknown", error_code="DELIVERY_NOT_CONFIRMED",
+                error="Runtime did not confirm supplemental delivery",
+            )
 
         outcome = outcome_tracker.outcome()
         terminal_status = {
