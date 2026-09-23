@@ -1597,7 +1597,7 @@ def _assert_package_id_available(
 
 
 def _assert_agent_group_name_available(name: str) -> None:
-    """Reject create when an AgentGroup already has the same display name."""
+    """Reject create/import when an AgentGroup has the same display name."""
     normalized_name = name.casefold()
     package_dirs = [
         *_iter_resource_package_dirs(_AGENT_GROUP_KIND),
@@ -1614,7 +1614,7 @@ def _assert_agent_group_name_available(name: str) -> None:
             for value in display_names.values()
         ):
             raise AgentGroupPackageError(
-                f"agent_group display name already exists: {name}",
+                f"agent_group display name already exists: {name} ({package_dir.name})",
                 "AGENT_GROUP_DUPLICATE",
             )
 
@@ -3709,6 +3709,10 @@ def _commit_imported_package(
     if kind == _AGENT_GROUP_KIND:
         from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
 
+        for display_name in dict.fromkeys(
+            _i18n(manifest.get("display_name"), package_id).values()
+        ):
+            _assert_agent_group_name_available(display_name.strip())
         if pkg_root.name != package_id:
             raise ValueError(
                 "agent_group manifest name must match its package directory"
