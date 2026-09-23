@@ -105,6 +105,141 @@ _APPROVAL_REPLY_HINT = (
     "回复其他内容将视为拒绝，并把该内容作为反馈转达给智能体。"
 )
 
+# ==================== AskUser 结构化选项卡（A2A status-update + data part） ====================
+# 出站：chat.ask_user_question → status-update(state=input-required)，message.parts 挂
+# text part（人类可读正文）+ data part（commands/Common/AskUser 信封，驱动端侧选项卡）。
+# 入站：端侧结构化应答 data part {askUserAnswer:{source,answers[]}}（camelCase 字段），
+# 转成 interrupt resume 的 snake_case answers（selected_options/custom_input）。
+_ASK_USER_COMMAND_NAMESPACE = "Common"
+_ASK_USER_COMMAND_NAME = "AskUser"
+
+
+def _build_ask_user_command_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """chat.ask_user_question 事件载荷 → 出站 AskUser 指令 payload（camelCase）。
+
+    options 空数组 = 自由文本输入；选项 index 从 1 开始，供文本回退按序号匹配；
+    label 原样下发，端侧回传时必须原样返回（语义映射靠 interface.py 白名单精确命中）。
+    """
+    questions_out: list[dict[str, Any]] = []
+    questions = payload.get("questions") or []
+    if not isinstance(questions, list):
+        questions = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        options_out: list[dict[str, Any]] = []
+        raw_options = q.get("options") or []
+        if not isinstance(raw_options, list):
+            raw_options = []
+        for idx, opt in enumerate(raw_options, start=1):
+            if not isinstance(opt, dict):
+                continue
+            label = str(opt.get("label") or "").strip()
+            if not label:
+                continue
+            item: dict[str, Any] = {
+                "index": idx,
+                "label": label,
+            }
+            description = str(opt.get("description") or "").strip()
+            if description:
+                item["description"] = description
+            options_out.append(item)
+        question_out: dict[str, Any] = {
+            "question": str(q.get("question") or "").strip(),
+        }
+        header = str(q.get("header") or "").strip()
+        if header:
+            question_out["header"] = header
+        multi_select = q.get("multi_select")
+        question_out["multiSelect"] = bool(multi_select)
+        if q.get("tool_call_id"):
+            question_out["toolCallId"] = str(q.get("tool_call_id"))
+        if q.get("tool_name"):
+            question_out["toolName"] = str(q.get("tool_name"))
+        if q.get("tool_args") is not None:
+            question_out["toolArgs"] = q.get("tool_args")
+        question_out["options"] = options_out
+        questions_out.append(question_out)
+
+    ask_user: dict[str, Any] = {
+        "source": str(payload.get("source") or "").strip() or "permission_interrupt",
+        "expiresAt": int(time.time() + _APPROVAL_EXPIRE_S),
+        "questions": questions_out,
+    }
+    return {
+        "header": {"namespace": _ASK_USER_COMMAND_NAMESPACE, "name": _ASK_USER_COMMAND_NAME},
+        "payload": {"askUser": ask_user},
+    }
+
+
+def _build_ask_user_prompt_text(source: str, questions: list) -> str:
+    """审批/提问 → 手机端可读的文本正文（text part，选项卡之外的人类可读回退）。
+
+    权限类中断保留"可选项"与回复约定提示；ask_user 自由问答只列问题本身，
+    不强加权限语义的词表提示（用户应自由作答，而非被引导成"同意/拒绝"）。
+    """
+    q0: dict[str, Any] = questions[0] if questions and isinstance(questions[0], dict) else {}
+    header = str(q0.get("header") or "").strip()
+    question = str(q0.get("question") or "").strip()
+    options = q0.get("options") or []
+    labels = [
+        str(opt.get("label") or "").strip()
+        for opt in options
+        if isinstance(opt, dict) and str(opt.get("label") or "").strip()
+    ]
+    is_permission_like = source in {"permission_interrupt", "confirm_interrupt"}
+    if is_permission_like:
+        lines = ["🔐 需要您的确认"]
+    else:
+        lines = ["❓ 想向您确认一个问题"]
+    if header:
+        lines.append(f"【{header}】")
+    if question:
+        lines.append(question)
+    if labels:
+        lines.append("可选项：" + " / ".join(labels))
+    if is_permission_like:
+        lines.append(_APPROVAL_REPLY_HINT)
+    elif not labels:
+        lines.append("请直接回复您的内容。")
+    return "\n".join(lines)
+
+
+def _parse_ask_user_answer_part(data: dict[str, Any]) -> dict[str, Any] | None:
+    """入站 data part → 结构化应答 {source, answers[]}；无 askUserAnswer 返回 None。
+
+    answers 出站给 interrupt resume 前还需经
+    XiaoyiChannel._build_answer_from_ask_user 白名单校验（权限类中断 fail-closed）。
+    """
+    if not isinstance(data, dict):
+        return None
+    answer = data.get("askUserAnswer")
+    if not isinstance(answer, dict):
+        return None
+    source = str(answer.get("source") or "").strip()
+    raw_answers = answer.get("answers")
+    if not isinstance(raw_answers, list):
+        return None
+    answers: list[dict[str, Any]] = []
+    for a in raw_answers:
+        if not isinstance(a, dict):
+            continue
+        selected = a.get("selectedOptions")
+        if isinstance(selected, str):
+            selected = [selected]
+        if not isinstance(selected, list):
+            selected = []
+        cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
+        answers.append({
+            "question": str(a.get("question") or "").strip(),
+            "selected_options": cleaned,
+            "custom_input": str(a.get("customInput") or "").strip(),
+        })
+    if not source or not answers:
+        return None
+    return {"source": source, "answers": answers}
+
 
 def _normalize_approval_text(text: str) -> str:
     """审批回复归一化：去全部空白与常见标点、转小写，便于精确匹配词表。"""
@@ -2546,6 +2681,7 @@ class XiaoyiChannel(BaseChannel):
         push_id = ""  # V2: 从 data part 的 systemVariables 提取，webhook 推送寻址 token
         client_variables: dict[str, Any] = {}  # data part 的 variables.clientVariables（workspace/permission 等）
         permission_reply: dict[str, Any] | None = None  # AgentEvent/PermissionReply 审批回执事件
+        ask_user_answer: dict[str, Any] | None = None  # data part 的 askUserAnswer 结构化应答
         file_attachments: list[str] = []
         media_files: list[dict[str, Any]] = []
 
@@ -2592,6 +2728,16 @@ class XiaoyiChannel(BaseChannel):
                         cv = variables.get("clientVariables")
                         if isinstance(cv, dict):
                             client_variables.update(cv)
+                    # AskUser 结构化应答（端侧选项卡点选）：{askUserAnswer:{source,answers[]}}
+                    if ask_user_answer is None:
+                        ask_user_answer = _parse_ask_user_answer_part(data)
+                        if ask_user_answer is not None:
+                            logger.info(
+                                "XiaoYi: 识别到 askUserAnswer 结构化应答 source=%s "
+                                "answers=%d 条",
+                                ask_user_answer.get("source"),
+                                len(ask_user_answer.get("answers") or []),
+                            )
                     # 审批回执事件（AgentEvent/PermissionReply）：用户点选/结构化回复授权决定
                     events = data.get("events")
                     if isinstance(events, list):
@@ -2746,6 +2892,53 @@ class XiaoyiChannel(BaseChannel):
             logger.warning("XiaoyiChannel failed to update .xiaoyiruntime", exc_info=True)
 
         raw_msg_id = message.get("id")
+        # ==================== ASK USER ANSWER BRIDGE（结构化应答） ====================
+        # 端侧选项卡点选 → askUserAnswer data part。仅含 data part、无 text/file，
+        # 必须在空帧拦截之前解析（否则会被当事件帧丢弃，应答永远到不了）。
+        # 权限类中断（permission/confirm/evolution）对 selected_options 做白名单
+        # 校验，映射不中按拒绝处理（fail-closed），不猜测放行；ask_user_interrupt
+        # 原样透传（自由问答允许选项外文本）。
+        if ask_user_answer is not None:
+            pending = self._pop_pending_approval_for_answer(logical_session)
+            if pending is not None:
+                routed = self._build_answer_from_ask_user(
+                    ask_user_answer, pending
+                )
+                if routed is not None:
+                    answer, log_note = routed
+                    resume_answers = self._resume_answers_from_ask_user(
+                        ask_user_answer, answer
+                    )
+                    logger.info(
+                        f"XiaoYi: askUserAnswer 结构化应答 session={logical_session} "
+                        f"request_id={pending.get('request_id')} answer={answer} "
+                        f"note={log_note}"
+                    )
+                    await self._route_approval_reply(
+                        message,
+                        answer,
+                        pending,
+                        session_id=session_id,
+                        logical_session=logical_session,
+                        agent_id=agent_id,
+                        device_id=device_id,
+                        push_id=push_id,
+                        answers=resume_answers,
+                    )
+                    return
+                logger.warning(
+                    "XiaoYi: askUserAnswer 结构化应答未构成有效回答，按普通消息处理 "
+                    "session=%s request_id=%s",
+                    logical_session,
+                    pending.get("request_id"),
+                )
+            else:
+                logger.info(
+                    "XiaoYi: askUserAnswer 应答无待答复审批（未发出或已过期/已消费），"
+                    "按普通消息处理 session=%s",
+                    logical_session,
+                )
+        # =================================================================
         # ==================== PERMISSION APPROVAL BRIDGE ====================
         # 本会话存在待答复的权限/确认审批时，把用户回复（文本约定或 PermissionReply
         # data event）转换为 interrupt resume（chat.send + request_id/answers/source）
@@ -3012,6 +3205,115 @@ class XiaoyiChannel(BaseChannel):
         # 其他意见：拒绝并把原文作为反馈（对齐 Web 端 custom_input 语义）
         return {"selected_options": [], "custom_input": feedback}
 
+    def _pop_pending_approval_for_answer(
+        self, logical_session: str
+    ) -> dict[str, Any] | None:
+        """取走会话的待答复审批（过期视为无待答复，不消费）。"""
+        pending = self._pending_approvals.get(logical_session)
+        if not pending:
+            return None
+        if time.time() - float(pending.get("created_at", 0)) > _APPROVAL_EXPIRE_S:
+            self._pending_approvals.pop(logical_session, None)
+            logger.info(
+                f"XiaoYi: 待答复审批已过期，结构化应答按普通消息处理 session={logical_session}"
+            )
+            return None
+        self._pending_approvals.pop(logical_session, None)
+        return pending
+
+    @staticmethod
+    def _build_answer_from_ask_user(
+        ask_user_answer: dict[str, Any],
+        pending: dict[str, Any],
+    ) -> tuple[dict[str, Any], str] | None:
+        """askUserAnswer 结构化应答 → interrupt resume answers；无效返回 None。
+
+        ask_user_interrupt：answers 原样透传（问题对齐 + 自由文本兜底）。
+        权限类中断（permission/confirm/evolution）：selected_options 必须**精确命中**
+        interface.py 的授权白名单（字符串相等，非模糊匹配）——映射不中一律按拒绝
+        处理（fail-closed），custom_input 只能作拒绝理由、不能授权。
+        answers 缺失首条时用空答案（= 拒绝 + 未知选项反馈），不猜测放行。
+        """
+        answers = ask_user_answer.get("answers") or []
+        answer = answers[0] if isinstance(answers[0], dict) else None
+        if answer is None:
+            return None
+        source = str(pending.get("source") or "").strip()
+        answer_source = str(ask_user_answer.get("source") or "").strip()
+
+        if source == "ask_user_interrupt" or answer_source == "ask_user_interrupt":
+            # 自由问答：问题文本对齐（多问题场景靠 question 关联），选项+自由文本
+            # 均为合法答案；空 selected_options + 空 custom_input 表示跳过。
+            resume_answer = {
+                "question": str(answer.get("question") or ""),
+                "selected_options": list(answer.get("selected_options") or []),
+                "custom_input": str(answer.get("custom_input") or ""),
+            }
+            return resume_answer, "ask_user 透传"
+
+        selected = answer.get("selected_options") or []
+        custom_input = str(answer.get("custom_input") or "").strip()
+        first = str(selected[0]).strip() if selected else ""
+
+        # 授权白名单（与 interface.py _build_interactive_input_from_answers 同源）：
+        # 允许一次 / 会话内记住 / 永久记住 / 拒绝。
+        if first in ("approve", "本次允许", "Approve", "Proceed", "批准", "开始执行"):
+            return {"selected_options": ["本次允许"], "custom_input": ""}, "权限:本次允许"
+        if first in ("session_allow", "会话内记住", "Session Allow"):
+            return {"selected_options": ["会话内记住"], "custom_input": ""}, "权限:会话内记住"
+        if first in (
+            "always_allow",
+            "allow_always",
+            "永久记住",
+            "总是允许",
+            "Always Allow",
+        ):
+            return {"selected_options": ["永久记住"], "custom_input": ""}, "权限:永久记住"
+        if first in ("reject", "拒绝", "Reject"):
+            return (
+                {"selected_options": ["拒绝"], "custom_input": custom_input},
+                "权限:拒绝",
+            )
+        if first == "继续规划":
+            return (
+                {"selected_options": ["继续规划"], "custom_input": custom_input},
+                "plan:继续规划",
+            )
+        # 命不中白名单（含多选/空选/选项外文本）：fail-closed 按拒绝处理，
+        # 用户附带文字作为拒绝理由反馈给智能体。
+        feedback = custom_input or (
+            f"用户拒绝（选项卡应答未命中白名单: {first}）"
+            if first
+            else "用户拒绝（选项卡应答未选择任何选项）"
+        )
+        return {"selected_options": ["拒绝"], "custom_input": feedback}, "权限:fail-closed拒绝"
+
+    @staticmethod
+    def _resume_answers_from_ask_user(
+        ask_user_answer: dict[str, Any],
+        fallback_answer: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """askUserAnswer 全量 answers → resume answers 列表。
+
+        ask_user_interrupt：逐条透传（保留 question 文本做多问题对齐，interface.py
+        按 question 组 answers_dict）。权限类中断：白名单语义已收敛进
+        fallback_answer，只传这一条（多问题选项卡对权限场景无意义，防第二条
+        未校验的答案混进 resume）。
+        """
+        source = str(ask_user_answer.get("source") or "").strip()
+        if source == "ask_user_interrupt":
+            answers: list[dict[str, Any]] = []
+            for a in ask_user_answer.get("answers") or []:
+                if not isinstance(a, dict):
+                    continue
+                answers.append({
+                    "question": str(a.get("question") or ""),
+                    "selected_options": list(a.get("selected_options") or []),
+                    "custom_input": str(a.get("custom_input") or ""),
+                })
+            return answers or [fallback_answer]
+        return [fallback_answer]
+
     async def _route_approval_reply(
         self,
         message: dict[str, Any],
@@ -3023,10 +3325,13 @@ class XiaoyiChannel(BaseChannel):
         agent_id: str,
         device_id: str,
         push_id: str,
+        answers: list[dict[str, Any]] | None = None,
     ) -> None:
         """把审批回复转成 chat.send interrupt-resume 路由给 AgentServer（恢复挂起的运行）。
 
         resume 的 xiaoyi_task_id 沿用原任务 id：续跑流式输出回到手机端同一任务气泡。
+        ``answers`` 显式传入完整答案列表（多问题 ask_user 场景逐条透传），缺省
+        按单答案 ``[answer]`` 兼容既有调用点。
         """
         task_id = str(pending.get("task_id") or "")
         params = {
@@ -3034,7 +3339,7 @@ class XiaoyiChannel(BaseChannel):
             "task_id": task_id,
             "session_id": logical_session,  # 对齐 Web 端 resume 载荷（useWebSocket chat.send）
             "request_id": pending.get("request_id") or "",
-            "answers": [answer],
+            "answers": answers if answers is not None else [answer],
             "source": pending.get("source") or "permission_interrupt",
             "mode": "agent",
         }
@@ -3076,11 +3381,20 @@ class XiaoyiChannel(BaseChannel):
             await self._send_status_update(task_id, session_id, "已收到您的回复，继续执行…")
 
     async def _send_ask_user_question_prompt(self, msg: Message, session_id: str, task_id: str) -> None:
-        """权限/确认审批提示：渲染问题与选项，并登记待答复审批（等用户下一条消息回复）。
+        """权限/确认/ask_user 提示：结构化选项卡 + 文本回退，并登记待答复审批。
 
-        回复约定：文本（同意 / 会话内允许 / 永久允许 / 拒绝，详见模块级词表）或
-        data event {"header":{"namespace":"AgentEvent","name":"PermissionReply"},
-        "payload":{"action":"approve|session_allow|always_allow|reject","feedback":?}}。
+        出站形态（A2A 标准语义）：status-update(state=input-required, final=false)，
+        message.parts 同时挂 text part（人类可读正文，老客户端仍可见）与 data part
+        （commands/Common/AskUser 信封，端侧据此渲染选项卡）。中断是"任务在等输入"
+        而非任务产出物，故用 status-update 而非 artifact-update；input-required 不在
+        终态集合内 → final=false，正确表达"任务未结束，正在等输入"。
+
+        回复约定（三条常驻路径）：
+        ① 结构化应答 data part {askUserAnswer:{source,answers[]}}（新端侧选项卡）；
+        ② 文本约定词表（同意 / 会话内允许 / 永久允许 / 拒绝）；
+        ③ AgentEvent/PermissionReply data event {"action":"approve|session_allow|
+           always_allow|reject","feedback":?}。
+        自由问答（options: []）与选项外文本走 ② 的"其他意见"分支。
         """
         payload = msg.payload if isinstance(msg.payload, dict) else {}
         questions = payload.get("questions") or []
@@ -3102,34 +3416,22 @@ class XiaoyiChannel(BaseChannel):
         else:
             logger.warning("XiaoYi: ask_user_question 缺少 request_id/会话标识，无法登记待答复审批")
 
-        q0: dict[str, Any] = questions[0] if questions and isinstance(questions[0], dict) else {}
-        header = str(q0.get("header") or "").strip()
-        question = str(q0.get("question") or "").strip()
-        options = q0.get("options") or []
-        labels = [
-            str(opt.get("label") or "").strip()
-            for opt in options
-            if isinstance(opt, dict) and str(opt.get("label") or "").strip()
-        ]
-        lines = ["🔐 需要您的确认"]
-        if header:
-            lines.append(f"【{header}】")
-        if question:
-            lines.append(question)
-        if labels:
-            lines.append("可选项：" + " / ".join(labels))
-        lines.append(_APPROVAL_REPLY_HINT)
-        prompt_text = "\n".join(lines)
-        # 完整文本块但非 final：提示可见且不关闭任务气泡，续跑结果继续落到同一任务
+        prompt_text = _build_ask_user_prompt_text(source, questions)
+        ask_user_part = {
+            "kind": "data",
+            "data": {"commands": [_build_ask_user_command_payload(payload)]},
+        }
+        # status-update：input-required 非终态 → final=false，不关闭任务气泡；
+        # 续跑结果继续落到同一任务。_send_status_update_with_state 的 extra_part
+        # 追加在 text part 之后（text 在前、data 在后）。
         for url_key in list(self._ws_connections.keys()):
-            await self._send_text_response(
-                session_id,
+            await self._send_status_update_with_state(
                 task_id,
+                session_id,
                 prompt_text,
+                "input-required",
                 url_key,
-                append=True,
-                last_chunk=True,
-                is_final=False,
+                extra_part=ask_user_part,
             )
 
     async def _start_session_heartbeat(self, session_id: str, task_id: str) -> None:
