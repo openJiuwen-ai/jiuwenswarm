@@ -473,32 +473,56 @@ class AgentWebSocketServer:
 
         if listen:
             try:
-                from websockets.legacy.server import serve as legacy_serve
-                self._server = await legacy_serve(
-                    self._connection_handler,
-                    self._host,
-                    self._port,
-                    process_request=self._process_request,
-                    ping_interval=self._ping_interval,
-                    ping_timeout=self._ping_timeout,
-                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-                )
-            except ImportError:
-                import websockets
-                self._server = await websockets.serve(
-                    self._connection_handler,
-                    self._host,
-                    self._port,
-                    process_request=self._process_request,
-                    ping_interval=self._ping_interval,
-                    ping_timeout=self._ping_timeout,
-                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-                )
+                try:
+                    from websockets.legacy.server import serve as legacy_serve
+                    self._server = await legacy_serve(
+                        self._connection_handler,
+                        self._host,
+                        self._port,
+                        process_request=self._process_request,
+                        ping_interval=self._ping_interval,
+                        ping_timeout=self._ping_timeout,
+                        max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                    )
+                except ImportError:
+                    import websockets
+                    self._server = await websockets.serve(
+                        self._connection_handler,
+                        self._host,
+                        self._port,
+                        process_request=self._process_request,
+                        ping_interval=self._ping_interval,
+                        ping_timeout=self._ping_timeout,
+                        max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                    )
+            except Exception as exc:
+                try:
+                    from jiuwenswarm.common.audit_emit import emit_audit_evt
+                    emit_audit_evt(
+                        SUBMDL="agent",
+                        PROC="agentserver_start",
+                        RSPCD="E005",
+                        EVT="agentserver start failed",
+                        MSG=str(exc),
+                    )
+                except Exception as _emit_exc:  # noqa: BLE001
+                    logger.debug("audit emit failed: %s", _emit_exc)
+                raise
             logger.info(
                 "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
             )
         else:
             logger.info("[AgentServer] handler initialized without an unauthenticated WS listener")
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            emit_audit_ua(
+                SUBMDL="agent",
+                PROC="agentserver_start",
+                RSPCD="0000",
+                UA="agentserver started",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
         # 启动端到端预热：interface_deep import → checkpointer → 临时 DeepAgent → query。
         # 拆成两个 task：
         #   - _startup_warmup_task 承载阶段1/2（import+checkpointer），快速有界，
@@ -1061,6 +1085,16 @@ class AgentWebSocketServer:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[AgentWebSocketServer] jiuwenbox_runner.stop failed: %s", exc)
         logger.info("[AgentWebSocketServer] 已停止")
+        try:
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            emit_audit_ua(
+                SUBMDL="agent",
+                PROC="agentserver_stop",
+                RSPCD="0000",
+                UA="agentserver stopped",
+            )
+        except Exception as _emit_exc:  # noqa: BLE001
+            logger.debug("audit emit failed: %s", _emit_exc)
 
     # ---------- 连接处理 ----------
 

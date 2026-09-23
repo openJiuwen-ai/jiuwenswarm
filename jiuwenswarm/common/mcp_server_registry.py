@@ -440,6 +440,16 @@ class McpServerRegistry:
                     self._registry[name] = entry
                     self._cache[name] = record
                 tool_names = [str(t.get("name") or "") for t in tools]
+                try:
+                    from jiuwenswarm.common.audit_emit import emit_audit_ua
+                    emit_audit_ua(
+                        SUBMDL="gateway",
+                        PROC="mcp_add",
+                        UA="mcp server registered",
+                        DETAIL=f"name={name};tools={tool_names}",
+                    )
+                except Exception as _emit_exc:  # noqa: BLE001
+                    logger.debug("audit emit failed: %s", _emit_exc)
                 return {
                     "name": name,
                     "ok": True,
@@ -557,6 +567,16 @@ class McpServerRegistry:
                 )
             await self.worker_pool.close_server(name)
             tool_names = [str(t.get("name") or "") for t in tools]
+            try:
+                from jiuwenswarm.common.audit_emit import emit_audit_ua
+                emit_audit_ua(
+                    SUBMDL="gateway",
+                    PROC="mcp_update",
+                    UA="mcp server updated",
+                    DETAIL=f"name={name};tools={tool_names}",
+                )
+            except Exception as _emit_exc:  # noqa: BLE001
+                logger.debug("audit emit failed: %s", _emit_exc)
             results.append(
                 {
                     "name": name,
