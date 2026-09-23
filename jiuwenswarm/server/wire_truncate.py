@@ -49,6 +49,18 @@ _TEAM_HISTORY_FRAME_OVERHEAD_BYTES = 1024
 _WORKFLOW_AGENT_FIELD_PART_BYTES = 32 * 1024
 _WORKFLOW_LIST_DEFAULT_LIMIT = 50
 _WORKFLOW_LIST_MAX_LIMIT = 200
+# Verify-group card fields carried in the phase summary (get_workflow): the
+# tree header needs identity + verdict; per-vote feedback is heavy text and
+# only arrives via get_agent, so it is not slimmed here.
+_VERIFY_GROUP_SUMMARY_KEYS = (
+    "id", "label", "verify_id", "status", "threshold", "reviewers",
+    "reviewer_labels", "reviewer_roles", "verdict", "started_at", "settled_at",
+    "outcome",
+)
+# Per-vote fields kept in the summary: join keys + verdict chips only.
+_VERIFY_VOTE_SUMMARY_KEYS = (
+    "name", "agent_id", "kind", "role", "decision", "score", "voted",
+)
 _WORKFLOW_PHASE_DEFAULT_LIMIT = 20
 _WORKFLOW_PHASE_MAX_LIMIT = 100
 _WORKFLOW_AGENT_DEFAULT_LIMIT = 50
@@ -448,6 +460,25 @@ def _workflow_phase_summary(phase: dict[str, Any]) -> dict[str, Any]:
     for opt_key in ("phase_type", "parent_phase", "nested_phase", "iteration"):
         if opt_key in phase:
             out[opt_key] = phase[opt_key]
+    # Verify group cards ride on the summary so a page refresh still renders
+    # the containers. Per-vote feedback is heavy text — strip it; the tree
+    # header only needs label/status/threshold/reviewer_labels/verdict and
+    # the votes' join keys.
+    groups = phase.get("verify_groups")
+    if isinstance(groups, list) and groups:
+        slim_groups = []
+        for g in groups:
+            if not isinstance(g, dict):
+                continue
+            slim: dict[str, Any] = {
+                k: g[k] for k in _VERIFY_GROUP_SUMMARY_KEYS if g.get(k) is not None
+            }
+            slim["votes"] = [
+                {k: v[k] for k in _VERIFY_VOTE_SUMMARY_KEYS if v.get(k) is not None}
+                for v in g.get("votes", []) if isinstance(v, dict)
+            ]
+            slim_groups.append(slim)
+        out["verify_groups"] = slim_groups
     out["detail_pending"] = True
     return out
 
@@ -457,10 +488,14 @@ def _workflow_phase_summary(phase: dict[str, Any]) -> dict[str, Any]:
 # get_agent is the universal layer for full agent content. A short preview
 # (~200 chars) of outcome/error is carried so the tree row can show a
 # one-line stub without a per-agent RPC; the full text is still get_agent.
+# Token split / cache and the fork-lineage keys ride along so the tree row's
+# chips and fork badge survive a refresh (the summary is what the page load
+# renders from).
 _WORKFLOW_AGENT_SUMMARY_KEEP_KEYS = (
     "id", "name", "status", "model", "kind", "node_type",
     "started_at", "completed_at", "duration_ms", "token_count",
-    "correlation_id",
+    "input_token_count", "output_token_count", "cache_token_count",
+    "correlation_id", "member_name", "parent_session_id",
 )
 _WORKFLOW_AGENT_SUMMARY_PREVIEW_CHARS = 200
 
