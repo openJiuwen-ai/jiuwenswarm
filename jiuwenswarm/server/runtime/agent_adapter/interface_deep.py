@@ -15540,6 +15540,32 @@ class JiuWenSwarmDeepAdapter:
             raise exc
         self._session_input_guard = guard
 
+    def _require_cross_session_task_admission(self, request: AgentRequest) -> None:
+        """Refuse protected-mode steering before any SDK submission."""
+        from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
+        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from jiuwenswarm.runtime.context import get_current_runtime
+        from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+
+        runtime = get_current_runtime()
+        checker = getattr(runtime, "session_message_requires_queue", None)
+        protected = (
+            is_plan_mode(self._last_mode)
+            or is_plan_mode(request.params.get("mode"))
+            or self.has_active_goal_interaction()
+            or bool(callable(checker) and checker(request.session_id))
+        )
+        if not protected and self._instance is not None:
+            session = resolve_live_agent_session(self._instance, request.session_id)
+            if session is not None:
+                # enter_plan_mode may run after the request mode was selected.
+                protected = self._instance.load_state(session).plan_mode.mode == "plan"
+        if protected:
+            raise SessionInputQueueRequiredError(
+                "cross-session messages must queue while a plan or goal is active; "
+                "supplemental input was not sent"
+            )
+
     async def deliver_active_session_input(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> bool:
@@ -15555,6 +15581,12 @@ class JiuWenSwarmDeepAdapter:
 
         from jiuwenswarm.runtime.session_input import SessionInputRejectedError
 
+        mode = sdk_input_mode(request.params)
+        cross_session_steer = mode is InputDispatchMode.STEER and isinstance(
+            request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        if cross_session_steer:
+            self._require_cross_session_task_admission(request)
         instance = self._instance
         if instance is None or instance.active_round is None:
             return False
@@ -15565,10 +15597,11 @@ class JiuWenSwarmDeepAdapter:
                 "session is waiting for an interaction answer; "
                 "supplemental input was not sent"
             )
-        mode = sdk_input_mode(request.params)
         bound_round = instance.active_round
 
         def require_open_input() -> None:
+            if cross_session_steer:
+                self._require_cross_session_task_admission(request)
             if mode is InputDispatchMode.STEER:
                 guard = self._session_input_guard
                 if guard is None or guard.owner is not instance:

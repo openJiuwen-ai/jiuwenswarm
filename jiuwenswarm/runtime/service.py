@@ -392,6 +392,25 @@ class AgentRuntime:
         if callable(setter):
             setter(self._session_message_goal_busy)
 
+    def session_message_requires_queue(self, session_id: str) -> bool:
+        """Prevent cross-session steering from interrupting plans or active goals."""
+        return (
+            session_id in self._plan_controller.active_sessions
+            or self._session_message_goal_busy(session_id)
+        )
+
+    def _require_cross_session_input_admission(self, request: AgentRequest) -> None:
+        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+
+        if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) and (
+            is_plan_mode(request.params.get("mode"))
+            or self.session_message_requires_queue(request.session_id)
+        ):
+            raise SessionInputQueueRequiredError(
+                "cross-session messages must queue while a plan or goal is active"
+            )
+
     def _session_message_goal_busy(self, session_id: str) -> bool:
         """Check Goal ownership, including rounds without an output consumer."""
         snapshot = self._session_coordinator.snapshot_session(session_id)
@@ -1730,6 +1749,7 @@ class AgentRuntime:
             validate_session_input(request.params)
             if background:
                 raise ValueError("session input must use foreground delivery")
+            self._require_cross_session_input_admission(request)
             if not request.session_id or not self._is_single_agent_session_mode(
                 request.params.get("mode"), work_mode=request.params.get("work_mode"),
             ):
@@ -1750,9 +1770,12 @@ class AgentRuntime:
                     yield event
                 return
             if work_kind is SessionWorkKind.SESSION_INPUT:
+                self._require_cross_session_input_admission(request)
+
                 async def idle_input():
                     from jiuwenswarm.runtime.events import RuntimeEvent
 
+                    self._require_cross_session_input_admission(request)
                     # Web stream clients need the idle disposition before ordinary output.
                     # Unary clients must retain their single final response.
                     if request.is_stream:

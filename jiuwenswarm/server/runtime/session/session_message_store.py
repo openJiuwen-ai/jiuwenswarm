@@ -64,6 +64,7 @@ class SessionMessageRecord:
     retry_of: str
     input_mode: str = ""
     queue_released_at: float | None = None
+    requested_input_mode: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -164,6 +165,14 @@ class SessionMessageStore:
                     conn.execute(
                         "ALTER TABLE session_messages ADD COLUMN queue_released_at REAL"
                     )
+                if "requested_input_mode" not in columns:
+                    conn.execute(
+                        "ALTER TABLE session_messages ADD COLUMN requested_input_mode "
+                        "TEXT NOT NULL DEFAULT ''"
+                    )
+                    conn.execute(
+                        "UPDATE session_messages SET requested_input_mode = input_mode"
+                    )
             self._schema_ready = True
 
     @staticmethod
@@ -204,6 +213,7 @@ class SessionMessageStore:
             resolution=str(row["resolution"]),
             retry_of=str(row["retry_of"]),
             input_mode=str(row["input_mode"]),
+            requested_input_mode=str(row["requested_input_mode"]),
             queue_released_at=(
                 float(row["queue_released_at"])
                 if row["queue_released_at"] is not None else None
@@ -237,6 +247,7 @@ class SessionMessageStore:
         hop_count: int = 1,
         retry_of: str = "",
         input_mode: str = "",
+        effective_input_mode: str | None = None,
         max_pending_per_target: int = 100,
         max_messages_per_chain: int = 16,
     ) -> tuple[SessionMessageRecord, bool]:
@@ -244,6 +255,9 @@ class SessionMessageStore:
 
         if input_mode not in {"", "steer"}:
             raise ValueError("unsupported cross-Session input mode")
+        delivery_mode = input_mode if effective_input_mode is None else effective_input_mode
+        if delivery_mode not in {"", input_mode}:
+            raise ValueError("unsupported effective cross-Session input mode")
         self.ensure_schema()
         now = time.time()
         message_id = f"sm_{uuid.uuid4().hex}"
@@ -267,7 +281,7 @@ class SessionMessageStore:
                 same_delivery = (
                     existing.target_session_id == target_session_id
                     and existing.content == content
-                    and existing.input_mode == input_mode
+                    and existing.requested_input_mode == input_mode
                 )
                 if not (same_request and same_delivery):
                     raise SessionMessageIdempotencyConflict(
@@ -307,8 +321,8 @@ class SessionMessageStore:
                     source_title_snapshot, source_request_id,
                     source_tool_call_id, idempotency_key, target_session_id,
                     content, chain_id, parent_message_id, hop_count, status,
-                    created_at, updated_at, retry_of, input_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+                    created_at, updated_at, retry_of, input_mode, requested_input_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
                 """,
                 (
                     message_id,
@@ -326,6 +340,7 @@ class SessionMessageStore:
                     now,
                     now,
                     retry_of,
+                    delivery_mode,
                     input_mode,
                 ),
             )
@@ -404,7 +419,7 @@ class SessionMessageStore:
         return int(cursor.rowcount)
 
     def next_queued(
-        self, target_session_id: str, input_mode: str = ""
+        self, target_session_id: str, input_mode: str = "", *, defer_steering: bool = False,
     ) -> SessionMessageRecord | None:
         """Return the FIFO head for one delivery mode in the same mailbox.
 
@@ -412,10 +427,29 @@ class SessionMessageStore:
         waiting for admission. Uncertain deliveries still block their own lane.
         The service serializes steering receipts; an idle fallback can keep
         running after releasing its steering consumer for subsequent inputs.
+        ``defer_steering`` moves eligible queued steers into the task lane in
+        the same transaction before selecting its head.
         """
 
         self.ensure_schema()
         with self._session() as conn, conn:
+            if defer_steering and input_mode == "":
+                # Normalize before selecting the task head, even if the steer
+                # worker has not run yet. Keep uncertain-delivery barriers.
+                conn.execute(
+                    """
+                    UPDATE session_messages SET input_mode = '', updated_at = ?
+                    WHERE target_session_id = ? AND input_mode = 'steer' AND status = 'queued'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM session_messages
+                        WHERE target_session_id = ? AND input_mode = 'steer'
+                          AND (status = 'waiting_user' OR
+                               (status = 'unknown' AND resolved_at IS NULL
+                                AND queue_released_at IS NULL))
+                      )
+                    """,
+                    (time.time(), target_session_id, target_session_id),
+                )
             blocker = conn.execute(
                 """
                 SELECT 1 FROM session_messages
@@ -532,11 +566,33 @@ class SessionMessageStore:
             ).fetchall()
         return self._rows_to_records(updated_rows)
 
+    def defer_steering(self, message_id: str) -> SessionMessageRecord | None:
+        """Move an unsubmitted steer into the task queue without changing its order."""
+        self.ensure_schema()
+        with self._session() as conn, conn:
+            cursor = conn.execute(
+                """
+                UPDATE session_messages
+                SET input_mode = '', status = 'queued', execution_request_id = '',
+                    runtime_run_id = '', started_at = NULL, updated_at = ?
+                WHERE message_id = ? AND input_mode = 'steer'
+                  AND status IN ('queued', 'running')
+                """,
+                (time.time(), message_id),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return self._row_to_record(conn.execute(
+                "SELECT * FROM session_messages WHERE message_id = ?", (message_id,)
+            ).fetchone())
+
     def claim(
         self,
         message_id: str,
         execution_request_id: str,
         runtime_run_id: str,
+        *,
+        expected_input_mode: str | None = None,
     ) -> SessionMessageRecord | None:
         self.ensure_schema()
         now = time.time()
@@ -547,8 +603,10 @@ class SessionMessageStore:
                 SET status = 'running', execution_request_id = ?,
                     runtime_run_id = ?, started_at = ?, updated_at = ?
                 WHERE message_id = ? AND status = 'queued'
+                  AND (? IS NULL OR input_mode = ?)
                 """,
-                (execution_request_id, runtime_run_id, now, now, message_id),
+                (execution_request_id, runtime_run_id, now, now, message_id,
+                 expected_input_mode, expected_input_mode),
             )
             if cursor.rowcount != 1:
                 return None

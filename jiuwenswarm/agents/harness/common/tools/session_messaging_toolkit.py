@@ -472,6 +472,7 @@ class SessionMessagingToolkit:
                             "向同一用户的另一个持久化会话发送文本，让目标 Agent 异步处理。"
                             "成功只表示消息已保存并排队，不表示目标已经完成。"
                             "省略 input_mode 保持独立任务排队；显式 steer 补充目标当前任务，"
+                            "但目标处于计划模式或活跃目标任务时仍会排队，等待任务释放后执行。"
                             "目标空闲时按普通消息执行。delivered 仅表示补充已送达，不代表任务成功。"
                         ),
                         input_params={
@@ -488,7 +489,7 @@ class SessionMessagingToolkit:
                                 "input_mode": {
                                     "type": "string",
                                     "enum": ["steer"],
-                                    "description": "可选：steer 补充目标运行中的任务。省略保持原投递方式。",
+                                    "description": "可选：steer 补充目标运行中的任务；计划模式或活跃目标任务仍排队。省略保持原投递方式。",
                                 },
                             },
                             "required": ["target_session_id", "message"],

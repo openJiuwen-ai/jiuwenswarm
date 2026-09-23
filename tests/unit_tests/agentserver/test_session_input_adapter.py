@@ -230,6 +230,74 @@ async def test_bound_steer_checks_target_at_sdk_enqueue_without_idle_dispatch(ra
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("protection", ["plan", "goal", "tool_plan"])
+@pytest.mark.parametrize("during_prepare", [False, True])
+@pytest.mark.parametrize("cross_session", [False, True])
+async def test_protected_steer_is_refused_before_sdk_submission(
+    protection, during_prepare, cross_session,
+):
+    from openjiuwen.harness.task_loop.loop_queues import LoopQueues
+    from openjiuwen.harness.task_loop.task_loop_controller import TaskLoopController
+    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+
+    protected = not during_prepare
+    queues = LoopQueues()
+    controller = TaskLoopController()
+    controller.set_event_handler(SimpleNamespace(interaction_queues=queues))
+    session = SimpleNamespace(get_session_id=lambda: "session")
+    instance = SimpleNamespace(
+        active_round=object(), has_output_stream=lambda: True,
+        loop_controller=controller, send_input=AsyncMock(), _interaction_session=session,
+        load_state=lambda _: SimpleNamespace(plan_mode=SimpleNamespace(
+            mode="plan" if protected and protection == "tool_plan" else "normal",
+        )),
+    )
+    guard = SessionInputGuard(instance)
+    guard.accepting = True
+    guard._session = SimpleNamespace(write_stream=AsyncMock())
+
+    async def prepare(*_args):
+        nonlocal protected
+        protected = True
+        if protection == "plan":
+            adapter._last_mode = "agent.code.plan"
+        return {"query": "later task"}
+
+    async def permission_send(sdk_request, *, send):
+        await send(sdk_request)
+
+    adapter = SimpleNamespace(
+        _instance=instance, _session_input_guard=guard,
+        _last_mode="agent.code.plan" if protected and protection == "plan" else "agent.code.normal",
+        has_active_goal_interaction=lambda: protected and protection == "goal",
+        _stream_completion_state=lambda **_: "completed",
+        _prepare_root_input_dispatch=prepare,
+        _permission_inputs_for_dispatch=lambda _req, prepared, _mode: prepared,
+        _send_input_with_permission_resume_guard=permission_send,
+        _permission_dispatch=SimpleNamespace(finalize=Mock()),
+    )
+    adapter._require_cross_session_task_admission = lambda request: (
+        JiuWenSwarmDeepAdapter._require_cross_session_task_admission(adapter, request)
+    )
+    params = {"input_mode": "steer", "query": "later task"}
+    if cross_session:
+        params[SESSION_MESSAGE_INTERNAL_KEY] = {"message_id": "sm-steer"}
+    request = SimpleNamespace(
+        params=params, request_id="steer", session_id="session", user_id="user-1",
+    )
+    if cross_session:
+        with pytest.raises(SessionInputQueueRequiredError):
+            await JiuWenSwarmDeepAdapter.deliver_active_session_input(adapter, request, {})
+        assert queues.drain_steering() == []
+        guard._session.write_stream.assert_not_awaited()
+    else:
+        assert await JiuWenSwarmDeepAdapter.deliver_active_session_input(adapter, request, {})
+        assert queues.drain_steering() == ["later task"]
+    instance.send_input.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("is_stream", [False, True])
 async def test_bound_input_cannot_fall_back_after_sdk_round_ends(monkeypatch, is_stream):
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep

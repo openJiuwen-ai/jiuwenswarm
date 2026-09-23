@@ -1198,6 +1198,7 @@ class AgentWebSocketServer:
             execute=self.execute_internal_session_message,
             status_callback=self._push_session_message_status,
             on_abandoned_wait=self._release_abandoned_session_message_wait,
+            requires_task_queue=self._runtime.session_message_requires_queue,
             available=self._current_ws is not None,
         )
         self._session_message_service = service
