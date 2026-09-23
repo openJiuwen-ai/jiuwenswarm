@@ -68,3 +68,4 @@ export { EntityAvatar, type EntityAvatarProps } from './EntityAvatar/EntityAvata
 export { DetailPromptChip, type DetailPromptChipProps } from './DetailPromptChip/DetailPromptChip';
 export { PageCard, type PageCardProps, type PageCardActionProps } from './PageCard/PageCard';
 export { FormDrawer, type FormDrawerProps } from './FormDrawer/FormDrawer';
+export { LoadingSpinner, type LoadingSpinnerProps } from './LoadingSpinner/LoadingSpinner';
