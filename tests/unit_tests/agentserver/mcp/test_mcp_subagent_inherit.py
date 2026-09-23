@@ -19,6 +19,8 @@ These tests exercise the propagation rules directly and the
 register/unregister hooks that trigger it.
 """
 
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 from types import SimpleNamespace
