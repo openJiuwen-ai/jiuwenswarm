@@ -234,19 +234,17 @@ async def test_remote_discovery_keeps_default_for_short_connector_timeout(
 
 
 @pytest.mark.asyncio
-async def test_sse_discovery_connect_failure_returns_empty(
+async def test_sse_discovery_connect_failure_raises_classified_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _FakeRemoteClient.reset()
     _FakeRemoteClient.connect_ok = False
     _patch_remote_client(monkeypatch)
 
-    tool_defs, params = await list_request_mcp_server_tools(
-        "baidu-netdisk", _sse_config()
-    )
+    with pytest.raises(mcp_config.McpConnectorDiscoveryError) as excinfo:
+        await list_request_mcp_server_tools("baidu-netdisk", _sse_config())
 
-    assert tool_defs == []
-    assert params == {}
+    assert excinfo.value.error_kind == mcp_config.MCP_CONNECTOR_ERROR_KIND_NETWORK
     client = _FakeRemoteClient.instances[0]
     client.disconnect.assert_not_awaited()  # connect returned False → no disconnect
 
@@ -616,3 +614,38 @@ async def test_missing_type_command_args_discovery_defaults_to_stdio(
 
     assert [t["name"] for t in tool_defs] == ["legacy_tool"]
     assert params["_mcp_client_type"] == "stdio"
+
+
+class _FakeHttpError(Exception):
+    def __init__(self, status_code: int | None = None) -> None:
+        super().__init__("http error")
+        self.status_code = status_code
+
+
+class _FakeResponseError(Exception):
+    class _Response:
+        def __init__(self) -> None:
+            self.status_code = 401
+
+    def __init__(self) -> None:
+        super().__init__("response error")
+        self.response = self._Response()
+
+
+def test_classify_mcp_connector_error_kinds() -> None:
+    auth = mcp_config.MCP_CONNECTOR_ERROR_KIND_AUTH
+    timeout = mcp_config.MCP_CONNECTOR_ERROR_KIND_TIMEOUT
+    network = mcp_config.MCP_CONNECTOR_ERROR_KIND_NETWORK
+    other = mcp_config.MCP_CONNECTOR_ERROR_KIND_OTHER
+
+    assert mcp_config.classify_mcp_connector_error(_FakeHttpError(401)) == auth
+    assert mcp_config.classify_mcp_connector_error(_FakeHttpError(403)) == auth
+    assert mcp_config.classify_mcp_connector_error(_FakeResponseError()) == auth
+    assert mcp_config.classify_mcp_connector_error(TimeoutError("t")) == timeout
+    assert mcp_config.classify_mcp_connector_error(ConnectionError("refused")) == network
+    assert mcp_config.classify_mcp_connector_error(OSError("socket")) == network
+    assert mcp_config.classify_mcp_connector_error(RuntimeError("boom")) == other
+
+    # McpConnectorDiscoveryError keeps its declared kind (auth wins over message).
+    classified = mcp_config.McpConnectorDiscoveryError(auth, "401 unauthorized")
+    assert mcp_config.classify_mcp_connector_error(classified) == auth

@@ -533,6 +533,9 @@ from jiuwenswarm.common.mcp_config import (
     set_agent_office_claw_tool_ids,
     unregister_live_office_claw_tool_instance,
     validate_office_claw_mcp_config,
+    McpConnectorDiscoveryError,
+    MCP_CONNECTOR_ERROR_KIND_OTHER,
+    classify_mcp_connector_error,
     _positive_timeout_s,
 )
 from jiuwenswarm.common.mcp_server_registry import (
@@ -2316,6 +2319,82 @@ class OfficeClawMcpBuiltinNameConflict(RuntimeError):
     def __init__(self, message: str, *, existing_id: str = "") -> None:
         super().__init__(message)
         self.existing_id = existing_id
+
+
+#: 注册失败旁路回报的事件名（调用方 WS 层据此拦截，不进入主链路）。
+MCP_REGISTRATION_FAILURE_EVENT = "mcp_server_registration_failed"
+
+#: request_id → 待上报的失败连接器列表（注册收尾一次性 flush）。
+_pending_mcp_registration_failures: dict[str, list[dict[str, Any]]] = {}
+
+
+def _mcp_connector_server_url(config: Any) -> str:
+    """从连接器配置里取脱敏的 url（仅用于失败回报定位，无凭据）。"""
+    if isinstance(config, dict):
+        url = config.get("url") or config.get("server_path") or ""
+        return str(url or "").strip()
+    url = getattr(config, "url", None) or getattr(config, "server_path", None) or ""
+    return str(url or "").strip()
+
+
+def _record_mcp_registration_failure(
+    request_id: str,
+    *,
+    name: str,
+    url: str = "",
+    error_kind: str,
+) -> None:
+    if not request_id or not name:
+        return
+    failures = _pending_mcp_registration_failures.setdefault(request_id, [])
+    for item in failures:
+        if item["name"] == name:
+            return
+    failures.append({"name": name, "url": url or "", "error_kind": error_kind})
+
+
+async def _flush_mcp_registration_failure_report(request: AgentRequest) -> None:
+    """把本请求累积的注册失败经 server_push 旁路回报调用方（不改主链路协议语义）。"""
+    failures = _pending_mcp_registration_failures.pop(request.request_id, None)
+    if not failures:
+        return
+    try:
+        from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
+        from jiuwenswarm.server.transports.push_registry import get_push_registry
+
+        if get_push_registry().subscriber_count() == 0:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] MCP registration failure report skipped: "
+                "request_id=%s failed=%d no push subscribers",
+                request.request_id,
+                len(failures),
+            )
+            return
+        delivered = await WebSocketGatewayPushTransport().send_push(
+            {
+                "request_id": request.request_id,
+                "channel_id": str(request.channel_id or ""),
+                "session_id": str(request.session_id or ""),
+                "payload": {
+                    "event_type": MCP_REGISTRATION_FAILURE_EVENT,
+                    "failedServers": failures,
+                },
+            }
+        )
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] reported MCP registration failures: "
+            "request_id=%s failed=%d delivered=%d",
+            request.request_id,
+            len(failures),
+            delivered,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] failed to report MCP registration failures: "
+            "request_id=%s error=%s",
+            request.request_id,
+            exc,
+        )
 
 
 @dataclass
@@ -4445,6 +4524,21 @@ class JiuWenSwarmDeepAdapter:
                         server_name, server_config
                     )
                 )
+            except McpConnectorDiscoveryError as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
+                    "discovery error: request_id=%s error=%s",
+                    server_name,
+                    request.request_id,
+                    exc,
+                )
+                _record_mcp_registration_failure(
+                    request.request_id,
+                    name=server_name,
+                    url=_mcp_connector_server_url(server_config),
+                    error_kind=exc.error_kind,
+                )
+                continue
             except Exception as exc:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
@@ -4452,6 +4546,12 @@ class JiuWenSwarmDeepAdapter:
                     server_name,
                     request.request_id,
                     exc,
+                )
+                _record_mcp_registration_failure(
+                    request.request_id,
+                    name=server_name,
+                    url=_mcp_connector_server_url(server_config),
+                    error_kind=classify_mcp_connector_error(exc),
                 )
                 continue
             if not connector_tool_defs:
@@ -4584,6 +4684,12 @@ class JiuWenSwarmDeepAdapter:
                     server_name,
                     len(connector_tool_defs),
                     request.request_id,
+                )
+                _record_mcp_registration_failure(
+                    request.request_id,
+                    name=server_name,
+                    url=_mcp_connector_server_url(connector_params),
+                    error_kind=MCP_CONNECTOR_ERROR_KIND_OTHER,
                 )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
@@ -4726,6 +4832,13 @@ class JiuWenSwarmDeepAdapter:
                     request.request_id,
                     [str(t.get("name") or "") for t in tool_defs],
                 )
+                if not tool_defs:
+                    _record_mcp_registration_failure(
+                        request.request_id,
+                        name=server_name,
+                        url=_mcp_connector_server_url(connect_params),
+                        error_kind=MCP_CONNECTOR_ERROR_KIND_OTHER,
+                    )
             if leftover_servers:
                 invocation_id = await self._append_request_mcp_server_tools(
                     request,
@@ -4767,14 +4880,27 @@ class JiuWenSwarmDeepAdapter:
                 invocation_id,
                 tool_names,
             )
+            await _flush_mcp_registration_failure_report(request)
             return registration
         except asyncio.CancelledError:
+            await _flush_mcp_registration_failure_report(request)
             await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             raise
-        except (McpRegistryChatError, UnknownMcpServerError, DisabledMcpServerError):
+        except (McpRegistryChatError, UnknownMcpServerError, DisabledMcpServerError) as exc:
+            if isinstance(exc, (UnknownMcpServerError, DisabledMcpServerError)):
+                for name in getattr(exc, "names", None) or [getattr(exc, "name", "") or ""]:
+                    if not name:
+                        continue
+                    _record_mcp_registration_failure(
+                        request.request_id,
+                        name=name,
+                        error_kind=MCP_CONNECTOR_ERROR_KIND_OTHER,
+                    )
+            await _flush_mcp_registration_failure_report(request)
             await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             raise
         except Exception as exc:
+            await _flush_mcp_registration_failure_report(request)
             await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] registry MCP registration failed; "
@@ -4935,11 +5061,14 @@ class JiuWenSwarmDeepAdapter:
                 len(registered_tools),
             )
             logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
+            await _flush_mcp_registration_failure_report(request)
             return registration
         except asyncio.CancelledError:
+            await _flush_mcp_registration_failure_report(request)
             await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             raise
         except Exception as exc:
+            await _flush_mcp_registration_failure_report(request)
             await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             _raw_command = str(raw_config.get("command") or "").strip() if isinstance(raw_config, dict) else ""
             _connector_names = (

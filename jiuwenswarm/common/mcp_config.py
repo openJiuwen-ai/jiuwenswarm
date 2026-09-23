@@ -41,6 +41,57 @@ from jiuwenswarm.edition import is_enterprise
 
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
 
+#: MCP 连接器注册失败回传用的 error_kind 白名单（供调用方触发连接器自愈）。
+MCP_CONNECTOR_ERROR_KIND_AUTH = "auth"
+MCP_CONNECTOR_ERROR_KIND_TIMEOUT = "timeout"
+MCP_CONNECTOR_ERROR_KIND_NETWORK = "network"
+MCP_CONNECTOR_ERROR_KIND_CONFIG = "config"
+MCP_CONNECTOR_ERROR_KIND_OTHER = "other"
+
+#: 无状态码时按异常文本判定 ``auth`` 的启发式标记。
+_AUTH_TEXT_MARKERS = ("401", "403", "unauthorized", "access token")
+
+
+class McpConnectorDiscoveryError(Exception):
+    """工具发现/连接失败，携带可分类的 ``error_kind``。
+
+    所有消费路径（registry 扫描 / add / update / 请求级注册）据 ``error_kind``
+    决定是否触发调用方的 OAuth 自愈；错误文本仅用于排障。
+    """
+
+    def __init__(self, error_kind: str, message: str) -> None:
+        super().__init__(message)
+        self.error_kind = error_kind or MCP_CONNECTOR_ERROR_KIND_OTHER
+
+
+def classify_mcp_connector_error(exc: BaseException) -> str:
+    """把发现/连接异常归类为 ``auth`` / ``timeout`` / ``network`` / ``other``。
+
+    ``auth`` 优先按显式 HTTP 401/403 判定；无状态码时按异常类型/文本启发式。
+    """
+    if isinstance(exc, McpConnectorDiscoveryError):
+        return exc.error_kind
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return MCP_CONNECTOR_ERROR_KIND_TIMEOUT
+    status = None
+    for attr in ("status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            status = value
+            break
+    if status is None:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            status = getattr(response, "status_code", None) or getattr(response, "status", None)
+    if isinstance(status, int) and status in (401, 403):
+        return MCP_CONNECTOR_ERROR_KIND_AUTH
+    if isinstance(exc, (ConnectionError, OSError, EOFError, BrokenPipeError)):
+        return MCP_CONNECTOR_ERROR_KIND_NETWORK
+    text = str(exc or "").lower()
+    if any(marker in text for marker in _AUTH_TEXT_MARKERS):
+        return MCP_CONNECTOR_ERROR_KIND_AUTH
+    return MCP_CONNECTOR_ERROR_KIND_OTHER
+
 
 def _positive_timeout_s(raw: Any, *, minimum: float = 0.0) -> float | None:
     """Return a normalized positive timeout, rejecting bool and invalid values."""
@@ -1890,7 +1941,8 @@ async def _list_request_mcp_server_tools_inner(
     对齐 _list_office_claw_mcp_tools_uncached。支持 stdio / sse / streamable-http。
     返回 (tool_defs, connect_params)：connect_params 是经 create_mcp_tool 安全层过滤后的
     连接描述，带 ``_mcp_client_type`` 字段供 ``_run_mcp_worker`` 按 transport 分派，
-    交给 RequestScopedOfficeClawMcpTool。任意失败返回 ([], {}) 以免单个坏连接器中断注册。
+    交给 RequestScopedOfficeClawMcpTool。任意失败抛 ``McpConnectorDiscoveryError``
+    （带 error_kind 分类），由消费路径决定跳过/上报，避免静默缺工具。
     """
 
     # 经 create_mcp_tool 安全层（危险参数过滤/stdio 命令校验/SSRF 主机屏蔽），
@@ -1904,7 +1956,10 @@ async def _list_request_mcp_server_tools_inner(
             server_name,
             exc,
         )
-        return [], {}
+        raise McpConnectorDiscoveryError(
+            MCP_CONNECTOR_ERROR_KIND_CONFIG,
+            f"connector '{server_name}' rejected by create_mcp_tool: {exc}",
+        ) from exc
 
     client_type = str(getattr(server_cfg, "client_type", "") or "").lower()
     if client_type == "sse" or client_type == "streamable-http":
@@ -1916,7 +1971,10 @@ async def _list_request_mcp_server_tools_inner(
                 server_name,
                 exc,
             )
-            return [], {}
+            raise McpConnectorDiscoveryError(
+                MCP_CONNECTOR_ERROR_KIND_CONFIG,
+                f"connector '{server_name}' rejected by SSRF check: {exc}",
+            ) from exc
         return await _list_remote_mcp_connector_tools(server_name, server_cfg, client_type)
 
     if client_type != "stdio":
@@ -1925,7 +1983,10 @@ async def _list_request_mcp_server_tools_inner(
             server_name,
             client_type or "unknown",
         )
-        return [], {}
+        raise McpConnectorDiscoveryError(
+            MCP_CONNECTOR_ERROR_KIND_CONFIG,
+            f"connector '{server_name}' transport '{client_type}' not supported",
+        )
 
     # stdio：起一次进程，list_tools 后关闭。
     from mcp import ClientSession
@@ -1938,7 +1999,10 @@ async def _list_request_mcp_server_tools_inner(
             server_name,
             params,
         )
-        return [], {}
+        raise McpConnectorDiscoveryError(
+            MCP_CONNECTOR_ERROR_KIND_CONFIG,
+            f"connector '{server_name}' stdio params incomplete",
+        )
 
     # 发现阶段超时：连接器下发 timeout_s 时取 max(下发值, 300s)——下发值只放宽不收紧
     # （npx 冷启动首次 initialize/list_tools 可远超 300s；下发值过小则仍以 300s 兜底）。
@@ -1972,18 +2036,38 @@ async def _list_request_mcp_server_tools_inner(
                 server_name,
                 _discovery_timeout,
             )
-            return [], {}
+            raise McpConnectorDiscoveryError(
+                MCP_CONNECTOR_ERROR_KIND_TIMEOUT,
+                f"connector '{server_name}' discovery timed out after {_discovery_timeout:.0f}s",
+            ) from None
         tool_defs = _extract_mcp_tool_defs(response)
         # 标记 transport，供 _run_mcp_worker 分派（默认 None 等价 stdio）。
         params["_mcp_client_type"] = "stdio"
         return tool_defs, params
+    except asyncio.CancelledError:
+        if is_asyncio_outer_cancellation():
+            raise
+        logger.warning(
+            "request-scoped MCP connector '%s' discovery cancelled (anyio internal), "
+            "isolating as connect failure",
+            server_name,
+        )
+        raise McpConnectorDiscoveryError(
+            MCP_CONNECTOR_ERROR_KIND_NETWORK,
+            f"connector '{server_name}' discovery cancelled (connect failure)",
+        ) from None
+    except McpConnectorDiscoveryError:
+        raise
     except Exception as exc:
         logger.warning(
             "request-scoped MCP connector '%s' tool discovery failed: %s",
             server_name,
             exc,
         )
-        return [], {}
+        raise McpConnectorDiscoveryError(
+            classify_mcp_connector_error(exc),
+            f"connector '{server_name}' tool discovery failed: {exc}",
+        ) from exc
     finally:
         await stack.aclose()
 
@@ -2007,7 +2091,10 @@ async def _list_remote_mcp_connector_tools(
             server_name,
             client_type,
         )
-        return [], {}
+        raise McpConnectorDiscoveryError(
+            MCP_CONNECTOR_ERROR_KIND_CONFIG,
+            f"connector '{server_name}' transport '{client_type}' has no client class",
+        )
 
     # timeout_s 由 create_mcp_tool 透传进 params，提升到顶层供 _run_mcp_worker
     # 按连接器超时调用 call_tool（与 stdio 分支的顶层 params 语义一致）。
@@ -2065,12 +2152,15 @@ async def _list_remote_mcp_connector_tools(
                 server_name,
                 discovery_timeout,
             )
-            return [], {}
+            raise McpConnectorDiscoveryError(
+                MCP_CONNECTOR_ERROR_KIND_TIMEOUT,
+                f"connector '{server_name}' discovery timed out after {discovery_timeout:.0f}s",
+            ) from None
         except asyncio.CancelledError:
             # connect 失败时 anyio TaskGroup cancel()+uncancel() 本 task 抛
             # CancelledError（BaseException，Py3.8+）；``except Exception`` 在下方
             # 抓不住，会泄漏杀死流式任务。cancelling()==0 → anyio 内部取消 → 当
-            # 该连接器连接失败跳过（返回空）；cancelling()>0 → 外层真取消 → re-raise。
+            # 该连接器连接失败跳过（抛 network）；cancelling()>0 → 外层真取消 → re-raise。
             if is_asyncio_outer_cancellation():
                 raise
             logger.warning(
@@ -2080,7 +2170,10 @@ async def _list_remote_mcp_connector_tools(
                 client_type,
                 connect_params["server_path"],
             )
-            return [], {}
+            raise McpConnectorDiscoveryError(
+                MCP_CONNECTOR_ERROR_KIND_NETWORK,
+                f"connector '{server_name}' connect cancelled (connect failure)",
+            ) from None
         if not connected:
             logger.warning(
                 "request-scoped MCP connector '%s' (%s) connect failed: %s",
@@ -2088,7 +2181,10 @@ async def _list_remote_mcp_connector_tools(
                 client_type,
                 connect_params["server_path"],
             )
-            return [], {}
+            raise McpConnectorDiscoveryError(
+                MCP_CONNECTOR_ERROR_KIND_NETWORK,
+                f"connector '{server_name}' ({client_type}) connect failed",
+            )
         try:
             # 同理避免 anyio.fail_after 撞 streamable-http transport 的 cancel scope。
             # StreamableHttpClient.list_tools 的 timeout 参数当前未生效（直接调
@@ -2103,7 +2199,10 @@ async def _list_remote_mcp_connector_tools(
                 server_name,
                 discovery_timeout,
             )
-            return [], {}
+            raise McpConnectorDiscoveryError(
+                MCP_CONNECTOR_ERROR_KIND_TIMEOUT,
+                f"connector '{server_name}' list_tools timed out after {discovery_timeout:.0f}s",
+            ) from None
         except asyncio.CancelledError:
             # list_tools 与 connect 共用 anyio TaskGroup，失败时同样 cancel() 本
             # task 抛 CancelledError。隔离语义同 connect：内部取消跳过该连接器，
@@ -2117,7 +2216,10 @@ async def _list_remote_mcp_connector_tools(
                 client_type,
                 connect_params["server_path"],
             )
-            return [], {}
+            raise McpConnectorDiscoveryError(
+                MCP_CONNECTOR_ERROR_KIND_NETWORK,
+                f"connector '{server_name}' list_tools cancelled (discovery failure)",
+            ) from None
         tool_defs = [
             {
                 "name": getattr(t, "name", "") or "",
@@ -2129,6 +2231,8 @@ async def _list_remote_mcp_connector_tools(
             for t in (tools or [])
         ]
         return tool_defs, connect_params
+    except McpConnectorDiscoveryError:
+        raise
     except Exception as exc:
         logger.warning(
             "request-scoped MCP connector '%s' (%s) tool discovery failed: %s",
@@ -2136,7 +2240,10 @@ async def _list_remote_mcp_connector_tools(
             client_type,
             exc,
         )
-        return [], {}
+        raise McpConnectorDiscoveryError(
+            classify_mcp_connector_error(exc),
+            f"connector '{server_name}' ({client_type}) tool discovery failed: {exc}",
+        ) from exc
     finally:
         if connected:
             try:
@@ -2419,6 +2526,13 @@ __all__ = [
     "get_active_office_claw_mcp_tool_ids",
     "get_live_office_claw_allowlist_for_tool_id",
     "get_live_office_claw_allowlist_for_tool_instance",
+    "MCP_CONNECTOR_ERROR_KIND_AUTH",
+    "MCP_CONNECTOR_ERROR_KIND_TIMEOUT",
+    "MCP_CONNECTOR_ERROR_KIND_NETWORK",
+    "MCP_CONNECTOR_ERROR_KIND_CONFIG",
+    "MCP_CONNECTOR_ERROR_KIND_OTHER",
+    "McpConnectorDiscoveryError",
+    "classify_mcp_connector_error",
     "invalidate_office_claw_mcp_schema_cache",
     "is_office_claw_tool_name_live_concurrent",
     "list_office_claw_mcp_tools",

@@ -205,7 +205,11 @@ class SafeRotatingFileHandler(BaseRotatingHandler):
     def __init__(self, filename, maxBytes=0, backupCount=0, encoding=None,
                  delay=False, errors=None):
         """Initialize the handler."""
-        super().__init__(filename, 'a', encoding, errors)
+        try:
+            super().__init__(filename, 'a', encoding, errors)
+        except FileNotFoundError:
+            Path(filename).parent.mkdir(parents=True, exist_ok=True)
+            super().__init__(filename, 'a', encoding, errors)
         self.max_bytes = maxBytes
         self.backup_count = backupCount
         self._current_filename = filename
