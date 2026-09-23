@@ -87,7 +87,8 @@ def test_candidate_question_uses_beginner_friendly_skill_package_copy() -> None:
     assert "**技能包名称**\n研究组合" in question["question"]
     assert "**适用场景**\n适合检索后生成报告" in question["question"]
     assert "**包含的技能及执行顺序**\n`search` → `writer`" in question["question"]
-    assert "**使用记录**\n执行 2 次，成功 2 次" in question["question"]
+    assert "**使用记录**" not in question["question"]
+    assert "执行 2 次，成功 2 次" not in question["question"]
     assert "沉淀" not in question["header"]
     assert "沉淀" not in question["question"]
     assert question["options"] == [

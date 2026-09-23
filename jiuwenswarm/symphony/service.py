@@ -107,9 +107,6 @@ def _candidate_question(
             "",
             "**包含的技能及执行顺序**",
             structure,
-            "",
-            "**使用记录**",
-            f"执行 {candidate.execution_count} 次，成功 {candidate.success_count} 次",
         )
     )
     return {
