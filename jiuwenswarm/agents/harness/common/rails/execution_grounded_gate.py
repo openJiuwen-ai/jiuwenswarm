@@ -14,10 +14,15 @@ The gate is *headroom control*, not a content filter:
 Evolution is allowed only while recent success still has room to improve.
 Once the window is all-success, further mutations are suppressed.
 
-An optional confidence threshold (Gate 2) can additionally drop candidate
-records whose judge-estimated reusability is below ``min_confidence``. Gate 2
-is a semantic pre-filter; it is *not* a substitute for execution evidence
-(see the SkillForge paper: plausible distractors score as high as valid rules).
+An optional confidence threshold (Gate 2) was removed in review: the pure
+success-window gate never read it, and a judge-based semantic pre-filter
+belongs in the admission-evidence layer, not in a headroom gate.
+
+Empty-window fail-open: with zero recorded outcomes the gate has nothing to
+say about the native trigger, so ``should_evolve`` returns allow. Suppression
+starts as soon as *any* outcome exists but the window is below ``min_samples``
+(warm-up noise protection), and once the window is all-success the gate
+suppresses for good until a failure re-opens headroom.
 
 Wiring: ``attach_execution_gate(evolution_rail, ...)`` wraps
 ``_allow_evolution_trigger`` of a live ``SkillEvolutionRail`` / team variant.
@@ -30,7 +35,6 @@ Enabled from config::
           enabled: true
           window: 6
           min_samples: 3
-          min_confidence: 0.6
 """
 from __future__ import annotations
 
@@ -61,15 +65,15 @@ class ExecutionGroundedGate:
         *,
         window: int = 6,
         min_samples: int = 3,
-        min_confidence: float = 0.6,
     ) -> None:
         if window < 1:
             raise ValueError("window must be >= 1")
-        if not 0.0 <= min_confidence <= 1.0:
-            raise ValueError("min_confidence must be in [0, 1]")
+        if min_samples < 1:
+            # min_samples=0 would make recent_success_rate divide by an empty
+            # window once outcomes exist; refuse it at construction time.
+            raise ValueError("min_samples must be >= 1")
         self.window = window
         self.min_samples = min_samples
-        self.min_confidence = min_confidence
         self._outcomes: Deque[_Outcome] = deque(maxlen=window)
 
     def record_task_outcome(self, task_id: str, success: bool) -> None:
@@ -77,8 +81,13 @@ class ExecutionGroundedGate:
 
         DeepAgent may fire both ``after_task_iteration`` and ``after_invoke``
         for one conversation; without this, the window double-counts.
+        Empty / whitespace task ids are skipped: they cannot be de-duplicated
+        reliably and would poison the window (the "unknown" fallback made the
+        gate suppress evolution forever in ctx-only environments).
         """
-        tid = str(task_id)
+        tid = str(task_id or "").strip()
+        if not tid:
+            return
         ok = bool(success)
         if self._outcomes and self._outcomes[-1].task_id == tid:
             self._outcomes[-1] = _Outcome(task_id=tid, success=ok)
@@ -87,11 +96,16 @@ class ExecutionGroundedGate:
 
     @property
     def recent_success_rate(self) -> float:
-        if len(self._outcomes) < self.min_samples:
+        if not self._outcomes or len(self._outcomes) < self.min_samples:
             return -1.0
         return sum(1 for outcome in self._outcomes if outcome.success) / len(self._outcomes)
 
     def should_evolve(self) -> tuple[bool, str]:
+        if not self._outcomes:
+            # Fail open: with zero evidence the gate has nothing to say about
+            # the native trigger and must not silently disable the feature it
+            # was asked to guard.
+            return True, "no evidence yet; fail open"
         if len(self._outcomes) < self.min_samples:
             return False, f"insufficient samples ({len(self._outcomes)}/{self.min_samples})"
         rate = self.recent_success_rate
@@ -123,8 +137,14 @@ class ExecutionGroundedGateRail(DeepAgentRail):
         success = getattr(ctx, "success", None)
         if not isinstance(success, bool):
             return
-        task_id = getattr(getattr(ctx, "inputs", None), "task_id", "") or "unknown"
-        self.gate.record_task_outcome(str(task_id), success)
+        # No task_id fallback: an "unknown" placeholder cannot be de-duplicated
+        # across conversations and would keep the window under min_samples
+        # forever (gate permanently suppressing). Integrators without task ids
+        # should record outcomes explicitly with stable ids instead.
+        task_id = str(getattr(getattr(ctx, "inputs", None), "task_id", "") or "").strip()
+        if not task_id:
+            return
+        self.gate.record_task_outcome(task_id, success)
 
 
 def attach_execution_gate(

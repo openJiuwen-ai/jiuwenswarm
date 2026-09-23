@@ -442,7 +442,8 @@ def get_execution_grounded_gate_config(config: dict[str, Any] | None) -> dict[st
     the evolution rail with a success-window headroom check.
 
     Returns:
-        ``{enabled, window, min_samples, min_confidence}``.
+        ``{enabled, window, min_samples}``. ``min_confidence`` was removed in
+        review: the pure success-window gate never read it.
     """
     raw = _get_evolution_config(config).get("execution_gate")
     if not isinstance(raw, dict):
@@ -454,18 +455,10 @@ def get_execution_grounded_gate_config(config: dict[str, Any] | None) -> dict[st
         except (TypeError, ValueError):
             return default
 
-    def _float(key: str, default: float) -> float:
-        try:
-            v = float(raw.get(key, default))
-        except (TypeError, ValueError):
-            return default
-        return max(0.0, min(1.0, v))
-
     return {
         "enabled": raw.get("enabled") is True,
         "window": _int("window", 6),
         "min_samples": _int("min_samples", 3),
-        "min_confidence": _float("min_confidence", 0.6),
     }
 
 

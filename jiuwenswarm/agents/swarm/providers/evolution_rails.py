@@ -504,16 +504,48 @@ def _maybe_attach_execution_gate(rail: SkillEvolutionRail, config: dict[str, Any
     gate = ExecutionGroundedGate(
         window=cfg["window"],
         min_samples=cfg["min_samples"],
-        min_confidence=cfg["min_confidence"],
     )
     attach_execution_gate(rail, gate)
     logger.info(
-        "[swarm.execution_gate] enabled window=%s min_samples=%s min_confidence=%s",
+        "[swarm.execution_gate] enabled window=%s min_samples=%s",
         cfg["window"],
         cfg["min_samples"],
-        cfg["min_confidence"],
     )
     return [ExecutionGroundedGateRail(gate)]
+
+
+def _maybe_attach_canary(rail: SkillEvolutionRail, config: dict[str, Any] | None) -> None:
+    """Opt-in canary skill library on a native evolution rail.
+
+    When enabled, Skills written through the rail enter the library in
+    ``probation``; the integrator feeds task outcomes via
+    ``rail._canary_library.record_task(...)`` to drive strikes / promotion.
+    Disabled by default; no effect on existing workspaces.
+    """
+    from jiuwenswarm.agents.harness.common.rails.canary_skill_library import (
+        get_canary_skill_config,
+    )
+
+    cfg = get_canary_skill_config(config)
+    if not cfg["enabled"]:
+        return
+    from jiuwenswarm.agents.harness.common.rails.canary_skill_library import (
+        CanaryLibrary,
+        attach_canary_library,
+    )
+
+    library = CanaryLibrary(
+        core_strikes=cfg["core_strikes"],
+        promote_after=cfg["promote_after"],
+        attribution_floor=cfg["attribution_floor"],
+    )
+    attach_canary_library(rail, library)
+    logger.info(
+        "[swarm.canary] enabled core_strikes=%s promote_after=%s attribution_floor=%s",
+        cfg["core_strikes"],
+        cfg["promote_after"],
+        cfg["attribution_floor"],
+    )
 
 
 def _build_evolution_approval_stack(
@@ -661,6 +693,7 @@ def build_team_skill_evolution_rail(
             trajectory_span_processor=inp.trajectory_span_processor,
         )
         extra = _maybe_attach_execution_gate(rail, ctx.config)
+        _maybe_attach_canary(rail, ctx.config)
         logger.info(
             "[swarm.team_skill_evolution] built: skills_dir=%s, model=%s, "
             "auto_save=%s",
@@ -873,6 +906,7 @@ def build_member_skill_evolution_rail(
             trajectory_span_processor=inp.trajectory_span_processor,
         )
         extra = _maybe_attach_execution_gate(rail, ctx.config)
+        _maybe_attach_canary(rail, ctx.config)
         logger.info(
             "[swarm.member_skill_evolution] built: model=%s, auto_save=%s, "
             "trajectory_span_processor=%s",

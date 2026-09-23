@@ -944,7 +944,7 @@ class TestConfigFunctions:
         assert cfg["enabled"] is False
         assert cfg["window"] == 6
         assert cfg["min_samples"] == 3
-        assert cfg["min_confidence"] == 0.6
+        assert "min_confidence" not in cfg
 
     def test_execution_grounded_gate_enabled_reads_fields(self):
         cfg = get_execution_grounded_gate_config({
@@ -952,7 +952,9 @@ class TestConfigFunctions:
                 "enabled": True, "window": 5, "min_samples": 2, "min_confidence": 0.8,
             }}}
         })
-        assert cfg == {"enabled": True, "window": 5, "min_samples": 2, "min_confidence": 0.8}
+        # min_confidence was removed in review (the gate never read it);
+        # unknown keys are ignored rather than propagated.
+        assert cfg == {"enabled": True, "window": 5, "min_samples": 2}
 
     def test_execution_grounded_gate_ignores_top_level_evolution(self):
         cfg = get_execution_grounded_gate_config({
