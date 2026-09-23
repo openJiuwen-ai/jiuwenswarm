@@ -4,10 +4,28 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 UVICORN_LOGGER_NAMES = ("uvicorn", "uvicorn.error", "uvicorn.access")
+
+
+def _ensure_utf8_stdio() -> None:
+    """Write logs as UTF-8 even when the process locale is cp936.
+
+    Windows without a console (and a GBK ANSI code page) makes StreamHandler
+    emit GBK bytes. Parents that decode the pipe as UTF-8 then show mojibake.
+    ``reconfigure`` also covers frozen interpreters that ignore PYTHONUTF8.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if stream is None or reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
 
 
 def _timestamp_formatter() -> logging.Formatter:
@@ -35,6 +53,7 @@ def patch_uvicorn_logging() -> None:
 
 def configure_logging(level: int = logging.INFO) -> None:
     """Configure process logging with jiuwenbox's default timestamped format."""
+    _ensure_utf8_stdio()
     logging.basicConfig(level=level, format=LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
     formatter = _timestamp_formatter()
     _set_handler_formatters(logging.getLogger(), formatter)

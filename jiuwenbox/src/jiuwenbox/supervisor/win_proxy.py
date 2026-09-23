@@ -102,12 +102,35 @@ class EgressFilter:
             return False
         return any(ip in net for net in nets)
 
+    @staticmethod
+    def _is_control_plane_destination(ip_str: str) -> bool:
+        """Hard-deny loopback / link-local / private targets (not overridable).
+
+        Sandboxed processes must not reach box-server or other host-local
+        services via win_proxy. ``allowed_ips: 127.0.0.1/32`` combined with
+        ``default: allow`` used to make that tunnel possible.
+        """
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False
+        return bool(
+            ip.is_loopback
+            or ip.is_link_local
+            or ip.is_private
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        )
+
     def allow(self, host: str, port: int) -> tuple[bool, str]:
         """判定是否放行 (host, port). 返回 (allowed, reason).
 
         语义对齐 Linux supervisor/network.py 的 iptables 规则:
           0. disable_all 总开关置位 → 直接拒绝 (officeAce sandbox.network.set;
              不清空 allow/blocked_domains, 用户配置原样保留, 关掉即恢复).
+          0b. loopback / link-local / private 硬拒, 优先级高于 allowed_ips
+              与 default:allow (防 SSRF 打到 box-server).
           1. blocked_domains / blocked_ips / blocked_ports 命中 -> 拒绝.
           2. allow 规则按维度独立判定 (OR), 任一命中即放行:
              - allowed_domains / allowed_ips 是一条 ACCEPT-by-host 规则;
@@ -120,6 +143,10 @@ class EgressFilter:
             return False, "network disabled (disable_all)"
         if not host:
             return False, "empty host"
+
+        host_l = host.strip().lower()
+        if host_l in {"localhost", "ip6-localhost", "ip6-loopback"}:
+            return False, "control-plane destination blocked (localhost)"
 
         # 1. 域名 deny 优先.
         for pat in self._blocked_domains:
@@ -149,6 +176,10 @@ class EgressFilter:
                 return self.egress.default != "deny", "unresolvable domain, default"
 
         ips_to_check: list[str] = [ip_host] if ip_host else resolved_ips
+
+        for ip in ips_to_check:
+            if self._is_control_plane_destination(ip):
+                return False, f"control-plane destination blocked ({ip})"
 
         # 3a. blocked_ips 命中 -> 拒绝.
         for ip in ips_to_check:

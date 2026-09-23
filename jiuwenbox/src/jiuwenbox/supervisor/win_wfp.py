@@ -115,7 +115,8 @@ def _wfp_error(hr: int, where: str) -> "OSError":
     if name is None and (hr & 0xFFFF0000) == 0x80070000:
         win32 = hr & 0xFFFF
         _sys = {5: "ERROR_ACCESS_DENIED", 87: "ERROR_INVALID_PARAMETER",
-                1377: "ERROR_MEMBER_IN_ALIAS", 2224: "NERR_UserExists"}
+                1377: "ERROR_MEMBER_NOT_IN_ALIAS", 1378: "ERROR_MEMBER_IN_ALIAS",
+                2224: "NERR_UserExists"}
         name = _sys.get(win32, f"WIN32_{win32}")
     if name is None and 0x80320000 <= hr <= 0x8032FFFF:
         # FWP_E_* 段未登记码: 多为 condition value / filter 结构校验类错误,

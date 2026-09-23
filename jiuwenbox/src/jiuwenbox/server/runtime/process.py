@@ -669,6 +669,7 @@ class ProcessRuntime(RuntimeAdapter):
         self._win_runners: dict[str, dict] = {}
         self._win_job_handles: dict[str, int] = {}
         self._win_acl_paths: dict[str, list[str]] = {}
+        self._win_write_roots: dict[str, list[str]] = {}
         self._win_sandbox_sids: dict[str, str | None] = {}
         self._win_policies: dict[str, SecurityPolicy] = {}
         self._win_exec_sem: asyncio.Semaphore | None = None
@@ -682,6 +683,50 @@ class ProcessRuntime(RuntimeAdapter):
         # subscribe_log 握手帧, 起后台线程持续读 runner push 的 log 帧并打印.
         self._win_log_threads: dict[str, threading.Thread] = {}
         self._win_log_stops: dict[str, threading.Event] = {}
+
+    def remember_windows_write_roots(self, sandbox_id: str, paths: list[str]) -> None:
+        """Union extra.paths write roots into this sandbox's live set."""
+        existing = list(self._win_write_roots.get(sandbox_id) or [])
+        seen = {os.path.normcase(os.path.abspath(p)) for p in existing if p}
+        for raw in paths:
+            if not raw:
+                continue
+            key = os.path.normcase(os.path.abspath(raw))
+            if key in seen:
+                continue
+            seen.add(key)
+            existing.append(raw)
+        self._win_write_roots[sandbox_id] = existing
+
+    def forget_windows_write_roots(self, paths: list[str]) -> None:
+        """Drop roots whose write ACE could not be applied, so they stop poisoning later writes."""
+        drop = {os.path.normcase(os.path.abspath(p)) for p in paths if p}
+        if not drop:
+            return
+        for sandbox_id, existing in list(self._win_write_roots.items()):
+            kept = [
+                raw for raw in existing
+                if raw and os.path.normcase(os.path.abspath(raw)) not in drop
+            ]
+            self._win_write_roots[sandbox_id] = kept
+
+    def windows_live_write_roots(self) -> list[str]:
+        """Union of write roots declared by every live Windows sandbox."""
+        out: list[str] = []
+        seen: set[str] = set()
+        for paths in self._win_write_roots.values():
+            for raw in paths:
+                if not raw:
+                    continue
+                key = os.path.normcase(os.path.abspath(raw))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(raw)
+        return out
+
+    def windows_sandbox_user_sid(self, sandbox_id: str) -> str | None:
+        return self._win_sandbox_sids.get(sandbox_id)
 
     @staticmethod
     def _load_policy(policy_path: Path) -> SecurityPolicy:
@@ -2970,18 +3015,7 @@ class ProcessRuntime(RuntimeAdapter):
 
     @staticmethod
     def _win_workspace_for(policy: SecurityPolicy, sandbox_id: str) -> str:
-        """沙箱 workspace 真实路径 (Windows): ~/.office-claw/.jiuwenclaw/jiuwenbox/workspace/<id>.
-
-        与 agent-server 同根 (~/.office-claw/.jiuwenclaw), box-server 进程
-        (xxx) 天然是该目录 owner → 改 DACL 不会 WinError 5, 子目录继承
-        ACL 顺. 旧版用 ~/.jiuwenbox/workspace 时该目录可能 owner 非当前用户
-        或 ACL 被 revoke 残留 → upload/list 频繁 Permission denied.
-
-        policy 里 allow_write[0] 写的是 ``{{ workspace }}`` 占位 (静态语义,
-        不是本机路径), ``os.path.expandvars`` 只认 ``%VAR%`` 不认 Jinja 风格,
-        展不开. 占位语义留在配置, 真实路径代码算. _create_windows 会把
-        ``{{ workspace }}`` 模板替换成本方法返回值再传 apply_sandbox_acl.
-        """
+        """沙箱 cwd 真实路径 (Windows): ~/.jiuwenbox/workspace/<id>."""
         return str(WIN_SANDBOX_WORKSPACE_ROOT / sandbox_id)
 
     async def _create_windows(
@@ -3010,97 +3044,45 @@ class ProcessRuntime(RuntimeAdapter):
                 sandbox_id, workspace, exc,
             )
 
-        # 1. 施加文件 ACL (读控制 deny-then-allow + workspace 默认 Allow Read). 返回 ACE 路径清单, 存供 stop 时撤销.
+        # 1. 施加文件 ACL. 根 policy 的 allow/deny 已在 box-server 启动时施加;
+        # 这里只补会话叠加路径 (workspace / project / extra.paths).
         #
-        # 动态路径注入 (docs §4.3): 打包 python 目录 + venv 目录是每机器/每用户不同的运行时路径, 不能写死在 policy yaml,
-        # 由 agent-server 拉起本进程时经 env 注入:
-        #   JIUWENBOX_BUNDLED_PYTHON = officeAce 打包 embeddable python 目录 (tools/python/), 授 allow_read (含 Execute);
-        #   JIUWENBOX_VENV_DIR       = 宿主机 isolation_venv 目录, 授 allow_write (pip 写 site-packages). 未注入则跳过.
-        # shell 目录 (System32/Git) 已在 read_acl_preinstall 预装, 此处不重复.
-        # policy 里 allow_write/deny_write 写的是 ``{{ workspace }}`` 占位,
-        # 这里展开成真实 workspace 路径 (os.path.expandvars 不认 Jinja 风格).
-        def _expand_ws(path: str) -> str:
-            return path.replace("{{ workspace }}", workspace)
-
-        allow_read_paths = [_expand_ws(p) for p in (policy.windows.filesystem.allow_read or [])]
-        allow_write_paths = [_expand_ws(p) for p in (policy.windows.filesystem.allow_write or [])]
-        deny_write_paths = [_expand_ws(p) for p in (policy.windows.filesystem.deny_write or [])]
-        deny_read_paths = [_expand_ws(p) for p in (policy.windows.filesystem.deny_read or [])]
-        bundled_python = (os.environ.get("JIUWENBOX_BUNDLED_PYTHON") or "").strip()
-        if bundled_python:
-            allow_read_paths.append(bundled_python)
-        venv_dir = (os.environ.get("JIUWENBOX_VENV_DIR") or "").strip()
-        if venv_dir:
-            allow_write_paths.append(venv_dir)
-        # 业务产物路径 (read_write / bind_mounts): rw 才进 allow_write;
-        # WRITE ACE 不含 FILE_READ_DATA, rw 路径同时进 allow_read.
-        # mode=ro (如 config.yaml) 只授读. 不授权 claw-desktop 等父目录.
-        for _rw in (policy.filesystem_policy.read_write or []):
-            if _rw and _rw not in allow_write_paths:
-                allow_write_paths.append(_rw)
-            if _rw and _rw not in allow_read_paths:
-                allow_read_paths.append(_rw)
-        for _mount in (policy.filesystem_policy.bind_mounts or []):
-            _sp = getattr(_mount, "sandbox_path", None)
-            if not _sp:
-                continue
-            _mode = str(getattr(_mount, "mode", "ro") or "ro").strip().lower()
-            if _mode != "rw":
-                if _sp not in allow_read_paths:
-                    allow_read_paths.append(_sp)
-                continue
-            if _sp not in allow_write_paths:
-                allow_write_paths.append(_sp)
-            if _sp not in allow_read_paths:
-                allow_read_paths.append(_sp)
-        # read_write/bind_mounts 路径可能尚未创建 (如 pptx-craft output_dir 由 skill generate-timestamp-dir 创建).
-        # apply_sandbox_acl 对不存在路径会跳过 → 受限 token 写不了, 这里先 makedirs ensure 存在.
-        for _p in allow_write_paths:
-            if _p in (policy.filesystem_policy.read_write or []):
-                try:
-                    os.makedirs(_p, exist_ok=True)
-                except OSError as _e:
-                    logger.warning("[SandboxWin] %s 创建产物目录失败 %s: %s",
-                                   sandbox_id, _p, _e)
-        # Windows 工具路径 (windows.filesystem.tool_paths): 非默认安装路径的 Git/Node/Python 目录.
-        # 读 ACL 由 install 预装, 运行时不改这些目录 DACL (普通用户无 WRITE_DAC, 会 WinError 5). 这里只拼进 PATH.
-        tool_paths = policy.windows.filesystem.tool_paths
-        win_tool_dirs: list[str] = []
-        for _dir_attr, _name in (
-            (tool_paths.git_dir, "git_dir"),
-            (tool_paths.node_dir, "node_dir"),
-            (tool_paths.python_dir, "python_dir"),
-        ):
-            _d = (_dir_attr or "").strip()
-            if not _d:
-                continue
-            win_tool_dirs.append(_d)
-            # Git 安装根含 usr/bin/bash.exe, 把子目录也纳入 PATH.
-            if _name == "git_dir":
-                win_tool_dirs.append(os.path.join(_d, "usr", "bin"))
-                win_tool_dirs.append(os.path.join(_d, "bin"))
-        _bash_path = (tool_paths.bash_path or "").strip()
-        # 把工具目录拼进 runner env 的 PATH (前置, 优先于系统 PATH).
-        if win_tool_dirs:
-            env = dict(env) if env else {}
-            existing_path = env.get("PATH", os.environ.get("PATH", ""))
-            extra = os.pathsep.join(win_tool_dirs)
-            env["PATH"] = f"{extra}{os.pathsep}{existing_path}" if existing_path else extra
-            # SystemRoot 也带上 (CreateProcessAsUserW 子进程基本依赖).
-            env.setdefault("SystemRoot", os.environ.get("SystemRoot", ""))
+        # Python / venv 写权限来自 policy.workspace ∪ allow_write (sysop_builder
+        # 把会话工作区写进 workspace), 不再按 JIUWENBOX_BUNDLED_PYTHON /
+        # JIUWENBOX_VENV_DIR 隐式打 ACE.
+        allow_read_paths = list(policy.windows.filesystem.allow_read or [])
+        allow_write_paths = list(policy.windows.filesystem.combined_allow_write())
+        deny_write_paths = list(policy.windows.filesystem.deny_write or [])
+        deny_read_paths = list(policy.windows.filesystem.deny_read or [])
+        try:
+            allow_read_paths = win_setup.drop_root_policy_acl_paths(allow_read_paths)
+            allow_write_paths = win_setup.drop_root_policy_acl_paths(allow_write_paths)
+            deny_write_paths = win_setup.drop_root_policy_acl_paths(deny_write_paths)
+            deny_read_paths = win_setup.drop_root_policy_acl_paths(deny_read_paths)
+        except Exception:  # noqa: BLE001
             logger.debug(
-                "[SandboxWin] %s windows toolpaths injected: dirs=%s bash_path=%s "
-                "PATH_prefix=%s (read ACL 由 install 预装, 运行时仅拼 PATH)",
-                sandbox_id, win_tool_dirs, _bash_path or "<未配置>", extra,
+                "[SandboxWin] %s drop_root_policy_acl_paths failed; applying full lists",
+                sandbox_id, exc_info=True,
             )
+        try:
+            allow_write_paths = win_acl.filter_write_roots(
+                allow_write_paths,
+                deny_write=deny_write_paths,
+                drop_heavy=False,
+                max_roots=None,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[SandboxWin] %s filter_write_roots failed; using unfiltered allow_write",
+                sandbox_id, exc_info=True,
+            )
+        bundled_python = (os.environ.get("JIUWENBOX_BUNDLED_PYTHON") or "").strip()
+        venv_dir = (os.environ.get("JIUWENBOX_VENV_DIR") or "").strip()
         # 沙箱可写临时区注入: 受限 token 写不了宿主 %TEMP% → Playwright mkdtemp EPERM.
         # TEMP/TMP 指向 jbx-sandbox profile 下每沙箱隔离子目录 (<profile>\AppData\Local\Temp\jiuwenbox\<sandbox_id>).
         # profile 根用标准路径 C:\Users\jbx-sandbox (同名残留建 .000 后缀, 第一跳没 token 无法 API 解析, 用 env 的 USERPROFILE 或标准名).
         # ms-playwright 安装目录跨沙箱共用不重下, 不设 PLAYWRIGHT_BROWSERS_PATH.
         env = dict(env) if env else {}
-        # bash 绝对路径经 env 注入 runner: 避免出现裸 bash
-        if _bash_path:
-            env.setdefault("JIUWENBOX_BASH_PATH", _bash_path)
         _sandbox_sub = sandbox_id
         # profile 根: 优先用 env 里已有的 USERPROFILE (调用方注入), 否则标准路径.
         _profile_root = (env.get("USERPROFILE") or "").strip()
@@ -3132,8 +3114,14 @@ class ProcessRuntime(RuntimeAdapter):
                 if _inherit_val:
                     env[_inherit_key] = _inherit_val
         for _k, _v in os.environ.items():
-            if _k.startswith("JIUWENBOX_") and _k not in env and _v:
+            if (
+                _k.startswith("JIUWENBOX_")
+                and _k not in env
+                and _v
+                and _k != "JIUWENBOX_API_TOKEN"
+            ):
                 env[_k] = _v
+        env.pop("JIUWENBOX_API_TOKEN", None)
         logger.debug(
             "[SandboxWin] %s sandbox-writable temp injected: TEMP=%s",
             sandbox_id, win_tmp_dir,
@@ -3154,7 +3142,10 @@ class ProcessRuntime(RuntimeAdapter):
                 sandbox_id, _runner_py,
             )
             try:
-                win_acl.grant_parent_traverse(_runner_py, sandbox_user_sid)
+                win_acl.grant_parent_traverse(
+                    _runner_py, sandbox_user_sid,
+                    readable_roots=allow_read_paths,
+                )
             except Exception:  # noqa: BLE001
                 logger.warning(
                     "[SandboxWin] %s grant_parent_traverse 失败 python=%s",
@@ -3183,92 +3174,102 @@ class ProcessRuntime(RuntimeAdapter):
         except Exception:  # noqa: BLE001 - best-effort, 读注册表失败不阻断创建
             _preinstalled = set()
         _t_acl0 = time.perf_counter()
-        desktop_data_dir = win_acl.resolve_desktop_data_dir()
 
-        def _under_desktop(p: str) -> bool:
-            if not desktop_data_dir or not p:
-                return False
-            try:
-                left = os.path.normcase(str(Path(os.path.expandvars(os.path.expanduser(desktop_data_dir))).resolve()))
-                right = os.path.normcase(str(Path(os.path.expandvars(os.path.expanduser(p))).resolve()))
-            except OSError:
-                return False
-            return right == left or right.startswith(left + os.sep)
-
-        # agent workspace / skills 在桌面 dataDir 下, 由 apply_desktop_data_rw
-        # 按目录走访授权 (每个 skill 子目录打 RW ACE; node_modules 只改自身不扫内部).
-        # 不对整棵 workspace 做 SetNamedSecurityInfo 全树传播: 扫到受保护文件会
-        # WinError 5 导致整段失败, 所有 skill 都拿不到写权限.
-        _acl_write = [p for p in allow_write_paths if not _under_desktop(p)]
-        _acl_read = [p for p in allow_read_paths if not _under_desktop(p)]
-        acl_paths = win_acl.apply_sandbox_acl(
-            workspace,
-            _acl_write,
-            deny_write_paths,
-            allow_read=_acl_read,
-            deny_read=deny_read_paths,
-            sandbox_user_sid=sandbox_user_sid,
-            preinstalled_read_paths=_preinstalled,
-        )
-        if desktop_data_dir:
-            try:
-                # 桌面 dataDir 整树可读可写, 不做 deny / 只读限制 (含 skills).
-                _desktop_acl = win_acl.apply_desktop_data_rw(
-                    desktop_data_dir,
-                    sandbox_user_sid=sandbox_user_sid,
-                    preserve_write_roots=allow_write_paths,
+        def _apply_acl_sync() -> tuple[list[str], list]:
+            """根节点 ACE 同步写上; 大目录整树传播由后台线程继续."""
+            acl_result = win_acl.apply_sandbox_acl(
+                workspace,
+                allow_write_paths,
+                deny_write_paths,
+                allow_read=allow_read_paths,
+                deny_read=deny_read_paths,
+                sandbox_user_sid=sandbox_user_sid,
+                preinstalled_read_paths=_preinstalled,
+            )
+            acl_paths = list(acl_result.paths)
+            grants = list(acl_result.grants)
+            if acl_result.failed:
+                logger.warning(
+                    "[SandboxWin] %s ACL 部分失败 paths=%s",
+                    sandbox_id, acl_result.failed,
                 )
-                if _desktop_acl:
-                    acl_paths = list(acl_paths or []) + _desktop_acl
+            if sandbox_user_sid:
+                _traverse_targets = [workspace, *allow_write_paths]
+                _group_sid = win_setup.get_sandbox_group_sid()
+                _seen_traverse: set[str] = set()
+                for _tp in _traverse_targets:
+                    if not _tp:
+                        continue
+                    _tk = os.path.normcase(os.path.abspath(_tp))
+                    if _tk in _seen_traverse:
+                        continue
+                    _seen_traverse.add(_tk)
+                    try:
+                        _preserve = list(allow_write_paths)
+                        _preserve.append(workspace)
+                        win_acl.grant_parent_traverse(
+                            _tp, sandbox_user_sid,
+                            readable_roots=allow_read_paths,
+                            preserve_roots=_preserve,
+                        )
+                        if _group_sid:
+                            win_acl.grant_parent_traverse(
+                                _tp, _group_sid,
+                                readable_roots=allow_read_paths,
+                                preserve_roots=_preserve,
+                            )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "[SandboxWin] %s grant_parent_traverse 失败 path=%s",
+                            sandbox_id, _tp, exc_info=True,
+                        )
+            return acl_paths or list(allow_write_paths) or [workspace], grants
+
+        self._win_write_roots[sandbox_id] = list(allow_write_paths)
+        self._win_sandbox_sids[sandbox_id] = sandbox_user_sid
+        self._win_acl_paths[sandbox_id] = list(allow_write_paths) or [workspace]
+
+        def _apply_acl_background() -> None:
+            try:
+                acl_paths, _grants = _apply_acl_sync()
+                self._win_acl_paths[sandbox_id] = acl_paths or [workspace]
+                try:
+                    win_setup.record_sandbox_acl(
+                        write_paths=list(allow_write_paths),
+                        applied_paths=acl_paths or list(allow_write_paths),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "record_sandbox_acl 失败 sandbox=%s", sandbox_id, exc_info=True,
+                    )
+                logger.info(
+                    "[SandboxWin] %s apply_sandbox_acl 总耗时=%.2fs (paths=%d); "
+                    "段级分解见 win_acl 段汇总日志",
+                    sandbox_id, time.perf_counter() - _t_acl0, len(acl_paths or []),
+                )
+                logger.debug(
+                    "[SandboxWin] %s ACL applied: workspace=%s, allow_read=%s, "
+                    "allow_write=%s (bundled_python=%s, venv=%s)",
+                    sandbox_id, workspace,
+                    policy.windows.filesystem.allow_read or [],
+                    allow_write_paths,
+                    bundled_python or "<未注入>",
+                    venv_dir or "<未注入>",
+                )
             except Exception:  # noqa: BLE001
                 logger.warning(
-                    "[SandboxWin] %s apply_desktop_data_rw 失败 dir=%s",
-                    sandbox_id, desktop_data_dir, exc_info=True,
+                    "[SandboxWin] %s apply_sandbox_acl 后台失败 (沙箱已继续创建)",
+                    sandbox_id, exc_info=True,
                 )
-        if sandbox_user_sid:
-            _traverse_targets = []
-            if desktop_data_dir:
-                _traverse_targets.append(desktop_data_dir)
-            _traverse_targets.append(workspace)
-            _traverse_targets.extend(allow_write_paths)
-            _seen_traverse: set[str] = set()
-            for _tp in _traverse_targets:
-                if not _tp:
-                    continue
-                _tk = os.path.normcase(os.path.abspath(_tp))
-                if _tk in _seen_traverse:
-                    continue
-                _seen_traverse.add(_tk)
-                try:
-                    win_acl.grant_parent_traverse(_tp, sandbox_user_sid)
-                    win_acl.grant_parent_traverse(_tp, win_acl.get_synthetic_write_sid())
-                except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "[SandboxWin] %s grant_parent_traverse 失败 path=%s",
-                        sandbox_id, _tp, exc_info=True,
-                    )
-        _t_acl1 = time.perf_counter()
-        # apply_sandbox_acl 整体耗时打点
+
+        threading.Thread(
+            target=_apply_acl_background,
+            name=f"jiuwenbox-acl-{sandbox_id}",
+            daemon=True,
+        ).start()
         logger.info(
-            "[SandboxWin] %s apply_sandbox_acl 总耗时=%.2fs (paths=%d); "
-            "段级分解见 win_acl 段汇总日志",
-            sandbox_id, _t_acl1 - _t_acl0, len(acl_paths or []),
-        )
-        self._win_acl_paths[sandbox_id] = acl_paths or [workspace]
-        self._win_sandbox_sids[sandbox_id] = sandbox_user_sid
-        # 记录施加路径到历史清单, 供启动时差集清理兜底 (避免配置变更后旧 ACE 残留放行).
-        try:
-            win_setup.record_applied_acl_paths(acl_paths or [], workspace)
-        except Exception:  # noqa: BLE001
-            logger.debug("record_applied_acl_paths 失败 sandbox=%s", sandbox_id, exc_info=True)
-        logger.debug(
-            "[SandboxWin] %s ACL applied: workspace=%s, allow_read=%s, allow_write=%s "
-            "(bundled_python=%s, venv=%s)",
-            sandbox_id, workspace,
-            policy.windows.filesystem.allow_read or [],
-            allow_write_paths,
-            bundled_python or "<未注入>",
-            venv_dir or "<未注入>",
+            "[SandboxWin] %s ACL 已交后台线程, 不等待传播完成即启动 runner",
+            sandbox_id,
         )
 
         # 2. 两跳启动 runner (CREATE_SUSPENDED, review MAJOR #1).
@@ -3294,7 +3295,8 @@ class ProcessRuntime(RuntimeAdapter):
         import secrets as _secrets
         control_token = _secrets.token_urlsafe(32)
         _t_spawn0 = time.perf_counter()
-        runner_pid, proc_handle = win_exec.two_hop_spawn_and_authorize(
+        runner_pid, proc_handle = await asyncio.to_thread(
+            win_exec.two_hop_spawn_and_authorize,
             sandbox_id,
             sandbox_user=user,
             sandbox_password=password,
@@ -3408,7 +3410,7 @@ class ProcessRuntime(RuntimeAdapter):
             await asyncio.sleep(WIN_RUNNER_READY_PROBE_INTERVAL)
 
     async def _stop_windows(self, sandbox_id: str, timeout: float = 10.0) -> None:
-        from jiuwenbox.supervisor import win_acl, win_exec, win_job
+        from jiuwenbox.supervisor import win_exec, win_job
 
         runner = self._win_runners.pop(sandbox_id, None)
         if runner is not None:
@@ -3443,14 +3445,11 @@ class ProcessRuntime(RuntimeAdapter):
             if job is not None:
                 win_job.teardown(job)
 
-        # 5. 撤销文件 ACL (按 apply 时返回的施加路径清单撤销, review MAJOR #6).
-        acl_paths = self._win_acl_paths.pop(sandbox_id, None)
-        sandbox_user_sid = self._win_sandbox_sids.pop(sandbox_id, None)
-        if acl_paths:
-            try:
-                win_acl.revoke_sandbox_acl(acl_paths, sandbox_user_sid=sandbox_user_sid)
-            except Exception:  # noqa: BLE001
-                logger.debug("撤销 ACL 失败 sandbox=%s", sandbox_id, exc_info=True)
+        # 5. 不再 revoke 文件 ACL: ACE 常驻以便下次启动复用, 避免整树再授权.
+        #    只清本沙箱内存态清单. 卸载仍走 uninstall 传播式撤销.
+        self._win_acl_paths.pop(sandbox_id, None)
+        self._win_write_roots.pop(sandbox_id, None)
+        self._win_sandbox_sids.pop(sandbox_id, None)
         # 清理 per-sandbox pipe lock.
         self._win_pipe_locks.pop(sandbox_id, None)
 
@@ -3491,6 +3490,9 @@ class ProcessRuntime(RuntimeAdapter):
         payload: dict[str, Any] = {
             "command": list(request.command),
             "stdin_size": len(request.stdin_data or b""),
+            # Always send the field (empty list = readonly token). Missing
+            # field is fail-closed in the runner.
+            "write_cap_sids": list(request.write_cap_sids or []),
         }
         if request.env:
             payload["env"] = dict(request.env)
@@ -3507,10 +3509,21 @@ class ProcessRuntime(RuntimeAdapter):
                 exit_code=1,
                 stderr=f"sandbox {sandbox_id!r} runner IPC 失败",
             )
+        # runner 起进程失败走 {"ok": false, "detail": "..."}, 没有 stdout/stderr.
+        # 不把 detail 映射出去时前端只看到 exit=1 空输出.
+        ok = response.get("ok", True)
+        stdout = str(response.get("stdout", "") or "")
+        stderr = str(response.get("stderr", "") or "")
+        detail = str(response.get("detail") or "")
+        if not ok and not stderr:
+            stderr = detail or str(response.get("error") or "exec failed")
+        exit_code = response.get("exit_code")
+        if exit_code is None:
+            exit_code = 0 if ok else 1
         return ExecResult(
-            exit_code=int(response.get("exit_code", 1)),
-            stdout=str(response.get("stdout", "")),
-            stderr=str(response.get("stderr", "")),
+            exit_code=int(exit_code),
+            stdout=stdout,
+            stderr=stderr,
         )
 
     async def _exec_background_windows(
@@ -3531,6 +3544,7 @@ class ProcessRuntime(RuntimeAdapter):
                 workdir=request.workdir,
                 env=request.env,
                 stdin_data=request.stdin_data,
+                write_cap_sids=request.write_cap_sids,
             ),
         )
         return BackgroundExecResult(
@@ -4101,6 +4115,7 @@ class ProcessRuntime(RuntimeAdapter):
             self._win_runners.pop(sandbox_id, None)
             self._win_policies.pop(sandbox_id, None)
             self._win_acl_paths.pop(sandbox_id, None)
+            self._win_write_roots.pop(sandbox_id, None)
             self._win_sandbox_sids.pop(sandbox_id, None)
             return
         self._processes.pop(sandbox_id, None)
