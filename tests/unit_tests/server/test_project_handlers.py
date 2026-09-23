@@ -768,6 +768,32 @@ class TestProjectPin:
 class TestSessionPin:
     @staticmethod
     @pytest.mark.asyncio
+    async def test_pinned_cron_execution_session_appears_in_pinned_list(
+        registered_channel, sessions_dir,
+    ):
+        _make_session("cron-run", cron_id="job-1", channel_id="__cron__")
+        _make_session("other-channel", channel_id="tui", pinned=True, pin_order=2)
+
+        pin = await _call(
+            registered_channel, "session.pin", {"session_id": "cron-run", "pinned": True}
+        )
+        assert pin["ok"] is True
+
+        pinned = await _call(registered_channel, "project.pinned_sessions", {})
+        assert [session["session_id"] for session in pinned["payload"]["sessions"]] == [
+            "cron-run"
+        ]
+        assert pinned["payload"]["sessions"][0]["cron_id"] == "job-1"
+
+        cron = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": "default", "cron_id": "job-1"},
+        )
+        assert cron["payload"]["sessions"] == []
+
+    @staticmethod
+    @pytest.mark.asyncio
     async def test_pin_and_unpin_idempotent(registered_channel, sessions_dir):
         _make_session("s1", last_user_message_at=100.0)
         # 置顶

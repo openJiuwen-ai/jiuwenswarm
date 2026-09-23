@@ -608,6 +608,35 @@ async def test_cron_backend_create_job_pushes_and_resets_route() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cron_backend_create_job_inherits_team_session_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda session_id, cache_bust=False: {
+            "mode": "team.work.normal" if session_id == "team-session" else "",
+        },
+    )
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    context = SimpleNamespace(
+        channel_id="web",
+        session_id="team-session",
+        mode="agent.work.normal",  # The leader's tool context can be agent mode.
+        metadata={},
+    )
+
+    await backend.create_job(
+        {
+            "schedule": {"kind": "cron", "expr": "0 0 2 * * ? *"},
+            "payload": {"kind": "agentTurn", "message": "提醒上班"},
+            "delivery": {"channel": "web"},
+        },
+        context=context,
+    )
+
+    assert cron_tools.create_payloads[0]["mode"] == "team.work.normal"
+
+
+@pytest.mark.asyncio
 async def test_cron_backend_uses_bound_context_for_operations_without_context() -> None:
     """list/get/delete/toggle/preview/run_now 无显式 context 时回退 build_tools() 绑定的稳定上下文。"""
     cron_tools = _FakeCronTools()

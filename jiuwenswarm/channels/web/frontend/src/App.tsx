@@ -3228,6 +3228,12 @@ function AppContent({
         resetHarnessStore(targetSessionId);
         historyRestoreFromPanelHintRef.current = true;
       }
+      if (options?.skipHistoryLoad) {
+        // The session returned by cron.run_now can precede its first persisted
+        // message. The sessionId effect must skip its initial history request too.
+        useChatStore.getState().setNewSession(targetSessionId, true);
+        historyRestoreFromPanelHintRef.current = false;
+      }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
       ensureSessionRuntimes(targetSessionId);
