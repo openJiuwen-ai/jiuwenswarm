@@ -5092,6 +5092,30 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
 
+        # 移除前先问 AgentServer 项目下是否有会话在执行:必须在 hide_project_jobs
+        # 之前拦截,否则定时任务已被停用、移除却被取消,留下任务全部停用的
+        # 半残状态。预检失败或旧版 AgentServer 不认识该参数时放行走原流程,
+        # 由 commit 侧 project.remove 的权威 busy 扫描兜底。
+        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+
+        precheck_ok, precheck_payload = await fetch_agent_unary(
+            agent_client=_resolve(agent_client),
+            req_method=ReqMethod.PROJECT_LIFECYCLE,
+            params={"project_id": project_id, "running_sessions": True},
+            session_id=session_id,
+            user_id=user_id,
+            channel_id="web",
+            label="project.remove.precheck",
+            timeout_seconds=10,
+        )
+        if precheck_ok and precheck_payload.get("has_running_sessions"):
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="project has running sessions; stop them before removing",
+                code="SESSION_BUSY",
+            )
+            return
+
         async def _after_remove(ok: bool, _payload: object) -> None:
             if not ok:
                 return

@@ -3504,7 +3504,8 @@
         "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
         "archiveFailed": "归档操作失败，请稍后重试",
         "projectNameConflict": "已有同名项目占用了该名称，无法恢复项目。请先重命名同名项目。",
-        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。"
+        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
+        "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。"
       },
       "cancel": "取消",
       "confirm": "确定"

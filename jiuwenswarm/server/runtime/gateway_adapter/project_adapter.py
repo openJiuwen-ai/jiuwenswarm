@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Callable
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -549,10 +549,40 @@ def _count_project_conversations(project_id: str) -> int:
     return count
 
 
+def _project_busy_sessions(project_id: str, runtime: Any) -> list[str]:
+    """project.remove 前的 busy 扫描:项目下仍在执行的 Web 会话。
+
+    枚举口径与 ``_count_project_conversations`` 一致(channel=web、非 cron
+    执行会话、project_id 匹配的未归档会话)。执行判定与 session.archive 的
+    ``_session_is_busy_for_action`` 一致:parked 的 Team 常驻流只剩响应流、
+    不再持有团队工作,不阻塞移除——否则任何跑过 Team 会话的项目都会因
+    常驻 leader 流而永远无法移除。
+    """
+    busy: list[str] = []
+    for session in collect_all_sessions_metadata():
+        if session.get("channel_id") != "web" or session.get("cron_id"):
+            continue
+        if str(session.get("project_id") or "") != project_id:
+            continue
+        session_id = str(session.get("session_id") or "")
+        if not session_id or not runtime.is_session_running(session_id):
+            continue
+        probe = getattr(runtime, "has_parked_team_streams", None)
+        if callable(probe) and probe(session_id):
+            continue
+        busy.append(session_id)
+    return busy
+
+
 def _remove_project(
-    params: dict[str, Any]
+    params: dict[str, Any],
+    runtime: Any = None,
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Hide a project, reporting how many active conversations it takes with it."""
+    """Hide a project, reporting how many active conversations it takes with it.
+
+    有会话仍在执行时拒绝移除(SESSION_BUSY):移除只是软隐藏,执行中的
+    会话不会随之停止,只会连同项目一起从前端列表消失,结果无处呈现。
+    """
     project_id = str(params.get("project_id") or "").strip()
     if not project_id:
         return None, "project_id is required", "BAD_REQUEST"
@@ -563,6 +593,13 @@ def _remove_project(
         return None, "project not found", "NOT_FOUND"
     if project.hidden:
         return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
+
+    if runtime is not None and _project_busy_sessions(project_id, runtime):
+        return (
+            None,
+            "project has running sessions; stop them before removing",
+            "SESSION_BUSY",
+        )
 
     affected = _count_project_conversations(project_id)
     hidden = project_store.hide_project(project_id)
@@ -1435,6 +1472,12 @@ async def _run_threaded(
 class ProjectAdapter(GatewayAdapter):
     """Project-domain adapter: project/git CRUD, diff status, session queries."""
 
+    def __init__(self, runtime_probe: Callable[[], Any] | None = None) -> None:
+        # project.remove 的 busy 扫描要读 AgentRuntime 的会话执行状态。
+        # 传探针而非实例:agent_manager 重建后 _execution_runtime 会换新实例,
+        # 每次移除时探针总能取到当前 runtime。
+        self._runtime_probe = runtime_probe
+
     methods: frozenset[str] = frozenset(
         {
             ReqMethod.PROJECT_INFO.value,
@@ -1532,7 +1575,10 @@ class ProjectAdapter(GatewayAdapter):
                 request, "project.create", _create_project, params, request.channel_id,
             )
         if method == ReqMethod.PROJECT_REMOVE:
-            return await _run_threaded(request, "project.remove", _remove_project, params)
+            return await _run_threaded(
+                request, "project.remove", _remove_project, params,
+                runtime=self._runtime_probe() if self._runtime_probe is not None else None,
+            )
         if method == ReqMethod.PROJECT_RESTORE:
             return await _run_threaded(request, "project.restore", _restore_project, params)
         if method == ReqMethod.PROJECT_PINNED_SESSIONS:
