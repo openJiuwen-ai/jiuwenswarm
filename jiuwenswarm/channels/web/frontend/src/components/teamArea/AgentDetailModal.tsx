@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import type { WorkflowAgent } from './workflowTypes';
+import { parseVerifyOutcome, verifyVoteText } from './workflowTypes';
 
 // ── 字数格式化 ────────────────────────────────────────────
 
@@ -63,13 +64,16 @@ export const accentTabActiveClass: Record<DetailAccent, string> = {
 };
 
 /** 根据 agent 字段汇总可用的详情 section，标签与弹窗共用同一数据源。 */
-export function buildDetailSections(agent: WorkflowAgent): DetailSection[] {
+export function buildDetailSections(
+  t: (key: string, opts?: Record<string, unknown>) => string,
+  agent: WorkflowAgent,
+): DetailSection[] {
   const secs: DetailSection[] = [];
-  if (agent.prompt) secs.push({ key: 'prompt', label: '输入', icon: '▶', content: agent.prompt, accent: 'blue' });
-  if (agent.human_prompt) secs.push({ key: 'human_prompt', label: '人工提问', icon: '☺', content: agent.human_prompt, accent: 'amber' });
-  if (agent.human_reply) secs.push({ key: 'human_reply', label: '人工回复', icon: '✓', content: agent.human_reply, accent: 'emerald' });
-  if (agent.outcome) secs.push({ key: 'outcome', label: '输出', icon: '◀', content: agent.outcome, accent: 'emerald' });
-  if (agent.error) secs.push({ key: 'error', label: '错误', icon: '✕', content: agent.error, accent: 'red' });
+  if (agent.prompt) secs.push({ key: 'prompt', label: t('swarmflow.sectionInput'), icon: '▶', content: agent.prompt, accent: 'blue' });
+  if (agent.human_prompt) secs.push({ key: 'human_prompt', label: t('swarmflow.sectionHumanPrompt'), icon: '☺', content: agent.human_prompt, accent: 'amber' });
+  if (agent.human_reply) secs.push({ key: 'human_reply', label: t('swarmflow.sectionHumanReply'), icon: '✓', content: agent.human_reply, accent: 'emerald' });
+  if (agent.outcome) secs.push({ key: 'outcome', label: t('swarmflow.sectionOutput'), icon: '◀', content: agent.outcome, accent: 'emerald' });
+  if (agent.error) secs.push({ key: 'error', label: t('swarmflow.sectionError'), icon: '✕', content: agent.error, accent: 'red' });
   return secs;
 }
 
@@ -210,14 +214,30 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange }: Age
         type="button"
         className="absolute inset-0 bg-black/60"
         onClick={onClose}
-        aria-label="关闭"
+        aria-label={t('common.close')}
         data-testid="team-area-swarmflow-detail-modal-backdrop"
       />
       <div className="relative w-full max-w-4xl max-h-[85vh] overflow-hidden rounded-xl border border-border bg-card shadow-2xl animate-rise flex flex-col">
         {/* 标题：Agent 名 · 当前 section label */}
         <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-border bg-panel shrink-0">
           <div className="min-w-0 flex-1">
-            <h3 className="text-base font-semibold text-text truncate" data-testid="team-area-swarmflow-detail-modal-title">{agentName}</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-text truncate" data-testid="team-area-swarmflow-detail-modal-title">{agentName}</h3>
+              {activeSection?.key === 'outcome' && (() => {
+                const verdict = parseVerifyOutcome(content);
+                if (!verdict) return null;
+                const badgeClass = verdict.type === 'pass' 
+                  ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                  : verdict.type === 'fail'
+                  ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800'
+                  : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800';
+                return (
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${badgeClass}`}>
+                    {verifyVoteText(t, verdict)}
+                  </span>
+                );
+              })()}
+            </div>
             <p className="text-xs text-text-muted mt-0.5" data-testid="team-area-swarmflow-detail-modal-section-label" data-variant={activeSection?.key}>{activeSection?.label}</p>
           </div>
           <button
