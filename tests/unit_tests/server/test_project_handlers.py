@@ -46,10 +46,21 @@ class _FakeSessionCreateAgentClient:
     def __init__(self) -> None:
         self.requests: list[object] = []
         self._sequence = 0
+        # project.remove 预检(project.lifecycle + running_sessions)的应答桩;
+        # 用例按需改写 has_running_sessions 模拟项目下有无会话在执行。
+        self.project_lifecycle: dict = {
+            "exists": True, "hidden": False, "has_running_sessions": False,
+        }
+        # AgentServer 侧 project.remove 权威 busy 扫描用的 runtime 桩;
+        # None 时等价于无 runtime(扫描跳过),与旧版行为一致。
+        self.project_runtime = None
 
     async def send_request(self, request):
         self.requests.append(request)
         params = dict(request.params or {})
+
+        if getattr(request, "method", None) == "project.lifecycle":
+            return SimpleNamespace(ok=True, payload=dict(self.project_lifecycle))
 
         # Phase 2: session.pin 走 E2A 转发到 AgentServer(SessionAdapter SESSION_PIN)。
         # fake 用生产 set_session_pinned 落盘,保持 Web handler 集成路径可验证。
@@ -84,7 +95,9 @@ class _FakeSessionCreateAgentClient:
                 "project.remove": ReqMethod.PROJECT_REMOVE,
                 "project.restore": ReqMethod.PROJECT_RESTORE,
             }[request.method]
-            response = await ProjectAdapter().handle(
+            response = await ProjectAdapter(
+                runtime_probe=lambda: self.project_runtime
+            ).handle(
                 AgentRequest(
                     request_id=str(request.request_id or ""),
                     channel_id=str(request.channel or "web"),
@@ -170,6 +183,25 @@ class _FakeSessionCreateAgentClient:
         return SimpleNamespace(
             ok=True, payload={"pinned": new_pinned, "pin_order": new_order},
         )
+
+
+class _FakeRemoveRuntime:
+    """project.remove busy 扫描的 AgentRuntime 桩。
+
+    ``running``/``parked`` 分别控制 ``is_session_running`` 与
+    ``has_parked_team_streams`` 的应答,模拟执行中会话与 parked 的
+    Team 常驻流。
+    """
+
+    def __init__(self, running=(), parked=()):
+        self._running = set(running)
+        self._parked = set(parked)
+
+    def is_session_running(self, session_id):
+        return session_id in self._running
+
+    def has_parked_team_streams(self, session_id):
+        return session_id in self._parked
 
 
 @pytest.fixture()
@@ -1117,6 +1149,114 @@ class TestProjectRemoveRestore:
             p["project_id"] == proj.project_id
             for p in listing["payload"]["projects"]
         )
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_rejected_by_precheck_when_session_running(registered_channel, tmp_path):
+        """预检发现项目下有会话在执行:SESSION_BUSY 拒绝,不触碰 cron 停用。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s1", project_id=proj.project_id, project_dir=pa)
+        cc = registered_channel.cron_controller
+        registered_channel.agent_client.project_lifecycle["has_running_sessions"] = True
+
+        resp = await _call(
+            registered_channel, "project.remove", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is False
+        assert resp["code"] == "SESSION_BUSY"
+
+        # 定时任务停用流程完全未启动:移除被拒后任务不能已被停用
+        cc.hide_project_jobs.assert_not_awaited()
+        listing = await _call(registered_channel, "project.list", {"filter": "all"})
+        assert any(
+            p["project_id"] == proj.project_id
+            for p in listing["payload"]["projects"]
+        )
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_requires_precheck_support(registered_channel, tmp_path):
+        proj = _make_project("P", _abspath(tmp_path, "app"))
+        del registered_channel.agent_client.project_lifecycle["has_running_sessions"]
+
+        resp = await _call(
+            registered_channel, "project.remove", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is False
+        assert resp["code"] == "SERVICE_UNAVAILABLE"
+        registered_channel.cron_controller.hide_project_jobs.assert_not_awaited()
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_authoritative_busy_scan_blocks(registered_channel, tmp_path):
+        """commit 侧权威扫描兜底:预检漏报(竞态)时仍拒绝隐藏项目。"""
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_run", project_id=proj.project_id, project_dir=pa)
+        # 预检应答保持默认 has_running_sessions=False,只让 AgentServer 侧
+        # runtime 桩报告 s_run 在执行,模拟预检与提交之间的竞态窗口。
+        registered_channel.agent_client.project_runtime = _FakeRemoveRuntime(
+            running={"s_run"}
+        )
+
+        resp = await _call(
+            registered_channel, "project.remove", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is False
+        assert resp["code"] == "SESSION_BUSY"
+
+        from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+        assert get_project_by_id(proj.project_id, cache_bust=True).hidden is False
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_busy_scan_exemptions(registered_channel, tmp_path, monkeypatch):
+        """扫描豁免:parked Team 常驻流、cron 执行会话、其他项目的会话不阻塞。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+            ProjectAdapter,
+        )
+
+        pa = _abspath(tmp_path, "app")
+        pb = _abspath(tmp_path, "other")
+        proj = _make_project("P", pa)
+        other = _make_project("Other", pb)
+        _make_session("s_idle", project_id=proj.project_id, project_dir=pa)
+        _make_session("s_park", project_id=proj.project_id, project_dir=pa)
+        _make_session("s_cron", project_id=proj.project_id, project_dir=pa, cron_id="cron_1")
+        _make_session("s_other", project_id=other.project_id, project_dir=pb)
+
+        runtime = _FakeRemoveRuntime(
+            running={"s_park", "s_cron", "s_other"},
+            parked={"s_park"},
+        )
+        from jiuwenswarm.server.runtime.gateway_adapter import project_adapter
+
+        collect = project_adapter.collect_all_sessions_metadata
+        scans = 0
+
+        def counted_collect():
+            nonlocal scans
+            scans += 1
+            return collect()
+
+        monkeypatch.setattr(project_adapter, "collect_all_sessions_metadata", counted_collect)
+        response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
+            AgentRequest(
+                request_id="req-busy-scan",
+                channel_id="web",
+                session_id="",
+                req_method=ReqMethod.PROJECT_REMOVE,
+                params={"project_id": proj.project_id},
+                user_id="",
+            )
+        )
+        assert response.ok is True
+        assert scans == 1
+        # s_idle + s_park 计入 affected(cron 执行会话与外部项目会话不计)
+        assert response.payload["affected_sessions"] == 2
 
     @staticmethod
     @pytest.mark.asyncio

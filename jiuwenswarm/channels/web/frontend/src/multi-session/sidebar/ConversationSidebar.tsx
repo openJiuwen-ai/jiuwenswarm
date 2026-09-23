@@ -1186,7 +1186,7 @@ export function ConversationSidebar({
     return <Archive aria-hidden size={16} strokeWidth={1.8} />;
   }
 
-  // 移除/恢复项目失败时的可翻译文案；重名冲突与定时任务停止失败都给出可操作提示。
+  // 移除/恢复项目失败时的可翻译文案；重名冲突、定时任务停止失败与会话运行中都给出可操作提示。
   function projectActionErrorText(error: unknown): string {
     const code = getArchiveErrorCode(error);
     if (code === 'PROJECT_NAME_CONFLICT') {
@@ -1194,6 +1194,9 @@ export function ConversationSidebar({
     }
     if (code === 'CRON_STOP_FAILED') {
       return t('multiSession.project.errors.cronStopFailed');
+    }
+    if (code === 'SESSION_BUSY') {
+      return t('multiSession.project.errors.removeSessionBusy');
     }
     return error instanceof Error ? error.message : String(error);
   }

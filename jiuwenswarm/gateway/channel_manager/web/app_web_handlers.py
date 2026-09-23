@@ -2937,7 +2937,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _project_remove(ws, req_id, params, session_id, user_id=None):
         """Forward project soft-deletion; stop its cron jobs, clean Git watchers."""
         from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
 
         project_id = str((params or {}).get("project_id") or "").strip()
 
@@ -2949,28 +2949,63 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
 
-        async def _after_remove(ok: bool, _payload: object) -> None:
-            if not ok:
-                return
+        # 移除前先问 AgentServer 项目下是否有会话在执行:必须在 hide_project_jobs
+        # 之前拦截,否则定时任务已被停用、移除却被取消,留下任务全部停用的
+        # 半残状态。预检失败或旧版 AgentServer 不认识该参数时不触碰 cron;
+        # 通过预检后仍由 commit 侧重新扫描,覆盖期间新启动的会话。
+        precheck_ok, precheck_payload = await fetch_agent_unary(
+            agent_client=_resolve(agent_client),
+            req_method=ReqMethod.PROJECT_LIFECYCLE,
+            params={"project_id": project_id, "running_sessions": True},
+            session_id=session_id,
+            user_id=user_id,
+            channel_id="web",
+            label="project.remove.precheck",
+            timeout_seconds=10,
+        )
+        if not precheck_ok or "has_running_sessions" not in precheck_payload:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error=str(precheck_payload.get("error") or "project remove precheck unavailable"),
+                code=str(precheck_payload.get("code") or "SERVICE_UNAVAILABLE"),
+            )
+            return
+        if precheck_payload["has_running_sessions"]:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="project has running sessions; stop them before removing",
+                code="SESSION_BUSY",
+            )
+            return
+
+        async def _after_remove() -> None:
             registry = getattr(channel, "git_watcher_registry", None)
             if registry is not None and project_id:
                 registry.cleanup_project(project_id)
             _schedule_agent_prewarm_sync("project.remove")
             await _broadcast_project_event("project.removed", project_id, user_id)
 
+        class _RemoveCommitError(Exception):
+            def __init__(self, payload: dict) -> None:
+                self.code = str(payload.get("code") or "BAD_REQUEST")
+                super().__init__(str(payload.get("error") or "project.remove failed"))
+
+        remove_payload: dict = {}
+
         async def commit():
-            await proxy_unary_request(
-                channel=channel,
+            nonlocal remove_payload
+            ok, payload = await fetch_agent_unary(
                 agent_client=_resolve(agent_client),
-                ws=ws,
-                req_id=req_id,
                 params=params if isinstance(params, dict) else {},
                 session_id=session_id,
                 user_id=user_id,
                 req_method=ReqMethod.PROJECT_REMOVE,
+                channel_id="web",
                 label="project.remove",
-                on_done=_after_remove,
             )
+            if not ok:
+                raise _RemoveCommitError(payload)
+            remove_payload = payload
 
         cc = _get_cron()
         if cc is None:
@@ -2978,9 +3013,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         try:
             await cc.hide_project_jobs(project_id, commit=commit)
+        except _RemoveCommitError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+            return
         except Exception as exc:
             logger.warning("project remove failed: %s", exc, exc_info=True)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CRON_STOP_FAILED")
+            return
+        await channel.send_response(ws, req_id, ok=True, payload=remove_payload)
+        await _after_remove()
 
     async def _project_restore(ws, req_id, params, session_id, user_id=None):
         """Forward project restoration to the target AgentServer."""

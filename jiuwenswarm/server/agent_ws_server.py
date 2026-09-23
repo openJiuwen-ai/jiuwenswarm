@@ -1138,7 +1138,7 @@ class AgentWebSocketServer:
             SessionAdapter(),
             WorkspaceFileAdapter(),
             MemoryAdapter(),
-            ProjectAdapter(),
+            ProjectAdapter(runtime_probe=self._execution_runtime),
             HarmonyOSAdapter(),
             ConfigAdapter(),
         ):
@@ -1999,7 +1999,7 @@ class AgentWebSocketServer:
                     SessionAdapter(),
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),
-                    ProjectAdapter(),
+                    ProjectAdapter(runtime_probe=self._execution_runtime),
                     HarmonyOSAdapter(),
                     ConfigAdapter(),
                 ):
@@ -5505,6 +5505,23 @@ class AgentWebSocketServer:
                 # 项目的定时任务不到点触发、不进任务列表。
                 payload["hidden"] = bool(project is not None and project.hidden)
                 payload["operation"] = lc.state("project", project_id).get("operation")
+                if params.get("running_sessions"):
+                    # project.remove 的移除前预检专用;cron 准入的常规查询不
+                    # 带该参数,不付全量会话扫描的成本。判定与 project.remove
+                    # 的 busy 扫描(_project_busy_sessions)完全一致。
+                    if project is None or project.hidden:
+                        payload["has_running_sessions"] = False
+                    else:
+                        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+                            _project_busy_sessions,
+                        )
+                        payload["has_running_sessions"] = bool(
+                            await asyncio.to_thread(
+                                _project_busy_sessions,
+                                project_id,
+                                self._execution_runtime(),
+                            )
+                        )
             elif method.startswith("session."):
                 ids = lc.parse_ids(params, delete=method == "session.delete")
                 results = []
