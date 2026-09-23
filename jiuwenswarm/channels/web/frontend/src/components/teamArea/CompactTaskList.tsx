@@ -24,16 +24,15 @@ import { useTranslation } from 'react-i18next';
 import { ApplicationTaskControls } from '../../applicationPlugins/ApplicationTaskControls';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
-import statusProcessingIcon from '../../assets/work-mode/status-processing.svg';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import statusSuccessIcon from '../../assets/work-mode/status-success.svg';
 import statusWaitingIcon from '../../assets/work-mode/status-waiting.svg';
 import statusWarningIcon from '../../assets/work-mode/status-warning.svg';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TaskColumnKey, type TeamMember } from './shared';
 
-const compactStatusIcons: Record<TaskColumnKey, string> = {
+const compactStatusIcons: Record<Exclude<TaskColumnKey, 'running'>, string> = {
   completed: statusSuccessIcon,
-  running: statusProcessingIcon,
   waiting: statusWaitingIcon,
   cancelled: statusWarningIcon,
 };
@@ -91,11 +90,18 @@ export function CompactTaskList({
         const columnKey = getTaskColumnKey(task);
         const statusIcon = renderStatusIcon ? (
           renderStatusIcon(task)
+        ) : columnKey === 'running' ? (
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+          >
+            <LoadingSpinner />
+          </span>
         ) : (
           <span className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden">
             <img
               src={compactStatusIcons[columnKey]}
-              className={`h-4 w-4 shrink-0 ${columnKey === 'running' ? 'animate-spin' : ''}`}
+              className="h-4 w-4 shrink-0"
               aria-hidden="true"
               data-testid="team-area-task-planning-task-status-icon"
             />
