@@ -3,6 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import type { Message, TeamMemberContextCompressionState } from '../../types';
 import type { TeamMemberExecutionEvent, TeamTask as SessionTeamTask } from '../../stores/sessionStore';
+import {
+  shouldPresentTeamMemberIdle,
+  type TeamConnectionPresentation,
+} from '../../features/teamConnectionPresentation';
 import { MarkdownMessageBody } from '../ChatPanel/MessageItem';
 import { parseTeamEventMessage, type ParsedTeamEvent } from '../ChatPanel/teamEventUtils';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
@@ -34,6 +38,7 @@ type TeamMembersPanelProps = {
   variant: 'compact' | 'expanded';
   members: TeamMember[];
   tasks?: SessionTeamTask[];
+  connectionPresentation?: TeamConnectionPresentation | null;
   selectedMemberId?: string;
   selectedMember?: TeamMember | null;
   activeDetailTab?: TeamDetailTab;
@@ -107,6 +112,7 @@ export function TeamMembersPanel({
   variant,
   members,
   tasks = [],
+  connectionPresentation = null,
   selectedMemberId = '',
   selectedMember = null,
   activeDetailTab = 'members',
@@ -173,6 +179,7 @@ export function TeamMembersPanel({
                 key={member.member_id}
                 member={member}
                 compact
+                showIdleStatus={shouldPresentTeamMemberIdle(member.member_id, member.status, connectionPresentation)}
                 taskProgress={memberTaskProgress[member.member_id]}
                 onClick={() => onMemberClick?.(member.member_id)}
               />
@@ -236,6 +243,7 @@ export function TeamMembersPanel({
                 key={member.member_id}
                 member={member}
                 selected={visibleSelectedMember?.member_id === member.member_id}
+                showIdleStatus={shouldPresentTeamMemberIdle(member.member_id, member.status, connectionPresentation)}
                 onClick={() => onSelectMember?.(member.member_id)}
               />
             ))
@@ -256,6 +264,7 @@ export function TeamMembersPanel({
         <MemberOverviewPanel
           members={visibleMembers}
           tasks={tasks}
+          connectionPresentation={connectionPresentation}
           historyMessages={historyMessages}
           onMemberClick={(memberId) => onSelectMember?.(memberId)}
         />
@@ -392,11 +401,13 @@ function GroupChatMessage({ event }: { event: ParsedTeamEvent }) {
 function MemberOverviewPanel({
   members,
   tasks,
+  connectionPresentation,
   historyMessages,
   onMemberClick,
 }: {
   members: TeamMember[];
   tasks: SessionTeamTask[];
+  connectionPresentation: TeamConnectionPresentation | null;
   historyMessages?: Message[];
   onMemberClick: (memberId: string) => void;
 }) {
@@ -420,6 +431,7 @@ function MemberOverviewPanel({
                 member={member}
                 sequence={index + 1}
                 tasks={tasks}
+                connectionPresentation={connectionPresentation}
                 historyMessages={historyMessages}
                 onClick={() => onMemberClick(member.member_id)}
               />
@@ -435,12 +447,14 @@ const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
   member,
   sequence,
   tasks,
+  connectionPresentation,
   historyMessages = [],
   onClick,
 }: {
   member: TeamMember;
   sequence: number;
   tasks?: SessionTeamTask[];
+  connectionPresentation: TeamConnectionPresentation | null;
   historyMessages?: Message[];
   onClick?: () => void;
 }) {
@@ -471,11 +485,13 @@ const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
   const displayName = getMemberDisplayName(member);
   const statusKey = getMemberStatusKey(member);
   const isRunning = statusKey === 'running';
-  const statusIcon = isRunning ? (
-    <LoadingIcon className="h-4 w-4 shrink-0 text-muted animate-spin" />
-  ) : (
-    <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
-  );
+  const showIdleStatus = shouldPresentTeamMemberIdle(member.member_id, member.status, connectionPresentation);
+  const statusIcon =
+    isRunning && !showIdleStatus ? (
+      <LoadingIcon className="h-4 w-4 shrink-0 text-muted animate-spin" />
+    ) : (
+      <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
+    );
 
   return (
     <MemberOverviewCard

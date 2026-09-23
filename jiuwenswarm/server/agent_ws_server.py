@@ -6111,7 +6111,10 @@ class AgentWebSocketServer:
                     snapshot = db_snapshot
                     source = "db"
 
-        payload = snapshot or empty_payload
+        payload = {
+            **(snapshot or empty_payload),
+            "members_source": source if snapshot is not None else "empty",
+        }
         members = payload.get("members") if isinstance(payload, dict) else []
         tasks = _snapshot_tasks(payload if isinstance(payload, dict) else None)
         logger.info(
