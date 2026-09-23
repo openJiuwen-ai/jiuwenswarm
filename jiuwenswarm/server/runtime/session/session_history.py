@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import atexit
 import datetime
 import logging
@@ -19,7 +20,7 @@ from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 logger = logging.getLogger(__name__)
 _FILE_LOCK = threading.Lock()
-_WRITE_QUEUE: queue.Queue[tuple[str, dict[str, Any], str | None]] = queue.Queue(maxsize=20000)
+_WRITE_QUEUE: queue.Queue[tuple[str, list[dict[str, Any]], str | None]] = queue.Queue(maxsize=20000)
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
 _LEGACY_HISTORY_FILENAME = "history.json"
@@ -606,6 +607,9 @@ def write_history_records(
         if preserve_existing_format
         else get_write_history_path(session_id)
     )
+    # 整文件重写前先排空异步写队列，避免重写结果与排队中的 append 交错
+    _ensure_worker_started()
+    _WRITE_QUEUE.join()
     with _FILE_LOCK:
         _write_records_to_path(path, records)
     return path
@@ -753,9 +757,24 @@ def read_session_history_records(session_id: str) -> list[dict[str, Any]]:
 
 
 def _batch_write_items(session_id: str, items: list[dict], sessions_root: str | None) -> None:
-    """批量写入 history.json（一次 open 写多行）。_FILE_LOCK 串行化磁盘写。"""
+    """批量写入 history.json（一次 open 写多行）。_FILE_LOCK 串行化磁盘写。
+
+    事件循环线程上只入队，由 session-history-writer 单线程落盘；队列满时
+    退化为调用方同步写。
+    """
     if not items:
         return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        _ensure_worker_started()
+        try:
+            _WRITE_QUEUE.put_nowait((session_id, items, sessions_root))
+            return
+        except queue.Full:
+            pass
     with _FILE_LOCK:
         if use_legacy_history_json():
             target_path = _ensure_legacy_json_bootstrap(session_id, sessions_root=sessions_root)
@@ -768,10 +787,6 @@ def _batch_write_items(session_id: str, items: list[dict], sessions_root: str | 
                 fh.write("\n")
 
 
-def _write_item(session_id: str, item: dict[str, Any], sessions_root: str | None = None) -> None:
-    _batch_write_items(session_id, [item], sessions_root)
-
-
 def _ensure_worker_started() -> None:
     global _WORKER_STARTED
     if _WORKER_STARTED:
@@ -782,9 +797,9 @@ def _ensure_worker_started() -> None:
 
         def _worker() -> None:
             while True:
-                sid, item, sessions_root = _WRITE_QUEUE.get()
+                sid, items, sessions_root = _WRITE_QUEUE.get()
                 try:
-                    _write_item(sid, item, sessions_root)
+                    _batch_write_items(sid, items, sessions_root)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("history 异步写入失败: %s", exc)
                 finally:
@@ -1173,11 +1188,7 @@ def append_history_record(
         _route_event(sid, item, et, sessions_root_s)
     except Exception as exc:  # noqa: BLE001
         logger.warning("history 缓冲写入失败，降级直写: %s", exc)
-        _ensure_worker_started()
-        try:
-            _WRITE_QUEUE.put_nowait((sid, item, sessions_root_s))
-        except queue.Full:
-            _write_item(sid, item, sessions_root_s)
+        _batch_write_items(sid, [item], sessions_root_s)
 
     # 工具调用成败统计：tool_call/tool_result 事件后防抖触发后台增量扫描（不阻塞主流程）
     if et in ("chat.tool_call", "chat.tool_result"):

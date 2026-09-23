@@ -351,7 +351,11 @@ from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
     setup_permissions_session_scope,
 )
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
-from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
+from jiuwenswarm.server.runtime.session.session_history import (
+    append_history_record,
+    flush_session_history,
+    load_history_records,
+)
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.prompt_attachment_loader import PromptAttachmentLoader
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
@@ -16566,6 +16570,8 @@ class JiuWenSwarmDeepAdapter:
         """Return True when this session already persisted a completion card for goal_id."""
         message_id = f"goal-completed-{goal_id}"
         try:
+            # 落盘为异步队列，去重检查前先排空，防止重复写完成卡
+            flush_session_history(session_id)
             for rec in load_history_records(session_id):
                 if not isinstance(rec, dict):
                     continue
