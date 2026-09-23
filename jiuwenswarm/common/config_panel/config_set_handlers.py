@@ -91,6 +91,12 @@ from jiuwenswarm.server.runtime.a2ui.integration import (
     get_default_a2ui_config_payload,
     validate_a2ui_config_update,
 )
+from jiuwenswarm.symphony.config import (
+    DEFAULT_EVOLUTION_ENABLED,
+    DEFAULT_SYMPHONY_ENABLED,
+    resolve_symphony_enabled,
+    resolve_symphony_evolution_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -388,8 +394,12 @@ def canonical_permission_facade(profile: str) -> dict[str, str]:
 
 
 SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "symphony_enabled": (("enabled",), "bool", False),
-    "symphony_evolution_enabled": (("evolution", "flow", "enabled"), "bool", False),
+    "symphony_enabled": (("enabled",), "bool", DEFAULT_SYMPHONY_ENABLED),
+    "symphony_evolution_enabled": (
+        ("evolution", "flow", "enabled"),
+        "bool",
+        DEFAULT_EVOLUTION_ENABLED,
+    ),
 }
 SYMPHONY_CONFIG_KEYS = tuple(SYMPHONY_CONFIG_SPECS.keys())
 SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
@@ -485,12 +495,20 @@ def flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in SYMPHONY_CONFIG_SPECS.items():
         value = get_nested_config_value(symphony, path, default)
-        if key == "symphony_evolution_enabled" and value == default:
-            # enabled 已移到 evolution.flow 下；旧配置（evolution.enabled）回退显示
+        if key == "symphony_evolution_enabled":
+            # null 或缺失时回退旧配置；明确写 false 时保持关闭。
+            flow = get_nested_config_value(symphony, ("evolution", "flow"), {})
             legacy = get_nested_config_value(symphony, ("evolution", "enabled"), None)
-            if legacy is not None:
+            if (
+                (not isinstance(flow, dict) or flow.get("enabled") is None)
+                and legacy is not None
+            ):
                 value = legacy
         if value_type == "bool":
+            if key == "symphony_enabled":
+                value = resolve_symphony_enabled(value)
+            elif key == "symphony_evolution_enabled":
+                value = resolve_symphony_evolution_enabled(value)
             flat[key] = "true" if bool(value) else "false"
         else:
             flat[key] = str(value)
