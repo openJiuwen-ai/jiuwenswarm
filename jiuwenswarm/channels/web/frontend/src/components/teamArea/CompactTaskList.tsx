@@ -21,20 +21,19 @@
  */
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { CircleAlert } from 'lucide-react';
 import { ApplicationTaskControls } from '../../applicationPlugins/ApplicationTaskControls';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import statusSuccessIcon from '../../assets/work-mode/status-success.svg';
 import statusWaitingIcon from '../../assets/work-mode/status-waiting.svg';
-import statusWarningIcon from '../../assets/work-mode/status-warning.svg';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TaskColumnKey, type TeamMember } from './shared';
 
-const compactStatusIcons: Record<Exclude<TaskColumnKey, 'running'>, string> = {
+const compactStatusIcons: Record<Exclude<TaskColumnKey, 'running' | 'cancelled'>, string> = {
   completed: statusSuccessIcon,
   waiting: statusWaitingIcon,
-  cancelled: statusWarningIcon,
 };
 
 export interface CompactTaskListProps {
@@ -90,16 +89,26 @@ export function CompactTaskList({
         const columnKey = getTaskColumnKey(task);
         const statusIcon = renderStatusIcon ? (
           renderStatusIcon(task)
+        ) : columnKey === 'running' ? (
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+          >
+            <LoadingSpinner />
+          </span>
+        ) : columnKey === 'cancelled' ? (
+          <span
+            className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
+            data-testid="team-area-task-planning-task-status-icon"
+          >
+            <CircleAlert className="h-4 w-4 shrink-0 text-warn" aria-hidden="true" />
+          </span>
         ) : (
           <span
             className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
             data-testid="team-area-task-planning-task-status-icon"
           >
-            {columnKey === 'running' ? (
-              <LoadingSpinner />
-            ) : (
-              <img src={compactStatusIcons[columnKey]} className="h-4 w-4 shrink-0" aria-hidden="true" />
-            )}
+            <img src={compactStatusIcons[columnKey]} className="h-4 w-4 shrink-0" aria-hidden="true" />
           </span>
         );
         return (
