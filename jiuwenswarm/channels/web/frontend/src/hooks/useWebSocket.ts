@@ -55,6 +55,12 @@ import { PLAN_ENTRY_SOURCE_PLAN_TOGGLE } from '../features/planMode/planEntrySou
 import { flushPendingGoalObjectiveBubble } from '../features/goalPendingObjectiveBubble';
 import { normalizeTaskEvent } from '../stores/teamTaskNormalize';
 import {
+  captureTeamConnectionPresentation,
+  isRunningTeamTaskStatus,
+  retainRunningTeamConnectionPresentation,
+  type TeamConnectionPresentation,
+} from '../features/teamConnectionPresentation';
+import {
   bindPendingPermissionCard,
   pendingQuestionIdentity,
   shouldClearPermissionQuestionsForLifecycleEvent,
@@ -125,6 +131,7 @@ import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
+const TEAM_CONNECTION_GRACE_MS = 5000;
 
 export function applyToolUpdatePayload(
   sessionId: string,
@@ -977,6 +984,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     onModelsUpdated,
     onCronResultArrived,
   } = options;
+  const activeSessionMode = useSessionStore(
+    (state) => state.runtimes[activeSessionId ?? '']?.mode,
+  );
+  const activeTeamMembers = useSessionStore(
+    (state) => state.runtimes[activeSessionId ?? '']?.teamMembers,
+  );
 
   // 同步更新 ref，避免竞态条件
   // 必须在渲染阶段同步更新，否则 effect 执行之前收到的事件会被错误过滤
@@ -1033,6 +1046,63 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     }
   }, []);
   const previousActiveSessionIdRef = useRef(activeSessionId);
+  const activeSessionIdRef = useRef(activeSessionId);
+  activeSessionIdRef.current = activeSessionId;
+  const lastTeamConnectionSessionRef = useRef(activeSessionId);
+  const lastTeamConnectionModeRef = useRef(activeSessionMode);
+  const teamMemberSnapshotRequestRef = useRef(
+    new Map<string, { revision: number; changedMemberIds: Set<string> }>()
+  );
+  const teamConnectionGraceTimerRef = useRef<{
+    timerId: number | null;
+    capturedBySession: Map<string, TeamConnectionPresentation>;
+    affectedSessionIds: Set<string>;
+    graceElapsed: boolean;
+  } | null>(null);
+  const captureTeamConnectionForSession = useCallback((sessionId: string) => {
+    const pending = teamConnectionGraceTimerRef.current;
+    if (!pending) return;
+    const runtime = useSessionStore.getState().getRuntime(sessionId);
+    if (runtime?.mode !== 'team') {
+      pending.capturedBySession.delete(sessionId);
+      pending.affectedSessionIds.delete(sessionId);
+      return;
+    }
+    const captured = captureTeamConnectionPresentation(runtime?.mode, runtime?.teamMembers ?? []);
+    if (!captured) {
+      pending.capturedBySession.delete(sessionId);
+      return;
+    }
+    pending.affectedSessionIds.add(sessionId);
+    pending.capturedBySession.set(sessionId, captured);
+    if (!pending.graceElapsed || runtime?.mode !== 'team') return;
+    const presentation = retainRunningTeamConnectionPresentation(captured, runtime.teamMembers);
+    if (presentation) {
+      useSessionStore.getState().setTeamConnectionPresentation(sessionId, presentation);
+    }
+  }, []);
+  const clearPendingTeamConnectionMember = useCallback((sessionId: string, memberId: string) => {
+    const pending = teamConnectionGraceTimerRef.current;
+    const captured = pending?.capturedBySession.get(sessionId);
+    if (!pending || !captured) return;
+    const memberIds = captured.memberIds.filter((id) => id !== memberId);
+    pending.capturedBySession.set(sessionId, { memberIds });
+  }, []);
+  const markTeamConnectionStateChanged = useCallback((sessionId: string, memberId?: string) => {
+    const request = teamMemberSnapshotRequestRef.current.get(sessionId);
+    if (!request) return;
+    if (memberId) {
+      request.changedMemberIds.add(memberId);
+    } else {
+      request.revision += 1;
+    }
+  }, []);
+  const clearConnectionPresentationForUserAction = useCallback((sessionId: string) => {
+    const pending = teamConnectionGraceTimerRef.current;
+    pending?.capturedBySession.delete(sessionId);
+    markTeamConnectionStateChanged(sessionId);
+    useSessionStore.getState().clearTeamConnectionPresentation(sessionId);
+  }, [markTeamConnectionStateChanged]);
   const teamMemberOutputEventRef = useRef<Map<string, string>>(new Map());
   const eventDedupDroppedRef = useRef<Record<string, number>>({});
   const symphonyStatusTargetRef = useRef<Map<string, { messageId: string; baseContent: string }>>(
@@ -1085,6 +1155,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     }
     previousActiveSessionIdRef.current = activeSessionId;
   }, [activeSessionId, clearPendingSubagentCorrelations]);
+
+  useEffect(() => {
+    const sessionChanged = lastTeamConnectionSessionRef.current !== activeSessionId;
+    const modeChanged = lastTeamConnectionModeRef.current !== activeSessionMode;
+    lastTeamConnectionSessionRef.current = activeSessionId;
+    lastTeamConnectionModeRef.current = activeSessionMode;
+
+    const pending = teamConnectionGraceTimerRef.current;
+    if (!pending || !activeSessionId) return;
+    const connectionState = webClient.getState();
+    if (connectionState !== 'reconnecting' && connectionState !== 'connecting') return;
+    if (activeSessionMode !== 'team') {
+      pending.capturedBySession.delete(activeSessionId);
+      pending.affectedSessionIds.delete(activeSessionId);
+      return;
+    }
+    if (!sessionChanged && !modeChanged && pending.capturedBySession.has(activeSessionId)) return;
+    captureTeamConnectionForSession(activeSessionId);
+  }, [
+    activeSessionId,
+    activeSessionMode,
+    activeTeamMembers,
+    captureTeamConnectionForSession,
+  ]);
 
   const flushPendingStreamDelta = useCallback((sessionId: string) => {
     const streamId = useChatStore.getState().getRuntime(sessionId)?.currentStreamId;
@@ -1162,6 +1256,102 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     []
   );
 
+  const reconcileTeamMembersFromSnapshot = useCallback(async (sessionId: string) => {
+    if (webClient.getState() !== 'ready') return;
+    if (teamMemberSnapshotRequestRef.current.has(sessionId)) return;
+    const requestState = { revision: 0, changedMemberIds: new Set<string>() };
+    teamMemberSnapshotRequestRef.current.set(sessionId, requestState);
+    try {
+      const response = await request<{ members?: unknown; members_source?: string }>(
+        'team.snapshot',
+        { session_id: sessionId },
+        { timeoutMs: 5000 },
+      );
+      if (
+        teamMemberSnapshotRequestRef.current.get(sessionId) !== requestState ||
+        requestState.revision !== 0
+      ) return;
+      if (response?.members_source !== 'live') return;
+      if (!Array.isArray(response?.members) || response.members.length === 0) return;
+      const runtime = useSessionStore.getState().getRuntime(sessionId);
+      if (runtime?.mode !== 'team') return;
+
+      const timestamp = Date.now();
+      const snapshotMembers = response.members.flatMap((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+        const snapshotMember = item as Record<string, unknown>;
+        const memberId = typeof snapshotMember.member_id === 'string'
+          ? snapshotMember.member_id.trim()
+          : '';
+        const status = typeof snapshotMember.status === 'string' ? snapshotMember.status : '';
+        if (!memberId || !status) return [];
+        const existing = runtime.teamMembers.find((member) => member.member_id === memberId);
+        return [{
+          id: existing?.id ?? `team-snapshot-${memberId}`,
+          member_id: memberId,
+          status,
+          timestamp,
+          name: typeof snapshotMember.name === 'string' ? snapshotMember.name : existing?.name,
+          execution_status:
+            snapshotMember.execution_status === null || typeof snapshotMember.execution_status === 'string'
+              ? snapshotMember.execution_status
+              : existing?.execution_status,
+          mode: typeof snapshotMember.mode === 'string' ? snapshotMember.mode : existing?.mode,
+          role: typeof snapshotMember.role === 'string' ? snapshotMember.role : existing?.role,
+          cli_agent:
+            snapshotMember.cli_agent === null || typeof snapshotMember.cli_agent === 'string'
+              ? snapshotMember.cli_agent
+              : existing?.cli_agent,
+        }];
+      });
+      if (snapshotMembers.length !== response.members.length || snapshotMembers.length === 0) return;
+
+      const changedMemberIds = requestState.changedMemberIds;
+      const reconciledMemberIds = snapshotMembers
+        .filter((member) => !changedMemberIds.has(member.member_id))
+        .map((member) => member.member_id);
+      if (reconciledMemberIds.length === 0) return;
+
+      const snapshotMemberIds = new Set(snapshotMembers.map((member) => member.member_id));
+      const members = snapshotMembers.flatMap((member) => {
+        if (!changedMemberIds.has(member.member_id)) return [member];
+        const currentMember = runtime.teamMembers.find(
+          (candidate) => candidate.member_id === member.member_id
+        );
+        return currentMember ? [currentMember] : [];
+      });
+      for (const member of runtime.teamMembers) {
+        if (changedMemberIds.has(member.member_id) && !snapshotMemberIds.has(member.member_id)) {
+          members.push(member);
+        }
+      }
+
+      const currentRuntime = useSessionStore.getState().getRuntime(sessionId);
+      if (currentRuntime?.mode !== 'team') return;
+      useSessionStore.getState().setTeamMembers(sessionId, members);
+      if (changedMemberIds.size === 0) {
+        useSessionStore.getState().clearTeamConnectionPresentation(sessionId);
+      } else {
+        for (const memberId of reconciledMemberIds) {
+          useSessionStore.getState().clearTeamConnectionPresentation(sessionId, memberId);
+        }
+      }
+    } catch {
+      // Keep the stale-connection presentation until a member event can reconcile it.
+    } finally {
+      if (teamMemberSnapshotRequestRef.current.get(sessionId) === requestState) {
+        teamMemberSnapshotRequestRef.current.delete(sessionId);
+      }
+    }
+  }, [request]);
+
+  useEffect(() => {
+    if (connectionState !== 'ready' || !activeSessionId || activeSessionMode !== 'team') return;
+    const runtime = useSessionStore.getState().getRuntime(activeSessionId);
+    if (!runtime?.teamConnectionPresentation) return;
+    void reconcileTeamMembersFromSnapshot(activeSessionId);
+  }, [activeSessionId, activeSessionMode, connectionState, reconcileTeamMembersFromSnapshot]);
+
   const clearPendingAgentGroupBinding = useCallback((sessionId: string) => {
     const pending = pendingAgentGroupBindingRef.current.get(sessionId);
     if (!pending) return;
@@ -1175,6 +1365,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const timer = window.setTimeout(() => {
       const pending = pendingAgentGroupBindingRef.current.get(sessionId);
       if (pending?.id !== groupId) return;
+      if (webClient.getState() !== 'ready') return;
       pendingAgentGroupBindingRef.current.delete(sessionId);
       const reconcile = reconcileAgentGroupBindingRef.current?.(sessionId);
       if (!reconcile) {
@@ -1852,6 +2043,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
             : {}),
         });
+        clearConnectionPresentationForUserAction(sessionId);
         if (sessionMetadata) {
           useSessionStore.getState().setSessionMetadata(sessionId, null);
         }
@@ -1882,6 +2074,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     },
     [
       closeActiveTeamLeaderMessages,
+      clearConnectionPresentationForUserAction,
       drainTaskQueueIfIdle,
       markPendingAgentGroupBinding,
       persistDocuments,
@@ -1944,6 +2137,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...agentGroupSelectionPayload,
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
         });
+        clearConnectionPresentationForUserAction(sessionId);
         if (agentGroupSelectionPayload.agent_group_name) {
           await reconcileAgentGroupBinding(sessionId);
         }
@@ -1968,6 +2162,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     },
     [
       clearFailedAgentGroupBinding,
+      clearConnectionPresentationForUserAction,
       markPendingAgentGroupBinding,
       reconcileAgentGroupBinding,
       request,
@@ -2058,6 +2253,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           if (selectedModel) params.model_name = selectedModel;
         }
         await request('chat.interrupt', params);
+        if (intent === 'supplement' || intent === 'resume') {
+          clearConnectionPresentationForUserAction(sessionId);
+        }
         if (intent === 'supplement') {
           // 成功发出后才消费 explicit-entry 标记（与 sendMessage 一致），失败时保留以便重试。
           consumePlanEntryMark(sessionId, String(params.mode));
@@ -2071,6 +2269,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     },
     [
       closeActiveTeamLeaderMessages,
+      clearConnectionPresentationForUserAction,
       request,
       resetContextCompressionTurn,
       t,
@@ -2155,6 +2354,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }
 
+      clearConnectionPresentationForUserAction(sessionId);
       useSessionStore.getState().setMode(sessionId, mode);
       if (sessionId && sessionId !== 'new') {
         updateSession(sessionId, { mode });
@@ -2164,7 +2364,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setSwitchingMode(sessionId, false);
       }, 300);
     },
-    [updateSession, interrupt]
+    [clearConnectionPresentationForUserAction, updateSession, interrupt],
   );
 
   // 发送用户回答
@@ -4739,6 +4939,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             updated_at?: number | string | null;
             workflow_run_id?: string;
           };
+          const memberId = e.assignee || e.member_id;
+          if (memberId && e.status && isRunningTeamTaskStatus(e.status)) {
+            clearPendingTeamConnectionMember(sessionId, memberId);
+            useSessionStore.getState().clearTeamConnectionPresentation(sessionId, memberId);
+          }
           if (e.type === 'team.task.created' && e.task_id) {
             useSessionStore.getState().registerConfirmedTeamTaskCreation(sessionId, e.task_id);
           }
@@ -4784,6 +4989,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             role?: string;
             cli_agent?: string | null;
           };
+          if (e.member_id) markTeamConnectionStateChanged(sessionId, e.member_id);
+          if (e.member_id && (e.status || e.new_status || e.execution_status)) {
+            clearPendingTeamConnectionMember(sessionId, e.member_id);
+            useSessionStore.getState().clearTeamConnectionPresentation(sessionId, e.member_id);
+          }
           const activeSessionId = getPayloadSessionId(payload) || undefined;
           upsertHumanShareCommandFromEvent(payload, e);
           if (e.type === 'team.member.shutdown' && e.member_id) {
@@ -5035,8 +5245,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     closeHeartbeatSessionState,
     drainTaskQueueIfIdle,
     isProactiveRecommendationPayload,
+    clearPendingTeamConnectionMember,
     clearPendingTeamMemberContextCompressionStart,
     clearTeamMemberContextCompressionStatus,
+    markTeamConnectionStateChanged,
     findExistingTeamMemberId,
     finishContextCompressionTurn,
     flushPendingStreamDelta,
@@ -5140,6 +5352,47 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const connected = state === 'ready';
       setIsConnected(connected);
       setConnected(connected);
+      if (connected && teamConnectionGraceTimerRef.current) {
+        const pending = teamConnectionGraceTimerRef.current;
+        if (pending.timerId !== null) window.clearTimeout(pending.timerId);
+        teamConnectionGraceTimerRef.current = null;
+        for (const sessionId of pending.affectedSessionIds) {
+          void reconcileTeamMembersFromSnapshot(sessionId);
+        }
+      }
+      if (state === 'reconnecting' && wasConnectedRef.current && !teamConnectionGraceTimerRef.current) {
+        const pending = {
+          timerId: null as number | null,
+          capturedBySession: new Map<string, TeamConnectionPresentation>(),
+          affectedSessionIds: new Set<string>(),
+          graceElapsed: false,
+        };
+        teamConnectionGraceTimerRef.current = pending;
+        for (const [sessionId, runtime] of Object.entries(useSessionStore.getState().runtimes)) {
+          if (runtime.mode === 'team') captureTeamConnectionForSession(sessionId);
+        }
+        const activeSessionId = activeSessionIdRef.current;
+        if (activeSessionId) captureTeamConnectionForSession(activeSessionId);
+
+        pending.timerId = window.setTimeout(() => {
+          if (teamConnectionGraceTimerRef.current !== pending) return;
+          pending.timerId = null;
+          const currentConnectionState = webClient.getState();
+          if (currentConnectionState !== 'reconnecting' && currentConnectionState !== 'connecting') {
+            teamConnectionGraceTimerRef.current = null;
+            return;
+          }
+          pending.graceElapsed = true;
+          for (const [sessionId, captured] of pending.capturedBySession) {
+            const currentRuntime = useSessionStore.getState().getRuntime(sessionId);
+            if (currentRuntime?.mode !== 'team') continue;
+            const presentation = retainRunningTeamConnectionPresentation(captured, currentRuntime.teamMembers);
+            if (presentation) {
+              useSessionStore.getState().setTeamConnectionPresentation(sessionId, presentation);
+            }
+          }
+        }, TEAM_CONNECTION_GRACE_MS);
+      }
       if (!connected && (state === 'reconnecting' || state === 'closed')) {
         streamDeltaBatcherRef.current?.flushAll();
         clearPendingSubagentCorrelations();
@@ -5157,17 +5410,43 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         const reconcile = reconcileAgentGroupBindingRef.current;
         if (reconcile) {
-          for (const sessionId of pendingAgentGroupBindingRef.current.keys()) {
-            void reconcile(sessionId);
+          for (const sessionId of Array.from(pendingAgentGroupBindingRef.current.keys())) {
+            const pending = pendingAgentGroupBindingRef.current.get(sessionId);
+            if (!pending) continue;
+            clearPendingAgentGroupBinding(sessionId);
+            void reconcile(sessionId).finally(() => {
+              const runtime = useSessionStore.getState().getRuntime(sessionId);
+              if (
+                runtime?.agentGroupBinding === pending.id ||
+                runtime?.agentGroupBindingPending !== pending.id
+              ) return;
+              if (useChatStore.getState().getRuntime(sessionId)?.isProcessing) {
+                markPendingAgentGroupBinding(sessionId, pending.id);
+              } else {
+                useSessionStore.getState().setAgentGroupBindingPending(sessionId, null);
+              }
+            });
           }
         }
       }
       wasConnectedRef.current = connected;
     });
     return () => {
+      const pending = teamConnectionGraceTimerRef.current;
+      if (pending) {
+        if (pending.timerId !== null) window.clearTimeout(pending.timerId);
+        teamConnectionGraceTimerRef.current = null;
+      }
       unsub();
     };
-  }, [clearPendingSubagentCorrelations, setConnected]);
+  }, [
+    captureTeamConnectionForSession,
+    clearPendingAgentGroupBinding,
+    clearPendingSubagentCorrelations,
+    markPendingAgentGroupBinding,
+    reconcileTeamMembersFromSnapshot,
+    setConnected,
+  ]);
 
   useEffect(() => {
     // 真实环境联调方案 9c：未完成目标超过 1 分钟没收到新的 goal.snapshot/goal.updated 事件，
