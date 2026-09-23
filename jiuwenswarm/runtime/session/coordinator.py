@@ -24,7 +24,7 @@ from jiuwenswarm.runtime.session.model import (
     SessionWorkKind,
 )
 from jiuwenswarm.runtime.session.work_scheduler import SessionWorkScheduler
-from jiuwenswarm.runtime.session_input import SessionInputTargetError
+from jiuwenswarm.runtime.session_input import SessionInputRejectedError, SessionInputTargetError
 
 T = TypeVar("T")
 
@@ -515,7 +515,7 @@ class RuntimeSessionCoordinator:
             session_id=session_id, generation=record.generation, active_only=True,
         )
         if any(handle.waiting_control_id for handle in active):
-            raise RuntimeError("session is waiting for an interaction answer; supplemental input was not sent")
+            raise SessionInputRejectedError("session is waiting for an interaction answer; supplemental input was not sent")
         parents = []
         for handle in active:
             if handle.state is not SessionExecutionState.RUNNING:
@@ -527,7 +527,7 @@ class RuntimeSessionCoordinator:
                 continue
             parents.append(handle)
         if any(handle.cancellation_requested for handle in parents):
-            raise RuntimeError("session execution is being cancelled")
+            raise SessionInputRejectedError("session execution is being cancelled")
         parent = parents[-1] if parents else None
         if expected_execution_id is not None and (
             parent is None or parent.execution_id != expected_execution_id

@@ -310,6 +310,10 @@ def is_external_user_authored_dispatch(
     # Scheduled Heartbeats reuse the original channel, including web. Inspect
     # each ingress container separately so merging metadata cannot erase a marker.
     for container in (params, metadata, params.get("metadata")):
+        if isinstance(container, dict) and isinstance(
+            container.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        ):
+            return False
         automation = container.get("automation") if isinstance(container, dict) else None
         if isinstance(automation, dict) and str(automation.get("kind") or "").strip().lower() == "heartbeat":
             return False
@@ -3537,6 +3541,11 @@ class JiuWenSwarm:
                 extra={
                     "output_order": payload.get("output_order"),
                     "is_supplemental_input": True,
+                    **{
+                        key: payload[key]
+                        for key in ("message_origin", "session_message_id", "cross_session")
+                        if key in payload
+                    },
                 },
                 mode=request.params.get("mode", "unknown"),
             )

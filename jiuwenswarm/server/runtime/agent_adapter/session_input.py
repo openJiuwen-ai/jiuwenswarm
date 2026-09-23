@@ -11,6 +11,7 @@ from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.harness.schema.interaction import InputDispatchMode
 
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY, SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.runtime.context import get_current_runtime
 from jiuwenswarm.runtime.session.model import SessionExecutionState
 from jiuwenswarm.runtime.session_input import SessionInputTargetError, resolve_session_input_mode
@@ -27,6 +28,8 @@ class QueuedSessionInput(str):
         value = super().__new__(cls, text)
         value.request_id = request_id
         value.display_content = text
+        value.cross_session = None
+        value.message_route = None
         value.boundary_ready = asyncio.Event()
         value.boundary_error = None
         return value
@@ -70,6 +73,17 @@ def enqueue_bound_session_input(instance, target_round, request, sdk_request) ->
         raise RuntimeError("active execution has no steering queue; supplemental input was not sent")
     entry = QueuedSessionInput(str(sdk_request.inputs["query"]), request.request_id)
     entry.display_content = str(request.params.get("content") or request.params.get("query") or entry)
+    cross_session = request.params.get(SESSION_MESSAGE_INTERNAL_KEY)
+    if isinstance(cross_session, dict):
+        entry.cross_session = {**cross_session, "content": entry.display_content}
+        entry.message_route = {
+            "session_id": request.session_id,
+            "request_id": request.request_id,
+            "user_id": request.user_id,
+            "chain_id": cross_session.get("chain_id", ""),
+            "parent_message_id": cross_session.get("message_id", ""),
+            "hop_count": cross_session.get("hop_count", 0),
+        }
     controller.enqueue_steer(entry)
     return entry
 
@@ -109,10 +123,17 @@ class SessionInputGuard(AgentRail):
         therefore cannot move the user bubble across already emitted text.
         """
         try:
+            provenance = {}
+            if entry.cross_session:
+                provenance = {
+                    "message_origin": SESSION_MESSAGE_ORIGIN,
+                    "session_message_id": entry.cross_session["message_id"],
+                    "cross_session": entry.cross_session,
+                }
             await self._session.write_stream(OutputSchema(
                 type="session_input_received", index=0,
                 payload={"input_request_id": entry.request_id, "content": entry.display_content,
-                         "timestamp": time.time() * 1000},
+                         "timestamp": time.time() * 1000, **provenance},
             ))
         except (Exception, asyncio.CancelledError) as exc:
             entry.boundary_error = exc
@@ -146,6 +167,14 @@ class SessionInputGuard(AgentRail):
         self._session = ctx.session
         parts = ctx.extra.pop("session_input_parts", [])
         entries = [part for part in parts if isinstance(part, QueuedSessionInput)]
+        if entries:
+            # Tool Tasks inherit the consumed Agent input's message chain,
+            # rather than resetting its hop count to that of the original turn.
+            # A mixed batch uses the deepest chain conservatively.
+            routes = [entry.message_route for entry in entries if entry.message_route]
+            ctx.extra["session_input_message_route"] = (
+                max(routes, key=lambda route: route["hop_count"]) if routes else None
+            )
         for entry in entries:
             await entry.boundary_ready.wait()
             if entry.boundary_error is not None:
