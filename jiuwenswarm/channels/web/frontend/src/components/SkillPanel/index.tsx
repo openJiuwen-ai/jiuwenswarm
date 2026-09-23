@@ -14,7 +14,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
 import NewConversationIcon from '../../assets/new_conversation.svg?react';
-import { PageCard, PageHeader, PageToolbar, PageToolbarSearch, Tabs } from '../ui';
+import SourceManagerIcon from '../../assets/skill-panel/source-manager.svg?react';
+import RefreshIcon from '../../assets/skill-panel/refresh.svg?react';
+import { PageCard, PageHeader, PageToolbar, PageToolbarSearch, Tabs, LoadingSpinner } from '../ui';
 import { webRequest } from '../../services/webClient';
 import { SourceManagerModal } from '../../features/SourceManagerModal';
 import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
@@ -596,15 +598,18 @@ export function SkillPanel({
           tooltip: t('skills.actions.goTry'),
         };
       }
+      const isInstalling = actionTarget === `install:${skill.identifier || skill.asset_id}`;
       return {
-        icon: (
+        icon: isInstalling ? (
+          <LoadingSpinner />
+        ) : (
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
           </svg>
         ),
         onClick: () => handleInstallHubSkill(skill),
-        disabled: actionTarget === `install:${skill.identifier || skill.asset_id}`,
-        tooltip: t('skills.actions.install'),
+        disabled: isInstalling,
+        tooltip: isInstalling ? undefined : t('skills.actions.install'),
       };
     },
     [skills, installedSkillNames, handleGoToChat, handleInstallHubSkill, actionTarget, t],
@@ -955,9 +960,7 @@ export function SkillPanel({
       // 从列表取会恒判为 false，导致禁用后无法再启用）
       const isSelfDetail = selectedSkill?.name === skillName;
       const listSkill = skills.find((s) => s.name === skillName);
-      const currentEnabled = isSelfDetail
-        ? selectedSkill?.enabled !== false
-        : listSkill?.enabled !== false;
+      const currentEnabled = isSelfDetail ? selectedSkill?.enabled !== false : listSkill?.enabled !== false;
       const newEnabled = !currentEnabled;
 
       // 二次确认以服务端实时探测为准：skills.toggle(dry_run) 返回该技能
@@ -974,9 +977,7 @@ export function SkillPanel({
         // 探测失败不阻塞切换：保持与旧行为一致（直接切换，不弹窗）
       }
       if (parentPacks.length > 0) {
-        const confirmed = window.confirm(
-          t('skills.packMemberToggleConfirm', { packs: parentPacks.join('、') }),
-        );
+        const confirmed = window.confirm(t('skills.packMemberToggleConfirm', { packs: parentPacks.join('、') }));
         if (!confirmed) return;
       }
 
@@ -1219,16 +1220,10 @@ export function SkillPanel({
       <PageHeader title={t('skills.title')} subtitle={t('skills.subtitle')}>
         <button
           onClick={() => setSourceModalOpen(true)}
-          className="flex items-center gap-1.5 px-1 py-1.5 rounded-lg text-sm text-text-muted hover:text-text hover:bg-secondary/50"
+          className="flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak hover:text-text hover:bg-secondary/50"
           data-testid="skill-panel-source-manager-btn"
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
-            />
-          </svg>
+          <SourceManagerIcon className="w-4 h-4" />
           {t('skills.actions.sourceManager')}
         </button>
         <button
@@ -1243,7 +1238,7 @@ export function SkillPanel({
               fetchSkills(true);
             }
           }}
-          className={`flex items-center gap-1.5 pl-[18px] pr-[24px] py-1.5 rounded-lg text-sm text-text-muted ${
+          className={`flex items-center gap-2 py-1.5 rounded-lg text-sm text-text-weak ${
             activeTab === 'graph' && graphReading
               ? 'cursor-not-allowed opacity-70'
               : 'hover:text-text hover:bg-secondary/50'
@@ -1251,18 +1246,7 @@ export function SkillPanel({
           disabled={activeTab === 'graph' && graphReading}
           data-testid="skill-panel-refresh-btn"
         >
-          <svg
-            className={`w-4 h-4 ${activeTab === 'graph' && graphReading ? 'animate-spin' : ''}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-            <path d="M21 3v5h-5" />
-          </svg>
+          <RefreshIcon className={`w-4 h-4 ${activeTab === 'graph' && graphReading ? 'animate-spin' : ''}`} />
           {activeTab === 'graph' && graphReading ? t('skills.graph.status.reading') : t('common.refresh')}
         </button>
       </PageHeader>
@@ -1271,7 +1255,7 @@ export function SkillPanel({
         <Tabs
           wrapperTestId="skill-panel-toolbar-tabs"
           itemTestId="skill-panel-tab"
-          className="h-[34px] text-base"
+          className="page-tabs"
           value={activeTab}
           onChange={handleMainTabChange}
           items={[

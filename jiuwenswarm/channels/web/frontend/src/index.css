@@ -2617,3 +2617,38 @@ body.workspace-resize-active iframe {
 .cron-template-card:hover {
   box-shadow: var(--effect-card-hover);
 }
+
+/* 页面工具栏主页签（agent-management / skill-panel / connector-market 共用）：
+   收敛原调用处 Tailwind 的 h-[34px] text-base gap-[32px]。ui/Tabs 基类 .tabs 是
+   unlayered，此规则必须同为 unlayered，且用 .tabs.page-tabs 复合选择器提权，
+   才能覆盖基类的 gap:18px */
+.tabs.page-tabs {
+  height: 34px;
+  font-size: var(--font-size-lg);
+  line-height: 24px;
+  gap: 32px;
+}
+
+/* 技能版本管理：版本文字与“默认”徽标行（8px 间距）。徽标复用 entity-header__tag
+   形态（20px 高药丸），配色用专属 token */
+.skill-version-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.skill-version-default-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: var(--color-skill-version-default-surface);
+  color: var(--color-skill-version-default-text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+  white-space: nowrap;
+}

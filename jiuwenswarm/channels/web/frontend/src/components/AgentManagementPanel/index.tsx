@@ -1331,7 +1331,7 @@ export function AgentManagementPanel({
               ariaLabel={t('agentManagement.tabsLabel')}
               wrapperTestId="agent-management-primary-tabs"
               itemTestId="agent-management-primary-tab"
-              className="h-[34px] text-base"
+              className="page-tabs"
               value={isMine ? 'mine' : view}
               onChange={(nextView) => {
                 setCreateMenuOpen(false);

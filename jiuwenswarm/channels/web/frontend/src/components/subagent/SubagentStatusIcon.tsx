@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { CircleAlert } from 'lucide-react';
-import LoadingIcon from '../../assets/subagent/loading.svg?react';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import SuccessIcon from '../../assets/subagent/success.svg?react';
 import WaitingIcon from '../../assets/subagent/waiting.svg?react';
 import { getSubagentStatusLabelKey, getSubagentStatusTone } from '../../features/subagent/subagentStatusPresentation';
@@ -22,7 +22,7 @@ export function SubagentStatusIcon({
   const label = t(getSubagentStatusLabelKey(status, closedReason, turnOutcome));
 
   if (tone === 'running') {
-    return <LoadingIcon className={`${className} shrink-0 text-muted animate-spin`} aria-label={label} role="img" />;
+    return <LoadingSpinner />;
   }
   if (tone === 'waiting') {
     return <WaitingIcon className={`${className} shrink-0 text-text-muted`} aria-label={label} role="img" />;

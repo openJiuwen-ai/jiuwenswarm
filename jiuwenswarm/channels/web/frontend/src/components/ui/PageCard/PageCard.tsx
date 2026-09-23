@@ -1,11 +1,13 @@
 import { type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { EntityHeader, type EntityHeaderAvatar } from '../EntityHeader/EntityHeader';
+import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import './PageCard.css';
 
 export interface PageCardActionProps {
   icon: ReactNode;
   onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
+  tooltip?: string;
 }
 
 export type PageCardAvatar = EntityHeaderAvatar;
@@ -54,6 +56,8 @@ export function PageCard({
   if (selected) classNames.push('page-card--selected');
   if (disabled) classNames.push('page-card--disabled');
 
+  const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
+
   const hasLabel = Array.isArray(label) && label.length > 0;
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!interactive || disabled || !onClick || event.target !== event.currentTarget) return;
@@ -94,6 +98,8 @@ export function PageCard({
                     e.stopPropagation();
                     action.onClick?.(e);
                   }}
+                  data-tooltip={action.tooltip}
+                  {...(action.tooltip ? tooltipHandlers : {})}
                 >
                   {action.icon}
                 </button>
@@ -101,26 +107,27 @@ export function PageCard({
                 actionSlot
               )}
             </div>
+          ) : action ? (
+            <button
+              type="button"
+              className="page-card-action"
+              disabled={action.disabled}
+              onClick={(e) => {
+                e.stopPropagation();
+                action.onClick?.(e);
+              }}
+              data-tooltip={action.tooltip}
+              {...(action.tooltip ? tooltipHandlers : {})}
+            >
+              {action.icon}
+            </button>
           ) : (
-            action ? (
-              <button
-                type="button"
-                className="page-card-action"
-                disabled={action.disabled}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  action.onClick?.(e);
-                }}
-              >
-                {action.icon}
-              </button>
-            ) : (
-              actionSlot
-            )
+            actionSlot
           )
         }
       />
       {description ? <div className="page-card__body">{description}</div> : null}
+      {tooltip}
     </div>
   );
 }

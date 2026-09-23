@@ -85,8 +85,9 @@
 }
 
 .page-card-action:disabled {
-  opacity: 0.5;
+  background: var(--color-skill-card-action-loading-surface, none);
   cursor: not-allowed;
+  opacity: 1;
 }
 
 .page-card__body {
