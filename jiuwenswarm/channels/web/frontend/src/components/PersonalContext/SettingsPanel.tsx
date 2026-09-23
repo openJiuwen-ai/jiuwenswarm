@@ -53,6 +53,7 @@ export function PersonalContextSettingsPanel({
     status,
     loadingConfig,
     pendingWrites,
+    configNeedsReconciliation,
     loadAll,
     setMasterEnabled,
     setEnabled,
@@ -93,13 +94,19 @@ export function PersonalContextSettingsPanel({
     }
   }, [isConnected, loadAll, loadAuthStatus]);
 
-  // 写操作统一处理：请求超时用 toast 提示。关闭/开启都可能等后端最长 30s 停任务，
-  // 超时后开关会回弹，直接提示比挂一条持久错误条更友好。
+  // 请求超时后由 store 核对实际配置；核对期间开关保持请求态。
   const runWrite = useCallback(
     (op: () => Promise<void>): Promise<void> =>
       op().catch((e: unknown) => {
         if (isRequestTimeoutError(e)) {
-          toast.open({ content: t('personalContext.settings.operationTimeout'), variant: 'warning' });
+          toast.open({
+            content: t(
+              usePersonalContextStore.getState().configNeedsReconciliation
+                ? 'personalContext.settings.collectionTimeoutReconciling'
+                : 'personalContext.settings.operationTimeout',
+            ),
+            variant: 'warning',
+          });
           return;
         }
         setError(e instanceof Error ? e.message : String(e));
@@ -108,7 +115,7 @@ export function PersonalContextSettingsPanel({
   );
 
   // 开启采集前确认任务已真正停完：若后端还在跑/停，start 会排在 _operation_lock 后面干等
-  // （stop 最长 30s），两个请求串行容易触发前端 60s 超时，这里提前拦截。
+  // 两个请求串行容易触发前端超时，这里提前拦截。
   const isFetchStillRunning = useCallback(async (): Promise<boolean> => {
     try {
       const fresh = await pcApi.getStatus();
@@ -308,12 +315,21 @@ export function PersonalContextSettingsPanel({
         {/* 总开关 */}
         <SettingRow
           title={t('personalContext.settings.masterEnable')}
-          description={t('personalContext.settings.masterEnableHint')}
+          description={t(
+            configNeedsReconciliation
+              ? 'personalContext.settings.collectionReconciling'
+              : 'personalContext.settings.masterEnableHint',
+          )}
         >
           <Switch
             checked={masterEnabled}
             onChange={handleMasterEnabled}
-            disabled={!isConnected || !!pendingWrites.collection_enabled || !!pendingWrites.agent_use_enabled}
+            disabled={
+              !isConnected ||
+              configNeedsReconciliation ||
+              !!pendingWrites.collection_enabled ||
+              !!pendingWrites.agent_use_enabled
+            }
           />
         </SettingRow>
 
@@ -322,12 +338,16 @@ export function PersonalContextSettingsPanel({
             {/* 采集个人上下文内容 */}
             <SettingRow
               title={t('personalContext.settings.enable')}
-              description={t('personalContext.settings.enableHint')}
+              description={t(
+                configNeedsReconciliation
+                  ? 'personalContext.settings.collectionReconciling'
+                  : 'personalContext.settings.enableHint',
+              )}
             >
               <Switch
                 checked={config.collection_enabled}
                 onChange={handleEnabled}
-                disabled={!isConnected || !!pendingWrites.collection_enabled}
+                disabled={!isConnected || configNeedsReconciliation || !!pendingWrites.collection_enabled}
               />
             </SettingRow>
 

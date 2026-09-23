@@ -1767,7 +1767,9 @@
       "modelHint": "选择已在 JiuwenSwarm 中配置的模型。",
       "collectionStopPending": "采集任务运行中，稍后生效",
       "collectionStoppingRetry": "采集任务仍在运行或停止中，请稍后再试",
-      "operationTimeout": "请求超时，请稍后重试"
+      "operationTimeout": "请求超时，请稍后重试",
+      "collectionTimeoutReconciling": "请求超时，正在核对实际采集状态",
+      "collectionReconciling": "请求结果尚未确认，正在核对实际采集状态"
     },
     "authorization": {
       "title": "内容采集授权",
@@ -1867,6 +1869,7 @@
       "colActions": "操作",
       "stateCollecting": "正在采集",
       "stateCompleted": "采集完成",
+      "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
       "stateStopped": "已停止",
