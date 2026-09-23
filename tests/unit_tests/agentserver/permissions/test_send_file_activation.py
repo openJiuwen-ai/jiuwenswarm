@@ -56,9 +56,9 @@ def _adapter(*, registered_send_tool: bool = False) -> JiuWenSwarmDeepAdapter:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("permission_mode", ["auto", "manual"])
+@pytest.mark.parametrize("mode", ["auto", "manual"])
 async def test_new_ordinary_send_tool_does_not_require_auto_authorization(
-    permission_mode: str,
+    mode: str,
 ) -> None:
     adapter = _adapter()
     toolkit = MagicMock()
@@ -66,7 +66,7 @@ async def test_new_ordinary_send_tool_does_not_require_auto_authorization(
     with patch.object(
         adapter_module,
         "get_config",
-        return_value={"permissions": {"mode": permission_mode}},
+        return_value={"permissions": {"mode": mode}},
     ), patch.object(
         adapter_module,
         "SendFileToolkit",

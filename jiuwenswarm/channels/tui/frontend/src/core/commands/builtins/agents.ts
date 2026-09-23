@@ -11,7 +11,6 @@ interface AgentDef {
   tools: string[];
   disallowed_tools: string[];
   color: string | null;
-  permission_mode: string | null;
   memory_scope: string | null;
   shadowed_by: string | null;
   enabled: boolean | null;
@@ -90,7 +89,6 @@ async function getAgent(
     `调用时机: ${a.when_to_use || a.description || "无"}`,
     `模型: ${a.model || "默认"}`,
     `颜色: ${a.color || "默认"}`,
-    `权限模式: ${a.permission_mode || "默认"}`,
     `记忆范围: ${a.memory_scope || "默认"}`,
     `最大迭代: ${a.max_iterations ?? "默认(200)"}`,
     `工具: ${a.tools.length > 0 ? a.tools.join(", ") : "无"}`,

@@ -909,7 +909,6 @@ hooks:
 | `tools` | 可用工具列表 |
 | `disallowed_tools` | 禁用工具列表 |
 | `color` | 显示颜色 |
-| `permission_mode` | 权限模式 |
 | `memory_scope` | 记忆范围 |
 | `when_to_use` | 调用时机描述 |
 | `max_iterations` | 最大迭代次数（默认 200） |

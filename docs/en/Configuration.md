@@ -327,7 +327,6 @@ When enabled, the system will:
 permissions:
   enabled: true
   schema: tiered_policy
-  permission_mode: normal  # normal | strict; maps severity to action
   defaults:
     "*": "allow"           # Allow all actions by default
   tools:
