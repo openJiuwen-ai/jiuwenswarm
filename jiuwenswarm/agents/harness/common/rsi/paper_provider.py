@@ -182,6 +182,7 @@ class PaperProvider:
     artifact_type = "paper"
     supports_pause = False
     supports_resume = False
+    tracks_model_usage = True
 
     # autoResearch's module agents still read model credentials from environment
     # variables.  This compatibility lock intentionally serializes paper runs
