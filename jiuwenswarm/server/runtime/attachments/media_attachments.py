@@ -51,6 +51,50 @@ def ensure_image_upload_filename(filename: str, canonical_suffix: str) -> str:
     return f"{filename}{canonical_suffix}"
 
 
+def discard_session_upload(session_id: str | None, raw_path: str) -> dict[str, bool]:
+    """删除当前会话 ``uploads`` 目录里的一个普通文件。
+
+    只接受该目录的直接子文件。符号链接、目录、其他会话和用户原图路径一律拒绝。
+    文件已经不存在时返回 ``{"deleted": False}``，重复删除是成功。
+    """
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("path is required")
+    raw = Path(raw_path).expanduser()
+    if not raw.is_absolute():
+        raise ValueError("path must be absolute")
+    if raw.name in {"", ".", ".."}:
+        raise ValueError("invalid filename")
+
+    upload_dir = (
+        get_agent_sessions_dir() / safe_session_dirname(session_id) / "uploads"
+    ).resolve(strict=False)
+    try:
+        parent = raw.parent.resolve(strict=False)
+    except OSError as exc:
+        raise ValueError("invalid path") from exc
+    if not _same_directory(parent, upload_dir):
+        raise ValueError("path is outside session uploads")
+
+    target = upload_dir / raw.name
+    if target.is_symlink():
+        raise ValueError("refusing to delete symlink")
+    if not target.exists():
+        return {"deleted": False}
+    if not target.is_file():
+        raise ValueError("path is not a file")
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return {"deleted": False}
+    return {"deleted": True}
+
+
+def _same_directory(left: Path, right: Path) -> bool:
+    if os.name == "nt":
+        return os.path.normcase(str(left)) == os.path.normcase(str(right))
+    return left == right
+
+
 def normalize_chat_media_attachments(params: dict[str, Any], session_id: str | None) -> None:
     """Validate browser media_items, persist images, and enrich the chat params.
 

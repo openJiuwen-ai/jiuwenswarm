@@ -148,6 +148,8 @@ class ReqMethod(Enum):
 
     # 媒体/文档附件（Phase 2 WorkspaceFileAdapter）
     MEDIA_PERSIST = "media.persist"
+    # 丢弃尚未发送的会话 uploads 副本。只删当前会话 uploads 内的普通文件。
+    MEDIA_DISCARD = "media.discard"
     DOCUMENT_PERSIST = "document.persist"
     DOCUMENT_FORMATS = "document.formats"
     # chat.send 上行外部 url 文件导入（Phase 2：AgentServer 下载落盘注入目录，Gateway 不落盘）

@@ -846,6 +846,38 @@ class TestWorkspaceFileAdapter:
         normalize_chat_media_attachments(params, session_id="sess-1")
         assert "media_items" not in params
 
+    async def test_media_discard_deletes_only_session_upload(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.attachments.media_attachments.get_agent_sessions_dir",
+            lambda: tmp_path,
+        )
+        upload_dir = tmp_path / "current-session" / "uploads"
+        upload_dir.mkdir(parents=True)
+        image = upload_dir / "sample.png"
+        image.write_bytes(b"png")
+        original = tmp_path / "sample.png"
+        original.write_bytes(b"original")
+
+        removed = await self._adapter().handle(
+            _request(ReqMethod.MEDIA_DISCARD, {"path": str(image)})
+        )
+        assert removed.ok is True
+        assert removed.payload == {"deleted": True}
+        assert not image.exists()
+
+        rejected = await self._adapter().handle(
+            _request(ReqMethod.MEDIA_DISCARD, {"path": str(original)})
+        )
+        assert rejected.ok is False
+        assert rejected.payload["code"] == "BAD_REQUEST"
+        assert original.read_bytes() == b"original"
+
+        missing_path = await self._adapter().handle(_request(ReqMethod.MEDIA_DISCARD, {}))
+        assert missing_path.ok is False
+        assert missing_path.payload["code"] == "BAD_REQUEST"
+
 
 # ── MemoryAdapter ────────────────────────────────────────────────────────────
 
