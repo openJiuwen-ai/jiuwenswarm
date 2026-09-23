@@ -3090,6 +3090,9 @@
   "chatUi": {
     "copyMessage": "Copy message",
     "copied": "Copied",
+    "usageInput": "Input",
+    "usageOutput": "Output",
+    "usageCacheHit": "Cache hit",
     "stopReading": "Stop reading",
     "readMessage": "Read message",
     "forkFromMessage": "Create a conversation branch from this message",

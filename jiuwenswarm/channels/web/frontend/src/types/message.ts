@@ -31,6 +31,10 @@ export interface UsageSummary {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  /** Provider prompt-cache hit tokens (subset of input_tokens); present when input > 0. */
+  cache_tokens?: number;
+  /** Preformatted hit rate (e.g. "85.3%"), computed server-side. */
+  cache_hit_rate?: string;
   input_cost?: number;
   output_cost?: number;
   total_cost?: number;

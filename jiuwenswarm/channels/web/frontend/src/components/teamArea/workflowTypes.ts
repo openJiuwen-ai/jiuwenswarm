@@ -37,7 +37,7 @@ export interface WorkflowBudget {
  * ``500`` stays ``500`` (no premature K-rounding — 500 must not read as 1K),
  * ``1250`` → ``1.3K``, ``220000`` → ``220K``.
  */
-function compactTokenLabel(value: number): string {
+export function compactTokenLabel(value: number): string {
   if (value < 1000) return `${Math.round(value)}`;
   if (value < 1_000_000) {
     const k = (value / 1000).toFixed(1);
@@ -118,6 +118,12 @@ export interface WorkflowAgent {
   started_at?: string;
   completed_at?: string;
   token_count?: number | null;
+  /** Prompt-cache-hit tokens (subset of token_count); null when the provider reported none. */
+  cache_token_count?: number | null;
+  /** Prompt input tokens; null on old runs that only carry the total. */
+  input_token_count?: number | null;
+  /** Completion output tokens; null on old runs that only carry the total. */
+  output_token_count?: number | null;
   duration_ms?: number | null;
   kind?: 'agent' | 'human';
   node_type?: WorkflowNodeType;
@@ -363,6 +369,43 @@ export function sortWorkflowAgentsByTurn(agents: WorkflowAgent[]): WorkflowAgent
     if (turnA !== null && turnB !== null) return turnA - turnB;
     return (a.started_at ?? '').localeCompare(b.started_at ?? '');
   });
+}
+
+/**
+ * Collect one session's turns across ALL phases of a run (member_name join).
+ *
+ * A session's turns can land in different phases (analyst in 基线/综合/裁决);
+ * per-phase grouping would only see one slice. member_name is the avatar's
+ * member name — constant across turns and unique per session — so it is the
+ * correct join key across phases. Returns [] when the run carries no matching
+ * member_name (old runs predating the field) — caller falls back to per-phase.
+ */
+export function sessionMembersAcrossPhases(
+  workflow: WorkflowRun | undefined,
+  memberName: string | undefined,
+  sessionLabel: string,
+  nodeType?: WorkflowNodeType,
+): WorkflowAgent[] {
+  if (!workflow || !memberName) return [];
+  const members: WorkflowAgent[] = [];
+  for (const phase of workflow.phases ?? []) {
+    for (const agent of phase.agents ?? []) {
+      if (
+        agent.member_name === memberName &&
+        agent.name === sessionLabel &&
+        isSessionNode(agent) &&
+        (nodeType === undefined || agent.node_type === nodeType)
+      ) {
+        members.push(agent);
+      }
+    }
+  }
+  if (members.length === 0) return [];
+  const byTurn = new Map<string, WorkflowAgent>();
+  for (const m of members) {
+    byTurn.set(m.correlation_id ?? m.id, m);
+  }
+  return sortWorkflowAgentsByTurn([...byTurn.values()]);
 }
 
 export function sessionMembersInPhase(

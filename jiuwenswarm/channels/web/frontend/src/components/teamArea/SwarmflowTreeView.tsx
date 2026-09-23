@@ -51,6 +51,8 @@ import {
   parseVerifyOutcome,
   summarizeVerifyVotes,
   partitionAgentsByVerifyGroups,
+  compactTokenLabel,
+  sessionMembersAcrossPhases,
 } from './workflowTypes';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -62,6 +64,7 @@ import {
   formatCharCount,
   accentChipClass,
   type AgentModalState,
+  type DetailSection,
 } from './AgentDetailModal';
 import { Toast } from '../ConnectorMarket/Toast';
 
@@ -378,6 +381,29 @@ function PhaseLoopNode({
 
 // ── Agent 节点 ────────────────────────────────────────────
 
+// Detail chip badge: prompt/outcome counts are tokens and carry the `tok`
+// unit; the remaining sections fall back to character counts, which stay
+// bare (an unmarked count means characters).
+function detailChipBadge(
+  agent: WorkflowAgent,
+  sec: DetailSection,
+): { value: string; unit: string; cache: string | null } {
+  if (sec.key === 'prompt') {
+    const n = agent.input_token_count;
+    const cache = agent.cache_token_count;
+    const cacheRate =
+      n != null && n > 0 && cache != null && cache > 0
+        ? `${Math.round((cache / n) * 100)}%`
+        : null;
+    return { value: n != null && n > 0 ? compactTokenLabel(n) : '', unit: 'tok', cache: cacheRate };
+  }
+  if (sec.key === 'outcome') {
+    const n = agent.output_token_count;
+    return { value: n != null && n > 0 ? compactTokenLabel(n) : '', unit: 'tok', cache: null };
+  }
+  return { value: formatCharCount(sec.content), unit: '', cache: null };
+}
+
 // Reviewer 行的 role 弱化标注配色：跟随行首状态图标同色系（与图标成组）。
 function roleTagCls(status: WorkflowStatus): string {
   switch (status) {
@@ -404,6 +430,7 @@ function AgentNode({
   sessionId,
   roleTag,
   voteBadge,
+  workflow,
 }: {
   agent: WorkflowAgent;
   phaseAgents: WorkflowAgent[];
@@ -414,6 +441,9 @@ function AgentNode({
   roleTag?: string | null;
   /** 评审员行票徽章（verify 面板传入；普通 agent 行自行解析 outcome）。 */
   voteBadge?: ReturnType<typeof parseVerifyOutcome>;
+  /** 整个 run（跨 phase）：session 节点的跨轮聚合按 member_name 在全 run 收集，
+   *  否则 analyst 分属基线/综合/裁决三个 phase 时每张卡只聚到本 phase 的轮次。 */
+  workflow?: WorkflowRun;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(agent.status === 'running');
@@ -429,16 +459,57 @@ function AgentNode({
   const isFork = isForkSessionNode(agent);
   // 票徽章：verify 面板传入（votes join，刷新后仍可见）；普通行解析自身 outcome。
   const verdict = voteBadge ?? parseVerifyOutcome(agent.outcome);
-  const sessionMembers = useMemo(
-    () =>
-      isSession
-        ? groupWorkflowAgentsByName(phaseAgents).sessions.find(
-            (s) => s.label === agent.name,
-          )?.members ?? []
-        : [],
-    [isSession, agent.name, phaseAgents],
-  );
+  // 收集该 session 的所有轮次：Σ 聚合跨 phase；明细只显示当前 phase 的轮次。
+  // 优先用 member_name（跨 phase 唯一），旧 run 缺失时退回本 phase 的 label 分组。
+  const sessionMembers = useMemo(() => {
+    if (!isSession) return [];
+    if (!workflow || !agent.member_name) {
+      return groupWorkflowAgentsByName(phaseAgents).sessions.find(
+        (s) => s.label === agent.name,
+      )?.members ?? [];
+    }
+    return sessionMembersAcrossPhases(
+      workflow,
+      agent.member_name,
+      agent.name,
+      agent.node_type,
+    );
+  }, [isSession, workflow, agent.member_name, agent.name, agent.node_type, phaseAgents]);
+  // 当前 phase 内的轮次（明细展示用，不跨 phase）。
+  const phaseSessionMembers = useMemo(() => {
+    const phaseIds = new Set(phaseAgents.map((a) => a.id));
+    return sessionMembers.filter((m) => phaseIds.has(m.id));
+  }, [sessionMembers, phaseAgents]);
+
+
   const hasSessionTree = isSession && sessionMembers.length >= 1;
+  const hasPhaseSessionTree = isSession && phaseSessionMembers.length >= 1;
+
+  // Session 节点的 representative 是 Turn 0 的条目（状态已按 members 聚合），
+  // token 计费字段同样跨轮累计：chips 显示该实例执行到当前的总消耗，
+  // 每轮 AGENT_COMPLETED 后随 members 刷新。任一轮都没报过值时保持 null（隐藏）。
+  const displayAgent = useMemo(() => {
+    if (!hasSessionTree) return agent;
+    const sum = (pick: (m: WorkflowAgent) => number | null | undefined): number | null => {
+      let total = 0;
+      let seen = false;
+      for (const m of sessionMembers) {
+        const v = pick(m);
+        if (v != null) {
+          total += v;
+          seen = true;
+        }
+      }
+      return seen ? total : null;
+    };
+    return {
+      ...agent,
+      token_count: sum((m) => m.token_count),
+      input_token_count: sum((m) => m.input_token_count),
+      output_token_count: sum((m) => m.output_token_count),
+      cache_token_count: sum((m) => m.cache_token_count),
+    };
+  }, [hasSessionTree, agent, sessionMembers]);
 
   // detail_pending=true 表示该 agent 仅含摘要（get_phase 下发），prompt/outcome 等
   // 大文本字段尚未拉取——展开详情或弹窗时按需调 get_agent 补全完整体（通用，不限 human）。
@@ -613,34 +684,45 @@ function AgentNode({
           data-variant={agent.id}
         >
           {/* Meta 信息 */}
-          {(agent.model || agent.token_count != null || agent.duration_ms != null || agent.started_at) && (
+          {(agent.model || displayAgent.token_count != null || agent.duration_ms != null || agent.started_at) && (
             <div className="flex items-center gap-2 text-[10px] text-text-muted/70 mr-auto pr-2">
               {agent.model && <span className="font-mono">{agent.model}</span>}
-              {agent.token_count != null && <span>{agent.token_count} tok</span>}
+              {displayAgent.token_count != null && <span>{displayAgent.token_count} tok</span>}
               {agent.duration_ms != null && <span>{(agent.duration_ms / 1000).toFixed(1)}s</span>}
               {agent.started_at && <span>{new Date(agent.started_at).toLocaleTimeString()}</span>}
             </div>
           )}
 
-          {detailSections.map((sec) => (
-            <button
-              key={sec.key}
-              type="button"
-              aria-label={`${sec.label} (${formatCharCount(sec.content)} 字符)`}
-              data-testid="team-area-swarmflow-agent-detail-chip"
-              data-variant={sec.key}
-              onClick={(e) => {
-                e.stopPropagation();
-                setModalState({ sections: detailSections, activeKey: sec.key });
-              }}
-              className={`shrink-0 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${accentChipClass[sec.accent]}`}
-            >
-              <span>{sec.icon} {sec.label}</span>
-              <span className="ml-0.5 px-1 rounded bg-black/10 dark:bg-white/10 text-[9px] tabular-nums opacity-80">
-                {formatCharCount(sec.content)}
-              </span>
-            </button>
-          ))}
+          {detailSections.map((sec) => {
+            const badge = detailChipBadge(displayAgent, sec);
+            return (
+              <button
+                key={sec.key}
+                type="button"
+                aria-label={badge.value ? `${sec.label} (${badge.value} ${badge.unit || '字符'})` : sec.label}
+                title={sec.key === 'prompt' && isFork ? '含继承的会话上下文与系统提示' : undefined}
+                data-testid="team-area-swarmflow-agent-detail-chip"
+                data-variant={sec.key}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setModalState({ sections: detailSections, activeKey: sec.key });
+                }}
+                className={`shrink-0 inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors ${accentChipClass[sec.accent]}`}
+              >
+                <span>{sec.icon} {sec.label}</span>
+                {badge.value && (
+                  <span className="ml-0.5 px-1 rounded bg-black/10 dark:bg-white/10 text-[9px] tabular-nums opacity-80">
+                    {badge.unit ? `${badge.value} ${badge.unit}` : badge.value}
+                  </span>
+                )}
+                {badge.cache && (
+                  <span className="ml-0.5 px-1 rounded-full bg-cyan-500/10 text-cyan-600 dark:text-cyan-300 text-[9px] tabular-nums">
+                    cache {badge.cache}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -676,14 +758,14 @@ function AgentNode({
       )}
 
       {/* Session turns */}
-      {hasSessionTree && expanded && (
+      {hasPhaseSessionTree && expanded && (
         <div
           className="border-l border-border/30 ml-4"
           style={{ marginLeft: `${depth * 20 + 16}px` }}
           data-testid="team-area-swarmflow-agent-turns"
           data-variant={agent.id}
         >
-          {sessionMembers.map((member) => {
+          {phaseSessionMembers.map((member) => {
             const turn = parseTurnFromCorrelationId(member.correlation_id);
             return (
               <div key={member.id} className="relative pl-4">
@@ -758,6 +840,25 @@ function voteBadgeFor(
   return { type: 'undecided', text: '? 未投' };
 }
 
+// 面板整体输入/输出 token：verify 自身不跑模型，= 各 reviewer 之和（未落部分按 0，
+// 数字随 settled 事件增量刷新）。cache 是 input 的子集，rate 分母仍为 input。
+function verifyPanelTokens(reviewers: WorkflowAgent[]): {
+  input: number;
+  output: number;
+  cacheRate: number | null;
+} {
+  let input = 0;
+  let output = 0;
+  let cache = 0;
+  for (const r of reviewers) {
+    input += r.input_token_count ?? 0;
+    output += r.output_token_count ?? 0;
+    cache += r.cache_token_count ?? 0;
+  }
+  const cacheRate = input > 0 && cache > 0 ? Math.round((cache / input) * 100) : null;
+  return { input, output, cacheRate };
+}
+
 function VerifyPanel({
   rounds,
   phaseAgents,
@@ -786,6 +887,7 @@ function VerifyPanel({
   const settled = group.status === 'settled';
   const verdict = group.verdict;
   const { undecided } = summarizeVerifyVotes(group);
+  const { input, output, cacheRate } = verifyPanelTokens(reviewers);
   // 整体输入 = 本轮交付物（reviewer 共同 prompt 源）；整体输出 = 引擎下发的
   // group.outcome（JSON 字符串，与 agent.outcome 同渲染通道），旧 run 无 outcome
   // 时回退本地按 _aggregate_feedback 同口径聚合 votes[].feedback
@@ -911,7 +1013,7 @@ function VerifyPanel({
             ))}
           </div>
         )}
-        {/* 整体输入/输出徽章（各 reviewer 聚合） */}
+        {/* 整体输入/输出徽章（各 reviewer 聚合；cache 挂输入侧） */}
         <div className="flex items-center gap-1.5 shrink-0 ml-auto" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
@@ -921,6 +1023,16 @@ function VerifyPanel({
             onClick={() => openWhole('prompt')}
           >
             <span>▶ 输入</span>
+            {input > 0 && (
+              <span className="px-1 rounded bg-black/10 dark:bg-white/10 text-[9px] tabular-nums opacity-80">
+                {compactTokenLabel(input)} tok
+              </span>
+            )}
+            {cacheRate != null && (
+              <span className="ml-0.5 px-1 rounded-full bg-cyan-500/10 text-cyan-600 dark:text-cyan-300 text-[9px] tabular-nums">
+                cache {cacheRate}%
+              </span>
+            )}
           </button>
           <button
             type="button"
@@ -930,6 +1042,11 @@ function VerifyPanel({
             onClick={() => openWhole('outcome')}
           >
             <span>◀ 输出</span>
+            {output > 0 && (
+              <span className="px-1 rounded bg-black/10 dark:bg-white/10 text-[9px] tabular-nums opacity-80">
+                {compactTokenLabel(output)} tok
+              </span>
+            )}
           </button>
         </div>
       </div>
@@ -1077,6 +1194,7 @@ function PhaseNode({
               depth={0}
               runId={runId}
               sessionId={sessionId}
+              workflow={workflow}
             />
           </div>
         ),
@@ -1112,7 +1230,7 @@ function PhaseNode({
     }
     items.sort((a, b) => a.ts.localeCompare(b.ts));
     return items.map((item) => item.el);
-  }, [uniqueAgents, agentLoops, sessions, containers, phase.agents, runId, sessionId]);
+  }, [uniqueAgents, agentLoops, sessions, containers, phase.agents, runId, sessionId, workflow]);
   // Prefer backend aggregate counters: a parent phase's agent_count already
   // includes its child phases' agents (same behavior as the TUI); fall back
   // to counting direct agents when the fields are absent.

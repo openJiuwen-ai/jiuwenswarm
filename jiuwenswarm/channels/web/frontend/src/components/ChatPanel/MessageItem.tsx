@@ -56,6 +56,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
+import { compactTokenLabel } from '../teamArea/workflowTypes';
 import { writeClipboard } from '../../utils/writeClipboard';
 import { isSkillPackageFile } from '../../utils/skillPackageFile';
 import {
@@ -377,6 +378,7 @@ export const MessageItem = memo(function MessageItem({
     commandOutput,
     agentTemplateName,
     crossSession,
+    usageSummary,
   } = message;
   const [hasAutoSpoken, setHasAutoSpoken] = useState(false);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
@@ -759,6 +761,22 @@ export const MessageItem = memo(function MessageItem({
 
   const withAssistantAvatar = !isUser && enableAssistantAvatar;
 
+  const usage =
+    !isUser && usageSummary && usageSummary.total_tokens > 0 ? usageSummary : null;
+  const usageTooltip = usage
+    ? [
+        `${t('chatUi.usageInput')} ${usage.input_tokens.toLocaleString()}`,
+        `${t('chatUi.usageOutput')} ${usage.output_tokens.toLocaleString()}`,
+        ...(typeof usage.cache_tokens === 'number' && usage.cache_tokens > 0
+          ? [
+              `${t('chatUi.usageCacheHit')} ${usage.cache_tokens.toLocaleString()}${
+                usage.cache_hit_rate ? ` (${usage.cache_hit_rate})` : ''
+              }`,
+            ]
+          : []),
+      ].join(' · ')
+    : '';
+
   return (
     <div
     data-testid="chat-panel-message-row"
@@ -864,6 +882,18 @@ export const MessageItem = memo(function MessageItem({
             )}
           >
             <span data-testid="chat-panel-message-timestamp">{formatTimestamp(timestamp)}</span>
+
+            {usage && (
+              <span
+                data-testid="chat-panel-message-usage"
+                title={usageTooltip}
+                className="inline-flex items-center gap-1"
+              >
+                <span>↑{compactTokenLabel(usage.input_tokens)}</span>
+                <span>↓{compactTokenLabel(usage.output_tokens)}</span>
+                {usage.cache_hit_rate && <span>cache {usage.cache_hit_rate}</span>}
+              </span>
+            )}
 
             {isUser && isGoalObjectiveMessage && (
               <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-text-meta" data-testid="chat-panel-message-goal-badge">
