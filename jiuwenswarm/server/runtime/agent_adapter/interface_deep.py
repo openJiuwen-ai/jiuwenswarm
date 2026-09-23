@@ -11578,6 +11578,9 @@ class JiuWenSwarmDeepAdapter:
             and not is_team_mode(deprecate_mode(self._last_mode))
             and getattr(runtime, "session_message_service", None) is not None
         )
+        messaging_rail = getattr(self, "_session_messaging_route_rail", None)
+        if messaging_rail is not None:
+            messaging_rail.set_service(runtime.session_message_service if eligible else None)
         if not eligible:
             if self._session_messaging_toolkit is not None:
                 registered_tools = [
@@ -11594,6 +11597,8 @@ class JiuWenSwarmDeepAdapter:
                 "session_send_message",
                 "session_message_list",
                 "session_message_resolve",
+                "session_continue_queued",
+                "session_read",
             } & registered_names:
                 self._instance.ability_manager.remove(name)
             return
@@ -11602,6 +11607,8 @@ class JiuWenSwarmDeepAdapter:
             "session_send_message",
             "session_message_list",
             "session_message_resolve",
+            "session_continue_queued",
+            "session_read",
         }
         if self._session_messaging_toolkit is None:
             # A restored adapter may still carry the retired multi-session

@@ -63,6 +63,7 @@ class SessionMessageRecord:
     resolution: str
     retry_of: str
     input_mode: str = ""
+    queue_released_at: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -137,6 +138,7 @@ class SessionMessageStore:
                         resolved_at REAL,
                         resolution TEXT NOT NULL DEFAULT '',
                         retry_of TEXT NOT NULL DEFAULT '',
+                        queue_released_at REAL,
                         CHECK (hop_count >= 1)
                     );
                     CREATE INDEX IF NOT EXISTS idx_session_messages_target_queue
@@ -158,6 +160,10 @@ class SessionMessageStore:
                             f"ALTER TABLE session_messages ADD COLUMN {name} "
                             "TEXT NOT NULL DEFAULT ''"
                         )
+                if "queue_released_at" not in columns:
+                    conn.execute(
+                        "ALTER TABLE session_messages ADD COLUMN queue_released_at REAL"
+                    )
             self._schema_ready = True
 
     @staticmethod
@@ -198,6 +204,10 @@ class SessionMessageStore:
             resolution=str(row["resolution"]),
             retry_of=str(row["retry_of"]),
             input_mode=str(row["input_mode"]),
+            queue_released_at=(
+                float(row["queue_released_at"])
+                if row["queue_released_at"] is not None else None
+            ),
         )
 
     @classmethod
@@ -272,7 +282,8 @@ class SessionMessageStore:
                     SELECT COUNT(*) FROM session_messages
                     WHERE target_session_id = ?
                       AND status IN ({placeholders})
-                      AND (status != 'unknown' OR resolved_at IS NULL)
+                      AND (status != 'unknown' OR
+                           (resolved_at IS NULL AND queue_released_at IS NULL))
                     """,
                     (target_session_id, *sorted(ACTIVE_SESSION_MESSAGE_STATUSES)),
                 ).fetchone()[0]
@@ -365,6 +376,33 @@ class SessionMessageStore:
             ).fetchall()
         return self._rows_to_records(rows)
 
+    def continue_queued_for_target(
+        self, *, owner_scope_id: str, target_session_id: str
+    ) -> int:
+        """Release uncertain blockers only for delivery lanes with queued work."""
+
+        self.ensure_schema()
+        now = time.time()
+        with self._session() as conn, conn:
+            cursor = conn.execute(
+                """
+                UPDATE session_messages AS blocked
+                SET queue_released_at = ?, updated_at = ?
+                WHERE owner_scope_id = ? AND target_session_id = ?
+                  AND status = 'unknown' AND resolved_at IS NULL
+                  AND queue_released_at IS NULL
+                  AND EXISTS (
+                    SELECT 1 FROM session_messages AS queued
+                    WHERE queued.owner_scope_id = blocked.owner_scope_id
+                      AND queued.target_session_id = blocked.target_session_id
+                      AND queued.input_mode = blocked.input_mode
+                      AND queued.status = 'queued'
+                  )
+                """,
+                (now, now, owner_scope_id, target_session_id),
+            )
+        return int(cursor.rowcount)
+
     def next_queued(
         self, target_session_id: str, input_mode: str = ""
     ) -> SessionMessageRecord | None:
@@ -386,7 +424,8 @@ class SessionMessageStore:
                   AND (
                     (status IN ('running', 'waiting_user')
                      AND NOT (input_mode = 'steer' AND status = 'running'))
-                    OR (status = 'unknown' AND resolved_at IS NULL)
+                    OR (status = 'unknown' AND resolved_at IS NULL
+                        AND queue_released_at IS NULL)
                   )
                 LIMIT 1
                 """,
@@ -640,12 +679,38 @@ class SessionMessageStore:
         participant_session_id: str,
         resolution: str,
     ) -> SessionMessageRecord | None:
-        """Resolve an uncertain outcome without replaying it automatically."""
+        """Resolve an uncertain outcome or release its queued successors."""
 
-        if resolution not in {"succeeded", "cancelled"}:
+        if resolution not in {"succeeded", "cancelled", "continue_queued"}:
             raise ValueError("unsupported unknown-message resolution")
         self.ensure_schema()
         now = time.time()
+        if resolution == "continue_queued":
+            with self._session() as conn, conn:
+                conn.execute(
+                    """
+                    UPDATE session_messages
+                    SET queue_released_at = COALESCE(queue_released_at, ?),
+                        updated_at = ?
+                    WHERE message_id = ? AND owner_scope_id = ?
+                      AND (source_session_id = ? OR target_session_id = ?)
+                      AND status = 'unknown' AND resolved_at IS NULL
+                    """,
+                    (
+                        now, now, message_id, owner_scope_id,
+                        participant_session_id, participant_session_id,
+                    ),
+                )
+                row = conn.execute(
+                    """
+                    SELECT * FROM session_messages
+                    WHERE message_id = ? AND owner_scope_id = ?
+                      AND (source_session_id = ? OR target_session_id = ?)
+                      AND status = 'unknown' AND resolved_at IS NULL
+                    """,
+                    (message_id, owner_scope_id, participant_session_id, participant_session_id),
+                ).fetchone()
+            return self._row_to_record(row)
         stored_resolution = f"{resolution}_by_user"
         error_code = "" if resolution == "succeeded" else "UNKNOWN_CANCELLED"
         error = "" if resolution == "succeeded" else "uncertain execution cancelled by user"
@@ -765,7 +830,8 @@ class SessionMessageStore:
                 FROM session_messages
                 WHERE target_session_id IN ({target_placeholders})
                   AND status IN ({status_placeholders})
-                  AND (status != 'unknown' OR resolved_at IS NULL)
+                  AND (status != 'unknown' OR
+                       (resolved_at IS NULL AND queue_released_at IS NULL))
                 GROUP BY target_session_id
                 """,
                 (*target_session_ids, *sorted(ACTIVE_SESSION_MESSAGE_STATUSES)),
@@ -786,7 +852,8 @@ class SessionMessageStore:
                 WHERE target_session_id IN ({placeholders})
                   AND (
                     status = 'waiting_user'
-                    OR (status = 'unknown' AND resolved_at IS NULL)
+                    OR (status = 'unknown' AND resolved_at IS NULL
+                        AND queue_released_at IS NULL)
                   )
                 ORDER BY sequence
                 """,
@@ -820,3 +887,24 @@ class SessionMessageStore:
                 (owner_scope_id, session_id, session_id, limit, offset),
             ).fetchall()
         return self._rows_to_records(rows)
+
+    def pending_targets_for_session(
+        self, *, owner_scope_id: str, session_id: str, limit: int = 21
+    ) -> list[str]:
+        """Find outstanding work even when newer completed messages fill a page."""
+
+        self.ensure_schema()
+        with self._session() as conn:
+            rows = conn.execute(
+                """
+                SELECT target_session_id FROM session_messages
+                WHERE owner_scope_id = ?
+                  AND (source_session_id = ? OR target_session_id = ?)
+                  AND (status IN ('queued', 'running', 'waiting_user')
+                       OR (status = 'unknown' AND resolved_at IS NULL
+                           AND queue_released_at IS NULL))
+                GROUP BY target_session_id ORDER BY MIN(sequence) LIMIT ?
+                """,
+                (owner_scope_id, session_id, session_id, limit),
+            ).fetchall()
+        return [str(row["target_session_id"]) for row in rows]

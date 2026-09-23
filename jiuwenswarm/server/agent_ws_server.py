@@ -91,6 +91,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
 from jiuwenswarm.server.runtime.session.session_message_service import (
     SessionMessageExecutionResult,
     SessionMessageService,
+    SessionMessagingError,
 )
 from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageRecord,
@@ -2471,6 +2472,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.SESSION_INPUT_INTENT:
                 await self._handle_session_input_intent(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED:
+                await self._handle_session_message_continue_queued(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.SESSION_REWIND:
                 await self._handle_session_rewind_full(ws, request, send_lock)
                 return
@@ -4726,6 +4730,36 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+
+    async def _handle_session_message_continue_queued(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = str(params.get("session_id") or request.session_id or "").strip()
+        service = getattr(self, "_session_message_service", None)
+        try:
+            if not session_id:
+                raise SessionMessagingError("INVALID_ARGUMENT", "session_id is required")
+            if service is None:
+                raise SessionMessagingError(
+                    "HOST_CAPABILITY_UNAVAILABLE", "Session messaging is unavailable"
+                )
+            payload = await service.continue_queued_for_target(session_id, request.user_id)
+            ok = True
+        except SessionMessagingError as exc:
+            payload = {"code": exc.code, "error": str(exc)}
+            ok = False
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=payload,
+            metadata=request.metadata,
+        )
+        async with send_lock:
+            await send_wire_payload(
+                ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+            )
 
     async def _handle_session_switch(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Translate ``session.switch`` between WebSocket wire and Runtime."""

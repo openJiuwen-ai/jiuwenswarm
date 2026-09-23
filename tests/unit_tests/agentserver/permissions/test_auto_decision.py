@@ -99,6 +99,8 @@ def test_readonly_fast_path_requires_binding_and_closed_args(tmp_path, name, arg
     [
         ("todo_get", {"id": "todo-1"}),
         ("session_list", {}),
+        ("session_read", {"target_session_id": "target-1", "limit": 10}),
+        ("session_message_list", {"target_session_id": "target-1"}),
         ("memory_get", {"path": "memory/MEMORY.md"}),
         ("memory_search", {"query": "project decisions"}),
         ("skill_tool", {"skill_name": "daily-report"}),
@@ -224,6 +226,9 @@ def test_subagent_runtime_without_binding_proof_is_not_terminal_allow(
     ("tool_name", "tool_args"),
     [
         ("session_list", {"unexpected": True}),
+        ("session_read", {}),
+        ("session_read", {"target_session_id": "target-1", "limit": True}),
+        ("session_read", {"target_session_id": "target-1", "execute": True}),
         ("todo_insert", {"idx": 1}),
         ("browser_probe_cards", {"target": "ftp://files.example.invalid/archive"}),
     ],

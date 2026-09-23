@@ -130,6 +130,8 @@ async function mount(context) {
       createElement(TaskQueue, {
         isProcessing: true,
         onSendTask: (text, media, options) => api.sendMessage(text, sid, media, options),
+        onContinueQueuedSessionMessages: (targetSessionId) =>
+          api.request('session.message.continue_queued', { session_id: targetSessionId }),
         onDrainTaskQueueIfIdle: api.drainTaskQueueIfIdle,
       }),
       createElement(A2UIProvider, null,
@@ -221,6 +223,13 @@ test('queued cross-session message appears in the target queue until it starts',
     assert.match(row.textContent, /Check the weather/);
     assert.match(row.textContent, /Source/);
     assert.equal(row.querySelector('button'), null);
+    const resume = document.querySelector('[data-testid="chat-panel-cross-session-queue-resume"]');
+    assert.ok(resume);
+    await act(async () => resume.click());
+    const continuation = c.socket.requests.find((request) => request.method === 'session.message.continue_queued');
+    assert.ok(continuation);
+    assert.equal(continuation.params.session_id, c.sid);
+    await act(async () => c.socket.response(continuation.id));
     assert.equal(c.runtime().currentStreamId, streamId);
     assert.equal(c.runtime().isProcessing, true);
 

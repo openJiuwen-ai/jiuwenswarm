@@ -171,6 +171,7 @@ interface ChatPanelProps {
   onClearGoal?: (sessionId: string) => void | Promise<void>;
   /** 目标 active 但当前无处理中任务时，消息入队后主动排空一次，见 InputArea.tsx 对应调用点 */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
+  onContinueQueuedSessionMessages?: (sessionId: string) => void | Promise<void>;
   /** 专家团「通过聊天创建」入口的 4.9 高保真欢迎态。 */
   welcomeVariant?: 'group-create' | null;
   /**
@@ -274,9 +275,11 @@ function ActiveTeamGroupEntry({
 export function AgentActivityCard({
   isProcessing: _isProcessing,
   onSendTask,
+  onContinueQueuedSessionMessages,
 }: {
   isProcessing: boolean;
   onSendTask?: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
+  onContinueQueuedSessionMessages?: (sessionId: string) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -330,6 +333,12 @@ export function AgentActivityCard({
     if (nextTask) {
       onSendTask?.(nextTask.content, nextTask.mediaItems);
     }
+  };
+
+  const handleContinueQueuedSessionMessages = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const sid = useChatStore.getState().activeSessionId;
+    if (sid) void onContinueQueuedSessionMessages?.(sid);
   };
 
   const handleRemoveTask = (e: React.MouseEvent, taskId: string) => {
@@ -469,9 +478,17 @@ export function AgentActivityCard({
         </button>
         {expanded && (
           <div className="team-event-group-list team-event-group-list--activity">
-            {queuedSessionMessages.length > 0 && taskQueue.length > 0 && (
+            {queuedSessionMessages.length > 0 && (
               <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-cross-session-queue-section">
-                {t('chatUi.crossSessionMessageQueue')}
+                <span>{t('chatUi.crossSessionMessageQueue')}</span>
+                <button
+                  type="button"
+                  data-testid="chat-panel-cross-session-queue-resume"
+                  onClick={handleContinueQueuedSessionMessages}
+                  style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}
+                >
+                  {t('chat.resume')}
+                </button>
               </div>
             )}
             {queuedSessionMessages.map((message) => (
@@ -1053,6 +1070,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onRefreshGoal,
   onClearGoal,
   onDrainTaskQueueIfIdle,
+  onContinueQueuedSessionMessages,
   welcomeVariant = null,
   composerDocked = false,
   composerCollapsed = false,
@@ -1993,7 +2011,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   </>
                 )}
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
+                <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
                 <InterruptResultBubble />
                 <InteractionSlot onSubmit={onUserAnswer} />
                 <InputArea
@@ -2060,7 +2078,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       {hasConversation && (
         <div ref={composeRef} className="chat-compose" data-testid="chat-panel-compose">
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
-          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
+          <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
           <InterruptResultBubble />
           <InteractionSlot onSubmit={onUserAnswer} />
           {onSetGoal && onPauseGoal && onResumeGoal && onClearGoal && (

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -255,6 +256,7 @@ async def test_session_message_status_content_is_web_only(monkeypatch, channel_i
         chain_id="chain-1",
         hop_count=0,
         status="queued",
+        input_mode="",
         created_at="now",
         started_at=None,
         finished_at=None,
@@ -293,7 +295,7 @@ async def test_session_message_status_distinguishes_anonymous_local_owner(monkey
         message_id="sm-1", execution_request_id="", owner_scope_id="local",
         source_session_id="source-1", source_title_snapshot="Source",
         target_session_id="target-1", content="private prompt",
-        chain_id="chain-1", hop_count=0, status="queued", created_at="now",
+        chain_id="chain-1", hop_count=0, status="queued", input_mode="", created_at="now",
         started_at=None, finished_at=None, last_error_code="", last_error="",
     )
     monkeypatch.setattr(
@@ -389,6 +391,7 @@ def test_store_migrates_existing_mailbox_for_interrupt_correlation(tmp_path) -> 
             "ALTER TABLE session_messages DROP COLUMN interrupt_request_id"
         )
         conn.execute("ALTER TABLE session_messages DROP COLUMN interrupt_source")
+        conn.execute("ALTER TABLE session_messages DROP COLUMN queue_released_at")
 
     SessionMessageStore(path).ensure_schema()
 
@@ -397,7 +400,7 @@ def test_store_migrates_existing_mailbox_for_interrupt_correlation(tmp_path) -> 
             str(row[1])
             for row in conn.execute("PRAGMA table_info(session_messages)")
         }
-    assert {"interrupt_request_id", "interrupt_source"} <= columns
+    assert {"interrupt_request_id", "interrupt_source", "queue_released_at"} <= columns
 
 
 class _RecordingAdmission:
@@ -666,6 +669,317 @@ async def test_unknown_message_can_be_explicitly_resolved_without_replay(
     assert resolved["resolution"] == "cancelled_by_user"
     assert store.next_queued("target-1").message_id == queued.message_id
     await service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via_target_action", [False, True])
+async def test_restart_continues_durable_queue_on_explicit_request_without_replaying_unknown(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, via_target_action: bool
+) -> None:
+    path = tmp_path / "messages.sqlite3"
+    store = SessionMessageStore(path)
+    interrupted, _ = _enqueue(store, key="interrupted", content="may have run")
+    store.claim(interrupted.message_id, "execution-1", "run-1")
+    queued, _ = _enqueue(store, key="queued", content="run after restart")
+    executed: list[str] = []
+
+    async def execute(record):
+        executed.append(record.message_id)
+        return SessionMessageExecutionResult(status="succeeded")
+
+    service = SessionMessageService(
+        store=SessionMessageStore(path),
+        admission=_RecordingAdmission(),
+        execute=execute,
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    try:
+        await service.start()
+        assert service.store.get(interrupted.message_id).status == "unknown"
+        assert service.store.get(queued.message_id).status == "queued"
+        assert service.store.next_queued("target-1") is None
+        snapshot = await service.queued_for_target("target-1", "user-1")
+        assert [item["message_id"] for item in snapshot] == [queued.message_id]
+
+        if via_target_action:
+            with pytest.raises(SessionMessagingError):
+                await service.continue_queued_for_target("target-1", "other-user")
+            continued = await service.continue_queued_for_target("target-1", "user-1")
+            assert continued["released_unknown_count"] == 1
+            repeated = await service.continue_queued_for_target("target-1", "user-1")
+            assert repeated["released_unknown_count"] == 0
+        else:
+            continued = await service.resolve_unknown(
+                _source("continue"),
+                message_id=interrupted.message_id,
+                resolution="continue_queued",
+            )
+        await _wait_for_status(service.store, queued.message_id, "succeeded")
+
+        uncertain = service.store.get(interrupted.message_id)
+        assert uncertain.status == "unknown"
+        assert uncertain.resolved_at is None
+        assert uncertain.queue_released_at is not None
+        if not via_target_action:
+            assert continued["queue_released_at"] == uncertain.queue_released_at
+        assert executed == [queued.message_id]
+        assert service.store.pending_counts(["target-1"]) == {}
+        assert service.store.blocking_states(["target-1"]) == {}
+        assert SessionMessageStore(path).get(interrupted.message_id).status == "unknown"
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_restart_keeps_queued_message_idle_until_user_continues(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "messages.sqlite3"
+    queued, _ = _enqueue(SessionMessageStore(path), key="queued-before-restart")
+    executed: list[str] = []
+
+    async def execute(record):
+        executed.append(record.message_id)
+        return SessionMessageExecutionResult(status="succeeded")
+
+    service = SessionMessageService(
+        store=SessionMessageStore(path),
+        admission=_RecordingAdmission(),
+        execute=execute,
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    try:
+        await service.start()
+        await service.set_available(True)
+        assert executed == []
+        assert service.store.get(queued.message_id).status == "queued"
+        snapshot = await service.queued_for_target("target-1", "user-1")
+        assert [item["message_id"] for item in snapshot] == [queued.message_id]
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server._session_message_service = service
+        ws = SimpleNamespace(send=AsyncMock())
+        await server._handle_session_message_continue_queued(
+            ws,
+            AgentRequest(
+                request_id="continue-1",
+                channel_id="web",
+                session_id="target-1",
+                req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+                params={"session_id": "target-1"},
+                user_id="user-1",
+            ),
+            asyncio.Lock(),
+        )
+        response = json.loads(ws.send.await_args.args[0])
+        assert response["body"]["result"]["accepted"] is True
+        await _wait_for_status(service.store, queued.message_id, "succeeded")
+        assert executed == [queued.message_id]
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("caller", ["source-1", "target-1", "third-session"])
+@pytest.mark.parametrize("with_unknown", [False, True])
+async def test_agent_can_discover_read_and_continue_after_restart(
+    tmp_path, monkeypatch, caller, with_unknown
+):
+    from jiuwenswarm.server.runtime.session import session_history
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    unknown = None
+    if with_unknown:
+        unknown, _ = _enqueue(store, key="uncertain")
+        store.claim(unknown.message_id, "old-execution", "old-run")
+    queued, _ = _enqueue(store, key="queued", content="pending work")
+    executed = []
+    history_path = tmp_path / "sessions" / "target-1" / "history.jsonl"
+    history_path.parent.mkdir(parents=True)
+
+    async def execute(record):
+        executed.append(record.message_id)
+        history_path.write_text(json.dumps({
+            "id": "answer", "role": "assistant", "content": "task result",
+            "event_type": "chat.final", "session_message_id": record.message_id,
+        }) + "\n", encoding="utf-8")
+        return SessionMessageExecutionResult(status="succeeded")
+
+    service = SessionMessageService(
+        store=SessionMessageStore(store.path), admission=_RecordingAdmission(), execute=execute
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    monkeypatch.setattr(service, "_metadata", lambda: ([_metadata("target-1")], 1))
+    toolkit = SessionMessagingToolkit(service)
+    rail = SessionMessagingRouteRail()
+    route = SessionMessagingRoute(session_id=caller, request_id="continue-request", user_id="user-1")
+    ctx = SimpleNamespace(
+        inputs=ToolCallInputs(
+            tool_call=SimpleNamespace(id="continue-call", name="session_continue_queued"),
+            tool_name="session_continue_queued",
+        ),
+        extra={"run_context": with_session_messaging_route({}, route)["run"]["context"]},
+    )
+    await service.start()
+    await service.set_available(True)
+    await rail.before_tool_call(ctx)
+    try:
+        if caller != "target-1":
+            targets = await toolkit.list_sessions()
+            assert targets["sessions"][0]["queue_pause_reason"] == "host_restarted"
+        mailbox = await toolkit.list_messages(target_session_id="target-1")
+        assert queued.message_id in {item["message_id"] for item in mailbox["messages"]}
+        before = await toolkit.read_session("target-1")
+        assert before["queue"]["can_continue_queued"] is True
+        assert before["messages"] == []
+        assert executed == []
+
+        replies = await asyncio.gather(
+            toolkit.continue_queued("target-1"), toolkit.continue_queued("target-1")
+        )
+        assert all(reply["accepted"] for reply in replies)
+        assert all(reply["finish_current_turn"] == (caller == "target-1") for reply in replies)
+        await _wait_for_status(service.store, queued.message_id, "succeeded")
+        after = await toolkit.read_session("target-1")
+        assert after["messages"][0]["content"] == "task result"
+        assert after["messages"][0]["session_message_id"] == queued.message_id
+        assert after["queue"]["queue_paused"] is False
+        assert executed == [queued.message_id]
+        if unknown:
+            assert service.store.get(unknown.message_id).status == "unknown"
+    finally:
+        await rail.after_tool_call(ctx)
+        await service.stop()
+
+
+async def test_read_session_history_is_bounded_paginated_and_target_scoped(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_history
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    history_path = tmp_path / "target-1" / "history.jsonl"
+    history_path.parent.mkdir()
+    records = [
+        {"id": str(i), "role": "assistant", "content": "answer" * 10, "private_metadata": "omit"}
+        for i in range(5)
+    ]
+    history_path.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+    service = SessionMessageService(
+        store=SessionMessageStore(tmp_path / "messages.sqlite3"),
+        admission=_RecordingAdmission(), execute=AsyncMock(),
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    try:
+        first = await service.read_session(_source("read"), target_session_id="target-1", limit=2, max_output_chars=8)
+        assert [item["id"] for item in first["messages"]] == ["4", "3"]
+        assert all(item["truncated"] and len(item["content"]) == 8 for item in first["messages"])
+        assert all("private_metadata" not in item for item in first["messages"])
+        second = await service.read_session(
+            _source("read"), target_session_id="target-1", limit=2, cursor=first["next_cursor"]
+        )
+        assert [item["id"] for item in second["messages"]] == ["2", "1"]
+        with pytest.raises(SessionMessagingError, match="different session"):
+            await service.read_session(_source("read"), target_session_id="other", cursor=first["next_cursor"])
+        service._execute.assert_not_awaited()
+    finally:
+        await service.stop()
+
+
+async def test_continue_current_session_defers_execution_until_user_turn_finishes(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_history
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="held")
+    admission = SessionRunAdmission()
+    executed = asyncio.Event()
+
+    async def execute(record):
+        executed.set()
+        return SessionMessageExecutionResult(status="succeeded")
+
+    service = SessionMessageService(store=store, admission=admission, execute=execute)
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    await admission.begin_user("target-1")
+    try:
+        source = SessionMessagingRoute(
+            session_id="target-1", request_id="user-continue", user_id="user-1"
+        ).source_for_list()
+        result = await service.continue_queued(source, target_session_id="target-1")
+        assert result["finish_current_turn"] is True
+        snapshot = await service.read_session(source, target_session_id="target-1")
+        assert snapshot["queue"]["runtime_state"] == "busy"
+        assert snapshot["queue"]["queue_paused"] is False
+        assert store.get(queued.message_id).status == "queued"
+        assert not executed.is_set()
+        await admission.end_user("target-1")
+        await asyncio.wait_for(executed.wait(), timeout=2)
+        await _wait_for_status(store, queued.message_id, "succeeded")
+    finally:
+        await admission.end_user("target-1")
+        await service.stop()
+
+
+@pytest.mark.parametrize("operation", ["read_session", "continue_queued", "list_messages"])
+@pytest.mark.parametrize("forbidden", ["source-1", "target-1"])
+async def test_session_observation_and_continuation_check_both_owners(
+    tmp_path, monkeypatch, operation, forbidden
+):
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="private")
+    service = SessionMessageService(store=store, admission=_RecordingAdmission(), execute=AsyncMock())
+    monkeypatch.setattr(service, "_session_metadata", lambda sid: {
+        **_metadata(sid), "user_id": "other-user" if sid == forbidden else "user-1",
+    })
+    try:
+        with pytest.raises(SessionMessagingError) as exc:
+            await getattr(service, operation)(_source("call"), target_session_id="target-1")
+        assert exc.value.code == "NOT_FOUND_OR_FORBIDDEN"
+        assert store.get(queued.message_id).status == "queued"
+        service._execute.assert_not_awaited()
+    finally:
+        await service.stop()
+
+
+async def test_pending_prompt_survives_restart_and_refreshes_without_replaying_content(tmp_path, monkeypatch):
+    store = SessionMessageStore(tmp_path / "messages.sqlite3")
+    queued, _ = _enqueue(store, key="old-pending", content="untrusted mailbox instructions")
+    for index in range(55):
+        record, _ = _enqueue(store, key=f"completed-{index}")
+        store.claim(record.message_id, f"request-{index}", f"run-{index}")
+        store.transition_status(record.message_id, "succeeded", expected_statuses=("running",))
+    service = SessionMessageService(
+        store=SessionMessageStore(store.path), admission=_RecordingAdmission(),
+        execute=AsyncMock(return_value=SessionMessageExecutionResult(status="succeeded")),
+    )
+    monkeypatch.setattr(service, "_session_metadata", _metadata)
+    rail = SessionMessagingRouteRail()
+    builder = Mock()
+    rail.init(SimpleNamespace(system_prompt_builder=builder))
+    rail.set_service(service)
+    route = SessionMessagingRoute(session_id="source-1", request_id="query", user_id="user-1")
+    ctx = SimpleNamespace(extra={"run_context": with_session_messaging_route({}, route)["run"]["context"]})
+    try:
+        await rail.before_model_call(ctx)
+        content = builder.add_section.call_args.args[0].content["en"]
+        state = json.loads(content.split("\n", 1)[1])
+        assert state["queues"][0]["target_session_id"] == "target-1"
+        assert state["queues"][0]["queue_pause_reason"] == "host_restarted"
+        assert "untrusted mailbox instructions" not in content
+        service._execute.assert_not_awaited()
+
+        await service.continue_queued(route.source_for_list(), target_session_id="target-1")
+        await _wait_for_status(service.store, queued.message_id, "succeeded")
+        await rail.before_model_call(ctx)
+        content = builder.add_section.call_args.args[0].content["en"]
+        assert json.loads(content.split("\n", 1)[1])["queues"] == []
+
+        builder.reset_mock()
+        await rail.before_model_call(SimpleNamespace(extra={}))
+        builder.remove_section.assert_called_once_with("session_tools")
+        builder.add_section.assert_not_called()
+    finally:
+        rail.uninit(None)
+        await service.stop()
 
 
 @pytest.mark.asyncio
@@ -1339,6 +1653,8 @@ def test_toolkit_uses_request_local_route_and_stable_replay_keys() -> None:
         "session_list",
         "session_send_message",
         "session_message_list",
+        "session_continue_queued",
+        "session_read",
         "session_message_resolve",
     ]
 
@@ -1432,6 +1748,7 @@ def test_adapter_first_registration_uses_stable_session_tools() -> None:
     adapter._instance = SimpleNamespace(ability_manager=_AbilityManager())
     adapter._last_mode = "agent.code.normal"
     adapter._session_messaging_toolkit = None
+    adapter._session_messaging_route_rail = SessionMessagingRouteRail()
     adapter._register_agent_owned_tool = lambda tool, owner_id: None
     adapter._tool_owner_id = lambda: "test-owner"
     runtime = SimpleNamespace(session_message_service=service)
@@ -1452,8 +1769,11 @@ def test_adapter_first_registration_uses_stable_session_tools() -> None:
         "session_send_message",
         "session_message_list",
         "session_message_resolve",
+        "session_continue_queued",
+        "session_read",
     }
     assert not hasattr(adapter._session_messaging_toolkit, "_fallback_route")
+    assert adapter._session_messaging_route_rail._service is service
 
 
 def test_adapter_refreshes_toolkit_service_after_runtime_rebuild() -> None:
@@ -1466,6 +1786,8 @@ def test_adapter_refreshes_toolkit_service_after_runtime_rebuild() -> None:
                     "session_send_message",
                     "session_message_list",
                     "session_message_resolve",
+                    "session_continue_queued",
+                    "session_read",
                 }
             }
 
@@ -1478,6 +1800,8 @@ def test_adapter_refreshes_toolkit_service_after_runtime_rebuild() -> None:
     adapter._instance = SimpleNamespace(ability_manager=_AbilityManager())
     adapter._last_mode = "agent.code.normal"
     adapter._session_messaging_toolkit = SessionMessagingToolkit(old_service)
+    adapter._session_messaging_route_rail = SessionMessagingRouteRail()
+    adapter._session_messaging_route_rail.set_service(old_service)
     runtime_token = set_runtime_context(
         SimpleNamespace(session_message_service=new_service), SimpleNamespace()
     )
@@ -1487,6 +1811,7 @@ def test_adapter_refreshes_toolkit_service_after_runtime_rebuild() -> None:
         reset_runtime_context(runtime_token)
 
     assert adapter._session_messaging_toolkit._service is new_service
+    assert adapter._session_messaging_route_rail._service is new_service
 
 
 def test_code_adapter_mounts_session_messaging_route_rail(monkeypatch) -> None:
@@ -2614,6 +2939,11 @@ async def test_execution_watchdog_moves_wedged_execution_to_unknown(
     store = SessionMessageStore(tmp_path / "messages.sqlite3")
     release = asyncio.Event()
     release_wait = AsyncMock()
+    abandoned = asyncio.Event()
+
+    async def on_abandoned(record):
+        await release_wait(record)
+        abandoned.set()
 
     async def wedged(record):
         await release.wait()
@@ -2623,7 +2953,7 @@ async def test_execution_watchdog_moves_wedged_execution_to_unknown(
         store=store,
         admission=_RecordingAdmission(),
         execute=wedged,
-        on_abandoned_wait=release_wait,
+        on_abandoned_wait=on_abandoned,
         execution_watchdog_timeout=0.05,
         available=True,
     )
@@ -2638,6 +2968,7 @@ async def test_execution_watchdog_moves_wedged_execution_to_unknown(
         assert record is not None
         assert record.status == "unknown"
         assert record.last_error_code == "EXECUTION_WATCHDOG_TIMEOUT"
+        await asyncio.wait_for(abandoned.wait(), timeout=1)
         release_wait.assert_awaited_once()
         assert release_wait.await_args.args[0].message_id == sent["message_id"]
         admission = service._admission

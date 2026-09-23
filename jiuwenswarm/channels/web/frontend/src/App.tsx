@@ -27,6 +27,7 @@ import { UpdatePanel } from './components/UpdatePanel';
 import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
 import { ToastStack } from './components/ui';
+import { toast } from './components/ui/Toast/toastStore';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
 import type { SettingsRequest } from './features/settings/services/settingsContract';
@@ -1692,6 +1693,14 @@ function AppContent({
       return null;
     }
   }, [navigate, request, setProcessing, setThinking, upsertSessionMetadata]);
+
+  const handleContinueQueuedSessionMessages = useCallback(async (targetSessionId: string) => {
+    try {
+      await request('session.message.continue_queued', { session_id: targetSessionId });
+    } catch {
+      toast.open({ content: t('network.resumeFailed'), variant: 'error' });
+    }
+  }, [request, t]);
 
   const loadSessionMetadata = useCallback((targetSessionId: string): Promise<Session | null> => {
     const inFlight = sessionMetadataRequestsRef.current.get(targetSessionId);
@@ -3731,6 +3740,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         composerCollapsed={composerCollapsed}
                         onToggleComposerCollapsed={toggleTrajectoryComposer}
                         onComposerHeightChange={setTrajectoryComposerHeight}
+                        onContinueQueuedSessionMessages={handleContinueQueuedSessionMessages}
                       />
                     )}
                     chatLabel={t('nav.chat')}
