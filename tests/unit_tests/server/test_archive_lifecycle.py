@@ -885,27 +885,28 @@ async def test_parked_team_stream_archive_proceeds_without_touching_stream(
 
 
 @pytest.mark.asyncio
-async def test_parked_team_stream_still_blocks_delete(archive, monkeypatch):
-    from jiuwenswarm.agents.harness.team import team_manager
-
+async def test_parked_team_stream_delete_proceeds_and_stops_runtime(archive):
     service, create, _, runtime = archive
     create()
-    stop_session_runtime = AsyncMock()
-    monkeypatch.setattr(
-        team_manager,
-        "_team_manager",
-        SimpleNamespace(
-            has_stream_task=lambda sid: True,
-            is_round_ended_request=lambda sid, rid: True,
-            stop_session_runtime=stop_session_runtime,
-        ),
-    )
+    # The runtime would report the session busy (parked handler pending);
+    # the parked exemption lets the delete through, and unlike archive the
+    # delete's stop path tears the team runtime (and the persistent stream
+    # parked on it) down before the directory goes away.
     runtime.is_session_running = Mock(return_value=True)
     runtime.has_parked_team_streams = Mock(return_value=True)
+
+    payload = await service.session("sess_a", "delete", "web")
+
+    assert payload["ok"] is True
+    runtime.stop_session_for_archive.assert_awaited_once()
+    runtime.delete_session.assert_awaited_once()
+    # A stream that is not fully parked — a request still preparing or
+    # mid-round — keeps the delete busy.
+    create("sess_b")
+    runtime.has_parked_team_streams = Mock(return_value=False)
     with pytest.raises(lc.LifecycleError) as error:
-        await service.session("sess_a", "delete", "web")
+        await service.session("sess_b", "delete", "web")
     assert error.value.code == "SESSION_BUSY"
-    stop_session_runtime.assert_not_awaited()
 
 
 @pytest.mark.asyncio
