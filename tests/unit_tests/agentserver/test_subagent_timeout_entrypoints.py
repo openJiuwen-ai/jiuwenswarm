@@ -27,10 +27,14 @@ def child_with_stream(stream, *, timeout=0.03, task_loop=False, invoke=None):
 
 @pytest.fixture
 def debug_capture(monkeypatch):
+    from openjiuwen.extensions.observability import setup as observability_setup
+
     logger = Mock()
     logger.captures_subagent_flow.return_value = True
+    # Disable tracing at its shared boundary, independent of where the
+    # subagent observability helper lives.
+    monkeypatch.setattr(observability_setup, "is_initialized", lambda: False)
     token = context.set_debug_trace_logger(logger)
-    monkeypatch.setattr(subagent_capture, "_ensure_observability_rail", lambda child: None)
     try:
         yield logger
     finally:
@@ -44,7 +48,7 @@ async def capture(child):
 
 
 @pytest.mark.parametrize("session_scoped", [False, True])
-async def test_code_creation_installs_timeout_before_initialization(monkeypatch, session_scoped):
+async def test_code_creation_installs_timeout_before_initialization(monkeypatch, session_scoped, tmp_path):
     from jiuwenswarm.server.runtime.agent_adapter import interface_code as code
 
     class InitializationReached(Exception):
@@ -57,7 +61,9 @@ async def test_code_creation_installs_timeout_before_initialization(monkeypatch,
     monkeypatch.setattr(cls, "copy_tenant_env_bindings_from", lambda *a: None)
     root = cls()
     root._skill_manager = None
+    root._personal_context_runtime_enabled = False
     adapter = root._new_session_scoped_adapter("code-session") if session_scoped else root
+    adapter._constructor_workspace_dir = None
     for name, value in {
         "set_checkpoint": AsyncMock(),
         "_refresh_multimodal_configs": Mock(),
@@ -72,8 +78,9 @@ async def test_code_creation_installs_timeout_before_initialization(monkeypatch,
     }.items():
         monkeypatch.setattr(adapter, name, value)
     monkeypatch.setattr(code, "_resolve_instance_config_base", lambda cfg: cfg)
-    monkeypatch.setattr(code, "get_agent_workspace_dir", lambda: "test-workspace")
-    monkeypatch.setattr(code, "Workspace", lambda **kw: SimpleNamespace(**kw))
+    # Workspace construction is side-effect free until SDK initialization;
+    # allow either adapter construction path to use the real workspace schema.
+    monkeypatch.setattr(code, "get_agent_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(code, "_set_workspace_coding_memory_directory", lambda *a, **kw: None)
     monkeypatch.setattr(code, "_deep_agent_kv_cache_affinity_config", lambda *a: None)
     monkeypatch.setattr(code, "build_code_system_prompt", lambda: "test")
