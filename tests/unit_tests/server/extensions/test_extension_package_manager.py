@@ -701,6 +701,57 @@ class TestAgentGroupLifecycle:
         assert catalog.is_agent_group_installed("imported-review") is True
         assert catalog.resolve_agent_group_dir("imported-review") == imported.resolve()
 
+    def test_import_rejects_duplicate_display_name(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        existing = _seed_valid_agent_group(
+            extension_workspace,
+            "existing-review",
+            under="local",
+        )
+        existing_manifest = json.loads(
+            (existing / "manifest.json").read_text(encoding="utf-8")
+        )
+        existing_manifest["display_name"] = {
+            "zh": "交付评审专家团",
+            "en": "Delivery Review Team",
+        }
+        (existing / "manifest.json").write_text(
+            json.dumps(existing_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        source_workspace = tmp_path / "source-home" / "agent" / "workspace"
+        source = _seed_valid_agent_group(
+            source_workspace,
+            "another-review",
+            under="local",
+        )
+        source_manifest = json.loads(
+            (source / "manifest.json").read_text(encoding="utf-8")
+        )
+        source_manifest["display_name"] = {
+            "zh": "交付评审专家团",
+            "en": "Another Review Team",
+        }
+        (source / "manifest.json").write_text(
+            json.dumps(source_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(catalog.AgentGroupPackageError) as exc_info:
+            catalog.import_agent_group({"path": str(source)})
+
+        assert exc_info.value.code == "AGENT_GROUP_DUPLICATE"
+        assert "existing-review" in str(exc_info.value)
+        assert not (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "local"
+            / "another-review"
+        ).exists()
+
     def test_resource_group_install_and_uninstall_preserves_shelf_card(
         self,
         monkeypatch: pytest.MonkeyPatch,
