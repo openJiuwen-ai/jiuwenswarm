@@ -131,6 +131,32 @@ def _make_adapter(**overrides: Any) -> Any:
     return adapter
 
 
+class TestGenerateRecapSessionRouting:
+    """Root adapters must route recap requests through a session adapter."""
+
+    @pytest.mark.asyncio
+    async def test_creates_session_adapter_when_cache_is_cold(self):
+        adapter = _make_adapter()
+        adapter._is_session_scoped_adapter = False
+        session_adapter = MagicMock()
+        session_adapter.generate_recap = AsyncMock(return_value={"status": "ok"})
+        adapter._get_or_create_session_adapter = AsyncMock(
+            return_value=session_adapter
+        )
+        adapter._evict_idle_session_adapters = AsyncMock()
+
+        result = await adapter.generate_recap(session_id="session-cold")
+
+        assert result == {"status": "ok"}
+        adapter._get_or_create_session_adapter.assert_awaited_once_with(
+            "session-cold"
+        )
+        session_adapter.generate_recap.assert_awaited_once_with(
+            session_id="session-cold"
+        )
+        adapter._evict_idle_session_adapters.assert_awaited_once_with()
+
+
 # =============================================================================
 # Section A: _build_btw_prompt
 # =============================================================================

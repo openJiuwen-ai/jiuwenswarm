@@ -91,6 +91,28 @@ class TestStripDebugDirective:
 
 # ── paths ──────────────────────────────────────────────────────────────────
 class TestPaths:
+    def test_original_agent_plan_keeps_agent_dir_after_code_profile_resolution(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(paths_mod, "get_user_workspace_dir", lambda: tmp_path)
+        mode = paths_mod.resolve_debug_trace_mode("code.plan", "agent.plan")
+
+        assert paths_mod.debug_trace_file(mode, "sess") == (
+            tmp_path / ".agent" / "traces" / "dump-agent-sess.txt"
+        )
+
+    def test_plain_web_agent_in_code_profile_remains_code_dump(self):
+        assert (
+            paths_mod.resolve_debug_trace_mode("code.normal", "agent")
+            == "code.normal"
+        )
+
+    def test_explicit_code_plan_remains_code_dump(self):
+        assert (
+            paths_mod.resolve_debug_trace_mode("code.plan", "code.plan")
+            == "code.plan"
+        )
+
     def test_agent_modes_use_agent_dir(self, monkeypatch, tmp_path):
         monkeypatch.setattr(paths_mod, "get_user_workspace_dir", lambda: tmp_path)
         assert paths_mod.debug_trace_dir("agent.plan") == tmp_path / ".agent" / "traces"
