@@ -142,12 +142,15 @@ class WebChannel(BaseWsChannel):
         self.git_watcher_registry: Any = None
         # AgentOSRouterClient for same-port HTTP container file APIs (set by handlers).
         self.container_file_client: Any = None
-        # 3rd-agent Web UI proxy on the same port (set by app_gateway).
+        # 3rd-agent Web UI proxy: one northbound port per agent_type.
         self.web_proxy_enabled: bool = False
         self.web_proxy_auth_enabled: bool = True
+        self.web_proxy_config: Any = None
+        self.web_port_manager: Any = None
         self.web_resolver: Any = None
         self.web_runtime_release: Any = None
         self.web_proxy_session: Any = None
+        self.web_proxy_http_session: Any = None
         self._web_proxy_session_lock = asyncio.Lock()
 
     @staticmethod
@@ -618,6 +621,24 @@ class WebChannel(BaseWsChannel):
             self.web_proxy_session = session
             return session
 
+    async def ensure_web_proxy_http_session(self) -> aiohttp.ClientSession:
+        """HTTP-only session. Each request closes its socket.
+
+        YuanRong's frontend answers the second request on a keep-alive
+        connection with an empty 404, which shows up as a blank SPA and
+        failed module loads. WebSocket stays on ``ensure_web_proxy_session``.
+        """
+        session = self.web_proxy_http_session
+        if session is not None and not session.closed:
+            return session
+        async with self._web_proxy_session_lock:
+            session = self.web_proxy_http_session
+            if session is not None and not session.closed:
+                return session
+            session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(force_close=True))
+            self.web_proxy_http_session = session
+            return session
+
     async def stop(self) -> None:
         """停止 WebSocket 服务并清理连接."""
         self._running = False
@@ -628,14 +649,22 @@ class WebChannel(BaseWsChannel):
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients_by_key.clear()
 
-        session = getattr(self, "web_proxy_session", None)
-        if session is not None:
+        manager = getattr(self, "web_port_manager", None)
+        if manager is not None:
+            try:
+                await manager.close_all()
+            except Exception:  # noqa: BLE001
+                logger.debug("[WebChannel] web proxy port shutdown ignored", exc_info=True)
+        for attr in ("web_proxy_session", "web_proxy_http_session"):
+            session = getattr(self, attr, None)
+            if session is None:
+                continue
             try:
                 if not session.closed:
                     await session.close()
             except Exception:  # noqa: BLE001
                 pass
-            self.web_proxy_session = None
+            setattr(self, attr, None)
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None

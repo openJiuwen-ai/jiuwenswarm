@@ -1569,6 +1569,10 @@ async def _run(
     from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
         WebProxyChannelConfig,
     )
+    from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+        WebPortManager,
+        register_3rdagent_web_method,
+    )
     from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.cleanup import start_background_cleanup
@@ -1946,6 +1950,7 @@ async def _run(
         path=web_path,
     )
     web_channel = WebChannel(web_config, _DummyBus(), agent_client=client)
+    register_3rdagent_web_method(web_channel)
 
     # 注入 Git diff 监控注册表(设计文档阶段10):
     # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
@@ -2802,6 +2807,9 @@ async def _run(
             web_channel.web_proxy_auth_enabled = True
             web_channel.web_resolver = None
             web_channel.web_runtime_release = None
+            previous_manager = getattr(web_channel, "web_port_manager", None)
+            if previous_manager is not None:
+                await previous_manager.close_all()
             if isinstance(web_proxy_conf, dict):
                 enabled, reason = _is_channel_enabled(web_proxy_conf, [])
                 full_cfg = get_config()
@@ -2847,14 +2855,20 @@ async def _run(
 
                         web_channel.web_proxy_enabled = wp_config.enabled
                         web_channel.web_proxy_auth_enabled = wp_config.auth_enabled
+                        web_channel.web_proxy_config = wp_config
                         web_channel.web_resolver = _held_web_resolver
                         web_channel.web_runtime_release = (
                             web_release if callable(web_release) else None
                         )
+                        manager = WebPortManager(web_channel, wp_config)
+                        web_channel.web_port_manager = manager
+                        manager.start()
                         logger.info(
-                            "[App] web proxy mounted on WebChannel :%s /{agent_type}/... "
-                            "(shares /ws and /file-api; auth=%s)",
-                            web_channel.config.port,
+                            "[App] 3rd-agent web proxy on ports [%s, %s) via 3rdagent.web "
+                            "(listen %s, auth=%s)",
+                            wp_config.port_base,
+                            wp_config.port_base + wp_config.port_span,
+                            wp_config.listen_host,
                             "on" if wp_config.auth_enabled else "off",
                         )
             else:

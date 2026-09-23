@@ -713,9 +713,17 @@ channels:
       cleanup_interval_sec: 60
 
   web_proxy:
-    # 3rd-agent Web UI 透明代理，挂在 WebChannel 同端口（默认 :19000）。
-    # URL: http://<gateway>:19000/<agent_type>/?user_id=<uid>&token=<iam>
+    # 3rd-agent Web UI。同一 agent_type 一个北向端口。
+    # ws://<gateway>:19000/ws 方法 3rdagent.web 返回
+    # http://<host>:<port>/?user_id=<uid>&token=<iam>
+    # 端口段默认 19101–19300（19100 留给 A2A）。
     enabled: true
+    auth_enabled: true
+    listen_host: <<INGRESS_VIP>>
+    advertise_host: <<INGRESS_VIP>>
+    port_base: 19101
+    port_span: 200
+    idle_timeout_sec: 900
 
 # ========== 细粒度权限管控（tiered_policy）==========
 #
