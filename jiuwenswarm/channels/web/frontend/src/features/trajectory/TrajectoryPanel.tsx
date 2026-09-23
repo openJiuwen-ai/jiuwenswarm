@@ -18,6 +18,7 @@ import { useTranslation } from 'react-i18next';
 import { webClient } from '../../services/webClient';
 import { saveBlobWithResult } from '../../utils/desktopSave';
 import { TrajectoryExplorer } from './client/TrajectoryExplorer';
+import { IconQuestionOutline14 } from './primitives/icons';
 import { JsonTree } from './primitives/JsonTree';
 import { projectOtelTrajectory } from './projector/otel-trajectory-projector';
 import { createTrajectoryV2Reducer } from './projector/trajectory-v2-reducer';
@@ -129,11 +130,6 @@ export interface TrajectoryPanelProps {
   active: boolean;
   mode?: string;
   sessionId: string;
-  /**
-   * Bottom clearance in pixels for content the host floats over this panel,
-   * such as the chat composer kept available while the trajectory is shown.
-   */
-  bottomInset?: number;
 }
 
 interface InitialLoadProgress {
@@ -205,7 +201,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   active,
   mode = 'agent',
   sessionId,
-  bottomInset = 0,
 }: TrajectoryPanelProps) {
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
@@ -279,7 +274,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const [fetchedRaw, setFetchedRaw] = useState<{ identity: string; data: unknown } | null>(null);
   const [rawLoading, setRawLoading] = useState(false);
   const [rawError, setRawError] = useState<string | null>(null);
-  const [rawExpanded, setRawExpanded] = useState(true);
+  // The raw OTel records are a debugging aid, not the reading surface, so the
+  // inspector opens as its summary row and the ledger keeps the height.
+  const [rawExpanded, setRawExpanded] = useState(false);
+  // MIT attribution for the migrated DeepSeek Harness sources. It is reachable
+  // from the header rather than standing permanently at the bottom, where it
+  // took reading space from every session.
+  const [attributionOpen, setAttributionOpen] = useState(false);
   const [rawHeight, setRawHeight] = useState(RAW_INSPECTOR_DEFAULT_HEIGHT);
   const [rawContainerHeightPx, setRawContainerHeightPx] = useState(600);
 
@@ -339,6 +340,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       'toolbar.search': '搜索轨迹',
       'toolbar.searchPlaceholder': '搜索',
     },
+    attributionLabel: '开源声明',
     attributionBasis: '本产品轨迹 UI 基于开源项目',
     attributionLicense: '的轨迹组件开发构建，原项目遵循',
     attributionLicenseSuffix: '。',
@@ -383,6 +385,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     rawExpand: 'Expand raw OTel panel',
     rawResize: 'Resize raw OTel panel height',
     toolbar: undefined,
+    attributionLabel: 'Open-source attribution',
     attributionBasis: 'The trajectory UI in this product is developed and built on the trajectory components of the open-source project',
     attributionLicense: ', which is licensed under the',
     attributionLicenseSuffix: '.',
@@ -1424,7 +1427,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 toolbarAddon={toolbarAddon}
                 viewState={viewState}
                 onOverviewActivate={onOverviewActivate}
-                bottomInset={expanded ? bottomInset : 0}
                 className={expanded ? css.explorer : undefined}
               />
               {expanded && rawRecords.length > 0 ? rawInspector : null}
@@ -1507,7 +1509,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                   error={selected && replayArchive === null ? error : null}
                   messages={copy.toolbar}
                   colorMode="light"
-                  bottomInset={selected ? bottomInset : 0}
                   className={css.explorer}
                 />
               </div>
@@ -1569,6 +1570,17 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
               {copy.exitReplay}
             </button>
           )}
+          <button
+            type="button"
+            className={`${css.attributionToggle} ${attributionOpen ? css.attributionToggleActive : ''}`}
+            aria-expanded={attributionOpen}
+            aria-label={copy.attributionLabel}
+            title={copy.attributionLabel}
+            onClick={() => setAttributionOpen(open => !open)}
+            data-testid="trajectory-attribution-toggle"
+          >
+            <IconQuestionOutline14 />
+          </button>
         </div>
       </header>
       {archiveError === null ? null : (
@@ -1661,6 +1673,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         </div>
       ) : null}
       <div ref={bodyRef} className={css.body}>{content}</div>
+      {attributionOpen ? (
       <footer className={css.footer}>
         <p className={css.footerText}>
           {copy.attributionBasis}{' '}
@@ -1686,6 +1699,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
           {copy.attributionCopyright}
         </p>
       </footer>
+      ) : null}
     </section>
   );
 });

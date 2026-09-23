@@ -7,7 +7,7 @@ import { AssetPublishHost } from './components/AssetPublishDrawer';
  * 应用主布局，整合所有组件
  */
 
-import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type PointerEvent as ReactPointerEvent } from 'react';
+import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { SideConversationPanel } from './components/ChatPanel/SideConversationPanel';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
@@ -3790,7 +3790,14 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 {/* Chat Panel - 在展开时可拖拽调整宽度 */}
                 <div
                   className={`${showConversationNotFound || shouldFullscreen ? 'hidden' : 'flex'} chat-layout__surface  pt-0 flex-col ${effectiveTeamAreaExpanded ? '' : 'min-w-0'} min-h-0 ${effectiveTeamAreaExpanded ? '' : 'flex-1'}`}
-                  style={effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : undefined}
+                  style={{
+                    ...(effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : {}),
+                    '--trajectory-composer-clearance': `${trajectoryComposerClearance(
+                      composerDocked,
+                      composerCollapsed,
+                      trajectoryComposerHeight,
+                    )}px`,
+                  } as CSSProperties}
                   data-testid="app-chat-surface"
                 >
 <SingleAgentSurface
@@ -3866,11 +3873,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           active={chatSurfaceView === 'trajectory'}
                           mode={mode}
                           sessionId={sessionId}
-                          bottomInset={trajectoryComposerClearance(
-                            composerDocked,
-                            composerCollapsed,
-                            trajectoryComposerHeight,
-                          )}
                         />
                       </Suspense>
                     )}

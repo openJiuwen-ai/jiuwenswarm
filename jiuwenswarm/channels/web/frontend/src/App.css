@@ -91,9 +91,8 @@
 
 /*
  * The composer stays live while the trajectory is shown, so a reader can answer
- * an approval or send a message without switching back to the chat. It floats
- * above the trajectory view; TrajectoryTable keeps its last rows clear of it
- * through the measured height the panel reports as `bottomInset`.
+ * an approval or send a message without switching back to the chat. Its own
+ * padding is the gap between the trajectory's bottom edge and the input frame.
  */
 .single-agent-surface--trajectory
   .chat-panel-shell--composer-docked:not(.chat-panel-shell--composer-collapsed)
@@ -101,6 +100,7 @@
   visibility: visible;
   pointer-events: auto;
   z-index: 11;
+  padding-top: 10px;
   padding-bottom: 10px;
 }
 
@@ -119,12 +119,16 @@
   left: 0;
 }
 
+/* The trajectory stops at the docked composer's top edge rather than running
+   under it, so its footer and raw-record panel stay inside the visible area.
+   `--trajectory-composer-clearance` is the composer's measured height, or 0
+   when it is collapsed or absent. */
 .single-agent-surface--trajectory .chat-surface-view[data-testid='single-agent-trajectory-view'] {
   position: absolute;
   z-index: 10;
   top: 88px;
   right: 0;
-  bottom: 0;
+  bottom: var(--trajectory-composer-clearance, 0px);
   left: 0;
   background: var(--color-surface-card);
 }

@@ -70,7 +70,9 @@ make check-genai-semconv
 
 轨迹视图下 `.chat-panel-shell` 并非 `display:none`，而是绝对定位铺满后由 `App.css` 的 `.single-agent-surface--trajectory .chat-panel-shell > :not(.chat-panel-header)` 隐藏。`.chat-compose`（输入框、审批卡片、目标栏）对这条规则开了例外，浮在轨迹之上，使读者不必切回对话即可回应审批或发消息。
 
-让位靠的是 padding 而不是压缩布局：ChatPanel 用 ResizeObserver 实测 compose 高度上报，经 `trajectoryComposerClearance()` 归一后作为 `TrajectoryPanel` 的 `bottomInset` → `--trajectory-bottom-inset` → `--dsh-trajectory-bottom-clearance` → `TrajectoryTable` 的 `padding-bottom`。收起状态按 sessionId 存在 App，收起时 clearance 归零。
+让位靠的是压缩轨迹区域，不是给内容加内边距：ChatPanel 用 ResizeObserver 实测 compose 高度上报，经 `trajectoryComposerClearance()` 归一后由 App 写成 `--trajectory-composer-clearance`，作为轨迹视图的 `bottom`。之所以不能用 `TrajectoryExplorer` 现成的 `bottomInset`（它只给 `TrajectoryTable` 加 `padding-bottom`），是因为面板底部还有 raw inspector 和 footer 在表格之外，padding 管不到它们，会从输入框两侧露出来。收起状态按 sessionId 存在 App，收起时 clearance 归零、轨迹立刻吃满高度。
+
+面板自身也为此让出了竖直空间：raw inspector 默认折叠成摘要行（`rawExpanded` 初值 `false`），MIT 归属 footer 默认不渲染，改由 header 的 `trajectory-attribution-toggle` 按钮开合——归属仍须在 UI 可达，不要直接删掉。
 
 ## 本目录的硬约束
 

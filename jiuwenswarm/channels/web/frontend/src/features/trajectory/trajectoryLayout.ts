@@ -27,12 +27,11 @@ export function shouldInsetTrajectoryForFloatingTasks(
 }
 
 /**
- * Bottom clearance the trajectory content reserves for the docked chat
- * composer.
+ * Bottom clearance the trajectory view gives up to the docked chat composer.
  *
- * The composer floats over the trajectory rather than shrinking it, so the
- * ledger pads its last rows by exactly what the composer covers. A composer
- * that is undocked or collapsed to watch-only covers nothing.
+ * The trajectory stops at the composer's top edge rather than running under
+ * it, so its own footer and raw-record panel stay inside the visible area. A
+ * composer that is undocked or collapsed to watch-only takes nothing.
  *
  * @param docked - Whether the composer is kept available on the trajectory view.
  * @param collapsed - Whether the docked composer is collapsed to watch-only.
