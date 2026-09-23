@@ -173,7 +173,10 @@ def load_pinned_sessions() -> dict[str, Any]:
     sessions = collect_all_sessions_metadata()
     pinned = []
     for session in sessions:
-        if not session.get("pinned") or session.get("channel_id") != "web":
+        channel_id = session.get("channel_id")
+        if not session.get("pinned") or not (
+            channel_id == "web" or (channel_id == "__cron__" and session.get("cron_id"))
+        ):
             continue
         if str(session.get("project_id") or "") in removed_project_ids:
             continue

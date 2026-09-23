@@ -465,6 +465,20 @@ class TestCronLastSessionId:
         assert state.execution_session_allocated is False
         assert not agent.unary_requests
 
+    @pytest.mark.asyncio
+    async def test_run_now_info_keeps_team_mode(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, mode="team.work.normal")
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+
+        info = await svc.trigger_run_now_info(job.id)
+
+        state = svc.runs[info["run_id"]]
+        assert state.exec_mode == "team.work.normal"
+        assert state.execution_session_allocated is False
+        assert not agent.unary_requests
+
 
 class TestCheckStoreChanged:
     """_check_store_changed detects file deletion, modification, recreation."""
