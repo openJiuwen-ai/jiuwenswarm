@@ -205,7 +205,14 @@ class SafeRotatingFileHandler(BaseRotatingHandler):
     def __init__(self, filename, maxBytes=0, backupCount=0, encoding=None,
                  delay=False, errors=None):
         """Initialize the handler."""
-        super().__init__(filename, 'a', encoding, errors)
+        parent = Path(filename).parent
+        parent.mkdir(parents=True, exist_ok=True)
+        try:
+            super().__init__(filename, 'a', encoding=encoding, errors=errors)
+        except FileNotFoundError:
+            # 目录可能在 mkdir 与 open 之间被并发进程/清理任务删除，重建后重试一次。
+            parent.mkdir(parents=True, exist_ok=True)
+            super().__init__(filename, 'a', encoding=encoding, errors=errors)
         self.max_bytes = maxBytes
         self.backup_count = backupCount
         self._current_filename = filename

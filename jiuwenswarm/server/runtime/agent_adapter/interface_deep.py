@@ -4436,6 +4436,44 @@ class JiuWenSwarmDeepAdapter:
         registered_tools = buffers.registered_tools
         seen_names = buffers.seen_names
         for server_name, server_config in request_mcp_servers.items():
+            # 这里统一走 identity-pinned 注册（与 Source 1 同一代码路径），
+            # 校验命令/参数/工作目录、复用 schema cache、产物注册到同一 buffers。
+            if server_name == "office-claw" and not skip_office_claw:
+                try:
+                    new_invocation_id = (
+                        await self._append_identity_pinned_office_claw_tools(
+                            request,
+                            server_config,
+                            request_scope,
+                            buffers,
+                        )
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "[JiuWenSwarmDeepAdapter] request-scoped MCP "
+                        "connector 'office-claw' identity-pinned "
+                        "registration failed; agent will have NO "
+                        "office_claw_* tools (no scheduled-task / "
+                        "task / rich-block capabilities). Validate "
+                        "sidecar env OFFICE_CLAW_MCP_COMMAND / "
+                        "ARGS_JSON / CWD and request env "
+                        "OFFICE_CLAW_API_URL / INVOCATION_ID / "
+                        "CALLBACK_TOKEN / USER_ID / AGENT_ID: "
+                        "request_id=%s error=%s",
+                        request.request_id,
+                        exc,
+                    )
+                    raise
+                if new_invocation_id and new_invocation_id != "-":
+                    invocation_id = new_invocation_id
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP "
+                    "connector 'office-claw' routed through "
+                    "identity-pinned registration (Source-2 fallback): "
+                    "request_id=%s",
+                    request.request_id,
+                )
+                continue
             # office-claw 已由 Source1 处理。
             if server_name == "office-claw" and skip_office_claw:
                 continue
