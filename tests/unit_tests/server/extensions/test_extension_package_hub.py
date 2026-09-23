@@ -101,6 +101,18 @@ class PortOnlyHub:
         raise AssertionError("list must not resolve downloads")
 
 
+class QueryRecordingHub(FakeHubAssetPort):
+    def __init__(self, kind: str) -> None:
+        super().__init__(_item(kind=kind))
+        self.requests: list[object] = []
+
+    async def search_assets(self, request) -> HubSearchPage:
+        self.requests.append(request)
+        return HubSearchPage(
+            items=(self.item,), total=1, page=request.page, page_size=request.page_size
+        )
+
+
 class FakeDownloader:
     def __init__(self, *, connectors: tuple[str, ...] = ()) -> None:
         self.calls = 0
@@ -407,6 +419,68 @@ async def test_list_fetches_all_hub_pages(extension_workspace: Path) -> None:
 
     assert [card["id"] for card in cards] == ["remote-1", "remote-2"]
     assert hub.list_calls == ["agent_template:1:100", "agent_template:2:100"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "list_catalog"),
+    [
+        ("agent_template", catalog.list_agent_templates_with_hub),
+        ("plugin", catalog.list_plugin_packages_with_hub),
+        ("agent_group", catalog.list_agent_groups_with_hub),
+    ],
+)
+async def test_market_search_forwards_visible_keyword_to_hub(
+    extension_workspace: Path, kind: str, list_catalog
+) -> None:
+    hub = QueryRecordingHub(kind)
+
+    await list_catalog(
+        {"filter": "builtin+hub", "query": "销售 分析", "cache_mode": "prefer_cache"},
+        hub_port=hub,
+    )
+
+    assert len(hub.requests) == 1
+    request = hub.requests[0]
+    assert request.kind == kind
+    assert request.query == "销售 分析"
+
+
+@pytest.mark.asyncio
+async def test_my_equipment_search_never_calls_hub(
+    extension_workspace: Path,
+) -> None:
+    hub = QueryRecordingHub("agent_template")
+
+    await catalog.list_agent_templates_with_hub(
+        {"filter": "mine", "query": "销售"}, hub_port=hub
+    )
+
+    assert hub.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "list_method"),
+    [
+        ("agent_template", catalog.list_agent_templates_with_hub),
+        ("plugin", catalog.list_plugin_packages_with_hub),
+        ("agent_group", catalog.list_agent_groups_with_hub),
+    ],
+)
+async def test_market_search_drops_hub_results_matching_only_internal_asset_id(
+    extension_workspace: Path,
+    kind: str,
+    list_method,
+) -> None:
+    hub = QueryRecordingHub(kind)
+    hub.item = replace(hub.item, asset_id="93e6e963-0896-4473-8655-09f611bcddc8")
+
+    cards = await list_method(
+        {"filter": "builtin+hub", "query": "6"}, hub_port=hub
+    )
+
+    assert cards == []
 
 
 @pytest.mark.asyncio

@@ -317,6 +317,8 @@ export function AgentManagementPanel({
   const groupMineRef = useRef<AgentGroupCatalogItem[]>([]);
   const groupCatalogRevisionRef = useRef(0);
   const groupMineRevisionRef = useRef(0);
+  const catalogSearchActiveRef = useRef(false);
+  const groupCatalogSearchActiveRef = useRef(false);
   const groupDetailRevisionRef = useRef(0);
   const groupFilesRevisionRef = useRef(0);
   const groupFileRevisionRef = useRef(0);
@@ -392,9 +394,11 @@ export function AgentManagementPanel({
       buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
         scope: 'catalog',
         category,
-        query,
+        // Marketplace results are already filtered by Hub. Reapplying a
+        // client-side substring filter would discard name/tag matches.
+        query: '',
       }),
-    [state.catalog, category, query, installationFilter],
+    [state.catalog, category, installationFilter],
 
   );
   const mineView = useMemo(
@@ -410,12 +414,12 @@ export function AgentManagementPanel({
     () => buildGroupCatalogViewModel(groupCatalog, {
       scope: 'catalog',
       category: groupCategory,
-      query: groupCatalogQuery,
+      query: '',
       installation: groupInstallationFilter,
       page: groupCatalogPage,
       pageSize: GROUP_PAGE_SIZE,
     }),
-    [groupCatalog, groupCategory, groupCatalogQuery, groupInstallationFilter, groupCatalogPage],
+    [groupCatalog, groupCategory, groupInstallationFilter, groupCatalogPage],
   );
   const groupMineView = useMemo(
     () => buildGroupCatalogViewModel(groupMine, {
@@ -430,7 +434,7 @@ export function AgentManagementPanel({
 
   );
 
-  const loadCatalog = useCallback(async (options: { includeTeamCompatibility?: boolean } = {}) => {
+  const loadCatalog = useCallback(async (options: { includeTeamCompatibility?: boolean; query?: string } = {}) => {
     const revision = ++catalogRevisionRef.current;
     const requestScope = catalogScope();
     if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loading' });
@@ -440,7 +444,11 @@ export function AgentManagementPanel({
         ? { includeTeamCompatibility: true }
         : {};
       const [marketplaceCatalog, mineCatalog] = await Promise.all([
-        client.listCatalog({ filter: equipmentListFilter('agent', 'catalog'), ...compatibilityOptions }),
+        client.listCatalog({
+          filter: equipmentListFilter('agent', 'catalog'),
+          ...compatibilityOptions,
+          ...(options.query ? { query: options.query } : {}),
+        }),
         client.listCatalog({ filter: equipmentListFilter('agent', 'mine'), ...compatibilityOptions }),
       ]);
       if (requestScope !== catalogScope()) return;
@@ -453,7 +461,7 @@ export function AgentManagementPanel({
       catalogRef.current = catalog;
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
-      seedAgentCatalog(catalog);
+      if (!options.query) seedAgentCatalog(catalog);
       dispatch({ type: 'catalog.loaded', catalog });
     } catch (error) {
       if (revision !== catalogRevisionRef.current) return;
@@ -463,7 +471,7 @@ export function AgentManagementPanel({
     }
   }, [client, formatActionError, t]);
 
-  const loadGroups = useCallback(async (scope: 'catalog' | 'mine') => {
+  const loadGroups = useCallback(async (scope: 'catalog' | 'mine', query = '') => {
     const revisionRef = scope === 'catalog' ? groupCatalogRevisionRef : groupMineRevisionRef;
     const setStatus = scope === 'catalog' ? setGroupCatalogStatus : setGroupMineStatus;
     const setError = scope === 'catalog' ? setGroupCatalogError : setGroupMineError;
@@ -475,12 +483,13 @@ export function AgentManagementPanel({
     try {
       const groups = await groupClient.listGroups({
         filter: scope === 'catalog' ? 'builtin+hub' : 'local',
-        ...(scope === 'catalog' ? { cache_mode: 'prefer_cache' } : {}),
+        ...(scope === 'catalog' && !query ? { cache_mode: 'prefer_cache' } : {}),
+        ...(scope === 'catalog' && query ? { query } : {}),
       });
       if (revision !== revisionRef.current) return;
       if (scope === 'catalog') {
         scheduleCatalogRefresh('agent-group-catalog', catalogCacheOf(groups),
-          () => { void loadGroups('catalog'); }, () => groupCatalogRevisionRef.current === revision);
+          () => { void loadGroups('catalog', query); }, () => groupCatalogRevisionRef.current === revision);
       }
       listRef.current = groups;
       setItems(groups);
@@ -636,6 +645,40 @@ export function AgentManagementPanel({
     if (view === 'teams') void loadGroups('catalog');
     if (view === 'mine' && mineKind === 'group') void loadGroups('mine');
   }, [loadGroups, mineKind, view]);
+
+  useEffect(() => {
+    if (!isActive || view !== 'catalog') return;
+    const searchQuery = query.trim();
+    if (!searchQuery) {
+      if (catalogSearchActiveRef.current) {
+        catalogSearchActiveRef.current = false;
+        void loadCatalog();
+      }
+      return;
+    }
+    catalogSearchActiveRef.current = true;
+    const timer = window.setTimeout(() => {
+      void loadCatalog({ query: searchQuery });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [isActive, loadCatalog, query, view]);
+
+  useEffect(() => {
+    if (!isActive || view !== 'teams') return;
+    const searchQuery = groupCatalogQuery.trim();
+    if (!searchQuery) {
+      if (groupCatalogSearchActiveRef.current) {
+        groupCatalogSearchActiveRef.current = false;
+        void loadGroups('catalog');
+      }
+      return;
+    }
+    groupCatalogSearchActiveRef.current = true;
+    const timer = window.setTimeout(() => {
+      void loadGroups('catalog', searchQuery);
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [groupCatalogQuery, isActive, loadGroups, view]);
 
   useEffect(() => {
     return () => {
@@ -1478,7 +1521,10 @@ export function AgentManagementPanel({
               busyIds={busyIds}
               onCategoryChange={value => { setGroupCategory(value); setGroupCatalogPage(1); }}
               onPageChange={value => view === 'teams' ? setGroupCatalogPage(value) : setGroupMinePage(value)}
-              onRetry={() => void loadGroups(view === 'teams' ? 'catalog' : 'mine')}
+              onRetry={() => void loadGroups(
+                view === 'teams' ? 'catalog' : 'mine',
+                view === 'teams' ? groupCatalogQuery.trim() : '',
+              )}
               onOpen={openGroupDetail}
               onUse={handleUseGroup}
               onInstall={handleInstallGroup}
@@ -1497,7 +1543,9 @@ export function AgentManagementPanel({
               error={state.catalogError}
               busyIds={busyIds}
               onCategoryChange={value => { setCategory(value); setCatalogPage(1); }}
-              onRetry={loadCatalog}
+              onRetry={() => void loadCatalog(
+                !isMine && query.trim() ? { query: query.trim() } : {},
+              )}
               onOpen={openDetail}
               onUse={handleUse}
               onReconnect={handleReconnect}
