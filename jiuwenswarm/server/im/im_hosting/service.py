@@ -14,7 +14,7 @@ from jiuwenswarm.server.im.im_hosting.auto_host import (
     select_auto_host_candidates,
 )
 from jiuwenswarm.server.im.im_hosting.cli_resolve import resolve_cli_path
-from jiuwenswarm.server.im.im_hosting.connectors import build_connector, channel_label
+from jiuwenswarm.server.im.im_hosting.connectors import channel_label, ensure_connector
 from jiuwenswarm.server.im.im_hosting.policy import CHANNEL_IDS, HostingPolicyStore
 from jiuwenswarm.server.im.im_hosting.poller import run_poll_once
 from jiuwenswarm.server.im.im_hosting.reply_bridge import AgentManagerLike
@@ -64,7 +64,9 @@ class HostingPollService:
     def _plugin(self, channel_id: str) -> Optional[ChannelPlugin]:
         if self._connectors is not None:
             return self._connectors.get(channel_id)
-        return build_connector(channel_id)
+        # 默认走进程级共享注册表：与 personal_context 学习链复用同一批
+        # ChannelPlugin 实例（CLI 子进程运行时与限流窗口只建一份）。
+        return ensure_connector(channel_id)
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():

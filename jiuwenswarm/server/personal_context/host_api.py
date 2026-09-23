@@ -23,6 +23,8 @@ import yaml
 from openjiuwen.harness.personal_context import PersonalContext
 
 from jiuwenswarm.common.config import get_config, get_default_models
+from jiuwenswarm.server.im.im_connector.learning_source import as_im_learning_source
+from jiuwenswarm.server.im.im_hosting.connectors import LazySharedRegistryView
 
 
 _CONFIG_FILENAME = "personal_context.yaml"
@@ -631,13 +633,28 @@ async def _validate_repository_pat_for_write(
         ) from None
 
 
+def _new_personal_context(home: Path) -> PersonalContext:
+    """Construct the Core facade with the AS-10 IM learning source injected.
+
+    The learning source wraps a lazy view over the im_hosting shared connector
+    registry: host construction never builds connectors, and the first learning
+    fetch resolves ChannelPlugin instances shared with the hosting chain (one
+    CLI subprocess and one throttle window per channel).
+    """
+
+    return PersonalContext(
+        home=home,
+        im_learning_source=as_im_learning_source(LazySharedRegistryView()),
+    )
+
+
 class PersonalContextHostAPI:
     """The only JiuwenSwarm API for configuring and controlling embedded PersonalContext."""
 
     def __init__(self, *, home: str | Path) -> None:
         self._home = Path(home).expanduser().resolve()
         self._config_path = self._home / _CONFIG_FILENAME
-        self._personal_context = PersonalContext(home=self._home)
+        self._personal_context = _new_personal_context(self._home)
         self._config: PersonalContext.Config | None = None
         self._stored_config: dict[str, object] | None = None
         self._operation_lock = asyncio.Lock()
@@ -1621,7 +1638,7 @@ class PersonalContextHostAPI:
             timeout_seconds=_STOP_TIMEOUT_SECONDS
         )
         if previous is None:
-            self._personal_context = PersonalContext(home=self._home)
+            self._personal_context = _new_personal_context(self._home)
             self._config = None
             self._stored_config = None
             return
