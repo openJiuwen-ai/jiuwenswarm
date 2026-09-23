@@ -1673,7 +1673,21 @@ def _restore_quarantined_path(
 def _cleanup_owned_publication(
     path: Path, descriptor: int, *, directory_fd: int | None = None
 ) -> None:
-    """Quarantine a published path before proving it is still our inode."""
+    """Quarantine a published path before proving it is still our inode.
+
+    The descriptor is closed here before the rename: on Windows an open
+    handle blocks rename/unlink (sharing violation), which would leave the
+    sidecar behind. Ownership identity is captured via fstat while the
+    descriptor is still open.
+    """
+    try:
+        owned = os.fstat(descriptor)
+    except OSError:
+        owned = None
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
     quarantine = path.with_name(f".{path.name}.cleanup-{uuid.uuid4().hex}")
     try:
         if directory_fd is None:
@@ -1687,8 +1701,12 @@ def _cleanup_owned_publication(
             )
     except OSError:
         return
+    if owned is None:
+        _restore_quarantined_path(
+            quarantine, path, directory_fd=directory_fd
+        )
+        return
     try:
-        owned = os.fstat(descriptor)
         moved = (
             os.lstat(quarantine)
             if directory_fd is None
@@ -1804,7 +1822,6 @@ def _publish_create(
         _cleanup_owned_publication(
             path, descriptor, directory_fd=directory_fd
         )
-        os.close(descriptor)
         raise
     return descriptor
 
@@ -1928,7 +1945,6 @@ def _publish_child_in_authorized_directory(
                     provenance_descriptor,
                     directory_fd=directory_fd,
                 )
-                os.close(provenance_descriptor)
                 provenance_descriptor = None
             logger.error(
                 "PROVENANCE_DIAG _publish_child provenance create failed type=%s "
@@ -1959,6 +1975,7 @@ def _publish_child_in_authorized_directory(
                     provenance_descriptor,
                     directory_fd=directory_fd,
                 )
+                provenance_descriptor = None
                 logger.info(
                     "PROVENANCE_DIAG _publish_child markdown exists attempt=%s path=%s",
                     attempt,
@@ -1972,13 +1989,13 @@ def _publish_child_in_authorized_directory(
                         markdown_descriptor,
                         directory_fd=directory_fd,
                     )
-                    os.close(markdown_descriptor)
                     markdown_descriptor = None
                 _cleanup_owned_publication(
                     paths.provenance_path,
                     provenance_descriptor,
                     directory_fd=directory_fd,
                 )
+                provenance_descriptor = None
                 logger.error(
                     "PROVENANCE_DIAG _publish_child markdown create failed type=%s "
                     "errno=%s msg=%s path=%s",
@@ -1995,13 +2012,13 @@ def _publish_child_in_authorized_directory(
                         markdown_descriptor,
                         directory_fd=directory_fd,
                     )
-                    os.close(markdown_descriptor)
                     markdown_descriptor = None
                 _cleanup_owned_publication(
                     paths.provenance_path,
                     provenance_descriptor,
                     directory_fd=directory_fd,
                 )
+                provenance_descriptor = None
                 raise
             else:
                 if __debug__ and markdown_descriptor is None:

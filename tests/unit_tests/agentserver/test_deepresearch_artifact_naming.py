@@ -245,7 +245,12 @@ def test_allocate_initial_paths_treats_direct_and_dangling_candidate_symlinks_as
     target = tmp_path / "target.md"
     if not dangling:
         target.write_text("target", encoding="utf-8")
-    first.markdown_path.symlink_to(target)
+    try:
+        first.markdown_path.symlink_to(target)
+    except OSError:
+        # Creating symlinks needs privilege on Windows; the rejection
+        # semantics are covered where symlinks are creatable.
+        pytest.skip("symlink creation requires privilege on this platform")
 
     allocated = api.allocate_initial_paths(tmp_path, "report.md")
 
@@ -415,7 +420,10 @@ def test_allocate_next_paths_skips_symlink_sidecars_without_following_them(tmp_p
     parent.write_text("# Report\n", encoding="utf-8")
     target = tmp_path / "target.json"
     target.write_text(json.dumps(_provenance(version_number=99)), encoding="utf-8")
-    (tmp_path / "linked.provenance.json").symlink_to(target)
+    try:
+        (tmp_path / "linked.provenance.json").symlink_to(target)
+    except OSError:
+        pytest.skip("symlink creation requires privilege on this platform")
 
     allocated = api.allocate_next_paths(parent, _provenance(version_number=1), "# Report\n")
 
@@ -469,7 +477,10 @@ def test_allocate_next_paths_rejects_same_document_legacy_symlink_markdown(tmp_p
     parent = tmp_path / "report-v1.md"
     parent.write_text("# Report\n", encoding="utf-8")
     legacy = tmp_path / "legacy-v2.md"
-    legacy.symlink_to(tmp_path / "outside.md")
+    try:
+        legacy.symlink_to(tmp_path / "outside.md")
+    except OSError:
+        pytest.skip("symlink creation requires privilege on this platform")
     legacy.with_suffix(".provenance.json").write_text(
         json.dumps({"document_id": "document-a", "rewrite_history": [{}]}),
         encoding="utf-8",

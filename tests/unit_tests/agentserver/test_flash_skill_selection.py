@@ -1116,6 +1116,55 @@ async def test_search_serves_snapshot_while_background_check_runs(harness, monke
     await svc.current_snapshot()
 
 
+@pytest.mark.parametrize("force_refresh", [False, True])
+async def test_snapshot_handles_failed_build_with_pending_refresh(tmp_path, monkeypatch, force_refresh):
+    """A waiter follows the forced replacement, but an unrecovered failure stays visible."""
+    import threading
+
+    root = tmp_path / "skills"
+    root.mkdir()
+    write_skill(root, "slides")
+    svc = service.SelectionService((root,), SelectionSettings())
+    prepare = svc._prepare_checked
+    entered, release = threading.Event(), threading.Event()
+    attempts = 0
+
+    def interrupted_install(*args):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+            raise execution.SelectionBusy("Skill files are changing")
+        return prepare(*args)
+
+    monkeypatch.setattr(svc, "_prepare_checked", interrupted_install)
+    pending = None
+    try:
+        svc.refresh()
+        assert await asyncio.to_thread(entered.wait, 5)
+        pending = asyncio.create_task(svc.current_snapshot())
+        # Let the waiter capture the first build before the install completes.
+        await asyncio.sleep(0)
+        if force_refresh:
+            write_skill(root, "installed")
+            svc.refresh(force=True)
+        release.set()
+        if force_refresh:
+            pipeline, generation = await asyncio.wait_for(pending, 5)
+            assert attempts == 2 and generation == 1
+            assert len(pipeline.documents) == 2
+            assert svc._error is None
+        else:
+            with pytest.raises(execution.SelectionBusy, match="Skill files are changing"):
+                await asyncio.wait_for(pending, 5)
+            assert attempts == 1 and not svc._ready
+    finally:
+        release.set()
+        if pending is not None:
+            await asyncio.gather(pending, return_exceptions=True)
+
+
 async def test_live_mixed_load_arguments_succeed_without_another_model_turn(harness):
     """Replay the exact extra-field pattern observed in all three live tasks."""
     from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall

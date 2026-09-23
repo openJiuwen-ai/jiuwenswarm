@@ -28,7 +28,6 @@ class SlimSysOperationRail(SysOperationRail):
         from openjiuwen.harness.rails._multimodal import (
             should_enable_read_image_multimodal,
         )
-        from openjiuwen.harness.tools import BashTool
         from openjiuwen.harness.tools.code import CodeTool
         from openjiuwen.harness.tools.filesystem import (
             EditFileTool,
@@ -36,6 +35,7 @@ class SlimSysOperationRail(SysOperationRail):
             WriteFileTool,
         )
 
+        from ..tools.flash_bash_tool import FlashBashTool
         from ..tools.flash_glob_tool import FlashGlobTool
         from ..tools.flash_read_tool import FlashReadFileTool
 
@@ -55,7 +55,7 @@ class SlimSysOperationRail(SysOperationRail):
         edit_tool = EditFileTool(self.sys_operation, lang, agent_id)
         glob_tool = FlashGlobTool(self.sys_operation, lang, agent_id)
         grep_tool = GrepTool(self.sys_operation, lang, agent_id)
-        bash_tool = BashTool(
+        bash_tool = FlashBashTool(
             self.sys_operation,
             lang,
             agent_id=agent_id,

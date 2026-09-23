@@ -1140,6 +1140,17 @@ class TenantAgentPool:
         """获取指定租户的 AgentManager 实例."""
         return await self._ensure_agent_manager(agent_id, service_id, workspace_key)
 
+    async def get_cached_agent_manager(
+            self, agent_id: str, service_id: str, workspace_key: str = "default"
+    ) -> Any | None:
+        """Read an existing manager asynchronously, without creating one.
+
+        Control handlers run on the cache's event loop and must await the read;
+        synchronously waiting for a future on that loop prevents it completing.
+        """
+        cache_key = self._build_cache_key(agent_id, service_id, workspace_key)
+        return await self._agent_wrappers.get(cache_key)
+
     def get_agent_manager_nowait(
             self, agent_id: str, service_id: str, workspace_key: str = "default"
     ) -> Any | None:

@@ -26,6 +26,44 @@ from jiuwenswarm.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
 
+# Enterprise audit shims. ``jiuwenswarm.common.audit_emit`` lives only on the
+# dev-stable line — some downstream forks (e.g. dev-stable-ee) ship without
+# it, so importing it eagerly would break the OBS path at runtime. Wrap the
+# import in :func:`_safe_emit_audit_evt` / :func:`_safe_emit_audit_ua` so the
+# tool degrades silently to no-op when the module is unavailable. On forks
+# that do ship ``audit_emit``, this routes through its internal
+# ``telemetry.audit`` adapter (see :mod:`jiuwenswarm.common.audit_emit`).
+try:
+    from jiuwenswarm.common.audit_emit import (
+        emit_audit_evt as _emit_audit_evt_impl,
+        emit_audit_ua as _emit_audit_ua_impl,
+    )
+    _AUDIT_EMIT_AVAILABLE: bool = True
+except ImportError:
+    _emit_audit_evt_impl = None  # type: ignore[assignment]
+    _emit_audit_ua_impl = None  # type: ignore[assignment]
+    _AUDIT_EMIT_AVAILABLE = False
+
+
+def _safe_emit_audit_evt(**fields: Any) -> None:
+    """Best-effort ``emit_audit_evt`` with graceful no-op when unavailable."""
+    if not _AUDIT_EMIT_AVAILABLE or _emit_audit_evt_impl is None:
+        return
+    try:
+        _emit_audit_evt_impl(**fields)
+    except Exception as exc:  # noqa: BLE001 - audit must never break delivery
+        logger.warning("[SendFileToolkit] emit_audit_evt failed: %s", exc)
+
+
+def _safe_emit_audit_ua(**fields: Any) -> None:
+    """Best-effort ``emit_audit_ua`` with graceful no-op when unavailable."""
+    if not _AUDIT_EMIT_AVAILABLE or _emit_audit_ua_impl is None:
+        return
+    try:
+        _emit_audit_ua_impl(**fields)
+    except Exception as exc:  # noqa: BLE001 - audit must never break delivery
+        logger.warning("[SendFileToolkit] emit_audit_ua failed: %s", exc)
+
 # Per-request send_file routing context (session_id / request_id / channel_id / metadata).
 # send_file_to_user 工具按全局名注册成单例时，并发请求会互相覆盖实例字段。
 # 此 ContextVar 按 async 上下文隔离；工具执行时优先据此解析当前请求路由，
@@ -76,6 +114,38 @@ def reset_send_file_request_context(token: Token) -> None:
 
 def _normalize_sent_file_path(path: str) -> str:
     return os.path.abspath(path).replace("\\", "/").lower()
+
+
+_MIN_XLSX_BYTES = 6000
+
+
+def _xlsx_size_warning(file_path: str) -> str | None:
+    """Return a warning string for suspiciously small workbook files, else None.
+
+    仅供提醒，不拦截发送：极小工作簿可能是合法产物，也可能来自构建工具链
+    失败后生成的空白文件（仅含默认空 Sheet1）。
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in (".xlsx", ".xlsm"):
+        return None
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        return None
+    if size < _MIN_XLSX_BYTES:
+        return (
+            f"⚠️ 文件「{os.path.basename(file_path)}」大小仅为 {size} 字节"
+            f"（低于建议阈值 {_MIN_XLSX_BYTES} 字节），"
+            "可能为空白或未正确渲染的工作簿。建议先用 read_file 确认内容，"
+            "若只有空白默认 Sheet1 则说明生成失败，应重新生成后再发送。"
+        )
+    return None
+
+
+def _append_size_warnings(result: str, size_warnings: list[str]) -> str:
+    if result and size_warnings:
+        return result + "\n" + "\n".join(size_warnings)
+    return result
 
 
 def _partition_sent_files(
@@ -279,23 +349,26 @@ class SendFileToolkit:
 
         valid_files = []
         missing_files = []
+        size_warnings: list[str] = []
         for fp in abs_file_path_list:
             fp = str(fp).strip()
             if not fp:
                 continue
             if os.path.isfile(fp):
                 valid_files.append(fp)
+                hint = _xlsx_size_warning(fp)
+                if hint:
+                    size_warnings.append(hint)
+                    logger.warning("[SendFileToolkit] 疑似空白工作簿: %s", fp)
             else:
                 missing_files.append(fp)
                 logger.warning("[SendFileToolkit] 文件不存在: %s", fp)
 
         if not valid_files:
-            from jiuwenswarm.common.audit_emit import emit_audit_evt
-
             msg_parts = ["发送文件失败：所有文件均不存在"]
             for mf in missing_files:
                 msg_parts.append(f"  - {mf}")
-            emit_audit_evt(
+            _safe_emit_audit_evt(
                 SUBMDL="file",
                 PROC="send_file_to_user",
                 MSG=msg_parts[0],
@@ -335,24 +408,26 @@ class SendFileToolkit:
         # 企业默认：OBS URL 经当前 chat SSE（不依赖 PushRegistry）。
         # 个人版不进此分支，保持本机 path + send_push / 显式 file_transfer。
         if self._should_use_obs_download():
-            return await self._send_file_via_obs(
+            result = await self._send_file_via_obs(
                 valid_files,
                 missing_files,
                 skipped_files,
                 route,
                 target_channel_list,
             )
+            return _append_size_warnings(result, size_warnings)
 
         from jiuwenswarm.common.file_transfer_config import get_file_transfer_config
 
         if get_file_transfer_config().enabled:
-            return await self._send_file_distributed(
+            result = await self._send_file_distributed(
                 valid_files,
                 missing_files,
                 skipped_files,
                 route,
                 target_channel_list,
             )
+            return _append_size_warnings(result, size_warnings)
 
         try:
             from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
@@ -461,6 +536,7 @@ class SendFileToolkit:
                 result_parts.append("以下文件不存在，未发送：")
                 for mf in missing_files:
                     result_parts.append(f"  - {mf}")
+            result_parts.extend(size_warnings)
             return "\n".join(result_parts)
         except Exception as e:
             logger.exception(
@@ -499,11 +575,9 @@ class SendFileToolkit:
             upload_local_file_to_minio,
         )
 
-        from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
-
         session = get_subagent_parent_session()
         if session is None or not hasattr(session, "write_stream"):
-            emit_audit_evt(
+            _safe_emit_audit_evt(
                 SUBMDL="file",
                 PROC="send_file_to_user",
                 MSG="no_write_stream",
@@ -519,7 +593,7 @@ class SendFileToolkit:
             minio_cfg = load_minio_upload_config()
         except Exception as exc:
             logger.warning("[SendFileToolkit] OBS 配置不可用: %s", exc)
-            emit_audit_evt(
+            _safe_emit_audit_evt(
                 SUBMDL="file",
                 PROC="send_file_to_user",
                 MSG=str(exc)[:512],
@@ -564,7 +638,7 @@ class SendFileToolkit:
             parts = ["发送文件失败：全部文件上传对象存储失败"]
             for ff in failed_files:
                 parts.append(f"  - {ff['file']}: {ff['error']}")
-            emit_audit_evt(
+            _safe_emit_audit_evt(
                 SUBMDL="file",
                 PROC="send_file_to_user",
                 MSG=parts[0],
@@ -594,7 +668,7 @@ class SendFileToolkit:
                 "[SendFileToolkit] write_stream chat.file 失败 session_id=%s",
                 route.session_id,
             )
-            emit_audit_evt(
+            _safe_emit_audit_evt(
                 SUBMDL="file",
                 PROC="send_file_to_user",
                 MSG=str(exc)[:512],
@@ -604,7 +678,7 @@ class SendFileToolkit:
             return f"发送文件失败：写入对话流失败（{exc}）"
 
         _mark_files_sent(route.session_id, sent_ok)
-        emit_audit_ua(
+        _safe_emit_audit_ua(
             SUBMDL="file",
             PROC="send_file_to_user",
             session_id=route.session_id,

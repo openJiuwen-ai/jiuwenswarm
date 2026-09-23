@@ -120,6 +120,9 @@ def test_request_schema_version_requires_exact_integer(schema_version):
         bridge.read_request(io.BytesIO(json.dumps(request).encode()))
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX mode bits are not materialized on Windows"
+)
 def test_bridge_writes_only_to_precreated_private_regular_file(tmp_path: Path):
     output = tmp_path / "styled.zip"
     _private_file(output)
@@ -136,12 +139,17 @@ def test_bridge_writes_archive_in_binary_mode_on_windows(tmp_path: Path, monkeyp
         bundle.writestr("report_bundle/report.html", b"line-1\nline-2")
 
     binary_flag = 1 << 29
+    real_binary = getattr(os, "O_BINARY", 0)
     opened_flags: dict[int, int] = {}
     original_open = os.open
     original_write = os.write
 
     def windows_open(path, flags, mode=0o777, **kwargs):
-        descriptor = original_open(path, flags & ~binary_flag, mode, **kwargs)
+        # Keep the real CRT binary bit on the actual open; the fake bit only
+        # drives the translation expectations of windows_write below.
+        descriptor = original_open(
+            path, (flags & ~binary_flag) | real_binary, mode, **kwargs
+        )
         opened_flags[descriptor] = flags
         return descriptor
 
@@ -172,7 +180,12 @@ def test_bridge_rejects_unsafe_output(tmp_path: Path, kind: str, monkeypatch):
     if kind == "symlink":
         source = tmp_path / "source"
         _private_file(source)
-        output.symlink_to(source)
+        try:
+            output.symlink_to(source)
+        except OSError:
+            # Creating symlinks needs privilege on Windows; the rejection
+            # semantics are covered where symlinks are creatable.
+            pytest.skip("symlink creation requires privilege on this platform")
     elif kind == "hardlink":
         source = tmp_path / "source"
         _private_file(source)
@@ -180,6 +193,8 @@ def test_bridge_rejects_unsafe_output(tmp_path: Path, kind: str, monkeypatch):
     elif kind == "mode":
         _private_file(output)
         output.chmod(0o640)
+        if os.name == "nt":
+            pytest.skip("chmod mode bits are not materialized on Windows")
     elif kind == "nonempty":
         _private_file(output)
         output.write_bytes(b"occupied")

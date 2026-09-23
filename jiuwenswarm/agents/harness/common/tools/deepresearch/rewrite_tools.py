@@ -411,7 +411,8 @@ async def _deliver_html(
     transport = WebSocketGatewayPushTransport()
     payload: dict[str, object] = {
         "event_type": "chat.file",
-        "files": [{"path": str(html_path), "name": html_path.name}],
+        # as_posix keeps the wire format platform-independent.
+        "files": [{"path": html_path.as_posix(), "name": html_path.name}],
     }
     metadata: dict[str, object] = {}
     if html_style_status in {"applied", "fallback"}:

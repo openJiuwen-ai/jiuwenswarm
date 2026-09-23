@@ -123,7 +123,11 @@ def _normalize_gateway_message(msg):
 
     req_method = getattr(msg, "req_method", None) or ReqMethod.CHAT_SEND
     params = dict(msg.params or {})
-    if "query" not in params and "content" in params:
+    if (
+        req_method not in (ReqMethod.CHAT_STEER, ReqMethod.CHAT_STEER_STATUS)
+        and "query" not in params
+        and "content" in params
+    ):
         params["query"] = params["content"]
     if req_method == ReqMethod.CHAT_RESUME:
         req_method = ReqMethod.CHAT_CANCEL

@@ -19,6 +19,9 @@ def _make_executor(execution_inputs: dict, env_skill_name: str) -> SkillTurboExe
     executor._node_artifacts_holder = {
         "p0_pipeline_init": {"status": "completed"},
     }
+    # P2 落盘带 plan_code_hash（resume 重放继承比对），__new__ 绕过 __init__
+    # 的 fixture 需显式提供默认空值。
+    executor._current_plan_code = ""
     return executor
 
 

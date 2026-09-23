@@ -17,7 +17,6 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
 import yaml
 import portalocker
 
-from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.kv_cache_affinity_config import (
     ASCEND_AFFINITY_PROVIDER,
     get_default_model_provider as resolve_default_model_provider,
@@ -31,12 +30,14 @@ from jiuwenswarm.common.local_env_config import (
     get_task_env_overlay,
 )
 from jiuwenswarm.common.utils import (
+    fill_template_defaults,
     get_config_dir,
     get_config_file,
     load_yaml_dict,
     merge_template_with_override,
     resolve_shipped_template_config_path,
 )
+from jiuwenswarm.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
 
@@ -304,9 +305,26 @@ def get_config():
         read_version = _config_version
 
     # Slow path: lock released during YAML merge / env resolve / normalize.
-    config_base = get_merged_config_dict()
-    config_base = resolve_env_vars(config_base)
-    _normalize_config(config_base)
+    from jiuwenswarm.common.config_provider import get_config_provider
+
+    config_base = None
+    provider = get_config_provider()
+    if provider is not None:
+        try:
+            supplied = provider.get_process_config()
+            if supplied is not None:
+                config_base = fill_template_defaults(
+                    supplied, load_yaml_dict(resolve_shipped_template_config_path())
+                )
+                config_base = resolve_env_vars(config_base)
+                _normalize_config(config_base)
+        except Exception:
+            logger.warning("config provider failed, fallback to yaml", exc_info=True)
+            config_base = None
+    if config_base is None:
+        config_base = get_merged_config_dict()
+        config_base = resolve_env_vars(config_base)
+        _normalize_config(config_base)
 
     with _config_lock:
         if _config_version == read_version:
@@ -389,6 +407,16 @@ def validate_persisted_kv_cache_affinity() -> tuple[bool, list[str]]:
 
 
 def set_config(config):
+    from jiuwenswarm.common.config_provider import get_config_provider
+
+    provider = get_config_provider()
+    if provider is not None:
+        writer = getattr(provider, "write_process_config", None)
+        if writer is not None:
+            writer(config)
+            clear_config_cache()
+            return
+        logger.warning("config provider does not support write-back; writing local config.yaml")
     with open(_current_config_yaml_path(), "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
     clear_config_cache()

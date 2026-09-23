@@ -1091,6 +1091,151 @@ def _extract_interaction_parts(interaction: Any) -> tuple[str, Any]:
     return str(request_id or "").strip(), value_obj
 
 
+# ---------------------------------------------------------------------------
+# P4 批量卡注册表：同批同 auto_confirm_key 的权限/确认中断在发射侧
+# （interface_deep._merge_batch_interaction_stream）合并为一张批量卡后，
+# 以 base_request_id（= 首成员 tool_call_id）登记成员；应答侧
+# （interface._build_inputs）peek 后把一张卡的答案展开为逐成员
+# InteractiveInput.update。模块级共享：发射在 DeepAdapter、应答在
+# JiuWenSwarm 外层 adapter，两处不共享实例状态。
+# ---------------------------------------------------------------------------
+_HITL_BATCH_MEMBERS: dict[str, tuple[str, ...]] = {}
+_HITL_BATCH_MEMBERS_MAX = 4096
+
+
+def record_hitl_batch_members(base_request_id: str, member_ids: tuple[str, ...]) -> None:
+    """登记批量卡成员（同 base 重复发射按最新覆盖）并施加容量上限。"""
+    _HITL_BATCH_MEMBERS[base_request_id] = tuple(member_ids)
+    if len(_HITL_BATCH_MEMBERS) > _HITL_BATCH_MEMBERS_MAX:
+        for old_key in list(_HITL_BATCH_MEMBERS.keys())[: _HITL_BATCH_MEMBERS_MAX // 2]:
+            _HITL_BATCH_MEMBERS.pop(old_key, None)
+
+
+def peek_hitl_batch_members(request_id: str) -> tuple[str, ...] | None:
+    """peek 语义查询批量成员（不弹出：resume 失败后重答仍可展开）。"""
+    return _HITL_BATCH_MEMBERS.get(request_id)
+
+
+def discard_hitl_batch_member_entry(request_id: str) -> None:
+    """作废同 base 的批量注册条目（卡片被顶替为非批量卡时调用）。"""
+    _HITL_BATCH_MEMBERS.pop(request_id, None)
+
+
+def _compute_merge_key_from_tool_ctx(tool_name: str, tool_args: Any) -> str:
+    """``auto_confirm_key`` 缺失时的回退合并键计算（P4 实测纠偏）。
+
+    真实链路 agent-core ``PermissionEngine.resolve_interrupt`` 发出的
+    ``InterruptRequest`` 只带 message/payload_schema，不带
+    ``auto_confirm_key``（仅 ``ConfirmInterruptRail`` 直发路径会填），导致
+    P4 合并判定对真实权限卡恒为 None、从不合并。此处按 batch allow 同键
+    算法（``compute_auto_confirm_key``：裸工具名；shell 类
+    ``tool:subcommand``；复杂 shell 命令返回空串）从 value 的工具上下文
+    重算，保证合并键与 rail 放行判定完全同键。
+    """
+    try:
+        from types import SimpleNamespace
+
+        from openjiuwen.harness.rails.security.tool_security_rail import (
+            compute_auto_confirm_key,
+        )
+
+        return compute_auto_confirm_key(
+            SimpleNamespace(name=tool_name, arguments=tool_args)
+        ).strip()
+    except Exception:
+        return ""
+
+
+def read_hitl_batch_merge_key(chunk: Any) -> str | None:
+    """P4 合并候选判定：返回 chunk 的 auto_confirm_key，不可合并返回 None。
+
+    仅权限/确认类 ``__interaction__`` chunk 参与（agent-core
+    ``ToolCallInterruptRequest`` 自带 auto_confirm_key，与 rail 放行判定
+    同键）。ask_user 中断（value 带 questions）、activate_confirm、无
+    tool_call id、无 auto_confirm_key、已合并的列表 payload 均排除。
+    ``auto_confirm_key`` 缺失时按工具上下文回退计算（见
+    ``_compute_merge_key_from_tool_ctx``）。
+    """
+    if getattr(chunk, "type", None) != "__interaction__":
+        return None
+    payload = getattr(chunk, "payload", None)
+    if payload is None or isinstance(payload, (list, tuple)):
+        return None
+    if isinstance(payload, dict):
+        if payload.get("interaction_type") == "activate_confirm":
+            return None
+        request_id = str(payload.get("id", "") or "").strip()
+        value_obj = payload.get("value")
+    elif hasattr(payload, "id"):
+        request_id = str(getattr(payload, "id", "") or "").strip()
+        value_obj = payload.value
+    else:
+        return None
+    if not request_id:
+        return None
+    if _extract_questions_from_value(value_obj) is not None:
+        return None
+    if isinstance(value_obj, dict):
+        auto_confirm_key = str(value_obj.get("auto_confirm_key", "") or "").strip()
+        tool_name = str(value_obj.get("tool_name", "") or "").strip()
+        tool_args = value_obj.get("tool_args")
+    else:
+        auto_confirm_key = str(
+            getattr(value_obj, "auto_confirm_key", "") or ""
+        ).strip()
+        tool_name = str(getattr(value_obj, "tool_name", "") or "").strip()
+        tool_args = getattr(value_obj, "tool_args", None)
+    if not auto_confirm_key and tool_name:
+        auto_confirm_key = _compute_merge_key_from_tool_ctx(tool_name, tool_args)
+    if not auto_confirm_key:
+        return None
+    return auto_confirm_key
+
+
+def annotate_hitl_batch_card(card: dict | None, payload: Any) -> None:
+    """P4 列表 payload（同批合并）批量卡标注 + 成员注册。
+
+    卡片 id 保持首成员 tool_call_id（无合成 id）：size==1 路径与现行单卡
+    完全同构，去重 / 活性注册表 / stale 守卫无需感知。``batch_size`` 为
+    前端可选增强字段；×N 信息由 questions 文本传达（前端零改动可渲染）。
+    成员数 < 2 时 no-op（防御：包装器只对 >=2 的组发列表 chunk）。
+    """
+    if not isinstance(card, dict) or not isinstance(payload, (list, tuple)):
+        return
+    if card.get("source") not in ("permission_interrupt", "confirm_interrupt"):
+        return
+    member_ids: list[str] = []
+    for interaction in _iter_interactions(list(payload)):
+        request_id, _value = _extract_interaction_parts(interaction)
+        if request_id:
+            member_ids.append(request_id)
+    if len(member_ids) < 2:
+        return
+    base_request_id = str(card.get("request_id") or "").strip()
+    if not base_request_id:
+        return
+    card["batch_size"] = len(member_ids)
+    questions = card.get("questions")
+    if isinstance(questions, list) and questions and isinstance(questions[0], dict):
+        question_text = questions[0].get("question")
+        if (
+            isinstance(question_text, str)
+            and question_text
+            and "本批共" not in question_text
+        ):
+            questions[0]["question"] = (
+                f"{question_text}"
+                f"（本批共 {len(member_ids)} 个同类请求，操作将作用于全部）"
+            )
+    record_hitl_batch_members(base_request_id, tuple(member_ids))
+    logger.info(
+        "[JiuWenClaw] hitl batch card emitted: base=%s members=%d source=%s",
+        base_request_id,
+        len(member_ids),
+        card.get("source"),
+    )
+
+
 def _extract_questions_from_value(value_obj: Any) -> list | None:
     """从 value 对象中提取 questions 列表.
 

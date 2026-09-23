@@ -9,7 +9,6 @@ import asyncio
 import io
 import json
 import os
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -178,7 +177,9 @@ class TestBuildRequest:
             trusted_dir=None,
         )
         req = _build_request(args, "test")
-        assert req["params"]["cwd"] == "/custom/cwd"
+        # The CLI resolves the argument; compare resolved forms so the
+        # assertion holds on both POSIX and Windows path shapes.
+        assert Path(req["params"]["cwd"]) == Path("/custom/cwd").resolve()
 
     @staticmethod
     def test_with_project_dir(monkeypatch):
@@ -191,7 +192,9 @@ class TestBuildRequest:
             trusted_dir=None,
         )
         req = _build_request(args, "test")
-        assert req["params"]["project_dir"] == "/custom/project"
+        assert Path(req["params"]["project_dir"]) == Path(
+            "/custom/project"
+        ).resolve()
 
     @staticmethod
     def test_with_trusted_dirs(monkeypatch):
@@ -208,9 +211,9 @@ class TestBuildRequest:
             trusted_dir=["/dir1", "/dir2"],
         )
         req = _build_request(args, "test")
-        assert sorted(str(d) for d in req["params"]["trusted_dirs"]) == sorted(
-            ["/dir1", "/dir2"]
-        )
+        assert sorted(
+            Path(d) for d in req["params"]["trusted_dirs"]
+        ) == sorted([Path("/dir1").resolve(), Path("/dir2").resolve()])
 
     @staticmethod
     def test_mode_included(monkeypatch):
@@ -1005,8 +1008,6 @@ class TestSpinner:
 
     @staticmethod
     def test_spinner_verb_rotates():
-        from jiuwenswarm.cli.render import _VERBS
-
         fake_time = 1000.0
 
         def mock_monotonic():

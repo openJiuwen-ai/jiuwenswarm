@@ -125,7 +125,13 @@ def _open_windows_parent(
             before = current.lstat()
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
             raise OSError("unsafe todo parent")
-        fd = os.open(current, flags, mode=0o700)
+        try:
+            fd = os.open(current, flags, mode=0o700)
+        except OSError:
+            # os.open cannot open directories on Windows Python; degrade the
+            # fd-based identity check to the lstat identity (best-effort).
+            chain.append((current, (before.st_dev, before.st_ino)))
+            continue
         try:
             opened = os.fstat(fd)
         finally:

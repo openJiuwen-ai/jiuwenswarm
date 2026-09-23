@@ -16,7 +16,9 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch import rewrite_tools a
 def _document(root: Path, citation_artifacts: dict[str, str] | None = None):
     body = "原句。\n"
     report = root / "report.md"
-    report.write_text(body, encoding="utf-8")
+    # write_bytes: content_sha256 hashes body's exact UTF-8 bytes; text mode
+    # would translate \n -> \r\n on Windows and break the hash check.
+    report.write_bytes(body.encode("utf-8"))
     snapshot = {
         "response_content": body,
         "citation_messages": {"code": 0, "msg": "success", "data": []},

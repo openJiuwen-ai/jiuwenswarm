@@ -1,6 +1,11 @@
 # 配置架构版本（用户 override 首次写入 version 时从本模板拷贝；迁移脚本可比对）
 version: 1.0
 
+# Agent 配置来源：yaml 仅本地配置；enterprise 合并 Gateway DB。
+# 环境变量 JIUWENSWARM_CONFIG_SOURCE 优先。进程级默认仍读取 YAML。
+config:
+  source: yaml
+
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
@@ -731,6 +736,8 @@ react:
     dream_interval: 50      # 每 N 次非 follow-up 任务迭代尝试一次 dream
     dream_min_hours: 24.0   # 距上次成功 dream 的最短间隔（小时）
     dream_ttl_days: 90      # 超过该天数未注入展示则剪枝
+    consult_top_k: 8        # ttse_consult 每轨（FACT/TIP）返回条数，改配置即可调
+    consult_retrieve_mode: hybrid  # hybrid | embed | bm25；池子不够仍 dump；embed/hybrid 向量不通时 BM25 兜底
     # 语义检索 / dedup；变量名与 secret_registry embed.* 一致。三段解析非空时混合召回，否则 BM25 兜底
     embedding:
       api_key: ${EMBED_API_KEY}

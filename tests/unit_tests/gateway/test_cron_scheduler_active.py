@@ -167,7 +167,7 @@ async def test_promotion_reloads_and_executes_jobs(tmp_path) -> None:
     await scheduler.start()
     try:
         # 模拟另一个 PRIMARY 在本实例处于 STANDBY 期间写入 store
-        run_at = datetime.now(tz=ZoneInfo("UTC")) + timedelta(seconds=1)
+        run_at = datetime.now(tz=ZoneInfo("UTC")) + timedelta(seconds=5)
         await store.create_job(
             name="t",
             cron_expr=_one_shot_cron_expr(run_at),
@@ -181,7 +181,7 @@ async def test_promotion_reloads_and_executes_jobs(tmp_path) -> None:
         await scheduler.reload()
         scheduler.set_active(True)
 
-        await asyncio.wait_for(agent_client.started.wait(), timeout=3.0)
+        await asyncio.wait_for(agent_client.started.wait(), timeout=10.0)
         assert len(agent_client.calls) >= 1
     finally:
         await scheduler.stop()

@@ -350,7 +350,9 @@ def _record_options_llm_perf(
         ).strip()
         if not request_id:
             return
-        input_tokens, output_tokens, cache_read = extract_usage_tokens(response)
+        input_tokens, output_tokens, cache_read, reasoning_tokens = extract_usage_tokens(
+            response
+        )
         collector = get_perf_collector()
         accumulator = collector.get_accumulator(request_id)
         if accumulator is not None and cache_read:
@@ -369,6 +371,7 @@ def _record_options_llm_perf(
                 task_id=resolve_task_id(request_ctx=request_context),
                 stream_source_id="deepresearch_options",
                 error_message=error_message,
+                reasoning_tokens=reasoning_tokens,
             ),
         )
     except Exception as exc:  # pylint: disable=broad-exception-caught

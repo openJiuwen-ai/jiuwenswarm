@@ -1,4 +1,4 @@
-import { Children, isValidElement, useEffect, useId, useMemo, useRef, useState, type AnchorHTMLAttributes, type HTMLAttributes, type ReactNode } from 'react';
+import { Children, createContext, isValidElement, useContext, useEffect, useId, useMemo, useRef, useState, type AnchorHTMLAttributes, type HTMLAttributes, type MouseEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTranslation } from 'react-i18next';
@@ -14,7 +14,21 @@ interface MarkdownRendererProps {
   content: string;
   className?: string;
   testId?: string;
+  /** 拦截非锚点链接点击。返回 true 表示已处理（阻止默认导航/新开标签）。 */
+  onLinkClick?: (href: string, event: MouseEvent<HTMLAnchorElement>) => boolean | void;
+  /**
+   * 页内锚点导航开关。默认关闭——#锚点 与其他链接一致新开标签页（历史基线，
+   * 企业版聊天等共用方不受影响）；个人上下文图谱详情等页内场景显式开启。
+   */
+  inPageAnchors?: boolean;
 }
+
+interface MarkdownLinkPolicy {
+  onLinkClick?: MarkdownRendererProps['onLinkClick'];
+  inPageAnchors: boolean;
+}
+
+const MarkdownLinkPolicyContext = createContext<MarkdownLinkPolicy>({ inPageAnchors: false });
 
 type MermaidRenderState = { status: 'loading'; svg: '' } | { status: 'rendered'; svg: string } | { status: 'error'; svg: '' };
 
@@ -303,8 +317,36 @@ function isCompleteCodeFence(contentLines: string[], node?: HastElement): boolea
 }
 
 function MarkdownLink({ href, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) {
+  const isFragmentLink = href?.startsWith('#');
+  const isExternalLink = /^https?:/i.test(href ?? '');
+  const { onLinkClick, inPageAnchors } = useContext(MarkdownLinkPolicyContext);
+
+  const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (!href || isFragmentLink || isExternalLink || !onLinkClick) {
+      props.onClick?.(event);
+      return;
+    }
+    const handled = onLinkClick(href, event);
+    if (handled !== false) {
+      event.preventDefault();
+    }
+  };
+
+  // http(s) 链接始终新开标签页（target=_blank），不论是否提供 onLinkClick；
+  // 锚点链接默认与其他链接一致新开页（历史基线），仅在调用方显式开启 inPageAnchors
+  // （个人上下文图谱详情等页内场景）时不开新页；内部相对链接：提供 onLinkClick 时
+  // 交给其拦截（不开新页），未提供时保持新开标签（与历史行为一致，避免相对链接
+  // 在当前页导航破坏 SPA）。
+  const openInNewTab = isExternalLink || (!isFragmentLink || !inPageAnchors) && !onLinkClick;
+
   return (
-    <a href={href} target='_blank' rel='noopener noreferrer' {...props}>
+    <a
+      href={href}
+      target={openInNewTab ? '_blank' : undefined}
+      rel={openInNewTab ? 'noopener noreferrer' : undefined}
+      onClick={handleClick}
+      {...props}
+    >
       {children}
     </a>
   );
@@ -358,7 +400,7 @@ export function repairCollapsedGfmTables(content: string): string {
   return next;
 }
 
-export function MarkdownRenderer({ content, className, testId }: MarkdownRendererProps) {
+export function MarkdownRenderer({ content, className, testId, onLinkClick, inPageAnchors = false }: MarkdownRendererProps) {
   const markdown = useMemo(
     () => repairCollapsedGfmTables(unescapeLiteralNewlines(content)),
     [content]
@@ -376,9 +418,11 @@ export function MarkdownRenderer({ content, className, testId }: MarkdownRendere
 
   return (
     <div className={className} data-testid={testId}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {markdown}
-      </ReactMarkdown>
+      <MarkdownLinkPolicyContext.Provider value={{ onLinkClick, inPageAnchors }}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+          {markdown}
+        </ReactMarkdown>
+      </MarkdownLinkPolicyContext.Provider>
     </div>
   );
 }

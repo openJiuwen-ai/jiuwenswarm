@@ -39,6 +39,14 @@ def main() -> None:
             sys.exit(130)
 
     argv = sys.argv[1:]
+    if argv and argv[0] == "skill-train":
+        # Offline ReflACT skill training with jiuwenswarm as the target agent.
+        try:
+            from jiuwenswarm.cli.skill_train import main as skill_train_main
+            sys.exit(skill_train_main(argv[1:]))
+        except KeyboardInterrupt:
+            logging.warning("Interrupted during startup. Exiting.")
+            sys.exit(130)
     if argv and argv[0] == "chat":
         argv = argv[1:]
 

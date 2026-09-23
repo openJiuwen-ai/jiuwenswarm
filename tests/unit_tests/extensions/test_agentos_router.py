@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -221,7 +222,11 @@ def test_resolve_agent_workspace_defaults_under_agentos_users(tmp_path, monkeypa
     assert resolve_agent_workspace("alice/../bob") == (
         str(expected_root / "alice_.._bob")
     )
-    assert resolve_agent_workspace("u1", workspace_root="/data/ws") == "/data/ws/u1"
+    # Compare resolved forms: on Windows the rooted POSIX-style literal
+    # resolves against the current drive.
+    assert Path(
+        resolve_agent_workspace("u1", workspace_root="/data/ws")
+    ) == Path("/data/ws/u1").resolve()
 
 
 @pytest.mark.asyncio
@@ -764,7 +769,9 @@ async def test_create_uses_configured_workspace_root() -> None:
             session_id="sess-1",
         )
         assert response["ok"] is True
-        assert yuanrong.create_payloads[0]["workspace"] == "/mnt/workspaces/u1"
+        assert Path(yuanrong.create_payloads[0]["workspace"]) == Path(
+            "/mnt/workspaces/u1"
+        ).resolve()
     finally:
         await client.shutdown()
 

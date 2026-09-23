@@ -53,6 +53,8 @@ def test_trajectory_license_and_notice_ship_in_vite_dist_and_python_wheel(tmp_pa
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     public_root = _FRONTEND_ROOT / "public" / _NOTICE_ROOT
@@ -91,6 +93,10 @@ def test_trajectory_license_and_notice_ship_in_vite_dist_and_python_wheel(tmp_pa
     with zipfile.ZipFile(wheel_paths[0]) as wheel:
         for artifact_name in _ARTIFACT_FILES:
             archive_name = f"{wheel_prefix}/{_NOTICE_ROOT.as_posix()}/{artifact_name}"
-            wheel_contents[artifact_name] = wheel.read(archive_name).decode("utf-8")
+            # Normalize line endings: on Windows checkouts the packaged bytes
+            # keep CRLF while read_text() above yields LF.
+            wheel_contents[artifact_name] = wheel.read(archive_name).decode(
+                "utf-8"
+            ).replace("\r\n", "\n")
     assert wheel_contents == public_contents
     _assert_notice_contents(wheel_contents)

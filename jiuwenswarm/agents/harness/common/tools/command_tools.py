@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import locale
+import logging
 import os
 import re
 import shlex
@@ -27,6 +28,8 @@ from openjiuwen.core.sys_operation.shell_process_registry import (
 )
 
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+logger = logging.getLogger(__name__)
 
 
 class CommandCancelled(Exception):
@@ -721,8 +724,205 @@ def _resolve_execution_plan(command: str, shell_type: str) -> tuple[list[str] | 
     raise RuntimeError(f"Unsupported shell_type: {normalized}")
 
 
+_WINDOWS_TOOL_DIRS: tuple[list[str], list[str]] | None = None
+"""Cached ``(trusted, workspace)`` tool-dir split from :func:`_discover_windows_tool_dirs`.
+
+``trusted`` (LOCALAPPDATA / Program Files) is prepended ahead of the system
+PATH so bundled python / officecli resolve. ``workspace`` (bounded ancestor
+walk from cwd) is appended after the system PATH so an agent-writable region
+cannot shadow system binaries via PATH-precedence tricks.
+"""
+
+
+_WORKSPACE_TOOL_DIR_BOUNDARY: int = 4
+"""Max ancestor levels to walk up from cwd when probing workspace-relative tool dirs.
+
+Bounds the agent-writable region so a workspace sub-tree cloned by an external
+source cannot plant a same-named ``office-claw-skills/common_binary/windows``
+dir and have it prepended ahead of the system PATH. Workspace-relative hits
+are :func:`_prepend_windows_tool_paths`-appended (lower priority) while
+trusted install locations (LOCALAPPDATA/Program Files) are still prepended.
+
+A workspace-relative hit is **only** adopted if the current user cannot write
+to it (verified via :func:`os.access` with ``os.W_OK``). User-writable
+ancestor dirs are skipped with a WARNING log so the operator can investigate
+why a workspace-relative install landed in an agent-controlled location.
+"""
+
+
+def _path_key(env: dict[str, str]) -> str:
+    """Return the canonical ``PATH`` key in *env*, falling back to ``"PATH"``.
+
+    On Windows the env-var name is case-insensitive but a plain ``dict`` is
+    case-sensitive, so a caller-supplied ``extra_env`` may have used
+    ``Path`` / ``path`` instead of ``PATH``. PATH writers should always read
+    and write through this helper to avoid losing the existing PATH value
+    (and silently shadowing it under a duplicate key).
+    """
+    for key in env:
+        if key.upper() == "PATH":
+            return key
+    return "PATH"
+
+
+def _discover_windows_tool_dirs() -> tuple[list[str], list[str]]:
+    """Discover tool dirs to merge into subprocess PATH (Windows only).
+
+    Returns a ``(trusted, workspace)`` tuple. ``trusted`` entries
+    (LOCALAPPDATA / Program Files) are prepended ahead of system PATH so
+    bundled python / officecli resolve. ``workspace`` entries (bounded
+    ancestor walk from cwd, see :data:`_WORKSPACE_TOOL_DIR_BOUNDARY`) are
+    appended after the existing PATH so an agent-writable region cannot
+    shadow system binaries. Each workspace hit is filtered through an
+    :func:`os.access` ``W_OK`` check so a user-writable ancestor cannot
+    poison the merged PATH; rejected entries are logged at WARNING with the
+    reason for operator visibility. Discovery runs once per process; the
+    cached split is applied to every subprocess env.
+    """
+    trusted: list[str] = []
+    workspace: list[str] = []
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    program_files = os.environ.get("ProgramFiles")
+    program_files_root = (
+        os.path.join(local_app_data, "Programs") if local_app_data else None
+    )
+    for base in (program_files_root, program_files):
+        if not base or not os.path.isdir(base):
+            continue
+        for app in ("OfficeAce", "OfficeClaw"):
+            root = os.path.join(base, app)
+            if not os.path.isdir(root):
+                continue
+            bundled_py = os.path.join(root, "tools", "python")
+            if os.path.isdir(bundled_py):
+                trusted.append(bundled_py)
+            bin_dir = os.path.join(root, "office-claw-skills", "common_binary", "windows")
+            if os.path.isdir(bin_dir):
+                trusted.append(bin_dir)
+    try:
+        current = os.getcwd()
+    except OSError as exc:
+        logger.warning("[BashEnv] os.getcwd failed, skipping workspace walk: %s", exc)
+        current = None
+    depth = 0
+    while current and os.path.isdir(current) and depth < _WORKSPACE_TOOL_DIR_BOUNDARY:
+        bin_dir = os.path.join(current, "office-claw-skills", "common_binary", "windows")
+        if os.path.isdir(bin_dir):
+            if os.access(bin_dir, os.W_OK):
+                logger.warning(
+                    "[BashEnv] workspace tool dir is user-writable, "
+                    "skipping to avoid PATH poisoning: %s (cwd=%s)",
+                    bin_dir,
+                    current,
+                )
+            else:
+                workspace.append(bin_dir)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+        depth += 1
+    office_cli = (
+        os.path.join(local_app_data, "OfficeCLI") if local_app_data else None
+    )
+    if office_cli and os.path.isdir(office_cli):
+        trusted.append(office_cli)
+    return trusted, workspace
+
+
+def _prepend_windows_tool_paths(env: dict[str, str]) -> None:
+    """Merge known tool directories into ``PATH`` in *env* (Windows only).
+
+    Trusted install locations (LOCALAPPDATA / Program Files) are prepended
+    ahead of the existing PATH so bundled python / officecli resolve even
+    when the agent process PATH is incomplete. Workspace-relative hits from
+    :func:`_discover_windows_tool_dirs` (bounded ancestor walk from cwd) are
+    appended *after* the existing PATH so an agent-writable region cannot
+    shadow system binaries via PATH-precedence tricks. Both lists are deduped
+    against the current PATH. Discovery runs once per process; the cached
+    list is applied on every call so each fresh subprocess env still gets
+    the hardened PATH.
+    """
+    global _WINDOWS_TOOL_DIRS
+    if _WINDOWS_TOOL_DIRS is None:
+        _WINDOWS_TOOL_DIRS = _discover_windows_tool_dirs()
+    trusted, workspace = _WINDOWS_TOOL_DIRS
+    if not trusted and not workspace:
+        return
+
+    path_key = _path_key(env)
+    existing = set(p.lower() for p in env.get(path_key, "").split(os.pathsep))
+    trusted_entries: list[str] = []
+    for d in trusted:
+        normalized = os.path.normcase(os.path.normpath(d))
+        if normalized.lower() not in existing:
+            trusted_entries.append(d)
+            existing.add(normalized.lower())
+    workspace_entries: list[str] = []
+    for d in workspace:
+        normalized = os.path.normcase(os.path.normpath(d))
+        if normalized.lower() not in existing:
+            workspace_entries.append(d)
+            existing.add(normalized.lower())
+    if not trusted_entries and not workspace_entries:
+        return
+
+    current_path = env.get(path_key, "")
+    new_path = current_path
+    if trusted_entries:
+        new_path = (
+            os.pathsep.join(trusted_entries)
+            + (os.pathsep + new_path if new_path else "")
+        )
+    if workspace_entries:
+        workspace_join = os.pathsep.join(workspace_entries)
+        new_path = new_path + (
+            os.pathsep + workspace_join if new_path else workspace_join
+        )
+    env[path_key] = new_path
+    logger.info(
+        "[BashEnv] merged %d trusted + %d workspace tool dirs into subprocess PATH: trusted=%s workspace=%s",
+        len(trusted_entries),
+        len(workspace_entries),
+        trusted_entries,
+        workspace_entries,
+    )
+
+
+def _windows_not_found_hint(command: str, stderr: str, exit_code: int) -> str | None:
+    """Return a diagnostic hint when a Windows subprocess could not find a command."""
+    if os.name != "nt":
+        return None
+    if exit_code == 9009:
+        pass  # fall through
+    elif not any(marker in stderr.lower() for marker in ("not recognized", "不是内部或外部命令", "不是可识别的")):
+        return None
+    cmd_name = command.split(None, 1)[0] if command else ""
+    if not cmd_name:
+        return None
+    return (
+        f"\n[Diagnostic] 命令「{cmd_name}」未在子进程 PATH 中找到"
+        f"（exit={exit_code}）。"
+        f"已尝试自动探测并添加常见工具目录（OfficeAce 捆绑 python、"
+        f"Python 安装目录、skill 二进制目录等），但仍未找到。"
+        f"可尝试使用完整路径执行："
+        f"如 C:\\Users\\<用户名>\\AppData\\Local\\Programs\\OfficeAce\\tools\\python\\python.exe"
+    )
+
+
 def _build_subprocess_env(extra_env: dict[str, str] | None) -> dict[str, str] | None:
-    """Merge skill-injected env vars into a copy of os.environ."""
+    """Merge skill-injected env vars into a copy of os.environ.
+
+    On Windows, also prepend common tool directories to subprocess PATH
+    to mitigate PATH inconsistencies between the agent process and the
+    spawned shell (python, officecli, etc.).
+    """
+    if os.name == "nt":
+        merged = dict(os.environ)
+        _prepend_windows_tool_paths(merged)
+        if extra_env:
+            merged.update(extra_env)
+        return merged
     if not extra_env:
         return None
     merged = dict(os.environ)
@@ -1054,6 +1254,13 @@ async def mcp_exec_command(
     except Exception as exc:
         return f"[ERROR]: command execution failed: {exc}"
 
+    hint = _windows_not_found_hint(command, result.stderr or "", result.returncode)
+    hint_text = hint or ""
+    if max_output_chars <= 0:
+        stderr_text = (result.stderr or "") + hint_text
+    else:
+        base_budget = max(0, max_output_chars - len(hint_text))
+        stderr_text = _clip_text(result.stderr or "", base_budget) + hint_text
     payload = {
         "command": command,
         "cwd": str(resolved_workdir),
@@ -1061,7 +1268,7 @@ async def mcp_exec_command(
         "resolved_shell": resolved_shell,
         "exit_code": result.returncode,
         "stdout": _clip_text(result.stdout or "", max_output_chars),
-        "stderr": _clip_text(result.stderr or "", max_output_chars),
+        "stderr": stderr_text,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 

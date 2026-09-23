@@ -85,14 +85,32 @@ def extract_llm_result(ctx: Any) -> Any:
     return getattr(ctx, "result", None)
 
 
-def extract_usage_tokens(result: Any) -> tuple[int, int, int]:
+def _extract_reasoning_tokens(usage: Any) -> int:
+    """Read provider reasoning/thinking tokens from usage metadata."""
+    if isinstance(usage, dict):
+        details = usage.get("completion_tokens_details")
+        if isinstance(details, dict):
+            nested = int(details.get("reasoning_tokens") or 0)
+            if nested:
+                return nested
+        return int(usage.get("reasoning_tokens") or 0)
+    details = getattr(usage, "completion_tokens_details", None)
+    if details is not None:
+        nested = int(getattr(details, "reasoning_tokens", 0) or 0)
+        if nested:
+            return nested
+    return int(getattr(usage, "reasoning_tokens", 0) or 0)
+
+
+def extract_usage_tokens(result: Any) -> tuple[int, int, int, int]:
+    """Return ``(input, output, cache_read, reasoning)`` token counts."""
     if result is None:
-        return 0, 0, 0
+        return 0, 0, 0, 0
     usage = getattr(result, "usage_metadata", None)
     if usage is None and isinstance(result, dict):
         usage = result.get("usage_metadata", result)
     if usage is None:
-        return 0, 0, 0
+        return 0, 0, 0, 0
     if isinstance(usage, dict):
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
@@ -101,7 +119,7 @@ def extract_usage_tokens(result: Any) -> tuple[int, int, int]:
             or usage.get("cache_read_tokens")
             or 0
         )
-        return input_tokens, output_tokens, cache_read
+        return input_tokens, output_tokens, cache_read, _extract_reasoning_tokens(usage)
     input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
     cache_read = int(
@@ -109,7 +127,7 @@ def extract_usage_tokens(result: Any) -> tuple[int, int, int]:
         or getattr(usage, "cache_read_tokens", 0)
         or 0
     )
-    return input_tokens, output_tokens, cache_read
+    return input_tokens, output_tokens, cache_read, _extract_reasoning_tokens(usage)
 
 
 def llm_status_from_ctx(ctx: Any) -> str:

@@ -51,10 +51,6 @@ def session_id_from_session(session: Any) -> str:
 
 PLAN_PAUSED_SESSION_KEY = "jiuwenclaw_plan_paused"
 PLAN_PAUSED_SNAPSHOT_KEY = "jiuwenclaw_plan_paused_snapshot"
-INTERRUPT_ARTIFACTS_SUMMARY_KEY = "jiuwenclaw_interrupt_artifacts_summary"
-# 生命周期：运行期 list[dict]（tool 产物日志，task_execution_rail 追加）
-# → 取消时 str（格式化摘要文本，_persist_interrupt_artifacts_summary 转换）
-# → 注入后 None（clear_interrupt_artifacts_summary_from_session 清空）
 INTERRUPT_RECOVERY_INJECTED_KEY = "jiuwenclaw_interrupt_recovery_injected"
 
 PAUSED_PLAN_DECISION_PROMPT_CN = """【系统：plan 暂停后的用户消息】
@@ -465,58 +461,6 @@ def append_supplementary_to_inputs_query(inputs: dict[str, Any], supplementary: 
 
 
 # ---------------------------------------------------------------------------
-# Interrupt artifacts summary (fallback when plan_pause / interrupt_resume fail)
-# ---------------------------------------------------------------------------
-
-ARTIFACTS_RESUME_PROMPT_CN = """【中断恢复提示】
-之前的任务被中断取消。以下是中断前已完成的工作产物摘要：
-
-{summary}
-
-请据此判断当前任务状态：
-- 如果产物显示目标文件已存在且内容较完整，请先 read_file 查看当前状态，再决定是补充完善还是从头重建
-- 如果产物显示目标文件尚未创建或内容很少，可以重新创建
-- 不要盲目从头 write_file 重建一个已存在的完整文件"""
-
-ARTIFACTS_RESUME_PROMPT_EN = """[Interrupt recovery hint]
-The previous task was interrupted and cancelled. Here is a summary of completed work artifacts before the interruption:
-
-{summary}
-
-Based on this, judge the current task state:
-- If artifacts show the target file already exists with substantial content, read_file first before deciding to supplement or rebuild from scratch
-- If artifacts show the target file was not created or has minimal content, you may create it anew
-- Do not blindly write_file to rebuild a file that already exists and is complete"""
-
-
-def build_interrupt_artifacts_resume_prompt(language: str, *, summary: str) -> str:
-    template = (
-        ARTIFACTS_RESUME_PROMPT_EN
-        if language in ("en", "english")
-        else ARTIFACTS_RESUME_PROMPT_CN
-    )
-    return template.format(summary=summary.strip() or "(empty)")
-
-
-def write_interrupt_artifacts_summary_to_session(session: Any, summary: str) -> None:
-    """Write interrupt artifacts summary into session state (one-shot, cleared after use)."""
-    session.update_state({INTERRUPT_ARTIFACTS_SUMMARY_KEY: summary})
-
-
-def read_interrupt_artifacts_summary_from_session(session: Any) -> str | None:
-    """Read interrupt artifacts summary from session state."""
-    value = session.get_state(INTERRUPT_ARTIFACTS_SUMMARY_KEY)
-    if isinstance(value, str) and value.strip():
-        return value
-    return None
-
-
-def clear_interrupt_artifacts_summary_from_session(session: Any) -> None:
-    """Clear interrupt artifacts summary from session state (after injection)."""
-    session.update_state({INTERRUPT_ARTIFACTS_SUMMARY_KEY: None})
-
-
-# ---------------------------------------------------------------------------
 # Unified sentinel: prevents multiple recovery mechanisms from injecting
 # into the same request cycle
 # ---------------------------------------------------------------------------
@@ -541,7 +485,6 @@ def clear_interrupt_recovery_injected(session: Any) -> None:
 # ---------------------------------------------------------------------------
 
 _RECOVERY_DIR_NAME = "recovery"
-_RECOVERY_FILE_NAME = "recovery.json"
 _PLAN_PAUSE_FILE_NAME = "plan_pause.json"
 
 
@@ -605,47 +548,6 @@ def clear_plan_pause_file(workspace_dir: Path, session_id: str) -> None:
             file_path.unlink()
     except Exception:
         logger.debug("[recovery] clear_plan_pause_file failed session=%s", session_id)
-
-
-def write_interrupt_artifacts_to_file(workspace_dir: Path, session_id: str, summary: str) -> None:
-    """Write interrupt artifacts summary to a JSON file on disk (process-restart safe)."""
-    if not summary.strip():
-        return
-    recovery_dir = _get_recovery_dir(workspace_dir, session_id)
-    recovery_dir.mkdir(parents=True, exist_ok=True)
-    file_path = recovery_dir / _RECOVERY_FILE_NAME
-    try:
-        json.dump({"summary": summary, "session_id": session_id}, file_path.open("w", encoding="utf-8"))
-    except Exception:
-        logger.warning("[recovery] write_interrupt_artifacts_to_file failed session=%s", session_id)
-
-
-def read_interrupt_artifacts_from_file(workspace_dir: Path, session_id: str) -> str | None:
-    """Read interrupt artifacts summary from the JSON file on disk.
-
-    Returns the summary string, or None if the file doesn't exist or is invalid.
-    """
-    file_path = _get_recovery_dir(workspace_dir, session_id) / _RECOVERY_FILE_NAME
-    try:
-        if not file_path.exists():
-            return None
-        data = json.load(file_path.open(encoding="utf-8"))
-        summary = data.get("summary", "")
-        if isinstance(summary, str) and summary.strip():
-            return summary
-    except Exception:
-        logger.debug("[recovery] read_interrupt_artifacts_from_file failed session=%s", session_id)
-    return None
-
-
-def clear_interrupt_artifacts_file(workspace_dir: Path, session_id: str) -> None:
-    """Delete the recovery file for a session (after successful injection)."""
-    file_path = _get_recovery_dir(workspace_dir, session_id) / _RECOVERY_FILE_NAME
-    try:
-        if file_path.exists():
-            file_path.unlink()
-    except Exception:
-        logger.debug("[recovery] clear_interrupt_artifacts_file failed session=%s", session_id)
 
 
 def clear_session_interrupt_state(session: Any) -> None:

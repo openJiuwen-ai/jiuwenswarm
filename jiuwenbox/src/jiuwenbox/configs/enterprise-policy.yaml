@@ -5,7 +5,12 @@ version: 1
 name: "server-enterprise"
 
 # Environment variables injected into every process running inside the sandbox.
-environment: {}
+environment:
+  PYTHONUSERBASE: "/opt/jiuwenbox-pip"    # 唯一共享安装根
+  PIP_USER: "1"                        # 不改 CLI，默认走进 user site
+  PIP_CACHE_DIR: "/tmp/pip-cache"      # 不占用共享挂载
+  TMPDIR: "/tmp"
+  PATH: "/opt/jiuwenbox-pip/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # Filesystem access rules. Paths are sandbox-visible absolute paths.
 filesystem_policy:
@@ -96,10 +101,9 @@ filesystem_policy:
     - host_path: "/etc/pki"
       sandbox_path: "/etc/pki"
       mode: "ro"
-    - host_path: "/opt"
-      sandbox_path: "/opt"
-      mode: "ro"
-
+    - host_path: "/opt/jiuwenbox-pip"
+      sandbox_path: "/opt/jiuwenbox-pip"
+      mode: "rw"
   # Device nodes to expose inside the sandbox with bwrap --dev-bind.
   # Each item uses:
   #   host_path: absolute device path on the host

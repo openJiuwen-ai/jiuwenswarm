@@ -46,6 +46,7 @@ from jiuwenswarm.server.runtime.skill_turbo.rails import (
 )
 from jiuwenswarm.server.runtime.skill_turbo.node_artifact_store import (
     clear_node_artifacts,
+    load_node_artifacts,
     save_node_artifacts,
 )
 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
@@ -709,6 +710,12 @@ class SkillTurboExecutor:
         # HITL resume 重放时保留产物（执行跳过主要靠 resume inputs；清盘会误伤可复用记录）。
         if not self._resume_replay:
             await self._clear_stale_node_artifacts()
+        else:
+            # P2-2：resume 重放从 session 继承同 plan_code 的已完成节点产物。
+            # 新 executor 的 holder 为空，completed 阶段又被 _should_skip_subplan_execute
+            # 跳过不再采集——若不继承，finally 落盘会用「空底+新增」覆盖 session，
+            # 中断前已完成阶段的产物就此丢失。
+            await self._inherit_node_artifacts_for_replay(plan_code)
 
         logger.info(
             "[SkillTurboExecutor] execute_plan_stream start plan_code_len=%s input_keys=%s resume_replay=%s",
@@ -1312,6 +1319,80 @@ class SkillTurboExecutor:
                         exc_info=True,
                     )
 
+    async def _inherit_node_artifacts_for_replay(self, plan_code: str) -> None:
+        """HITL resume 重放前，从 session 继承同 plan_code 的已完成节点产物（P2-2）。
+
+        每次请求新建 Executor，holder 为空；重放时 completed 阶段被
+        ``_should_skip_subplan_execute`` 跳过不再采集。若不继承，finally 的
+        ``_persist_node_artifacts`` 会用「空底+新增」覆盖 session state，
+        中断前已完成阶段的产物就此丢失。继承后：
+        - 重放阶段新产物按 plan_name 覆盖继承条目（自然收敛）；
+        - finally 落盘写出的是「继承 ∪ 新增」的完整集合。
+
+        仅当持久化记录的 ``plan_code_hash`` 与当前重放的 plan_code 哈希一致时
+        才继承；旧记录无哈希字段时视为匹配（fail-open）。哈希不一致说明产物
+        属于另一个 plan（如 planner 重新生成），不继承。
+
+        与 ``_clear_stale_node_artifacts`` 同范式：用独立 session 读写，
+        post_run 只关闭临时 session 的 stream emitter，不影响主 session。
+        """
+        session = _session_var.get()
+        if session is None:
+            return
+        sid = getattr(session, "session_id", None) or getattr(session, "_session_id", None)
+        card = self._env.card
+        load_session = None
+        try:
+            load_session = create_agent_session(
+                session_id=sid, card=card
+            ) if sid else create_agent_session(card=card)
+            # 必须与 _setup_execution_context 一致，使用 __skill_turbo agent_id 隔离
+            # checkpointer key，否则读不到 {card.id}__skill_turbo key 下的产物记录。
+            set_skill_turbo_id(load_session, card)
+            await load_session.pre_run(inputs=None)
+            state = await load_node_artifacts(load_session)
+            if not state:
+                return
+            nodes = state.get("nodes") or {}
+            if not isinstance(nodes, dict) or not nodes:
+                return
+            persisted_hash = str(state.get("plan_code_hash") or "")
+            current_hash = self._hash_code(plan_code)
+            if persisted_hash and persisted_hash != current_hash:
+                logger.warning(
+                    "[SkillTurboExecutor] skip inheriting node artifacts: "
+                    "plan_code_hash mismatch persisted=%s current=%s nodes=%d",
+                    persisted_hash,
+                    current_hash,
+                    len(nodes),
+                )
+                return
+            for plan_name, entry in nodes.items():
+                if plan_name:
+                    self._node_artifacts_holder[plan_name] = entry
+            logger.info(
+                "[SkillTurboExecutor] inherited node artifacts for replay: "
+                "plan_code_hash=%s inherited_nodes=%d",
+                current_hash,
+                len(nodes),
+            )
+        except Exception:
+            logger.warning(
+                "[SkillTurboExecutor] inherit node artifacts for replay failed "
+                "(fail-open, holder stays empty)",
+                exc_info=True,
+            )
+        finally:
+            # post_run 必须执行以关闭 stream emitter，即使加载抛异常也不能漏
+            if load_session is not None:
+                try:
+                    await load_session.post_run()
+                except Exception:
+                    logger.debug(
+                        "[SkillTurboExecutor] inherit load_session post_run failed",
+                        exc_info=True,
+                    )
+
     async def _persist_node_artifacts(
         self, session: Any, *, skip_post_run: bool = False
     ) -> None:
@@ -1339,6 +1420,7 @@ class SkillTurboExecutor:
                 session,
                 skill=skill,
                 nodes=dict(self._node_artifacts_holder),
+                plan_code_hash=self._hash_code(self._current_plan_code or ""),
                 skip_post_run=skip_post_run,
             )
         except Exception as exc:

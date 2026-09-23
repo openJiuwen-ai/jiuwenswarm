@@ -15,7 +15,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.common.path_provider import PathCategory
+from jiuwenswarm.common.utils import _dispatch_path, get_user_workspace_dir
 
 
 def _safe_segment(value: str, fallback: str = "_") -> str:
@@ -32,6 +33,9 @@ def _safe_segment(value: str, fallback: str = "_") -> str:
 
 def debug_trace_dir(mode: str) -> Path:
     """Return the trace directory for *mode* (``.agent`` or ``.code``)."""
+    overridden = _dispatch_path(PathCategory.DEBUG_TRACE, node=mode)
+    if overridden is not None:
+        return overridden
     root = get_user_workspace_dir()
     kind = ".code" if (mode or "").startswith("code") else ".agent"
     return root / kind / "traces"

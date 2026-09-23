@@ -2531,6 +2531,22 @@ class MessageHandler(FileTransferMixin, ABC):
     async def _prepare_agent_dispatch_message(self, msg: "Message") -> "Message":
         from jiuwenswarm.common.schema.message import ReqMethod
 
+        if msg.req_method in (ReqMethod.CHAT_STEER, ReqMethod.CHAT_STEER_STATUS):
+            # Resolve only an existing ACP alias; control requests must never
+            # allocate a session or prepare a normal chat/approval response.
+            external = str(msg.session_id or "").strip()
+            internal = (
+                self._acp_session_aliases.get(external)
+                if msg.channel_id == _ACP_CHANNEL_ID else None
+            )
+            if internal:
+                metadata = dict(msg.metadata or {})
+                metadata.setdefault(_ACP_ORIGINAL_SESSION_ID_KEY, external)
+                return replace(
+                    msg, session_id=internal,
+                    params={**(msg.params or {}), "session_id": internal}, metadata=metadata,
+                )
+            return msg
         msg = self._attach_original_request_to_ask_user_answer(msg)
         if msg.channel_id != _ACP_CHANNEL_ID:
             return msg
@@ -4352,6 +4368,12 @@ class MessageHandler(FileTransferMixin, ABC):
             try:
                 msg = await self.consume_user_messages(timeout=None)
                 if msg is None:
+                    continue
+
+                if msg.req_method in (ReqMethod.CHAT_STEER, ReqMethod.CHAT_STEER_STATUS):
+                    control = replace(msg, is_stream=False)
+                    agent_msg = await self._prepare_agent_dispatch_message(control)
+                    await self._process_non_stream_request(control, self.message_to_e2a(agent_msg))
                     continue
 
                 # 先处理受控通道的 Channel 控制指令（如 /new_session、/mode、/skills list）

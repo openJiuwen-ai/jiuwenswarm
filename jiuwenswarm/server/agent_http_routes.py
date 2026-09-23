@@ -124,6 +124,8 @@ ROUTES: list[RouteSpec] = [
     RouteSpec("GET", "/sessions/{session_id}/turns", ReqMethod.HISTORY_LIST_TURNS.value),
     # --- 对话动作（非流式） ---
     RouteSpec("POST", "/chat/{session_id}/actions/interrupt", ReqMethod.CHAT_CANCEL.value),
+    RouteSpec("POST", "/chat/{session_id}/actions/steer", ReqMethod.CHAT_STEER.value),
+    RouteSpec("POST", "/chat/{session_id}/actions/steer/status", ReqMethod.CHAT_STEER_STATUS.value),
     RouteSpec("POST", "/chat/{session_id}/actions/answer", ReqMethod.CHAT_ANSWER.value),
     # --- 命令 ---
     RouteSpec("POST", "/sessions/{session_id}/commands", ReqMethod.COMMAND_SESSION.value),

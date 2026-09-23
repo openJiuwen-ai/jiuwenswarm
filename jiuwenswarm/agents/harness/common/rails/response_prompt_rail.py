@@ -16,6 +16,7 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
     PromptPriority,
     _final_visible_reply_prompt,
     _response_prompt,
+    _thinking_discipline_prompt,
 )
 from jiuwenswarm.server.runtime.a2ui.prompt_instructions import (
     is_a2ui_browser_workflow_request,
@@ -25,11 +26,15 @@ logger = logging.getLogger(__name__)
 
 SKIP_A2UI_PROMPT_CONTEXT_KEY = "skip_a2ui"
 A2UI_BROWSER_WORKFLOW_CONTEXT_KEY = "a2ui_browser_workflow"
-_RESPONSE_SECTION_NAMES = ("response", LocalSectionName.FINAL_VISIBLE_REPLY)
+_RESPONSE_SECTION_NAMES = (
+    "response",
+    LocalSectionName.THINKING_DISCIPLINE,
+    LocalSectionName.FINAL_VISIBLE_REPLY,
+)
 
 
 class ResponsePromptRail(DeepAgentRail):
-    """Inject response format and final-reply rules as independent prompt sections."""
+    """Inject response format, thinking discipline, and final-reply rules."""
 
     priority = 5
 
@@ -77,6 +82,7 @@ class ResponsePromptRail(DeepAgentRail):
 
         language = self.system_prompt_builder.language or "cn"
         self.system_prompt_builder.add_section(_response_prompt(language))
+        self.system_prompt_builder.add_section(_thinking_discipline_prompt(language))
         self.system_prompt_builder.add_section(_final_visible_reply_prompt(language))
         self._sync_a2ui_prompt_section(
             self._resolve_channel(ctx),

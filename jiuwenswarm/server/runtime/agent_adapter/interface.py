@@ -79,6 +79,7 @@ from jiuwenswarm.agents.harness.common.auto_memory import (
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     EVOLUTION_INTERRUPT_METADATA_SOURCES,
     is_interrupt_resume_payload,
+    peek_hitl_batch_members,
 )
 
 PLAN_REMINDER_ORIGINAL_QUERY_KEY = getattr(
@@ -125,6 +126,20 @@ def _is_team_permission_interactive_resume(
     return isinstance(inputs.get("query"), InteractiveInput)
 
 
+def _is_ask_user_interrupt_response(request: AgentRequest) -> bool:
+    """True when this request is an ask_user/HITL card answer (resume continuation).
+
+    ask_user continuations bypass the permission ledger by design (they are
+    workflow input, not permission replays), but they are still interrupt
+    answers: the interrupt state-machine terminal guard must apply before
+    they enter the runtime (P2 协议化——防死卡/终态会话的应答触发重放)。
+    """
+    if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME):
+        return False
+    params = request.params if isinstance(request.params, dict) else {}
+    return params.get("source") == "ask_user_interrupt"
+
+
 def _duplicate_permission_response(request: AgentRequest) -> AgentResponse:
     return AgentResponse(
         request_id=request.request_id,
@@ -134,6 +149,33 @@ def _duplicate_permission_response(request: AgentRequest) -> AgentResponse:
             "deduplicated": True,
         },
         metadata=request.metadata,
+    )
+
+
+def _stale_interrupt_response(request: AgentRequest) -> AgentResponse:
+    """应答落在已被取消/补充的会话上（状态机终态守卫拒绝）。"""
+    return AgentResponse(
+        request_id=request.request_id,
+        channel_id=request.channel_id,
+        payload={
+            "event_type": "chat.interrupt_result",
+            "code": "stale_interrupt_response",
+            "invalidated": True,
+        },
+        metadata=request.metadata,
+    )
+
+
+def _stale_interrupt_chunk(request: AgentRequest) -> AgentResponseChunk:
+    return AgentResponseChunk(
+        request_id=request.request_id,
+        channel_id=request.channel_id,
+        payload={
+            "event_type": "chat.interrupt_result",
+            "code": "stale_interrupt_response",
+            "invalidated": True,
+        },
+        is_complete=True,
     )
 
 
@@ -1074,6 +1116,10 @@ class JiuWenSwarm:
         skill_manager: SkillManager | None = None,
     ) -> None:
         self._adapter: AgentAdapter | None = None
+        # PersonalContext Rail follows the Host runtime switch.  Keep the
+        # latest snapshot on the facade so a lazily-created adapter inherits
+        # the current state before its first rail synchronization.
+        self._personal_context_runtime_enabled: bool = False
         self._sdk_name: str | None = None
         # 多租户：user_workspace_dir 为 workspace_key 对应的用户根，再拼相对 workspace/sessions。
         enterprise = is_enterprise()
@@ -1222,6 +1268,11 @@ class JiuWenSwarm:
             )
             if hasattr(self._adapter, "set_skill_manager"):
                 self._adapter.set_skill_manager(self._skill_manager)
+            setter = getattr(
+                self._adapter, "set_personal_context_runtime_enabled", None
+            )
+            if callable(setter):
+                setter(self._personal_context_runtime_enabled)
             self._skill_manager.set_skillnet_install_complete_hook(
                 self._on_skillnet_install_complete
             )
@@ -1323,6 +1374,31 @@ class JiuWenSwarm:
         env_ns_token = bind_agent_env_ns(str(mem_sid), str(mem_aid))
         wk_token = bind_workspace_key(str(mem_wk))
         return tenant_tokens, (mem_ws_token, mem_aid_token, env_ns_token, wk_token)
+
+    def set_personal_context_runtime_enabled(self, enabled: bool) -> None:
+        """Store and forward the PersonalContext Host runtime switch."""
+
+        self._personal_context_runtime_enabled = bool(enabled)
+        adapter = self._adapter
+        setter = (
+            getattr(adapter, "set_personal_context_runtime_enabled", None)
+            if adapter is not None
+            else None
+        )
+        if callable(setter):
+            setter(self._personal_context_runtime_enabled)
+
+    async def refresh_personal_context_rail(self) -> None:
+        """Refresh the PersonalContext Rail without creating an Agent."""
+
+        adapter = self._adapter
+        refresher = (
+            getattr(adapter, "refresh_personal_context_rail", None)
+            if adapter is not None
+            else None
+        )
+        if callable(refresher):
+            await refresher()
 
     @staticmethod
     def _reset_tenant_request_context(tenant_tokens: Any, mem_token: Any) -> None:
@@ -2039,10 +2115,16 @@ class JiuWenSwarm:
         else:
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": f"未知选项: {value}"}
 
-        interactive_input.update(request_id, confirm_payload)
+        # P4 批量卡答案展开：批量卡（同批同 auto_confirm_key 合并）的答案
+        # 需对批内每个成员 tool_call_id 逐个 update，rail 侧按各自 id 读取
+        # 后放行整批。成员注册表在发射侧（DeepAdapter）写入，此处 peek。
+        expand_ids = peek_hitl_batch_members(request_id)
+        update_targets = tuple(expand_ids) if expand_ids else (request_id,)
+        for target_id in update_targets:
+            interactive_input.update(target_id, confirm_payload)
         logger.info(
-            "[JiuWenSwarm] PermissionRail InteractiveInput.update: request_id=%s payload=%s",
-            request_id, confirm_payload
+            "[JiuWenSwarm] PermissionRail InteractiveInput.update: request_id=%s payload=%s members=%d",
+            request_id, confirm_payload, len(update_targets)
         )
 
         return interactive_input
@@ -2507,6 +2589,14 @@ class JiuWenSwarm:
         plan_language = str(params.get("plan_language") or "").strip().lower()
         return plan_language in {"cn", "en"}
 
+    def owns_steering_request(self, request: AgentRequest) -> bool:
+        check = getattr(self._adapter, "owns_steering_request", None)
+        return callable(check) and check(request)
+
+    async def process_steering(self, request: AgentRequest, *, query: bool) -> dict[str, Any]:
+        # Pure lookup: do not ensure an adapter, prepare a turn, or attach output.
+        return await self._adapter.process_steering(request, query=query)
+
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """处理非流式请求.
 
@@ -2696,10 +2786,25 @@ class JiuWenSwarm:
                 "None" if _adapter_instance is None else "bound",
             )
             if permission_key is None:
+                # ask_user/HITL 应答（P2 协议化）：非权限 continuation 但仍是
+                # 中断应答——进 prepare hooks 前先过状态机终态守卫，会话已
+                # cancel/supplement 或死卡应答直接拒绝，不触发 runtime 重放。
+                if _is_ask_user_interrupt_response(request):
+                    _ask_guard = getattr(hook_adapter, "guard_stale_interrupt_response", None)
+                    if callable(_ask_guard):
+                        try:
+                            if await _ask_guard(request):
+                                return _stale_interrupt_response(request)
+                        except Exception:
+                            logger.warning(
+                                "[JiuWenClaw] ask_user stale guard failed session_id=%s "
+                                "(fail-open)",
+                                session_id,
+                                exc_info=True,
+                            )
                 for hook_name, log_name in (
                     ("prepare_plan_pause_for_request", "prepare_plan_pause"),
                     ("prepare_interrupt_resume_for_request", "prepare_interrupt_resume"),
-                    ("prepare_interrupt_artifacts_for_request", "prepare_interrupt_artifacts"),
                     ("prepare_stale_todo_cleanup_for_new_request", "prepare_stale_todo_cleanup"),
                 ):
                     hook = getattr(hook_adapter, hook_name, None)
@@ -2719,6 +2824,21 @@ class JiuWenSwarm:
                             log_name, session_id, exc, exc_info=True,
                         )
             else:
+                # 权限应答（permission continuation）：先跑状态机终态守卫——
+                # 会话已 cancel/supplement 时旧卡片应答直接拒绝，不进 runtime
+                # 重放（防"点一张旧卡 → resume → 再弹新卡"的反馈循环）。
+                guard = getattr(hook_adapter, "guard_stale_interrupt_response", None)
+                if callable(guard):
+                    try:
+                        if await guard(request):
+                            return _stale_interrupt_response(request)
+                    except Exception:
+                        logger.warning(
+                            "[JiuWenClaw] stale interrupt guard failed session_id=%s "
+                            "(fail-open)",
+                            session_id,
+                            exc_info=True,
+                        )
                 logger.debug(
                     "[JiuWenClaw] prepare-hook loop SKIPPED (permission continuation) session_id=%s",
                     session_id,
@@ -3078,10 +3198,32 @@ class JiuWenSwarm:
                 "None" if _adapter_instance is None else "bound",
             )
             if stream_permission_key is None:
+                # ask_user/HITL 应答（P2 协议化）：进 prepare hooks 前先过状态机
+                # 终态守卫（与 unary 路径对称）——会话已 cancel/supplement 或死卡
+                # 应答直接拒绝，不触发 runtime 重放。
+                if _is_ask_user_interrupt_response(request):
+                    _ask_guard = getattr(hook_adapter, "guard_stale_interrupt_response", None)
+                    if callable(_ask_guard):
+                        try:
+                            if await _ask_guard(request):
+                                logger.info(
+                                    "[JiuWenSwarm] stale ask_user answer rejected: "
+                                    "session_id=%s request_id=%s",
+                                    session_id,
+                                    request.request_id,
+                                )
+                                yield _stale_interrupt_chunk(request)
+                                return
+                        except Exception:
+                            logger.warning(
+                                "[JiuWenClaw] stream ask_user stale guard failed session_id=%s "
+                                "(fail-open)",
+                                session_id,
+                                exc_info=True,
+                            )
                 for hook_name, log_name in (
                     ("prepare_plan_pause_for_request", "prepare_plan_pause"),
                     ("prepare_interrupt_resume_for_request", "prepare_interrupt_resume"),
-                    ("prepare_interrupt_artifacts_for_request", "prepare_interrupt_artifacts"),
                     ("prepare_stale_todo_cleanup_for_new_request", "prepare_stale_todo_cleanup"),
                 ):
                     hook = getattr(hook_adapter, hook_name, None)
@@ -3174,6 +3316,40 @@ class JiuWenSwarm:
         permission_key = _permission_response_key(request)
         permission_reservation = None
         if permission_key is not None:
+            # 状态机终态守卫：会话已 cancel/supplement 时旧卡片应答直接拒绝
+            # （磁盘态 + 内存态相位均读，fail-open）。
+            _guard_adapter = adapter
+            _guard_target = getattr(_guard_adapter, "_instance", None)
+            if (
+                _guard_target is None
+                and callable(getattr(_guard_adapter, "_get_or_create_session_adapter", None))
+                and session_id
+            ):
+                try:
+                    _guard_adapter = await _guard_adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
+                        session_id, request=request
+                    )
+                except Exception:
+                    _guard_adapter = adapter
+            _guard = getattr(_guard_adapter, "guard_stale_interrupt_response", None)
+            if callable(_guard):
+                try:
+                    if await _guard(request):
+                        logger.info(
+                            "[JiuWenSwarm] stale interrupt response rejected: "
+                            "session_id=%s request_id=%s",
+                            session_id,
+                            request.request_id,
+                        )
+                        yield _stale_interrupt_chunk(request)
+                        return
+                except Exception:
+                    logger.warning(
+                        "[JiuWenSwarm] stale interrupt guard failed session_id=%s "
+                        "(fail-open)",
+                        session_id,
+                        exc_info=True,
+                    )
             permission_reservation = self._permission_response_ledger.reserve(
                 session_id,
                 permission_key,

@@ -12,7 +12,10 @@ lifecycle dependencies.
 from __future__ import annotations
 
 import re
+import uuid as _uuid
 from typing import Any, List, Sequence
+
+from openjiuwen.harness.tools.todo import TODO_GENERATION_TOKEN_SESSION_KEY
 
 _ACTIVE_TODO_STATUS_VALUES = frozenset({"pending", "in_progress"})
 
@@ -95,85 +98,58 @@ Resume from this item; do not redo completed items."""
 
 
 TODO_RESUME_SNAPSHOT_PENDING_KEY = "jiuwenclaw_todo_resume_snapshot_pending"
-SKIP_INVOKE_TASK_UPDATE_SYNC_KEY = "jiuwenclaw_skip_invoke_task_update_sync"
-# before_invoke 捕获的旧 todo id 集合（JSON list）。TaskExecutionRail 写入，
-# StreamEventRail._emit_todo_updated 读取——todo.updated 旁路（todo 工具
-# after_tool_call 全量推 todo.json）也要过滤这些跨请求残留，否则旧任务的
-# completed 条目会经该通道重新弹回前端（task.update 通道的 _stale_todo_ids
-# 过滤管不到这条旁路）。
-STALE_TODO_IDS_SESSION_KEY = "jiuwenclaw_stale_todo_ids"
-# 本轮 invoke 中实际存在的 todo id 集合（JSON list）。TaskExecutionRail 在
-# _sync_todo_and_emit_transitions 完成后写入，StreamEventRail._emit_todo_updated
-# 读取——过滤 stale ids 时排除本轮新建的同 ID 项，防止 todo_create 创建的
-# 新 todo 被 stale 过滤器误杀。
-CURRENT_INVOKE_TODO_IDS_SESSION_KEY = "jiuwenclaw_current_invoke_todo_ids"
-# before_invoke 中 _init_task_tracking 加载磁盘 todo 后的 id 快照。
-# 用于区分「磁盘旧残留」与「本轮 LLM 新建」：过滤 stale ids 时，
-# 若 id 既在 stale 集又在此快照中 → 真旧残留，过滤；否则 → 本轮新建，保留。
-PRE_INVOKE_TODO_IDS_SESSION_KEY = "jiuwenclaw_pre_invoke_todo_ids"
 
 
-def set_current_invoke_todo_ids(session: Any, ids: list[str] | set[str]) -> None:
-    """Record todo ids that exist in _todo_map during this invoke."""
-    session.update_state({CURRENT_INVOKE_TODO_IDS_SESSION_KEY: sorted(ids)})
+# ---------------------------------------------------------------------------
+# 待办代际 token（请求隔离）：生产者是 agent_adapter 的 prepare hook
+# （新一轮非续跑用户消息 → bump），消费者是 TaskExecutionRail /
+# StreamEventRail 的广播层与 openjiuwen 的 todo 工具（打标/过滤）。
+# 取代旧的 stale ids / pre-invoke ids / current-invoke ids / skip 标志多层
+# 过滤体系：旧代条目按 token 一致性判定，无需逐 id 比对。
+# ---------------------------------------------------------------------------
+
+def bump_todo_generation_token(session: Any) -> str:
+    """Start a new todo generation and return the fresh token.
+
+    Called by the prepare hook on a fresh (non-resume) user turn. Todos
+    stamped with previous tokens are filtered out of every broadcast channel;
+    resume/supplement/answer turns keep the current token, so legitimately
+    continued todos stay visible.
+    """
+    token = str(_uuid.uuid4())
+    session.update_state({TODO_GENERATION_TOKEN_SESSION_KEY: token})
+    return token
 
 
-def get_current_invoke_todo_ids(session: Any) -> set[str]:
-    """Read the current invoke's todo ids; empty set when unset."""
-    value = session.get_state(CURRENT_INVOKE_TODO_IDS_SESSION_KEY)
-    if isinstance(value, list):
-        return {
-            str(item)
-            for item in value
-            if item is not None and not isinstance(item, (dict, list, tuple)) and str(item).strip()
-        }
-    return set()
+def get_todo_generation_token(session: Any) -> str | None:
+    """Read the current todo generation token; None when unset (fail-open)."""
+    value = session.get_state(TODO_GENERATION_TOKEN_SESSION_KEY)
+    return value if isinstance(value, str) and value else None
 
 
-def clear_current_invoke_todo_ids(session: Any) -> None:
-    session.update_state({CURRENT_INVOKE_TODO_IDS_SESSION_KEY: None})
+def todo_item_generation_token(item: Any) -> str | None:
+    """Extract the generation token from a TodoItem or its persisted dict."""
+    if isinstance(item, dict):
+        value = item.get("generation_token")
+    else:
+        value = getattr(item, "generation_token", None)
+    return value if isinstance(value, str) and value else None
 
 
-def set_pre_invoke_todo_ids(session: Any, ids: list[str] | set[str]) -> None:
-    """Snapshot of todo ids loaded by _init_task_tracking (disk state)."""
-    session.update_state({PRE_INVOKE_TODO_IDS_SESSION_KEY: sorted(ids)})
+def filter_todos_by_generation(items: Sequence[Any], token: str | None) -> List[Any]:
+    """Drop entries from superseded generations; unstamped entries pass.
 
-
-def get_pre_invoke_todo_ids(session: Any) -> set[str]:
-    """Read the pre-invoke todo ids snapshot; empty set when unset."""
-    value = session.get_state(PRE_INVOKE_TODO_IDS_SESSION_KEY)
-    if isinstance(value, list):
-        return {
-            str(item)
-            for item in value
-            if item is not None and not isinstance(item, (dict, list, tuple)) and str(item).strip()
-        }
-    return set()
-
-
-def clear_pre_invoke_todo_ids(session: Any) -> None:
-    session.update_state({PRE_INVOKE_TODO_IDS_SESSION_KEY: None})
-
-
-def set_stale_todo_ids(session: Any, ids: list[str] | set[str]) -> None:
-    """Record the stale todo ids captured by before_invoke for this turn."""
-    session.update_state({STALE_TODO_IDS_SESSION_KEY: sorted(ids)})
-
-
-def get_stale_todo_ids(session: Any) -> set[str]:
-    """Read the stale todo ids for this turn; empty set when unset."""
-    value = session.get_state(STALE_TODO_IDS_SESSION_KEY)
-    if isinstance(value, list):
-        return {
-            str(item)
-            for item in value
-            if item is not None and not isinstance(item, (dict, list, tuple)) and str(item).strip()
-        }
-    return set()
-
-
-def clear_stale_todo_ids(session: Any) -> None:
-    session.update_state({STALE_TODO_IDS_SESSION_KEY: None})
+    ``token`` 为 None（未启用隔离 / 会话无该标志）时原样放行，退化到
+    旧版行为（fail-open），不新增故障点。
+    """
+    if not token:
+        return list(items)
+    kept: List[Any] = []
+    for item in items:
+        item_token = todo_item_generation_token(item)
+        if not item_token or item_token == token:
+            kept.append(item)
+    return kept
 
 
 def _todo_status_value(item: Any) -> str:
@@ -253,23 +229,3 @@ def todo_create_read_failed_message(language: str = "cn") -> str:
     if language in ("en", "english"):
         return TODO_CREATE_READ_FAILED_EN
     return TODO_CREATE_READ_FAILED_CN
-
-
-# ---------------------------------------------------------------------------
-# Skip-invoke markers: producers are the agent_adapter prepare hooks
-# (stale_todo_cleanup), the consumer is TaskExecutionRail.before_invoke.
-# Set on the runtime session (_interaction_session) — a flag on a throwaway
-# session object is invisible to the rail.
-# ---------------------------------------------------------------------------
-
-def mark_skip_invoke_task_update_sync(session: Any) -> None:
-    """Mark that before_invoke should not broadcast a stale todo snapshot this turn."""
-    session.update_state({SKIP_INVOKE_TASK_UPDATE_SYNC_KEY: True})
-
-
-def is_skip_invoke_task_update_sync(session: Any) -> bool:
-    return session.get_state(SKIP_INVOKE_TASK_UPDATE_SYNC_KEY) is True
-
-
-def clear_skip_invoke_task_update_sync(session: Any) -> None:
-    session.update_state({SKIP_INVOKE_TASK_UPDATE_SYNC_KEY: None})

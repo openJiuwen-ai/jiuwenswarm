@@ -1572,6 +1572,21 @@ class TeamManager:
                 params=bootstrap,
             )
 
+    async def get_active_steering_leader(self, session_id: str) -> Any | None:
+        """Look up the existing Runner leader; never restore or build a team."""
+        team_name = self.get_active_team_name(session_id)
+        if not team_name:
+            return None
+        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+        runtime_manager = vars(GLOBAL_RUNNER).get("_team_runtime_manager")
+        if runtime_manager is None:
+            return None
+        active = await runtime_manager.pool.get(team_name)
+        if active is None:
+            return None
+        return active.agent
+
     async def interact(self, session_id: str, user_input: Any) -> tuple[bool, str | None]:
         try:
             if not self.is_runtime_active(session_id):
@@ -2799,6 +2814,11 @@ class TeamManager:
 # routed through interact() instead of being misidentified as a first request
 # and colliding with the Runner team pool.
 _team_manager: TeamManager | None = None
+
+
+def peek_team_manager() -> TeamManager | None:
+    """Read the existing manager without initializing team services."""
+    return _team_manager
 
 
 def get_team_manager(channel_id: str | None = None) -> TeamManager:

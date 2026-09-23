@@ -220,7 +220,12 @@ def test_team_entity_store_delete_does_not_follow_team_symlink(tmp_path) -> None
     external_file = external_path / "keep.txt"
     external_file.write_text("keep", encoding="utf-8")
     team_link = teams_home / "research_team"
-    team_link.symlink_to(external_path, target_is_directory=True)
+    try:
+        team_link.symlink_to(external_path, target_is_directory=True)
+    except OSError:
+        # Creating symlinks needs privilege on Windows; the rejection
+        # semantics are covered where symlinks are creatable.
+        pytest.skip("symlink creation requires privilege on this platform")
 
     store = TeamEntityStore(teams_home)
 

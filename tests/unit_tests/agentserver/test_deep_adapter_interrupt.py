@@ -209,7 +209,6 @@ async def test_team_stream_binds_a2a_resource_context(
     adapter._workspace_dir = None
     monkeypatch.setattr(adapter, "_inject_extension_config_into_inputs", lambda _inputs: None)
     monkeypatch.setattr(adapter, "_try_skill_turbo_resume", AsyncMock(return_value=None))
-    monkeypatch.setattr(adapter, "_arm_skill_turbo_interrupt_recovery_hint", AsyncMock())
     monkeypatch.setattr(adapter, "_deepresearch_artifact_output_dir", lambda _path: None)
     monkeypatch.setattr(
         adapter, "_prepare_multimodal_image_inputs", lambda _request, inputs: inputs
@@ -989,9 +988,14 @@ def test_runtime_route_keeps_artifact_leaf_lexical(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     agent_workspace.mkdir()
     outside.mkdir()
-    (agent_workspace / "projects").symlink_to(
-        outside, target_is_directory=True
-    )
+    try:
+        (agent_workspace / "projects").symlink_to(
+            outside, target_is_directory=True
+        )
+    except OSError:
+        # Creating symlinks needs privilege on Windows; the rejection
+        # semantics are covered where symlinks are creatable.
+        pytest.skip("symlink creation requires privilege on this platform")
     adapter = _make_adapter(
         _env_service_id="service-output",
         _env_agent_id="agent-output",

@@ -16,6 +16,7 @@ import LongHorizonReminderToasts from './components/LongHorizonReminderToast';
 import { ToolPanel } from './components/ToolPanel';
 import { ConfigPanel } from './components/ConfigPanel';
 import { ChannelsPanel } from './components/ChannelsPanel';
+import { PersonalContextPanel } from './components/PersonalContext';
 import { BrowserPanel } from './components/BrowserPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import { A2AIngressPanel } from './components/A2AIngressPanel';
@@ -27,7 +28,7 @@ import {
 } from './features/shareImageExport';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
-import { FEATURE_APP_UPDATER_UI } from './featureFlags';
+import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
 import { ENTERPRISE_HIDDEN_NAV_ITEMS, isEnterprise } from './edition';
 import {
   beginHistoryRestore,
@@ -372,6 +373,7 @@ function AppContent() {
   const [securityAlertContent, setSecurityAlertContent] = useState('');
   const [hasVisitedSkills, setHasVisitedSkills] = useState(activeNav === 'skills');
   const [hasVisitedChannels, setHasVisitedChannels] = useState(activeNav === 'channels');
+  const [hasVisitedPersonalContext, setHasVisitedPersonalContext] = useState(activeNav === 'personalContext');
   const [sidebarMorePanelOpen, setSidebarMorePanelOpen] = useState(false);
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   const [modelSetupGuideManual, setModelSetupGuideManual] = useState(false);
@@ -418,6 +420,13 @@ function AppContent() {
     }
   }, [activeNav]);
 
+  // 个人上下文入口开关关闭时，回退到对话页，避免恢复出失效导航。
+  useEffect(() => {
+    if (!FEATURE_PERSONAL_CONTEXT_UI && activeNav === 'personalContext') {
+      setActiveNav('chat');
+    }
+  }, [activeNav]);
+
   useEffect(() => {
     const handler = (e: Event) => {
       const nav = (e as CustomEvent<MainNavKey>).detail;
@@ -425,6 +434,7 @@ function AppContent() {
       setActiveNav(nav);
       if (nav === 'skills') setHasVisitedSkills(true);
       if (nav === 'channels') setHasVisitedChannels(true);
+      if (nav === 'personalContext') setHasVisitedPersonalContext(true);
     };
     window.addEventListener('jiuwen:nav', handler);
     return () => window.removeEventListener('jiuwen:nav', handler);
@@ -2362,6 +2372,7 @@ function AppContent() {
     }
     if (nav === 'skills') setHasVisitedSkills(true);
     if (nav === 'channels') setHasVisitedChannels(true);
+    if (nav === 'personalContext') setHasVisitedPersonalContext(true);
   }, [enterpriseMode, modelSetupGuideStep]);
 
   const skipModelSetupGuide = useCallback(() => {
@@ -2735,6 +2746,11 @@ function AppContent() {
         {hasVisitedChannels && (
           <div className={`app-section ${activeNav === 'channels' ? '' : 'is-hidden'}`}>
             <ChannelsPanel isConnected={isConnected} />
+          </div>
+        )}
+        {FEATURE_PERSONAL_CONTEXT_UI && hasVisitedPersonalContext && (
+          <div className={`app-section ${activeNav === 'personalContext' ? '' : 'is-hidden'}`}>
+            <PersonalContextPanel isConnected={isConnected} isActive={activeNav === 'personalContext'} />
           </div>
         )}
         {activeNav === 'extensions' && (

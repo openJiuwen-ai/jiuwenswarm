@@ -186,7 +186,11 @@ def create_adapter(
     if sdk_name == "harness":
         if mode == "code":
             from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
-            return JiuwenSwarmCodeAdapter()
+            return JiuwenSwarmCodeAdapter(
+                workspace_dir=enterprise_workspace,
+                agent_id=enterprise_agent_id,
+                service_id=enterprise_service_id,
+            )
         if mode == "flash":
             # flash 是独立轻量 mode。是否触发由 mode 解析层
             # (resolve_agent_request_mode 读 flash.enabled) 注入决定，到这里 mode

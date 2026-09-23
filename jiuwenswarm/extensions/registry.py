@@ -1,4 +1,4 @@
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
@@ -13,6 +13,10 @@ from jiuwenswarm.extensions.sdk.skill_source import SkillSourceExtension
 from jiuwenswarm.extensions.types import ExtensionConfig
 from jiuwenswarm.common.security.base_crypto import CryptoProvider
 from jiuwenswarm.gateway.routing.third_agent import ThirdAgent
+
+if TYPE_CHECKING:
+    from jiuwenswarm.extensions.sdk.config_provider import ConfigProviderExtension
+    from jiuwenswarm.extensions.sdk.path_provider import PathProviderExtension
 
 
 class ExtensionRegistry:
@@ -66,6 +70,20 @@ class ExtensionRegistry:
 
     def register_agent_server_client(self, extension: AgentServerClientExtension) -> None:
         self._agent_server_client = extension
+
+    @staticmethod
+    def register_path_provider(extension: "PathProviderExtension") -> None:
+        from jiuwenswarm.common.path_provider import register_path_provider
+
+        provider = extension.get_path_provider()
+        register_path_provider(provider)
+
+    @staticmethod
+    def register_config_provider(extension: "ConfigProviderExtension") -> None:
+        from jiuwenswarm.common.config_provider import register_config_provider
+
+        provider = extension.get_config_provider()
+        register_config_provider(provider)
 
     def register_crypto_utility(self, extension: CryptoUtility) -> None:
         self._crypto_tool = extension

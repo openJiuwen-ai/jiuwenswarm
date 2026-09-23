@@ -3,7 +3,9 @@
 """SkillTurbo 中断恢复链路测试。
 
 覆盖 #3755 修复三件套的可观察契约：
-1. prepare_interrupt_artifacts_for_request：注入摘要 + 挂一次性 hint + 清产物（一次性）。
+1. （已移除，2026-09）prepare_interrupt_artifacts_for_request 注入摘要 + 挂一次性
+   hint + 清产物——三层兜底被 executor 的 plan_code_hash 主路径（fresh 清盘 /
+   resume 重放 hash 匹配继承）物理取代，相关测试随之删除。
 2. executor._clear_stale_node_artifacts：fresh 执行无条件清盘（不因残留 resume_ctx 跳过）。
 3. process_interrupt(cancel/supplement)：清 pending 的 skill_acceleration_exec HITL 状态
    （INTERRUPTION_KEY + __skill_turbo_resume_ctx__），保留 node_artifacts。
@@ -27,28 +29,6 @@ from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
     SKILL_TURBO_RESUME_CTX_KEY,
 )
 
-_RECOVERY_HINT_KEY = "skill_turbo_interrupt_recovery"
-
-
-def _mock_session_pair() -> tuple[MagicMock, MagicMock, MagicMock]:
-    """构造 (哨兵 session, 产物 session, create_agent_session mock)。
-
-    _arm_skill_turbo_interrupt_recovery_for_card 会开两个 session：先普通命名空间
-    session 读 is_interrupt_recovery_injected 哨兵，后 __skill_turbo 隔离 session
-    读写节点产物。真实空 session 的 get_state 返回 None；MagicMock 默认返回
-    truthy mock 会让哨兵误判「已注入」。
-    """
-    def _make() -> MagicMock:
-        session = MagicMock()
-        session.pre_run = AsyncMock()
-        session.post_run = AsyncMock()
-        session.get_state = MagicMock(return_value=None)
-        return session
-
-    sentinel_session, artifact_session = _make(), _make()
-    create_session = MagicMock(side_effect=[sentinel_session, artifact_session])
-    return sentinel_session, artifact_session, create_session
-
 
 def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
@@ -59,261 +39,6 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter
-
-
-# ────────────────── prepare_interrupt_artifacts_for_request ──────────────────
-
-
-@pytest.mark.asyncio
-async def test_prepare_interrupt_artifacts_injects_hint_and_clears_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """注入产物摘要必须是一次性：设置 supplementary_info + metadata hint，并清空产物存储。
-
-    复现 #3755：commit 1fe36d2d8 前的代码在注入后清空，导致同请求内 LLM 再调
-    skill_acceleration_exec 时产物已丢；该 commit 又改为长期保留，导致摘要被
-    逐请求重复注入。本测试锁定"注入即消费（清存储）+ hint 供同请求工具守卫读取"。
-    """
-    card = MagicMock()
-    card.id = "card-recovery"
-    adapter = _make_adapter(_instance=SimpleNamespace(card=card))
-    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "zh")
-
-    _sentinel_session, skill_turbo_session, create_session = _mock_session_pair()
-    monkeypatch.setattr(
-        "openjiuwen.core.session.agent.create_agent_session", create_session,
-    )
-    monkeypatch.setattr(
-        type(adapter), "_read_skill_turbo_node_artifacts_summary",
-        staticmethod(AsyncMock(return_value="[SkillAccelerationExec (ppt) 已完成节点产物]\n- p1_outline: 完成")),
-    )
-    clear_spy = AsyncMock()
-    monkeypatch.setattr(node_artifact_store, "clear_node_artifacts", clear_spy)
-
-    request = AgentRequest(
-        request_id="req-prepare",
-        channel_id="web",
-        session_id="sess-prepare",
-        params={},
-        metadata={},
-    )
-
-    await adapter.prepare_interrupt_artifacts_for_request(request)
-
-    # 摘要注入 supplementary_info，LLM 可见
-    supplementary = request.params.get("supplementary_info")
-    assert isinstance(supplementary, str)
-    assert "已有产物提示" in supplementary
-    assert "p1_outline" in supplementary
-    # 一次性 hint 挂到 request.metadata，供 skill_acceleration_exec 工具守卫读取
-    hint = (request.metadata or {}).get(_RECOVERY_HINT_KEY)
-    assert isinstance(hint, dict)
-    assert hint.get("consumed") is False
-    assert "p1_outline" in str(hint.get("summary") or "")
-    # 产物存储在注入后即清空（防下一请求重复注入）
-    clear_spy.assert_awaited_once_with(skill_turbo_session)
-    skill_turbo_session.post_run.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_prepare_interrupt_artifacts_noop_without_records(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """无产物记录时不注入、不挂 hint、不清存储。"""
-    card = MagicMock()
-    adapter = _make_adapter(_instance=SimpleNamespace(card=card))
-    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "zh")
-
-    _sentinel_session, skill_turbo_session, create_session = _mock_session_pair()
-    monkeypatch.setattr(
-        "openjiuwen.core.session.agent.create_agent_session", create_session,
-    )
-    monkeypatch.setattr(
-        type(adapter), "_read_skill_turbo_node_artifacts_summary",
-        staticmethod(AsyncMock(return_value=None)),
-    )
-    clear_spy = AsyncMock()
-    monkeypatch.setattr(node_artifact_store, "clear_node_artifacts", clear_spy)
-
-    request = AgentRequest(
-        request_id="req-prepare-none",
-        channel_id="web",
-        session_id="sess-prepare",
-        params={},
-        metadata={},
-    )
-
-    await adapter.prepare_interrupt_artifacts_for_request(request)
-
-    assert "supplementary_info" not in request.params
-    assert _RECOVERY_HINT_KEY not in (request.metadata or {})
-    clear_spy.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_root_prepare_uses_cached_session_adapter_when_instance_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """根 adapter（无 _instance）必须借缓存的 session adapter 解析 card。
-
-    复现 #3755 现象 2：officeclaw/tenant-pool 部署里根 adapter 按设计不持有
-    _instance（_skip_own_instance_build），根层 prepare 静默早退——摘要不注入、
-    hint 不挂、工具守卫不武装，LLM 自由 fresh 调用从 p0 清盘重跑。
-    """
-    card = MagicMock()
-    root_adapter = _make_adapter(_instance=None)
-    session_adapter = SimpleNamespace(_instance=SimpleNamespace(card=card))
-    monkeypatch.setattr(
-        root_adapter,
-        "_get_cached_session_adapter",
-        lambda session_id: session_adapter if session_id == "sess-continue" else None,
-    )
-    monkeypatch.setattr(root_adapter, "_resolve_runtime_language", lambda: "zh")
-
-    _sentinel_session, skill_turbo_session, create_session = _mock_session_pair()
-    monkeypatch.setattr(
-        "openjiuwen.core.session.agent.create_agent_session", create_session,
-    )
-    monkeypatch.setattr(
-        type(root_adapter), "_read_skill_turbo_node_artifacts_summary",
-        staticmethod(AsyncMock(return_value="[SkillAccelerationExec (ppt) 已完成节点产物]\n- p1_outline: 完成")),
-    )
-    clear_spy = AsyncMock()
-    monkeypatch.setattr(node_artifact_store, "clear_node_artifacts", clear_spy)
-
-    request = AgentRequest(
-        request_id="req-root-prepare",
-        channel_id="officeclaw",
-        session_id="sess-continue",
-        params={},
-        metadata={},
-    )
-
-    await root_adapter.prepare_interrupt_artifacts_for_request(request)
-
-    # 借到 cached adapter 的 card 后：注入 + 挂 hint + 清盘 全部生效
-    assert "p1_outline" in (request.params.get("supplementary_info") or "")
-    hint = (request.metadata or {}).get(_RECOVERY_HINT_KEY)
-    assert isinstance(hint, dict) and hint.get("consumed") is False
-    clear_spy.assert_awaited_once_with(skill_turbo_session)
-
-
-@pytest.mark.asyncio
-async def test_arm_hint_in_session_trunk_uses_own_instance(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """session trunk 武装 helper：self._instance 存在时挂 hint + 清盘（一次性）。"""
-    card = MagicMock()
-    adapter = _make_adapter(_instance=SimpleNamespace(card=card))
-
-    _sentinel_session, skill_turbo_session, create_session = _mock_session_pair()
-    monkeypatch.setattr(
-        "openjiuwen.core.session.agent.create_agent_session", create_session,
-    )
-    monkeypatch.setattr(
-        type(adapter), "_read_skill_turbo_node_artifacts_summary",
-        staticmethod(AsyncMock(return_value="[SkillAccelerationExec (ppt) 已完成节点产物]\n- p2_content: 完成")),
-    )
-    clear_spy = AsyncMock()
-    monkeypatch.setattr(node_artifact_store, "clear_node_artifacts", clear_spy)
-
-    request = AgentRequest(
-        request_id="req-arm",
-        channel_id="officeclaw",
-        session_id="sess-arm",
-        params={"query": "继续执行"},
-        metadata={},
-    )
-
-    await adapter._arm_skill_turbo_interrupt_recovery_hint(request)
-
-    hint = (request.metadata or {}).get(_RECOVERY_HINT_KEY)
-    assert isinstance(hint, dict)
-    assert hint.get("consumed") is False
-    assert "p2_content" in str(hint.get("summary") or "")
-    clear_spy.assert_awaited_once_with(skill_turbo_session)
-    skill_turbo_session.post_run.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_arm_hint_not_set_when_clear_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """clear_node_artifacts 失败时 hint 不得设置（hint 与清盘保持原子）。
-
-    若先挂 hint 后清盘：clear 失败 → hint 残留在 request.metadata、产物未清，
-    下一请求再次加载产物重新武装——clear 持续失败时 guard 每次都拦截 fresh
-    调用，用户无法启动新任务。
-    """
-    card = MagicMock()
-    adapter = _make_adapter(_instance=SimpleNamespace(card=card))
-
-    _sentinel_session, skill_turbo_session, create_session = _mock_session_pair()
-    monkeypatch.setattr(
-        "openjiuwen.core.session.agent.create_agent_session", create_session,
-    )
-    monkeypatch.setattr(
-        type(adapter), "_read_skill_turbo_node_artifacts_summary",
-        staticmethod(AsyncMock(return_value="[SkillAccelerationExec (ppt) 已完成节点产物]\n- p1_outline: 完成")),
-    )
-    monkeypatch.setattr(
-        node_artifact_store,
-        "clear_node_artifacts",
-        AsyncMock(side_effect=RuntimeError("checkpointer down")),
-    )
-
-    request = AgentRequest(
-        request_id="req-arm-clear-fail",
-        channel_id="officeclaw",
-        session_id="sess-arm-clear-fail",
-        params={"query": "继续执行"},
-        metadata={},
-    )
-
-    result = await adapter._arm_skill_turbo_interrupt_recovery_hint(request)
-
-    assert result is None
-    assert _RECOVERY_HINT_KEY not in (request.metadata or {})
-    skill_turbo_session.post_run.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_arm_hint_is_noop_without_instance_or_artifacts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """无 _instance → no-op；有 instance 但无产物 → 不挂 hint、不清盘。"""
-    adapter = _make_adapter(_instance=None)
-    request = AgentRequest(
-        request_id="req-arm-none",
-        channel_id="officeclaw",
-        session_id="sess-arm-none",
-        params={},
-        metadata={},
-    )
-    # 无 instance：不得触碰 create_agent_session
-    create_spy = MagicMock()
-    monkeypatch.setattr(
-        "openjiuwen.core.session.agent.create_agent_session", create_spy
-    )
-    await adapter._arm_skill_turbo_interrupt_recovery_hint(request)
-    create_spy.assert_not_called()
-
-    # 有 instance 但无产物
-    adapter2 = _make_adapter(_instance=SimpleNamespace(card=MagicMock()))
-    _s2, _a2, create_session2 = _mock_session_pair()
-    monkeypatch.setattr(
-        "openjiuwen.core.session.agent.create_agent_session", create_session2,
-    )
-    monkeypatch.setattr(
-        type(adapter2), "_read_skill_turbo_node_artifacts_summary",
-        staticmethod(AsyncMock(return_value=None)),
-    )
-    clear_spy = AsyncMock()
-    monkeypatch.setattr(node_artifact_store, "clear_node_artifacts", clear_spy)
-
-    await adapter2._arm_skill_turbo_interrupt_recovery_hint(request)
-    assert _RECOVERY_HINT_KEY not in (request.metadata or {})
-    clear_spy.assert_not_awaited()
 
 
 # ────────────────── executor._clear_stale_node_artifacts ──────────────────
@@ -456,6 +181,9 @@ async def test_interaction_cancel_clears_pending_skill_turbo_hitl_state(
         _session_agent_tasks={},
     )
     adapter._cancel_pending_todos = AsyncMock(return_value=None)
+    # P0 通用中断态清理经 post_agent_execute_for_session 落盘，需可 await 的
+    # checkpointer（object.__new__ 构造的 adapter 无 __init__ 属性）
+    adapter._checkpointer = SimpleNamespace(post_agent_execute=AsyncMock())
 
     response = await adapter.process_interrupt(_build_interrupt_request("cancel"))
 
@@ -474,10 +202,12 @@ async def test_interaction_cancel_clears_pending_skill_turbo_hitl_state(
     assert call({SKILL_TURBO_RESUME_CTX_KEY: None}) in (
         skill_turbo_session.update_state.call_args_list
     )
-    skill_turbo_session.pre_run.assert_awaited_once()
-    skill_turbo_session.post_run.assert_awaited_once()
-    # node_artifacts 保留：供 prepare_interrupt_artifacts_for_request 注入摘要，
-    # 引导非 skillTurbo 流程基于产物继续执行
+    # P0 起取消流有两条 session 生命周期（通用中断态清理 + skill_turbo 隔离键
+    # 清理），共享同一 mock：断言至少完整跑过一次 pre/post_run
+    assert skill_turbo_session.pre_run.await_count >= 1
+    assert skill_turbo_session.post_run.await_count >= 1
+    # node_artifacts 保留：供 executor 的 plan_code_hash 匹配（resume 重放继承
+    # 同 hash 产物，fresh 清盘）
     clear_artifacts_spy.assert_not_awaited()
     assert response.payload["intent"] == "cancel"
     assert response.payload["success"] is True
@@ -608,7 +338,7 @@ async def test_interrupt_cleanup_skips_other_sessions_and_pure_ask_user(
         ai_message=SimpleNamespace(tool_calls=[tool_call]),
         interrupted_tools={"call-0": SimpleNamespace(tool_call=tool_call)},
     )
-    loop_session, _context_engine, _context = _loop_session_fixture(interruption_state)
+    loop_session, _context_engine, context = _loop_session_fixture(interruption_state)
 
     instance = MagicMock()
     instance._interaction_started = True
@@ -635,8 +365,13 @@ async def test_interrupt_cleanup_skips_other_sessions_and_pure_ask_user(
 
     await adapter.process_interrupt(_build_interrupt_request("cancel"))
 
-    # 纯 ask_user interrupt 不走 skill_turbo 清理（不创建 __skill_turbo session）
-    create_session_spy.assert_not_called()
+    # P0 起 cancel 流总会跑一次通用中断态清理（独立 session：哨兵 / 终态相位 /
+    # resume ctx），与 skill_turbo 无关——此处只创建这一个 session。
+    create_session_spy.assert_called_once()
+    # 纯 ask_user interrupt 不走 skill_turbo DeepAgent 侧清理：无悬挂 tool_call
+    # 弹出、DeepAgent 的 INTERRUPTION_KEY 不经 loop_session 清除
+    context.pop_messages.assert_not_called()
+    assert call({INTERRUPTION_KEY: None}) not in loop_session.update_state.call_args_list
 
 
 @pytest.mark.asyncio
@@ -745,3 +480,204 @@ async def test_resume_success_falls_back_to_isolated_clear_when_hitl_miss(
     _ = [chunk async for chunk in stream]
 
     isolated_clear.assert_awaited_once_with("sess-resume-miss")
+
+
+# ────────────────── P2-2: resume 重放按 plan_code 继承 node_artifacts ──────────────────
+
+_PLAN_CODE = "root = PlanNode(name='p', description='d')"
+_PLAN_HASH = executor_module.SkillTurboExecutor._hash_code(_PLAN_CODE)
+
+
+def _make_replay_executor() -> executor_module.SkillTurboExecutor:
+    """构造带最小属性集的 executor（绕过 __init__，对齐 clear 测试范式）。"""
+    executor = object.__new__(executor_module.SkillTurboExecutor)
+    executor._env = SimpleNamespace(card=MagicMock(), skill_name="ppt")
+    executor._node_artifacts_holder = {}
+    executor._current_plan_code = _PLAN_CODE
+    # _persist_node_artifacts 产物溯源：inputs 无 skill_name 时回退 env 值。
+    executor._execution_inputs = {}
+    return executor
+
+
+def _replay_session_mock() -> MagicMock:
+    load_session = MagicMock()
+    load_session.session_id = "sess-replay"
+    load_session.pre_run = AsyncMock()
+    load_session.post_run = AsyncMock()
+    return load_session
+
+
+@pytest.mark.asyncio
+async def test_resume_replay_inherits_matching_plan_artifacts() -> None:
+    """resume 重放必须把同 plan_code 的已完成节点产物继承进新 executor holder。
+
+    复现 P2-2 缺口：每请求新建 executor，holder 为空 + completed 阶段被跳过
+    不再采集 → finally 落盘用「空底+新增」覆盖 session，中断前已完成阶段的
+    产物丢失。
+    """
+    executor = _make_replay_executor()
+    load_session = _replay_session_mock()
+    persisted_nodes = {
+        "p1_outline": {"status": "completed", "files": [{"path": "a.md"}]},
+        "p2_content": {"status": "completed"},
+    }
+    with (
+        patch.object(
+            executor_module, "create_agent_session", return_value=load_session
+        ),
+        patch.object(executor_module, "set_skill_turbo_id", MagicMock()),
+        patch.object(
+            executor_module,
+            "load_node_artifacts",
+            AsyncMock(
+                return_value={
+                    "skill": "ppt",
+                    "plan_code_hash": _PLAN_HASH,
+                    "nodes": persisted_nodes,
+                }
+            ),
+        ),
+    ):
+        token = executor_module._session_var.set(
+            SimpleNamespace(session_id="sess-replay")
+        )
+        try:
+            await executor._inherit_node_artifacts_for_replay(_PLAN_CODE)
+        finally:
+            executor_module._session_var.reset(token)
+
+    assert executor._node_artifacts_holder == persisted_nodes
+    load_session.pre_run.assert_awaited_once()
+    load_session.post_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_replay_skips_inherit_on_hash_mismatch() -> None:
+    """plan_code 哈希不一致（planner 重新生成 plan）→ 不继承，holder 保持为空。"""
+    executor = _make_replay_executor()
+    load_session = _replay_session_mock()
+    with (
+        patch.object(
+            executor_module, "create_agent_session", return_value=load_session
+        ),
+        patch.object(executor_module, "set_skill_turbo_id", MagicMock()),
+        patch.object(
+            executor_module,
+            "load_node_artifacts",
+            AsyncMock(
+                return_value={
+                    "skill": "ppt",
+                    "plan_code_hash": "deadbeef",
+                    "nodes": {"p1_outline": {"status": "completed"}},
+                }
+            ),
+        ),
+    ):
+        token = executor_module._session_var.set(
+            SimpleNamespace(session_id="sess-replay")
+        )
+        try:
+            await executor._inherit_node_artifacts_for_replay(_PLAN_CODE)
+        finally:
+            executor_module._session_var.reset(token)
+
+    assert executor._node_artifacts_holder == {}
+
+
+@pytest.mark.asyncio
+async def test_resume_replay_inherits_legacy_records_without_hash() -> None:
+    """旧记录无 plan_code_hash 字段 → 视为匹配（fail-open 向后兼容）。"""
+    executor = _make_replay_executor()
+    load_session = _replay_session_mock()
+    legacy_nodes = {"p1_outline": {"status": "completed"}}
+    with (
+        patch.object(
+            executor_module, "create_agent_session", return_value=load_session
+        ),
+        patch.object(executor_module, "set_skill_turbo_id", MagicMock()),
+        patch.object(
+            executor_module,
+            "load_node_artifacts",
+            AsyncMock(
+                return_value={"skill": "ppt", "nodes": legacy_nodes}
+            ),
+        ),
+    ):
+        token = executor_module._session_var.set(
+            SimpleNamespace(session_id="sess-replay")
+        )
+        try:
+            await executor._inherit_node_artifacts_for_replay(_PLAN_CODE)
+        finally:
+            executor_module._session_var.reset(token)
+
+    assert executor._node_artifacts_holder == legacy_nodes
+
+
+@pytest.mark.asyncio
+async def test_resume_replay_inherit_failopen_on_error() -> None:
+    """加载抛异常 → 不上抛（fail-open），holder 保持为空，post_run 仍执行。"""
+    executor = _make_replay_executor()
+    load_session = _replay_session_mock()
+    with (
+        patch.object(
+            executor_module, "create_agent_session", return_value=load_session
+        ),
+        patch.object(executor_module, "set_skill_turbo_id", MagicMock()),
+        patch.object(
+            executor_module,
+            "load_node_artifacts",
+            AsyncMock(side_effect=RuntimeError("checkpointer down")),
+        ),
+    ):
+        token = executor_module._session_var.set(
+            SimpleNamespace(session_id="sess-replay")
+        )
+        try:
+            await executor._inherit_node_artifacts_for_replay(_PLAN_CODE)
+        finally:
+            executor_module._session_var.reset(token)
+
+    assert executor._node_artifacts_holder == {}
+    load_session.post_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resume_replay_inherit_noop_without_records() -> None:
+    """无产物记录 → no-op，holder 保持为空。"""
+    executor = _make_replay_executor()
+    load_session = _replay_session_mock()
+    with (
+        patch.object(
+            executor_module, "create_agent_session", return_value=load_session
+        ),
+        patch.object(executor_module, "set_skill_turbo_id", MagicMock()),
+        patch.object(
+            executor_module, "load_node_artifacts", AsyncMock(return_value=None)
+        ),
+    ):
+        token = executor_module._session_var.set(
+            SimpleNamespace(session_id="sess-replay")
+        )
+        try:
+            await executor._inherit_node_artifacts_for_replay(_PLAN_CODE)
+        finally:
+            executor_module._session_var.reset(token)
+
+    assert executor._node_artifacts_holder == {}
+
+
+@pytest.mark.asyncio
+async def test_persist_node_artifacts_writes_plan_code_hash() -> None:
+    """落盘必须写入当前 plan_code 哈希，供 resume 重放继承时比对。"""
+    executor = _make_replay_executor()
+    executor._node_artifacts_holder = {"p3_export": {"status": "completed"}}
+    save_spy = AsyncMock()
+    with patch.object(executor_module, "save_node_artifacts", save_spy):
+        await executor._persist_node_artifacts(SimpleNamespace())
+
+    save_spy.assert_awaited_once()
+    kwargs = save_spy.await_args.kwargs
+    assert kwargs["plan_code_hash"] == _PLAN_HASH
+    assert kwargs["skill"] == "ppt"
+    assert kwargs["nodes"] == {"p3_export": {"status": "completed"}}

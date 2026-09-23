@@ -18,6 +18,7 @@ class LlmPerfEvent:
     task_id: str | None = None
     stream_source_id: str | None = None
     error_message: str | None = None
+    reasoning_tokens: int = 0
 
 
 @dataclass(frozen=True)

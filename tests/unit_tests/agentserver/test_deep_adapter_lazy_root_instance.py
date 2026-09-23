@@ -142,7 +142,10 @@ def test_instance_config_base_falls_back_to_native_config(monkeypatch: pytest.Mo
     disk_config = {"models": {"defaults": [{"model": "disk-model"}]}}
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: disk_config)
 
-    assert interface_deep_module._resolve_instance_config_base(None) is disk_config
+    resolved = interface_deep_module._resolve_instance_config_base(None)
+    assert resolved == disk_config
+    assert resolved is not disk_config
+    assert resolved["models"] is not disk_config["models"]
 
 
 @pytest.mark.asyncio
@@ -492,10 +495,17 @@ async def test_session_skill_prebuilt_sync_uses_create_instance_workspace_dir(
     """
     constructor_ws = str(tmp_path / "constructor-workspace")
     request_ws = str(tmp_path / "request-workspace")
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("JIUWENSWARM_CONFIG_SOURCE", "enterprise")
     adapter = JiuWenSwarmDeepAdapter()
     adapter._workspace_dir = constructor_ws
     adapter.mark_as_session_scoped("sess_skill_sync_workspace")
-    adapter._enterprise_config = SimpleNamespace(skill_prebuilt=[{"skill_id": "prebuilt-x"}])
+    adapter._enterprise_config = SimpleNamespace(
+        skill_prebuilt=[{"skill_id": "prebuilt-x"}],
+        models=None,
+        embedding=None,
+        mcp=None,
+    )
     monkeypatch.setattr(adapter, "_merge_enterprise_models_into_config", lambda cfg: cfg)
     config_base = {"react": {"agent_name": "main_agent"}}
     monkeypatch.setattr(interface_deep_module, "get_config", lambda: config_base)

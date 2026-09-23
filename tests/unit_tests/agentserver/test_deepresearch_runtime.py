@@ -46,7 +46,12 @@ def test_resolve_python_executable_preserves_symlinked_venv_identity(
     bin_dir.mkdir(parents=True)
     (venv_root / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
     python = bin_dir / "python"
-    python.symlink_to(sys.executable)
+    try:
+        python.symlink_to(sys.executable)
+    except OSError:
+        # Creating symlinks needs privilege on Windows; the resolution
+        # semantics are covered where symlinks are creatable.
+        pytest.skip("symlink creation requires privilege on this platform")
     monkeypatch.setattr(sys, "executable", str(python))
     resolved = resolve_python_executable()
     child_env = build_child_env(resolved)
@@ -95,6 +100,8 @@ def test_resolve_python_executable_rejects_invalid_current_runtime(
     elif invalid_kind == "missing":
         configured = str(tmp_path / "missing" / "python")
     elif invalid_kind == "not_executable":
+        if os.name == "nt":
+            pytest.skip("execute bits are not materialized on Windows")
         configured = str(_fake_venv_python(tmp_path, executable=False))
 
     monkeypatch.setattr(sys, "executable", configured)
@@ -108,6 +115,8 @@ def test_build_child_env_isolates_python_and_allows_only_http_proxy_family(
 ):
     from jiuwenswarm.agents.harness.common.tools.deepresearch.runtime import build_child_env
 
+    if os.name == "nt":
+        pytest.skip("env var case distinction is unavailable on Windows")
     python = _fake_venv_python(tmp_path)
     process_proxies = {
         "HTTP_PROXY": "http://process-upper-http",

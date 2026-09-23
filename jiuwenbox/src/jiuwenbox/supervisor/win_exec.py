@@ -399,8 +399,9 @@ def _build_runner_command(
     优先级: ``JIUWENBOX_RUNNER_PYTHON`` env (显式指定) > 默认系统 python 路径.
     dev 实测设 ``JIUWENBOX_RUNNER_PYTHON`` 指向系统 CPython 安装;
     打包环境设 tools/python/python.exe. 系统 python 需先装 jiuwenbox_dev.pth
-    指向源码 (否则 ``-m jiuwenbox...`` 找不到) + pip install uvicorn
-    (logging_config 触发).
+    指向源码 (否则 ``-m jiuwenbox...`` 找不到). uvicorn 非必需:
+    logging_config 缺包时降级跳过 patch (仅 box-server 才真正用 uvicorn),
+    故 runner 跑裸系统 python 无需 ``pip install uvicorn``.
     """
     py = (os.environ.get("JIUWENBOX_RUNNER_PYTHON") or "").strip()
     if not py or not os.path.isfile(py):

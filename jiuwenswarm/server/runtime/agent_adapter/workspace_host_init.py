@@ -89,7 +89,8 @@ def _ensure_workspace_template(
     """进程内预置一份模板目录（同 schema 只建一次）。"""
     fp = _dirs_fingerprint(directories)
     lang = (language or "cn").strip() or "cn"
-    key = f"{lang}:{fp}"
+    # '_' not ':': a colon is invalid in Windows directory names.
+    key = f"{lang}_{fp}"
     with _TPL_LOCK:
         cached = _TPL_CACHE.get(key)
         if cached is not None and (cached / ".workspace").is_file():

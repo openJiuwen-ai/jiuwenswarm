@@ -218,7 +218,12 @@ def test_persist_rejects_symlink_session_directory(tmp_path):
     external.mkdir()
     todo_root = tmp_path / "todo"
     todo_root.mkdir()
-    (todo_root / "session-1").symlink_to(external, target_is_directory=True)
+    try:
+        (todo_root / "session-1").symlink_to(external, target_is_directory=True)
+    except OSError:
+        # Creating symlinks needs privilege on Windows; the rejection
+        # semantics are covered where symlinks are creatable.
+        pytest.skip("symlink creation requires privilege on this platform")
 
     with pytest.raises(OSError):
         persist_deepresearch_task_update(
@@ -290,7 +295,12 @@ def test_windows_parent_chain_rejects_symlink_ancestor(tmp_path):
     external = tmp_path / "external"
     external.mkdir()
     linked = tmp_path / "linked"
-    linked.symlink_to(external, target_is_directory=True)
+    try:
+        linked.symlink_to(external, target_is_directory=True)
+    except OSError:
+        # Creating symlinks needs privilege on Windows; the rejection
+        # semantics are covered where symlinks are creatable.
+        pytest.skip("symlink creation requires privilege on this platform")
 
     with pytest.raises(OSError):
         _open_windows_parent(linked / "session" / "todo.json", create=True)
@@ -320,8 +330,15 @@ def test_existing_untrusted_todo_leaf_does_not_block_safe_publish(
     outside = tmp_path / "outside"
     outside.write_text("outside", encoding="utf-8")
     if leaf_type == "symlink":
-        todo_path.symlink_to(outside)
+        try:
+            todo_path.symlink_to(outside)
+        except OSError:
+            # Creating symlinks needs privilege on Windows; the rejection
+            # semantics are covered where symlinks are creatable.
+            pytest.skip("symlink creation requires privilege on this platform")
     elif leaf_type == "fifo":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO is unavailable on this platform")
         os.mkfifo(todo_path)
     elif leaf_type == "hardlink":
         os.link(outside, todo_path)

@@ -33,6 +33,8 @@ class PromptPriority(IntEnum):
     A2UI = 61
     WORKSPACE = 70
     TODO = 85
+    # thinking_discipline 紧挨最终可见回复之前：思考与 tool_calls 职责分工，高于 RESPONSE。
+    THINKING_DISCIPLINE = 115
     # final_visible_reply 放在 system 最末，强调约束工具/todo 结束后必须再发一轮完整纯文本 final；
     # UI 主要展示「最后一轮无 tool_calls」的正文。
     FINAL_VISIBLE_REPLY = 120
@@ -42,10 +44,80 @@ class LocalSectionName:
     """Local section names for optional JiuwenSwarm prompt sections."""
 
     A2UI = "a2ui"
+    THINKING_DISCIPLINE = "thinking_discipline"
     FINAL_VISIBLE_REPLY = "final_visible_reply"
 
 
 # ─── response section (shared by both modes via ResponsePromptRail) ───
+
+
+def _thinking_discipline_prompt(language: str) -> PromptSection:
+    if language == "cn":
+        content = """# 思考纪律（强制，针对思考过程 reasoning_content）
+
+思考过程与工具调用参数都会完整落盘并计费。思考的职责是**决策**——做什么、选哪个方案、注意哪些约束；产物的职责是**内容**。二者严禁重叠。
+
+**硬规则（违反任何一条即为错误思考）：**
+
+1. **严禁誊写产物**：按要写入工具参数的具体内容——正文、JSON 字段与数值、表格逐行内容、bullet 每一条文案、长代码——只允许出现在 tool_calls 参数里。严禁在思考中以任何形式起草这些内容。
+2. **严禁复述上下文**：对话历史、工具结果、素材、规格表中已有的内容，不要在思考中重抄或整理一遍。引用时只写编号或关键词（如「素材第2条」「模板第3节」），不抄原文。
+3. **大纲简短 = 关键词行**：生成大段产物前，思考中的大纲每节只写一行关键词，不写完整句子。
+   - ✅ 正确：[核心摘要：交付项 / 进行中项 / 风险项 / 下周目标]
+   - ❌ 错误：[核心摘要：本周完成客户A三期需求评审，确认3个核心模块交付范围……。]（这是把产物文案搬进思考）
+4. **决策 = 结论 + 一句理由**：方案取舍（如表头设计、列数据选择）、约束核对（模糊词查询、日期排算）仍要思考，但每项一两行给出结论即可，不展开成文。
+5. **思考预算**：单轮思考一般不超过 20 行。下一步动作已明确时，压缩到几行直接发起工具调用。
+
+## 写文件轮（强制）
+
+本轮的动作是：直接调用写文件类工具（write_file / edit_file）产出文件。素材、模板与方案均已在前文确定。
+
+思考只允许两行以内：
+1. 第一行：写哪个文件（如「按前文 content.md 与 common 模板渲染 document.html」）。
+2. 随后立即发起工具调用。
+
+**硬规则（违反任一条即为错误输出，即使产物正确也算失败）：**
+- 将要写入文件的具体内容——HTML/Markdown 全文或片段、TOC 结构与锚点 id 映射、章节标题清单、占位符→值映射、逐条文案、表格行——只允许出现在 tool_calls 参数里，严禁在思考中出现任何一部分。
+- 占位符替换、markdown→HTML 转换、锚点与 id 生成，全部在工具参数中直接完成，禁止在思考中预演或罗列。
+- 所需素材已在前文工具结果中，**禁止**为确认内容再调用 read_file / grep 等工具；禁止复述 content.md、模板或上下文已有结构。
+"""
+        # 「写文件轮」小节正文为实验验证的 v2 原文逐字节保留（2026-09-16 llm_reason_test_0915
+        # 独立采样：n=7 中 6/7 rtok≤150、中位 52 vs 基线中位 1005）。该措辞高度敏感：
+        # 例举替换、括号化、追加任一改动均使压制力崩塌（v3~v6 四版证伪），修改前必须重放复验。
+    else:
+        # en 「Write-file turn」is a structural translation of the verified cn v2.
+        # cn wording is highly sensitive (see cn-branch comment); do not casually rephrase en either.
+        content = """# Thinking discipline (mandatory, for reasoning_content)
+
+Both the thinking process and tool-call arguments are fully persisted and billed. Thinking is for **decisions**—what to do, which option to pick, which constraints to watch. Artifacts are for **content**. The two must not overlap.
+
+**Hard rules (breaking any one is incorrect thinking):**
+
+1. **Do not transcribe artifacts**: Concrete content destined for tool arguments—body text, JSON fields and values, table rows, each bullet's wording, long code—may appear only in `tool_calls` arguments. Never draft that content in thinking in any form.
+2. **Do not restate context**: Do not recopy or reorganize dialogue history, tool results, source material, or spec tables. Cite by number or keyword only (e.g. "source item 2", "template section 3"); never paste the original.
+3. **Outlines = keyword lines**: Before generating a long artifact, each outline section in thinking is one keyword line, not full sentences.
+   - Correct: [Core summary: delivered / in progress / risks / next-week goals]
+   - Wrong: [Core summary: This week finished the phase-3 review for customer A and confirmed the delivery scope of 3 core modules...] (that moves artifact copy into thinking)
+4. **Decision = conclusion + one reason**: Tradeoffs (headers, column choices) and constraint checks (fuzzy-term lookup, date arithmetic) still belong in thinking, but one or two lines per item—do not expand into prose.
+5. **Thinking budget**: Keep a single turn of thinking to about 20 lines. When the next action is already clear, compress to a few lines and issue the tool call.
+
+## Write-file turn (mandatory)
+
+This turn's action is: call a write-file tool (write_file / edit_file) directly to produce the file. Source material, template, and plan are already settled earlier in the conversation.
+
+Thinking may be at most two lines:
+1. Line 1: which file to write (e.g. "render document.html from earlier content.md and the common template").
+2. Then issue the tool call immediately.
+
+**Hard rules (breaking any one is incorrect output, even if the artifact is correct):**
+- Concrete content destined for the file—full or partial HTML/Markdown, TOC structure and anchor-id mapping, chapter-title lists, placeholder→value mapping, per-item copy, table rows—may appear only in `tool_calls` arguments; none of it may appear in thinking.
+- Placeholder substitution, markdown→HTML conversion, and anchor/id generation must be done directly in the tool arguments; do not preview or enumerate them in thinking.
+- Required source material is already in earlier tool results. **Do not** call read_file / grep or similar to re-confirm content; do not restate content.md, the template, or structure already present in context.
+"""
+    return PromptSection(
+        name=LocalSectionName.THINKING_DISCIPLINE,
+        content={language: content},
+        priority=PromptPriority.THINKING_DISCIPLINE,
+    )
 
 
 def _final_visible_reply_prompt(language: str) -> PromptSection:
@@ -296,6 +368,7 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
   仅当确需整体替换、或无既有数据可保留时才整体覆盖。
   要求设置/更新某字段时，确认已真正写入。
 - **交付前自检**：交付前逐条核对全部条件是否满足、有无错纳漏纳、时间/数值/单位是否精确、既有数据是否完好、格式是否与模板一致；不过关先修正。
+- **工具结果优先**：若使用 read_file 检查过生成的文件，必须严格以工具实际返回的内容为准。若 read_file 只显示 `## Sheet1` 或只有空白默认表，即使你认为任务"应该"成功了，也必须如实判定构建失败并重新生成。切勿凭空推断文件内容。
 
 ## 输出文件放置规范
 

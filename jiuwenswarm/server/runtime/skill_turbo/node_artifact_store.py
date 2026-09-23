@@ -50,6 +50,7 @@ async def save_node_artifacts(
     *,
     skill: str,
     nodes: dict[str, dict[str, Any]],
+    plan_code_hash: str = "",
     skip_post_run: bool = False,
 ) -> None:
     """持久化节点产物记录到 session state。
@@ -61,6 +62,9 @@ async def save_node_artifacts(
         session: openjiuwen Session 实例。
         skill: 当前执行的 skill 标识（如 "ppt"），仅作溯源记录存储，不参与注入时比对。
         nodes: 以 plan_name 为 key 的节点产物字典，结构见模块文档。
+        plan_code_hash: 当前 plan_code 的哈希（executor._hash_code）。HITL resume
+            重放时按此比对，只有同一 plan 的产物才继承进新 executor（P2-2）。
+            旧记录无此字段时视为匹配（fail-open 兼容）。
         skip_post_run: 跳过 post_run（仅 pre_run + update_state）。用于调用方随后
             会自行 post_run 持久化的场景（如中断路径与 save_resume_ctx 合并落盘），
             避免对主 session 重复 post_run 触发 close_stream。
@@ -81,6 +85,7 @@ async def save_node_artifacts(
     payload = {
         "skill": skill,
         "updated_at": time.time(),
+        "plan_code_hash": plan_code_hash,
         "nodes": nodes,
     }
     try:

@@ -253,21 +253,43 @@ def _resolve_project_dir(override: str | Path | None) -> Path | None:
 
 
 def _sandbox_isolation_custom_id(
-    project_dir: str | Path | None, *, shared_dir: str | Path | None = None,
+    project_dir: str | Path | None,
+    *,
+    shared_dir: str | Path | None = None,
+    sandbox_url: str | None = None,
 ) -> str:
-    """Stable SysOperation isolation key suffix for per-project sandbox sharing."""
+    """Stable SysOperation isolation key suffix for per-project sandbox sharing.
+
+    ``sandbox_url`` (box-server endpoint) 折进 digest: 它是沙箱身份的一部分,
+    不同端口服务的是不同后端。端口进 key 后, 端口变化生成新 key、注册新 card,
+    旧 card 自然被取代, 而非被 registry 按相同 key 复用到陈旧端口的旧 card。
+    card 构建侧从 ``JiuwenBoxRunner.instance().get_owned_endpoint()`` 取本轮存活
+    端口传入, 保证 key 与 base_url 同源。
+    """
     resolved = _resolve_project_dir(project_dir)
+    endpoint_token = (sandbox_url or "").strip().lower().rstrip("/")
     if is_enterprise():
         # Match the trusted workspace mounted for this tenant. A default
         # project must not reuse another tenant's cached sandbox client.
         root = Path(shared_dir if shared_dir is not None else get_agent_root_dir()).expanduser().resolve()
-        scope = json.dumps([str(root), str(resolved) if resolved is not None else None])
+        scope = json.dumps(
+            [
+                str(root),
+                str(resolved) if resolved is not None else None,
+                endpoint_token,
+            ]
+        )
         digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:24]
         return f"workspace_project_{digest}"
     if resolved is None:
-        return "project_default"
-    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
-    return f"project_{digest}"
+        base = "project_default"
+    else:
+        digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
+        base = f"project_{digest}"
+    if not endpoint_token:
+        return base
+    ep_digest = hashlib.sha256(endpoint_token.encode("utf-8")).hexdigest()[:8]
+    return f"{base}_ep_{ep_digest}"
 
 
 def _resolve_agent_root_dir() -> Path | None:
@@ -646,7 +668,9 @@ def create_sandbox_sysop_card(
     try:
         if normalized_type == "yuanrong":
             extra_params = _build_yuanrong_extra_params()
-            isolation_custom_id = _sandbox_isolation_custom_id(project_dir, shared_dir=shared_dir)
+            isolation_custom_id = _sandbox_isolation_custom_id(
+                project_dir, shared_dir=shared_dir, sandbox_url=sandbox_url,
+            )
             gateway_config = SandboxGatewayConfig(
                 isolation=SandboxIsolationConfig(
                     container_scope=ContainerScope.CUSTOM,
@@ -712,7 +736,9 @@ def create_sandbox_sysop_card(
         if idle_check_interval is not None:
             extra_params["idle_check_interval"] = idle_check_interval
 
-        isolation_custom_id = _sandbox_isolation_custom_id(project_dir, shared_dir=shared_dir)
+        isolation_custom_id = _sandbox_isolation_custom_id(
+            project_dir, shared_dir=shared_dir, sandbox_url=sandbox_url,
+        )
         gateway_config = SandboxGatewayConfig(
             isolation=SandboxIsolationConfig(
                 container_scope=ContainerScope.CUSTOM,

@@ -1,23 +1,22 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Regression guard: todo.updated side-channel must filter stale todo ids.
+"""Regression guard: todo.updated side-channel must filter stale generations.
 
 When a fresh (non-resume) turn follows an interrupted task, the prepare hook
-cancels the leftover todos and TaskExecutionRail.before_invoke captures their
-ids (``set_stale_todo_ids`` on the runtime session). The ``task.update``
-channel already filtered them via ``_stale_todo_ids``; this test pins the
-**second** channel: ``StreamEventRail._emit_todo_updated`` pushes the whole
-todo.json snapshot after every todo tool call (e.g. the LLM's own
-``todo_modify`` cancelling old tasks) — without the session-state filter, the
+bumps the todo generation token (request isolation, P1-2). The ``task.update``
+channel filters old-generation entries via ``_load_todo_from_json``; this test
+pins the **second** channel: ``StreamEventRail._emit_todo_updated`` pushes the
+whole todo.json snapshot after every todo tool call (e.g. the LLM's own
+``todo_modify`` touching old tasks) — without the generation-token filter, the
 old tasks' completed rows re-pop the frontend todo panel ("中断恢复后 todo
 任务又跳出来").
 
 Observed live (session officeclaw_569f53f14985c97acfc126a6): the LLM's
 todo_modify executed successfully → after_tool_call emitted todo.updated with
-the full 6-task list (3 completed + 3 just-cancelled) → relay converted it to
-a task_progress snapshot → frontend accepted it (non-empty) → stale tasks
-popped. Runs where todo_modify never completed (parallel web_search won the
-race) did not pop — the intermittent symptom.
+the full 6-task list (3 completed + 3 from the interrupted generation) → relay
+converted it to a task_progress snapshot → frontend accepted it (non-empty) →
+stale tasks popped. Runs where todo_modify never completed (parallel
+web_search won the race) did not pop — the intermittent symptom.
 """
 
 from __future__ import annotations
@@ -27,12 +26,7 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.agents.harness.common.tools.todo_resume import (
-    STALE_TODO_IDS_SESSION_KEY,
-    get_stale_todo_ids,
-    set_stale_todo_ids,
-    clear_stale_todo_ids,
-)
+from openjiuwen.harness.tools.todo import TODO_GENERATION_TOKEN_SESSION_KEY
 
 
 class _FakeState:
@@ -63,7 +57,8 @@ class _FakeTodoItem(SimpleNamespace):
     pass
 
 
-def _todos(*specs: tuple[str, str]) -> list[_FakeTodoItem]:
+def _todos(*specs: tuple[str, str, str | None]) -> list[_FakeTodoItem]:
+    """Build fake items: (id, status, generation_token)."""
     from openjiuwen.harness.schema.task import TodoStatus
 
     status_enum = {
@@ -78,44 +73,105 @@ def _todos(*specs: tuple[str, str]) -> list[_FakeTodoItem]:
             content=f"task {tid}",
             activeForm=f"task {tid}",
             status=status_enum[status],
+            generation_token=token,
         )
-        for tid, status in specs
+        for tid, status, token in specs
     ]
 
 
-def test_set_get_clear_roundtrip() -> None:
+# The session-state key is owned by openjiuwen (imported at the top) so the
+# tests write the exact key the tools / rails read.
+
+
+def test_token_roundtrip_and_filter() -> None:
+    """bump/get roundtrip + generation filtering semantics."""
+    from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+        bump_todo_generation_token,
+        filter_todos_by_generation,
+        get_todo_generation_token,
+        todo_item_generation_token,
+    )
+
     session = _FakeSession()
-    assert get_stale_todo_ids(session) == set()
+    assert get_todo_generation_token(session) is None
 
-    set_stale_todo_ids(session, {"b", "a", "c"})
-    # Stored as a sorted JSON-able list.
-    assert session.get_state(STALE_TODO_IDS_SESSION_KEY) == ["a", "b", "c"]
-    assert get_stale_todo_ids(session) == {"a", "b", "c"}
+    token = bump_todo_generation_token(session)
+    assert token and get_todo_generation_token(session) == token
 
-    clear_stale_todo_ids(session)
-    assert get_stale_todo_ids(session) == set()
-    assert session.get_state(STALE_TODO_IDS_SESSION_KEY) is None
+    items = _todos(
+        ("legacy", "completed", None),        # 未打标：放行（legacy 磁盘残留）
+        ("current", "in_progress", token),   # 当前代：放行
+        ("stale_active", "in_progress", "gen-old"),  # 旧代活跃项：过滤
+        ("stale_done", "completed", "gen-old"),      # 旧代终态项：过滤
+    )
+    kept = filter_todos_by_generation(items, token)
+    assert [t.id for t in kept] == ["legacy", "current"]
 
+    # 无 token（fail-open）：全部放行。
+    assert filter_todos_by_generation(items, None) == items
 
-def test_get_stale_todo_ids_tolerates_garbage() -> None:
-    session = _FakeSession()
-    session.update_state({STALE_TODO_IDS_SESSION_KEY: "not-a-list"})
-    assert get_stale_todo_ids(session) == set()
-    session.update_state({STALE_TODO_IDS_SESSION_KEY: [1, "", None, "x"]})
-    assert get_stale_todo_ids(session) == {"1", "x"}
+    # dict 形态（task.update 通道的磁盘快照）同样支持。
+    dicts = [
+        {"id": "d1", "status": "completed", "generation_token": "gen-old"},
+        {"id": "d2", "status": "in_progress", "generation_token": token},
+        {"id": "d3", "status": "pending", "generation_token": None},
+    ]
+    assert [d["id"] for d in filter_todos_by_generation(dicts, token)] == ["d2", "d3"]
+    assert todo_item_generation_token(dicts[0]) == "gen-old"
 
 
 @pytest.mark.asyncio
-async def test_emit_todo_updated_no_filter_without_stale_ids(
+async def test_emit_todo_updated_filters_stale_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without a stale set, todo.updated passes the full (already cancelled-stripped) list."""
+    """todo.updated must drop entries stamped with a superseded token."""
     from jiuwenswarm.agents.harness.common.rails import stream_event_rail
 
     rail = object.__new__(stream_event_rail.JiuSwarmStreamEventRail)
     rail._member_name = ""  # pylint: disable=protected-access
     rail._main_todo_tool = None  # pylint: disable=protected-access
-    disk_todos = _todos(("a", "completed"), ("b", "in_progress"))
+    disk_todos = _todos(
+        ("old_completed", "completed", "gen-old"),
+        ("old_active", "in_progress", "gen-old"),
+        ("new_active", "in_progress", "gen-current"),
+        ("legacy_unstamped", "completed", None),
+    )
+
+    class _FakeTodoTool:
+        async def load_todos(self, _session_id: str) -> list[_FakeTodoItem]:
+            return list(disk_todos)
+
+    monkeypatch.setattr(rail, "_get_todo_tool", lambda: _FakeTodoTool())
+
+    pushed: list[dict[str, Any]] = []
+
+    class _FakeSessionWithStream(_FakeSession):
+        async def write_stream(self, schema: Any) -> None:
+            pushed.append(schema.payload)
+
+    session = _FakeSessionWithStream()
+    session.update_state({TODO_GENERATION_TOKEN_SESSION_KEY: "gen-current"})
+
+    await rail._emit_todo_updated(session, "sess-1")  # pylint: disable=protected-access
+
+    assert len(pushed) == 1
+    assert [t["id"] for t in pushed[0]["todos"]] == [
+        "new_active",
+        "legacy_unstamped",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_emit_todo_updated_no_filter_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a token on the session, todo.updated passes the full list (fail-open)."""
+    from jiuwenswarm.agents.harness.common.rails import stream_event_rail
+
+    rail = object.__new__(stream_event_rail.JiuSwarmStreamEventRail)
+    rail._member_name = ""  # pylint: disable=protected-access
+    rail._main_todo_tool = None  # pylint: disable=protected-access
+    disk_todos = _todos(("a", "completed", None), ("b", "in_progress", None))
 
     class _FakeTodoTool:
         async def load_todos(self, _session_id: str) -> list[_FakeTodoItem]:
@@ -147,7 +203,10 @@ async def test_emit_todo_updated_overlays_later_completed(
     rail = object.__new__(stream_event_rail.JiuSwarmStreamEventRail)
     rail._member_name = ""  # pylint: disable=protected-access
     rail._main_todo_tool = None  # pylint: disable=protected-access
-    disk_todos = _todos(("search_temp", "in_progress"), ("load_skill", "completed"))
+    disk_todos = _todos(
+        ("search_temp", "in_progress", None),
+        ("load_skill", "completed", None),
+    )
 
     class _FakeTodoTool:
         async def load_todos(self, _session_id: str) -> list[_FakeTodoItem]:

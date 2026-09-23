@@ -82,6 +82,10 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "heartbeat.relay",
         "context.usage",
         "context.compression_state",
+        "personal_context.context.start",
+        "personal_context.context.nodes",
+        "personal_context.context.edges",
+        "personal_context.context.end",
         "chat.ask_user_question",
         "chat.ask_user_question_expired",
         "chat.subtask_update",
@@ -698,6 +702,7 @@ class WebWsTransport(BaseWsChannel):
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
+            or event_name.startswith("personal_context.context.")
         )
 
     @classmethod

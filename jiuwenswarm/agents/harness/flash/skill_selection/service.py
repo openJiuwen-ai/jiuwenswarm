@@ -229,7 +229,15 @@ class SelectionService:
             else:
                 build = self._build
         while True:
-            await asyncio.shield(asyncio.wrap_future(build))
+            try:
+                await asyncio.shield(asyncio.wrap_future(build))
+            except SelectionBusy as exc:
+                # A forced refresh may already supersede a failed installation
+                # snapshot. Follow that build; keep unrecovered failures visible.
+                self._after_build(build)
+                with self._lock:
+                    if self._build is None and self._error is not None:
+                        raise exc
             self._after_build(build)
             with self._lock:
                 if self.retired:

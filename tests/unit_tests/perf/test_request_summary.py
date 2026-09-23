@@ -251,11 +251,87 @@ def test_accumulator_adds_external_token_usage_once_without_fake_llm_call() -> N
         "output": 130,
         "total": 730,
         "cache_read": 0,
+        "reasoning": 0,
     }
     assert summary["summary"]["stats"]["llm"]["count"] == 1
 
 
-def test_accumulator_include_by_agent_when_enabled() -> None:
+def test_accumulator_sums_reasoning_tokens_into_summary_and_bottleneck() -> None:
+    acc = RequestSummaryAccumulator(
+        meta=RequestMeta(
+            session_id="sess-1",
+            request_id="req-1",
+            channel_id="web",
+            mode="plan",
+            trace_id=None,
+            started_at=1000.0,
+        )
+    )
+    acc.record_llm(
+        LlmPerfEvent(
+            llm_call_id="llm-1",
+            duration_ms=1000.0,
+            model="glm-5.2",
+            iteration=1,
+            input_tokens=100,
+            output_tokens=80,
+            status="ok",
+            reasoning_tokens=55,
+        )
+    )
+    acc.record_llm(
+        LlmPerfEvent(
+            llm_call_id="llm-2",
+            duration_ms=500.0,
+            model="glm-5.2",
+            iteration=2,
+            input_tokens=120,
+            output_tokens=40,
+            status="ok",
+            reasoning_tokens=12,
+        )
+    )
+    acc.cache_read_tokens = 64
+
+    summary = acc.finalize(status="ok", ended_at=1002.0)
+    assert summary["summary"]["tokens"] == {
+        "input": 220,
+        "output": 120,
+        "total": 340,
+        "cache_read": 64,
+        "reasoning": 67,
+    }
+    assert summary["bottleneck"]["llm"][0]["reasoning_tokens"] == 55
+
+
+def test_extract_usage_tokens_reads_reasoning_from_usage_metadata() -> None:
+    from jiuwenswarm.perf.extract import extract_usage_tokens
+
+    direct = extract_usage_tokens(
+        {
+            "usage_metadata": {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "cache_read_tokens": 4,
+                "reasoning_tokens": 7,
+            }
+        }
+    )
+    nested = extract_usage_tokens(
+        SimpleNamespace(
+            usage_metadata=SimpleNamespace(
+                input_tokens=1,
+                output_tokens=2,
+                cache_read_input_tokens=0,
+                cache_read_tokens=0,
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=9),
+                reasoning_tokens=0,
+            )
+        )
+    )
+
+    assert direct == (10, 20, 4, 7)
+    assert nested == (1, 2, 0, 9)
     acc = RequestSummaryAccumulator(
         meta=RequestMeta(
             session_id="sess-1",

@@ -494,6 +494,7 @@ export class CliPiAppState {
     setPendingQuestion: (question) => {
       this.pendingQuestion = question;
     },
+    getPendingQuestion: () => this.pendingQuestion,
     setLastError: (error) => {
       this.lastError = error;
     },

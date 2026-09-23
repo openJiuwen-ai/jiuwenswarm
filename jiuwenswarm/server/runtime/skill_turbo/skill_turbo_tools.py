@@ -620,69 +620,6 @@ def _resume_user_input_from_raw(
     return raw
 
 
-# ────────────────── 中断恢复 hint（一次性 fresh 调用守卫） ──────────────────
-# prepare_interrupt_artifacts_for_request 注入产物摘要时，会在 request.metadata 上
-# 挂一份结构化 hint。本请求内 skill_acceleration_exec 若被全新调用（非 HITL resume），
-# 工具层守卫据此先拒绝一次并附上产物摘要，引导 LLM 走非 skillTurbo 流程基于已有
-# 产物继续；LLM 明确重试（视为全新任务）时 hint 已被消费，放行。
-# request.metadata 经 _update_runtime_config 浅拷贝进 rail metadata（内部 dict 共享
-# 引用），故 consumed 标记在原地标记即可对所有副本生效。
-
-SKILL_TURBO_INTERRUPT_RECOVERY_KEY = "skill_turbo_interrupt_recovery"
-
-
-def set_interrupt_recovery_hint(request: Any, *, summary: str, skill: str = "") -> None:
-    """把一次性中断恢复 hint 挂到 request.metadata（仅注入产物摘要的请求调用）。"""
-    metadata = getattr(request, "metadata", None)
-    if not isinstance(metadata, dict):
-        # metadata 缺失时无处挂载：不静默降级——记 warning 保证可观测，
-        # 此时守卫不生效，LLM 只能靠指南条件句自行判断（同一信号、两处呼应）。
-        logger.warning(
-            "[SkillTurboTool] interrupt recovery hint dropped: request.metadata "
-            "missing (guard inactive for this request), summary_len=%d",
-            len(summary or ""),
-        )
-        return
-    metadata[SKILL_TURBO_INTERRUPT_RECOVERY_KEY] = {
-        "summary": summary,
-        "skill": skill,
-        "request_id": str(getattr(request, "request_id", "") or ""),
-        "consumed": False,
-    }
-
-
-def _pending_interrupt_recovery_hint(request_metadata: Any) -> dict[str, Any] | None:
-    """读取本请求未消费的中断恢复 hint；无 hint 或已消费返回 None。"""
-    if not isinstance(request_metadata, dict):
-        return None
-    hint = request_metadata.get(SKILL_TURBO_INTERRUPT_RECOVERY_KEY)
-    if isinstance(hint, dict) and hint.get("summary") and not hint.get("consumed"):
-        return hint
-    return None
-
-
-def _consume_interrupt_recovery_hint(hint: dict[str, Any]) -> None:
-    """标记 hint 已消费：同请求内的下一次 fresh 调用放行（视为明确的全新任务）。"""
-    hint["consumed"] = True
-
-
-def _build_interrupt_recovery_reject(hint: dict[str, Any]) -> dict[str, Any]:
-    """构造 fresh 调用守卫的一次性拒绝结果（success=False，引导非 skillTurbo 继续）。"""
-    summary = str(hint.get("summary") or "").strip()
-    error = (
-        "检测到上一轮被中断的 SkillAccelerationExec 任务仍有可复用的已完成产物：\n\n"
-        f"{summary}\n\n"
-        "全新调用 skill_acceleration_exec 会丢弃以上产物并从 p0 重新规划执行，"
-        "导致已完成的工作被重复执行。\n"
-        "- 若用户想继续或完成被中断的任务：请勿调用 skill_acceleration_exec，"
-        "改用 skill_tool 走标准流程（可基于以上产物文件继续），"
-        "或用 read_file / edit_file 等工具直接处理产物文件；\n"
-        "- 若用户明确要求与已有产物无关的全新任务：请直接再次调用 "
-        "skill_acceleration_exec，本次将被放行（该提示仅生效一次）。"
-    )
-    return {"success": False, "error": error}
-
-
 def _resolve_skill_turbo_resume_session_id(
     external_session_id: Any,
     parent_session: Any,
@@ -1116,20 +1053,6 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                 task_states=resume_ctx.get("task_states"),
             )
         else:
-            # fresh 调用守卫：本请求注入过"中断恢复 hint"（上一轮中断任务有未消费产物）
-            # 时，先一次性拒绝并附产物摘要，避免新 executor 从 p0 清盘重跑（产物已在
-            # prepare_interrupt_artifacts_for_request 注入时落盘清空，此处只拦 LLM 的
-            # 盲目重启）。LLM 重试（明确全新任务）时 hint 已消费，直接放行。
-            recovery_hint = _pending_interrupt_recovery_hint(request_metadata)
-            if recovery_hint is not None:
-                _consume_interrupt_recovery_hint(recovery_hint)
-                logger.info(
-                    "[SkillTurboTool] interrupt recovery guard: reject fresh "
-                    "run_stream once (unconsumed artifacts from interrupted task)"
-                )
-                return _wrap_skill_turbo_result(
-                    _build_interrupt_recovery_reject(recovery_hint)
-                )
             stream = skill_turbo_inst.run_stream(
                 query, inputs, request_id, channel_id
             )

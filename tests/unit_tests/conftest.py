@@ -19,11 +19,23 @@ functions, hence this hook.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
-import jiuwenswarm.common.utils as _utils
+# Force UTF-8 stdio for the test process and any child it spawns. On Windows
+# the interpreter starts with locale (GBK) std streams; app logging that
+# reaches the original stdout/stderr then writes GBK bytes into pytest's
+# UTF-8 fd-level capture, breaking the whole run at test boundaries.
+os.environ.setdefault("PYTHONUTF8", "1")
+for _stream in (sys.__stdout__, sys.__stderr__):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError, ValueError):
+        pass
+
+import jiuwenswarm.common.utils as _utils  # noqa: E402  (must follow the stdio reconfigure above)
 
 _REAL_GET_CONFIG_FILE = _utils.get_config_file
 _REAL_GET_AGENT_WORKSPACE_DIR = _utils.get_agent_workspace_dir

@@ -59,7 +59,7 @@ async def test_set_checkpoint_initializes_once(monkeypatch, tmp_path: Path):
         new=AsyncMock(),
     ) as mysql_mock, patch.object(
         iface,
-        "get_multi_tenant_user_workspace_dir",
+        "get_checkpoint_dir",
         return_value=tmp_path,
     ):
         await adapter.set_checkpoint()
@@ -90,7 +90,7 @@ async def test_set_checkpoint_reuses_mysql_engine(monkeypatch, tmp_path: Path):
         new=AsyncMock(return_value=mock_checkpointer),
     ) as create_mock, patch.object(
         iface,
-        "get_multi_tenant_user_workspace_dir",
+        "get_checkpoint_dir",
         return_value=tmp_path,
     ):
         await asyncio.gather(

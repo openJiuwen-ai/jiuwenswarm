@@ -130,6 +130,7 @@ export interface AppEventDelegate {
   setEntries(entries: HistoryItem[]): void;
   setStreamingState(state: StreamingState): void;
   setPendingQuestion(question: PendingQuestion | null): void;
+  getPendingQuestion(): PendingQuestion | null;
   setLastError(error: string | null): void;
   getActiveSubtasks(): Map<string, SubtaskState>;
   setTodos(todos: TodoItem[]): void;
@@ -1200,10 +1201,22 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
       return true;
 
     case "chat.interrupt_result": {
+      // 死卡应答被服务端状态机终态守卫拒绝（stale_interrupt_response）：
+      // 该卡片对应的中断早已被取消/取代，本地清掉 pending question 即可。
+      if (payload.code === "stale_interrupt_response") {
+        delegate.setPendingQuestion(null);
+        return true;
+      }
       const intent = typeof payload.intent === "string" ? payload.intent : "cancel";
       const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
       const eventSessionId =
         typeof payload.session_id === "string" ? payload.session_id : activeSessionId;
+      // 终态广播：cancel/supplement 后服务端作废该会话全部未应答 HITL 卡片。
+      // 本地 pending question 即死卡——立即清除，防止用户提交 stale 应答
+      // 触发后端 stale_interrupt_response 循环。
+      if (payload.invalidate_pending_cards === true) {
+        delegate.setPendingQuestion(null);
+      }
       if (intent === "cancel") {
         // 先通知等待型 waiter，让其 resolve/reject。
         // 服务端可能不回显 TUI 的 requestId（使用自己的 interrupt_xxx 格式），
@@ -1312,6 +1325,19 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
         questions,
       });
       delegate.setStreamingState(StreamingState.WaitingForConfirmation);
+      return true;
+    }
+
+    case "chat.ask_user_question_expired": {
+      // 卡片失效（reason=superseded：被新一代卡片取代；subagent 审批超时/取消）。
+      // 被取代的旧卡应答会被后端死卡守卫拒绝（stale_interrupt_response），
+      // 按 request_id 精确移除当前挂起卡，屏幕上只保留最新活卡。
+      const expiredRequestId =
+        typeof payload.request_id === "string" ? payload.request_id.trim() : "";
+      const current = delegate.getPendingQuestion();
+      if (expiredRequestId && current?.requestId === expiredRequestId) {
+        delegate.setPendingQuestion(null);
+      }
       return true;
     }
 

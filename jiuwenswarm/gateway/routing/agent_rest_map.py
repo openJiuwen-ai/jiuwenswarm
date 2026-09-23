@@ -44,6 +44,8 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("history.get", "GET", "/sessions/{session_id}/history"),
     ("history.list_turns", "GET", "/sessions/{session_id}/turns"),
     ("chat.interrupt", "POST", "/chat/{session_id}/actions/interrupt"),
+    ("chat.steer", "POST", "/chat/{session_id}/actions/steer"),
+    ("chat.steer.status", "POST", "/chat/{session_id}/actions/steer/status"),
     ("chat.user_answer", "POST", "/chat/{session_id}/actions/answer"),
     ("command.session", "POST", "/sessions/{session_id}/commands"),
     ("command.compact", "POST", "/sessions/{session_id}/commands/compact"),

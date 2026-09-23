@@ -27,6 +27,7 @@ from jiuwenswarm.server.handlers import sandbox as sandbox_handlers
 from jiuwenswarm.server.handlers import schedule as schedule_handlers
 from jiuwenswarm.server.handlers import session as session_handlers
 from jiuwenswarm.server.handlers import team as team_handlers
+from jiuwenswarm.server.handlers import steering as steering_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,8 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     # --- 中断 ---
     # 实现在 handlers/chat.py。chat.send / chat.resume 走默认路径，不在表内。
     ReqMethod.CHAT_CANCEL: HandlerSpec(fn=chat_handlers.handle_chat_cancel_dispatch),
+    ReqMethod.CHAT_STEER: HandlerSpec(fn=steering_handlers.handle_chat_steering),
+    ReqMethod.CHAT_STEER_STATUS: HandlerSpec(fn=steering_handlers.handle_chat_steering),
     # Gateway ↔ Agent 分块文件传输（默认跟随 is_enterprise；YAML 可显式覆盖）
     ReqMethod.FILE_TRANSFER_START: HandlerSpec(fn=file_transfer_handlers.handle_file_transfer),
     ReqMethod.FILE_TRANSFER_CHUNK: HandlerSpec(fn=file_transfer_handlers.handle_file_transfer),

@@ -823,6 +823,8 @@ CORE_ROUTE_CATALOG: tuple[tuple[str, str, str, str], ...] = (
     ("POST", "/chat/completions", "chat.send", "发消息 SSE（主路径）"),
     ("POST", "/chat/resume", "chat.resume", "恢复中断对话"),
     ("POST", "/chat/{session_id}/actions/interrupt", "chat.interrupt", "中断生成"),
+    ("POST", "/chat/{session_id}/actions/steer", "chat.steer", "追加当前任务输入"),
+    ("POST", "/chat/{session_id}/actions/steer/status", "chat.steer.status", "查询追加输入状态"),
     ("POST", "/chat/{session_id}/actions/user_answer", "chat.user_answer", "回答 Agent 追问"),
 )
 

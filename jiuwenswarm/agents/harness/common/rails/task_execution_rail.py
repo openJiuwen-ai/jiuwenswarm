@@ -35,13 +35,8 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from jiuwenswarm.common.tool_display import build_tool_display_name
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
-    is_skip_invoke_task_update_sync,
-    clear_skip_invoke_task_update_sync,
-    set_stale_todo_ids,
-    clear_stale_todo_ids,
-    set_pre_invoke_todo_ids,
-    set_current_invoke_todo_ids,
-    get_pre_invoke_todo_ids,
+    filter_todos_by_generation,
+    get_todo_generation_token,
 )
 
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
@@ -1331,10 +1326,10 @@ class TaskExecutionRail(DeepAgentRail):
         self._active_tasks: dict[str, TaskExecutionContext] = {}
         self._todo_started: set[str] = set()
         self._deep_agent: Any | None = None
-        # 中断恢复 skip 机制：before_invoke 检测到 skip 标志时（本请求由
-        # prepare_* 注入了恢复提示），记录旧 todo id，_emit_task_update_event
-        # 据此过滤已清理的旧项，避免向前端回灌跨请求残留 todo。
-        self._stale_todo_ids: set[str] = set()
+        # 请求隔离：本轮 invoke 的 todo generation token（before_invoke 从
+        # session 捕获）。_load_todo_from_json 据此过滤被新一轮请求取代的
+        # 旧代条目，避免向前端回灌跨请求残留 todo。
+        self._todo_generation_token: str | None = None
         # 产物检测：工具调用开始时间（按 tool_call_id 记录，用于 mtime 校验）
         self._tool_start_times: dict[str, float] = {}
         # 已触发过产物 hook 的文件身份（路径+mtime_ns+size），防止重复后处理
@@ -1403,48 +1398,28 @@ class TaskExecutionRail(DeepAgentRail):
                     "failed to get session_id",
                     exc_info=True,
                 )
-        # skip 标志置位时捕获旧 todo id 供 _emit_task_update_event 过滤。
-        skip_invoke = (
-            ctx.session is not None
-            and is_skip_invoke_task_update_sync(ctx.session)
-        )
-        if skip_invoke:
-            self._stale_todo_ids = set(self._todo_map.keys())
-            # 同步写入 session，供 StreamEventRail._emit_todo_updated（todo.updated
-            # 旁路）过滤同一批跨请求残留——那条旁路读不到本 rail 的实例字段。
-            if ctx.session is not None:
-                try:
-                    set_stale_todo_ids(ctx.session, self._stale_todo_ids)
-                except Exception:
-                    logger.debug(
-                        "[TaskExecutionRail] before_invoke: set_stale_todo_ids failed",
-                        exc_info=True,
-                    )
-            logger.info(
-                "[TaskExecutionRail] before_invoke: skip_invoke_task_update "
-                "flag set, captured %d stale todo ids=%s",
-                len(self._stale_todo_ids),
-                list(self._stale_todo_ids),
-            )
-        else:
-            self._stale_todo_ids = set()
-            # 与实例字段同步清掉 session 上的残留（上轮崩溃兜底）。
-            if ctx.session is not None:
-                try:
-                    clear_stale_todo_ids(ctx.session)
-                except Exception:
-                    logger.debug(
-                        "[TaskExecutionRail] before_invoke: clear_stale_todo_ids failed",
-                        exc_info=True,
-                    )
+        # 请求隔离：捕获本轮 generation token，_load_todo_from_json 据此
+        # 过滤被新一轮请求取代的旧代 todo（prepare hook 经 flag proxy 写入，
+        # 运行时 session 此处可见）。
+        self._todo_generation_token = None
+        if ctx.session is not None:
+            try:
+                self._todo_generation_token = get_todo_generation_token(
+                    ctx.session
+                )
+            except Exception:
+                logger.debug(
+                    "[TaskExecutionRail] before_invoke: get_todo_generation_token failed",
+                    exc_info=True,
+                )
         logger.info(
             "[TaskExecutionRail] before_invoke reset tracking: "
             "session_id=%s prev_todo_map_size=%d prev_active_tasks=%s "
-            "skip_invoke=%s",
+            "todo_generation_token=%s",
             session_id,
             len(self._todo_map),
             list(self._active_tasks.keys()),
-            skip_invoke,
+            self._todo_generation_token or "none",
         )
         self._todo_map = {}
         self._todo_map_before_tool = {}
@@ -1463,7 +1438,7 @@ class TaskExecutionRail(DeepAgentRail):
                 t.get("status") in ("pending", "in_progress")
                 for t in self._todo_map.values()
             )
-            if has_active_tasks and not skip_invoke:
+            if has_active_tasks:
                 parent_request_id = self._extract_request_id(ctx)
                 await self._emit_task_update_event(
                     ctx.session, parent_request_id
@@ -1799,20 +1774,6 @@ class TaskExecutionRail(DeepAgentRail):
 
     async def after_invoke(self, ctx: AgentCallbackContext) -> None:
         self._todo_map_before_tool = {}
-        # 本轮 invoke 结束后清掉 skip 标志与 stale 缓存：skip 只在
-        # prepare→before_invoke 这一段窗口生效，之后模型若实际推进
-        # todo（todo_modify 写盘 + 下一次 emit 应正常广播新快照）。
-        if ctx.session is not None:
-            try:
-                clear_skip_invoke_task_update_sync(ctx.session)
-                clear_stale_todo_ids(ctx.session)
-            except Exception:
-                logger.debug(
-                    "[TaskExecutionRail] after_invoke: "
-                    "clear_skip_invoke_task_update_sync failed",
-                    exc_info=True,
-                )
-        self._stale_todo_ids = set()
         self._bind_context_to_in_progress_task()
 
     # ------------------------------------------------------------------
@@ -1831,14 +1792,6 @@ class TaskExecutionRail(DeepAgentRail):
                 self._todo_map = self._build_map_from_todo_items(
                     todo_items
                 )
-                # 记录磁盘加载的 todo ids 快照，用于区分「磁盘旧残留」与「本轮 LLM 新建」
-                try:
-                    set_pre_invoke_todo_ids(session, set(self._todo_map.keys()))
-                except Exception:
-                    logger.debug(
-                        "[TaskExecutionRail] set_pre_invoke_todo_ids failed",
-                        exc_info=True,
-                    )
                 logger.info(
                     "[TaskExecutionRail] Loaded todo.json "
                     "session_id=%s tasks=%d",
@@ -1859,7 +1812,12 @@ class TaskExecutionRail(DeepAgentRail):
             return []
         with open(todo_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        # 请求隔离：剔除已被新一轮请求取代的旧代条目（token 不一致）。
+        # before_invoke 捕获的 token 覆盖本 invoke 内全部加载点，过滤后的
+        # _todo_map / task.update 快照天然不含跨请求残留。
+        return filter_todos_by_generation(data, self._todo_generation_token)
 
     def _get_todo_workspace_path(
         self, session_id: str
@@ -2124,14 +2082,6 @@ class TaskExecutionRail(DeepAgentRail):
 
         self._todo_map = current_map
         self._todo_map_before_tool = {}
-        # 记录本轮 invoke 实际存在的 todo ids，供过滤 stale 时排除本轮新建的同 ID 项
-        try:
-            set_current_invoke_todo_ids(ctx.session, set(current_map.keys()))
-        except Exception:
-            logger.debug(
-                "[TaskExecutionRail] set_current_invoke_todo_ids failed",
-                exc_info=True,
-            )
         self._bind_context_after_todo_sync(
             completed_in_batch, current_map
         )
@@ -2308,30 +2258,9 @@ class TaskExecutionRail(DeepAgentRail):
     ) -> None:
         """Send full task list snapshot (all todos) to the frontend."""
         session_id = session.get_session_id()
+        # _load_todo_from_json 已按 generation token 过滤旧代条目
+        # （请求隔离），快照天然不含跨请求残留。
         todo_items = self._load_todo_from_json(session_id)
-        # 兜底过滤：即便 skip 窗口未拦下，也剔除已被 prepare_* 清理的
-        # 旧 todo id，防止跨请求残留项回灌前端快照。键推导须与
-        # _build_map_from_todo_items 一致：有 id 用 id，无 id 用 str(index)。
-        if self._stale_todo_ids:
-            # 仅过滤 stale 集中仍处于终态（cancelled/completed）的旧残留项。
-            # 本轮 LLM 通过 todo_create/todo_modify 重建的同 ID 项状态为
-            # pending/in_progress，不会被过滤。
-            # 额外排除本轮新建的同 ID 项：若 id 不在磁盘快照（pre_invoke_todo_ids）
-            # 中，说明是本轮 LLM 新建的，即使 id 与 stale 集合重合也不应过滤。
-            pre_invoke_ids = get_pre_invoke_todo_ids(session)
-            filtered: list[dict[str, Any]] = []
-            _DONE_STATUSES = frozenset({"cancelled", "completed"})  # pylint: disable=huawei-invalid-name
-            for idx, item in enumerate(todo_items):
-                key = str(item.get("id", str(idx)))
-                status = str(item.get("status", "")).lower()
-                if key in self._stale_todo_ids and status in _DONE_STATUSES:
-                    # 仅当 id 存在于磁盘快照时才认定为真旧残留
-                    if pre_invoke_ids and key not in pre_invoke_ids:
-                        filtered.append(item)
-                        continue
-                    continue
-                filtered.append(item)
-            todo_items = filtered
         todo_items = self._overlay_serial_todo_statuses(todo_items)
         todo_tasks = self._format_tasks_for_update(
             todo_items, source="todo"

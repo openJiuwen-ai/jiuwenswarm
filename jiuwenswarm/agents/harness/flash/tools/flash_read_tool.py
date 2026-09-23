@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from openjiuwen.harness.tools.base_tool import ToolOutput
@@ -207,6 +208,8 @@ class FlashReadFileTool(ReadFileTool):
                 file_type = "image"
             elif self._is_office_doc(file_path):
                 rendered = await self._read_office_doc(file_path)
+                if file_path.lower().endswith(".xlsx"):
+                    rendered = self._annotate_empty_xlsx(rendered)
                 file_type = "office"
             else:
                 rendered = await self._read_text(
@@ -263,6 +266,43 @@ class FlashReadFileTool(ReadFileTool):
             "line_count": 0,
             "error": error,
         }
+
+    @staticmethod
+    def _annotate_empty_xlsx(rendered: str | dict) -> str | dict:
+        """Prepend a warning banner if xlsx output has only empty default sheet.
+
+        The _read_office_doc / _read_xlsx_text renderer outputs one ``## SheetName``
+        header per worksheet plus markdown table rows for data, with line-number
+        prefixes (``     1\\t``).  When no data rows exist and only one sheet header
+        (``## Sheet1``) appears, the workbook is effectively empty — inject a
+        visible banner so the model cannot ignore it.
+        """
+        content = rendered.get("content", "") if isinstance(rendered, dict) else str(rendered)
+        stripped = content.strip()
+        if not stripped:
+            return rendered
+        # Strip line-number prefix ("     1\t...") used by the renderer's _cat_n.
+        _prefix_re = re.compile(r"^\s*\d+\t", re.M)
+        stripped = _prefix_re.sub("", stripped)
+        # Detect: exactly one sheet header, zero data rows
+        header_count = 0
+        data_lines = 0
+        for line in stripped.splitlines():
+            line_stripped = line.strip()
+            if line_stripped.startswith("## "):
+                header_count += 1
+            elif line_stripped.startswith("|"):
+                data_lines += 1
+        if header_count <= 1 and data_lines == 0:
+            banner = (
+                "⚠️ [WARNING] 该工作簿内容为空（仅含默认空白 Sheet1），不含任何数据。"
+                "请重新检查构建环节是否正确。\n\n"
+            )
+            if isinstance(rendered, dict):
+                rendered["content"] = banner + content
+                return rendered
+            return banner + content
+        return rendered
 
     # ------------------------------------------------------------------
     # Multi-file parallel reader
@@ -340,7 +380,37 @@ class FlashReadFileTool(ReadFileTool):
             model_name = self._resolve_model_name(kwargs)
             return await self._invoke_multi(paths, model_name)
 
-        return await super().invoke(inputs, **kwargs)
+        result = await super().invoke(inputs, **kwargs)
+        return self._annotate_single_xlsx(inputs, result)
+
+    def _annotate_single_xlsx(
+        self, inputs: Dict[str, Any], result: ToolOutput
+    ) -> ToolOutput:
+        """Apply the empty-xlsx banner on the single-file path too.
+
+        Single-file reads go through stock ``ReadFileTool.invoke`` directly,
+        bypassing ``_read_one_file``; without this the banner never shows for
+        the most common ``read_file(file_path=...)`` form.
+        """
+        file_path = str(inputs.get("file_path") or "")
+        if not file_path.lower().endswith(".xlsx"):
+            return result
+        if result is None or not isinstance(result.data, dict):
+            return result
+        content = result.data.get("content")
+        if not isinstance(content, str):
+            return result
+        annotated = self._annotate_empty_xlsx({"content": content})
+        new_content = annotated.get("content") if isinstance(annotated, dict) else None
+        if new_content is None or new_content == content:
+            return result
+        new_data = dict(result.data)
+        new_data["content"] = new_content
+        return ToolOutput(
+            success=result.success,
+            data=new_data,
+            error=result.error,
+        )
 
     async def stream(self, inputs: Dict[str, Any], **kwargs) -> Any:
         # 与 UnifiedTodoTool 同约定：flash 工具不走增量流式，整包一次性产出。

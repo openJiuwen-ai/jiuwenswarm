@@ -3647,6 +3647,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const payload = event.payload;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        // 终态广播：cancel/supplement 后服务端作废该会话全部未应答 HITL 卡片
+        // （stale_interrupt_response：死卡应答被后端状态机守卫拒绝）。二者都
+        // 必须清除 pendingQuestion，防止用户提交死卡应答触发 stale resume 循环。
+        // 放在 per-tab 请求过滤器之前——广播性质，任何 tab 都要生效。
+        const rawResult = payload as Record<string, unknown>;
+        if (rawResult.invalidate_pending_cards === true || rawResult.code === 'stale_interrupt_response') {
+          useChatStore.getState().setPendingQuestion(sessionId, null);
+        }
         if (!shouldHandleCurrentRequestEvent(event)) return;
         if (shouldDropDuplicatedEvent('chat.interrupt_result', payload)) return;
         // 切换模式时忽略中断结果
@@ -3788,8 +3796,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.ask_user_question_expired', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
-        // 子 Agent 委托审批超时/取消：仅当 expired 与当前挂起问题严格匹配时收起卡片
         const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestion;
+        // 卡片被新一代卡片取代（reason=superseded）：旧卡应答会被后端死卡
+        // 守卫拒绝（stale_interrupt_response），按 request_id 精确移除挂起卡。
+        if (payload.reason === 'superseded') {
+          const expiredRequestId =
+            typeof payload.request_id === 'string' ? payload.request_id.trim() : '';
+          if (
+            expiredRequestId &&
+            expiredRequestId === pendingQuestion?.request_id?.trim()
+          ) {
+            useChatStore.getState().setPendingQuestion(sessionId, null);
+          }
+          return;
+        }
+        // 子 Agent 委托审批超时/取消：仅当 expired 与当前挂起问题严格匹配时收起卡片
         if (!isMatchingSubagentApprovalExpiry(pendingQuestion, payload)) return;
         useChatStore.getState().setPendingQuestion(sessionId, null);
         if (payload.reason === 'timeout') {

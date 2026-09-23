@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import sys
+import warnings
 import zipfile
 from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
@@ -332,8 +333,12 @@ async def test_stream_sends_versioned_config_over_stdin_only():
     with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as spawn:
         outcome = await dt.deepresearch_stream._func(action="start", query="q", file_name="r")
 
-    assert spawn.await_args.args[0] == "/runtime/bin/python"
-    assert spawn.await_args.args[1] == "/skills/deepresearch/scripts/run_deepsearch.py"
+    # Normalize separators: on Windows str(Path) renders backslashes.
+    assert str(spawn.await_args.args[0]).replace("\\", "/") == "/runtime/bin/python"
+    assert (
+        str(spawn.await_args.args[1]).replace("\\", "/")
+        == "/skills/deepresearch/scripts/run_deepsearch.py"
+    )
     assert "--config-stdin" in spawn.await_args.args
     assert "LLM_API_KEY" not in spawn.await_args.kwargs["env"]
     frame = json.loads(bytes(proc.stdin.data))
@@ -474,13 +479,17 @@ def test_styled_zip_rejects_symlink_member(tmp_path: Path):
 
 
 def test_styled_zip_rejects_duplicate_normalized_member(tmp_path: Path):
-    payload = _zip_payload(
-        [
-            ("report_bundle/report.html", b"ok", None),
-            ("report_bundle/a.txt", b"a", None),
-            ("report_bundle\\a.txt", b"b", None),
-        ]
-    )
+    # zipfile warns on the duplicate (normalized) name; the warning is the
+    # test fixture's construction detail, not the behavior under test.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        payload = _zip_payload(
+            [
+                ("report_bundle/report.html", b"ok", None),
+                ("report_bundle/a.txt", b"a", None),
+                ("report_bundle\\a.txt", b"b", None),
+            ]
+        )
     with pytest.raises(ValueError, match="duplicate ZIP"):
         dt._extract_styled_bundle(payload, tmp_path)
 
@@ -2177,7 +2186,12 @@ def test_offline_html_converter_rejects_symlink_input(tmp_path: Path):
     real = tmp_path / "real.md"
     real.write_text("secret", encoding="utf-8")
     source = tmp_path / "report.md"
-    source.symlink_to(real)
+    try:
+        source.symlink_to(real)
+    except OSError:
+        # Creating symlinks needs privilege on Windows; the rejection
+        # semantics are covered where symlinks are creatable.
+        pytest.skip("symlink creation requires privilege on this platform")
     with pytest.raises(OSError, match="unsafe Markdown input"):
         convert_md_to_html(source, tmp_path / "report.html")
 
@@ -2194,7 +2208,10 @@ def test_offline_html_converter_never_overwrites_existing_or_symlink_output(
     protected = tmp_path / "protected.html"
     protected.write_text("keep", encoding="utf-8")
     output = tmp_path / "report.html"
-    output.symlink_to(protected)
+    try:
+        output.symlink_to(protected)
+    except OSError:
+        pytest.skip("symlink creation requires privilege on this platform")
     with pytest.raises(FileExistsError):
         convert_md_to_html(source, output)
     assert protected.read_text(encoding="utf-8") == "keep"
@@ -2341,10 +2358,12 @@ async def test_progress_file_is_precreated_in_private_owned_directory():
     progress, parent, leaf = observations[0]
     assert progress.parent.parent == Path(__import__("tempfile").gettempdir())
     assert stat.S_ISDIR(parent.st_mode)
-    assert stat.S_IMODE(parent.st_mode) == 0o700
     assert stat.S_ISREG(leaf.st_mode)
     assert leaf.st_nlink == 1
-    assert stat.S_IMODE(leaf.st_mode) == 0o600
+    if os.name != "nt":
+        # POSIX mode bits are not materialized on Windows.
+        assert stat.S_IMODE(parent.st_mode) == 0o700
+        assert stat.S_IMODE(leaf.st_mode) == 0o600
 
 
 @pytest.mark.asyncio
@@ -2384,7 +2403,12 @@ def test_report_publication_fails_closed_when_output_root_is_swapped(
         bundle = original(*args, **kwargs)
         workspace.rename(moved)
         attacker.mkdir()
-        workspace.symlink_to(attacker, target_is_directory=True)
+        try:
+            workspace.symlink_to(attacker, target_is_directory=True)
+        except OSError:
+            pytest.skip(
+                "symlink creation requires privilege on this platform"
+            )
         return bundle
 
     final_result = {
@@ -2407,7 +2431,10 @@ def test_route_output_root_symlink_is_rejected_without_outside_write(
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
     outside.mkdir()
-    workspace.symlink_to(outside, target_is_directory=True)
+    try:
+        workspace.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation requires privilege on this platform")
     route_token = dt.push_deepresearch_route(
         "request",
         "channel",
@@ -2604,7 +2631,10 @@ def test_resolve_runner_rejects_symlink_and_hardlink(tmp_path: Path):
     real = tmp_path / "real-runner.py"
     real.write_text("# runner", encoding="utf-8")
     runner = scripts / "run_deepsearch.py"
-    runner.symlink_to(real)
+    try:
+        runner.symlink_to(real)
+    except OSError:
+        pytest.skip("symlink creation requires privilege on this platform")
     with patch.object(dt, "get_shared_agent_skills_dirs", return_value=[shared]):
         assert dt._resolve_run_script() == ""
     runner.unlink()
@@ -2968,7 +2998,12 @@ def test_install_styled_bundle_preserves_occupied_asset_target(
     else:
         protected.mkdir()
         (protected / "keep").write_text("keep", encoding="utf-8")
-        occupied.symlink_to(protected, target_is_directory=True)
+        try:
+            occupied.symlink_to(protected, target_is_directory=True)
+        except OSError:
+            pytest.skip(
+                "symlink creation requires privilege on this platform"
+            )
     with pytest.raises((FileExistsError, OSError)):
         dt._install_styled_bundle(bundle, output / "report.html")
     assert not (output / "report.html").exists()
@@ -2996,7 +3031,10 @@ def test_install_styled_bundle_rolls_back_owned_assets_after_html_collision(
 def test_install_styled_bundle_rejects_symlink_source_member(tmp_path: Path):
     bundle = _styled_bundle(tmp_path / "staging")
     (bundle / "infer" / "a.html").unlink()
-    (bundle / "infer" / "a.html").symlink_to(bundle / "report.html")
+    try:
+        (bundle / "infer" / "a.html").symlink_to(bundle / "report.html")
+    except OSError:
+        pytest.skip("symlink creation requires privilege on this platform")
     output = tmp_path / "output"
     output.mkdir()
     with pytest.raises(OSError, match="unsafe report asset"):
@@ -3573,14 +3611,14 @@ def test_exclusive_writes_remove_owned_partial_after_fsync_failure(
     assert not direct.exists()
 
     root_fd, _ = dt._open_output_root(tmp_path)
-    assert root_fd is not None
-    try:
-        with patch.object(dt.os, "fsync", side_effect=OSError("disk failed")):
-            with pytest.raises(OSError, match="disk failed"):
-                dt._exclusive_write_at(root_fd, "at.bin", b"partial")
-    finally:
-        os.close(root_fd)
-    assert not (tmp_path / "at.bin").exists()
+    if root_fd is not None:
+        try:
+            with patch.object(dt.os, "fsync", side_effect=OSError("disk failed")):
+                with pytest.raises(OSError, match="disk failed"):
+                    dt._exclusive_write_at(root_fd, "at.bin", b"partial")
+        finally:
+            os.close(root_fd)
+        assert not (tmp_path / "at.bin").exists()
 
 
 def test_zip_validation_failure_does_not_create_destination(tmp_path: Path):
@@ -3680,6 +3718,10 @@ def test_zip_second_member_read_failure_rolls_back_entire_destination(
     assert not destination.exists()
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="concurrent destination swap requires POSIX rename-while-open semantics",
+)
 def test_zip_rollback_preserves_concurrent_destination_replacement(
     tmp_path: Path,
 ):
@@ -3701,6 +3743,10 @@ def test_zip_rollback_preserves_concurrent_destination_replacement(
     assert (destination / "foreign").read_text(encoding="utf-8") == "keep"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="concurrent destination swap requires POSIX rename-while-open semantics",
+)
 def test_zip_rollback_preserves_swap_after_owned_tree_cleanup(tmp_path: Path):
     destination = tmp_path / "destination"
     moved_owned = tmp_path / "moved-owned"
@@ -3763,6 +3809,7 @@ def test_zip_windows_fallback_writes_members_in_binary_mode(
         [("report_bundle/report.html", member_payload, None)]
     )
     binary_flag = 1 << 29
+    real_binary = getattr(os, "O_BINARY", 0)
     opened_flags: dict[int, int] = {}
     original_open = os.open
     original_write = os.write
@@ -3770,7 +3817,11 @@ def test_zip_windows_fallback_writes_members_in_binary_mode(
     def windows_open(path, flags, mode=0o777, *, dir_fd=None):
         if dir_fd is not None:
             raise NotImplementedError("dir_fd unavailable")
-        descriptor = original_open(path, flags & ~binary_flag, mode)
+        # Keep the real CRT binary bit on the actual open; the fake bit only
+        # drives the translation expectations of windows_write below.
+        descriptor = original_open(
+            path, (flags & ~binary_flag) | real_binary, mode
+        )
         opened_flags[descriptor] = flags
         return descriptor
 
@@ -3799,12 +3850,17 @@ def test_regular_file_reader_uses_binary_mode_on_windows(
     payload = b"prefix\r\nsuffix\x1atail"
     source.write_bytes(payload)
     binary_flag = 1 << 29
+    real_binary = getattr(os, "O_BINARY", 0)
     opened_flags: dict[int, int] = {}
     original_open = os.open
     original_read = os.read
 
     def windows_open(path, flags, mode=0o777, **kwargs):
-        descriptor = original_open(path, flags & ~binary_flag, mode, **kwargs)
+        # Keep the real CRT binary bit on the actual open; the fake bit only
+        # drives the translation expectations of windows_read below.
+        descriptor = original_open(
+            path, (flags & ~binary_flag) | real_binary, mode, **kwargs
+        )
         opened_flags[descriptor] = flags
         return descriptor
 
@@ -4330,6 +4386,10 @@ async def test_protocol_control_keys_and_values_survive_secret_redaction(
 
 
 @pytest.mark.parametrize("swap_point", ["after_root_open", "after_first_write"])
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="held-destination swap requires POSIX rename-while-open semantics",
+)
 def test_posix_zip_extraction_stays_on_held_destination_when_name_is_swapped(
     tmp_path: Path, swap_point: str
 ):

@@ -25,8 +25,22 @@ def patch_uvicorn_logging() -> None:
     Uvicorn uses the logger name ``uvicorn.error`` for normal server lifecycle
     messages (not errors). Rename it to ``uvicorn`` for clearer log output, and
     apply jiuwenbox's timestamped format to the default formatter.
+
+    No-op when uvicorn is not installed (e.g. the sandbox runner runs on a bare
+    system Python without the project deps); the import is swallowed so the
+    runner can still start and log via :func:`configure_logging`'s basicConfig.
     """
-    from uvicorn.config import LOGGING_CONFIG
+    # uvicorn 仅 box-server (``uvicorn jiuwenbox.server.app:app``) 需要并安装;
+    # 沙箱 runner (``jiuwenbox.supervisor.win_exec``) 是最小子进程, 运行在裸
+    # 系统 Python (dev 下 JIUWENBOX_RUNNER_PYTHON 探测 C:\Python3* 候选, 无
+    # 项目依赖), 既不跑 uvicorn 也不需要其 LOGGING_CONFIG. 此函数被
+    # ``configure_logging`` 在导入期无条件调用, 若硬 import uvicorn, runner
+    # 启动即 ModuleNotFoundError 退出 → 沙箱 phase=error → bash/read_file 工具
+    # 连不上 per-sandbox 网关报 WinError 10061. 缺包时跳过, 不影响 box-server
+    try:
+        from uvicorn.config import LOGGING_CONFIG
+    except ImportError:
+        return
 
     LOGGING_CONFIG["formatters"]["default"]["fmt"] = LOG_FORMAT
     LOGGING_CONFIG["formatters"]["default"]["datefmt"] = LOG_DATE_FORMAT

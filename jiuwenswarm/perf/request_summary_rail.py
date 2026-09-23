@@ -230,7 +230,9 @@ class RequestSummaryRail(DeepAgentRail):
         agent = getattr(ctx, "agent", None)
         model_name, _ = extract_model_info(agent)
         result = extract_llm_result(ctx)
-        input_tokens, output_tokens, cache_read = extract_usage_tokens(result)
+        input_tokens, output_tokens, cache_read, reasoning_tokens = extract_usage_tokens(
+            result
+        )
         acc = get_perf_collector().get_accumulator(request_id)
         if acc is not None and cache_read:
             acc.cache_read_tokens += cache_read
@@ -248,6 +250,7 @@ class RequestSummaryRail(DeepAgentRail):
             task_id=resolve_task_id(request_ctx=req_ctx),
             stream_source_id=extract_stream_source_id(ctx),
             error_message=extract_llm_error(ctx) if llm_status != "ok" else None,
+            reasoning_tokens=reasoning_tokens,
         )
         get_perf_collector().record_llm(request_id, event)
         clear_current_llm_call()

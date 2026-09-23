@@ -58,6 +58,7 @@ class RequestSummaryAccumulator:
     output_tokens: int = 0
     total_tokens: int = 0
     cache_read_tokens: int = 0
+    reasoning_tokens: int = 0
     tasks: list[dict[str, Any]] = field(default_factory=list)
     bottleneck_llm: list[dict[str, Any]] = field(default_factory=list)
     bottleneck_tool: list[dict[str, Any]] = field(default_factory=list)
@@ -91,7 +92,7 @@ class RequestSummaryAccumulator:
         key = self._agent_key(agent_id)
         bucket = self._agent_tokens.get(key)
         if bucket is None:
-            bucket = {"input": 0, "output": 0}
+            bucket = {"input": 0, "output": 0, "reasoning": 0}
             self._agent_tokens[key] = bucket
         return bucket
 
@@ -118,6 +119,7 @@ class RequestSummaryAccumulator:
         self.input_tokens += max(0, event.input_tokens)
         self.output_tokens += max(0, event.output_tokens)
         self.total_tokens += max(0, event.input_tokens) + max(0, event.output_tokens)
+        self.reasoning_tokens += max(0, event.reasoning_tokens)
         if self._include_by_agent:
             agent_key = self._agent_key(event.agent_id)
             self._agent_llm.setdefault(agent_key, LlmStatsAccumulator()).record(
@@ -127,6 +129,7 @@ class RequestSummaryAccumulator:
             token_bucket = self._agent_token_bucket(agent_key)
             token_bucket["input"] += max(0, event.input_tokens)
             token_bucket["output"] += max(0, event.output_tokens)
+            token_bucket["reasoning"] += max(0, event.reasoning_tokens)
         if event.task_id:
             llm_acc, _ = self._task_stat_pair(event.task_id)
             llm_acc.record(
@@ -144,6 +147,7 @@ class RequestSummaryAccumulator:
             "iteration": event.iteration,
             "input_tokens": event.input_tokens,
             "output_tokens": event.output_tokens,
+            "reasoning_tokens": event.reasoning_tokens,
         }
         if event.stream_source_id:
             entry["stream_source_id"] = event.stream_source_id
@@ -288,13 +292,18 @@ class RequestSummaryAccumulator:
         for agent_id in agent_ids:
             llm = self._agent_llm.get(agent_id) or LlmStatsAccumulator()
             tool = self._agent_tool.get(agent_id) or ToolStatsAccumulator()
-            tokens = self._agent_tokens.get(agent_id) or {"input": 0, "output": 0}
+            tokens = self._agent_tokens.get(agent_id) or {
+                "input": 0,
+                "output": 0,
+                "reasoning": 0,
+            }
             out[agent_id] = {
                 "llm": llm.to_dict(),
                 "tool": tool.to_dict(),
                 "tokens": {
                     "input": int(tokens.get("input") or 0),
                     "output": int(tokens.get("output") or 0),
+                    "reasoning": int(tokens.get("reasoning") or 0),
                 },
             }
         return out
@@ -346,6 +355,7 @@ class RequestSummaryAccumulator:
                     "output": self.output_tokens,
                     "total": self.total_tokens,
                     "cache_read": self.cache_read_tokens,
+                    "reasoning": self.reasoning_tokens,
                 },
             },
             "tasks": self.tasks,

@@ -63,12 +63,22 @@ def test_build_report_bundle_rejects_occupied_resource_paths_without_mutation(
     elif occupied_kind == "directory_symlink":
         outside_dir = tmp_path / "outside-dir"
         outside_dir.mkdir()
-        chart_dir.symlink_to(outside_dir, target_is_directory=True)
+        try:
+            chart_dir.symlink_to(outside_dir, target_is_directory=True)
+        except OSError:
+            # Creating symlinks needs privilege on Windows; the rejection
+            # semantics are covered where symlinks are creatable.
+            pytest.skip("symlink creation requires privilege on this platform")
     else:
         chart_dir.mkdir()
         target = chart_dir / "chart-a.png"
         if occupied_kind == "file_symlink":
-            target.symlink_to(outside)
+            try:
+                target.symlink_to(outside)
+            except OSError:
+                pytest.skip(
+                    "symlink creation requires privilege on this platform"
+                )
         else:
             os.link(outside, target)
 
@@ -83,6 +93,9 @@ def test_build_report_bundle_rejects_occupied_resource_paths_without_mutation(
         assert list(chart_dir.iterdir()) == []
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX mode bits are not materialized on Windows"
+)
 def test_build_report_bundle_publishes_private_files_and_direct_manifest(tmp_path, monkeypatch):
     report_base = tmp_path / "report-v1"
     real_fsync = bundle_module.os.fsync
@@ -213,6 +226,9 @@ def test_build_report_bundle_cleans_owned_resources_after_rewrite_failure(tmp_pa
     assert not (tmp_path / "report-v1_charts").exists()
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="POSIX directory descriptor contract"
+)
 def test_build_report_bundle_rejects_directory_descriptor_swap_without_outside_write(
     tmp_path, monkeypatch
 ):

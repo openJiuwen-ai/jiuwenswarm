@@ -83,6 +83,7 @@ def main() -> int:
     # ---- 企业版域修改（与原 yq 版等价；宏改为 ${ENV:-default} 插值占位）----
     setpath(data, "gateway.agent_client.type", "jiuwen")
     setpath(data, "gateway.edition", "enterprise")
+    setpath(data, "config.source", "enterprise")
     setpath(data, "gateway.session_map_scope", "${GATEWAY_SESSION_MAP_SCOPE:-per_chat_bot}")
     setpath(data, "react.max_iterations", "${AGENT_SERVER_REACT_MAX_ITER:-100}")
     setpath(data, "react.evolution.enabled", False)

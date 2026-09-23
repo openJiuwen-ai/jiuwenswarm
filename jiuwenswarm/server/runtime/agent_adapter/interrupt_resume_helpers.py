@@ -25,6 +25,7 @@ from jiuwenswarm.server.runtime.agent_adapter.plan_pause_helpers import (
     post_agent_execute_for_session,
     read_plan_pause_from_session,
 )
+from jiuwenswarm.server.runtime.agent_adapter.session_flag_proxy import build_flag_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -131,12 +132,11 @@ async def prepare_interrupt_resume_for_request(
     session = create_agent_session(session_id=session_id, card=instance.card)
     await session.pre_run(inputs=None)
     try:
-        # 哨兵：已有其他恢复机制注入则跳过。同时查临时 session（走 checkpointer
-        # 的磁盘态）和运行时 session（in-memory 态）—— 同一请求周期内 plan_pause
-        # 可能已把哨兵标到 runtime_session 上，临时 session 的 pre_run 不一定能读到。
-        if is_interrupt_recovery_injected(session) or (
-            runtime_session is not None and is_interrupt_recovery_injected(runtime_session)
-        ):
+        # 哨兵：已有其他恢复机制注入则跳过。经 SessionFlagProxy 同时读临时
+        # session（checkpointer 磁盘态）与运行时 session（in-memory 态），
+        # 同一请求周期内 plan_pause 先跑标到 runtime_session 也能读到。
+        flag_proxy = build_flag_proxy(session, runtime_session)
+        if is_interrupt_recovery_injected(flag_proxy):
             return
 
         paused, _snapshot = read_plan_pause_from_session(session)
@@ -149,14 +149,11 @@ async def prepare_interrupt_resume_for_request(
             snapshot=snapshot_text,
         )
         merge_supplementary_into_request_params(params, decision)
-        # 标志同时落临时 session（保 checkpointer 落盘，跨请求兜底）与运行时
-        # session（保 before_invoke 这一轮看得见）；两者是不同对象，只标临时
-        # session 等价于没标 runtime。
-        set_todo_resume_snapshot_pending(session, pending=True)
-        mark_interrupt_recovery_injected(session)
-        if runtime_session is not None and runtime_session is not session:
-            set_todo_resume_snapshot_pending(runtime_session, pending=True)
-            mark_interrupt_recovery_injected(runtime_session)
+        # 经 proxy 同时落临时 session（checkpointer 落盘，跨请求兜底）与运行时
+        # session（before_invoke 这一轮看得见）；两者是不同对象，proxy 保证
+        # 不会漏写其一。
+        set_todo_resume_snapshot_pending(flag_proxy, pending=True)
+        mark_interrupt_recovery_injected(flag_proxy)
         await post_agent_execute_for_session(session)
 
         logger.info(

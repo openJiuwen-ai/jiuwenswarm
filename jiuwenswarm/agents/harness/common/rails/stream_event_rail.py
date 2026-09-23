@@ -42,8 +42,8 @@ from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
     strip_image_content_from_model_context,
 )
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
-    get_stale_todo_ids,
-    get_pre_invoke_todo_ids,
+    filter_todos_by_generation,
+    get_todo_generation_token,
 )
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
@@ -1443,38 +1443,26 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
             return
 
-        # skip 窗口内（prepare hook 清理了跨请求残留 todo）过滤掉同一批旧 id：
-        # todo.updated 是全量快照旁路，不过滤会把旧任务的 completed 条目重新
-        # 弹回前端（task.update 通道的 _stale_todo_ids 过滤管不到这条旁路）。
+        # 请求隔离：todo.updated 是全量快照旁路（todo 工具 after_tool_call
+        # 全量推 todo.json），按 generation token 剔除已被新一轮请求取代的
+        # 旧代条目，防止旧任务的 completed 条目重新弹回前端。未打标条目
+        # （legacy 磁盘残留）与无 token 会话（fail-open）原样放行。
         try:
-            stale_ids = get_stale_todo_ids(session)
+            generation_token = get_todo_generation_token(session)
         except Exception:
-            stale_ids = set()
-        if stale_ids:
-            # 仅过滤 stale 集中仍处于终态（cancelled/completed）的旧残留项。
-            # 本轮 LLM 通过 todo_create/todo_modify 重建的同 ID 项状态为
-            # pending/in_progress，不会被过滤。
-            # 额外排除本轮新建的同 ID 项：若 id 不在磁盘快照（pre_invoke_todo_ids）
-            # 中，说明是本轮 LLM 新建的，即使 id 与 stale 集合重合也不应过滤。
-            pre_invoke_ids = get_pre_invoke_todo_ids(session)
-            _DONE_STATUSES = frozenset({"cancelled", "completed"})  # pylint: disable=huawei-invalid-name
+            generation_token = None
+        if generation_token:
             before = len(todos_data)
-            todos_data = [
-                t for t in todos_data
-                if not (  # pylint: disable=complicate-comprehension
-                    str(getattr(t, "id", "")) in stale_ids  # pylint: disable=complicate-comprehension
-                    and str(getattr(t, "status", "")).lower() in _DONE_STATUSES
-                    and (not pre_invoke_ids or str(getattr(t, "id", "")) in pre_invoke_ids)
+            todos_data = filter_todos_by_generation(todos_data, generation_token)
+            if len(todos_data) != before:
+                logger.info(
+                    "[StreamEventRail] todo.updated filtered stale-generation "
+                    "todos: session_id=%s generation_token=%s before=%d after=%d",
+                    session_id,
+                    generation_token,
+                    before,
+                    len(todos_data),
                 )
-            ]
-            logger.info(
-                "[StreamEventRail] todo.updated filtered stale todos: "
-                "session_id=%s stale_ids=%d before=%d after=%d",
-                session_id,
-                len(stale_ids),
-                before,
-                len(todos_data),
-            )
 
         # Parent StreamEventRail only: team-member rails use their own
         # workspace and must not feed request_summaries.tasks.
