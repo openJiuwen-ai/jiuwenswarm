@@ -21,6 +21,15 @@ from openjiuwen.core.workflow import WorkflowCard
 # Ability type definition
 Ability = Union[ToolCard, WorkflowCard, AgentCard, McpServerConfig]
 
+# 未知工具名错误附加给 LLM 的自纠提示,仅改错误文案、不改执行行为。
+_UNKNOWN_TOOL_NAME_HINT = (
+    " The tool name does not match any registered ability. Check the tools "
+    "list of this request: if a tool with a similar name exists, retry with "
+    "its exact name (this is a name mismatch, NOT a tool failure or an "
+    "environment issue); if no such tool exists, proceed with a different "
+    "approach."
+)
+
 
 class AbilityManager:
     """Agent Ability Manager
@@ -347,7 +356,10 @@ class AbilityManager:
                     error_msg = f"Tool execution error: {str(e)}"
                     logger.error(error_msg)
             else:
-                error_msg = f"Ability not found in resource_mgr: {tool_name}"
+                error_msg = (
+                    f"Ability not found in resource_mgr: {tool_name}"
+                    f".{_UNKNOWN_TOOL_NAME_HINT}"
+                )
 
         # Build ToolMessage
         content = str(result) if result is not None else (error_msg or "")
