@@ -16,6 +16,7 @@ import { ConnectTokenModal } from '../ConnectorMarket/ConnectTokenModal';
 import { PendingConnectorModals, usePendingConnectorFlow } from '../ConnectorMarket/usePendingConnectorFlow';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { seedAgentCatalog } from '../../stores/agentCatalogStore';
+import { seedSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import {
   AgentInstallPendingError,
   AgentManagementError,
@@ -1003,12 +1004,14 @@ export function AgentManagementPanel({
   const handleUseGroup = (id: string) => {
     const item = [...groupCatalogRef.current, ...groupMineRef.current].find(candidate => candidate.id === id);
     if (!item?.installed || !item.capabilities.canUse) return;
+    seedSelectedAgentGroup(item);
     onUseAgentGroup?.(item.name);
   };
 
   const handleUseGroupPrompt = (id: string, prompt: string) => {
     const item = [...groupCatalogRef.current, ...groupMineRef.current].find(candidate => candidate.id === id);
     if (!item?.installed || !item.capabilities.canUse) return;
+    seedSelectedAgentGroup(item);
     onUseGroupPrompt?.(item.name, prompt);
   };
 
