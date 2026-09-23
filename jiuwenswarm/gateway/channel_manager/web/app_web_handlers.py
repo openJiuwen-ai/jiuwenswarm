@@ -1276,7 +1276,7 @@ def _validate_wechat_numeric_params(params: dict) -> str | None:
 
 _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "symphony_enabled": (("enabled",), "bool", False),
-    "symphony_evolution_enabled": (("evolution", "enabled"), "bool", False),
+    "symphony_evolution_enabled": (("evolution", "flow", "enabled"), "bool", False),
 }
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
@@ -1372,6 +1372,11 @@ def _flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in _SYMPHONY_CONFIG_SPECS.items():
         value = _get_nested_config_value(symphony, path, default)
+        if key == "symphony_evolution_enabled" and value == default:
+            # enabled 已移到 evolution.flow 下；旧配置（evolution.enabled）回退显示
+            legacy = _get_nested_config_value(symphony, ("evolution", "enabled"), None)
+            if legacy is not None:
+                value = legacy
         if value_type == "bool":
             flat[key] = "true" if bool(value) else "false"
         else:

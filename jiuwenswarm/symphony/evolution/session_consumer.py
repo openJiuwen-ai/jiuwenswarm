@@ -99,7 +99,7 @@ def schedule_session_evolution_consume(
         return False
     try:
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not config.evolution.flow.enabled:
             return False
         graph_dir = prepare_evolution_store(config.paths.graph_dir)
     except Exception as exc:  # noqa: BLE001
@@ -166,7 +166,7 @@ def consume_session_history(
         return {"success": False, "detail": "session_id is required"}
     if graph_dir is None:
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not config.evolution.flow.enabled:
             return {
                 "success": True,
                 "enabled": False,

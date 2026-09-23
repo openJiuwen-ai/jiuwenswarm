@@ -311,10 +311,15 @@ def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     evolution = symphony.get("evolution")
     if not isinstance(evolution, dict):
         return False
+    # enabled 位于 evolution.flow 下；旧配置（evolution.enabled）向后兼容
+    flow = evolution.get("flow")
+    flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
+    if flow_enabled is None:
+        flow_enabled = evolution.get("enabled")
     enabled_values = {"1", "true", "yes", "on"}
     return (
         str(symphony.get("enabled")).strip().lower() in enabled_values
-        and str(evolution.get("enabled")).strip().lower() in enabled_values
+        and str(flow_enabled).strip().lower() in enabled_values
     )
 
 

@@ -47,6 +47,7 @@ CapabilityPackager = core_symphony.flow.CapabilityPackager
 LLMPackageReviewAgent = core_symphony.LLMPackageReviewAgent
 PackageReviewGate = core_symphony.flow.PackageReviewGate
 SymphonyFlowEngine = core_symphony.flow.SymphonyFlowEngine
+SymphonyFlowConfig = core_symphony.orchestration.config.SymphonyFlowConfig
 SkillPackAdapter = core_symphony.flow.SkillPackAdapter
 VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
 
@@ -631,7 +632,7 @@ class SwarmSymphonyService:
             config.orchestration.top_k,
             config.orchestration.max_depth,
             config.orchestration.min_edge_confidence,
-            config.evolution.enabled,
+            config.evolution.flow.enabled,
             llm_signature,
         )
         if self._runtime is None or self._runtime_key != key:
@@ -660,10 +661,15 @@ class SwarmSymphonyService:
     ) -> SymphonyRuntimeType:
         model = model_from_config(llm_config)
         flow_engine = None
-        if with_flow and config.evolution.enabled:
+        if with_flow and config.evolution.flow.enabled:
             flow_dir = config.paths.graph_dir.parent / "flow"
+            flow_cfg = config.evolution.flow
             flow_engine = SymphonyFlowEngine(
                 flow_dir,
+                config=SymphonyFlowConfig(
+                    min_successes=flow_cfg.min_successes,
+                    min_pack_success_rate=flow_cfg.min_pack_success_rate,
+                ),
                 llm_client=model,
                 gate=PackageReviewGate(LLMPackageReviewAgent(model)),
                 skill_adapter=SkillPackAdapter(),
@@ -735,7 +741,7 @@ class SwarmSymphonyService:
         """Submit one Rail graph pair and deliver any new install candidates."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not config.evolution.flow.enabled:
             return
         runtime = self._runtime_for(config)
         result = await runtime.submit_evolution(
@@ -787,7 +793,7 @@ class SwarmSymphonyService:
         """Start Flow recovery when the feature is enabled."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not config.evolution.flow.enabled:
             return
         runtime = self._runtime_for(config)
         recovered = await self._start_flow(runtime)
@@ -869,7 +875,7 @@ class SwarmSymphonyService:
         """Return installable Recipe versions retained by the Core Flow store."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not config.evolution.flow.enabled:
             return {"success": True, "enabled": False, "candidates": []}
         flow = self._runtime_for(config).flow_engine
         candidates = flow.list_candidates() if flow is not None else ()
@@ -890,7 +896,7 @@ class SwarmSymphonyService:
         """Re-send one retained candidate through the existing Host question flow."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not config.evolution.flow.enabled:
             return {"success": False, "reason": "flow_disabled"}
         flow = self._runtime_for(config).flow_engine
         candidate = (
@@ -928,7 +934,7 @@ class SwarmSymphonyService:
         if request_id != expected_request_id:
             return {"installed": False, "reason": "invalid_request_id"}
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not config.evolution.flow.enabled:
             return {"installed": False, "reason": "flow_disabled"}
         async with self._install_lock:
             previous = self._install_receipts.get(request_id)

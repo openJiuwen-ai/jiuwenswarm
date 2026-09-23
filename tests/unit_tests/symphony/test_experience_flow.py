@@ -272,7 +272,7 @@ def rail_capture(monkeypatch):
 def test_evolution_is_the_only_core_experience_switch(tmp_path: Path) -> None:
     config = symphony_config_from_dict({"paths": {"graph_dir": str(tmp_path)}})
 
-    assert config.evolution.enabled is False
+    assert config.evolution.flow.enabled is False
     assert not hasattr(config.evolution, "backend")
     assert not hasattr(config, "flow")
 
