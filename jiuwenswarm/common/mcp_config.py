@@ -37,6 +37,10 @@ try:
 except ImportError:
     pass
 
+from jiuwenswarm.common.mcp_iam_signing import (
+    IAM_AUTH_PARAMS_KEY,
+    parse_huawei_cloud_iam_auth,
+)
 from jiuwenswarm.edition import is_enterprise
 
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
@@ -100,6 +104,26 @@ def _resolve_remote_mcp_auth(
     if not auth_query:
         auth_query = _coerce_str_dict(entry.get("query_params"))
     return auth_headers or {}, auth_query or {}
+
+
+def _stash_remote_iam_auth_descriptor(
+    params: dict[str, Any],
+    entry: Mapping[str, Any],
+) -> None:
+    """把远程连接器下发的华为云 IAM 签名描述符收进 ``params``。
+
+    relay-claw 对 SSE + 华为云 IAM 鉴权的连接器不下发静态预签名头，改下发
+    签名描述符（凭证 + 算法），由本机 sidecar 的签名 Provider 按每个请求的
+    实际 method+URL 现算（SSE 建流 GET 与消息 POST 各自签名）。描述符收进
+    ``McpServerConfig.params`` 后随 connect_params / ``_build_remote_mcp_config``
+    流转到 worker 重建的 client，由 ``mcp_iam_signing`` 补丁消费。未下发
+    （``None``）不动作；下发了但非法则显式失败——不允许静默丢弃后以未签名
+    请求打真实端点。
+    """
+    descriptor = parse_huawei_cloud_iam_auth(entry.get("auth"))
+    if descriptor is None:
+        return
+    params[IAM_AUTH_PARAMS_KEY] = descriptor
 
 
 def build_mcp_server_config(
@@ -652,6 +676,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
         if not url:
             raise ValueError(f"工具 '{tool_name}'（'{client_type}'）需要 url")
         headers, query = _resolve_remote_mcp_auth(tool_config)
+        _stash_remote_iam_auth_descriptor(params, tool_config)
         return McpServerConfig(
             server_id=server_id or tool_name,
             server_name=tool_name,
@@ -666,6 +691,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
         if not url:
             raise ValueError(f"工具 '{tool_name}'（'{client_type}'）需要 url")
         headers, query = _resolve_remote_mcp_auth(tool_config)
+        _stash_remote_iam_auth_descriptor(params, tool_config)
         return McpServerConfig(
             server_id=server_id or tool_name,
             server_name=tool_name,

@@ -547,6 +547,7 @@ from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch 
     apply_deepagent_task_plan_binding_patch,
 )
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
+from jiuwenswarm.common.mcp_iam_signing import apply_mcp_iam_signing_patch
 from jiuwenswarm.perf.context import DeepResearchReportType
 from jiuwenswarm.perf.interface_hooks import (
     clear_perf_summary_context,
@@ -2397,6 +2398,10 @@ class JiuWenSwarmDeepAdapter:
         # (TC_MCP_CALL_014). AbilityManager __init_subclass__ hook is a
         # classmethod. Honors config ``timeout_s``. Idempotent (_PATCHED).
         apply_mcp_call_timeout_patch()
+        # SSE + 华为云 IAM 任务下发链路：把下发的签名描述符布线进 mcp SDK 工厂
+        # 的 auth=（逐请求现算 SDK-HMAC-SHA256 / V11 签名，401 APIG.0301 时
+        # v3_credential 降级重签）。幂等；与 timeout 补丁同为包装转发、可叠加。
+        apply_mcp_iam_signing_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
         self._instance: DeepAgent | None = None
