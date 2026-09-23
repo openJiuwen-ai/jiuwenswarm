@@ -2525,7 +2525,7 @@ def test_load_router_config_sandbox_idle_knobs(monkeypatch) -> None:
     assert loaded.sandbox_idle_timeout_seconds == 0.0
     assert loaded.sandbox_idle_check_interval_seconds == 5.0
 
-    # Persisted config (including management-plane values) overrides env.
+    # Env overrides the persisted value for the startup seed.
     monkeypatch.setenv("SANDBOX_IDLE_TIMEOUT_SECONDS", "120")
     env_loaded = load_router_config(
         {
@@ -2535,7 +2535,9 @@ def test_load_router_config_sandbox_idle_knobs(monkeypatch) -> None:
             }
         }
     )
-    assert env_loaded.sandbox_idle_timeout_seconds == 0.0
+    assert env_loaded.sandbox_idle_timeout_seconds == 120.0
+
+    monkeypatch.delenv("SANDBOX_IDLE_TIMEOUT_SECONDS")
 
     negative_loaded = load_router_config(
         {
@@ -2566,9 +2568,9 @@ def test_read_optional_float() -> None:
     assert read_optional_float(None, "timeout") is None
 
 
-def test_resolve_float_setting_yaml_env_default(monkeypatch) -> None:
+def test_resolve_float_setting_env_yaml_default(monkeypatch) -> None:
     monkeypatch.setenv("TEST_FLOAT_SETTING", "200")
-    assert resolve_float_setting({"timeout": 100}, "timeout", "TEST_FLOAT_SETTING", 300) == 100
+    assert resolve_float_setting({"timeout": 100}, "timeout", "TEST_FLOAT_SETTING", 300) == 200
     assert resolve_float_setting({}, "timeout", "TEST_FLOAT_SETTING", 300) == 200
     monkeypatch.delenv("TEST_FLOAT_SETTING")
     assert resolve_float_setting({}, "timeout", "TEST_FLOAT_SETTING", 300) == 300
