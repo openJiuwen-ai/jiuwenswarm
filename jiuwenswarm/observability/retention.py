@@ -678,12 +678,10 @@ def plan_session_retention(
         for subject_id, subject_rows in grouped_rows.items()
     }
     prefixes = _select_page_prefixes(pages_by_group, cutoff)
-    deleted: set[tuple[str, str]] = {
-        row.identity
-        for prefix in prefixes.values()
-        for page in prefix
-        for row in page.rows
-    }
+    deleted: set[tuple[str, str]] = set()
+    for prefix in prefixes.values():
+        for page in prefix:
+            deleted.update(row.identity for row in page.rows)
 
     turn_page_rows: set[tuple[str, str]] = set()
     trace_level_traces = {row.trace_id for row in ungrouped}
@@ -697,7 +695,7 @@ def plan_session_retention(
     for row in rows:
         rows_by_trace.setdefault(row.trace_id, []).append(row)
     for trace_id in sorted(trace_level_traces):
-        trace_rows = rows_by_trace[trace_id]
+        trace_rows = rows_by_trace.get(trace_id, [])
         settled = all(_settled(row, cutoff) for row in trace_rows)
         turns_left = any(
             row.identity in turn_page_rows and row.identity not in deleted
@@ -967,16 +965,21 @@ def _physical_inference_ids(
         return ()
     if not compaction_commit and event_kind != "compaction.completed":
         return ()
-    inference_ids = [
-        request["inference_id"].strip()
-        for request in model_requests
-        if isinstance(request, dict)
-        and isinstance(request.get("inference_id"), str)
-        and request["inference_id"].strip()
-    ]
+    request_ids = [_request_inference_id(request) for request in model_requests]
+    inference_ids = [inference_id for inference_id in request_ids if inference_id]
     if len(inference_ids) != len(model_requests) or len(set(inference_ids)) != len(inference_ids):
         return ()
     return tuple(inference_ids)
+
+
+def _request_inference_id(request: Any) -> str:
+    """Return a model request's stripped inference id, or "" when it has none."""
+    if not isinstance(request, dict):
+        return ""
+    inference_id = request.get("inference_id")
+    if not isinstance(inference_id, str):
+        return ""
+    return inference_id.strip()
 
 
 def _parse_v2_event(span: Mapping[str, Any], attributes: Mapping[str, Any]) -> _V2Event | None:
@@ -1180,7 +1183,9 @@ def apply_context_delta(
         index = operation.get("index")
         message = operation.get("message")
         if op == "insert":
-            if message is None or index is None or index > len(messages) or current != -1:
+            if message is None or index is None:
+                return None
+            if index > len(messages) or current != -1:
                 return None
             messages.insert(index, dict(message))
             continue

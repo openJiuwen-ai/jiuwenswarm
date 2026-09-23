@@ -773,14 +773,13 @@ class TrajectoryStore:
         # Deleting by span_ref keeps the frame delete on the index the frames
         # are clustered by, and resolving the ref first means a span that never
         # streamed costs one lookup instead of a scan.
-        refs = [
-            (int(row["span_ref"]),)
-            for identity in finished
-            for row in connection.execute(
+        refs: list[tuple[int]] = []
+        for identity in finished:
+            rows = connection.execute(
                 "SELECT span_ref FROM trajectory_frame_spans WHERE trace_id = ? AND span_id = ?",
                 identity,
             )
-        ]
+            refs.extend((int(row["span_ref"]),) for row in rows)
         if not refs:
             return
         connection.executemany("DELETE FROM trajectory_stream_frames WHERE span_ref = ?", refs)

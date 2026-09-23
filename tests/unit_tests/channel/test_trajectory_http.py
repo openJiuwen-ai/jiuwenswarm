@@ -53,6 +53,9 @@ test_logger = logging.getLogger("tests.trajectory_http")
 _TRACE_ID = "4" * 32
 _SPAN_ID = "d" * 16
 _LATE_SPAN_ID = "e" * 16
+# A span still answering: it has no terminal record, so the store keeps its
+# frames (frames of an ended span are dropped as its final record lands).
+_STREAMING_SPAN_ID = "f" * 16
 
 
 def _settings(database_path: Path, *, enabled: bool = True) -> TrajectoryStoreSettings:
@@ -338,7 +341,7 @@ def _seed_frames(
     *,
     session_id: str = "session-1",
 ) -> None:
-    """Append *count* text frames to the seeded span."""
+    """Append *count* text frames to a span that is still streaming."""
     store = TrajectoryStore(database_path)
     store.initialize()
     try:
@@ -349,7 +352,7 @@ def _seed_frames(
                     timestamp_unix_nano=1_700_000_000_000_000_000 + index,
                     observed_timestamp_unix_nano=1_700_000_000_000_000_000 + index,
                     trace_id=_TRACE_ID,
-                    span_id=_SPAN_ID,
+                    span_id=_STREAMING_SPAN_ID,
                     sequence=index,
                     kind="text-delta",
                     session_id=session_id,
