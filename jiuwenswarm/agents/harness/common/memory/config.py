@@ -466,14 +466,20 @@ def is_memory_enabled(mode: str, config: Optional[Dict[str, Any]] = None) -> boo
 def is_proactive_memory(mode: str, config: Optional[Dict[str, Any]] = None) -> bool:
     """Check if proactive memory is enabled for the given mode.
 
-    plan / fast 合并后，agent 模式**只保留被动记忆**：始终返回 ``False``
-    （注入被动模式记忆提示词，仅在用户明确要求时读写记忆）。``is_proactive``
-    配置开关已下线。code 等其他模式仍读取各自 ``memory.is_proactive``。
+    agent 模式使用**主动记忆**提示词：涉及偏好/历史/继续等上下文时模型应
+    主动调用 memory_search 检索，而不是等用户说"根据记忆"才想起检索。
+    （被动模式提示词只在用户明确提"记忆/历史"时才触发检索，实测普通
+    任务型 query 如"我要下载 node"完全不会触发——模型直接泛答，用户
+    沉淀的偏好记忆形同虚设。）code 等其他模式仍读取各自 ``memory.is_proactive``。
+    flash 档是 deep 的裁剪 profile，提示词预算受限，**保持被动记忆**。
     """
     try:
-        # agent 合并模式（含历史 agent.plan / agent.fast / 单独出现的 plan|fast，
-        if is_agent_mode(mode):
+        # flash 归入 is_agent_mode 白名单（共用 agent 记忆档），须在 agent
+        # 判断前短路，否则会被误翻成主动记忆
+        if (mode or "").strip() == "flash":
             return False
+        if is_agent_mode(mode):
+            return True
         return bool(_resolve_mode_memory(mode, config).get("is_proactive", False))
     except Exception as e:
         logger.warning(f"Invalid proactive memory config, disable proactive memory, error: {e}")
