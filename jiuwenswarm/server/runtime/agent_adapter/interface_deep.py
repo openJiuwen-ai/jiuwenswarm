@@ -1587,6 +1587,38 @@ def parse_int(value: Any, default: int) -> int:
         return default
 
 
+def _parse_bool(value: Any, *, default: bool = False) -> bool:
+    """Parse YAML bool / env-var-backed boolean strings.
+
+    ``${VAR:-default}`` 插值会把 env 值解析成字符串（config.resolve_env_vars），
+    所以「环境变量驱动的开关」必须容忍 "true"/"1"/"yes"/"on" 这类字符串，不能
+    用 ``is True`` 判等。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    return default
+
+
+def _model_routing_enabled(config: dict[str, Any] | None) -> bool:
+    """model_routing 总开关：config.yaml ``model_routing.enabled``（默认 false）+ 进程级 env 覆盖。
+
+    relay 侧可经 spawn env 注入 ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（进程级开关，
+    仿 JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED）；env 显式设置时优先于 config.yaml。
+    """
+    enabled = _parse_bool((config or {}).get("model_routing", {}).get("enabled"))
+    env_val = os.getenv("JIUWENSWARM_MODEL_ROUTING_ENABLED")
+    if env_val is not None and env_val.strip():
+        enabled = _parse_bool(env_val)
+    return enabled
+
+
 def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[str, Any]:
     if config_base is None:
         return get_config()
@@ -8962,7 +8994,8 @@ class JiuWenSwarmDeepAdapter:
     def _build_model_routing(config: dict[str, Any] | None = None) -> Any | None:
         """构建 ModelRoutingRail（模型路由）。
 
-        - 使能：config.yaml ``model_routing.enabled`` = true。
+        - 使能：config.yaml ``model_routing.enabled`` = true，或进程级 env
+          ``JIUWENSWARM_MODEL_ROUTING_ENABLED``（relay spawn 注入，见 _model_routing_enabled）。
         - 始终真切换（apply_routing=True）。
         - 模型选择由前端下拉框与具体模型同级，经 frame ``params.model_name`` 注入
           （fast / balanced / extreme / auto 四档写死模式，或具体模型名），见 ModelRoutingRail。
@@ -8971,7 +9004,7 @@ class JiuWenSwarmDeepAdapter:
           _build_model_from_entry 使能力表带 Model 对象（真切换前置）。
         """
         mr_cfg = (config or {}).get("model_routing") or {}
-        if not (mr_cfg.get("enabled") is True):
+        if not _model_routing_enabled(config):
             return None
 
         try:
