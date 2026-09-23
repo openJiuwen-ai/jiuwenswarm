@@ -380,8 +380,9 @@ class SessionArchiveService:
             return False
         if parked_team_streams:
             # Parked Team stream handlers no longer own team work; only the
-            # persistent leader stream keeps them alive.  The archive proceeds
-            # and leaves that stream alone.
+            # persistent leader stream keeps them alive.  Archive leaves that
+            # stream alone; delete proceeds and its stop path tears the team
+            # runtime (and with it the stream) down.
             return False
         # is_cron_session 不再豁免 busy 检查：running 的 cron/heartbeat session
         # 同样必须先停止才能 delete，避免僵尸流永久锁定会话。
@@ -446,7 +447,9 @@ class SessionArchiveService:
                         project_id=project_id,
                     )
             parked_team_streams = False
-            if action == "archive" and self.runtime.is_session_running(session_id):
+            if action in {"archive", "delete"} and self.runtime.is_session_running(
+                session_id
+            ):
                 probe = getattr(self.runtime, "has_parked_team_streams", None)
                 parked_team_streams = callable(probe) and bool(probe(session_id))
             if self._session_is_busy_for_action(
