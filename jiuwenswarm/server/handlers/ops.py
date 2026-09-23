@@ -146,6 +146,29 @@ async def handle_agent_reload_config(ctx: RequestContext) -> None:
         params = request.params or {}
         config_payload = params.get("config")
         env_overrides = params.get("env")
+
+        # 触发 AGENT_RELOAD_CONFIG hook（扩展可原地修改 config/env 后再生效）
+        try:
+            from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
+            from jiuwenswarm.extensions.hooks_context import AgentReloadConfigHookContext
+            from jiuwenswarm.extensions.registry import ExtensionRegistry
+
+            hook_ctx = AgentReloadConfigHookContext(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                config=config_payload,
+                env=env_overrides,
+            )
+            await ExtensionRegistry.get_instance().trigger(
+                AgentServerHookEvents.AGENT_RELOAD_CONFIG, hook_ctx
+            )
+            # 允许扩展修改配置
+            config_payload = hook_ctx.config
+            env_overrides = hook_ctx.env
+        except RuntimeError:
+            # ExtensionRegistry 未初始化，跳过
+            pass
+
         target_channel_id = str(params.get("target_channel_id") or "").strip() or None
         target_session_id = str(params.get("target_session_id") or "").strip() or None
         raw_reload_scopes = params.get("reload_scopes")

@@ -105,3 +105,22 @@ class ArtifactPostProcessHookContext:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class AgentReloadConfigHookContext:
+    """Agent 配置重载事件的 hook context。
+
+    在 AgentServer 接收到 agent.reload_config 请求时触发；
+    扩展可原地修改 ``config`` / ``env``，宿主在 hook 返回后使用修改值执行 reload。
+    """
+
+    request_id: str
+    channel_id: str
+    config: dict[str, Any] | None = None
+    env: dict[str, str] | None = None
+    # 输出扩展
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
