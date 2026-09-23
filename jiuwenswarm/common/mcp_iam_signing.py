@@ -34,6 +34,7 @@ import contextvars
 import hashlib
 import hmac
 import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Mapping, Optional
 from urllib.parse import parse_qsl, quote, unquote
@@ -125,18 +126,26 @@ def _hkdf_derive_key_v11(access_key: str, secret_key: str, credential_scope: str
     return okm.hex()
 
 
+@dataclass(frozen=True)
+class _SigningCredential:
+    """签名凭证具名封装：access_key/secret_key（+ V11 的 region_id）。"""
+
+    access_key: str
+    secret_key: str
+    region_id: str = ""
+
+
 def _build_authorization_v1(
     method: str,
     url: httpx.URL,
     sdk_date: str,
-    access_key: str,
-    secret_key: str,
+    credential: _SigningCredential,
 ) -> str:
     canonical_request = _build_canonical_request(method, url, sdk_date)
     string_to_sign = "\n".join([ALGORITHM_V1, sdk_date, _sha256_hex(canonical_request)])
-    signature = _hmac_sha256_hex(secret_key, string_to_sign)
+    signature = _hmac_sha256_hex(credential.secret_key, string_to_sign)
     return (
-        f"{ALGORITHM_V1} Access={access_key}, "
+        f"{ALGORITHM_V1} Access={credential.access_key}, "
         f"SignedHeaders={_SIGNED_HEADER_NAMES}, Signature={signature}"
     )
 
@@ -145,19 +154,19 @@ def _build_authorization_v11(
     method: str,
     url: httpx.URL,
     sdk_date: str,
-    access_key: str,
-    secret_key: str,
-    region_id: str,
+    credential: _SigningCredential,
 ) -> str:
     canonical_request = _build_canonical_request(method, url, sdk_date)
-    credential_scope = f"{sdk_date[:8]}/{region_id}/{_V11_SERVICE}"
+    credential_scope = f"{sdk_date[:8]}/{credential.region_id}/{_V11_SERVICE}"
     string_to_sign = "\n".join(
         [ALGORITHM_V11, sdk_date, credential_scope, _sha256_hex(canonical_request)]
     )
-    derived_key = _hkdf_derive_key_v11(access_key, secret_key, credential_scope)
+    derived_key = _hkdf_derive_key_v11(
+        credential.access_key, credential.secret_key, credential_scope
+    )
     signature = _hmac_sha256_hex(derived_key, string_to_sign)
     return (
-        f"{ALGORITHM_V11} Credential={access_key}/{credential_scope}, "
+        f"{ALGORITHM_V11} Credential={credential.access_key}/{credential_scope}, "
         f"SignedHeaders={_SIGNED_HEADER_NAMES}, Signature={signature}"
     )
 
@@ -352,22 +361,18 @@ class HuaweiCloudIamAuthProvider(httpx.Auth):
         request.headers["X-Sdk-Content-Sha256"] = UNSIGNED_PAYLOAD
         if credential["project_id"]:
             request.headers["X-Project-ID"] = credential["project_id"]
+        signing_credential = _SigningCredential(
+            access_key=credential["access_key"],
+            secret_key=credential["secret_key"],
+            region_id=str(self._descriptor["region_id"]),
+        )
         if self.algorithm == ALGORITHM_V11:
             authorization = _build_authorization_v11(
-                request.method,
-                request.url,
-                sdk_date,
-                credential["access_key"],
-                credential["secret_key"],
-                self._descriptor["region_id"],
+                request.method, request.url, sdk_date, signing_credential
             )
         else:
             authorization = _build_authorization_v1(
-                request.method,
-                request.url,
-                sdk_date,
-                credential["access_key"],
-                credential["secret_key"],
+                request.method, request.url, sdk_date, signing_credential
             )
         request.headers["Authorization"] = authorization
 
