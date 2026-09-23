@@ -155,6 +155,7 @@ import {
   readTrajectoryArchive,
   shouldCatchUpTrajectory,
   TrajectoryArchiveLimitError,
+  trajectoryReplayTeamMode,
 } from '../node_modules/.cache/trajectory-window/trajectoryArchive.mjs';
 import {
   formatTokenCount,
@@ -423,6 +424,30 @@ test('archive reader reports files that are not trajectory archives as format er
       error => isTrajectoryArchiveFormatError(error) && !isTrajectoryArchiveLimitError(error),
     );
   }
+});
+
+test('archive replay keeps the mode its records were exported in', async () => {
+  const read = records => readTrajectoryArchive(chunkedSource(jsonlBytes(archiveLines(records))));
+  const leader = backendArchiveRecord({ changeSeq: '1' });
+  const member = backendArchiveRecord({ spanId: hexId(2, 16), changeSeq: '2', subjectId: 'member:alice' });
+  const withMode = (record, agentMode) => ({ ...record, agent_mode: agentMode });
+  const withoutMode = record => {
+    const { agent_mode: _omitted, ...rest } = record;
+    return rest;
+  };
+
+  assert.equal((await read([withMode(leader, 'agent.code.normal')])).mode, 'agent');
+  assert.equal((await read([withMode(leader, 'team'), withMode(member, 'team')])).mode, 'team');
+  assert.equal((await read([withMode(leader, 'team.work.plan')])).mode, 'team');
+  assert.equal((await read([withMode(leader, 'agent.work.normal'), withMode(member, 'team')])).mode, 'team');
+  assert.equal((await read([withoutMode(leader)])).mode, null);
+  assert.equal((await read([])).mode, null);
+
+  // A stated mode wins over the hosting session; only an unstated one follows it.
+  assert.equal(trajectoryReplayTeamMode('agent', true), false);
+  assert.equal(trajectoryReplayTeamMode('team', false), true);
+  assert.equal(trajectoryReplayTeamMode(null, true), true);
+  assert.equal(trajectoryReplayTeamMode(null, false), false);
 });
 
 test('archive reader rejects records out of commit order and unknown line types', async () => {

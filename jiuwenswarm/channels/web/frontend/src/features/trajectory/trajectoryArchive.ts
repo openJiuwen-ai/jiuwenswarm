@@ -17,6 +17,7 @@
 
 import { Unzip, UnzipInflate, type UnzipFile } from 'fflate';
 import type { WebConnectionState } from '../../types';
+import { isTeamAgentMode } from '../planMode/wireMode';
 import type { OtlpExportTraceServiceRequest } from './shared/otlp';
 import type { TrajectoryUsage } from './trajectory/model';
 import {
@@ -122,8 +123,17 @@ export interface TrajectoryArchiveView {
   rawDataByRecordId: Map<string, unknown>;
 }
 
+/** Base mode of the session an archive was exported from. */
+export type TrajectoryArchiveMode = 'agent' | 'team';
+
 export interface TrajectoryArchiveReplay {
   header: TrajectoryArchiveHeader;
+  /**
+   * Mode of the exporting session, read from the `agent_mode` its records
+   * carry: `team` once any record ran in a Team mode. `null` when no record
+   * states a mode, so the replay follows the hosting session instead.
+   */
+  mode: TrajectoryArchiveMode | null;
   /** How the imported file was packaged, so a re-export keeps its extension. */
   container: 'zip' | 'jsonl';
   view: TrajectoryArchiveView;
@@ -237,6 +247,8 @@ function parseSequenceReferences(
 interface ArchiveRecordLine {
   subjectId: string;
   changeSeq: bigint;
+  /** Canonical mode the record ran in, when the line states one. */
+  agentMode?: string;
   record: TrajectoryDetailRecord;
   rawData?: unknown;
 }
@@ -318,6 +330,9 @@ function parseRecordLine(
   };
   return {
     subjectId: value.subject_id,
+    ...(typeof value.agent_mode === 'string' && value.agent_mode.length > 0
+      ? { agentMode: value.agent_mode }
+      : {}),
     changeSeq: BigInt(value.change_seq as string),
     record,
     ...(otlp === null ? { rawData } : {}),
@@ -345,6 +360,8 @@ function createArchiveLineReader(limits: TrajectoryArchiveLimits): ArchiveLineRe
   let lastChangeSeq: bigint | null = null;
   let usageStarted = false;
   let invalidRecordSeen = false;
+  let teamRecordSeen = false;
+  let agentRecordSeen = false;
   const cache = createSequenceCache();
   const nodes = new Map<string, SequenceNode>();
   const recordIds = new Set<string>();
@@ -417,6 +434,13 @@ function createArchiveLineReader(limits: TrajectoryArchiveLimits): ArchiveLineRe
     recordIds.add(identity);
     traceIds.add(parsed.record.trace_id as string);
     recordCount += 1;
+    if (parsed.agentMode !== undefined) {
+      if (isTeamAgentMode(parsed.agentMode)) {
+        teamRecordSeen = true;
+      } else {
+        agentRecordSeen = true;
+      }
+    }
     resolveHeads(Object.values(parsed.record.sequences ?? {}).map(reference => reference.hash));
     pending.push({ subjectId: parsed.subjectId, record: rebuildRecord(parsed.record, cache) });
     if (parsed.record.otlp === null) rawDataByRecordId.set(identity, parsed.rawData);
@@ -505,6 +529,7 @@ function createArchiveLineReader(limits: TrajectoryArchiveLimits): ArchiveLineRe
       const bucketList = [...buckets.values()];
       return {
         header,
+        mode: teamRecordSeen ? 'team' : agentRecordSeen ? 'agent' : null,
         container,
         checkpoints: resolveTrajectoryCheckpoints(checkpointLines, cache),
         view: {
@@ -761,6 +786,25 @@ export function shouldCatchUpTrajectory(
   next: WebConnectionState,
 ): boolean {
   return next === 'ready' && (previous === 'reconnecting' || previous === 'closed');
+}
+
+/**
+ * Whether a replay renders as a Team.
+ *
+ * An archive keeps the mode it was exported in: a single-Agent file opened in
+ * a Team session still shows one Agent, and a Team file opened in a
+ * single-Agent session still shows its lanes. Only an archive whose records
+ * state no mode follows the session hosting the replay.
+ *
+ * @param archiveMode The mode the archive's records state.
+ * @param sessionTeamMode Whether the hosting session runs as a Team.
+ * @returns True when the replay renders as a Team.
+ */
+export function trajectoryReplayTeamMode(
+  archiveMode: TrajectoryArchiveMode | null,
+  sessionTeamMode: boolean,
+): boolean {
+  return archiveMode === null ? sessionTeamMode : archiveMode === 'team';
 }
 
 export function exitTrajectoryReplay(archive: TrajectoryArchiveReplay | null): TrajectoryReplayExit {

@@ -61,6 +61,7 @@ import {
   isTrajectoryArchiveLimitError,
   readTrajectoryArchive,
   shouldCatchUpTrajectory,
+  trajectoryReplayTeamMode,
   type TrajectoryArchiveProgress,
   type TrajectoryArchiveReplay,
 } from './trajectoryArchive';
@@ -205,12 +206,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
 }: TrajectoryPanelProps) {
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
-  const teamMode = mode === 'team';
+  const sessionTeamMode = mode === 'team';
   // The panel is not remounted when the session or its mode changes, so the
   // stable callbacks below read the mode through a ref instead of closing
   // over the value they were first created with.
-  const teamModeRef = useRef(teamMode);
-  teamModeRef.current = teamMode;
+  const sessionTeamModeRef = useRef(sessionTeamMode);
+  sessionTeamModeRef.current = sessionTeamMode;
   const windowStateRef = useRef(createTrajectoryWindowState());
   const operationCoordinatorRef = useRef(createTrajectoryOperationCoordinator());
   const loadedSessionRef = useRef<string | null>(null);
@@ -254,12 +255,17 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   // Team mode: `null` collapses every lane (only the swimlane grid is shown);
   // a subject id expands that member's trajectory drawer.
   const [selectedSubjectId, setSelectedSubjectId] = useState<string | null>(
-    teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID,
+    sessionTeamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID,
   );
   const [loading, setLoading] = useState(false);
   const [initialLoadProgress, setInitialLoadProgress] = useState<InitialLoadProgress | null>(null);
   const [exporting, setExporting] = useState(false);
   const [replayArchive, setReplayArchive] = useState<TrajectoryArchiveReplay | null>(null);
+  // A replay renders in the mode its archive was exported from, not the mode
+  // of the session hosting it.
+  const teamMode = replayArchive === null
+    ? sessionTeamMode
+    : trajectoryReplayTeamMode(replayArchive.mode, sessionTeamMode);
   // The file as imported. Exporting a replay saves these bytes: the replayed
   // view has its references resolved, and restating them would undo what
   // makes the addressed file small.
@@ -306,6 +312,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     archiveInvalid: (detail: string) => (
       `无法导入：所选文件不是有效的轨迹归档（.trajectory.jsonl / .trajectory.zip）。详情：${detail}`
     ),
+    replayModeMismatch: (replayTeamMode: boolean) => (replayTeamMode
+      ? '该轨迹导出自集群模式会话，与当前单 Agent 会话模式不同，已按集群模式复现。'
+      : '该轨迹导出自单 Agent 模式会话，与当前集群会话模式不同，已按单 Agent 模式复现。'),
     exportBrowserStarted: '轨迹归档下载已开始；请在浏览器下载列表确认文件。',
     exportBrowserSaved: '轨迹归档已保存到本地。',
     exportDesktopSaved: '轨迹归档已保存到本地。',
@@ -371,6 +380,11 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       'Cannot import: the selected file is not a valid trajectory archive '
       + `(.trajectory.jsonl / .trajectory.zip). Details: ${detail}`
     ),
+    replayModeMismatch: (replayTeamMode: boolean) => (replayTeamMode
+      ? 'This trajectory was exported from a Team session, unlike the current single-Agent session; '
+        + 'it is replayed as a Team.'
+      : 'This trajectory was exported from a single-Agent session, unlike the current Team session; '
+        + 'it is replayed as a single Agent.'),
     exportBrowserStarted: 'Trajectory archive download started; confirm it in the browser downloads list.',
     exportBrowserSaved: 'Trajectory archive saved locally.',
     exportDesktopSaved: 'Trajectory archive saved locally.',
@@ -503,7 +517,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setPublishedWindow(EMPTY_PUBLISHED_WINDOW);
     initialLoadProgressRef.current = null;
     setInitialLoadProgress(null);
-    setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+    setSelectedSubjectId(sessionTeamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setInvalidRecordSeen(false);
     setError(null);
     setRawSelection('');
@@ -1186,8 +1200,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       replayArchiveFileRef.current = file;
       replayV2ReducerRef.current = createTrajectoryV2Reducer();
       replayV2ReducerRef.current.seed(archive.checkpoints.v2Seeds);
+      const replayTeamMode = trajectoryReplayTeamMode(archive.mode, sessionTeamModeRef.current);
       setReplayArchive(archive);
-      setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+      setSelectedSubjectId(replayTeamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+      if (replayTeamMode !== sessionTeamModeRef.current) {
+        setArchiveNotice(copy.replayModeMismatch(replayTeamMode));
+      }
       setRawSelection('');
       setFetchedRaw(null);
       setRawError(null);
@@ -1210,7 +1228,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     replayArchiveFileRef.current = null;
     replayV2ReducerRef.current.clear();
     setReplayArchive(transition.archive);
-    setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+    setSelectedSubjectId(sessionTeamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setArchiveError(null);
     setArchiveNotice(null);
     setRawSelection('');
