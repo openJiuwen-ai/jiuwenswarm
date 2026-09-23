@@ -34,6 +34,26 @@ from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
 
+# 需要用户作答才能继续的中断事件。cron 执行会话是无人值守的（``common/cron_session.py``
+# 明确 cron 运行"另一端没有操作者"），这类事件一旦出现就没有人能回答，本轮不可能
+# 再产出结果，必须立刻以失败收场，而不是让 job 挂到超时。取值与 CLI/前端判定
+# "需要用户输入"的事件集合对齐（``channels/cli/events.py:needs_user_input``，
+# 另含 harness 激活确认：它同样是等人 accept/reject 的挂起点）。
+CRON_INTERRUPT_EVENT_TYPES = frozenset(
+    {
+        "chat.ask_user_question",
+        "plan.approval_required",
+        "harness.activate_interaction",
+    }
+)
+
+CRON_INTERRUPT_RESULT_TEXT = "[cron] 任务执行遇到审批中断，未返回结果内容"
+
+
+def _is_cron_interrupt_event(event_type: str) -> bool:
+    """Whether *event_type* parks the turn waiting for a human answer."""
+    return str(event_type or "").strip() in CRON_INTERRUPT_EVENT_TYPES
+
 
 def _now_utc_ts() -> float:
     return time.time()
@@ -1668,8 +1688,10 @@ class CronSchedulerService:
     ) -> tuple[str, bool]:
         """Run a single-agent cron turn until its terminal stream result."""
         stream_gen = self._agent_client.send_request_stream(envelope)
+        interrupted = False
 
         async def _consume() -> tuple[str, bool]:
+            nonlocal interrupted
             result_text = ""
             error_text = ""
             try:
@@ -1683,12 +1705,24 @@ class CronSchedulerService:
                         error_text = text or "任务执行失败"
                     elif text:
                         result_text = text
+                    if _is_cron_interrupt_event(event_type):
+                        # 无人可答 ⇒ 本轮已卡在中断点上，立即收尾。继续消费只会
+                        # 等到流关闭（或挂满 timeout）后仍以空结果失败。
+                        interrupted = True
+                        break
             finally:
                 try:
                     await stream_gen.aclose()
                 except Exception:
                     pass
 
+            if interrupted:
+                logger.warning(
+                    "[Cron] single-agent stream hit interrupt event, failing fast "
+                    "request_id=%s",
+                    getattr(envelope, "request_id", ""),
+                )
+                return CRON_INTERRUPT_RESULT_TEXT, False
             if error_text:
                 return error_text, False
             if result_text:
@@ -1696,7 +1730,12 @@ class CronSchedulerService:
             return "[cron] 任务执行完成但未返回结果内容", False
 
         try:
-            return await asyncio.wait_for(_consume(), timeout=timeout_seconds)
+            result = await asyncio.wait_for(_consume(), timeout=timeout_seconds)
+            if interrupted:
+                # Closing the Gateway stream only drops its receive queue; the
+                # AgentServer session still needs an explicit interrupt.
+                await self._cancel_agent_session(state, reason="interrupt")
+            return result
         except asyncio.TimeoutError:
             timeout_min = max(1, int(timeout_seconds // 60))
             logger.warning(
@@ -1722,7 +1761,12 @@ class CronSchedulerService:
         request_metadata.setdefault("cron", cron_meta)
 
         round_state = new_cron_team_round_state()
-        consume_meta: dict[str, Any] = {"ok": True, "ended_early": False, "error_text": ""}
+        consume_meta: dict[str, Any] = {
+            "ok": True,
+            "ended_early": False,
+            "error_text": "",
+            "interrupted": False,
+        }
         stream_gen = self._agent_client.send_request_stream(envelope)
 
         async def _consume() -> tuple[str, bool]:
@@ -1743,8 +1787,9 @@ class CronSchedulerService:
                 )
             try:
                 async for chunk in stream_gen:
+                    published = True
                     if callable(publish_chunk):
-                        await publish_chunk(
+                        published = await publish_chunk(
                             chunk,
                             session_id=exec_session_id,
                             request_metadata=request_metadata,
@@ -1752,6 +1797,24 @@ class CronSchedulerService:
                     payload = chunk.payload if isinstance(chunk.payload, dict) else None
                     event_type = str((payload or {}).get("event_type") or "").strip()
                     note_seen_event(event_type)
+                    auto_accepts = getattr(
+                        self._message_handler, "auto_accepts_evolution_approval", None
+                    )
+                    if event_type == "chat.ask_user_question" and published is False:
+                        if callable(auto_accepts) and auto_accepts(payload):
+                            # MessageHandler queued an automatic evolution answer.
+                            continue
+                    if _is_cron_interrupt_event(event_type):
+                        # leader 的 ask_user/审批中断同样无人可答：本轮不可能再产出
+                        # 报告，立即停止消费并取消团队会话，而不是一直等到超时。
+                        consume_meta["interrupted"] = True
+                        consume_meta["ended_early"] = not chunk.is_complete
+                        logger.warning(
+                            "[Cron] team stream hit interrupt event=%s request_id=%s",
+                            event_type,
+                            getattr(envelope, "request_id", ""),
+                        )
+                        break
                     if payload:
                         apply_cron_team_round_event(round_state, payload)
                         # team.error 由团队运行时直接抛出，不会经 gateway 归一化成
@@ -1797,6 +1860,11 @@ class CronSchedulerService:
                 except Exception:
                     pass
 
+            if consume_meta.get("interrupted"):
+                # 中断意味着本轮已停在等人回答的点上，leader/workflow 的部分输出
+                # 不能冒充报告，直接以中断文案失败收场（ended_early 已置位，
+                # 调用方会据此取消团队会话）。
+                return CRON_INTERRUPT_RESULT_TEXT, False
             text = _pick_cron_team_result_text(
                 leader_text=str(round_state.get("leader_text") or ""),
                 workflow_text=str(round_state.get("workflow_text") or ""),
