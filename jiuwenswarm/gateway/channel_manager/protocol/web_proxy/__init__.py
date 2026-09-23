@@ -8,15 +8,17 @@ from typing import TYPE_CHECKING
 
 __all__ = [
     "WebProxyChannelConfig",
-    "attach_web_proxy_routes",
-    "RESERVED_AGENT_TYPES",
+    "WebPortManager",
+    "register_3rdagent_web_method",
 ]
 
 if TYPE_CHECKING:
     from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
-        RESERVED_AGENT_TYPES,
         WebProxyChannelConfig,
-        attach_web_proxy_routes,
+    )
+    from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+        WebPortManager,
+        register_3rdagent_web_method,
     )
 
 
@@ -24,7 +26,10 @@ def __getattr__(name: str):
     if name in __all__:
         from jiuwenswarm.gateway.channel_manager.protocol.web_proxy import (
             web_proxy_connect,
+            web_proxy_listen,
         )
 
-        return getattr(web_proxy_connect, name)
+        for module in (web_proxy_connect, web_proxy_listen):
+            if hasattr(module, name):
+                return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
