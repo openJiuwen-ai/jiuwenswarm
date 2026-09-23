@@ -24,6 +24,8 @@ drops any one of them turns red for that specific reason:
 3. the flag is accepted by argparse and forwarded to every child process.
 """
 
+# pylint: disable=protected-access
+
 from __future__ import annotations
 
 import os
@@ -152,6 +154,44 @@ def test_shared_config_cannot_overwrite_the_project_file(
     assert os.environ["HELIX_PROJECT_KEY"] == "sk-project-scoped", (
         "the shared config overwrote the project-scoped value"
     )
+
+
+def test_run_keeps_the_single_argument_call_when_no_dotenv_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``--dotenv`` on the command line ⇒ call ``_build_commands(mode)`` as before.
+
+    The upstream suite stubs it with a one-argument lambda
+    (``tests/unit_tests/test_instance_manager.py``,
+    ``TestStartServicesFallback``), so unconditionally passing a second
+    argument breaks a pre-existing test. The flag must not change the call
+    shape when it is absent.
+    """
+    _launch_with(monkeypatch, ["jiuwenswarm-start", "app"])
+
+    class _FakeInstanceCommand:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.config = type("Cfg", (), {"ports": {}})()
+
+        def validate_and_load(self) -> int | None:
+            return None
+
+        def check_ports_conflicts(self) -> bool:
+            return False
+
+    seen: list = []
+
+    def _one_arg_stub(mode):                       # mirrors the upstream stub
+        seen.append(mode)
+        return []
+
+    monkeypatch.setattr(start_services, "InstanceCommand", _FakeInstanceCommand)
+    monkeypatch.setattr(start_services, "_sync_default_env_ports", lambda ports: None)
+    monkeypatch.setattr(start_services, "_build_commands", _one_arg_stub)
+
+    assert start_services._run("app") == 2        # no commands → rc 2, stub ran
+    assert seen == ["app"]
 
 
 # -- 3. argparse and child-process forwarding ----------------------------------

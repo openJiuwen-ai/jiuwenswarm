@@ -856,7 +856,13 @@ def _run(mode: str) -> int:
     # 文件透传给子进程（agentserver/gateway）。**必须透传**——子进程若拿不到
     # `--dotenv`，它自己的 early parse 就不会加载该文件，随后运行时仍会去读
     # 公共 `<数据根>/config/.env`，项目 key 会被覆盖（配合 get_env_file 的修复）。
-    commands = _build_commands(mode, _dotenv_path_from_args())
+    # **调用形态兼容**（2026-09-23 CI 修复）：未显式指定 `--dotenv` 时仍按
+    # 单参数调用 `_build_commands(mode)`——保持与既有调用方/测试替身一致
+    # （上游 `test_instance_manager.py` 用 `lambda mode: ...` 打桩，双参数会
+    # TypeError）；只有拿到 `--dotenv` 路径时才把该路径透传给子进程。
+    dotenv_path = _dotenv_path_from_args()
+    commands = (_build_commands(mode, dotenv_path) if dotenv_path
+                else _build_commands(mode))
     if not commands:
         logging.info(f"[start_services] no commands to run for mode: {mode}")
         return 2
