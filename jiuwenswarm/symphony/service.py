@@ -1239,7 +1239,10 @@ def _web_graph_payload(
             member_ids = list(definition.members)
             pack_node_id = f"pack:{pack_id}"
             description = definition.description or pack_id
-            label = description[:50] + "..." if len(description) > 50 else description
+            # 节点 label 用包名（display_name 优先，frontmatter name 兜底），
+            # 描述保留在 properties 里由详情面板展示
+            label_source = definition.display_name or pack_id
+            label = label_source[:50] + "..." if len(label_source) > 50 else label_source
             pack_dir = skills_dir / pack_id
             pack_nodes.append({
                 "id": pack_node_id,
