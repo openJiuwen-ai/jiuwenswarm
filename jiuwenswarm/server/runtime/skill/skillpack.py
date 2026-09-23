@@ -287,26 +287,38 @@ def unavailable_skillpacks(
     *,
     enabled_for: Callable[[str], bool],
 ) -> list[str]:
-    """Return installed SkillPack directory IDs that must not execute."""
+    """Return installed SkillPack directory IDs that must not execute.
+
+    覆盖标准包与容器包两种形态：标准包通过成员 frontmatter 校验聚合状态，
+    容器包通过目录扫描判断成员可用性；任一成员禁用/缺失/损坏则整包不可用。
+    """
 
     if not skills_dir.is_dir():
         return []
     unavailable: list[str] = []
     for child in skills_dir.iterdir():
-        if child.name.startswith("_") or not child.is_dir() or not is_skillpack(child):
+        if child.name.startswith("_") or not child.is_dir():
             continue
-        try:
-            definition = load_skillpack(child, expected_name=child.name)
-            status = compute_skillpack_status(
-                definition,
-                skills_dir=skills_dir,
-                enabled_for=enabled_for,
-            )
-        except SkillPackValidationError:
-            unavailable.append(child.name)
-            continue
-        if not status.enabled:
-            unavailable.append(child.name)
+        if is_skillpack(child):
+            try:
+                definition = load_skillpack(child, expected_name=child.name)
+                status = compute_skillpack_status(
+                    definition,
+                    skills_dir=skills_dir,
+                    enabled_for=enabled_for,
+                )
+            except SkillPackValidationError:
+                unavailable.append(child.name)
+                continue
+            if not status.enabled:
+                unavailable.append(child.name)
+        elif is_container_skillpack(child):
+            members = container_pack_members(child, enabled_for=enabled_for)
+            if not enabled_for(child.name) or any(
+                member.get("blocking_reason")
+                for member in members
+            ):
+                unavailable.append(child.name)
     return sorted(unavailable)
 
 
@@ -357,20 +369,28 @@ def read_skillpack_section(skill_dir: Path, section: str) -> str:
 
 
 def referencing_skillpacks(skills_dir: Path, member_name: str) -> list[str]:
-    """Return valid installed SkillPacks that declare ``member_name``."""
+    """Return valid installed SkillPacks that declare ``member_name``.
+
+    同时覆盖标准包与容器包（zip 解压形态）；容器包按成员目录名 /
+    frontmatter name 匹配。
+    """
 
     if not skills_dir.is_dir() or not member_name:
         return []
     references: list[str] = []
     for child in skills_dir.iterdir():
-        if child.name.startswith("_") or not child.is_dir() or not is_skillpack(child):
+        if child.name.startswith("_") or not child.is_dir():
             continue
-        try:
-            definition = load_skillpack(child, expected_name=child.name)
-        except SkillPackValidationError:
-            continue
-        if member_name in definition.members:
-            references.append(child.name)
+        if is_skillpack(child):
+            try:
+                definition = load_skillpack(child, expected_name=child.name)
+            except SkillPackValidationError:
+                continue
+            if member_name in definition.members:
+                references.append(child.name)
+        elif is_container_skillpack(child):
+            if find_container_member_dir(child, member_name) is not None:
+                references.append(child.name)
     return sorted(references)
 
 

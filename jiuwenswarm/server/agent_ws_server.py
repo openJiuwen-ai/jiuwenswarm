@@ -142,9 +142,11 @@ from jiuwenswarm.common.config import (
     get_sandbox_startup_mode_explicit,
     remove_mcp_server,
     resolve_preserve_file_sharing_mode_default,
+    resolve_sandbox_api_token,
     resolve_sandbox_policy_path,
     remove_subagent_from_config,
     set_mcp_server_enabled,
+    sync_sandbox_api_token_environ,
     update_sandbox_endpoint,
     update_sandbox_runtime,
     upsert_mcp_server,
@@ -184,6 +186,7 @@ from jiuwenswarm.runtime.host_services import (
     restore_runtime_push_handler,
 )
 from jiuwenswarm.runtime.plan import PlanModeController
+from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
@@ -1115,6 +1118,7 @@ class AgentWebSocketServer:
         self._agent_manager = self._runtime.agent_manager
         self._runtime_push_handler = None
         self._previous_runtime_push_handler = None
+        self._runtime_services_started = False
         # RSI 服务域分发句柄（懒加载，见 _get_rsi_handlers）
         self._rsi_handlers = None
         # Optional production Provider injection point.  The concrete class is
@@ -1130,6 +1134,7 @@ class AgentWebSocketServer:
         # dispatch occurs before the legacy handler chain below.
         self._adapter_registry = AdapterRegistry()
         for adapter in (
+            VoiceTaskServerAdapter(),
             SessionAdapter(),
             WorkspaceFileAdapter(),
             MemoryAdapter(),
@@ -1178,6 +1183,9 @@ class AgentWebSocketServer:
         self._login_credential_refresh_task: Optional[asyncio.Task] = None
         # Proactive recommendation engine (set by app_agentserver for debug trigger)
         self._proactive_engine: Any = None
+        self._on_runtime_ready: Any = None
+        self._on_runtime_warmup_retry: Any = None
+        self._on_runtime_failed: Any = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -1200,6 +1208,22 @@ class AgentWebSocketServer:
     def set_proactive_engine(self, engine: Any) -> None:
         """Store the proactive engine instance for debug trigger interface."""
         self._proactive_engine = engine
+
+    def set_runtime_lifecycle_hooks(
+        self,
+        *,
+        on_ready: Any = None,
+        on_warmup_retry: Any = None,
+        on_failed: Any = None,
+    ) -> None:
+        """Front readiness callbacks. ``on_ready`` is Agent Runtime start, not attach.
+
+        Retryable warmup errors use ``on_warmup_retry`` (stay ``RUNTIME_WARMING``).
+        ``on_failed`` is only for unrecoverable startup that stops retrying.
+        """
+        self._on_runtime_ready = on_ready
+        self._on_runtime_warmup_retry = on_warmup_retry
+        self._on_runtime_failed = on_failed
 
     def set_rsi_harness_provider(self, provider: Any) -> None:
         """Install the production ``HarnessProvider`` at the RSI seam."""
@@ -1329,24 +1353,58 @@ class AgentWebSocketServer:
                 exc,
             )
 
-    async def start(self) -> None:
-        """启动或恢复面向 Gateway 的 WebSocket 服务端。
+    def attach_gateway_connection(self, ws: Any, send_lock: asyncio.Lock) -> None:
+        """Publish the Front-owned Gateway socket for send_push / ACP caps."""
+        self._current_ws = ws
+        self._current_send_lock = send_lock
 
-        ``AgentRuntime`` 实例本身是一次性的，但 AgentServer 保持原有的可重启
-        服务契约：一次 ``stop()`` 完成后，后续 ``start()`` 使用 stop 阶段准备的
-        全新 Runtime/AgentManager，重新开放同一 WebSocket 传输并后台预热 Runtime。
-        TUI、Web、IM、A2A 等远程 Channel 的 Gateway/Server 调用模式不变。
+    async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
+        """Runtime-side cleanup when Front drops the Gateway connection."""
+        if self._current_ws is ws:
+            self._current_ws = None
+            self._current_send_lock = None
+        self._clear_ws_acp_client_capabilities(ws)
+        try:
+            await self._execution_runtime().cancel_all_inflight_work(
+                reason=f"[gateway ws closed {remote}] ",
+                exclude_session_ids=(
+                    self._heartbeat_runtime.execution.active_session_ids()
+                ),
+            )
+        except Exception:
+            logger.exception("[AgentWebSocketServer] cancel_all_inflight_work failed")
+        try:
+            await self._stop_scheduler()
+        except Exception:
+            logger.exception("[AgentWebSocketServer] scheduler stop failed")
+        try:
+            await self._execution_runtime().cancel_all_team_stream_tasks(
+                reason=f"[gateway ws closed {remote}] ",
+                exclude_session_ids=(
+                    self._heartbeat_runtime.execution.active_session_ids()
+                ),
+            )
+        except Exception:
+            logger.exception("[AgentWebSocketServer] team stream cancel failed")
+        self._session_stream_tasks.clear()
 
-        优先使用 legacy.server.serve 以与 Gateway 的 legacy client 握手兼容.
+    async def start(self, *, bind_transport: bool = False) -> None:
+        """Start Runtime services. Production Front owns the listen socket.
 
-        注: persistent checkpointer 的初始化历史在 ``legacy_serve`` 之前同步 await,
-        首次约耗时 ~14s (sqlite 文件 + openjiuwen 工厂反射), 期间 WS 端口未 listen,
-        是 Gateway connect 重试 (头两次必失败, 白等 ~6s) 的元凶。现改为 ``legacy_serve``
-        之后后台预热 (fire-and-forget), 让端口尽快开放; 首条 chat 请求若赶在预热完成前
-        到达, 走 ``_ensure_persistent_checkpointer_response`` 兜底等待, 不影响握手.
+        ``bind_transport=True`` is the test/compat entry only. AgentServer
+        main always calls ``bind_transport=False`` so there is a single
+        Gateway-facing port.
         """
-        if self._server is not None:
+        if bind_transport:
+            logger.warning(
+                "[AgentWebSocketServer] bind_transport=True is a test/compat "
+                "entry; production listens through AgentServer Front"
+            )
+        if bind_transport and self._server is not None:
             logger.warning("[AgentWebSocketServer] 服务端已在运行")
+            return
+        if not bind_transport and self._runtime_services_started:
+            logger.warning("[AgentWebSocketServer] Runtime 服务已在运行")
             return
 
         owner = self._kv_cache_application_owner
@@ -1359,28 +1417,32 @@ class AgentWebSocketServer:
         # Reset harness package state to native on service startup
         reset_harness_packages_state()
 
-        try:
-            from websockets.legacy.server import serve as legacy_serve
-            self._server = await legacy_serve(
-                self._connection_handler,
-                self._host,
-                self._port,
-                process_request=self._process_request,
-                ping_interval=self._ping_interval,
-                ping_timeout=self._ping_timeout,
-                max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-            )
-        except ImportError:
-            import websockets
-            self._server = await websockets.serve(
-                self._connection_handler,
-                self._host,
-                self._port,
-                process_request=self._process_request,
-                ping_interval=self._ping_interval,
-                ping_timeout=self._ping_timeout,
-                max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-            )
+        if bind_transport:
+            try:
+                from websockets.legacy.server import serve as legacy_serve
+                self._server = await legacy_serve(
+                    self._connection_handler,
+                    self._host,
+                    self._port,
+                    process_request=self._process_request,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                )
+            except ImportError:
+                import websockets
+                self._server = await websockets.serve(
+                    self._connection_handler,
+                    self._host,
+                    self._port,
+                    process_request=self._process_request,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                )
+        else:
+            self._server = None
+        self._runtime_services_started = True
         self._runtime_push_handler = self.send_push
         self._previous_runtime_push_handler = install_runtime_push_handler(
             self._runtime_push_handler
@@ -1411,9 +1473,15 @@ class AgentWebSocketServer:
                         retry_delay,
                         exc,
                     )
+                    retry = self._on_runtime_warmup_retry
+                    if callable(retry):
+                        retry(str(exc))
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(30.0, retry_delay * 2)
                     continue
+                ready = self._on_runtime_ready
+                if callable(ready):
+                    ready()
                 await self._start_symphony_recovery()
                 return
 
@@ -1616,11 +1684,25 @@ class AgentWebSocketServer:
                     port,
                 )
 
+            try:
+                api_token = resolve_sandbox_api_token(startup_mode="internal")
+            except ValueError as exc:
+                logger.warning(
+                    "[AgentWebSocketServer] sandbox token 配置无效, "
+                    "跳过 jiuwenbox auto-start: %s",
+                    exc,
+                )
+                return
+            # Sync onto the agent-server process so provider HTTP clients /
+            # hybrid-shell host orchestration inherit the same Bearer token.
+            sync_sandbox_api_token_environ(api_token)
+
             ok = await self._jiuwenbox_runner.ensure_running(
                 host=host,
                 port=port,
                 startup_mode="internal",
                 policy_path=policy_path,
+                api_token=api_token,
             )
             if not ok:
                 stderr_tail = self._jiuwenbox_runner.get_stderr_tail(10)
@@ -1857,6 +1939,7 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] image modality refresh cancel failed: %s", exc
                 )
         had_server = self._server is not None
+        runtime_only = self._runtime_services_started and not had_server
         if had_server:
             self._server.close()
             await self._server.wait_closed()
@@ -1912,6 +1995,7 @@ class AgentWebSocketServer:
                 self._install_session_message_service()
                 self._adapter_registry = AdapterRegistry()
                 for adapter in (
+                    VoiceTaskServerAdapter(),
                     SessionAdapter(),
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),
@@ -1939,7 +2023,7 @@ class AgentWebSocketServer:
             )
             self._runtime_push_handler = None
 
-        if not had_server:
+        if not had_server and not runtime_only:
             if runtime_close_error is not None and (
                 not isinstance(runtime_close_error, Exception)
                 or not closing_runtime.closed
@@ -1955,6 +2039,7 @@ class AgentWebSocketServer:
             or not closing_runtime.closed
         ):
             raise runtime_close_error
+        self._runtime_services_started = False
         logger.info("[AgentWebSocketServer] 已停止")
 
     async def _suspend_kv_cache(self) -> None:
@@ -2251,9 +2336,12 @@ class AgentWebSocketServer:
             request.channel_id,
             request.is_stream,
         )
+        await self.dispatch_parsed_request(ws, request, send_lock)
 
-        # First touch point of frontend chat input inside AgentServer: record it through the
-        # agent-core logging system so it lands in the unified agent log stream.
+    async def dispatch_parsed_request(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
         if request.req_method == ReqMethod.CHAT_SEND:
             server_logger.info(
                 "[AgentServer] chat input received: request_id=%s session_id=%s channel_id=%s query=%s",
@@ -2304,7 +2392,7 @@ class AgentWebSocketServer:
             unguarded_methods = {
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
-                "session.stop",
+                "session.stop", "voice.task.checkpoint.ack",
             }
             if guarded_method not in unguarded_methods:
                 try:
@@ -2481,6 +2569,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.MCP_WAIT_AUTH:
                 await self._handle_mcp_wait_auth(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.MCP_CANCEL_CONNECT:
+                await self._handle_mcp_cancel_connect(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.MCP_DISCONNECT:
                 await self._handle_mcp_disconnect(ws, request, send_lock)
                 return
@@ -2551,7 +2642,10 @@ class AgentWebSocketServer:
                 await self._handle_harness_packages_delete(ws, request, send_lock)
                 return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
-            if (request.req_method.value or "").startswith("rsi."):
+            if (
+                isinstance(request.req_method, ReqMethod)
+                and request.req_method.value.startswith("rsi.")
+            ):
                 await self._handle_rsi_request(ws, request, send_lock)
                 return
             # Schedule task management
@@ -2619,6 +2713,26 @@ class AgentWebSocketServer:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
+                if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
+                    try:
+                        await self._execution_runtime().stop_session_for_archive(
+                            channel_id=request.channel_id or "default",
+                            session_id=request.session_id or "default",
+                        )
+                        response = AgentResponse(
+                            request_id=request.request_id, channel_id=request.channel_id,
+                            ok=True, payload={"success": True},
+                        )
+                    except Exception as exc:
+                        response = AgentResponse(
+                            request_id=request.request_id, channel_id=request.channel_id,
+                            ok=False, payload={"success": False, "error": str(exc)},
+                        )
+                    async with send_lock:
+                        await send_wire_payload(
+                            ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+                        )
+                    return
                 # 中断请求：根据 intent 决定是否取消流式任务
                 sid = request.session_id or "default"
                 intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
@@ -3559,6 +3673,7 @@ class AgentWebSocketServer:
                     "chain_id": record.chain_id,
                     "hop_count": record.hop_count,
                     "status": record.status,
+                    "input_mode": record.input_mode,
                     "created_at": record.created_at,
                     "started_at": record.started_at,
                     "finished_at": record.finished_at,
@@ -3612,6 +3727,8 @@ class AgentWebSocketServer:
         cross_session = {
             "message_id": record.message_id,
             "source_session_id": record.source_session_id,
+            "source_request_id": record.source_request_id,
+            "source_tool_call_id": record.source_tool_call_id,
             "source_title": record.source_title_snapshot,
             "chain_id": record.chain_id,
             "parent_message_id": record.parent_message_id,
@@ -3623,6 +3740,8 @@ class AgentWebSocketServer:
             "mode": mode,
             SESSION_MESSAGE_INTERNAL_KEY: cross_session,
         }
+        if record.input_mode:
+            params["input_mode"] = record.input_mode
         for key in ("project_id", "project_dir", "work_mode"):
             value = metadata.get(key)
             if value is not None and str(value).strip():
@@ -3653,6 +3772,10 @@ class AgentWebSocketServer:
             *,
             request_id: str,
         ) -> dict[str, Any]:
+            if payload.get("event_type") == "chat.input_received":
+                # This input has its own author and message association, even
+                # when the receiving task was started by another mailbox item.
+                return payload
             return {
                 **payload,
                 # ask_user 等事件的 request_id 是交互关联 ID，不能覆盖；
@@ -3664,30 +3787,44 @@ class AgentWebSocketServer:
                 "cross_session": public_cross_session,
             }
 
-        await self.send_push(
-            build_server_push_message(
-                session_id=record.target_session_id,
-                request_id=request.request_id,
-                payload=_with_cross_session_marker(
-                    {
-                        "event_type": "chat.processing_status",
-                        "session_id": record.target_session_id,
-                        "is_processing": True,
-                        "is_complete": False,
-                        "content": record.content,
-                    },
+        async def start_processing() -> None:
+            await self.send_push(
+                build_server_push_message(
+                    session_id=record.target_session_id,
                     request_id=request.request_id,
-                ),
-                fallback_channel_id=channel_id,
+                    payload=_with_cross_session_marker(
+                        {
+                            "event_type": "chat.processing_status",
+                            "session_id": record.target_session_id,
+                            "is_processing": True,
+                            "is_complete": False,
+                            "content": record.content,
+                        },
+                        request_id=request.request_id,
+                    ),
+                    fallback_channel_id=channel_id,
+                )
             )
-        )
+
+        supplemental_delivery = record.input_mode == "steer"
+        delivered = False
+        delivery_error_code = ""
+        if not supplemental_delivery:
+            await start_processing()
 
         outcome_tracker = _TurnOutcomeTracker()
         processing_finished = False
-        runtime_stream = self._execution_runtime().stream(
+        runtime = self._execution_runtime()
+        if supplemental_delivery:
+            # Resume persisted idle Sessions through the public lifecycle API.
+            await runtime.start()
+            await runtime.create_or_resume_session(
+                channel_id=channel_id, session_id=record.target_session_id,
+            )
+        runtime_stream = runtime.stream(
             request,
             trigger_hook=False,
-            background=True,
+            background=not supplemental_delivery,
         )
         try:
             async for event in runtime_stream:
@@ -3701,6 +3838,17 @@ class AgentWebSocketServer:
                     if isinstance(payload, dict)
                     else ""
                 )
+                if supplemental_delivery and event.ok and event_type == "runtime.accepted":
+                    if payload.get("input_delivery") == "chat":
+                        supplemental_delivery = False
+                        await start_processing()
+                    elif payload.get("input_boundary") == "stream":
+                        delivered = True
+                        continue
+                elif record.input_mode == "steer" and event.ok and event_type == "runtime.accepted":
+                    service = getattr(self, "_session_message_service", None)
+                    if service is not None:
+                        service.on_steering_fallback_started(record)
                 outcome_tracker.observe(event)
                 if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
                     error_payload = dict(payload or {})
@@ -3711,7 +3859,13 @@ class AgentWebSocketServer:
                         or "Runtime execution failed"
                     )
                     payload = error_payload
+                    delivery_error_code = str(error_payload.get("code") or "")
                     outcome_tracker.fail(str(error_payload.get("error") or ""))
+                if supplemental_delivery:
+                    # Receipt-only delivery does not own target task output or
+                    # its processing/history completion. The original stream
+                    # publishes the ordered, source-tagged input boundary.
+                    continue
                 if (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.ask_user_question"
@@ -3757,7 +3911,7 @@ class AgentWebSocketServer:
             try:
                 await runtime_stream.aclose()
             finally:
-                if not processing_finished:
+                if not supplemental_delivery and not processing_finished:
                     await self.send_push(
                         build_server_push_message(
                             session_id=record.target_session_id,
@@ -3774,6 +3928,20 @@ class AgentWebSocketServer:
                             fallback_channel_id=channel_id,
                         )
                     )
+
+        if supplemental_delivery:
+            if outcome_tracker.outcome() == "failed":
+                return SessionMessageExecutionResult(
+                    status="unknown" if delivery_error_code == "SESSION_INPUT_DELIVERY_UNKNOWN" else "failed",
+                    error_code=delivery_error_code or "DELIVERY_FAILED",
+                    error=outcome_tracker.error or "Runtime rejected supplemental input",
+                )
+            if delivered:
+                return SessionMessageExecutionResult(status="delivered")
+            return SessionMessageExecutionResult(
+                status="unknown", error_code="DELIVERY_NOT_CONFIRMED",
+                error="Runtime did not confirm supplemental delivery",
+            )
 
         outcome = outcome_tracker.outcome()
         terminal_status = {
@@ -5292,7 +5460,7 @@ class AgentWebSocketServer:
             "session.delete",
             "cron.sessions.delete",
             "project.sessions.archive", "project.sessions.delete_archived",
-            "project.delete", "project.lifecycle",
+            "project.lifecycle",
         }
         if method not in methods:
             return False
@@ -5331,17 +5499,22 @@ class AgentWebSocketServer:
                 project_id = lc.validate_id(params.get("project_id"))
                 payload = lc.projection("project", project_id)
                 from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
-                payload["exists"] = get_project_by_id(project_id, cache_bust=True) is not None
+                project = get_project_by_id(project_id, cache_bust=True)
+                payload["exists"] = project is not None
+                # 调度闸门(project_execution_allowed)据此拒隐藏项目:被移除
+                # 项目的定时任务不到点触发、不进任务列表。
+                payload["hidden"] = bool(project is not None and project.hidden)
                 payload["operation"] = lc.state("project", project_id).get("operation")
-                if any(key in params for key in ("completed_cron_job_ids", "planned_cron_job_ids", "failed")):
-                    payload["operation"] = lc.checkpoint_project(project_id, params)
-                    payload.update(lc.projection("project", project_id))
             elif method.startswith("session."):
                 ids = lc.parse_ids(params, delete=method == "session.delete")
                 results = []
                 for sid in ids:
                     try:
-                        results.append(await service.session(sid, method.split(".")[1], request.channel_id or ""))
+                        results.append(await service.session(
+                            sid,
+                            method.split(".")[1],
+                            request.channel_id or "",
+                        ))
                     except lc.LifecycleError as exc:
                         results.append(dict(session_id=sid, ok=False, code=exc.code, error=str(exc), **exc.details))
                 if method == "session.delete" and "session_ids" not in params:
@@ -5355,11 +5528,8 @@ class AgentWebSocketServer:
                 else:
                     succeeded = sum(item["ok"] for item in results)
                     payload = dict(succeeded_count=succeeded, failed_count=len(results) - succeeded, results=results)
-            else:
-                payload = await service.project(
-                    params.get("project_id"), method.split(".")[1],
-                    request.channel_id or "", params,
-                )
+            # methods 集合已穷尽上面的分支;不再有项目级删除级联,
+            # 任何新增方法都必须在这里拿到显式分支。
         except lc.LifecycleError as exc:
             ok, payload = False, dict(code=exc.code, error=str(exc), **exc.details)
         except Exception as exc:
@@ -7040,6 +7210,48 @@ class AgentWebSocketServer:
                             "payload": compression_state_payload,
                         })
 
+                # /compact runs outside the normal model-call stream, so the
+                # Core usage rail has no provider response from which to emit
+                # an authoritative input-token total. Ask the adapter for a
+                # canonical post_compact local-measurement snapshot and route
+                # it through both history and the live push path so the UI
+                # reflects the newly compacted context now.
+                if result in {"compressed", "noop"}:
+                    build_usage_event = getattr(agent, "get_context_usage_event", None)
+                    if callable(build_usage_event):
+                        try:
+                            usage_payload = await build_usage_event(
+                                session_id=session_id,
+                                request_id=request.request_id,
+                            )
+                        except Exception:  # usage telemetry must not fail /compact
+                            logger.warning(
+                                "[AgentWebSocketServer] manual context usage event failed",
+                                exc_info=True,
+                            )
+                        else:
+                            if isinstance(usage_payload, dict):
+                                append_history_record(
+                                    session_id=session_id,
+                                    request_id=request.request_id,
+                                    channel_id=channel_id,
+                                    role="assistant",
+                                    event_type="context.usage",
+                                    content="",
+                                    timestamp=_dt.datetime.now().timestamp(),
+                                    extra={
+                                        key: value
+                                        for key, value in usage_payload.items()
+                                        if key != "event_type"
+                                    },
+                                    mode=params.get("mode", "unknown"),
+                                )
+                                await self.send_push({
+                                    "channel_id": channel_id,
+                                    "session_id": session_id,
+                                    "payload": usage_payload,
+                                })
+
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
@@ -8377,9 +8589,18 @@ class AgentWebSocketServer:
         self, name: str, *, rollback_on_probe_failure: bool = True
     ) -> dict[str, Any]:
         """Run the shared connect flow and return a frontend payload."""
-        from jiuwenswarm.server.runtime.mcp.registry import connect_mcp
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            connect_mcp,
+            was_connect_cancelled,
+        )
 
         item = await asyncio.to_thread(connect_mcp, name)
+        if was_connect_cancelled(name):
+            # User cancelled while connect_mcp was still running (slow CLI
+            # install / auth step); cancel_connect already killed the pending
+            # auth proc and rolled back any connecting record.
+            logger.info("[mcp] connect '%s' cancelled by user", name)
+            return {"type": "cancelled", "name": name}
         if isinstance(item, dict) and item.get("auth_required"):
             return {"type": "auth_required", **self._mask_sensitive_fields(item)}
         if isinstance(item, dict) and item.get("credentials_required"):
@@ -8482,6 +8703,52 @@ class AgentWebSocketServer:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] mcp.connect failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_mcp_cancel_connect(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Handle ``mcp.cancel_connect``: abort an in-flight connect/auth flow.
+
+        The user may mis-click or want to redo OAuth while a CLI MCP's
+        ``mcp.wait_auth`` (or a slow ``mcp.connect``) is still holding the RPC
+        open (up to 10 min). This marks the name cancelled so the poller /
+        connect flow unwinds with a ``cancelled`` result, kills any pending
+        authWaitForExit CLI proc, and rolls back the connecting state.json
+        record. Idempotent — safe even when nothing is in flight. Because each
+        incoming RPC is dispatched in its own task (the ws receive loop uses
+        create_task), this runs concurrently with the hold-open wait_auth.
+        """
+        from jiuwenswarm.server.runtime.mcp.registry import cancel_connect
+        try:
+            params = request.params or {}
+            name = str(params.get("name", "")).strip()
+            if not name:
+                raise ValueError("mcp name is required")
+            payload = await asyncio.to_thread(cancel_connect, name)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=payload,
+            )
+        except ValueError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "bad_request", "error": str(exc), "code": "MCP_BAD_REQUEST"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] mcp.cancel_connect failed: %s", exc)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -8718,12 +8985,21 @@ class AgentWebSocketServer:
         from jiuwenswarm.server.runtime.mcp.registry import (
             CliConnectError,
             complete_cli_auth,
+            was_connect_cancelled,
         )
 
         cur_step = max(0, int(step_index))
         last_output = ""
         try:
             for attempt in range(max_attempts):
+                if was_connect_cancelled(name):
+                    # User clicked cancel on the auth modal: unwind the
+                    # hold-open RPC with a cancelled result instead of polling
+                    # until the 10-min timeout. cancel_connect already killed
+                    # the pending auth proc and rolled back any connecting
+                    # record.
+                    logger.info("[mcp] _await_cli_auth '%s' cancelled by user", name)
+                    return {"type": "cancelled", "name": name}
                 item = await asyncio.to_thread(complete_cli_auth, name, cur_step)
                 if not isinstance(item, dict):
                     raise ValueError(f"complete_cli_auth returned non-dict: {item!r}")
@@ -8742,7 +9018,15 @@ class AgentWebSocketServer:
                     )
                     await asyncio.sleep(delay)
                     continue
-                # Authenticated — finalize and return the connected payload.
+                # Authenticated — re-check the cancel flag: the user may have
+                # cancelled between this poll and the auth completing, or the
+                # auth proc finished at the same moment the cancel landed.
+                if was_connect_cancelled(name):
+                    logger.info(
+                        "[mcp] _await_cli_auth '%s' cancelled after auth completed", name,
+                    )
+                    return {"type": "cancelled", "name": name}
+                # Finalize and return the connected payload.
                 return await self._finalize_cli_auth(name, item)
             # Exhausted retries (~10 min) — return a failure so the handler can
             # surface it. Include the last status output so a misaligned
@@ -9118,12 +9402,18 @@ class AgentWebSocketServer:
         else:
             port = preferred_port
 
+        api_token = resolve_sandbox_api_token(startup_mode=startup_mode)
+        # Sync onto the agent-server process so provider HTTP clients /
+        # hybrid-shell host orchestration inherit the same Bearer token.
+        sync_sandbox_api_token_environ(api_token)
+
         # 3. 启动 / 健康检查本地 jiuwenbox; 失败直接报错
         ok = await self._jiuwenbox_runner.ensure_running(
             host=host,
             port=port,
             startup_mode=startup_mode,
             policy_path=policy_path,
+            api_token=api_token,
         )
         if not ok:
             if startup_mode == "external":
@@ -9642,15 +9932,9 @@ class AgentWebSocketServer:
     @staticmethod
     def _parse_sandbox_host_port(url: str) -> tuple[str, int]:
         """从 sandbox url 解析 host:port; 默认 127.0.0.1:8321."""
-        from urllib.parse import urlparse
+        from jiuwenswarm.server.sandbox.host_port import parse_sandbox_host_port
 
-        try:
-            parsed = urlparse(url)
-            host = parsed.hostname or "127.0.0.1"
-            port = parsed.port or 8321
-        except Exception:
-            host, port = "127.0.0.1", 8321
-        return host, int(port)
+        return parse_sandbox_host_port(url)
 
     @staticmethod
     def _is_tcp_port_bindable(host: str, port: int) -> bool:

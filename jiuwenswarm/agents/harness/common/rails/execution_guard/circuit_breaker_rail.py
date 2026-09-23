@@ -323,7 +323,9 @@ class CircuitBreakerRail(DeepAgentRail):
 
     def cleanup_session(self, session_id: str = "") -> None:
         """Remove per-session history and lock for *session_id*."""
-        sid = session_id or "default"
+        # Key must match before_invoke's (stripped): the adapter calls this
+        # with the pre-normalized sid, so a raw key would never be evicted.
+        sid = str(session_id or "").strip() or "default"
         self._histories.pop(sid, None)
         self._locks.pop(sid, None)
 
@@ -376,8 +378,10 @@ class CircuitBreakerRail(DeepAgentRail):
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(ctx.inputs, InvokeInputs):
             return
+        # Strip like StreamEventRail._sid_key: control-side cleanup arrives
+        # pre-normalized and must land on the same key.
         raw_conv_id = ctx.inputs.conversation_id or ""
-        sid = raw_conv_id or "default"
+        sid = raw_conv_id.strip() or "default"
         ctx.extra[self._SID_KEY] = sid
         _invoke_sid.set(sid)
         self._histories[sid] = []

@@ -61,9 +61,9 @@
   --color-text-divider-rgb: 219, 219, 219;
 
   /* Borders */
-  --color-border-default: #e4e4e7;
-  --color-border-default-rgb: 228, 228, 231;
-  --color-border-card: #e6e6e6;
+   --color-border-default: #e4e4e7;
+   --color-border-default-rgb: 228, 228, 231;
+   --color-border-card: #e6e6e6;
   --color-border-strong: #d4d4d8;
   --color-border-hover: #a1a1aa;
   --color-border-accent: rgba(37, 99, 235, 0.5);
@@ -77,6 +77,7 @@
   --color-border-input-strong-rgb: 194, 194, 194;
   --color-border-toolbar-input: #e2e2e2;
   --color-border-focus: #2563eb;
+  --color-tool-panel-divider: #ededed;
 
   /* Actions and brand */
   --color-action-primary: #2563eb;
@@ -292,8 +293,11 @@
   --color-task-column-label: #8c8c8c;
   --color-team-overflow-surface: #edf1ff;
   --color-member-card-badge-surface: #e1e8fd;
+  --color-agent-group-member-card-border: #f0f0f0;
+  --color-agent-group-member-card-surface: #fafafa;
   --color-team-detail-surface: #f8fafc;
   --color-team-detail-text: #5d6675;
+  --color-team-member-item-id-text: #656565;
   --color-team-detail-label: #9aa3af;
   --color-team-detail-divider: #e2e5ea;
   --color-team-status-waiting: #777777;

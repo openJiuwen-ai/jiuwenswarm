@@ -52,6 +52,8 @@ export interface JiuwenElectronDesktopApi {
     paths: string[],
   ) => Promise<Array<Record<string, unknown>>>;
   getClipboardFiles: () => Promise<Array<Record<string, unknown>>>;
+  pasteClipboard: () => Promise<void>;
+  clearHuaweiSignIn?: () => Promise<number>;
   onLayoutInvalidated: (callback: () => void) => () => void;
   browser: {
     navigate: (url: string, sessionId: string) => Promise<ElectronBrowserState>;

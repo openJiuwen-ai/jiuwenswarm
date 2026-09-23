@@ -224,6 +224,56 @@ def test_list_enabled_false_when_disconnected(tmp_path: Path, monkeypatch) -> No
     assert "enabled" not in by_name["stale-custom"]
 
 
+def test_stale_legacy_marketplace_record_is_filtered(tmp_path: Path, monkeypatch) -> None:
+    """A removed builtin's state record must not render as a custom MCP."""
+    from jiuwenswarm.server.runtime.mcp import state_store
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(state_store, "get_workspace_dir", lambda: tmp_path)
+    state_store.upsert_mcp_record(
+        "harmonyos-mcp",
+        {"name": "harmonyos-mcp", "transport": "stdio", "command": "npx",
+         "args": ["-y", "harmonyos-mcp"], "server_id_scope": "mcp:harmonyos-mcp"},
+        state="connected",
+        integration_type="stdio-mcp",
+    )
+
+    summaries = registry.list_marketplace_mcps(mcp_filter="local")
+    assert "harmonyos-mcp" not in {s["name"] for s in summaries}
+    assert registry.get_mcp("harmonyos-mcp") is None
+
+
+def test_stale_hub_record_is_filtered(tmp_path: Path, monkeypatch) -> None:
+    """A removed Hub package's state record must not render as a custom MCP."""
+    from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+        HubInstallRecord,
+        HubInstallStateStore,
+    )
+    from jiuwenswarm.server.runtime.mcp import state_store
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(state_store, "get_workspace_dir", lambda: tmp_path)
+    HubInstallStateStore(tmp_path / "mcp").upsert(
+        HubInstallRecord(
+            asset_id="mcp-asset-uuid",
+            package_id="stale-hub-mcp",
+            kind="mcp",
+            version="1.0.0",
+            checksum_sha256="abc123",
+            installed_at="2026-09-02T00:00:00Z",
+        )
+    )
+    state_store.upsert_mcp_record(
+        "stale-hub-mcp",
+        {"name": "stale-hub-mcp", "transport": "stdio", "command": "npx",
+         "args": ["-y", "stale-hub-mcp"], "server_id_scope": "mcp:stale-hub-mcp"},
+        state="connected",
+        integration_type="stdio-mcp",
+    )
+
+    summaries = registry.list_marketplace_mcps(mcp_filter="local")
+    assert "stale-hub-mcp" not in {s["name"] for s in summaries}
+    assert registry.get_mcp("stale-hub-mcp") is None
+
+
 def test_connect_custom_mcp_writes_connecting_until_handler_promotes(tmp_path: Path, monkeypatch) -> None:
     """connect on a registered custom MCP (no marketplace package) returns the
     definition and persists it as ``connecting`` (NOT connected).

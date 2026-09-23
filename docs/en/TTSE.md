@@ -14,6 +14,8 @@ react:
     inject_enabled: true    # inject system-prompt guidance
     # Auto-dream (silent bank hygiene; does not hijack the user turn)
     dream_enabled: true
+    consult_top_k: 8        # FACT/TIP hits per track for ttse_consult
+    consult_retrieve_mode: hybrid  # hybrid | embed | bm25; dump when the pool is small
     embedding:
       api_key: "${EMBED_API_KEY}"
       base_url: "${EMBED_API_BASE}"
@@ -24,4 +26,4 @@ The rule bank is always `workspace/.ttse/bank.json`. Disclosure is always `disk_
 
 Auto-dream knobs `dream_interval` / `dream_min_hours` / `dream_ttl_days` are Host-fixed at `50` / `24.0` / `90` and are **not user-configurable**. With `dream_enabled`, TTSE performs hygiene on an existing FACT/TIP bank (TTL prune, near-duplicate merge, low-quality TIP purge), independent of online `induce` / `blame`.
 
-`embedding` is optional; env names follow `EMBED_API_KEY` / `EMBED_API_BASE` / `EMBED_MODEL`. When all three resolve to non-empty values, consult uses BM25+embedding hybrid recall; otherwise it falls back to BM25.
+`embedding` is optional; env names follow `EMBED_API_KEY` / `EMBED_API_BASE` / `EMBED_MODEL`. `consult_retrieve_mode` selects scoring (`hybrid` / `embed` / `bm25`); missing or failed embeddings fall back to BM25, and a small pool still dumps. Call `ttse_consult(category=…, query=<situation sentence>)` with both arguments required; use `category=all` for the whole bank.

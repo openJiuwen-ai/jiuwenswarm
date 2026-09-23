@@ -24,6 +24,7 @@
     "processing": "Processing…",
     "retry": "Retry",
     "editMenu": {
+      "actionFailed": "Unable to complete the text editing action. Please try again.",
       "cut": "Cut",
       "copy": "Copy",
       "paste": "Paste",
@@ -50,7 +51,7 @@
     "settings": "Settings",
     "logs": "Logs",
     "update": "Updates",
-    "personalContext": "Context"
+    "personalContext": "Knowledge"
   },
   "applicationPlugins": {
     "title": "Application plugins",
@@ -61,6 +62,21 @@
     "disabled": "Disabled",
     "empty": "No application plugins were found",
     "noSettings": "This plugin does not provide a settings page."
+  },
+  "videoLive": {
+    "modelFallback": "Video model",
+    "subtitle": "Real-time multi-screen audio and video Q&A",
+    "status": { "connecting": "Connecting to the Full-duplex model and requesting microphone access…", "speaking": "The model is responding…" },
+    "coreAgent": { "startFailed": "Jiuwen Core Agent could not start the task: {{message}}", "startFailedSummary": "The task could not start. The error is shown in the interface." },
+    "errors": { "startFailed": "Failed to start the Full-duplex session.", "joyaiTextNotAccepted": "The text input was not accepted by the JoyAI session.", "qwenTextNotAccepted": "The text input was not accepted by the Qwen Realtime session.", "textSendFailed": "Failed to send the text input." },
+    "empty": { "title": "Open a real-time view", "description": "Use a camera, local video, or add multiple screens", "listening": "Listening continuously", "waiting": "Waiting to start Full-duplex", "hint": "Speak after starting; no need to click for each sentence" },
+    "sources": { "camera": "Camera", "localVideo": "Local video", "addScreen": "Add screen", "shareScreen": "Share screen", "stopCamera": "Stop camera", "stopScreens": "Stop all screens" },
+    "actions": { "closeVideo": "Close video", "starting": "Starting Full-duplex session", "stopSession": "End Full-duplex session", "startSession": "Start Full-duplex session" },
+    "frameWindow": "Rolling window: {{count}}/{{max}} frames",
+    "audioOnly": "Audio only; no video frames sent",
+    "chat": { "coreResult": "Tool result · Jiuwen Core Agent", "user": "You", "search": "Jiuwen Search", "assistant": "Assistant", "searchCompleted": "Jiuwen Search Agent completed" },
+    "search": { "ready": "Preparing search", "selectHistory": "Select search history", "latest": "Latest search (automatic)" },
+    "input": { "activePlaceholder": "You can also type in this session…", "inactivePlaceholder": "Start Full-duplex first…", "send": "Send question" }
   },
   "settingsPanel": {
     "title": "Settings",
@@ -73,7 +89,9 @@
       "signedIn": "Signed in",
       "loggedInDescription": "Limited-time free models are now available in the chat model dropdown",
       "endedTitle": "Campaign ended",
-      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part."
+      "endedDescription": "This round of limited-time free models has ended. Thanks for taking part.",
+      "configTitle": "Free model settings",
+      "configDescription": "Set the context window and other options for the limited-time free models"
     },
     "categories": {
       "general": "General",
@@ -81,7 +99,7 @@
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
-      "personalContext": "Context",
+      "personalContext": "Knowledge",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
@@ -121,12 +139,14 @@
       "deleteArchivedSessionsRecord": "Permanently delete all archived conversations in the project \"{{projectName}}\". This cannot be undone.",
       "archivedSessionsDeleted": "Deleted {{count}} archived conversations",
       "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed.",
+      "removedProjectNote": "This project was removed, so its conversations stay hidden from the workspace. Restoring any conversation restores the project too.",
       "errors": {
         "forbidden": "This operation is not supported for this resource",
         "notFound": "The resource no longer exists or has changed. Refresh and try again.",
         "sessionGone": "This conversation no longer exists and cannot be restored.",
         "requestFailed": "The operation failed. Please try again later.",
-        "sessionRestoreFailed": "Failed to restore the conversation. Refresh and try again."
+        "sessionRestoreFailed": "Failed to restore the conversation. Refresh and try again.",
+        "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first."
       }
     },
     "dialog": {
@@ -334,7 +354,7 @@
       "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
-      "taskAsr": "ASR model configuration",
+      "taskAsr": "Speech transcription",
       "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-Party Agents",
       "externalCliAgentsDescription": "For Team mode only.",
@@ -347,6 +367,41 @@
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check."
+    },
+    "taskAsr": {
+      "dialogTitle": "Configure speech transcription model",
+      "validationRequired": "Enter the speech transcription URL, API key, and model.",
+      "notConfigured": "Speech transcription model is not configured."
+    },
+    "videoDuplex": {
+      "loading": "Loading full-duplex model settings…",
+      "description": "Configure the vision model and its speech recognition and synthesis channels.",
+      "enabled": "Full duplex enabled",
+      "disabled": "Full duplex disabled",
+      "enable": "Enable",
+      "disable": "Disable",
+      "toggleError": "Unable to update the plugin status",
+      "saved": "Settings saved; new requests will use the latest configuration",
+      "videoSectionTitle": "Video model",
+      "saveSettings": "Save settings",
+      "loadError": "Unable to load full-duplex model settings",
+      "saveError": "Unable to save full-duplex model settings",
+      "notConfigured": "Full-duplex model is not configured",
+      "dialogTitle": "Configure full-duplex model",
+      "providerLabel": "Model channel",
+      "joyaiModelLabel": "JoyAI model",
+      "voiceSectionTitle": "Speech transcription and synthesis",
+      "voiceProtocolLabel": "Voice channel",
+      "voiceApiKeyLabel": "Voice API key",
+      "asrEndpointLabel": "Speech transcription endpoint",
+      "ttsEndpointLabel": "Speech synthesis endpoint",
+      "asrModelLabel": "Speech transcription model",
+      "ttsModelLabel": "Speech synthesis model",
+      "ttsVoiceLabel": "Speech synthesis voice",
+      "qwenModelLabel": "Qwen model",
+      "qwenVoiceLabel": "Qwen voice",
+      "deleteTitle": "Delete full-duplex model settings",
+      "deleteConfirm": "This clears the saved full-duplex endpoint, model, and API key."
     },
     "fields": {
       "preferred_language": {
@@ -372,19 +427,23 @@
       "embed_api_key": { "title": "API key" },
       "embed_model": { "title": "Model name" },
       "asr_api_base": {
-        "title": "ASR API URL",
+        "title": "Speech transcription API URL",
         "description": "Enter an OpenAI-compatible base URL or the full /audio/transcriptions URL.",
         "placeholder": "e.g. https://api.example.com/v1"
       },
       "asr_api_key": {
-        "title": "ASR API key",
+        "title": "Speech transcription API key",
         "description": "Used for general speech transcription; JoyAI has separate settings.",
         "placeholder": "e.g. sk-..."
       },
       "asr_model": {
-        "title": "ASR model",
+        "title": "Speech transcription model",
         "description": "Model used for general speech transcription.",
         "placeholder": "e.g. FunAudioLLM/SenseVoiceSmall"
+      },
+      "task_asr_enabled": {
+        "title": "Speech transcription",
+        "description": "Enable microphone speech transcription in task conversations."
       },
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",
@@ -546,7 +605,7 @@
     "selectMember": "Select a team member",
     "detailTabs": {
       "members": "Members",
-      "group": "Group Chat"
+      "group": "Sub-topics"
     },
     "leader": "Team leader",
     "memberSeparator": ", ",
@@ -740,6 +799,9 @@
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
     "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
+    "sessionArchived": "This session has been archived. Restore it or start a new session to continue.",
+    "sessionDeleted": "This session has been deleted and can no longer be used.",
+    "sessionOperationInProgress": "An archive or delete operation is in progress for this session. Please try again later.",
     "placeholderAwaitingApproval": "Please respond to the pending confirmation above",
     "placeholderProcessing": "Processing, enter to interrupt...",
     "placeholderProcessingQueue": "Processing, new input will join the queue...",
@@ -856,6 +918,7 @@
     "agentGroupNoMatches": "No matching Expert Teams found",
     "agentGroupRemove": "Remove Expert Team",
     "agentGroupSkillsLocked": "An Expert Team is selected; additional Expert Team skills are unavailable",
+    "teamSkillsGroupLocked": "Team skills are selected; an Expert Team cannot be selected",
     "agentGroupBinding": "This conversation is bound to an Expert Team and cannot be changed",
     "agentGroupFirstBuildOnly": "Expert Teams can only be selected when a Team is first created",
     "agentOnlyInSingleAgentMode": "Experts can only be selected in single-Agent mode",
@@ -869,6 +932,7 @@
     "extensionMore": "More",
     "recentTasks": "Progress",
     "applicationTasks": {
+      "unknown": "Status unconfirmed",
       "cancelling": "Stopping",
       "cancelled": "Cancelled",
       "controls": {
@@ -1033,6 +1097,7 @@
     "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
     "overwriteConfirm": "The current goal \"{{currentObjective}}\" is unfinished. Replace it with \"{{requestedObjective}}\"?",
     "closeTag": "Cancel goal",
+    "closeTagDisabled": "Cannot close the goal while the session is busy",
     "badge": "Goal",
     "status": {
       "active": "Active",
@@ -1663,6 +1728,7 @@
       "updateFailed": "Failed to update task",
       "updateFailedWithReason": "Failed to update task: {{reason}}",
       "deleteFailed": "Failed to delete task",
+      "deleteSessionBusy": "The session associated with this scheduled task is still running and cannot be deleted. Please stop the session manually and try again.",
       "toggleFailed": "Failed to update task status",
       "previewFailed": "Failed to preview next runs",
       "runNowFailed": "Failed to trigger the task immediately",
@@ -1754,7 +1820,10 @@
       "model": "Context Organize Model",
       "modelPlaceholder": "Please select an organize model",
       "modelRequiredFirst": "Please select an organize model first",
-      "modelHint": "Select a model configured in JiuwenSwarm."
+      "modelHint": "Select a model configured in JiuwenSwarm.",
+      "collectionStopPending": "A fetch task is running; the setting takes effect shortly.",
+      "collectionStoppingRetry": "A fetch task is still running or stopping. Please try again in a moment.",
+      "operationTimeout": "Request timed out. Please try again in a moment."
     },
     "authorization": {
       "title": "Content source authorization",
@@ -1783,7 +1852,20 @@
       "gitcodeTokenHint": "Token is stored locally in the browser and used to authenticate the fetch service.",
       "gitcodeTokenRequired": "Please enter a GitCode token",
       "feishuHint": "Feishu uses an OAuth device flow. After authorizing, complete the login in your browser as prompted.",
-      "feishuVerifyHint": "Complete the Feishu authorization in the opened page; the state will update automatically."
+      "feishuVerifyHint": "Complete the Feishu authorization in the opened page; the state will update automatically.",
+      "feishuConfigInitHint": "First time using Feishu: complete the app setup first (Step 1 of 2). Authorization will continue automatically afterward.",
+      "feishuStep1Done": "Step 1 complete. Click \"Authorize\" again to finish Step 2 sign-in.",
+      "feishuOpenLink": "Didn't open automatically? Click here to open the authorization page",
+      "feishuStep1": "Step 1: Set up the Feishu app",
+      "feishuStep2": "Step 2: Sign in to Feishu",
+      "feishuExpiresInSeconds": "Authorization link expires in {{count}}s",
+      "feishuExpiresInMinutes": "Authorization link expires in {{count}} min",
+      "feishuAuthExpiredShort": "Authorization link expired",
+      "feishuAuthSuccess": "Feishu authorization successful",
+      "feishuAuthFailed": "Feishu authorization failed. Please re-authorize.",
+      "feishuConfigInitFailed": "Feishu app setup failed. Please re-authorize.",
+      "feishuAuthExpired": "Authorization link expired. Please re-authorize.",
+      "tokenInvalid": "Authorization failed. Please enter a valid token and try again."
     },
     "info": {
       "tabGraph": "Context graph",
@@ -1858,6 +1940,7 @@
       "empty": "No content yet. Click \"Add content\" at the top right to create one.",
       "noContentInCategory": "No content",
       "runSubmitted": "Fetch request submitted",
+      "updated": "Configuration updated",
       "startedAt": "Started",
       "finishedAt": "Finished",
       "backToGraph": "Back to Graph",
@@ -2055,7 +2138,8 @@
     "noEnabledSkills": "No enabled skills",
     "noBuiltinSkills": "No builtin skills",
     "setEnabledError": "Failed to set skill enabled status",
-    "packBlockedHint": "This skill pack contains uninstalled skills. Install them under \"Included Skills\" before enabling.",
+    "packBlockedHint": "This skill pack contains uninstalled or disabled skills.",
+    "packMemberToggleConfirm": "This skill belongs to skill pack(s) {{packs}}. Changing its enabled state will affect the availability of the entire pack. Continue?",
     "setEnabledSuccess": "Skill {name} enabled",
     "setDisabledSuccess": "Skill {name} disabled",
     "marketplaceTabs": {
@@ -2835,7 +2919,9 @@
       "personaPreview": "Persona Markdown preview",
       "uploadHint": "Supports .zip and .tar files; once extracted, the folder must include manifest.json, persona files, and README.md, and the .json file must declare package_type.",
       "uploadPlaceholder": "Click or drag a file here",
+      "webUploadPlaceholder": "Click to upload a file",
       "uploadInvalidType": "Only .zip and .tar files are supported",
+      "uploadDirectoryUnsupported": "Folders cannot be dragged here. Compress the folder into a .zip or .tar file before uploading.",
       "uploadPickerUnsupported": "Local file selection is not supported in this environment",
       "uploadPickerFailed": "Failed to open the local file picker. Try again.",
       "removeUpload": "Remove selected file",
@@ -2907,6 +2993,7 @@
         "definitionUnavailable": "This Expert Team definition is incomplete and cannot be used.",
         "membersInvalid": "The Expert Team members are invalid. Choose a leader and distinct members.",
         "memberUnavailable": "A selected Expert is unavailable or not Team-compatible.",
+        "packageValidationError": "Expert Team package validation failed: {{reason}}",
         "createSuccess": "Expert Team package {{id}} was created.",
         "uploadSuccess": "Expert Team package {{id}} was imported. Review it in My Expert Teams.",
         "uploadError": "Unable to import the Expert Team package. Check the file and try again.",
@@ -2962,9 +3049,10 @@
         "uploadInvalidType": "Only .zip, .tar and .tar.gz Expert Team packages are supported",
         "errors": {
           "nameRequired": "Enter an Expert Team name",
-          "descriptionRequired": "Enter an Expert Team description",
+          "descriptionRequired": "Enter an Expert Team capability description",
           "personaRequired": "Enter an Expert Team introduction",
-          "leaderRequired": "Choose a leader Expert"
+          "leaderRequired": "Choose a leader Expert",
+          "membersRequired": "Choose at least one member Expert"
         }
       },
       "picker": {
@@ -3449,17 +3537,18 @@
       "conversationArchived": "Task session archived",
       "archiveView": "View",
       "archiveUndo": "Undo",
-      "deleteProject": "Delete project",
-      "deleteProjectDescription": "Delete the cron jobs and idle conversations in “<name>{{projectName}}</name>”. Running ordinary conversations will be skipped and the project kept until you stop them and retry. The working directory stays. Deleted content cannot be recovered.",
-      "projectDeletedSummary": "Project deleted: {{sessions}} conversation(s), {{crons}} cron job(s)",
-      "deleteFailedSummary": "Project deletion incomplete: deleted {{sessions}} conversation(s) and {{crons}} cron job(s).",
-      "deleteSkippedRunning": "Deleted {{sessions}} conversation(s) and {{crons}} cron job(s). Skipped {{count}} running conversation(s) and kept the project. Stop them manually, then retry deletion.",
+      "removeProject": "Remove project",
+      "removeProjectConfirm": "Remove",
+      "removeProjectDescription": "Remove “<name>{{projectName}}</name>” from the list and hide its conversations. Archived conversations stay available in the archive page. Its cron jobs are stopped and kept (they stay stopped after the project is restored and must be re-enabled manually); the working directory is unaffected. Undo, or create a project with the same directory to restore it.",
+      "projectRemovedSummary": "Project removed; its cron jobs were stopped",
       "archiveSessions": "Archive all conversations",
-      "archiveSessionsDescription": "Archive all ordinary conversations in “<name>{{projectName}}</name>”. Running conversations will remain active and be skipped. Cron jobs stay unchanged.",
+      "archiveConfirmTitle": "Archive ({{count}}) conversations",
+      "archiveConfirmTitleFallback": "Archive all conversations",
+      "archiveConfirmDescription": "This will archive conversations in the current project. You can find them later in archived conversations.",
+      "archiveConfirmAll": "Archive all",
       "sessionsArchived": "Archived {{count}} conversations",
-      "archiveSkippedRunning": "{{count}} conversation(s) are running and were skipped",
-      "archiveSkippedRunningWithSuccess": "Archived {{succeeded}} conversation(s); {{count}} running conversation(s) were skipped",
-      "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed. Failed items can be retried.",
+      "archiveBatchFailedRunning": "{{count}} conversation(s) are running and could not be archived",
+      "archiveBatchFailed": "{{count}} conversation(s) failed to archive",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
       "errors": {
@@ -3471,7 +3560,9 @@
         "deleteSessionBusy": "This conversation is running and cannot be deleted. Stop it manually, then try again.",
         "archiveForbidden": "This task does not support archiving.",
         "archiveNotFound": "The resource no longer exists or has changed. Refresh and try again.",
-        "archiveFailed": "The archive operation failed. Please try again later."
+        "archiveFailed": "The archive operation failed. Please try again later.",
+        "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
+        "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
@@ -3763,7 +3854,8 @@
       "stepDone": "Done, continue to the next step",
       "error": "Connection failed, please retry",
       "retry": "Retry",
-      "timeout": "Authorization timed out, please reopen the page and retry"
+      "timeout": "Authorization timed out, please reopen the page and retry",
+      "cancelConnect": "Cancel connection"
     },
     "registerMcp": {
       "title": "Configure connector",
@@ -3841,6 +3933,7 @@
       "loginSuccessToast": "Signed in with HUAWEI ID",
       "statusStarting": "Preparing sign-in…",
       "statusWaiting": "Sign-in page opened in your browser — come back here when you're done…",
+      "claimPendingHint": "We haven't received your sign-in yet. Finish authorizing your Huawei account in the page that opened, then click \"I've signed in\".",
       "checkLogin": "I've signed in",
       "popupBlocked": "The browser blocked the new tab. Copy this URL and open it manually:",
       "modelError": {
@@ -3856,6 +3949,7 @@
         "unit": "credits",
         "used": "Used",
         "total": "Total",
+        "fetchFailedHint": "Credits are temporarily unavailable. Please try again later.",
         "meteringHint": "Credits are deducted by actual model usage.",
         "exhaustedHint": "Your free credits are used up. Switch to a configured model.",
         "exhaustedUntil": "Your free credits are used up. They refresh {{date}}.",

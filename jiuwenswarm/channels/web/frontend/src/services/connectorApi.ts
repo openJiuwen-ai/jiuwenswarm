@@ -220,6 +220,11 @@ export const connectorApi = {
     );
     return fromRawConnect(payload);
   },
+  // 用户在中途放弃连接/授权（误操作想重新走一遍 OAuth，或等太久了）。后端把正在 hold-open 的
+  // mcp.connect/mcp.wait_auth 收尾成 cancelled，杀掉挂起的 CLI 授权进程并回滚 connecting 记录。
+  // 幂等，连接没在进行中时调用也无副作用。
+  cancelConnect: (name: string) =>
+    webRequest<{ type: 'cancelled'; name: string; applied?: boolean }>('mcp.cancel_connect', { name }),
   disconnect: (name: string) =>
     webRequest<{ type: 'disconnected'; name: string; applied: boolean; item: Record<string, unknown> }>(
       'mcp.disconnect',

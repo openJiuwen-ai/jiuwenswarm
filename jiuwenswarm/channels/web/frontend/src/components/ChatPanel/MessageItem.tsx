@@ -56,6 +56,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
+import { writeClipboard } from '../../utils/writeClipboard';
 import { isSkillPackageFile } from '../../utils/skillPackageFile';
 import {
   resolveTeamLeaderDisplayName,
@@ -468,18 +469,8 @@ export const MessageItem = memo(function MessageItem({
     const raw = role === 'user' ? stripUploadDocumentBlocks(stripSwarmflowAdvisory(content)) : content;
     if (!raw) return;
     const copyContent = a2uiContentToText(raw) || raw;
-    try {
-      await navigator.clipboard.writeText(copyContent);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = copyContent;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
+    const ok = await writeClipboard(copyContent);
+    if (!ok) return;
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2000);
   }, [content, role]);
@@ -901,8 +892,8 @@ export const MessageItem = memo(function MessageItem({
                   {...tooltipHandlers}
                   onClick={handleCopy}
                   className={clsx(
-                    'p-1.5 rounded-md',
-                    copied ? 'text-accent' : 'hover:text-accent hover:bg-secondary'
+                    'px-1 py-1.5 rounded-md',
+                    copied ? 'text-accent' : 'hover:bg-secondary'
                   )}
                 >
                   {copied ? (
@@ -924,10 +915,10 @@ export const MessageItem = memo(function MessageItem({
                   {...tooltipHandlers}
                   onClick={handleSpeak}
                   className={clsx(
-                    'p-1.5 rounded-md ',
+                    'px-1 py-1.5 rounded-md ',
                     isPlaying
                       ? 'text-accent bg-accent/10'
-                      : 'hover:text-accent hover:bg-secondary'
+                      : 'hover:bg-secondary'
                   )}
                 >
                   {isPlaying ? (
@@ -951,7 +942,7 @@ export const MessageItem = memo(function MessageItem({
                   onClick={() => void handleForkFromMessage()}
                   disabled={isForking}
                   className={clsx(
-                    'p-1.5 rounded-md hover:text-accent hover:bg-secondary',
+                    'px-1 py-1.5 rounded-md hover:bg-secondary',
                     isForking && 'cursor-wait opacity-50'
                   )}
                 >

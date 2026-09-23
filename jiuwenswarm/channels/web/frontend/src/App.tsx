@@ -78,6 +78,7 @@ import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import {
   AgentMode,
   MediaItem,
+  type ChatSendOptions,
   UserAnswer,
   ModelEntry,
   type MessageForkPoint,
@@ -1003,6 +1004,7 @@ function AppContent({
     request,
     persistMedia,
     persistDocuments,
+    discardMedia,
     sendMessage,
     sendStructuredChatContent,
     pause,
@@ -1312,6 +1314,7 @@ function AppContent({
             id: n.id,
             name: n.name,
             arguments: n.arguments,
+            outputOrder: n.outputOrder,
             description: n.description,
             formatted_args: n.formatted_args,
             call_goal: n.call_goal,
@@ -1605,6 +1608,12 @@ function AppContent({
       const session = await request<Session>('session.get_metadata', {
         session_id: targetSessionId,
       });
+      if ((session as unknown as Record<string, unknown>).archived === true) {
+        if (sessionIdRef.current === targetSessionId) {
+          navigate({ kind: 'chat-new' }, { replace: true });
+        }
+        return null;
+      }
       const isSideConversation = Boolean(session.ephemeral && session.side_parent_session_id?.trim());
       if (isSideConversation) {
         useSessionStore.getState().removeSession(targetSessionId);
@@ -1688,7 +1697,7 @@ function AppContent({
       }
       return null;
     }
-  }, [registerSideConversation, request, setProcessing, setThinking, upsertSessionMetadata]);
+  }, [navigate, registerSideConversation, request, setProcessing, setThinking, upsertSessionMetadata]);
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
@@ -2280,6 +2289,7 @@ function AppContent({
                 id: n.id,
                 name: n.name,
                 arguments: n.arguments,
+            outputOrder: n.outputOrder,
                 description: n.description,
                 formatted_args: n.formatted_args,
                 call_goal: n.call_goal,
@@ -2375,6 +2385,19 @@ function AppContent({
           count: info.count,
           summaries: info.summaries,
         });
+      },
+      onPendingQuestionReplay: (items) => {
+        // 防御性兜底：当前 materializeHistoryTimeline 把未答问题也渲染成只读
+        // qa.summary 卡片（不弹实时交互框——web 重连后后端不重发挂起中断，弹框 +
+        // resume 会报 "session has no active execution"），所以 pendingQuestionReplay
+        // 恒为空、本回调不会被触发。保留此钩子是为了将来后端支持重发挂起中断时
+        // 可直接重新启用，无需改接口。
+        const chatStore = useChatStore.getState();
+        chatStore.ensureRuntime(sessionId);
+        const sorted = [...items].sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0));
+        for (const item of sorted) {
+          chatStore.enqueuePendingQuestion(sessionId, item.payload);
+        }
       },
       onError: (message) => {
         console.warn('[history.restore]', message);
@@ -2625,7 +2648,10 @@ function AppContent({
     setCurrentSession(null);
     setTeamAreaExpanded(false);
     setSingleAgentPanelExpanded(false);
-    navigate({ kind: 'chat-new' });
+    navigate(
+      { kind: 'chat-new' },
+      options.replaceHistory ? { replace: true } : undefined,
+    );
     setActiveNav('chat');
     requestComposerFocus();
   }, [disposeInFlightHistoryHandles, mode, navigate, requestComposerFocus, setCurrentSession, setSelectedProject, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
@@ -2828,9 +2854,13 @@ function AppContent({
     useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: groupId });
   }, [enterNewConversation]);
 
-  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
+  const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
+    if (options?.queuedTaskId) {
+      await sendMessage(content, currentSessionId, mediaItems, options);
+      return;
+    }
     if (currentSessionId === NEW_CONVERSATION_ID) {
       const persistCommand = parsePersistSessionCommand(content);
       if (persistCommand.persistSession && !persistCommand.content) {
@@ -3020,6 +3050,13 @@ function AppContent({
     }
     return persistMedia(content, currentSessionId, mediaItems);
   }, [persistMedia]);
+
+  const handleDiscardMedia = useCallback((sessionId: string, path: string) => {
+    if (!sessionId || sessionId === NEW_CONVERSATION_ID || !path) {
+      return Promise.resolve();
+    }
+    return discardMedia(sessionId, path);
+  }, [discardMedia]);
 
   const handlePersistDocuments = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -3751,6 +3788,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onInputIntent={handleSessionInputIntent}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}
+                        onDiscardMedia={handleDiscardMedia}
                         onInterrupt={handleInterrupt}
                         onCancel={handleCancel}
                         onSwitchMode={handleSwitchMode}
@@ -4020,10 +4058,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-page-body">
             <div className="page-content">
               <ConnectorMarketPanel
-                applicationPlugins={applicationPlugins}
-                applicationPluginsLoading={applicationPluginState.loading}
-                applicationPluginsError={applicationPluginState.error}
-                onRefreshApplicationPlugins={applicationPluginState.refresh}
                 onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                   detail: {
                     skillName: 'plugin-creator',

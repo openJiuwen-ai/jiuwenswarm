@@ -37,6 +37,9 @@ def test_macos_close_hides_window_and_dock_reopens_it(
     button = FakeButton()
 
     class FakeNativeWindow:
+        def orderOut_(self, sender) -> None:
+            actions.append(("order_out", sender))
+
         def standardWindowButton_(self, button_type):
             actions.append(("button", button_type))
             return button
@@ -50,11 +53,22 @@ def test_macos_close_hides_window_and_dock_reopens_it(
         def instancesRespondToSelector_(_selector) -> bool:
             return False
 
-    browser_view = types.SimpleNamespace(AppDelegate=FakeAppDelegate)
-    objc = types.SimpleNamespace(
-        _C_NSBOOL=b"Z",
-        selector=lambda callback, signature: callback,
+    class FakeWindowDelegate:
+        def windowShouldClose_(self, window) -> bool:
+            actions.append(("original_should_close", window))
+            return True
+
+    browser_view = types.SimpleNamespace(
+        AppDelegate=FakeAppDelegate,
+        WindowDelegate=FakeWindowDelegate,
     )
+    selectors = []
+
+    def fake_selector(callback, selector, signature):
+        selectors.append((selector, signature))
+        return callback
+
+    objc = types.SimpleNamespace(_C_NSBOOL=b"Z", selector=fake_selector)
 
     monkeypatch.setitem(sys.modules, "AppKit", appkit)
     monkeypatch.setitem(
@@ -82,11 +96,23 @@ def test_macos_close_hides_window_and_dock_reopens_it(
 
     runtime._configure_macos_window_lifecycle()
 
+    assert selectors == [
+        (b"windowShouldClose:", b"Z@:@"),
+        (b"applicationShouldHandleReopen:hasVisibleWindows:", b"Z@:@Z"),
+    ]
     assert actions == [
         ("button", appkit.NSWindowCloseButton),
         ("target", native_window),
         ("action", "orderOut:"),
     ]
+    delegate = FakeWindowDelegate()
+    assert delegate.windowShouldClose_(native_window) is False
+    assert actions[-1] == ("order_out", None)
+
+    runtime._allow_window_close = True
+    assert delegate.windowShouldClose_(native_window) is True
+    assert actions[-1] == ("original_should_close", native_window)
+
     reopen = FakeAppDelegate.applicationShouldHandleReopen_hasVisibleWindows_
     assert reopen(None, None, False) is True
     assert shown == [True]
@@ -110,3 +136,68 @@ def test_non_macos_close_button_is_unchanged(desktop_app, monkeypatch, tmp_path)
     runtime._configure_macos_window_lifecycle()
 
     assert native_calls == []
+
+
+def test_explicit_macos_exit_allows_window_destruction(
+    desktop_app, monkeypatch, tmp_path
+) -> None:
+    destroyed = []
+
+    class ImmediateThread:
+        def __init__(self, target, daemon) -> None:
+            self._target = target
+            assert daemon is True
+
+        def start(self) -> None:
+            self._target()
+
+    monkeypatch.setattr(desktop_app.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_app.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(desktop_app.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: tmp_path / "logs")
+    runtime = desktop_app.DesktopRuntime(
+        frontend_host="127.0.0.1",
+        ports=calculate_instance_ports(0),
+    )
+    runtime.window = types.SimpleNamespace(destroy=lambda: destroyed.append(True))
+
+    assert runtime.close_window() is True
+    assert runtime._allow_window_close is True
+    assert destroyed == [True]
+
+
+def test_macos_context_paste_dispatches_native_action_on_ui_thread(desktop_app, monkeypatch, tmp_path):
+    actions = []
+
+    class Responder:
+        def respondsToSelector_(self, selector):
+            return selector == "paste:"
+
+        def paste_(self, sender):
+            actions.append(("paste", sender))
+
+    def call_after(callback):
+        actions.append("ui-dispatch")
+        callback()
+
+    monkeypatch.setitem(sys.modules, "PyObjCTools", types.SimpleNamespace(
+        AppHelper=types.SimpleNamespace(callAfter=call_after),
+    ))
+    monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: tmp_path / "logs")
+    runtime = desktop_app.DesktopRuntime(frontend_host="127.0.0.1", ports=calculate_instance_ports(0))
+    runtime.window = types.SimpleNamespace(native=types.SimpleNamespace(firstResponder=lambda: Responder()))
+    monkeypatch.setattr(desktop_app.sys, "platform", "darwin")
+    desktop_app._WindowApi(runtime).paste_clipboard()
+    assert actions == ["ui-dispatch", ("paste", None)]
+
+    runtime.window.native.firstResponder = lambda: None
+    with pytest.raises(RuntimeError, match="Focused view"):
+        runtime.paste_clipboard()
+
+
+def test_pywebview_native_paste_api_is_only_exposed_on_macos(desktop_app, monkeypatch):
+    runtime = types.SimpleNamespace(paste_clipboard=lambda: None)
+    monkeypatch.setattr(desktop_app.sys, "platform", "darwin")
+    assert callable(desktop_app._WindowApi(runtime).paste_clipboard)
+    monkeypatch.setattr(desktop_app.sys, "platform", "win32")
+    assert not hasattr(desktop_app._WindowApi(runtime), "paste_clipboard")

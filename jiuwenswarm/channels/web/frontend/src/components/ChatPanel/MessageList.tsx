@@ -1,11 +1,4 @@
-import {
-  Fragment,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
 import { LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -96,14 +89,9 @@ type TimelineDerivationCacheEntry = TimelineDerivationInput & {
 };
 
 const timelineDerivationCache = new WeakMap<Message[], TimelineDerivationCacheEntry>();
-const executionListCache = new WeakMap<
-  Map<string, ToolExecution>,
-  WeakMap<string[], ToolExecution[]>
->();
+const executionListCache = new WeakMap<Map<string, ToolExecution>, WeakMap<string[], ToolExecution[]>>();
 
-function deriveTimelineItems(
-  input: TimelineDerivationInput
-): TimelineRenderItems {
+function deriveTimelineItems(input: TimelineDerivationInput): TimelineRenderItems {
   const cached = timelineDerivationCache.get(input.messages);
   if (
     cached?.sessionId === input.sessionId &&
@@ -117,16 +105,13 @@ function deriveTimelineItems(
   const renderItems = buildRenderItems(
     buildTimelineItems(input.messages, input.executions, input.reasoningSegments),
     input.isTeamMode,
-    input.isProcessing
+    input.isProcessing,
   );
   timelineDerivationCache.set(input.messages, { ...input, renderItems });
   return renderItems;
 }
 
-function getExecutionList(
-  executions: Map<string, ToolExecution>,
-  order: string[]
-): ToolExecution[] {
+function getExecutionList(executions: Map<string, ToolExecution>, order: string[]): ToolExecution[] {
   let byOrder = executionListCache.get(executions);
   if (!byOrder) {
     byOrder = new WeakMap();
@@ -143,13 +128,7 @@ function getExecutionList(
   return next;
 }
 
-function TeamLeaderDisplay({
-  identity,
-  className,
-}: {
-  identity?: TeamLeaderIdentity | null;
-  className?: string;
-}) {
+function TeamLeaderDisplay({ identity, className }: { identity?: TeamLeaderIdentity | null; className?: string }) {
   if (identity) {
     return <AgentAvatar identityOverride={identity} alt="" className={className} showName />;
   }
@@ -244,9 +223,7 @@ export function TurnElapsed({
       data-testid="chat-panel-turn-elapsed"
       data-variant={showActive ? 'active' : 'finished'}
     >
-      {showActive && (
-        <LoaderCircle className="turn-elapsed__spinner" size={12} strokeWidth={2.2} aria-hidden="true" />
-      )}
+      {showActive && <LoaderCircle className="turn-elapsed__spinner" size={12} strokeWidth={2.2} aria-hidden="true" />}
       <span className="turn-elapsed__label" data-testid="chat-panel-turn-elapsed-label">
         {showActive ? t('chatUi.turnRunning') : t('chatUi.turnElapsed')}
       </span>
@@ -260,7 +237,10 @@ export function TurnElapsed({
   }
   // 与折叠条同构：头像 + 名称在第一行，耗时行紧随其下。
   return (
-    <div className={clsx('completed-work-col', teamLayout && 'completed-work-col--team')} data-testid="chat-panel-turn-elapsed-block">
+    <div
+      className={clsx('completed-work-col', teamLayout && 'completed-work-col--team')}
+      data-testid="chat-panel-turn-elapsed-block"
+    >
       <div className="completed-work-col__avatar pt-0.5">
         {!teamLayout && agentTemplateName ? (
           <AgentAvatar agentId={agentTemplateName} alt="" className="h-7 w-7" showName />
@@ -325,17 +305,23 @@ function CompletedWorkChip({
         'completed-work-chip',
         variant === 'streak' && 'completed-work-chip--streak',
         expanded && 'is-expanded',
-        toneClass
+        toneClass,
       )}
       onClick={onToggle}
       aria-expanded={expanded}
       data-testid="chat-panel-completed-work-chip"
       data-variant={variant}
     >
-      <span className={clsx('completed-work-chip__icon', toneClass)} aria-hidden="true" data-testid="chat-panel-completed-work-chip-icon">
+      <span
+        className={clsx('completed-work-chip__icon', toneClass)}
+        aria-hidden="true"
+        data-testid="chat-panel-completed-work-chip-icon"
+      >
         <WaitingStatusIcon />
       </span>
-      <span className="completed-work-chip__label" data-testid="chat-panel-completed-work-chip-label">{label}</span>
+      <span className="completed-work-chip__label" data-testid="chat-panel-completed-work-chip-label">
+        {label}
+      </span>
       <span className={clsx('tool-tree-item__disclosure', expanded && 'is-open')} aria-hidden="true">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
           <path strokeLinecap="round" strokeLinejoin="round" d="m8 6 4 4-4 4" />
@@ -350,7 +336,7 @@ function CompletedWorkChip({
         className={clsx(
           'completed-work-col',
           'completed-work-col--team',
-          variant === 'streak' && 'completed-work-col--nested'
+          variant === 'streak' && 'completed-work-col--nested',
         )}
       >
         {showAvatar ? (
@@ -364,12 +350,7 @@ function CompletedWorkChip({
   }
 
   return (
-    <div
-      className={clsx(
-        'completed-work-col',
-        variant === 'streak' && 'completed-work-col--nested'
-      )}
-    >
+    <div className={clsx('completed-work-col', variant === 'streak' && 'completed-work-col--nested')}>
       {showAvatar ? (
         <div className="completed-work-col__avatar">
           {agentTemplateName ? (
@@ -455,7 +436,14 @@ function ReasoningSegmentBlock({
       >
         <span className="tool-tree__header-line">
           <span className="tool-tree__cat-icon" aria-hidden="true">
-            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
               <path d="M10 3.2a4.4 4.4 0 0 0-2.6 7.95v1.6a.9.9 0 0 0 .9.9h3.4a.9.9 0 0 0 .9-.9v-1.6A4.4 4.4 0 0 0 10 3.2z" />
               <path d="M8.3 16.2h3.4" />
             </svg>
@@ -513,11 +501,7 @@ function ReasoningSegmentBlock({
   }
 
   return (
-    <div
-      className="reasoning-col"
-      data-testid="chat-panel-reasoning-block"
-      data-variant="default"
-    >
+    <div className="reasoning-col" data-testid="chat-panel-reasoning-block" data-variant="default">
       {showAvatar ? (
         <div className="reasoning-col__avatar">
           {agentTemplateName ? (
@@ -738,9 +722,24 @@ export function ChatTimelineList({
     }));
   };
 
+  const renderTurnChip = (turnKey: string, meta: NonNullable<ReturnType<typeof turnWorkMeta.get>>) => (
+    <CompletedWorkChip
+      key={`${timelineScope}/completed-work-${turnKey}`}
+      variant="turn"
+      outcomeTone={meta.outcomeTone}
+      expanded={Boolean(expandedTurns[turnKey])}
+      onToggle={() => toggleTurn(turnKey)}
+      elapsedMs={completedWorkDurationMs(meta)}
+      showAvatar
+      teamLayout={isTeamMode}
+      agentTemplateName={agentTemplateNameByTurn.get(meta.turnId)}
+      teamLeaderIdentity={teamLeaderIdentity}
+      teamGroupIdentity={teamGroupIdentity}
+    />
+  );
+
   const renderDisplayItem = (displayItem: TimelineDisplayItem) => {
-    const { item, turnKey, meta, turnFoldable, turnOpen, streak, streakOpen, contentOpen, isTurnAnchor, deliverables } =
-      displayItem;
+    const { item, turnKey, turnFoldable, turnOpen, streak, streakOpen, contentOpen, deliverables } = displayItem;
     if (item.type === 'message') {
       // 正文始终展示；hideMeta 只控制时间与操作栏，不参与思考/工具折叠。
       return (
@@ -762,25 +761,6 @@ export function ChatTimelineList({
 
     if (item.type === 'reasoning' || item.type === 'toolGroup') {
       const nodes: ReactNode[] = [];
-
-      if (turnFoldable && isTurnAnchor && meta) {
-        nodes.push(
-          <CompletedWorkChip
-            key={`${timelineScope}/completed-work-${turnKey}`}
-            variant="turn"
-            outcomeTone={meta.outcomeTone}
-            expanded={turnOpen}
-            onToggle={() => toggleTurn(turnKey)}
-            // 折叠条就是该轮视觉顶部：头像必须挂在这里，不能跟 meta/内容区抢来抢去。
-            elapsedMs={completedWorkDurationMs(meta)}
-            showAvatar
-            teamLayout={isTeamMode}
-            agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
-            teamLeaderIdentity={teamLeaderIdentity}
-            teamGroupIdentity={teamGroupIdentity}
-          />,
-        );
-      }
 
       // 轮次展开后才露出 streak chip；内容仍可按 streak 再折一层
       // 整轮只有最顶部一颗头像：turn 折叠条 > 该轮第一条 streak > 首条内容
@@ -872,9 +852,9 @@ export function ChatTimelineList({
 
     if (item.type === 'turnSummary') {
       const meta = turnWorkMeta.get(item.turnId);
-      // 有折叠工作的已完成轮次：耗时已并入折叠条文案（头像下第一行），时间行不再重复渲染。
+      // 已完成工作条使用 summary 的顶部位置，避免补充消息或提前输出把折叠条挤到工作区中间。
       if (meta?.completed && meta.hasWork) {
-        return null;
+        return renderTurnChip(turnKey, meta);
       }
       const range = meta
         ? turnElapsedRangeMs(meta)
@@ -948,7 +928,7 @@ export function MessageList({
   const mode = useSessionStore((s) => s.runtimes[resolvedSessionId ?? '']?.mode ?? 'agent');
   const executions = useMemo(
     () => getExecutionList(toolExecutions, toolExecutionOrder),
-    [toolExecutions, toolExecutionOrder]
+    [toolExecutions, toolExecutionOrder],
   );
 
   return (

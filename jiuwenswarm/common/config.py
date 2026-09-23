@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -26,6 +27,7 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     set_default_model_provider_in_entries,
     validate_affinity_invariant,
 )
+from jiuwenswarm.common.security.base_crypto import get_crypto_provider
 from jiuwenswarm.common.utils import (
     get_config_dir,
     get_config_file,
@@ -75,12 +77,10 @@ def resolve_env_vars(value: Any) -> Any:
             default = match.group(2)
             current = os.getenv(var_name)
             is_need_decrypt = ("api_key" in var_name.lower() or "token" in var_name.lower()) and current
-            reg_mod = sys.modules.get("jiuwenswarm.extensions.registry")
-            if reg_mod is not None and hasattr(reg_mod, "ExtensionRegistry"):
+            if is_need_decrypt:
                 try:
-                    reg = reg_mod.ExtensionRegistry.get_instance()
-                    crypto = reg.get_crypto_provider()
-                    if is_need_decrypt and crypto:
+                    crypto = get_crypto_provider()
+                    if crypto:
                         current = crypto.decrypt(current)
                 except Exception:
                     logger.debug(
@@ -974,6 +974,15 @@ def update_task_full_duplex_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_task_asr_in_config(enabled: bool) -> None:
+    """Update the task-chat speech transcription switch in config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["task_asr_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_updater_in_config(updates: dict[str, Any]) -> None:
     """只更新 updater 段并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -1428,17 +1437,15 @@ def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]
 
     result = copy.deepcopy(entries)
 
-    reg_mod = sys.modules.get("jiuwenswarm.extensions.registry")
     crypto = None
-    if reg_mod is not None and hasattr(reg_mod, "ExtensionRegistry"):
-        try:
-            crypto = reg_mod.ExtensionRegistry.get_instance().get_crypto_provider()
-        except Exception:
-            logger.debug(
-                "Crypto provider unavailable while decrypting model entries; "
-                "api_key fields will be returned as stored",
-                exc_info=True,
-            )
+    try:
+        crypto = get_crypto_provider()
+    except Exception:
+        logger.debug(
+            "Crypto provider unavailable while decrypting model entries; "
+            "api_key fields will be returned as stored",
+            exc_info=True,
+        )
 
     for entry in result:
         mcc = entry.get("model_client_config")
@@ -1612,6 +1619,36 @@ def update_default_models_in_config(models_list: list[dict[str, Any]]) -> None:
         data["models"]["defaults"] = models_list
         if "default" in data["models"]:
             del data["models"]["default"]
+        return data
+    update_config(_mutate)
+
+
+def update_login_model_settings_in_config(context_windows: dict[str, int | None]) -> None:
+    from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SETTINGS_KEY
+
+    def _mutate(data):
+        if "models" not in data:
+            data["models"] = {}
+        models = data["models"]
+        settings = models.get(LOGIN_MODEL_SETTINGS_KEY)
+        if not isinstance(settings, dict):
+            settings = {}
+        for name, context_window in context_windows.items():
+            own = settings.get(name)
+            if context_window is None:
+                if isinstance(own, dict):
+                    own.pop("context_window", None)
+                    if not own:
+                        del settings[name]
+                continue
+            if not isinstance(own, dict):
+                own = {}
+                settings[name] = own
+            own["context_window"] = context_window
+        if settings:
+            models[LOGIN_MODEL_SETTINGS_KEY] = settings
+        else:
+            models.pop(LOGIN_MODEL_SETTINGS_KEY, None)
         return data
     update_config(_mutate)
 
@@ -2178,9 +2215,12 @@ def get_mcp_servers() -> list[dict[str, Any]]:
             list_connected_mcps,
             record_to_mcp_entry,
         )
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            is_stale_marketplace_record,
+        )
         for rec in list_connected_mcps():
             name = rec.get("name", "")
-            if not name:
+            if not name or is_stale_marketplace_record(name, rec):
                 continue
             entry = record_to_mcp_entry(name, rec)
             # skill-only MCPs return None
@@ -2737,7 +2777,7 @@ def get_model_names() -> list[str]:
                 name_count[display] = count
                 names.append(display)
         return names
-    skip = {"default", "defaults"}
+    skip = {"default", "defaults", "login_model_settings"}
     return [k for k, v in models.items() if isinstance(v, dict) and k not in skip]
 
 
@@ -2811,9 +2851,11 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
 #     idle_ttl_seconds: 600         # 可选, 默认 None = 不进行 idle 驱逐
 #     idle_check_interval: 60       # 可选, 默认 None = 让 jiuwenbox 端用自身默认值
 #     fallback_on_failure: false    # jiuwenbox exec 异常时回退本地 (见 agent-core jiuwenbox provider)
+#     token: "..."                  # 可选, jiuwenswarm↔jiuwenbox Bearer token (与 use_random_token 互斥)
+#     use_random_token: false       # 可选, internal 模式下随机生成 token (不落盘)
 #
 # ``get_sandbox_runtime`` 把这些 key 读出来填默认值;
-# ``update_sandbox_runtime`` 写回时也只动这几个 key, 不动 endpoint 字段。
+# ``update_sandbox_runtime`` 写回时也只动这几个 key, 不动 endpoint / token 字段。
 #
 # ``idle_ttl_seconds`` / ``idle_check_interval`` 透传给
 # ``create_sandbox_sysop_card`` 作为同名参数, 最终在 jiuwenbox provider 里通过
@@ -2831,7 +2873,25 @@ _SANDBOX_RUNTIME_DEFAULTS: dict[str, Any] = {
 }
 
 # 受 ``get_sandbox_runtime`` / ``update_sandbox_runtime`` 管辖的 sandbox 字段。
+# ``token`` / ``use_random_token`` 故意不在这里: 它们是 endpoint 级凭据, 不该被
+# ``/sandbox`` runtime patch 整表刷盘。
 _SANDBOX_RUNTIME_KEYS: tuple[str, ...] = tuple(_SANDBOX_RUNTIME_DEFAULTS.keys())
+
+# Shared with jiuwenbox server / CLI / provider HTTP client.
+JIUWENBOX_API_TOKEN_ENV = "JIUWENBOX_API_TOKEN"
+
+# Process-lifetime cache for ``sandbox.use_random_token=true``. Must stay stable
+# across bootstrap and later ``/sandbox enable`` so parent env and the already
+# spawned jiuwenbox subprocess keep the same Bearer token. Cleared only on
+# process restart (or explicitly in unit tests via
+# :func:`_clear_sandbox_api_token_cache_for_tests`).
+_random_sandbox_api_token_cache: str | None = None
+
+
+def _clear_sandbox_api_token_cache_for_tests() -> None:
+    """Reset the random-token cache. Unit tests only."""
+    global _random_sandbox_api_token_cache
+    _random_sandbox_api_token_cache = None
 
 
 def _coerce_optional_positive_int(
@@ -3042,6 +3102,80 @@ def get_sandbox_startup_mode_explicit() -> str | None:
     if text not in _VALID_SANDBOX_STARTUP_MODES:
         return None
     return text
+
+
+def get_sandbox_token_config() -> tuple[str, bool]:
+    """返回 ``(sandbox.token, sandbox.use_random_token)`` 的归一化结果。
+
+    - ``token``: 去空白后的字符串; 缺失 / 空串 → ``""``。
+    - ``use_random_token``: 缺省 ``False``。
+    """
+    cfg = get_config() or {}
+    sandbox = cfg.get("sandbox")
+    if not isinstance(sandbox, dict):
+        sandbox = {}
+    token = str(sandbox.get("token") or "").strip()
+    use_random = bool(sandbox.get("use_random_token", False))
+    return token, use_random
+
+
+def resolve_sandbox_api_token(*, startup_mode: str | None = None) -> str | None:
+    """解析 jiuwenswarm ↔ jiuwenbox 之间使用的 Bearer token。
+
+    规则:
+    - ``sandbox.token`` 非空且 ``use_random_token=true`` → ``ValueError`` (互斥)。
+    - ``use_random_token=true`` 且 ``startup_mode=external`` → ``ValueError``
+      (随机值无法注入用户自行拉起的进程)。
+    - 仅 ``token`` 非空 → 返回该值。
+    - 仅 ``use_random_token=true`` → 返回进程内缓存的随机值 (首次生成后复用,
+      **不写回** ``sandbox.token``)。
+    - 两者都未启用 → ``None`` (关闭认证, 与旧行为一致)。
+
+    Args:
+        startup_mode: 调用方已知的模式; ``None`` 时回落到
+            :func:`get_sandbox_startup_mode`。
+    """
+    global _random_sandbox_api_token_cache
+
+    token, use_random = get_sandbox_token_config()
+    if token and use_random:
+        raise ValueError(
+            "sandbox.token 与 sandbox.use_random_token 不能同时配置: "
+            "请只保留其中一个"
+        )
+
+    mode = (
+        _normalize_sandbox_startup_mode(startup_mode)
+        if startup_mode is not None
+        else get_sandbox_startup_mode()
+    )
+    if use_random and mode == "external":
+        raise ValueError(
+            "sandbox.use_random_token=true 仅适用于 startup_mode=internal: "
+            "external 模式下无法把随机 token 注入用户自行拉起的 jiuwenbox"
+        )
+
+    if token:
+        return token
+    if use_random:
+        if _random_sandbox_api_token_cache is None:
+            _random_sandbox_api_token_cache = secrets.token_urlsafe(32)
+        return _random_sandbox_api_token_cache
+    return None
+
+
+def sync_sandbox_api_token_environ(token: str | None) -> None:
+    """把解析出的 token 同步到当前进程的 ``JIUWENBOX_API_TOKEN``。
+
+    agent-server 派生的子进程 (MCP server / hybrid shell 宿主侧编排 /
+    jiuwenbox CLI 等) 会继承该环境变量, 以便现有 provider HTTP 客户端无需改
+    签名即可带上 ``Authorization: Bearer``。无 token 时显式 ``pop``, 避免继承
+    到过期值。
+    """
+    if token:
+        os.environ[JIUWENBOX_API_TOKEN_ENV] = token
+    else:
+        os.environ.pop(JIUWENBOX_API_TOKEN_ENV, None)
 
 
 def update_sandbox_startup_mode(mode: str) -> str:

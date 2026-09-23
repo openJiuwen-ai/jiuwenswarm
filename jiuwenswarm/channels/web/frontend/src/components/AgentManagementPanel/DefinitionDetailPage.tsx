@@ -70,24 +70,25 @@ export function DefinitionDetailPage({
   onInstall,
   onUninstall,
   onDelete,
-  onEdit,
 }: DefinitionDetailPageProps) {
   const { t } = useTranslation();
-
 
   if (!detail) {
     const loading = detailStatus === 'loading';
     return (
-      <div className="agent-management-detail" data-testid="agent-detail" aria-busy={loading}>
+      <div className={`agent-management-detail${loading ? ' detail-loading-shell' : ''}`} data-testid="agent-detail" aria-busy={loading}>
         <button type="button" className="detail-back" data-testid="agent-management-detail-back" onClick={onBack}>
-
           <BackIcon aria-hidden="true" />
           {t('agentManagement.actions.back')}
         </button>
-        <div className="detail-body flex-1 min-h-0 overflow-y-auto pb-[72px]">
+        <div
+          className={loading ? 'detail-loading-center' : 'detail-body flex-1 min-h-0 overflow-y-auto pb-[72px]'}
+          data-testid="agent-management-detail-state-body"
+        >
           <div
             className={`agent-management-detail--state${loading ? '' : ' agent-management-state--error'}`}
             data-testid="agent-management-detail-state"
+            data-variant={loading ? 'loading' : undefined}
             role={loading ? 'status' : 'alert'}
           >
             <p>{loading ? t('common.loading') : detailError || t('agentManagement.states.detailError')}</p>
@@ -124,7 +125,6 @@ export function DefinitionDetailPage({
     { title: t('agentManagement.detail.rails'), items: detail.rails },
     { title: t('agentManagement.detail.mcps'), items: detail.mcps },
   ].filter((group) => group.items.length > 0);
-  const canEdit = detail.source === 'local';
   return (
     <div className="agent-management-detail" data-testid="agent-detail">
       <button type="button" className="detail-back" onClick={onBack} data-testid="agent-management-detail-back">
@@ -147,17 +147,22 @@ export function DefinitionDetailPage({
           ]}
           actions={
             <div className="agent-management-detail__actions">
-              {canEdit ? (
+              {(detail.installed || detail.source !== 'hub') && (
                 <button
                   type="button"
-                  className="agent-management-button agent-management-button--secondary agent-management-detail-action--edit"
-                  disabled={busy}
-                  onClick={() => onEdit(detail.id)}
+                  className="agent-management-button agent-management-button--secondary"
+                  data-testid="agent-management-agent-template-publish"
+                  onClick={() =>
+                    openAssetPublish({
+                      kind: 'agent_template',
+                      local_id: detail.runtimePackageName,
+                      avatar_url: avatarUrl || undefined,
+                    })
+                  }
                 >
-                  {t('agentManagement.actions.edit')}
+                  {t('skills.actions.publish')}
                 </button>
-              ) : null}
-              {(detail.installed || detail.source !== 'hub') && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="agent-management-agent-template-publish" onClick={() => openAssetPublish({ kind: 'agent_template', local_id: detail.runtimePackageName, avatar_url: avatarUrl || undefined })}>{t('skills.actions.publish')}</button>}
+              )}
               {detail.installed ? (
                 <>
                   {needsConnection ? (
@@ -179,14 +184,20 @@ export function DefinitionDetailPage({
                     disabled={busy}
                     aria-busy={busy}
                     onClick={() =>
-                      detail.source === 'local'
-                        ? onDelete(detail.id, detail.displayName)
-                        : onUninstall(detail.id)
+                      detail.source === 'local' ? onDelete(detail.id, detail.displayName) : onUninstall(detail.id)
                     }
                     data-testid="agent-management-detail-uninstall-btn"
                   >
                     <UninstallIcon aria-hidden="true" />
-                    {t(detail.source === 'local' ? (busy ? 'agentManagement.actions.deleting' : 'agentManagement.actions.delete') : (busy ? 'agentManagement.actions.uninstalling' : 'agentManagement.actions.uninstall'))}
+                    {t(
+                      detail.source === 'local'
+                        ? busy
+                          ? 'agentManagement.actions.deleting'
+                          : 'agentManagement.actions.delete'
+                        : busy
+                          ? 'agentManagement.actions.uninstalling'
+                          : 'agentManagement.actions.uninstall',
+                    )}
                   </button>
                   <button
                     type="button"

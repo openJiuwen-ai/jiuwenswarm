@@ -236,6 +236,35 @@ class TestPrepareWorkspaceAndMarketplace:
 
 
 class TestAgentGroupResolution:
+    def test_list_agent_groups_orders_latest_create_or_install_first(
+        self,
+        extension_workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _seed_valid_agent_group(extension_workspace, "older-group", under="local")
+        _seed_valid_agent_group(extension_workspace, "newer-group", under="local")
+        timestamps = iter((100, 200, 300))
+        monkeypatch.setattr(catalog.time, "time_ns", lambda: next(timestamps))
+
+        catalog.upsert_agent_group_marketplace_entry(
+            "older-group", installed=True, source="local"
+        )
+        catalog.upsert_agent_group_marketplace_entry(
+            "newer-group", installed=True, source="local"
+        )
+        assert [card["name"] for card in catalog.list_agent_groups()] == [
+            "newer-group",
+            "older-group",
+        ]
+
+        catalog.upsert_agent_group_marketplace_entry(
+            "older-group", installed=True, source="local"
+        )
+        assert [card["name"] for card in catalog.list_agent_groups()] == [
+            "older-group",
+            "newer-group",
+        ]
+
     def test_list_agent_groups_returns_only_loadable_selection_cards(
         self,
         extension_workspace: Path,
@@ -650,7 +679,7 @@ class TestAgentGroupLifecycle:
             / "another-delivery-review-team"
         ).exists()
 
-    def test_import_valid_group_writes_local_uninstalled(
+    def test_import_valid_group_installs_local_group(
         self, extension_workspace: Path, tmp_path: Path
     ) -> None:
         source_workspace = tmp_path / "source-home" / "agent" / "workspace"
@@ -669,7 +698,59 @@ class TestAgentGroupLifecycle:
             / "imported-review"
         )
         assert imported.is_dir()
-        assert catalog.is_agent_group_installed("imported-review") is False
+        assert catalog.is_agent_group_installed("imported-review") is True
+        assert catalog.resolve_agent_group_dir("imported-review") == imported.resolve()
+
+    def test_import_rejects_duplicate_display_name(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        existing = _seed_valid_agent_group(
+            extension_workspace,
+            "existing-review",
+            under="local",
+        )
+        existing_manifest = json.loads(
+            (existing / "manifest.json").read_text(encoding="utf-8")
+        )
+        existing_manifest["display_name"] = {
+            "zh": "交付评审专家团",
+            "en": "Delivery Review Team",
+        }
+        (existing / "manifest.json").write_text(
+            json.dumps(existing_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        source_workspace = tmp_path / "source-home" / "agent" / "workspace"
+        source = _seed_valid_agent_group(
+            source_workspace,
+            "another-review",
+            under="local",
+        )
+        source_manifest = json.loads(
+            (source / "manifest.json").read_text(encoding="utf-8")
+        )
+        source_manifest["display_name"] = {
+            "zh": "交付评审专家团",
+            "en": "Another Review Team",
+        }
+        (source / "manifest.json").write_text(
+            json.dumps(source_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(catalog.AgentGroupPackageError) as exc_info:
+            catalog.import_agent_group({"path": str(source)})
+
+        assert exc_info.value.code == "AGENT_GROUP_DUPLICATE"
+        assert "existing-review" in str(exc_info.value)
+        assert not (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "local"
+            / "another-review"
+        ).exists()
 
     def test_resource_group_install_and_uninstall_preserves_shelf_card(
         self,

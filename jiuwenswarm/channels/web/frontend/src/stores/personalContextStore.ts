@@ -23,6 +23,7 @@ export type InfoTab = 'graph' | 'services';
 /** 未配置时的统一投影（与后端 _unconfigured_projection 字段对齐）。 */
 const UNCONFIGURED: PersonalContextConfig = {
   configured: false,
+  master_enabled: false,
   collection_enabled: false,
   agent_use_enabled: false,
   strategy_profile: 'agent',
@@ -63,7 +64,7 @@ interface PersonalContextState {
 
   setEnabled: (enabled: boolean) => Promise<void>;
   setAgentUseEnabled: (enabled: boolean) => Promise<void>;
-  /** 总开关：无独立持久化状态，仅联动两个子开关——开启=两者开，关闭=两者关。 */
+  /** 总开关（独立持久化）：开启=两个子开关都开，关闭=两个子开关都关；子开关切换不影响它。 */
   setMasterEnabled: (enabled: boolean) => Promise<void>;
   setStrategyProfile: (profile: PersonalContextConfig['strategy_profile']) => Promise<void>;
   selectModel: (modelIndex: number) => Promise<void>;
@@ -78,10 +79,12 @@ interface PersonalContextState {
   stopRun: (serviceId: string) => Promise<void>;
 
   loadAuthStatus: (provider: string) => Promise<void>;
-  /** 授权（飞书 OAuth 设备流不带 credentials；github/gitcode 传 {token}/{pat}）。 */
+  /** 授权（飞书 OAuth 设备流不带 credentials；github/gitcode 传 {token}/{pat}）。
+   *  reauthorize=true 时强制重新发起授权（飞书已授权后再次授权需传）。 */
   authorizeProvider: (
     provider: string,
     credentials?: Record<string, string>,
+    reauthorize?: boolean,
   ) => Promise<AuthorizationResult>;
   /** 派生：provider 是否已授权（飞书/github/gitcode 走 authByProvider 真实态，其余无需授权）。 */
   isProviderAuthorized: (provider: FetchProvider) => boolean;
@@ -138,6 +141,9 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   loadGraph: async () => {
+    // 防重入：getGraph 走全局流式事件订阅，并发调用会互相收到对方的 nodes/edges 帧，
+    // 导致数据串扰；上一轮未结束时跳过本轮，由进行中的那次完成后统一 set。
+    if (get().loadingGraph) return;
     set({ loadingGraph: true });
     try {
       const graph = await pcApi.getGraph();
@@ -190,14 +196,39 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
   },
 
   setMasterEnabled: async (enabled) => {
-    // 总开关为派生状态，本身不落库：开=两个子开关都开，关=两个子开关都关。
-    if (enabled) {
-      // 开启顺序：先采集（可能触发后端首次初始化 config），再 agent 使用
-      await get().setEnabled(true);
-      await get().setAgentUseEnabled(true);
-    } else {
-      await get().setEnabled(false);
-      await get().setAgentUseEnabled(false);
+    // 总开关联动两个子开关，由后端一次 RPC 原子持久化，避免中间状态落盘不一致。前端仍做
+    // 乐观更新 + pendingWrites（对齐 setEnabled/setAgentUseEnabled）：切换期间主/子开关都进入
+    // 禁用态，失败回滚乐观翻转。
+    set({
+      pendingWrites: {
+        ...get().pendingWrites,
+        collection_enabled: true,
+        agent_use_enabled: true,
+      },
+    });
+    const prev = get().config;
+    set({
+      config: {
+        ...prev,
+        master_enabled: enabled,
+        collection_enabled: enabled,
+        agent_use_enabled: enabled,
+      },
+    });
+    try {
+      const next = await pcApi.setMasterEnabled(enabled);
+      set({ config: next, status: await pcApi.getStatus().catch(() => get().status) });
+    } catch (e) {
+      set({ config: prev });
+      throw e;
+    } finally {
+      set({
+        pendingWrites: {
+          ...get().pendingWrites,
+          collection_enabled: false,
+          agent_use_enabled: false,
+        },
+      });
     }
   },
 
@@ -352,10 +383,10 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     }
   },
 
-  authorizeProvider: async (provider, credentials) => {
+  authorizeProvider: async (provider, credentials, reauthorize) => {
     set({ pendingWrites: { ...get().pendingWrites, [`auth:${provider}`]: true } });
     try {
-      const result = await pcApi.authorizeProvider(provider, credentials);
+      const result = await pcApi.authorizeProvider(provider, credentials, reauthorize);
       set({ authByProvider: { ...get().authByProvider, [provider]: result } });
       return result;
     } finally {

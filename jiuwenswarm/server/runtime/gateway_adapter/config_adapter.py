@@ -139,25 +139,27 @@ class ConfigAdapter(GatewayAdapter):
 
         # Keep the mature panel serialization/validation implementation shared
         # while making its execution context (and therefore config directory)
-        # unambiguously AgentServer-owned.
+        # unambiguously AgentServer-owned. The implementation lives in
+        # common.config_panel (channel-specific modules; the TUI contract
+        # differs from the Web one, so each side registers its own handlers).
         channel = _ConfigRpcChannel(request.channel_id)
         if request.channel_id == "tui":
             # TUI has a distinct config schema (notably Auto-Harness fields).
-            # Reuse its mature local handler in the AgentServer process instead
-            # of silently treating a TUI request as a Web config request.
-            from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
-                CliHandlersBindParams,
-                register_cli_handlers,
+            from jiuwenswarm.common.config_panel.tui_models_handlers import (
+                register_tui_config_handlers,
             )
 
-            register_cli_handlers(CliHandlersBindParams(channel=channel, force_local_config=True))
+            register_tui_config_handlers(channel)
         else:
-            from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-                WebHandlersBindParams,
-                _register_web_handlers,
+            from jiuwenswarm.common.config_panel.config_set_handlers import (
+                register_config_set_handlers,
+            )
+            from jiuwenswarm.common.config_panel.models_handlers import (
+                register_models_handlers,
             )
 
-            _register_web_handlers(WebHandlersBindParams(channel=channel))
+            register_config_set_handlers(channel)
+            register_models_handlers(channel)
         handler = channel.methods.get(request.req_method.value)
         if handler is None:
             return build_error_response(request, "unsupported config method", code="BAD_REQUEST")
@@ -261,9 +263,8 @@ class ConfigAdapter(GatewayAdapter):
 
     async def _handle_tui_command_model(self, request: AgentRequest) -> AgentResponse:
         """Run the complete legacy TUI model command in this user directory."""
-        from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
-            CliHandlersBindParams,
-            register_cli_handlers,
+        from jiuwenswarm.common.config_panel.tui_models_handlers import (
+            command_model_handler,
         )
 
         class _ReloadNoopClient:
@@ -275,17 +276,15 @@ class ConfigAdapter(GatewayAdapter):
                 return type("Response", (), {"ok": True, "payload": {}})()
 
         channel = _ConfigRpcChannel(request.channel_id or "tui")
-        register_cli_handlers(
-            CliHandlersBindParams(
-                channel=channel,
-                agent_client=_ReloadNoopClient(),
-                force_local_config=True,
-            )
+        await command_model_handler(
+            channel,
+            object(),
+            request.request_id,
+            request.params or {},
+            request.session_id,
+            agent_client=_ReloadNoopClient(),
+            user_id=request.user_id,
         )
-        handler = channel.methods.get(ReqMethod.COMMAND_MODEL.value)
-        if handler is None:
-            return build_error_response(request, "command.model handler unavailable")
-        await handler(object(), request.request_id, request.params or {}, request.session_id)
         response = channel.response
         if response is None:
             return build_error_response(request, "command.model produced no response")

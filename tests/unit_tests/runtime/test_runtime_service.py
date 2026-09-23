@@ -1594,7 +1594,8 @@ async def test_interrupt_answer_resumes_session_execution_after_stream_ends(
         plan_controller=FakePlanController(),
     )
     runtime._trigger_before_chat_request_hook = AsyncMock()
-    session_id = "ask-user-stream-session"
+    # Keep parameter cases separate from asynchronous metadata writes.
+    session_id = f"ask-user-stream-session-{expected_work_kind}"
     original = AgentRequest(
         request_id="original",
         channel_id="web",
@@ -3299,7 +3300,7 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     first_runtime.start = AsyncMock()
     first_runtime.close = AsyncMock(wraps=first_runtime.close)
 
-    await server.start()
+    await server.start(bind_transport=True)
     await server._checkpointer_warmup_task
     await server.stop()
 
@@ -3308,7 +3309,7 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     recovered_runtime.start = AsyncMock()
     recovered_runtime.close = AsyncMock(wraps=recovered_runtime.close)
 
-    await server.start()
+    await server.start(bind_transport=True)
     await server._checkpointer_warmup_task
 
     assert len(listeners) == 2

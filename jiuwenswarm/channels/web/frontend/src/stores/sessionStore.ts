@@ -27,6 +27,7 @@ import {
   type TaskProgressBaseline,
 } from '../features/teamTaskProgressBaseline';
 import type { AgentGroupSelectionIntent, AgentSelectionIntent } from '../features/agentManagement/types';
+import { isAgentGroupSelected } from '../features/agentManagement/port';
 import { isTeamAgentMode, stripPlanSuffix } from '../features/planMode/wireMode';
 import {
   applyWorkflowUpdate as applyWorkflowUpdateImpl,
@@ -1207,6 +1208,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (!normalized) return;
     set((state) => {
       const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      if (
+        isAgentGroupSelected(
+          runtime.mode,
+          runtime.agentGroupSelectionIntent,
+          runtime.agentGroupBinding,
+          runtime.agentGroupBindingPending,
+        )
+      ) return state;
       if (runtime.selectedSkills.includes(normalized)) return state;
       return {
         runtimes: {

@@ -6,7 +6,6 @@ import ctypes
 import http.client
 import json
 import logging
-import mimetypes
 import os
 import secrets
 import shlex
@@ -22,6 +21,7 @@ import uuid
 import webbrowser
 import weakref
 from contextlib import contextmanager
+from concurrent.futures import Future
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -713,6 +713,9 @@ def _launch_windows_installer_helper(
 class _WindowApi:
     def __init__(self, runtime: "DesktopRuntime") -> None:
         self._runtime = runtime
+        if sys.platform == "darwin":
+            # Expose only where the host implements the native paste command.
+            self.paste_clipboard = runtime.paste_clipboard
 
     def minimize_window(self) -> bool:
         return self._runtime.minimize_window()
@@ -723,12 +726,15 @@ class _WindowApi:
     def close_window(self) -> bool:
         return self._runtime.close_window()
 
-    def get_close_action(self) -> str | None:
+    # pywebview drops the first argument of exposed methods from the JS signature.
+    @classmethod
+    def get_close_action(cls) -> str | None:
         if not _is_windows_desktop():
             return None
         return _load_close_action() or CLOSE_ACTION_ASK
 
-    def set_close_action(self, action: str) -> bool:
+    @classmethod
+    def set_close_action(cls, action: str) -> bool:
         if not _is_windows_desktop():
             return False
         return _save_close_action(action)
@@ -1562,10 +1568,34 @@ class DesktopRuntime:
             try:
                 self.window.destroy()
             except Exception as exc:  # noqa: BLE001
+                if sys.platform == "darwin":
+                    self._allow_window_close = False
                 logger.warning("[desktop] failed to close desktop window: %s", exc)
 
         threading.Thread(target=_delayed_destroy, daemon=True).start()
         return True
+
+    def paste_clipboard(self) -> None:
+        """Send the same Cocoa paste action as Cmd+V, on the UI thread."""
+        from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+
+        result: Future[None] = Future()
+
+        def _paste() -> None:
+            try:
+                if self.window is None or self.window.native is None:
+                    raise RuntimeError("Desktop window is unavailable")
+                responder = self.window.native.firstResponder()
+                if responder is None or not responder.respondsToSelector_("paste:"):
+                    raise RuntimeError("Focused view does not support paste")
+                responder.paste_(None)
+                result.set_result(None)
+            except Exception as exc:
+                result.set_exception(exc)
+
+        # Exposed pywebview API methods run on a worker thread.
+        AppHelper.callAfter(_paste)
+        result.result()
 
     def _configure_macos_window_lifecycle(self) -> None:
         """Keep the macOS app alive when its main window is closed."""
@@ -1596,6 +1626,38 @@ class DesktopRuntime:
                 close_button.setAction_("orderOut:")
 
                 _MACOS_RUNTIME_REF = weakref.ref(self)
+                window_delegate = BrowserView.WindowDelegate
+                bool_signature = getattr(objc, "_C_NSBOOL")
+                close_interceptor_attr = (
+                    "_jiuwenswarm_close_interceptor_installed"
+                )
+                if not getattr(window_delegate, close_interceptor_attr, False):
+                    original_should_close = window_delegate.windowShouldClose_
+
+                    def window_should_close(
+                        _delegate, window
+                    ) -> bool:
+                        runtime_ref = _MACOS_RUNTIME_REF
+                        runtime = runtime_ref() if runtime_ref is not None else None
+                        runtime_window = (
+                            getattr(runtime.window, "native", None)
+                            if runtime is not None
+                            else None
+                        )
+                        if runtime is not None and window is runtime_window:
+                            if not runtime._allow_window_close:  # pylint: disable=protected-access
+                                window.orderOut_(None)
+                                return False
+                        return original_should_close(_delegate, window)
+
+                    close_handler = objc.selector(
+                        window_should_close,
+                        selector=b"windowShouldClose:",
+                        signature=bool_signature + b"@:@",
+                    )
+                    setattr(window_delegate, "windowShouldClose_", close_handler)
+                    setattr(window_delegate, close_interceptor_attr, True)
+
                 reopen_selector = (
                     b"applicationShouldHandleReopen:hasVisibleWindows:"
                 )
@@ -1604,7 +1666,7 @@ class DesktopRuntime:
                 ):
                     return
 
-                def applicationShouldHandleReopen_hasVisibleWindows_(
+                def application_should_handle_reopen(
                     _delegate, _application, _has_visible_windows
                 ) -> bool:
                     runtime_ref = _MACOS_RUNTIME_REF
@@ -1613,9 +1675,10 @@ class DesktopRuntime:
                         runtime.window.show()
                     return True
 
-                signature = objc._C_NSBOOL + b"@:@" + objc._C_NSBOOL
+                signature = bool_signature + b"@:@" + bool_signature
                 reopen_handler = objc.selector(
-                    applicationShouldHandleReopen_hasVisibleWindows_,
+                    application_should_handle_reopen,
+                    selector=reopen_selector,
                     signature=signature,
                 )
                 setattr(
@@ -1644,7 +1707,6 @@ class DesktopRuntime:
 
             dialog = WinForms.Form()
             dialog.Text = f"关闭 {DISPLAY_NAME}"
-            dialog.ClientSize = Size(430, 238)
             dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
             dialog.StartPosition = WinForms.FormStartPosition.CenterParent
             dialog.MaximizeBox = False
@@ -1657,37 +1719,39 @@ class DesktopRuntime:
             message = WinForms.Label()
             message.Text = "关闭窗口后，您希望隐藏到系统托盘，还是退出应用？"
             message.AutoSize = False
+            message.Size = Size(382, message.GetPreferredSize(Size(382, 0)).Height)
             message.Location = Point(24, 24)
-            message.Size = Size(382, 24)
+            first_option_top = max(62, message.Bottom + 14)
 
             hide_option = WinForms.RadioButton()
             hide_option.Text = "最小化到托盘"
             hide_option.Checked = True
             hide_option.AutoSize = True
-            hide_option.Location = Point(28, 62)
+            hide_option.Location = Point(28, first_option_top)
 
             quit_option = WinForms.RadioButton()
             quit_option.Text = "退出应用"
             quit_option.AutoSize = True
-            quit_option.Location = Point(28, 94)
+            quit_option.Location = Point(28, first_option_top + 32)
 
             remember = WinForms.CheckBox()
             remember.Text = "记住我的选择"
             remember.Checked = False
             remember.AutoSize = True
-            remember.Location = Point(24, 138)
+            remember.Location = Point(24, first_option_top + 76)
 
             confirm_button = WinForms.Button()
             confirm_button.Text = "确认"
             confirm_button.DialogResult = WinForms.DialogResult.OK
-            confirm_button.Location = Point(238, 186)
+            confirm_button.Location = Point(238, first_option_top + 124)
             confirm_button.Size = Size(80, 32)
 
             cancel_button = WinForms.Button()
             cancel_button.Text = "取消"
             cancel_button.DialogResult = WinForms.DialogResult.Cancel
-            cancel_button.Location = Point(326, 186)
+            cancel_button.Location = Point(326, first_option_top + 124)
             cancel_button.Size = Size(80, 32)
+            dialog.ClientSize = Size(430, cancel_button.Bottom + 20)
 
             dialog.Controls.Add(message)
             dialog.Controls.Add(hide_option)
@@ -2159,7 +2223,9 @@ class DesktopRuntime:
             logger.warning("[desktop] failed to stat selected file %s: %s", path, exc)
             return None
 
-        mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        from jiuwenswarm.channels.web.file_picker import attachment_mime_type
+
+        mime_type = attachment_mime_type(filename)
         absolute = str(path)
         if ext in IMAGE_EXTENSIONS:
             if size > MAX_IMAGE_BYTES:
@@ -2295,6 +2361,22 @@ class DesktopRuntime:
       return false;
     }
   }
+  // Archive managers expose dragged folders as virtual FileSystemEntry
+  // directories. Letting pywebview serialize that DataTransfer can recurse
+  // through a large virtual tree and freeze/crash WebView2, so reject it before
+  // the document-level Python bridge sees the event.
+  function hasDirectory(dt) {
+    if (!dt || !dt.items) return false;
+    try {
+      return Array.from(dt.items).some(function (item) {
+        if (!item || item.kind !== 'file' || typeof item.webkitGetAsEntry !== 'function') return false;
+        var entry = item.webkitGetAsEntry();
+        return Boolean(entry && entry.isDirectory);
+      });
+    } catch (err) {
+      return false;
+    }
+  }
   // Distinguish an app-internal HTML5 drag (queue reorder, etc.) from an OS file
   // drag. 'Files' alone is NOT reliable: dragging an <img> element makes Chromium
   // inject a spurious 'Files'/'text/uri-list' entry. Chromium tags every drag
@@ -2319,6 +2401,11 @@ class DesktopRuntime:
     function accept(e) {
       if (!hasFiles(e.dataTransfer)) return;
       e.preventDefault();
+      if (hasDirectory(e.dataTransfer)) {
+        try { e.dataTransfer.dropEffect = 'none'; } catch (err) {}
+        e.stopImmediatePropagation();
+        return;
+      }
       try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
       window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:true}}));
     }
@@ -2333,6 +2420,10 @@ class DesktopRuntime:
     window.addEventListener('drop', function (e) {
       if (!hasFiles(e.dataTransfer)) return;
       e.preventDefault();
+      if (hasDirectory(e.dataTransfer)) {
+        e.stopImmediatePropagation();
+        window.dispatchEvent(new CustomEvent('jiuwen-desktop-directory-drop-rejected'));
+      }
       endDrag();
     }, true);
   }
@@ -2434,6 +2525,16 @@ class DesktopRuntime:
                 paths.append(path.strip())
         if not paths:
             logger.warning("[desktop] drop files missing pywebviewFullPath: %s", raw_files)
+            return
+        # Never pass directories (including archive-manager temporary/virtual
+        # extraction directories) into the local-file upload pipeline. The page
+        # normally rejects FileSystemEntry directories before this callback; this
+        # is the native-path fallback for shells that expose only full paths.
+        if any(Path(path).is_dir() for path in paths):
+            logger.info("[desktop] rejected directory drop")
+            self._run_js(
+                "window.dispatchEvent(new CustomEvent('jiuwen-desktop-directory-drop-rejected'));"
+            )
             return
         described = self.describe_local_files(paths)
         if described:

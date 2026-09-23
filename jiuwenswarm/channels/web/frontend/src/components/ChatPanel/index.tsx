@@ -30,6 +30,7 @@ import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '..
 import {
   AgentMode,
   MediaItem,
+  type ChatSendOptions,
   Message,
   UserAnswer,
   type MessageForkPoint,
@@ -61,6 +62,7 @@ import { HarnessProgressBar } from './HarnessProgressBar';
 import { AgentTeamActivityCard } from './TeamEventGroupDisplay';
 import { isTeamActivityMessage, parseTeamEventMessage } from './teamEventUtils';
 import { isTeamLeaderMember, type TeamMemberIdentity } from '../../utils/teamMemberAvatar';
+import { writeClipboard } from '../../utils/writeClipboard';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import './ChatPanel.css';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
@@ -95,7 +97,7 @@ export interface ChatHistoryPagerProps {
 }
 
 interface ChatPanelProps {
-  onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
+  onSendMessage: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
   onNewSession: () => void;
   onForkSession: (
@@ -124,6 +126,7 @@ interface ChatPanelProps {
     media_items?: Record<string, unknown>[];
     files?: Record<string, unknown>;
   }>;
+  onDiscardMedia?: (sessionId: string, path: string) => Promise<unknown>;
   onInterrupt: (newInput?: string) => void;
   onCancel: () => void;
   onSwitchMode: (mode: AgentMode) => void;
@@ -254,12 +257,12 @@ function ActiveTeamGroupEntry({
 }
 
 /** 单 Agent 模式的消息队列卡片，展示在输入框上方 */
-function AgentActivityCard({
+export function AgentActivityCard({
   isProcessing: _isProcessing,
   onSendTask,
 }: {
   isProcessing: boolean;
-  onSendTask?: (content: string, mediaItems?: MediaItem[]) => void;
+  onSendTask?: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -308,10 +311,8 @@ function AgentActivityCard({
     if (!sid) return;
     setQueuePaused(sid, false);
     // 触发下一条队列任务
-    const runtime = useChatStore.getState().getRuntime(sid);
-    const nextTask = runtime?.taskQueue[0];
+    const nextTask = onSendTask && useChatStore.getState().claimQueuedTask(sid);
     if (nextTask) {
-      removeFromTaskQueue(sid, nextTask.id);
       onSendTask?.(nextTask.content, nextTask.mediaItems);
     }
   };
@@ -328,6 +329,8 @@ function AgentActivityCard({
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
     if (sid) {
+      const task = useChatStore.getState().getRuntime(sid)?.taskQueue.find((item) => item.id === taskId);
+      if (!task || task.status === 'sending') return;
       // Editing restores only the text into the input; attachments cannot follow
       // and will be removed together with the task — confirm first.
       if (mediaItemCount > 0 && !window.confirm(t('chat.editTaskDropAttachments', { count: mediaItemCount }))) {
@@ -342,10 +345,8 @@ function AgentActivityCard({
   const handleSendTask = (e: React.MouseEvent, taskId: string, content: string, mediaItems?: MediaItem[]) => {
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
-    if (sid) {
-      removeFromTaskQueue(sid, taskId);
-    }
-    onSendTask?.(content, mediaItems);
+    if (!sid) return;
+    onSendTask?.(content, mediaItems, { queuedTaskId: taskId });
   };
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
@@ -671,7 +672,8 @@ function HumanSharePanel({ commands, onClose }: { commands: HumanShareCommand[];
 
   const copyText = useCallback(async (key: string, text: string) => {
     if (!text) return;
-    await navigator.clipboard.writeText(text);
+    const ok = await writeClipboard(text);
+    if (!ok) return;
     setCopiedKey(key);
     window.setTimeout(() => {
       setCopiedKey((current) => (current === key ? null : current));
@@ -966,6 +968,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onInputIntent,
   onPersistMedia,
   onPersistDocuments,
+  onDiscardMedia,
   onInterrupt,
   onCancel,
   onSwitchMode,
@@ -1534,9 +1537,9 @@ export const ChatPanel = React.memo(function ChatPanel({
 
   // 包装发送消息函数，添加滚动逻辑
   const handleSendMessage = useCallback(
-    (content: string, mediaItems?: MediaItem[]) => {
+    (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
       setIsSending(true);
-      onSendMessage(content, mediaItems);
+      onSendMessage(content, mediaItems, options);
     },
     [onSendMessage],
   );
@@ -1901,6 +1904,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onInputIntent={onInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
+                  onDiscardMedia={onDiscardMedia}
                   onInterrupt={onInterrupt}
                   onCancel={onCancel}
                   onSwitchMode={onSwitchMode}
@@ -1977,6 +1981,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onInputIntent={onInputIntent}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}
+            onDiscardMedia={onDiscardMedia}
             onInterrupt={onInterrupt}
             onCancel={onCancel}
             onSwitchMode={onSwitchMode}

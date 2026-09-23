@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types
 from pathlib import Path
@@ -75,10 +76,15 @@ def test_close_action_preference_round_trip(
 def test_window_api_reads_and_updates_close_action(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
+    monkeypatch.setattr(desktop_app, "_is_windows_desktop", lambda: True)
     monkeypatch.setattr(desktop_app, "get_user_workspace_dir", lambda: tmp_path)
     runtime = _runtime(desktop_app, tmp_path, monkeypatch)
     api = desktop_app._WindowApi(runtime)
 
+    # pywebview removes the receiver from the JS-facing method parameters.
+    assert inspect.ismethod(api.get_close_action)
+    assert inspect.getfullargspec(api.get_close_action).args[1:] == []
+    assert inspect.getfullargspec(api.set_close_action).args[1:] == ["action"]
     assert api.get_close_action() == desktop_app.CLOSE_ACTION_ASK
     assert api.set_close_action(desktop_app.CLOSE_ACTION_QUIT) is True
     assert api.get_close_action() == desktop_app.CLOSE_ACTION_QUIT
@@ -94,6 +100,14 @@ def test_window_api_hides_close_action_setting_outside_windows(
 
     assert api.get_close_action() is None
     assert api.set_close_action(desktop_app.CLOSE_ACTION_HIDE) is False
+
+
+def test_windows_close_prompt_adapts_to_wrapped_message(desktop_app) -> None:
+    source = inspect.getsource(desktop_app.DesktopRuntime._prompt_windows_close_action)
+
+    assert "message.Size = Size(382, message.GetPreferredSize(Size(382, 0)).Height)" in source
+    assert "first_option_top = max(62, message.Bottom + 14)" in source
+    assert "dialog.ClientSize = Size(430, cancel_button.Bottom + 20)" in source
 
 
 def test_saved_ask_prompts_again(

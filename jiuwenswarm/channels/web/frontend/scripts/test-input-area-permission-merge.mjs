@@ -23,6 +23,18 @@ await build({
     {
       name: 'input-area-test-assets',
       setup(builder) {
+        builder.onResolve({ filter: /applicationPlugins\/ApplicationPluginOutlet$/ }, () => ({
+          path: 'task-action', namespace: 'task-action',
+        }));
+        builder.onLoad({ filter: /.*/, namespace: 'task-action' }, () => ({
+          contents: `import { createElement } from 'react';
+            export function ApplicationPluginTaskInputActions(props) {
+              return props.eligible ? createElement('button', { 'data-testid': 'test-duplex-action' }, 'Full-duplex') : props.fallback;
+            }`,
+          loader: 'js',
+          resolveDir: root,
+        }));
+
         builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'svg-react-stub' }));
         builder.onLoad({ filter: /.*/, namespace: 'svg-react-stub' }, () => ({
           contents: 'export default function SvgStub() { return null; }',

@@ -42,6 +42,7 @@ class TestReqMethod:
             "personal_context.runtime.get_config",
             "personal_context.runtime.patch_config",
             "personal_context.runtime.select_model",
+            "personal_context.runtime.set_master_enabled",
             "personal_context.fetch.list_services",
             "personal_context.fetch.create_service",
             "personal_context.fetch.delete_service",
@@ -61,7 +62,7 @@ class TestReqMethod:
             "personal_context.context.get_node",
             "personal_context.context.get_source",
         }
-        assert len(methods) == 25
+        assert len(methods) == 26
 
     @staticmethod
     def test_session_methods():

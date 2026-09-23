@@ -1177,7 +1177,13 @@ class SkillManager:
             raise SkillRpcError("SKILL_REBUILD_FAILED", f"rebuild 失败: {exc}") from exc
 
     async def handle_skills_toggle(self, params: dict) -> dict:
-        """切换已安装本地 skill 的 enabled 状态。"""
+        """切换已安装本地 skill 的 enabled 状态。
+
+        支持 ``dry_run=True`` 探测：不落任何状态，仅返回该技能当前
+        关联的技能包列表（parent_skillpacks）。前端在成员技能切换前
+        先探测一次，以服务端实时结果决定是否弹出二次确认，避免依赖
+        页面缓存的列表数据。
+        """
         name = params.get("name", "")
         enabled = params.get("enabled")
         if not name:
@@ -1189,6 +1195,15 @@ class SkillManager:
         except ValueError as exc:
             _log_rejected_name("skills.toggle", "skill", name, exc)
             return {"success": False, "detail": str(exc)}
+
+        # 探测模式：仅报告关联技能包，不修改任何状态
+        if params.get("dry_run"):
+            return {
+                "success": True,
+                "name": name,
+                "enabled": enabled,
+                "parent_skillpacks": referencing_skillpacks(self._skills_dir, name),
+            }
 
         skill_dir = self._resolve_local_skill_dir(name)
         is_pack = is_skillpack(skill_dir)
@@ -1264,6 +1279,9 @@ class SkillManager:
             return None
         names = "、".join(str(item.get("name")) for item in blocked if item.get("name"))
         suffix = f"（{names}）" if names else ""
+        reasons = {str(item.get("reason")) for item in blocked}
+        if reasons <= {"disabled"}:
+            return f"技能包包含已禁用的技能{suffix}，请先在「包含技能」中启用后再启用技能包"
         return f"技能包包含未安装的技能{suffix}，请先在「包含技能」中安装，或重新下载完整技能包后再启用"
 
     @staticmethod
@@ -2451,6 +2469,98 @@ class SkillManager:
                 normalized["matched_sources"][0]["owner_handle"] = owner_handle
         return normalized
 
+    @staticmethod
+    def _online_search_native_score_value(item: dict[str, Any]) -> float:
+        raw = item.get("native_score")
+        if raw is None:
+            return float("-inf")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return float("-inf")
+
+    @classmethod
+    def _online_search_item_preferred(
+        cls,
+        candidate: dict[str, Any],
+        incumbent: dict[str, Any],
+    ) -> bool:
+        """Prefer better source_rank, then higher native_score; keep incumbent on ties."""
+        cand_rank = int(candidate.get("source_rank") or 0)
+        inc_rank = int(incumbent.get("source_rank") or 0)
+        if cand_rank != inc_rank:
+            return cand_rank < inc_rank
+        cand_score = cls._online_search_native_score_value(candidate)
+        inc_score = cls._online_search_native_score_value(incumbent)
+        if cand_score != inc_score:
+            return cand_score > inc_score
+        return False
+
+    @staticmethod
+    def _online_search_presentation_key(item: dict[str, Any]) -> str | None:
+        """Collapse key for visually identical plaza cards (same title + blurb)."""
+        display = str(item.get("display_name") or item.get("name") or "").strip().casefold()
+        description = str(item.get("description") or "").strip().casefold()
+        if not display or not description:
+            return None
+        return f"{display}\0{description}"
+
+    @classmethod
+    def _online_search_presentation_preferred(
+        cls,
+        candidate: dict[str, Any],
+        incumbent: dict[str, Any],
+    ) -> bool:
+        cand_fs = float(candidate.get("fusion_score") or 0.0)
+        inc_fs = float(incumbent.get("fusion_score") or 0.0)
+        if cand_fs != inc_fs:
+            return cand_fs > inc_fs
+        return cls._online_search_item_preferred(candidate, incumbent)
+
+    @classmethod
+    def _merge_online_search_duplicate(
+        cls,
+        existing: dict[str, Any],
+        item: dict[str, Any],
+        *,
+        prefer_presentation: bool = False,
+    ) -> dict[str, Any]:
+        fusion_score = float(existing["fusion_score"]) + float(item["fusion_score"])
+        matched_sources = list(existing["matched_sources"]) + list(item["matched_sources"])
+        source_rank = min(int(existing["source_rank"]), int(item["source_rank"]))
+        preferred = (
+            cls._online_search_presentation_preferred(item, existing)
+            if prefer_presentation
+            else cls._online_search_item_preferred(item, existing)
+        )
+        winner = item if preferred else existing
+        winner["fusion_score"] = fusion_score
+        winner["matched_sources"] = matched_sources
+        winner["source_rank"] = source_rank
+        return winner
+
+    @classmethod
+    def _collapse_online_search_by_presentation(
+        cls,
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Fold cards that share the same display_name + description (any identifier/source)."""
+        collapsed: dict[str, dict[str, Any]] = {}
+        passthrough: list[dict[str, Any]] = []
+        for item in items:
+            key = cls._online_search_presentation_key(item)
+            if key is None:
+                passthrough.append(item)
+                continue
+            existing = collapsed.get(key)
+            if existing is None:
+                collapsed[key] = item
+                continue
+            collapsed[key] = cls._merge_online_search_duplicate(
+                existing, item, prefer_presentation=True
+            )
+        return list(collapsed.values()) + passthrough
+
     @classmethod
     def _aggregate_online_search_results(
         cls,
@@ -2470,23 +2580,17 @@ class SkillManager:
                     continue
                 if not item["identifier"] and not item["name"]:
                     continue
+                # ClawHub: collapse same slug across publishers; keep best owner for install.
                 identity_value = item["identifier"] or item["name"]
-                if source == "clawhub":
-                    owner_handle = str(item.get("owner_handle") or "").strip()
-                    if owner_handle and identity_value:
-                        # Keep ambiguous slugs from different publishers as distinct results.
-                        identity_value = f"{owner_handle}/{identity_value}"
                 identity = cls._normalize_online_search_identifier(source, identity_value)
                 existing = merged.get(identity)
                 if existing is None:
                     merged[identity] = item
                     continue
-                existing["fusion_score"] += item["fusion_score"]
-                existing["matched_sources"].extend(item["matched_sources"])
-                existing["source_rank"] = min(existing["source_rank"], item["source_rank"])
+                merged[identity] = cls._merge_online_search_duplicate(existing, item)
 
+        items = cls._collapse_online_search_by_presentation(list(merged.values()))
         normalized_query = query.strip().casefold()
-        items = list(merged.values())
         for item in items:
             item["exact_match"] = normalized_query in {
                 str(item.get("name") or "").strip().casefold(),
@@ -3063,17 +3167,19 @@ class SkillManager:
                         mirror_root.mkdir(parents=True, exist_ok=True)
                         shutil.copytree(skill_dir, mirror_dest)
 
-                    # skill_name 必须与磁盘扫描出的规范名（_resolve_skill_name）保持一致，
-                    # 否则会被 _register_unmanaged_local_skills 当作"未登记的本地技能"
-                    # 重复注册一条 source=local 的幽灵记录（表现为大小写不一致 + 重复条目）。
-                    # 展示层面的大小写差异（如 Weather vs weather）改为通过 display_name 单独承载。
+                    # ClawHub 登记名必须与磁盘目录名（slug）一致：多个包常共用 SKILL.md
+                    # frontmatter name（如都叫 weather），若按 parsed name 登记会互相覆盖
+                    # local_skills / installed_plugins，导致广场 origin 错绑。
+                    # 展示名仍用市场 display_name（或 SKILL.md name）承载。
                     parsed_name = str(meta.get("name") or "").strip()
                     stem = md.stem if md else ""
-                    if parsed_name and parsed_name != stem:
-                        skill_name = parsed_name
+                    skill_name = slug
+                    if display_name:
+                        resolved_display_name = display_name
+                    elif parsed_name and parsed_name != stem:
+                        resolved_display_name = parsed_name
                     else:
-                        skill_name = slug
-                    resolved_display_name = display_name if display_name else skill_name
+                        resolved_display_name = slug
 
                     self._add_local_skill(
                         {
@@ -6011,18 +6117,30 @@ class SkillManager:
                 if source == source_default and p.get("marketplace"):
                     source = p.get("marketplace", source_default)
                 break
-        # 检查是否通过 import_local / SkillNet 等写入 local_skills（含 origin 供前端对照 skill_url）
+        # 检查是否通过 import_local / SkillNet / ClawHub 等写入 local_skills（含 origin）。
+        # 优先按目录名精确匹配，避免多个目录共用同一 frontmatter name 时错挂 origin。
+        matched_local: dict[str, Any] | None = None
         for ls in self._state.get("local_skills", []):
-            if ls.get("name") in (meta.get("name"), registered_name):
-                source = ls.get("source", source_default) if isinstance(ls, dict) else source_default
-                if isinstance(ls, dict):
-                    origin = ls.get("origin")
-                    if isinstance(origin, str) and origin.strip():
-                        meta["origin"] = origin.strip()
-                    display_name = ls.get("display_name")
-                    if isinstance(display_name, str) and display_name.strip():
-                        meta["display_name"] = display_name.strip()
+            if not isinstance(ls, dict):
+                continue
+            if ls.get("name") == meta.get("name"):
+                matched_local = ls
                 break
+        if matched_local is None:
+            for ls in self._state.get("local_skills", []):
+                if not isinstance(ls, dict):
+                    continue
+                if ls.get("name") == registered_name:
+                    matched_local = ls
+                    break
+        if matched_local is not None:
+            source = matched_local.get("source", source_default) or source_default
+            origin = matched_local.get("origin")
+            if isinstance(origin, str) and origin.strip():
+                meta["origin"] = origin.strip()
+            display_name = matched_local.get("display_name")
+            if isinstance(display_name, str) and display_name.strip():
+                meta["display_name"] = display_name.strip()
 
         meta["source"] = source
         if not str(meta.get("display_name") or "").strip():
@@ -6076,14 +6194,15 @@ class SkillManager:
 
         容器根下无 SKILL.md，成员为容器 ``skills/`` 子目录内的技能；
         聚合状态语义与标准 SkillPack 对齐：requested_enabled 取容器自身
-        配置，enabled = requested_enabled 且无阻塞成员（disabled 不阻塞）。
+        配置，enabled = requested_enabled 且无阻塞成员（含 disabled 成员，
+        与标准包一致：任一成员禁用则整包禁用）。
         """
         name = child.name
         members = container_pack_members(child, enabled_for=self.get_skill_enabled)
         blocked = [
             member
             for member in members
-            if member.get("blocking_reason") not in (None, "", "disabled")
+            if member.get("blocking_reason") not in (None, "")
         ]
         requested_enabled = self.get_skill_enabled(name)
         meta: dict[str, Any] = {
@@ -6201,7 +6320,12 @@ class SkillManager:
         return skill_name
 
     def _resolve_local_skill_dir(self, skill_name: str) -> Path | None:
-        """根据 skill name 定位本地技能目录（仅 agent/skills 下）."""
+        """根据 skill name 定位本地技能目录（仅 agent/skills 下）.
+
+        优先精确匹配目录名；仅当不存在同名目录时，才回退到 SKILL.md
+        frontmatter name（或容器包成员名），避免多个包共用 frontmatter name
+        时绑错目录。
+        """
         try:
             direct = _safe_child_path(self._skills_dir, skill_name, "skill")
         except ValueError:
@@ -6225,9 +6349,62 @@ class SkillManager:
             if md is None:
                 continue
             meta = self._parse_skill_md(md)
-            if meta and meta.get("name") == skill_name:
+            if meta is None:
+                continue
+            if self._resolve_skill_name(child, md, meta) == skill_name:
                 return child
         return None
+
+    def _skill_dir_get_payload(
+        self, child: Path, *, request_name: str
+    ) -> tuple[Path, dict[str, Any]] | None:
+        """为已选定的本地技能目录构建 skills.get 展示元数据."""
+        md = self._try_find_skill_file(child)
+        if md is None:
+            if request_name == child.name and is_container_skillpack(child):
+                return child, {
+                    "name": child.name,
+                    "source": self._resolve_skill_source(child.name),
+                    "display_name": child.name,
+                    "is_builtin": False,
+                    "is_builtin_source": False,
+                    "container_pack": True,
+                }
+            if is_container_skillpack(child):
+                member_dir = find_container_member_dir(child, request_name)
+                if member_dir is not None:
+                    return member_dir, {
+                        "name": request_name,
+                        "source": self._resolve_skill_source(request_name),
+                        "display_name": request_name,
+                        "is_builtin": False,
+                        "is_builtin_source": False,
+                    }
+            return None
+        meta = self._parse_skill_md(md)
+        if meta is None:
+            return None
+        registered_name = self._resolve_skill_name(child, md, meta)
+        listed_meta = self._scan_one_skill_dir(child)
+        if listed_meta is None:
+            if is_skillpack(child):
+                return child, {
+                    "name": child.name,
+                    "source": self._resolve_skill_source(child.name),
+                    "display_name": registered_name,
+                    "is_builtin": False,
+                    "is_builtin_source": False,
+                }
+            return None
+        base = {
+            "name": listed_meta.get("name", child.name),
+            "source": listed_meta.get("source", "project"),
+            "display_name": listed_meta.get("display_name", registered_name),
+            "is_builtin": bool(listed_meta.get("is_builtin", False)),
+            "is_builtin_source": bool(listed_meta.get("is_builtin_source", False)),
+            "proprietary": bool(listed_meta.get("proprietary", False)),
+        }
+        return child, base
 
     @staticmethod
     def apply_archive_version_and_type(meta: dict, skill_dir: Path | None) -> None:
@@ -6555,25 +6732,30 @@ class SkillManager:
                 shutil.move(str(archive_backup), str(archive_dir))
 
     def _locate_skill_for_get(self, name: str) -> tuple[Path | None, dict | None]:
-        """定位 skills.get 所需的 workspace/marketplace 目录及展示元数据."""
-        # 本地 skills 目录
+        """定位 skills.get 所需的 workspace/marketplace 目录及展示元数据.
+
+        与 ``_resolve_local_skill_dir`` 对齐：优先精确匹配目录名，仅当不存在
+        同名目录时才回退 frontmatter name / 容器成员名。
+        """
         if self._skills_dir.exists():
+            try:
+                direct = _safe_child_path(self._skills_dir, name, "skill")
+            except ValueError:
+                direct = None
+            else:
+                if direct.is_dir():
+                    exact = self._skill_dir_get_payload(direct, request_name=name)
+                    if exact is not None:
+                        return exact
+
             for child in self._skills_dir.iterdir():
                 if child.name.startswith("_") or not child.is_dir():
                     continue
+                if direct is not None and child.resolve() == direct.resolve():
+                    continue
                 md = self._try_find_skill_file(child)
                 if md is None:
-                    # 容器型技能包：按容器名匹配后走容器详情构建
-                    if name == child.name and is_container_skillpack(child):
-                        return child, {
-                            "name": child.name,
-                            "source": self._resolve_skill_source(child.name),
-                            "display_name": child.name,
-                            "is_builtin": False,
-                            "is_builtin_source": False,
-                            "container_pack": True,
-                        }
-                    # 容器成员：按名匹配容器内的成员技能目录，走标准详情路径
+                    # 无根 SKILL.md：仅尝试容器成员按名定位（目录精确匹配已在上面处理）
                     if is_container_skillpack(child):
                         member_dir = find_container_member_dir(child, name)
                         if member_dir is not None:
@@ -6589,30 +6771,12 @@ class SkillManager:
                 if meta is None:
                     continue
                 registered_name = self._resolve_skill_name(child, md, meta)
-                if name not in (child.name, registered_name):
+                # 回退阶段只认 frontmatter 规范名，避免与「精确目录优先」语义打架
+                if name != registered_name:
                     continue
-                listed_meta = self._scan_one_skill_dir(child)
-                if listed_meta is None:
-                    if is_skillpack(child):
-                        return child, {
-                            "name": child.name,
-                            "source": self._resolve_skill_source(child.name),
-                            "display_name": registered_name,
-                            "is_builtin": False,
-                            "is_builtin_source": False,
-                        }
-                    continue
-                base = {
-                    "name": listed_meta.get("name", child.name),
-                    "source": listed_meta.get("source", "project"),
-                    "display_name": listed_meta.get("display_name", registered_name),
-                    "is_builtin": bool(listed_meta.get("is_builtin", False)),
-                    "is_builtin_source": bool(
-                        listed_meta.get("is_builtin_source", False)
-                    ),
-                    "proprietary": bool(listed_meta.get("proprietary", False)),
-                }
-                return child, base
+                matched = self._skill_dir_get_payload(child, request_name=name)
+                if matched is not None:
+                    return matched
 
         # marketplace 未安装副本（只支持读 workspace 语义，无本地产品版本）
         if self._marketplace_dir.exists():
@@ -8516,6 +8680,7 @@ class SkillManager:
         return parsed_name
 
     def _collect_existing_local_skill_names(self) -> set[str]:
+        """磁盘上仍存在的本地技能名集合（以目录名为准，与列表 / ClawHub 登记一致）。"""
         names: set[str] = set()
         if not self._skills_dir.exists():
             return names
@@ -8525,13 +8690,14 @@ class SkillManager:
                 continue
             md = self._try_find_skill_file(child)
             if md is None:
+                # 容器型技能包无根 SKILL.md，仍按目录名计入，避免误删登记
+                if is_container_skillpack(child):
+                    names.add(child.name)
                 continue
             meta = self._parse_skill_md(md)
             if not isinstance(meta, dict):
                 continue
-            name = self._resolve_skill_name(child, md, meta)
-            if name:
-                names.add(name)
+            names.add(child.name)
         return names
 
     def _register_unmanaged_local_skills(self) -> None:
@@ -8548,6 +8714,9 @@ class SkillManager:
         imported via the UI. Built-in skills (folders that also exist under the
         package builtin dir) are deliberately excluded so their source/behavior
         is preserved.
+
+        登记名使用目录名（与 skills.list / ClawHub slug 一致），避免多个目录
+        共用同一 frontmatter name 时互相覆盖或误删登记。
         """
         if not self._skills_dir.exists():
             return
@@ -8566,7 +8735,7 @@ class SkillManager:
             meta = self._parse_skill_md(md)
             if not isinstance(meta, dict):
                 continue
-            name = self._resolve_skill_name(child, md, meta)
+            name = child.name
             if not name or name in registered:
                 continue
             # 排除内置技能（用户目录下与 builtin 目录同名的文件夹），避免改变其来源/行为。

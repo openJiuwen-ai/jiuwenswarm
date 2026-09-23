@@ -107,6 +107,14 @@ export function isFetchTaskRunningError(error: unknown): boolean {
   return String((error as { code?: unknown })?.code ?? '') === String(FETCH_TASK_RUNNING_ERROR_CODE);
 }
 
+/** 是否存在尚未停完的采集任务（采集进度里 running/stopping）。 */
+export function hasRunningFetchTask(status: PersonalContextStatus | null | undefined): boolean {
+  if (!status) return false;
+  return Object.values(status.fetch_run_progress ?? {}).some(
+    (item) => item.run_state === 'running' || item.run_state === 'stopping',
+  );
+}
+
 // ── runtime.get_config / patch / select_model 返回的 stored config ─────────
 export type StrategyProfile = 'rules' | 'balanced' | 'agent';
 
@@ -155,6 +163,8 @@ export type FetchServicePatch = Partial<
 
 export type PersonalContextConfig = {
   configured: boolean;
+  /** 总开关（独立持久化）：控制两个子开关联动，子开关切换不影响它。 */
+  master_enabled: boolean;
   collection_enabled: boolean;
   agent_use_enabled: boolean;
   strategy_profile: StrategyProfile;
@@ -171,9 +181,13 @@ export type AuthorizationState =
   | 'authorized'
   | 'authorization_failed';
 
+/** 飞书授权阶段：config_init=首次应用配置（第1步），device_authorization=登录授权（第2步）。 */
+export type FeishuAuthorizationStep = 'config_init' | 'device_authorization';
+
 export type AuthorizationResult = {
   provider: string;
   state: AuthorizationState;
+  authorization_step?: FeishuAuthorizationStep | null;
   verification_url: string | null;
   expires_at: string | null;
   error: string | null;
@@ -269,6 +283,13 @@ export const pcApi = {
     webRequest<PersonalContextConfig>(
       'personal_context.runtime.stop_collection',
       {},
+      { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
+
+  setMasterEnabled: (enabled: boolean) =>
+    webRequest<PersonalContextConfig>(
+      'personal_context.runtime.set_master_enabled',
+      { enabled },
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
@@ -368,12 +389,17 @@ export const pcApi = {
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
-  authorizeProvider: (provider: string, credentials?: Record<string, string>) =>
+  authorizeProvider: (
+    provider: string,
+    credentials?: Record<string, string>,
+    reauthorize?: boolean,
+  ) =>
     webRequest<AuthorizationResult>(
       'personal_context.fetch.authorize_provider',
       {
         provider,
         ...(credentials ? { credentials } : {}),
+        ...(reauthorize ? { reauthorize: true } : {}),
       },
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),

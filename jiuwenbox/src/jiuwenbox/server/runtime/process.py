@@ -99,6 +99,19 @@ SERVER_PROTECT_PORTS_ENV = "JIUWENBOX_SERVER_PROTECT_PORTS"
 # explicitly accepted that the box-server has no host-level protection.
 LISTEN_URI_ENV = "JIUWENBOX_LISTEN"
 DEFAULT_SERVER_PROTECT_PORTS: tuple[int, ...] = (8321,)
+_API_TOKEN_ENV = "JIUWENBOX_API_TOKEN"
+
+
+def _sandbox_process_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Build the environment passed into the sandbox bwrap/daemon process.
+
+    Starts from the server process env (plus optional per-sandbox overrides),
+    then strips ``JIUWENBOX_API_TOKEN`` so the management Bearer credential
+    never becomes visible inside the sandbox.
+    """
+    process_env = {**os.environ, **(extra or {})}
+    process_env.pop(_API_TOKEN_ENV, None)
+    return process_env
 
 
 def _derive_protect_ports_from_listen() -> tuple[int, ...]:
@@ -2002,7 +2015,7 @@ class ProcessRuntime(RuntimeAdapter):
         )
         daemon_cmd = self._wrap_command_in_namespace(bwrap_args, netns_name)
 
-        process_env = {**os.environ, **(env or {})}
+        process_env = _sandbox_process_env(env)
         # ``LISTENER_FD_ENV`` is injected into the sandboxed process via
         # ``BwrapConfig.env`` -> ``bwrap --setenv``; bwrap itself never
         # consumes it, so we no longer set it on the bwrap parent env.

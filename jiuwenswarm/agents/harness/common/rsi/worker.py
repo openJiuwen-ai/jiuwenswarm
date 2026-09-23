@@ -22,6 +22,7 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiNotReady,
     RsiScenarioNotSupported,
     RsiTaskStateConflict,
+    failure_reason,
 )
 from jiuwenswarm.agents.harness.common.rsi.event_consumer import RsiEventConsumer, consume_queue
 from jiuwenswarm.agents.harness.common.rsi.events import EngineEvent
@@ -399,7 +400,10 @@ class RsiWorker:
         except Exception as exc:  # noqa: BLE001
             logger.exception("[RSI] 任务执行失败 task=%s: %s", task_id, exc)
             if self._is_current_execution(task_id, generation):
-                self._mark_failed_if_running(task_id, str(exc)[:200])
+                self._mark_failed_if_running(
+                    task_id,
+                    failure_reason(exc, fallback=f"任务执行失败: {type(exc).__name__}"),
+                )
         finally:
             try:
                 if cancelled:
@@ -425,7 +429,7 @@ class RsiWorker:
                     except Exception:  # noqa: BLE001
                         logger.exception("[RSI] 事件消费协程退出异常 task=%s", task_id)
                     if provider_result_ready and self._is_current_execution(task_id, generation):
-                        self._apply_result_status(task_id, result)
+                        self._apply_result_status(task_id, result, adapter=adapter)
                 if self._is_current_execution(task_id, generation):
                     self._persist_results(task_id, result)
             except asyncio.CancelledError:
@@ -491,7 +495,7 @@ class RsiWorker:
         del task_view
         return self.provider_poll_timeout
 
-    def _apply_result_status(self, task_id: str, result: Any) -> None:
+    def _apply_result_status(self, task_id: str, result: Any, *, adapter: Any = None) -> None:
         status = _provider_status(result, default="COMPLETED")
         if status in _PROVIDER_IN_PROGRESS:
             # A Provider may legitimately return its current state from
@@ -512,11 +516,22 @@ class RsiWorker:
         current = self.store.get(task_id).status
         if current != TaskStatus.RUNNING.value:
             return
+        cause = f"provider.{status.lower()}"
+        if target == TaskStatus.FAILED.value:
+            cause = self._provider_failure_reason(
+                task_id,
+                result,
+                adapter=adapter,
+                fallback=(
+                    "Provider 执行失败 ("
+                    f"{getattr(result, 'error_code', None) or status.lower()})"
+                ),
+            )
         self.store.update_status(
             task_id,
             [TaskStatus.RUNNING.value],
             target,
-            cause=f"provider.{status.lower()}",
+            cause=cause,
         )
 
     async def _wait_for_provider_terminal(
@@ -734,7 +749,8 @@ class RsiWorker:
             )
             return
         try:
-            current = self.store.get(task_id).status
+            task = self.store.get(task_id)
+            current = task.status
             if current == target:
                 return
             allowed_targets = {
@@ -755,15 +771,54 @@ class RsiWorker:
                     target,
                 )
                 return
+            cause = f"provider.{status.lower()}"
+            if target == TaskStatus.FAILED.value:
+                cause = self._provider_failure_reason(
+                    task_id,
+                    result,
+                    adapter=self._adapter_for(task.scenario, task.artifact_type),
+                    fallback=(
+                        f"Provider.{mode} 执行失败 ("
+                        f"{getattr(result, 'error_code', None) or status.lower()})"
+                    ),
+                )
             self.store.update_status(
                 task_id,
                 [current],
                 target,
-                cause=f"provider.{status.lower()}",
+                cause=cause,
             )
         except RsiTaskStateConflict:
             # The run path or another control already owns the final state.
             logger.debug("[RSI] task state changed while applying Provider.%s: %s", mode, task_id)
+
+    @staticmethod
+    def _provider_failure_reason(
+        task_id: str,
+        result: Any,
+        *,
+        adapter: Any,
+        fallback: str,
+    ) -> str:
+        """Resolve a failure message from the result or its durable snapshot."""
+
+        explicit_message = (
+            result.get("error_message") if isinstance(result, dict) else getattr(result, "error_message", None)
+        )
+        if str(explicit_message or "").strip():
+            return failure_reason(result, fallback=fallback)
+
+        reader = getattr(adapter, "read_state", None) if adapter is not None else None
+        if callable(reader):
+            try:
+                state = reader(task_id)
+            except Exception as exc:  # noqa: BLE001 - preserve the original failure
+                logger.debug("[RSI] failed to read Provider failure snapshot task=%s: %s", task_id, exc)
+            else:
+                snapshot_reason = failure_reason(state)
+                if snapshot_reason:
+                    return snapshot_reason
+        return failure_reason(result, fallback=fallback)
 
     def _persist_results(self, task_id: str, result: Any) -> None:
         """引擎结果落盘（IterativeSingleHarnessResult 形状）→ task.json.config.results。

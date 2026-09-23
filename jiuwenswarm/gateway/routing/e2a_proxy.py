@@ -8,9 +8,9 @@
 - Gateway 不直接读写用户态文件，也不保留依赖用户 ``.jiuwenswarm`` 的
   业务逻辑；目标 AgentServer 不可达时返回可重试错误，**禁止**用部署侧
   目录代替用户目录执行。
-- 单用户共享目录布局（默认本地 WebSocket client）保留可用性兼容路径
-  （``_try_legacy_shared_directory_adapter``）：同一 ``~/.jiuwenswarm``
-  时可直接运行中立适配器，此路径不对远程/AgentOS client 开放。
+- 单用户共享目录布局（默认本地 WebSocket client）**不再**在
+  ``server_ready=False`` 时跑本地 adapter。Session/Project/Config/History/Health
+  由 AgentServer Front 提供；执行类请求在 Front 不可达时返回可重试错误。
 - user_id 只用于路由/观测关联，不要求 AgentServer 据此选择目录。
 - 传输层客户端由配置驱动（websocket / agentos_router），本薄代理对
   两者透明。
@@ -22,8 +22,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import logging
 import time
 import uuid
@@ -32,7 +30,10 @@ from typing import Any
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from jiuwenswarm.gateway.routing.agent_client import (
+    DuplicateRequestIdError,
+    WebSocketAgentServerClient,
+)
 from jiuwenswarm.gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
@@ -45,6 +46,24 @@ logger = logging.getLogger(__name__)
 #: 目标 AgentServer 不可达/请求失败时返回的外部协议错误码
 SERVICE_UNAVAILABLE_CODE = "SERVICE_UNAVAILABLE"
 DEFAULT_PROXY_LABEL = "agent-proxy"
+
+
+def _new_fetch_request_id() -> str:
+    """生成 Gateway 侧主动发起的 E2A request_id（``fetch-`` 前缀）。
+
+    request_id 是 ``WebSocketAgentServerClient`` 路由响应的唯一键：同一连接上
+    若两个在途请求撞号，客户端会拒绝注册第二个队列并抛错（请求根本发不出去）。
+
+    因此不能只用 ``time.time_ns()``：
+
+    - 墙钟分辨率有限（Windows 实测只有 100ns 步进，部分环境更粗），相邻两次
+      生成可能完全相同；归档/删除等长耗时 RPC 与 2s 生命周期轮询共用连接的
+      情况下，撞号会直接表现为偶发失败。
+    - 墙钟非单调，NTP 校正或休眠唤醒回拨时可能重放出已用过的取值。
+
+    保留时间戳前缀便于日志排序与排查，后缀补 8 位随机量保证进程内唯一。
+    """
+    return f"fetch-{time.time_ns()}-{uuid.uuid4().hex[:8]}"
 
 
 def is_agentos_routing_client(agent_client: Any) -> bool:
@@ -63,190 +82,13 @@ def is_agentos_routing_client(agent_client: Any) -> bool:
 
 
 def is_legacy_shared_directory_client(agent_client: Any) -> bool:
-    """Whether an unavailable client can safely use Gateway's local data dir.
+    """Whether this is the default local WebSocket AgentServer client.
 
-    Only the default local WebSocket client shares ``~/.jiuwenswarm`` with the
-    Gateway.  Other extension clients (for example YuanRong) may be remote and
-    must retain the normal unavailable error instead of accidentally falling
-    back to deployment-side state.
+    Channel handlers use this to distinguish the single-user shared-directory
+    layout from remote/AgentOS clients.  It does not authorize a Gateway-side
+    adapter substitute for AgentServer RPCs.
     """
     return isinstance(agent_client, WebSocketAgentServerClient)
-
-
-async def _try_legacy_shared_directory_adapter(
-    *,
-    channel: Any,
-    ws: Any,
-    req_id: str,
-    params: dict[str, Any] | None,
-    session_id: str | None,
-    user_id: str | None,
-    req_method: ReqMethod,
-    preserve_error_payload: bool,
-) -> bool:
-    """Run an adapter directly only for the legacy shared-directory layout.
-
-    This is an availability compatibility path, not an AgentOS fallback: it is
-    unavailable to all remote clients.  The same neutral adapters are used, so
-    Web/TUI payload and error semantics remain aligned with the normal E2A
-    path without importing Gateway handlers into AgentServer code.
-    """
-    result = await _run_legacy_shared_directory_adapter(
-        channel_id=channel.channel_id,
-        req_id=req_id,
-        params=params,
-        session_id=session_id,
-        user_id=user_id,
-        req_method=req_method,
-    )
-    if result is None:
-        return False
-    ok, payload = result
-    await channel.send_response(
-        ws,
-        req_id,
-        ok=ok,
-        payload=payload if ok or preserve_error_payload else None,
-        error=None if ok else str(payload.get("error") or f"{req_method.value} failed"),
-        code=None if ok else str(payload.get("code") or "BAD_REQUEST"),
-    )
-    return True
-
-
-async def _run_legacy_shared_directory_adapter(
-    *,
-    channel_id: str,
-    req_id: str,
-    params: dict[str, Any] | None,
-    session_id: str | None,
-    user_id: str | None,
-    req_method: ReqMethod,
-) -> tuple[bool, dict[str, Any]] | None:
-    """Execute a neutral adapter against the legacy Gateway/AgentServer data dir.
-
-    ``None`` means that no adapter owns the method.  A two-tuple means the
-    request was handled, including normalized adapter errors.  Keeping this
-    result form separate from the channel response lets ``fetch_agent_unary``
-    use exactly the same compatibility path as RPC handlers.
-    """
-    from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.gateway_adapter import (
-        AdapterRegistry,
-        ConfigAdapter,
-        HarmonyOSAdapter,
-        MemoryAdapter,
-        ProjectAdapter,
-        SessionAdapter,
-        WorkspaceFileAdapter,
-    )
-
-    registry = AdapterRegistry()
-    for adapter in (
-        SessionAdapter(),
-        WorkspaceFileAdapter(),
-        MemoryAdapter(),
-        ProjectAdapter(),
-        HarmonyOSAdapter(),
-        ConfigAdapter(),
-    ):
-        registry.register(adapter)
-    adapter = registry.get(req_method.value)
-    if adapter is None:
-        # These are the pre-existing shared-directory availability fallbacks.
-        # Keep them narrowly scoped to the default local WebSocket transport;
-        # remote/AgentOS clients never reach this helper.
-        request = AgentRequest(
-            request_id=req_id,
-            channel_id=channel_id,
-            session_id=session_id,
-            req_method=req_method,
-            params=dict(params or {}),
-            user_id=user_id,
-        )
-        try:
-            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
-                dispatch_permissions_config_request,
-                get_permissions_config_req_methods,
-            )
-
-            if req_method in get_permissions_config_req_methods():
-                response = dispatch_permissions_config_request(request)
-                payload = dict(response.payload) if isinstance(response.payload, dict) else {}
-                return bool(response.ok), payload
-
-            if req_method in {
-                ReqMethod.HARNESS_PACKAGES_GET,
-                ReqMethod.HARNESS_PACKAGES_SCAN,
-                ReqMethod.HARNESS_PACKAGES_DELETE,
-                ReqMethod.HARNESS_PACKAGES_IMPORT,
-                ReqMethod.HARNESS_PACKAGES_EXPORT,
-            }:
-                from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
-                from jiuwenswarm.common.utils import get_user_workspace_dir
-
-                service = AutoHarnessService(rail=None, agent=None)
-                if req_method == ReqMethod.HARNESS_PACKAGES_GET:
-                    payload = await asyncio.to_thread(service.get_packages_info)
-                elif req_method == ReqMethod.HARNESS_PACKAGES_SCAN:
-                    payload = await asyncio.to_thread(service.scan_runtime_extensions)
-                    await asyncio.to_thread(service.save_packages, payload)
-                else:
-                    package_id = str((params or {}).get("package_id") or "").strip()
-                    if req_method == ReqMethod.HARNESS_PACKAGES_IMPORT:
-                        raw = (params or {}).get("file_content")
-                        if not isinstance(raw, str) or not raw:
-                            return False, {"error": "Missing file_content", "code": "BAD_REQUEST"}
-                        content = base64.b64decode(raw, validate=True)
-                        if len(content) > 50 * 1024 * 1024:
-                            return False, {"error": "File exceeds 50MB limit", "code": "BAD_REQUEST"}
-                        temp_dir = get_user_workspace_dir() / "auto-harness" / "temp" / "uploads"
-                        temp_dir.mkdir(parents=True, exist_ok=True)
-                        temp_path = temp_dir / f"upload_{uuid.uuid4().hex}.zip"
-                        try:
-                            await asyncio.to_thread(temp_path.write_bytes, content)
-                            package = await asyncio.to_thread(service.import_package, temp_path)
-                        finally:
-                            temp_path.unlink(missing_ok=True)
-                        payload = {"ok": True, "package": package, "message": "Package imported successfully"}
-                    elif req_method == ReqMethod.HARNESS_PACKAGES_EXPORT:
-                        if not package_id:
-                            return False, {"error": "Missing package_id", "code": "BAD_REQUEST"}
-                        from jiuwenswarm.agents.harness.common.tools.web_file_download import build_file_download_info
-
-                        zip_path = await asyncio.to_thread(service.export_package, package_id)
-                        info = build_file_download_info(str(zip_path), zip_path.name, session_id or "", expires_in=600)
-                        payload = {
-                            "ok": True, "download_url": info["download_url"],
-                            "download_token": info["download_token"], "filename": info["name"],
-                            "file_size": info["size"], "message": "Package exported successfully",
-                        }
-                    else:
-                        if not package_id:
-                            return False, {"error": "missing package_id", "code": "BAD_REQUEST"}
-                        if package_id == "native":
-                            return False, {"error": "Cannot delete native agent version", "code": "BAD_REQUEST"}
-                        payload = await service.delete_package(package_id)
-                return True, dict(payload) if isinstance(payload, dict) else payload
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[legacy-shared-dir] %s local fallback failed: %s", req_method.value, exc)
-            return False, {"error": str(exc), "code": "INTERNAL_ERROR"}
-        return None
-    try:
-        response = await adapter.handle(
-            AgentRequest(
-                request_id=req_id,
-                channel_id=channel_id,
-                session_id=session_id,
-                req_method=req_method,
-                params=dict(params or {}),
-                user_id=user_id,
-            )
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[legacy-shared-dir] %s local adapter failed: %s", req_method.value, exc)
-        return False, {"error": str(exc), "code": "INTERNAL_ERROR"}
-    payload = dict(response.payload) if isinstance(response.payload, dict) else {}
-    return bool(response.ok), payload
 
 
 async def proxy_unary_request(
@@ -294,17 +136,6 @@ async def proxy_unary_request(
     # remain callable (and may apply their own timeout), so only an explicit
     # False denotes an unavailable transport here.
     if agent_client is None or getattr(agent_client, "server_ready", True) is False:
-        if is_legacy_shared_directory_client(agent_client) and await _try_legacy_shared_directory_adapter(
-            channel=channel,
-            ws=ws,
-            req_id=req_id,
-            params=params,
-            session_id=session_id,
-            user_id=user_id,
-            req_method=req_method,
-            preserve_error_payload=preserve_error_payload,
-        ):
-            return True
         await channel.send_response(
             ws,
             req_id,
@@ -359,17 +190,6 @@ async def proxy_unary_request(
             req_id,
             exc,
         )
-        if is_legacy_shared_directory_client(agent_client) and await _try_legacy_shared_directory_adapter(
-            channel=channel,
-            ws=ws,
-            req_id=req_id,
-            params=params,
-            session_id=session_id,
-            user_id=user_id,
-            req_method=req_method,
-            preserve_error_payload=preserve_error_payload,
-        ):
-            return True
         await channel.send_response(
             ws,
             req_id,
@@ -420,58 +240,68 @@ async def fetch_agent_unary(
     使用。目标 AgentServer 不可达/超时/失败时返回 ``(False, {error, code})``。
     """
     if agent_client is None or getattr(agent_client, "server_ready", True) is False:
-        if is_legacy_shared_directory_client(agent_client):
-            result = await _run_legacy_shared_directory_adapter(
-                channel_id=channel_id,
-                req_id=f"fetch-{time.time_ns()}",
-                params=params,
-                session_id=session_id,
-                user_id=user_id,
-                req_method=req_method,
-            )
-            if result is not None:
-                return result
         return False, {
             "error": "AgentServer is unavailable",
             "code": SERVICE_UNAVAILABLE_CODE,
         }
 
-    env = e2a_from_agent_fields(
-        request_id=f"fetch-{time.time_ns()}",
-        channel_id=channel_id,
-        session_id=session_id,
-        req_method=req_method,
-        params=dict(params or {}),
-        is_stream=False,
-        timestamp=time.time(),
-        user_id=user_id or None,
-    )
-    try:
-        response = await send_agent_request_with_timeout(
-            agent_client,
-            env,
-            label=f"{label} {req_method.value}",
-            timeout_seconds=timeout_seconds,
+    response = None
+    # request_id 撞号时请求尚未发出（拒绝发生在注册响应队列阶段），换号重试
+    # 一次是安全的；不做这层重试，id 生成器偶发重复会直接变成用户可见的失败。
+    for attempt in (0, 1):
+        env = e2a_from_agent_fields(
+            request_id=_new_fetch_request_id(),
+            channel_id=channel_id,
+            session_id=session_id,
+            req_method=req_method,
+            params=dict(params or {}),
+            is_stream=False,
+            timestamp=time.time(),
+            user_id=user_id or None,
         )
-    except AgentRequestTimeoutError:
-        return False, {
-            "error": AGENT_SERVER_TIMEOUT_ERROR,
-            "code": AGENT_SERVER_TIMEOUT_CODE,
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[%s] %s 转发失败: error=%s", label, req_method.value, exc)
-        if is_legacy_shared_directory_client(agent_client):
-            result = await _run_legacy_shared_directory_adapter(
-                channel_id=channel_id,
-                req_id=f"fetch-{time.time_ns()}",
-                params=params,
-                session_id=session_id,
-                user_id=user_id,
-                req_method=req_method,
+        try:
+            response = await send_agent_request_with_timeout(
+                agent_client,
+                env,
+                label=f"{label} {req_method.value}",
+                timeout_seconds=timeout_seconds,
             )
-            if result is not None:
-                return result
-        return False, {"error": str(exc), "code": SERVICE_UNAVAILABLE_CODE}
+            break
+        except AgentRequestTimeoutError:
+            return False, {
+                "error": AGENT_SERVER_TIMEOUT_ERROR,
+                "code": AGENT_SERVER_TIMEOUT_CODE,
+            }
+        except DuplicateRequestIdError as exc:
+            if attempt == 0:
+                logger.warning(
+                    "[%s] %s request_id 撞号，换号重试: request_id=%s",
+                    label,
+                    req_method.value,
+                    exc.request_id,
+                )
+                continue
+            logger.error(
+                "[%s] %s request_id 重复撞号，放弃: request_id=%s",
+                label,
+                req_method.value,
+                exc.request_id,
+            )
+            return False, {"error": str(exc), "code": SERVICE_UNAVAILABLE_CODE}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[%s] %s 转发失败: request_id=%s error=%s",
+                label,
+                req_method.value,
+                getattr(env, "request_id", ""),
+                exc,
+            )
+            return False, {"error": str(exc), "code": SERVICE_UNAVAILABLE_CODE}
+    if response is None:  # pragma: no cover - 防御：循环内所有异常分支均已返回
+        return False, {
+            "error": "AgentServer is unavailable",
+            "code": SERVICE_UNAVAILABLE_CODE,
+        }
 
     payload = (
         dict(response.payload)
