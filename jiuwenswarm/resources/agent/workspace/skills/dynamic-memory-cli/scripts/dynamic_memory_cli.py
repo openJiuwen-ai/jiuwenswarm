@@ -37,7 +37,23 @@ def normalize(value: Any) -> str:
 
 
 def tokens(value: Any) -> list[str]:
-    return re.findall(r"\w+", normalize(value), flags=re.UNICODE)
+    text = normalize(value)
+    result = re.findall(r"[a-z0-9_]+", text)
+    # ``\w+`` treats an entire Chinese clause as one token, so two natural
+    # phrasings that share "磁盘/落盘/返回" can otherwise have zero overlap.
+    # Character n-grams keep the CLI deterministic and dependency-free while
+    # making user-authored CJK queries useful for Pending and Built UTs alike.
+    for chunk in re.findall(r"[\u3400-\u9fff]+", text):
+        if len(chunk) == 1:
+            result.append(chunk)
+            continue
+        for width in (2, 3, 4):
+            if len(chunk) < width:
+                continue
+            for index in range(len(chunk) - width + 1):
+                window = slice(index, index + width)
+                result.append(chunk[window])
+    return result
 
 
 def content_hash(record: dict[str, Any]) -> str:
@@ -320,6 +336,7 @@ def publish_pending(root: Path, proposal: dict[str, Any]) -> dict[str, Any]:
 
 def freeze_pending(root: Path, output: Path) -> dict[str, Any]:
     with connect(root) as conn:
+        current = state(conn)
         rows = conn.execute(
             "SELECT * FROM uts WHERE status='active' AND build_state='pending' ORDER BY id"
         )
@@ -328,7 +345,13 @@ def freeze_pending(root: Path, output: Path) -> dict[str, Any]:
     # Calling it ``created_at`` is structurally ambiguous to the Builder: a
     # perfectly valid UT.updated_at necessarily precedes the time at which the
     # batch is frozen.  Keep that ordering explicit in the wire format.
-    batch = {"frozen_at": now(), "items": items}
+    batch = {
+        "frozen_at": now(),
+        "memory_revision": current["memory_revision"],
+        "snapshot_revision": current["snapshot_revision"],
+        "covered_through": current["covered_through"],
+        "items": items,
+    }
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
     temporary.write_text(

@@ -14,8 +14,8 @@ Use `scripts/dynamic_memory_cli.py` as the deterministic boundary between a conv
 3. Submit one proposal with `publish-pending --file <proposal.json>`. Never expose an Agent's scratch buffer directly.
 4. Use `search` immediately. Published Pending UTs participate through lexical matching and are marked `pending` in results.
 5. Run `freeze-pending --output <batch.json>` for a stable exact-content batch.
-6. Let the builder Agent review that batch, then run `build-pending --file <batch.json>`.
-7. Treat a successful build as an atomic representation migration. It does not advance semantic memory revision, Snapshot revision, or history cursor.
+6. Give the builder Agent an isolated copy of the memory project and frozen batch. The Builder runs `build-pending`, `test --built-only`, and `bench` there and returns its build evidence.
+7. Let the Harness validate the staged result, exact batch, revisions, cursor, hashes, and command evidence; only then run the atomic `build-pending` publication against canonical memory. A build does not advance semantic memory revision, Snapshot revision, or history cursor.
 
 Read [references/dynamic-memory-contract.md](references/dynamic-memory-contract.md) before creating proposals or integrating a Harness.
 
@@ -47,8 +47,8 @@ Do not edit `memory.sqlite3` manually. Preserve stable UT IDs. Modifying a Built
 ## Agent boundaries
 
 - Extraction Agent: decide what to remember, resolve semantic conflicts, author UTs, and produce Snapshot content.
-- Builder Agent: review a frozen Pending batch and request deterministic construction and Built-only validation.
-- Harness: verify identity/range/version inputs and invoke atomic commands.
+- Builder Agent: construct a frozen Pending batch in staging and run deterministic Built-only tests and benchmark checks.
+- Harness: verify identity/range/version/hash inputs and staged evidence, then invoke the canonical atomic publication command.
 - CLI: enforce schemas, continuity, exact-content comparison, transactions, search merging, and test gates.
 
 Save each foreground, extractor, and builder transcript outside the database in the session's Raw History or agent-history area. Store evidence references on every changed UT and on empty-UT proposals.

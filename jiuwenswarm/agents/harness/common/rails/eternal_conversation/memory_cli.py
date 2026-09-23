@@ -81,12 +81,26 @@ class DynamicMemoryGateway:
             result = {"error": "invalid_json", "stdout": text, "stderr": error_text}
             await self.evidence.append_audit(
                 "memory-cli-calls",
-                {"args": list(args), "returncode": process.returncode, "elapsed_ms": elapsed_ms, "result": result},
+                {
+                    "root": str(self.root),
+                    "script": str(self.script),
+                    "args": list(args),
+                    "returncode": process.returncode,
+                    "elapsed_ms": elapsed_ms,
+                    "result": result,
+                },
             )
             raise RuntimeError(f"dynamic-memory-cli returned invalid JSON: {text or error_text}") from exc
         await self.evidence.append_audit(
             "memory-cli-calls",
-            {"args": list(args), "returncode": process.returncode, "elapsed_ms": elapsed_ms, "result": result},
+            {
+                "root": str(self.root),
+                "script": str(self.script),
+                "args": list(args),
+                "returncode": process.returncode,
+                "elapsed_ms": elapsed_ms,
+                "result": result,
+            },
         )
         if process.returncode != 0:
             raise RuntimeError(f"dynamic-memory-cli failed: {result}")

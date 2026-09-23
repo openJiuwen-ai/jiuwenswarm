@@ -1,0 +1,35 @@
+id: VER-20260914-002-persist-extractor-fork
+applies_to:
+  source_revision: working-tree-2026-09-14
+  modules: [agent-harness]
+  flows: [eternal-conversation-memory]
+  symbols:
+    - EternalConversationRail._freeze_extractor_fork_context
+    - SessionCoordinator.request_extract
+    - BackgroundAgentRunner.call_json
+    - build_background_deep_agent_spec
+    - BackgroundEvidenceRail.after_model_call
+  paths:
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/rail.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/coordinator.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/background_agents.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/background_specs.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/prompts.py
+    - scripts/acceptance/eternal_conversation_200.py
+    - tests/unit_tests/agentserver/rails/test_eternal_conversation_rail.py
+    - tests/unit_tests/agentserver/rails/test_eternal_conversation_deep_agents.py
+evidence:
+  level: unit
+  scenario: exact-worker-prefix-fork-at-or-below-seventy-percent
+  environment: local Windows Python 3.12
+  command: uv run pytest -q tests/unit_tests/agentserver/rails/test_eternal_conversation_rail.py tests/unit_tests/agentserver/rails/test_eternal_conversation_deep_agents.py tests/unit_tests/runtime/test_runtime_service.py tests/unit_tests/agentserver/test_session_manager_lifecycle.py tests/unit_tests/agents/harness/test_permissions_persist_file_guard.py tests/unit_tests/channel/test_attachment_persist.py --no-cov --maxfail=1
+  repetitions: 1
+  successes: 183
+  warnings: 7
+result: passed
+status: superseded
+recorded_at: 2026-09-14T02:47:00Z
+supersedes:
+  - VER-20260914-001-persist-context-headroom
+evidence_paths: []
+notes: Unit evidence proves exact system/message/tool/model-config inheritance, one appended Extractor user message, parent Session lineage, the inclusive 70% policy, structural prefix hashing, provider cache-token accounting, and task-boundary routing. Superseded by the 2026-09-17 live-provider 200-task Web Code proof.

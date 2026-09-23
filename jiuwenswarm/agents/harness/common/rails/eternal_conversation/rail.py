@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import copy
+import hashlib
 import uuid
 from typing import Any
 
@@ -18,16 +20,17 @@ from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
 )
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
+from .background_agents import ExtractorForkContext
 from .coordinator import SessionCoordinator
 from .evidence import jsonable, read_json
 from .prompts import render_memory_context
+from .retrieval import extract_user_text
 from .registry import get_session_coordinator
 
 
 logger = logging.getLogger(__name__)
 
 FOREGROUND_CONTEXT_REPLACEMENT_MESSAGE_LIMIT = 1000
-FOREGROUND_CONTEXT_REPLACEMENT_BYTE_LIMIT = 512 * 1024
 
 
 class EternalConversationRail(DeepAgentRail):
@@ -62,6 +65,7 @@ class EternalConversationRail(DeepAgentRail):
         self._interaction_resume = False
         self._pending_projection: dict[str, Any] | None = None
         self._prefetched_memory: dict[str, Any] | None = None
+        self._extractor_fork_context: ExtractorForkContext | None = None
 
     def init(self, agent: Any) -> None:
         self._agent = agent
@@ -174,18 +178,15 @@ class EternalConversationRail(DeepAgentRail):
             )
             return
         self._task_id = self._request_id or f"task-{uuid.uuid4().hex}"
-        query = str(getattr(ctx.inputs, "query", None) or "").strip()
+        # Search only the user-authored text.  The Worker still receives the
+        # original assembled query unchanged; this affects retrieval only.
+        query = extract_user_text(getattr(ctx.inputs, "query", None))
         self._prefetched_memory = None
+        self._extractor_fork_context = None
         if query:
             try:
                 result = await self._coordinator.memory.search(query)
                 matches = list(result.get("matches") or [])
-                matches.sort(
-                    key=lambda item: (
-                        "support-window" not in set(item.get("tags") or []),
-                        "constraint" not in set(item.get("tags") or []),
-                    )
-                )
                 self._prefetched_memory = {
                     "query": query,
                     "matches": matches[:12],
@@ -265,21 +266,20 @@ class EternalConversationRail(DeepAgentRail):
             context = getattr(ctx, "context", None)
             if self._pending_projection is None and context is not None:
                 messages = context.get_messages()
-                encoded_size = len(
-                    json.dumps(
-                        jsonable(messages),
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                )
-                if (
-                    len(messages) > FOREGROUND_CONTEXT_REPLACEMENT_MESSAGE_LIMIT
-                    or encoded_size > FOREGROUND_CONTEXT_REPLACEMENT_BYTE_LIMIT
-                ):
+                if len(messages) > FOREGROUND_CONTEXT_REPLACEMENT_MESSAGE_LIMIT:
                     self._pending_projection = (
                         await self._coordinator.projection_for_boundary(force=True)
                     )
+                    if self._pending_projection is None:
+                        # The immediately preceding task may have finished while
+                        # its Extractor is still publishing the next Snapshot.
+                        # At high water, wait for that semantic publication so
+                        # the new user message can be admitted after a safe
+                        # replacement.  Pending is sufficient; Builder remains
+                        # fully asynchronous.
+                        self._pending_projection = (
+                            await self._coordinator.wait_for_projection_boundary()
+                        )
             await self._apply_pending_projection(ctx)
         await self._coordinator.evidence.append(
             "user-message",
@@ -329,7 +329,69 @@ class EternalConversationRail(DeepAgentRail):
         )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        self._extractor_fork_context = self._freeze_extractor_fork_context(ctx)
         await self._record_model_envelope(ctx, status="succeeded")
+
+    def _freeze_extractor_fork_context(
+        self, ctx: AgentCallbackContext
+    ) -> ExtractorForkContext | None:
+        """Freeze the exact successful Worker request prefix for extraction."""
+        def field(value: Any, name: str) -> Any:
+            if isinstance(value, dict):
+                return value.get(name)
+            return getattr(value, name, None)
+
+        messages = list(getattr(ctx.inputs, "messages", None) or [])
+        if not messages:
+            return None
+        first = messages[0]
+        role = str(getattr(first, "role", "") or "")
+        system_prompt = getattr(first, "content", None)
+        if role != "system" or not isinstance(system_prompt, str):
+            return None
+        tools = list(getattr(ctx.inputs, "tools", None) or [])
+        response = getattr(ctx.inputs, "response", None)
+        usage = getattr(response, "usage_metadata", None)
+        source_input_tokens = field(usage, "input_tokens")
+        report = getattr(ctx, "context_usage_report", None) or getattr(
+            ctx.inputs, "context_usage_report", None
+        )
+        report_window = field(report, "context_window")
+        context_window_tokens = field(report_window, "limit_tokens")
+        session = getattr(ctx, "session", None)
+        get_session_id = getattr(session, "get_session_id", None)
+        parent_session_id = (
+            str(get_session_id()) if callable(get_session_id) else str(self._session_id or "")
+        )
+        payload = {
+            "messages": jsonable(messages),
+            "tools": jsonable(tools),
+        }
+        prefix_sha256 = hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        deep_config = getattr(self._agent, "deep_config", None)
+        return ExtractorForkContext(
+            system_prompt=system_prompt,
+            messages=tuple(copy.deepcopy(messages[1:])),
+            tools=tuple(copy.deepcopy(tools)),
+            parent_session_id=parent_session_id,
+            source_input_tokens=(
+                int(source_input_tokens) if source_input_tokens is not None else None
+            ),
+            context_window_tokens=(
+                int(context_window_tokens) if context_window_tokens is not None else None
+            ),
+            prefix_sha256=prefix_sha256,
+            kv_cache_affinity_config=copy.deepcopy(
+                getattr(deep_config, "kv_cache_affinity_config", None)
+            ),
+        )
 
     async def on_model_exception(self, ctx: AgentCallbackContext) -> None:
         await self._record_model_envelope(ctx, status="failed")
@@ -402,7 +464,10 @@ class EternalConversationRail(DeepAgentRail):
             {"result": result},
             task_id=self._task_id,
         )
-        await self._coordinator.request_extract(int(event["cursor"]))
+        await self._coordinator.request_extract(
+            int(event["cursor"]),
+            fork_context=self._extractor_fork_context,
+        )
 
     async def close(self) -> None:
         # Coordinator lifetime follows the durable Session. Web/TUI routinely
