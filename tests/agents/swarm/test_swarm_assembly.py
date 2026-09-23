@@ -48,6 +48,7 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
     WorkspaceSpec,
     register_rail_provider,
 )
+from openjiuwen.agent_teams.schema.team import ExternalCliMemberSpec
 from openjiuwen.core.foundation.llm import ModelClientConfig
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent.rail.base import (
@@ -1541,6 +1542,42 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
         }
         assert restored_members["member1"].prompt == predefined["member1"].prompt
         assert restored.leader.prompt == spec.leader.prompt
+
+
+def test_enrich_agent_group_builds_predefined_external_member(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jiuwenswarm.server.runtime import extension_package_manager as package_manager
+
+    group = _write_agent_group_assembly_fixture(tmp_path)
+    manifest_path = group / "agents" / "member1" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime"] = {
+        "provider_name": "codex",
+        "provider_version": "0.1.0",
+        "config": {},
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(package_manager, "resolve_agent_group_dir", lambda _name: group)
+
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode="team",
+        channel_id="web",
+        agent_group_name="sample-expert-group",
+    )
+
+    members = {member.member_name: member for member in spec.predefined_members}
+    member = members["member1"]
+    assert isinstance(member, ExternalCliMemberSpec)
+    assert member.external_cli.cli_agent == "codex"
+    assert [Path(skill["dir"]).name for skill in member.external_cli.skills] == [
+        "skill_name_1"
+    ]
+    assert spec.agents["member1"].agent_template_spec is None
 
 
 def test_send_file_returns_empty_without_request_id() -> None:
