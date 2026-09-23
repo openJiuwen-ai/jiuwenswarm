@@ -1676,8 +1676,8 @@ export function SwarmflowTreeView({ runs, sessionId }: SwarmflowTreeViewProps) {
   }
 
   return (
-    <div className="flex flex-col h-full" data-testid="team-area-swarmflow-tree-view">
-      <div className="flex-1 overflow-auto">
+    <div className="flex flex-col flex-1 min-h-0" data-testid="team-area-swarmflow-tree-view">
+      <div className="flex-1 min-h-0 overflow-auto">
         <div className="flex flex-col gap-2 p-2">
           {runs.map((run) => (
             <RunNode key={run.id} run={run} sessionId={sessionId} />
