@@ -4108,7 +4108,6 @@
       "paperLabel": "Paper folder (optional; one of instruction/paper required)",
       "paperPlaceholder": "Select a paper folder",
       "paperPickerTitle": "Select paper folder",
-      "paperInfoBar": "Paper optimization produces a LaTeX folder and attempts to generate a PDF. Make sure MiKTeX or TeX Live is installed and latexmk or pdflatex is available; otherwise, PDF generation may fail.",
       "webProxyLabel": "Literature proxy (optional)",
       "webProxyPlaceholder": "For example: http://127.0.0.1:7890",
       "webProxyTip": "An HTTP/HTTPS proxy is recommended to improve literature webpage and full-text download success.",
@@ -4126,7 +4125,7 @@
       "customModels": "Custom models",
       "submit": "Create",
       "cancel": "Cancel",
-      "infoBar": "Please pre-install and invoke the evolve-design skill, create artifact optimization dependencies, and fill in the program path.",
+      "infoBar": "Please invoke rsi-program-dataset-creator to create the dataset package required for program optimization.",
       "validation": {
         "nameRequired": "Please enter experiment name",
         "datasetRequired": "Please select dataset file",
