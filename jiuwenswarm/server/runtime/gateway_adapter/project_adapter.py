@@ -538,31 +538,28 @@ def _count_project_conversations(project_id: str) -> int:
     Cron execution sessions are excluded, as in every other conversation count
     in this module.
     """
-    count = 0
-    for session in collect_all_sessions_metadata():
-        if (
-            session.get("channel_id") == "web"
-            and not session.get("cron_id")
-            and str(session.get("project_id") or "") == project_id
-        ):
-            count += 1
-    return count
+    return _project_conversation_state(project_id)[0]
 
 
-def _project_busy_sessions(project_id: str, runtime: Any) -> list[str]:
-    """project.remove 前的 busy 扫描:项目下仍在执行的 Web 会话。
+def _project_conversation_state(
+    project_id: str, runtime: Any = None,
+) -> tuple[int, list[str]]:
+    """Count Web conversations and find running ones in one metadata scan.
 
-    枚举口径与 ``_count_project_conversations`` 一致(channel=web、非 cron
-    执行会话、project_id 匹配的未归档会话)。执行判定与 session.archive 的
+    执行判定与 session.archive 的
     ``_session_is_busy_for_action`` 一致:parked 的 Team 常驻流只剩响应流、
     不再持有团队工作,不阻塞移除——否则任何跑过 Team 会话的项目都会因
     常驻 leader 流而永远无法移除。
     """
+    count = 0
     busy: list[str] = []
     for session in collect_all_sessions_metadata():
         if session.get("channel_id") != "web" or session.get("cron_id"):
             continue
         if str(session.get("project_id") or "") != project_id:
+            continue
+        count += 1
+        if runtime is None:
             continue
         session_id = str(session.get("session_id") or "")
         if not session_id or not runtime.is_session_running(session_id):
@@ -571,7 +568,11 @@ def _project_busy_sessions(project_id: str, runtime: Any) -> list[str]:
         if callable(probe) and probe(session_id):
             continue
         busy.append(session_id)
-    return busy
+    return count, busy
+
+
+def _project_busy_sessions(project_id: str, runtime: Any) -> list[str]:
+    return _project_conversation_state(project_id, runtime)[1]
 
 
 def _remove_project(
@@ -594,14 +595,14 @@ def _remove_project(
     if project.hidden:
         return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
 
-    if runtime is not None and _project_busy_sessions(project_id, runtime):
+    affected, busy = _project_conversation_state(project_id, runtime)
+    if busy:
         return (
             None,
             "project has running sessions; stop them before removing",
             "SESSION_BUSY",
         )
 
-    affected = _count_project_conversations(project_id)
     hidden = project_store.hide_project(project_id)
     if hidden is None:
         return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None

@@ -1176,6 +1176,19 @@ class TestProjectRemoveRestore:
 
     @staticmethod
     @pytest.mark.asyncio
+    async def test_remove_requires_precheck_support(registered_channel, tmp_path):
+        proj = _make_project("P", _abspath(tmp_path, "app"))
+        del registered_channel.agent_client.project_lifecycle["has_running_sessions"]
+
+        resp = await _call(
+            registered_channel, "project.remove", {"project_id": proj.project_id}
+        )
+        assert resp["ok"] is False
+        assert resp["code"] == "SERVICE_UNAVAILABLE"
+        registered_channel.cron_controller.hide_project_jobs.assert_not_awaited()
+
+    @staticmethod
+    @pytest.mark.asyncio
     async def test_remove_authoritative_busy_scan_blocks(registered_channel, tmp_path):
         """commit 侧权威扫描兜底:预检漏报(竞态)时仍拒绝隐藏项目。"""
         pa = _abspath(tmp_path, "app")
@@ -1198,7 +1211,7 @@ class TestProjectRemoveRestore:
 
     @staticmethod
     @pytest.mark.asyncio
-    async def test_remove_busy_scan_exemptions(registered_channel, tmp_path):
+    async def test_remove_busy_scan_exemptions(registered_channel, tmp_path, monkeypatch):
         """扫描豁免:parked Team 常驻流、cron 执行会话、其他项目的会话不阻塞。"""
         from jiuwenswarm.common.schema.agent import AgentRequest
         from jiuwenswarm.common.schema.message import ReqMethod
@@ -1219,6 +1232,17 @@ class TestProjectRemoveRestore:
             running={"s_park", "s_cron", "s_other"},
             parked={"s_park"},
         )
+        from jiuwenswarm.server.runtime.gateway_adapter import project_adapter
+
+        collect = project_adapter.collect_all_sessions_metadata
+        scans = 0
+
+        def counted_collect():
+            nonlocal scans
+            scans += 1
+            return collect()
+
+        monkeypatch.setattr(project_adapter, "collect_all_sessions_metadata", counted_collect)
         response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
             AgentRequest(
                 request_id="req-busy-scan",
@@ -1230,6 +1254,7 @@ class TestProjectRemoveRestore:
             )
         )
         assert response.ok is True
+        assert scans == 1
         # s_idle + s_park 计入 affected(cron 执行会话与外部项目会话不计)
         assert response.payload["affected_sessions"] == 2
 

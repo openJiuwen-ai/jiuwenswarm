@@ -411,3 +411,30 @@ async def test_hide_stop_failure_never_commits():
         await controller.hide_project_jobs("project", commit=commit)
     commit.assert_not_awaited()
     assert not scheduler.hiding_projects
+
+
+@pytest.mark.asyncio
+async def test_hide_commit_rejection_restores_original_enabled_jobs():
+    jobs = {
+        "enabled": SimpleNamespace(id="enabled", project_id="project", enabled=True),
+        "disabled": SimpleNamespace(id="disabled", project_id="project", enabled=False),
+    }
+
+    async def update_job(job_id, patch):
+        jobs[job_id].enabled = patch["enabled"]
+
+    scheduler = _FakeScheduler(reload=AsyncMock(), stop_project_runs=AsyncMock())
+    store = SimpleNamespace(list_jobs=AsyncMock(side_effect=lambda: list(jobs.values())), update_job=update_job)
+    controller = CronController(store=store, scheduler=scheduler)
+
+    async def reject_commit():
+        assert not jobs["enabled"].enabled
+        raise RuntimeError("SESSION_BUSY")
+
+    with pytest.raises(RuntimeError, match="SESSION_BUSY"):
+        await controller.hide_project_jobs("project", commit=reject_commit)
+
+    assert jobs["enabled"].enabled is True
+    assert jobs["disabled"].enabled is False
+    assert scheduler.reload.await_count == 2
+    assert "project" not in scheduler.hiding_projects
