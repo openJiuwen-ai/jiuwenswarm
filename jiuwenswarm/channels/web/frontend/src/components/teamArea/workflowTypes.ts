@@ -16,7 +16,7 @@ export type WorkflowStatus =
   | 'stopped'
   | 'waiting_for_human';
 
-export type WorkflowNodeType = 'agent' | 'agent_session' | 'human' | 'human_session';
+export type WorkflowNodeType = 'agent' | 'agent_session' | 'agent_session_fork' | 'human' | 'human_session';
 
 export interface WorkflowAgentActivity {
   timestamp: string;
@@ -64,6 +64,45 @@ export interface WorkflowAgentPart {
   content: string;
 }
 
+/** One reviewer's vote inside a verify group (mirrors the engine's settled shape). */
+export interface WorkflowVerifyVote {
+  /** Matches the reviewer agent node's label in the same phase. */
+  name: string;
+  /** The reviewer agent() call's deterministic node id (second join key). */
+  agent_id?: string | null;
+  kind: 'verdict' | 'score';
+  /** Display-only business role (verifier / inspector / challenger); judgement never reads it. */
+  role?: string | null;
+  /** 'pass' | 'fail' | null (not voted / malformed). */
+  decision?: 'pass' | 'fail' | null;
+  score?: number | null;
+  feedback?: string;
+  voted?: boolean;
+}
+
+/** One verify() round folded under a phase by the backend (VERIFY_STARTED → VERIFY_COMPLETED). */
+export interface WorkflowVerifyGroup {
+  id: string;
+  label: string;
+  /** Engine round identity (structural call position); None on legacy events. */
+  verify_id?: string;
+  /** 'running' until VERIFY_COMPLETED arrives. */
+  status: 'running' | 'settled';
+  threshold?: number;
+  reviewers?: number;
+  /** Reviewer label roster in fan-out order (verify_started); unique across rounds. */
+  reviewer_labels?: string[];
+  /** Reviewer business role roster (verify_started), same fan-out order as labels; display-only. */
+  reviewer_roles?: (string | null)[];
+  /** 'pass' | 'fail' | null = undecided (a reviewer did not vote — never a silent pass). */
+  verdict?: 'pass' | 'fail' | null;
+  votes?: WorkflowVerifyVote[];
+  /** Complete round output as a JSON string (engine _preview(VerifyResult)); absent on legacy runs. */
+  outcome?: string;
+  started_at?: string;
+  settled_at?: string;
+}
+
 export interface WorkflowAgent {
   id: string;
   name: string;
@@ -83,6 +122,15 @@ export interface WorkflowAgent {
   kind?: 'agent' | 'human';
   node_type?: WorkflowNodeType;
   correlation_id?: string;
+  /**
+   * Fork child (node_type=agent_session_fork): parent session's avatar member
+   * name (unique per session) — the fork-edge source. Resolves the exact
+   * parent even for chained / same-label forks; a label is NOT unique here
+   * because fork() inherits the parent label by default.
+   */
+  parent_session_id?: string;
+  /** This session's avatar member name (constant across turns); join key for parent_session_id. */
+  member_name?: string;
   human_prompt?: string;
   human_prompt_parts?: WorkflowAgentPart[];
   human_reply?: string;
@@ -105,6 +153,8 @@ export interface WorkflowPhase {
   completed_agent_count?: number;
   /** Absent on phase summaries from ``action=get_workflow``. */
   agents?: WorkflowAgent[];
+  /** verify() rounds folded under this phase (backend VERIFY_STARTED/SETTLED). */
+  verify_groups?: WorkflowVerifyGroup[];
   phase_type?: 'child' | null;
   parent_phase?: string | null;
   iteration?: number | null;
@@ -204,7 +254,60 @@ export function workflowStatusIcon(status: WorkflowStatus): string {
 // ── Session 节点工具 ──────────────────────────────────────
 
 export function isSessionNode(agent: Pick<WorkflowAgent, 'node_type'>): boolean {
-  return agent.node_type === 'agent_session' || agent.node_type === 'human_session';
+  return agent.node_type === 'agent_session'
+    || agent.node_type === 'agent_session_fork'
+    || agent.node_type === 'human_session';
+}
+
+/** 判断是否为 fork 子会话节点 */
+export function isForkSessionNode(agent: Pick<WorkflowAgent, 'node_type'>): boolean {
+  return agent.node_type === 'agent_session_fork';
+}
+
+/**
+ * 把 fork 父引用（avatar member name，形如 ``wf-sess-<label>-<n>``，或带 run
+ * 前缀的 ``wf-<run>-sess-<label>-<n>``）缩成友好显示名 ``<label>``。旧数据 /
+ * 非常规值原样返回。
+ */
+export function forkParentDisplay(parentSessionId?: string): string {
+  if (!parentSessionId) return '';
+  const stripped = parentSessionId.replace(/^wf-(?:[a-z0-9]+-)?(?:sess|human)-/, '');
+  if (stripped === parentSessionId) return parentSessionId;
+  const lastDash = stripped.lastIndexOf('-');
+  // 尾段是 per-run counter（数字）；label 本身可含连字符，故只剥最后一段
+  if (lastDash > 0 && /^\d+$/.test(stripped.slice(lastDash + 1))) {
+    return stripped.slice(0, lastDash);
+  }
+  return stripped;
+}
+
+/**
+ * 解析 verify outcome，返回徽章类型和文本
+ * pass: 绿色✓，fail:红色✗，score≥0.85绿色，<0.85红色，
+ * undecided: 票形态存在但值畸形（decision 非法 / score 非数字）——按未投处理，
+ * null: 普通文本（不是 verify 票）
+ */
+export function parseVerifyOutcome(outcome?: string): {
+  type: 'pass' | 'fail' | 'score' | 'undecided' | null;
+  text: string;
+  score?: number;
+} | null {
+  if (!outcome) return null;
+  try {
+    const obj = JSON.parse(outcome);
+    if (obj && typeof obj === 'object') {
+      if (obj.decision === 'pass') return { type: 'pass', text: '✓ pass' };
+      if (obj.decision === 'fail') return { type: 'fail', text: '✗ fail' };
+      if (typeof obj.score === 'number') {
+        const type = obj.score >= 0.85 ? 'pass' : 'fail';
+        return { type, text: `${obj.score.toFixed(2)} 分`, score: obj.score };
+      }
+      if ('decision' in obj || 'score' in obj) {
+        return { type: 'undecided', text: '? 未投' };
+      }
+    }
+  } catch {}
+  return null;
 }
 
 export function sessionGroupKey(
@@ -212,6 +315,36 @@ export function sessionGroupKey(
 ): string | null {
   if (!isSessionNode(agent)) return null;
   return `${agent.name}\0${agent.node_type}`;
+}
+
+/**
+ * Tally a verify group's votes into badge-friendly counts.
+ *
+ * A vote counts as pass/fail by its own outcome; anything else (not voted /
+ * malformed) is undecided. The score pool reads against ``threshold``.
+ */
+export function summarizeVerifyVotes(
+  group: Pick<WorkflowVerifyGroup, 'votes' | 'threshold'>,
+): { pass: number; fail: number; undecided: number } {
+  let pass = 0;
+  let fail = 0;
+  let undecided = 0;
+  for (const vote of group.votes ?? []) {
+    if (vote.kind === 'verdict') {
+      if (vote.decision === 'pass') pass += 1;
+      else if (vote.decision === 'fail') fail += 1;
+      else undecided += 1;
+    } else {
+      const threshold = group.threshold ?? 0.85;
+      if (typeof vote.score === 'number') {
+        if (vote.score >= threshold) pass += 1;
+        else fail += 1;
+      } else {
+        undecided += 1;
+      }
+    }
+  }
+  return { pass, fail, undecided };
 }
 
 export function parseTurnFromCorrelationId(correlationId?: string): number | null {
@@ -302,6 +435,70 @@ export function groupWorkflowAgentsByName(agents: WorkflowAgent[]): {
   }
 
   return { sessions, oneShots };
+}
+
+/**
+ * 把 one-shot agent 按 verify 容器归属分桶。
+ *
+ * 归属键是精确等值：agent.name ∈ group.reviewer_labels（verify_started 名册，
+ * 引擎保证跨 verify 唯一），或已 settled 的 votes[].name 兜底（旧事件无名册）。
+ * 无名册的旧 run：所有 one-shot 落 orphans，保持旧行为。
+ */
+export function partitionAgentsByVerifyGroups(
+  oneShotAgents: WorkflowAgent[],
+  verifyGroups: WorkflowVerifyGroup[],
+): {
+  containers: Array<{ group: WorkflowVerifyGroup; reviewers: WorkflowAgent[] }>;
+  orphans: WorkflowAgent[];
+} {
+  // "Second round" semantics: only verify() calls under the SAME label are
+  // rounds of one group (the backend folds one round per group card). Each
+  // agent belongs to exactly one round — settled rounds claim their reviewers
+  // by votes[].agent_id (exact, engine-guaranteed), running rounds by the
+  // roster names. Reviewers of a different verify label therefore never mix
+  // into another group's rounds.
+  const claimed = new Set<string>();
+  const reviewersByGroup = new Map<string, WorkflowAgent[]>();
+  for (const group of verifyGroups) {
+    if (group.status !== 'settled') continue;
+    const ids = new Set(
+      (group.votes ?? [])
+        .map((v) => v.agent_id)
+        .filter((id): id is string => Boolean(id)),
+    );
+    if (ids.size === 0) continue;
+    const members: WorkflowAgent[] = [];
+    for (const agent of oneShotAgents) {
+      if (ids.has(agent.id) && !claimed.has(agent.id)) {
+        members.push(agent);
+        claimed.add(agent.id);
+      }
+    }
+    reviewersByGroup.set(group.id, members);
+  }
+  // Running rounds (no votes yet) and legacy settled rounds without vote
+  // agent_ids join by name (labels are unique per round on new runs).
+  for (const group of verifyGroups) {
+    if (reviewersByGroup.has(group.id)) continue;
+    const names = group.reviewer_labels?.length
+      ? group.reviewer_labels
+      : (group.votes ?? []).map((v) => v.name);
+    const nameSet = new Set(names);
+    const members: WorkflowAgent[] = [];
+    for (const agent of oneShotAgents) {
+      if (nameSet.has(agent.name) && !claimed.has(agent.id)) {
+        members.push(agent);
+        claimed.add(agent.id);
+      }
+    }
+    reviewersByGroup.set(group.id, members);
+  }
+  const containers = verifyGroups.map((group) => ({
+    group,
+    reviewers: reviewersByGroup.get(group.id) ?? [],
+  }));
+  const orphans = oneShotAgents.filter((a) => !claimed.has(a.id));
+  return { containers, orphans };
 }
 
 // ── 子工作流（child phase） ───────────────────────────────
