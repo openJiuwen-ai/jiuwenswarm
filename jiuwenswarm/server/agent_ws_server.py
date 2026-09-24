@@ -341,6 +341,10 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # Proactive recommendation engine (set by app_agentserver for debug trigger)
         self._proactive_engine: Any = None
+        # Optional in-process answerer for A2A outbound reverse RPCs (set by
+        # app_agentserver in Gateway-less packaged topologies). Signature:
+        # async (chunk, session_id) -> bool (True = handled).
+        self._a2a_outbound_local_rpc_handler: Any = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -353,6 +357,10 @@ class AgentWebSocketServer:
     def set_proactive_engine(self, engine: Any) -> None:
         """Store the proactive engine instance for debug trigger interface."""
         self._proactive_engine = engine
+
+    def _set_a2a_outbound_local_rpc_handler(self, handler: Any) -> None:
+        """Register the Gateway-less A2A outbound RPC fallback (app_agentserver)."""
+        self._a2a_outbound_local_rpc_handler = handler
 
     @staticmethod
     def _ws_capabilities_key(ws: Any) -> str:
@@ -1197,6 +1205,31 @@ class AgentWebSocketServer:
         registry = get_push_registry()
         response_kind = str(msg.get("response_kind") or "").strip()
         is_reverse_rpc = response_kind == E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST
+
+        # Gateway-less packaged topology: answer A2A outbound reverse RPCs
+        # locally instead of pushing them to a WS client that cannot reply.
+        if is_reverse_rpc and self._a2a_outbound_local_rpc_handler is not None:
+            try:
+                from jiuwenswarm.common.e2a.wire_codec import (
+                    parse_agent_server_wire_chunk,
+                )
+
+                chunk = parse_agent_server_wire_chunk(
+                    build_server_push_wire(msg)
+                )
+                session_id = str(msg.get("session_id") or "").strip() or None
+                handled = await self._a2a_outbound_local_rpc_handler(
+                    chunk=chunk,
+                    session_id=session_id,
+                )
+            except Exception:
+                logger.exception(
+                    "[AgentWebSocketServer] local A2A outbound RPC fallback failed"
+                )
+                handled = False
+            if handled:
+                return 1
+
         if (
             not registry.reverse_rpc_ready()
             if is_reverse_rpc
