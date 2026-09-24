@@ -280,8 +280,15 @@ def _is_transient_state(project_dir: str) -> tuple[bool, str]:
             return False, ""
     if git_dir is None or not git_dir.exists():
         return False, ""
-    for kind in ("merge", "rebase-merge", "rebase-apply", "cherry-pick", "revert"):
-        if (git_dir / kind).exists():
+    transient_markers = (
+        ("merge", "MERGE_HEAD"),
+        ("rebase", "rebase-merge"),
+        ("rebase", "rebase-apply"),
+        ("cherry-pick", "CHERRY_PICK_HEAD"),
+        ("revert", "REVERT_HEAD"),
+    )
+    for kind, marker in transient_markers:
+        if (git_dir / marker).exists():
             return True, kind
     return False, ""
 
