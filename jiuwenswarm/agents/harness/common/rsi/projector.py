@@ -50,11 +50,10 @@ class RsiProjector:
         if not events_path.is_file() or not card_path.is_file():
             return 0
         try:
-            from openjiuwen.rsi.artifact_rsi.program_opt.scorecard import solved_threshold
+            from jiuwenswarm.agents.harness.common.rsi.program_threshold_provider import _solved_threshold
 
-            card = json.loads(card_path.read_text(encoding="utf-8"))
-            threshold = solved_threshold(card.get("scorecard", card))
-            if not math.isfinite(threshold):
+            threshold = _solved_threshold(task_dir / "run")
+            if threshold is None:
                 return 0
             solved = False
             stopped_ids: set[str] = set()
