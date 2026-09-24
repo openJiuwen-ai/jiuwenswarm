@@ -15,7 +15,6 @@ from jiuwenswarm.symphony.evolution.models import (
     OVERLAY_SCHEMA_VERSION,
     OUTCOME_NEEDS_INPUT,
     OUTCOME_FAILURE,
-    OUTCOME_SUCCESS,
     PLAN_OUTCOME,
     edge_key,
     normalize_edges,

@@ -69,12 +69,7 @@ class SymphonyBuildConfig:
 
 @dataclass(frozen=True)
 class SymphonyFlowDistillConfig:
-    """Core Flow 蒸馏参数（对称 openjiuwen SymphonyFlowConfig 的子集）。
-
-    enabled 为沉淀总开关（Core Graph-Evolution Rail / Flow 引擎启停）；
-    分组签名 = 轨迹全部成功边，确定性不漂移；判级只看 pack 级统计
-    （min_successes + min_pack_success_rate），达标即 verified。
-    """
+    """Flow 沉淀开关与阈值；成功次数同时约束 Core 的两个判级阶段。"""
 
     enabled: bool = DEFAULT_EVOLUTION_ENABLED
     min_successes: int = DEFAULT_FLOW_MIN_SUCCESSES

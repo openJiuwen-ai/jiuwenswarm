@@ -237,13 +237,13 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
                 '{"query":"task","candidate_skill_ids":["skill-a"]}',
                 "compose-1",
             ),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-blocked-1"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer"),
             _call(
                 "ask_user",
                 '{"questions":[{"header":"Audience","question":"Audience"}]}',
                 "ask-1",
             ),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-blocked-2"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-after-answer"),
             _call(
                 "symphony_compose_graph",
                 '{"query":"drift","candidate_skill_ids":["other"]}',
@@ -278,7 +278,7 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
     )
     first = await agent.invoke(_inputs("task", mode=mode))
     assert first["result_type"] == "interrupt"
-    assert not skill_calls
+    assert skill_calls == [{"skill_name": "skill-a"}]
     answer = InteractiveInput()
     answer.update(
         "ask-1", {"answers": {"Audience": "engineering", "api_key": "secret"}}
@@ -289,7 +289,7 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
     assert compose_calls[1]["query"] == (
         'task\n\n补充信息：\n- Audience: "engineering"\n- api_key: "secret"'
     )
-    assert skill_calls == [{"skill_name": "skill-a"}]
+    assert skill_calls == [{"skill_name": "skill-a"}] * 3
     assert client.index == len(client.responses)
 
 
@@ -312,18 +312,18 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
             _call(
                 "symphony_compose_graph", '{"candidate_skill_ids":["skill-a"]}', "c1"
             ),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "blocked-1"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer-1"),
             _call(
                 "symphony_compose_graph",
                 '{"query":"drift","candidate_skill_ids":["drift"]}',
                 "compose-blocked-original",
             ),
             _call("ask_user", '{"questions":[{"question":"Audience"}]}', "ask-1"),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "blocked-2"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-after-answer-1"),
             _call("symphony_compose_graph", '{"candidate_skill_ids":["drift"]}', "c2"),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "blocked-3"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer-2"),
             _call("ask_user", '{"questions":[{"question":"Scope"}]}', "ask-2"),
-            _call("skill_tool", '{"skill_name":"skill-a"}', "blocked-4"),
+            _call("skill_tool", '{"skill_name":"skill-a"}', "skill-after-answer-2"),
             _call("symphony_compose_graph", '{"candidate_skill_ids":["drift"]}', "c3"),
             _call("skill_tool", '{"skill_name":"skill-a"}', "allowed"),
             AssistantMessage(
@@ -362,7 +362,7 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
     ]
     assert "engineering" in compose_calls[-1]["query"]
     assert "platform" in compose_calls[-1]["query"]
-    assert skill_calls == [{"skill_name": "skill-a"}]
+    assert skill_calls == [{"skill_name": "skill-a"}] * 5
     assert client.index == len(client.responses)
 
 

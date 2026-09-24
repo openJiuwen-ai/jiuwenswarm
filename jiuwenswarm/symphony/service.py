@@ -63,8 +63,14 @@ def _symphony_flow_config(flow_cfg: Any) -> SymphonyFlowConfig:
     kwargs: dict[str, Any] = {}
     if "min_successes" in accepted:
         kwargs["min_successes"] = flow_cfg.min_successes
+    else:
+        for name in ("min_successes_candidate", "min_successes_verified"):
+            if name in accepted:
+                kwargs[name] = flow_cfg.min_successes
     if "min_pack_success_rate" in accepted:
         kwargs["min_pack_success_rate"] = flow_cfg.min_pack_success_rate
+    elif "min_pack_success_rate_verified" in accepted:
+        kwargs["min_pack_success_rate_verified"] = flow_cfg.min_pack_success_rate
     return SymphonyFlowConfig(**kwargs)
 
 
