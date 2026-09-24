@@ -74,6 +74,46 @@ def _bind_parent_dirs(binds: list[tuple[str, str]], existing_dirs: set[str]) -> 
     return result
 
 
+def _is_strict_subpath(path: str, ancestor: str) -> bool:
+    """Whether ``path`` is a proper descendant of ``ancestor`` (POSIX absolute).
+
+    Equal paths return False. A root ``/`` ancestor is never treated as a
+    parent here: root binds are deduplicated and emitted in a separate stage
+    of :meth:`BwrapConfig.to_args`, so treating ``/`` as a parent would flag
+    every ro-bind as nested. ``posixpath.normpath`` handles trailing slashes
+    and ``//``.
+    """
+    norm_path = posixpath.normpath(path)
+    norm_ancestor = posixpath.normpath(ancestor)
+    if norm_ancestor == "/" or norm_path == norm_ancestor:
+        return False
+    return norm_path.startswith(norm_ancestor.rstrip("/") + "/")
+
+
+def _partition_nested_ro_binds(
+    ro_binds: list[tuple[str, str]],
+    rw_binds: list[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split ``ro_binds`` into ``(non-nested, nested-under-a-rw-parent)``.
+
+    A nested ro-bind must be emitted *after* the rw parent in
+    :meth:`BwrapConfig.to_args` so bwrap's later-wins keeps it as the live
+    mountpoint atop the rw tree; otherwise the rw parent overlays the subtree
+    and shadows it. Both partitions preserve the original relative order of
+    ``ro_binds``.
+    """
+    rw_dsts = [dst for _, dst in rw_binds]
+    non_nested: list[tuple[str, str]] = []
+    nested: list[tuple[str, str]] = []
+    for bind in ro_binds:
+        dst = bind[1]
+        if any(_is_strict_subpath(dst, rw_dst) for rw_dst in rw_dsts):
+            nested.append(bind)
+        else:
+            non_nested.append(bind)
+    return non_nested, nested
+
+
 @dataclass
 class BwrapConfig:
     """Configuration that maps to bwrap CLI arguments."""
@@ -467,13 +507,26 @@ class BwrapConfig:
             else:
                 args.extend(["--tmpfs", path])
 
-        # read-only binds
-        for src, dst in ro_binds:
+        # Read-only binds nested under a rw parent are emitted *after* the rw
+        # binds so bwrap's later-overrides-earlier makes the ro-bind the live
+        # mountpoint atop the rw tree (see ``_partition_nested_ro_binds``).
+        # Non-nested ro-binds keep their original pre-rw order so the
+        # bind_root_entries-vs-bind_mounts override contract holds for
+        # non-overlapping paths.
+        non_nested_ro, nested_ro = _partition_nested_ro_binds(ro_binds, rw_binds)
+
+        # read-only binds not nested under a rw parent
+        for src, dst in non_nested_ro:
             args.extend(["--ro-bind", src, dst])
 
         # read-write binds
         for src, dst in rw_binds:
             args.extend(["--bind", src, dst])
+
+        # read-only binds nested under a rw parent — emitted last so the ro
+        # mountpoint is created atop the rw tree (later-wins).
+        for src, dst in nested_ro:
+            args.extend(["--ro-bind", src, dst])
 
         for src, dst in self.device_binds:
             args.extend(["--dev-bind", src, dst])

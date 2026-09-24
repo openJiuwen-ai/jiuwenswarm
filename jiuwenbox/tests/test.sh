@@ -9,7 +9,9 @@ cd "$PROJECT_DIR"
 JIUWENBOX_DIR="$(realpath "$PROJECT_DIR/src")"
 
 # 默认 test 目标 & 类别; 各子命令可以覆盖。
-TEST_TARGETS=("tests/integration/")
+# tests/unit/ 是纯单测 (无需 server), 始终纳入默认与 default 目标,
+# 保证 bwrap/landlock/seccomp 等纯逻辑回归在每次入口都跑到。
+TEST_TARGETS=("tests/unit/" "tests/integration/")
 TEST_KIND="integration"
 PERF_SANDBOX_COUNT="${JIUWENBOX_PERF_SANDBOX_COUNT:-1}"
 PERF_CONCURRENCY="${JIUWENBOX_PERF_CONCURRENCY:-4}"
@@ -21,11 +23,14 @@ usage() {
 Usage: tests/test.sh [target] [--server-endpoint=URI] [pytest args...]
 
 Targets:
-  default                 Run test_server_api_default.py + test_cli_default.py
+  default                 Run tests/unit/ + test_server_api_default.py +
+                          test_cli_default.py + test_mcp_default.py
+  unit                    Run pure unit tests under tests/unit/ (no server
+                          needed; safe to run without a live jiuwenbox)
   inference-privacy-proxy Run test_inference_privacy_proxy.py
   performance             Run performance suite (accepts --sandbox-count /
                           --concurrency / --loop)
-  (omitted)               Run the whole tests/integration/ directory
+  (omitted)               Run tests/unit/ + the whole tests/integration/ directory
 
 Server endpoint:
   --server-endpoint=URI   Pick the listener to test against. Transport is
@@ -62,11 +67,17 @@ if [[ $# -gt 0 ]]; then
             ;;
         default)
             TEST_TARGETS=(
+                "tests/unit/"
                 "tests/integration/test_server_api_default.py"
                 "tests/integration/test_cli_default.py"
                 "tests/integration/test_mcp_default.py"
             )
             TEST_KIND="integration"
+            shift
+            ;;
+        unit)
+            TEST_TARGETS=("tests/unit/")
+            TEST_KIND="unit"
             shift
             ;;
         inference-privacy-proxy)
@@ -146,7 +157,9 @@ if (( ${#PYTEST_ARGS[@]} > 0 )); then
     done
 fi
 
-if [[ -n "$user_endpoint" ]]; then
+if [[ "$TEST_KIND" == "unit" ]]; then
+    : # unit tests need no server endpoint; skip the listener echo.
+elif [[ -n "$user_endpoint" ]]; then
     case "$user_endpoint" in
         unix://*)
             echo "[test.sh] endpoint=${user_endpoint} (uds)" >&2
