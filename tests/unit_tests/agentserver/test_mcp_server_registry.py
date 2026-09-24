@@ -547,7 +547,13 @@ async def test_chat_empty_list_without_office_claw_skips() -> None:
         params={"mcp_server_list": []},
     )
     result = await adapter.register_request_scoped_office_claw_mcp(request)
-    assert result is None
+    # Empty list + no office_claw still publishes a no-tool registration so
+    # Team members own this request generation instead of a prior one.
+    assert result is not None
+    assert result.request_id == "r1"
+    assert result.tool_ids == ()
+    assert result.tool_names == ()
+    assert result.tool_instances == ()
 
 
 @pytest.mark.asyncio
