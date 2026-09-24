@@ -44,8 +44,10 @@ test('Skill Hub marketplace and installation rely on the server-configured Hub',
   assert.match(marketplaceSource, /category_id: category/);
   assert.match(hubMarketplaceSource, /hubHomeLoadedCategoryRef/);
   assert.match(hubMarketplaceSource, /const silent = hubHomeLoadedCategoryRef\.current === category/);
-  // 首开直连 Hub；同分类再进才 prefer_cache
-  assert.match(homeSource, /const preferCache = silent/);
+  // 先 prefer_cache；cold miss 且无旧卡时立刻直连 Hub（不空等轮询）
+  assert.match(homeSource, /preferCache:\s*true/);
+  assert.match(homeSource, /preferCache:\s*false/);
+  assert.match(homeSource, /isCatalogMissRefreshing/);
   assert.match(homeSource, /loadOne\('swarmskill'/);
   assert.match(homeSource, /loadOne\('skill'/);
   assert.doesNotMatch(homeSource, /loadOne\('skillpack'|fetchHubRecommendByType\(category,\s*'skillpack'/);
