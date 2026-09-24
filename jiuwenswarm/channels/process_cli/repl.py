@@ -216,8 +216,9 @@ async def _forward_live_input(
     *,
     prompt_session,
     layout: LiveTurnLayout,
+    cancel_requested: asyncio.Event | None = None,
 ) -> None:
-    """Forward terminal lines from the REPL process to its Runtime worker."""
+    """Route live slash commands locally and forward ordinary input to the worker."""
 
     writer = process.stdin
     if writer is None:
@@ -229,10 +230,28 @@ async def _forward_live_input(
             except EOFError:
                 return
             except KeyboardInterrupt:
+                if cancel_requested is not None:
+                    cancel_requested.set()
                 await _interrupt_worker(process)
                 return
             if process.returncode is not None:
                 return
+            stripped = text.strip()
+            if stripped.startswith("/"):
+                command = parse_slash_command(stripped)
+                if command is None:
+                    layout.add_notice(f"未知命令：{stripped.split(maxsplit=1)[0]}。输入 /help 查看可用命令。")
+                elif command.name == "/cancel" and not command.arguments:
+                    if cancel_requested is not None:
+                        cancel_requested.set()
+                    layout.add_notice("正在中断当前任务…")
+                    await _interrupt_worker(process)
+                    return
+                elif command.name == "/cancel":
+                    layout.add_notice("用法：/cancel")
+                else:
+                    layout.add_notice(f"当前任务运行中，暂不能执行 {command.name}；可使用 /cancel 中断任务。")
+                continue
             layout.add_supplement(text)
             writer.write((text + "\n").encode("utf-8"))
             await writer.drain()
@@ -354,12 +373,14 @@ async def _run_worker(
                 layout=live_layout,
             )
         )
+        cancel_requested = asyncio.Event()
         input_task = (
             asyncio.create_task(
                 _forward_live_input(
                     process,
                     prompt_session=live_prompt_session,
                     layout=live_layout,
+                    cancel_requested=cancel_requested,
                 )
             )
             if live_layout is not None and live_prompt_session is not None
@@ -367,6 +388,8 @@ async def _run_worker(
         )
         try:
             return_code = await process.wait()
+            if cancel_requested.is_set():
+                return_code = 130
         except asyncio.CancelledError:
             _clear_current_task_cancellation()
             await _interrupt_worker(process)
@@ -663,6 +686,9 @@ def _handle_simple_slash_command(
         return False
     if command.name == "/exit":
         return True
+    if command.name == "/cancel":
+        ui.notice("当前没有运行中的任务。")
+        return False
     if command.name == "/status":
         ui.status(
             model_name=state.model_name,
@@ -727,6 +753,9 @@ async def run_repl(args: argparse.Namespace) -> int:
         if slash_command is not None:
             if await _handle_slash_command(args, slash_command, ui, state):
                 return 0
+            continue
+        if prompt.startswith("/"):
+            ui.notice(f"未知命令：{prompt.split(maxsplit=1)[0]}。输入 /help 查看可用命令。")
             continue
         worker_kwargs = {
             "prompt": prompt,
