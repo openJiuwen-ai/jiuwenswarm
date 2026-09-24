@@ -157,12 +157,12 @@ def resolve_float_setting(
     env_name: str,
     default: float,
 ) -> float:
-    """Resolve a float setting with YAML > env > default precedence."""
-    configured = read_optional_float(section, key)
-    if configured is not None:
-        return configured
+    """Resolve a float setting with env > YAML > default precedence."""
     environment = _read_float_env(env_name)
-    return environment if environment is not None else default
+    if environment is not None:
+        return environment
+    configured = read_optional_float(section, key)
+    return configured if configured is not None else default
 
 
 def _read_bool(section: Mapping[str, Any], key: str, default: bool) -> bool:
