@@ -2269,13 +2269,28 @@ class AgentRuntime:
         if not requests:
             self._pending_chat_requests.pop(session_id, None)
 
-    def is_session_running(self, session_id: str) -> bool:
-        """Read current execution state without cancelling work or fencing admission."""
+    def is_session_running(
+        self, session_id: str, *, ignore_heartbeats: bool = False
+    ) -> bool:
+        """Read current execution state without cancelling work or fencing admission.
+
+        ``ignore_heartbeats`` drops background Heartbeat executions from the
+        read, answering "would this Session still be busy once a lifecycle
+        action has stopped its Heartbeats".  Removal prechecks use it so a
+        Heartbeat the removal is about to stop does not read as a blocker;
+        the action itself still scans with them counted, so a run that
+        refused to cancel keeps the Session busy.
+        """
         if getattr(self, "_pending_chat_requests", {}).get(session_id):
             return True
         snapshot = self._session_coordinator.snapshot_session(session_id)
         if snapshot and any(
-            not execution.state.terminal for execution in snapshot.executions
+            not execution.state.terminal
+            and not (
+                ignore_heartbeats
+                and execution.work_kind is SessionWorkKind.HEARTBEAT
+            )
+            for execution in snapshot.executions
         ):
             return True
         from jiuwenswarm.agents.harness.team.team_manager import is_team_session_running
@@ -2315,6 +2330,83 @@ class AgentRuntime:
         )
 
         return team_round_finishing_after_flow(session_id)
+
+    async def stop_heartbeat_runs(self, session_id: str) -> bool:
+        """Cancel the Session's active Heartbeat run so lifecycle work can proceed.
+
+        Archive and delete stop a background Heartbeat instead of waiting it
+        out; neither may move a Session out from under a live run.  Returns
+        False when no Heartbeat owns the Session.  A run that refuses to
+        cancel raises, leaving the caller its ordinary busy fallback.
+        """
+        controller = getattr(self, "_admission_controller", None)
+        stopper = getattr(controller, "stop_active_heartbeat", None)
+        stopped = bool(await stopper(session_id)) if callable(stopper) else False
+        # The coordinator adopts the admitted run, so releasing the admission
+        # marker alone does not settle the Session: cancel the Heartbeat
+        # execution too, or the ordinary busy check still sees a live run.
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if not snapshot:
+            return stopped
+        executions = []
+        for execution in snapshot.executions:
+            if execution.work_kind is not SessionWorkKind.HEARTBEAT:
+                continue
+            if execution.state.terminal:
+                continue
+            executions.append(execution)
+        if not executions:
+            return stopped
+        cancel = getattr(self._session_coordinator, "cancel_execution", None)
+        if not callable(cancel):
+            return stopped
+        for execution in executions:
+            await cancel(session_id, execution_id=execution.execution_id)
+        return True
+
+    async def stop_subagent_runtimes(
+        self,
+        session_id: str,
+        *,
+        channel_id: str = "",
+        reason: str = "session_deleted",
+    ) -> bool:
+        """Release the Session's resident subagents so lifecycle work can proceed.
+
+        A resident subagent stays alive until something explicitly releases it,
+        so it can outlive the user's own stop and keep the Session looking
+        busy.  Archive and delete release it instead of waiting it out, same as
+        they do for a Heartbeat.  Returns False when no Agent owns the Session;
+        a release that raises leaves the caller its ordinary busy fallback.
+        """
+        manager = getattr(self, "_agent_manager", None)
+        release = getattr(manager, "release_subagent_runtime_for_session", None)
+        if not callable(release):
+            return False
+        return bool(
+            await release(
+                channel_id=channel_id or None,
+                session_id=session_id,
+                reason=reason,
+            )
+        )
+
+    def is_subagent_finishing(
+        self, session_id: str, *, channel_id: str = ""
+    ) -> bool:
+        """Whether a busy Session is only waiting on resident subagents.
+
+        Those subagents were already told to stop — by the user, or by the
+        lifecycle action itself — but cancel and teardown take time, so the
+        Session still reads busy.  Lifecycle actions use this to ask for a
+        retry shortly instead of telling the user to stop a Session that has
+        already been stopped.
+        """
+        manager = getattr(self, "_agent_manager", None)
+        probe = getattr(manager, "session_has_live_subagents", None)
+        if not callable(probe):
+            return False
+        return bool(probe(channel_id=channel_id or None, session_id=session_id))
 
     async def stop_session_for_archive(
         self, *, channel_id: str, session_id: str

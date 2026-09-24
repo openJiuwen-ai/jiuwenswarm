@@ -506,7 +506,9 @@ class WebClient {
         ? message.payload.error
         : i18n.t('network.requestFailed');
     const code = typeof message.payload.code === 'string' ? message.payload.code : undefined;
-    pending.reject(this.createWebError(error, code, requestId, true));
+    // 服务端平铺在 payload 上的 details（如 SESSION_BUSY 的 finishing 细分）
+    // 要带到错误对象上，界面才能按成因选择文案。
+    pending.reject(this.createWebError(error, code, requestId, true, message.payload));
   }
 
   private dispatchEvent(event: WsEvent): void {

@@ -71,7 +71,8 @@ function getSessionTitle(session: Session, fallback: string): string {
 function archiveErrorKey(error: unknown): string {
   const code = getArchiveErrorCode(error);
   if (code === 'SESSION_BUSY') {
-    // swarm flow 已结束、回合收尾中：会话会自行结束，引导稍后重试
+    // 会话正在自行收尾（swarm flow 回合汇报中或常驻 subagent 退出）：
+    // 引导稍后重试，而不是让用户先手动停止一个已经在收尾的会话。
     return getArchiveErrorFinishing(error)
       ? 'multiSession.project.errors.archiveSessionFinishing'
       : 'multiSession.project.errors.archiveSessionBusy';
@@ -326,7 +327,7 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
             const entry = findBatchSessionResult(response, session.session_id);
             if (!entry?.ok) {
               const error = new Error(entry?.error || 'Failed to unarchive session');
-              Object.assign(error, { code: entry?.code });
+              Object.assign(error, { code: entry?.code, finishing: entry?.finishing });
               throw error;
             }
             await useWorkspaceStore.getState().refreshWorkspaceAndCron();
@@ -484,7 +485,9 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
         error instanceof Error && error.message
           ? error.message
           : code === 'SESSION_BUSY'
-            ? t('multiSession.project.errors.deleteSessionBusy')
+            ? getArchiveErrorFinishing(error)
+              ? t('multiSession.project.errors.deleteSessionFinishing')
+              : t('multiSession.project.errors.deleteSessionBusy')
             : t('multiSession.errors.delete'),
       );
     } finally {
