@@ -259,7 +259,7 @@ export function RsiDetailHeader({
   };
   // 类型标签 + 状态徽章 + 数值标签
   const typeLabel = typeDisplayLabel(task.scenario, task.artifact_type);
-  const badge = statusBadgeInfo(task.status, installed);
+  const badge = statusBadgeInfo(task.status);
   const maxIter = t('rsi.detail.tagMaxIterations') + '：' + task.config.max_iterations;
   const createdLabel = t('rsi.detail.tagCreatedAt', { defaultValue: '创建时间' }) + '：' + formatDateTime(createdAt);
   const failureReason = badge.kind === 'failed' ? task.failure_reason : null;
@@ -415,7 +415,6 @@ const STATUS_ICON_SRCS: Partial<Record<StatusBadgeKind, string>> = {
   running: runningIcon,
   paused: pauseIcon,
   completed: completeIcon,
-  installed: completeIcon,
 };
 
 function StatusIcon({ kind, title }: { kind: StatusBadgeKind; title?: string }) {

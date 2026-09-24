@@ -208,7 +208,6 @@ const CANVAS_STATUS_ICON_SRCS: Partial<Record<StatusBadgeKind, string>> = {
   running: evaluatingIcon,
   paused: pauseIcon,
   completed: bestIcon,
-  installed: bestIcon,
 };
 
 function TaskStatusIcon({ kind, title }: { kind: StatusBadgeKind; title: string }) {
@@ -750,9 +749,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
 
   // 状态条数据：运行态进度/成本来自 P2 推送（liveProgress），回退 task.progress/usage（§3.3/§3.4）
   const liveProgress = useRsiStore((s) => s.detail[task.task_id]?.liveProgress ?? null);
-  const installedTask = useRsiStore((s) => Boolean(s.installedTaskIds[task.task_id]));
-  const installed = task.status === 'COMPLETED' && installedTask;
-  const statusInfo = statusBadgeInfo(task.status, installed);
+  const statusInfo = statusBadgeInfo(task.status);
   const provisionalNode =
     [...(tree?.nodes ?? [])]
       .filter((node) => node.type === 'PROVISIONAL')
