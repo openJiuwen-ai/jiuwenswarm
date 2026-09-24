@@ -1,0 +1,13 @@
+# 三方 Agent 注册表（内置预设）
+# 此处登记的 Agent 安装时只需提供 name；注册表外的 Agent 也允许安装，
+# 由调用方在 install_third_agent 入参中提供 start_cmd / port 等信息。
+# 新增内置预设时在 agents 列表追加条目即可。
+agents:
+  - name: openclaw              # 唯一标识，工具入参（大小写不敏感匹配）
+    display_name: openClaw      # 展示名
+    description: 开源个人 AI 助手
+    install_cmd: npm install -g openclaw   # 安装命令（shell 同步执行）
+    start_cmd: openclaw gateway            # 启动命令（后台进程）
+    stop_cmd: openclaw gateway stop        # 停止命令；留空则按 pid kill 进程组
+    port: 18789                            # web 服务端口
+    web_path: /                            # 访问路径，拼成 http://localhost:18789/
