@@ -732,23 +732,42 @@ def redo_session_files(
     }
 
 
-async def rewind_session_context(
-    *,
-    deep_agent: "DeepAgent",
-    session_id: str,
-    turn_index: int,
-) -> bool:
-    """Rebuild context_engine from truncated history.json and persist to checkpointer.
+def _build_context_messages_from_history(
+    history_records: list[dict[str, Any]],
+) -> tuple[list[Any], int]:
+    """Convert history.jsonl records into a list of openjiuwen BaseMessage.
 
-    The context_engine buffer only holds a sliding window (older messages are
-    compressed by ``round_level_compressor`` / ``dialogue_compressor``), so we
-    cannot simply slice the in-memory buffer.  Instead we reload the truncated
-    history.json, convert its records to openjiuwen messages, tear down the old
-    context, and build a fresh one.
+    history.json stores raw streaming events, NOT clean messages.
+    A single user turn produces many records across multiple LLM API calls:
 
-    When DeepAgent has a live ``_interaction_session`` for this session_id, the
-    rebuild mutates that Session in place (commit, not post_run) so the next
-    chat round does not reload stale pre-rewind messages from memory.
+      Per LLM call:
+        chat.reasoning (N chunks)  → thinking text (concatenated)
+        chat.usage_metadata         → end-of-call marker (skip)
+        EITHER:
+          chat.tool_call (1..N)     → AssistantMessage(reasoning + tool_calls)
+          chat.tool_result (per tc) → ToolMessage
+        OR:
+          chat.delta (N chunks)     → skip (fragments of chat.final)
+          chat.final                → AssistantMessage(reasoning + content)
+
+      Other events (all skipped):
+        chat.tool_update            → intermediate tool progress
+        chat.usage_summary          → turn-level usage stats
+        chat.ask_user_question      → UI interaction event
+
+    Aligned with claude-code's approach: preserve thinking (reasoning),
+    tool_call/tool_result structure, and final text to fully reconstruct
+    the conversation context for the LLM.
+
+    State machine:
+      - reasoning_buffer: accumulates chat.reasoning text chunks
+      - current_tool_calls: collects tool_calls for the current LLM call
+      - When a NEW reasoning chunk arrives after tool_calls were collected,
+        flush the pending AssistantMessage (one LLM call boundary crossed)
+      - Consecutive tool_calls without reasoning between them belong to
+        the same LLM call (parallel tool execution)
+
+    Returns ``(context_messages, skipped_record_count)``.
     """
     from openjiuwen.core.foundation.llm.schema.message import (
         OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
@@ -758,72 +777,6 @@ async def rewind_session_context(
         AssistantMessage,
         ToolMessage,
     )
-
-    react_agent = deep_agent.react_agent
-    if react_agent is None:
-        logger.warning("rewind_session_context: no react_agent for %s", session_id)
-        return False
-
-    # --- 1. Load truncated history.json (already cut by caller) ---
-    history_path = get_read_history_path(session_id)
-    if not history_path.exists():
-        logger.warning("rewind_session_context: history not found for %s", session_id)
-        return False
-
-    try:
-        history_records = load_history_records(session_id)
-    except OSError as exc:
-        logger.warning("rewind_session_context: failed to read history for %s: %s", session_id, exc)
-        return False
-
-    if not isinstance(history_records, list):
-        logger.warning("rewind_session_context: invalid history for %s", session_id)
-        return False
-
-    # Empty history (e.g. rewind removed every turn) still requires clearing the
-    # live context — otherwise the next chat.send keeps the rewound turns.
-    if not history_records:
-        logger.info("rewind_session_context: empty history for %s; clearing live context", session_id)
-        return await _apply_rewound_context(
-            deep_agent=deep_agent,
-            react_agent=react_agent,
-            session_id=session_id,
-            turn_index=turn_index,
-            context_messages=[],
-            skipped=0,
-        )
-
-    # --- 2. Convert history.json records → openjiuwen BaseMessage list ---
-    #
-    # history.json stores raw streaming events, NOT clean messages.
-    # A single user turn produces many records across multiple LLM API calls:
-    #
-    #   Per LLM call:
-    #     chat.reasoning (N chunks)  → thinking text (concatenated)
-    #     chat.usage_metadata         → end-of-call marker (skip)
-    #     EITHER:
-    #       chat.tool_call (1..N)     → AssistantMessage(reasoning + tool_calls)
-    #       chat.tool_result (per tc) → ToolMessage
-    #     OR:
-    #       chat.delta (N chunks)     → skip (fragments of chat.final)
-    #       chat.final                → AssistantMessage(reasoning + content)
-    #
-    #   Other events (all skipped):
-    #     chat.tool_update            → intermediate tool progress
-    #     chat.usage_summary          → turn-level usage stats
-    #     chat.ask_user_question      → UI interaction event
-    #
-    # Aligned with claude-code's approach: preserve thinking (reasoning),
-    # tool_call/tool_result structure, and final text to fully reconstruct
-    # the conversation context for the LLM.
-    #
-    # State machine:
-    #   - reasoning_buffer: accumulates chat.reasoning text chunks
-    #   - current_tool_calls: collects tool_calls for the current LLM call
-    #   - When a NEW reasoning chunk arrives after tool_calls were collected,
-    #     flush the pending AssistantMessage (one LLM call boundary crossed)
-    #   - Consecutive tool_calls without reasoning between them belong to
-    #     the same LLM call (parallel tool execution)
 
     context_messages: list[Any] = []
     skipped = 0
@@ -970,7 +923,7 @@ async def rewind_session_context(
     if reasoning_buffer or current_tool_calls:
         _flush_pending_assistant()
 
-    # --- 2b. Post-processing (aligned with claude-code's deserialization pipeline) ---
+    # --- Post-processing (aligned with claude-code's deserialization pipeline) ---
 
     # Filter out AssistantMessages whose tool_calls have no matching ToolMessage.
     # Analogous to claude-code's filterUnresolvedToolUses — these occur when
@@ -1003,12 +956,164 @@ async def rewind_session_context(
                     tool_calls=resolved if resolved else None,
                 )
         filtered_messages.append(msg)
-    context_messages = filtered_messages
 
     if removed_unresolved > 0:
         logger.info(
-            "rewind_session_context: removed %d unresolved tool_call(s)", removed_unresolved
+            "_build_context_messages_from_history: removed %d unresolved tool_call(s)",
+            removed_unresolved,
         )
+
+    return filtered_messages, skipped
+
+
+async def warmup_session_context(
+    *,
+    deep_agent: "DeepAgent",
+    session_id: str,
+    history_before_request_id: str | None = None,
+) -> bool:
+    """Restart-safe restore of context_engine messages from on-disk history.
+
+    对话消息只存在于 context_engine 的进程内存（``_context_pool``），不落
+    checkpointer。server 重启或 session adapter 被空闲驱逐后重建时 pool 为
+    空，而 chat.send 主路径不会把磁盘 history.jsonl 回灌给模型，导致
+    "能看到历史列表但继续对话失忆"。
+
+    在新建 session adapter（``start_interaction`` 之后）调用：若内存 context
+    缺失且磁盘上有历史记录，则将 history 转换为 openjiuwen 消息并灌回
+    context_engine。chat.send 会先落盘当前用户消息再创建 adapter，因此传入
+    ``history_before_request_id`` 时只恢复该请求之前的记录，避免当前消息同时
+    作为历史和实时 query 注入。与 ``rewind_session_context`` 的区别：不改写
+    history、不清理 Session state（agent/workflow 状态已由 checkpointer 在
+    pre_run 恢复）、不强写 checkpointer（消息持久化本就由 history.jsonl 承担）。
+    """
+    react_agent = getattr(deep_agent, "react_agent", None)
+    if react_agent is None:
+        logger.warning("warmup_session_context: no react_agent for %s", session_id)
+        return False
+
+    context_engine = react_agent.context_engine
+    if context_engine.get_context(session_id=session_id) is not None:
+        # 内存上下文已存在（进程未重启 / 已 warmup / rewind 重建过）
+        return True
+
+    if not history_exists(session_id):
+        # 全新会话，磁盘无历史，静默跳过
+        return False
+
+    try:
+        history_records = load_history_records(session_id)
+    except OSError as exc:
+        logger.warning("warmup_session_context: failed to read history for %s: %s", session_id, exc)
+        return False
+
+    if not isinstance(history_records, list) or not history_records:
+        return False
+
+    boundary_request_id = str(history_before_request_id or "").strip()
+    if boundary_request_id:
+        for index, record in enumerate(history_records):
+            if str(record.get("request_id") or "").strip() == boundary_request_id:
+                history_records = history_records[:index]
+                break
+
+    context_messages, skipped = _build_context_messages_from_history(history_records)
+    if not context_messages:
+        logger.info(
+            "warmup_session_context: no rebuildable messages in history for %s", session_id
+        )
+        return False
+
+    session = _resolve_live_agent_session(deep_agent, session_id)
+    if session is None:
+        # 正常调用点（start_interaction 之后）live session 必在；兜底临时 Session。
+        try:
+            from openjiuwen.core.single_agent import create_agent_session
+
+            session = create_agent_session(
+                session_id=session_id, card=getattr(deep_agent, "card", None)
+            )
+            await session.pre_run(inputs=None)
+        except Exception as exc:
+            logger.warning("warmup_session_context: pre_run failed for %s: %s", session_id, exc)
+            return False
+
+    try:
+        await context_engine.create_context(
+            session=session,
+            history_messages=context_messages,
+        )
+    except Exception as exc:
+        logger.warning("warmup_session_context: create_context failed for %s: %s", session_id, exc)
+        return False
+
+    logger.info(
+        "warmup_session_context: session=%s restored context from disk history with %d messages "
+        "(skipped %d streaming/metadata records)",
+        session_id, len(context_messages), skipped,
+    )
+    return True
+
+
+async def rewind_session_context(
+    *,
+    deep_agent: "DeepAgent",
+    session_id: str,
+    turn_index: int,
+) -> bool:
+    """Rebuild context_engine from truncated history.json and persist to checkpointer.
+
+    The context_engine buffer only holds a sliding window (older messages are
+    compressed by ``round_level_compressor`` / ``dialogue_compressor``), so we
+    cannot simply slice the in-memory buffer.  Instead we reload the truncated
+    history.json, convert its records to openjiuwen messages, tear down the old
+    context, and build a fresh one.
+
+    When DeepAgent has a live ``_interaction_session`` for this session_id, the
+    rebuild mutates that Session in place (commit, not post_run) so the next
+    chat round does not reload stale pre-rewind messages from memory.
+    """
+    from openjiuwen.core.foundation.llm.schema.message import (
+        UserMessage,
+        AssistantMessage,
+    )
+
+    react_agent = deep_agent.react_agent
+    if react_agent is None:
+        logger.warning("rewind_session_context: no react_agent for %s", session_id)
+        return False
+
+    # --- 1. Load truncated history.json (already cut by caller) ---
+    history_path = get_read_history_path(session_id)
+    if not history_path.exists():
+        logger.warning("rewind_session_context: history not found for %s", session_id)
+        return False
+
+    try:
+        history_records = load_history_records(session_id)
+    except OSError as exc:
+        logger.warning("rewind_session_context: failed to read history for %s: %s", session_id, exc)
+        return False
+
+    if not isinstance(history_records, list):
+        logger.warning("rewind_session_context: invalid history for %s", session_id)
+        return False
+
+    # Empty history (e.g. rewind removed every turn) still requires clearing the
+    # live context — otherwise the next chat.send keeps the rewound turns.
+    if not history_records:
+        logger.info("rewind_session_context: empty history for %s; clearing live context", session_id)
+        return await _apply_rewound_context(
+            deep_agent=deep_agent,
+            react_agent=react_agent,
+            session_id=session_id,
+            turn_index=turn_index,
+            context_messages=[],
+            skipped=0,
+        )
+
+    # --- 2. Convert history.json records → openjiuwen BaseMessage list ---
+    context_messages, skipped = _build_context_messages_from_history(history_records)
 
     # If conversation ends with an AssistantMessage, append a synthetic
     # continuation user message so the next API call has proper role

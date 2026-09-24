@@ -3066,6 +3066,7 @@ class JiuWenSwarmDeepAdapter:
         session_id: str | None,
         *,
         request: AgentRequest | None = None,
+        history_before_request_id: str | None = None,
     ) -> "JiuWenSwarmDeepAdapter":
         """Return the session-owned adapter, creating and initializing it once."""
         if self._is_session_scoped_adapter:
@@ -3137,6 +3138,27 @@ class JiuWenSwarmDeepAdapter:
             # ``_reload_session_adapter_if_stale`` owns the version bookkeeping
             # (including the no-pending case, where it silently catches up).
             await self._reload_session_adapter_if_stale(sid, adapter)
+            # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
+            # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
+            # 模型将拿到空上下文。这里在新建 adapter 后从磁盘恢复上下文
+            # （全新会话磁盘无历史，warmup 内部会静默跳过）。
+            try:
+                from jiuwenswarm.agents.harness.common.session_ops_service import (
+                    warmup_session_context,
+                )
+
+                await warmup_session_context(
+                    deep_agent=getattr(adapter, "_instance", None),
+                    session_id=sid,
+                    history_before_request_id=history_before_request_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] session context warmup failed: "
+                    "session_id=%s error=%s",
+                    sid,
+                    exc,
+                )
             self._touch_session_adapter(sid)
             # Cold-start cost of a session's first turn, split so a slow one can
             # be attributed to agent assembly vs. interaction startup.
@@ -18095,7 +18117,9 @@ class JiuWenSwarmDeepAdapter:
                 or ""
             )
             session_adapter = await self._get_or_create_session_adapter(
-                request.session_id, request=request
+                request.session_id,
+                request=request,
+                history_before_request_id=request.request_id,
             )
             # 同流式路径：team 模式控制续接跳过 request-scoped MCP 注册，
             # 避免与持有生命周期锁的被中断原始请求死锁。
@@ -18867,7 +18891,9 @@ class JiuWenSwarmDeepAdapter:
                 or ""
             )
             session_adapter = await self._get_or_create_session_adapter(
-                request.session_id, request=request
+                request.session_id,
+                request=request,
+                history_before_request_id=request.request_id,
             )
             # team 模式控制续接（ask_user/permission 作答）只负责把答案经
             # interact() 投递给存活的 runtime，自身不执行工具；被中断的原始
