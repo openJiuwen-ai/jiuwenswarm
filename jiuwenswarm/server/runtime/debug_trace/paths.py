@@ -47,4 +47,19 @@ def debug_trace_file(mode: str, session_id: str) -> Path:
     return debug_trace_dir(mode) / f"dump-{kind}-{_safe_segment(session_id)}.txt"
 
 
-__all__ = ["debug_trace_dir", "debug_trace_file"]
+def resolve_debug_trace_mode(
+    runtime_mode: str,
+    original_mode: str | None = None,
+) -> str:
+    """Return the mode used to select a request's local dump path.
+
+    Web code-profile Plan requests arrive as ``agent.plan`` and are later
+    canonicalized to ``code.plan`` for Adapter selection. Preserve the explicit
+    Agent Plan wire mode for storage classification without changing ordinary
+    ``agent`` + ``work_mode=code`` requests, which remain Code dumps.
+    """
+    requested = str(original_mode or "").strip().lower()
+    return "agent.plan" if requested == "agent.plan" else runtime_mode
+
+
+__all__ = ["debug_trace_dir", "debug_trace_file", "resolve_debug_trace_mode"]
