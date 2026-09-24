@@ -1,0 +1,16 @@
+id: flash_read
+name: FlashRead
+version: 0.1.0
+description: Enhanced read_file tool with parallel multi-file reading support
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.3"
+dependencies: {}
+config_schema:
+  type: object
+  properties:
+    FLASH_ENABLED:
+      type: string
+      description: "Set to 1 to enable all Flash extensions (default off)"
+    FLASH_READ_ENABLED:
+      type: string
+      description: "Set to 1 to enable enhanced read_file tool only (default off)"
