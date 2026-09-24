@@ -177,6 +177,19 @@ test('typing or pasting an external CLI path triggers a debounced detection', ()
   assert.match(sectionSource, /delete next\[cliAgent\]/);
 });
 
+test('reselecting the current external CLI path triggers one immediate detection', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(sectionSource, /const currentPath = draftValues\[cliPathKey\] \|\| ''/);
+  assert.match(
+    sectionSource,
+    /changeCliPath\(cliAgent, cliPathKey, selectedPath\);\s*if \(selectedPath === currentPath\) \{\s*await detect\(cliAgent, selectedPath\);/,
+  );
+});
+
 test('saving a disabled external CLI clears its stale detected path without a refresh', () => {
   const sectionSource = readFileSync(
     new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
