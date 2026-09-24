@@ -585,7 +585,9 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
     lifecycle,
     statusKind: lifecycleStatusKind(lifecycle),
     runtimeKind: lifecycleRuntimeKind(lifecycle),
-    runtimeLabel: runningProgramLeader ? '当前领先' : lifecycleRuntimeLabel(lifecycle),
+    runtimeLabel: node.extra?.threshold_stop_cancelled === true
+      ? '已停止'
+      : runningProgramLeader ? '当前领先' : lifecycleRuntimeLabel(lifecycle),
     runtimeIcon: runtimeIconKind(lifecycleRuntimeKind(lifecycle)),
     stageLabel: nodeStageLabel(node),
     summary,

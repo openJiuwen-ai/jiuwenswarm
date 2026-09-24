@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -51,9 +52,10 @@ class ThresholdStoppingProgramProvider(PuctProgramArtifactProvider):
     ) -> Any:
         threshold: float | None = None
         threshold_loaded = False
+        solved = False
 
         async def observe(event: Any) -> None:
-            nonlocal threshold, threshold_loaded
+            nonlocal threshold, threshold_loaded, solved
             if isinstance(event, EventNode):
                 node = event.node
                 if node.type == "adopted" and node.adopted and node.score is not None:
@@ -61,22 +63,53 @@ class ThresholdStoppingProgramProvider(PuctProgramArtifactProvider):
                         threshold = _solved_threshold(request.run_dir)
                         threshold_loaded = True
                     if threshold is not None and math.isfinite(float(node.score)) and node.score >= threshold:
-                        self._complete_solved_run(request.task_id)
+                        solved = self._complete_solved_run(request.task_id) or solved
+                elif solved and _is_stopped_empty_candidate(node):
+                    # The pinned engine returns an empty reply for model waits
+                    # abandoned by the stop flag. Its durable tree calls those
+                    # attempts rejected, but they were stopped by a winner.
+                    # Mark the service projection so a later tree refresh can
+                    # keep the same verdict instead of restoring "failed".
+                    extra = dict(node.extra or {})
+                    program = extra.get("program")
+                    if isinstance(program, dict):
+                        extra["program"] = {
+                            **program, "logical_kind": "pruned", "error": None,
+                        }
+                    extra["threshold_stop_cancelled"] = True
+                    event = replace(event, node=replace(
+                        node,
+                        type="pruned",
+                        summary="已达标，停止此候选",
+                        reason="其他候选已达到目标分数",
+                        failure_class=None,
+                        extra=extra,
+                    ))
             if on_event is not None:
                 await on_event(event)
 
         return await operation(request, on_event=observe)
 
-    def _complete_solved_run(self, task_id: str) -> None:
+    def _complete_solved_run(self, task_id: str) -> bool:
         # The upstream Provider guards both maps with this lock. Preserve a
         # concurrent user pause/terminate: an already-set flag wins.
         with self._lock:
             stop = self._stopping.get(task_id)
             state = self._live.get(task_id)
             if stop is None or state is None or stop.is_set():
-                return
+                return False
             state.stopped_status = "completed"
             stop.set()
+            return True
+
+
+def _is_stopped_empty_candidate(node: Any) -> bool:
+    return (
+        node.type in {"candidate", "rejected"}
+        and not node.adopted
+        and node.score is None
+        and node.failure_class == "empty_reply"
+    )
 
 
 __all__ = ["ThresholdStoppingProgramProvider"]
