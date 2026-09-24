@@ -14,6 +14,16 @@ import type {
 // 节点类型 → 展示用状态色类名（对应 rsi.css 的 bar--* 与图例 dot）
 export type NodeStatusKind = 'best-path' | 'evaluated' | 'pending' | 'failed' | 'pruned';
 
+/** Hide candidates abandoned after a program reaches its target score. */
+export function visibleRsiTree(
+  tree: RsiTreeGetResult | null,
+  artifactType: RsiArtifactType | null,
+): RsiTreeGetResult | null {
+  if (!tree || artifactType !== 'PROGRAM') return tree;
+  const nodes = tree.nodes.filter((node) => node.extra?.threshold_stop_cancelled !== true);
+  return nodes.length === tree.nodes.length ? tree : { ...tree, nodes };
+}
+
 // 节点 type → 状态色映射（对齐样式概要：最优路径/已评测/待评测/已剪枝）
 // adopted/root → best-path；rejected → evaluated；provisional → pending；pruned → pruned
 export function nodeTypeToStatusKind(type: RsiNodeType): NodeStatusKind {
@@ -570,9 +580,7 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
     lifecycle,
     statusKind: lifecycleStatusKind(lifecycle),
     runtimeKind: lifecycleRuntimeKind(lifecycle),
-    runtimeLabel: node.extra?.threshold_stop_cancelled === true
-      ? '已停止'
-      : runningProgramLeader ? '当前领先' : lifecycleRuntimeLabel(lifecycle),
+    runtimeLabel: runningProgramLeader ? '当前领先' : lifecycleRuntimeLabel(lifecycle),
     runtimeIcon: runtimeIconKind(lifecycleRuntimeKind(lifecycle)),
     stageLabel: nodeStageLabel(node),
     summary,

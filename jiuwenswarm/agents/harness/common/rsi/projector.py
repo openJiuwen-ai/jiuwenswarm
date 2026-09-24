@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,72 @@ class RsiProjector:
         # C3 恢复通道反查（read_state candidate_gates）前，本索引是本层完成
         # stage 事件定位的关键映射（内部 v3 §4.4 投影规则：node_ref → N<序号>）。
         self._ref_index: dict[str, dict[str, str]] = {}
+        self._reconciled_program_stops: set[str] = set()
+
+    def reconcile_program_threshold_stops(self, task_id: str) -> int:
+        """Correct pre-fix empty-reply nodes that landed after a solved node.
+
+        The Provider wrote its raw rejection before the service knew the model
+        wait had been abandoned. Event order is durable, so use it once after
+        completion to distinguish these nodes from real earlier failures.
+        """
+        with self._lock:
+            if task_id in self._reconciled_program_stops:
+                return 0
+        task_dir = Path(self.tasks_root) / task_id
+        events_path = task_dir / "events.jsonl"
+        card_path = task_dir / "run" / "scorecard.json"
+        if not events_path.is_file() or not card_path.is_file():
+            return 0
+        try:
+            from openjiuwen.rsi.artifact_rsi.program_opt.scorecard import solved_threshold
+
+            card = json.loads(card_path.read_text(encoding="utf-8"))
+            threshold = solved_threshold(card.get("scorecard", card))
+            if not math.isfinite(threshold):
+                return 0
+            solved = False
+            stopped_ids: set[str] = set()
+            with events_path.open(encoding="utf-8") as stream:
+                for line in stream:
+                    record = json.loads(line)
+                    if record.get("event_type") != "node":
+                        continue
+                    node = (record.get("event") or {}).get("node") or {}
+                    score = node.get("score")
+                    if (node.get("type") == "adopted" and node.get("adopted")
+                            and isinstance(score, (int, float)) and math.isfinite(score)
+                            and score >= threshold):
+                        solved = True
+                    elif (solved and node.get("type") == "rejected"
+                          and node.get("failure_class") == "empty_reply"
+                          and score is None):
+                        stopped_ids.add(_normalize_provider_node_id(task_id, str(node.get("node_id") or "")))
+        except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+            return 0
+
+        changed = 0
+        with self._lock:
+            nodes = self._nodes.get(task_id) or {}
+            for node_id in stopped_ids:
+                node = nodes.get(node_id)
+                if node is None or node.type != "REJECTED":
+                    continue
+                extra = dict(node.extra or {})
+                program = extra.get("program")
+                if isinstance(program, dict):
+                    extra["program"] = {**program, "logical_kind": "pruned", "error": None}
+                extra["threshold_stop_cancelled"] = True
+                node.type = "PRUNED"
+                node.description = "已达标，停止此候选"
+                node.failure_reason = "其他候选已达到目标分数"
+                node.failure_class = None
+                node.extra = extra
+                changed += 1
+            if changed:
+                self._persist_locked(task_id)
+            self._reconciled_program_stops.add(task_id)
+        return changed
 
     def _tree_path(self, task_id: str) -> Path:
         return Path(self.tasks_root) / task_id / "tree.json"
