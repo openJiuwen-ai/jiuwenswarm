@@ -632,6 +632,22 @@ def test_installers_recursively_pack_runtime_into_app_dir() -> None:
     ), "installer-electron.iss 不再递归打包 Electron 产物, resources\\backend\\runtime 将不会进安装包"
 
 
+def test_installers_use_versioned_shortcut_icon() -> None:
+    """升级后快捷方式应使用版本化图标路径，避免 Windows 复用旧图标缓存。"""
+    icon_path = r"{app}\logo-{#MyAppVersion}.ico"
+
+    for installer_path in (INSTALLER_PY_ISS, INSTALLER_ELECTRON_ISS):
+        source = _read(installer_path)
+        assert f"UninstallDisplayIcon={icon_path}" in source
+        assert 'DestName: "logo-{#MyAppVersion}.ico"' in source
+        assert source.count(f'IconFilename: "{icon_path}"') == 2
+
+    python_installer = _read(INSTALLER_PY_ISS)
+    assert 'Type: filesandordirs; Name: "{app}\\resources"' in python_installer
+    assert 'Type: files; Name: "{app}\\logo-*.ico"' in python_installer
+    assert 'Type: files; Name: "{app}\\logo-*.ico"' in _read(INSTALLER_ELECTRON_ISS)
+
+
 # ─── macOS 打包链路的 node 绑定对齐(build-macos.sh / build-electron-exe.sh) ─
 
 RUNTIME_SH_FUNCTIONS = (

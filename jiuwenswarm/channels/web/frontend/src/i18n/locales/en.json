@@ -3552,6 +3552,7 @@
       "removeProject": "Remove project",
       "removeProjectConfirm": "Remove",
       "removeProjectDescription": "Remove “<name>{{projectName}}</name>” from the list and hide its conversations. Archived conversations stay available in the archive page. Its cron jobs are stopped and kept (they stay stopped after the project is restored and must be re-enabled manually); the working directory is unaffected. Undo, or create a project with the same directory to restore it.",
+      "projectRemoved": "Project removed",
       "projectRemovedSummary": "Project removed; its cron jobs were stopped",
       "archiveSessions": "Archive all conversations",
       "archiveConfirmTitle": "Archive ({{count}}) conversations",
