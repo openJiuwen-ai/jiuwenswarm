@@ -588,6 +588,37 @@ def get_skill_create_enabled(config: dict[str, Any] | None) -> bool:
     return _get_evolution_config(config).get("skill_create", False)
 
 
+def get_skill_sleep_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Return ``react.evolution.skill_sleep`` block (empty dict when unset)."""
+    raw = _get_evolution_config(config).get("skill_sleep")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def get_skill_sleep_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether runtime skill-sleep should mount.
+
+    Reuses ``react.evolution.enabled`` and ``signal_trigger`` (no separate
+    ``skill_sleep.enabled`` switch).
+    """
+    return get_skill_evolution_enabled(config) and get_evolution_signal_trigger_enabled(
+        config
+    )
+
+
+def get_skill_sleep_call_threshold(config: dict[str, Any] | None) -> int:
+    """Return per-skill usage threshold (trigger when usage count > value).
+
+    Optional override via ``react.evolution.skill_sleep.call_threshold``; when
+    absent, uses the fixed default 20.
+    """
+    raw = get_skill_sleep_config(config).get("call_threshold", 20)
+    try:
+        threshold = int(raw)
+    except (TypeError, ValueError):
+        return 20
+    return max(threshold, 1)
+
+
 def get_evolution_auto_save_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether evolution approvals may auto-save without user action."""
     try:
