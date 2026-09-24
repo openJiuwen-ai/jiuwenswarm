@@ -543,7 +543,7 @@ class ModelAnomalyDetectionInput(ConstructionInput):
 @harness_element(
     kind=ElementKind.RAIL,
     name=MODEL_ANOMALY_DETECTION,
-    description="Model anomaly detection rail (repeat/stream retry + tool_loop_compact). "
+    description="Model anomaly detection rail (repeat/stream/transient retry + tool_loop_compact). "
     "Mounted when execution_guard.model_anomaly_detection_rail.enabled is true; "
     "overrides openjiuwen's default ModelAnomalyDetectionRail() so tool_loop_compact "
     "can be enabled from config.",
@@ -561,6 +561,8 @@ def _build_model_anomaly_detection(
     try:
         return ModelAnomalyDetectionRail(
             max_retries=rail_cfg.get("max_retries", 2),
+            transient_max_retries=rail_cfg.get("transient_max_retries", 3),
+            transient_base_delay_seconds=rail_cfg.get("transient_base_delay_seconds", 2.0),
             repeat_min_pattern_chars=rail_cfg.get("repeat_min_pattern_chars", 2),
             repeat_max_pattern_chars=rail_cfg.get("repeat_max_pattern_chars", 64),
             repeat_min_count=rail_cfg.get("repeat_min_count", 6),

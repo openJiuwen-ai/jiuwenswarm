@@ -918,12 +918,16 @@ health_check:
 
 # 执行护栏：工具循环检测与主动中断
 execution_guard:
-  # 模型异常检测护栏：重复输出/流式帧超时重试，以及连续相同工具调用压缩
+  # 模型异常检测护栏：重复输出、流式帧超时、瞬时失败重试，以及连续相同工具调用压缩
   model_anomaly_detection_rail:
     # 总开关。关闭后不注册 ModelAnomalyDetectionRail
     enabled: true
-    # 单次 invoke 内同一类异常最多重试次数；超过后把异常继续抛给上层
+    # 单次 invoke 内，重复输出和流式帧超时各自最多重试次数；超过后把异常继续抛给上层
     max_retries: 2
+    # 单次 invoke 内，429 / 408 / 409 / 5xx 以及出字前的连接中断最多再试次数
+    transient_max_retries: 3
+    # 瞬时失败指数退避的基数秒。默认间隔 2s、4s、8s；Retry-After 不超过 60 秒时优先用响应头
+    transient_base_delay_seconds: 2.0
     # 重复片段检测的最短长度，单位：字符；用于检测短句/短片段循环输出
     repeat_min_pattern_chars: 2
     # 重复片段检测的最长长度，单位：字符；过长片段不作为循环模式检测

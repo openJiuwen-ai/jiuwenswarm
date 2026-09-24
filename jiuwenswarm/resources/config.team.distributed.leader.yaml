@@ -317,10 +317,15 @@ health_check:
 
 # 执行护栏：工具循环检测与主动中断（分布式模板为完整配置，不合并基础 config.yaml）
 execution_guard:
-  # 模型异常检测护栏：重复输出/流式帧超时重试，以及连续相同工具调用压缩
+  # 模型异常检测护栏：重复输出、流式帧超时、瞬时失败重试，以及连续相同工具调用压缩
   model_anomaly_detection_rail:
     enabled: true
+    # 重复输出和流式帧超时各自最多重试次数
     max_retries: 2
+    # 429 / 408 / 409 / 5xx 以及出字前的连接中断最多再试次数
+    transient_max_retries: 3
+    # 瞬时失败指数退避的基数秒。默认间隔 2s、4s、8s
+    transient_base_delay_seconds: 2.0
     repeat_min_pattern_chars: 2
     repeat_max_pattern_chars: 64
     repeat_min_count: 6

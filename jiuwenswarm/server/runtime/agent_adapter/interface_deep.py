@@ -8773,6 +8773,8 @@ class JiuWenSwarmDeepAdapter:
                 return None
             rail = ModelAnomalyDetectionRail(
                 max_retries=retry_cfg.get("max_retries", 2),
+                transient_max_retries=retry_cfg.get("transient_max_retries", 3),
+                transient_base_delay_seconds=retry_cfg.get("transient_base_delay_seconds", 2.0),
                 repeat_min_pattern_chars=retry_cfg.get("repeat_min_pattern_chars", 2),
                 repeat_max_pattern_chars=retry_cfg.get("repeat_max_pattern_chars", 64),
                 repeat_min_count=retry_cfg.get("repeat_min_count", 6),

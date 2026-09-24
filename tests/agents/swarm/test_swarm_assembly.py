@@ -1719,6 +1719,58 @@ def test_model_anomaly_detection_provider_wires_tool_loop_compact() -> None:
     assert rail._tool_loop_compact.enabled is True  # pylint: disable=protected-access
 
 
+def test_model_anomaly_detection_provider_wires_transient_retry_settings() -> None:
+    """Missing keys use the core defaults; explicit config overrides them."""
+    from openjiuwen.harness.rails import ModelAnomalyDetectionRail
+
+    ctx = SwarmBuildContext()
+    default_rail = member_rails._build_model_anomaly_detection(
+        {"rail_config": {"enabled": True}},
+        ctx,
+    )
+    assert isinstance(default_rail, ModelAnomalyDetectionRail)
+    assert default_rail.transient_max_retries == 3
+    assert default_rail.transient_base_delay_seconds == 2.0
+
+    configured = member_rails._build_model_anomaly_detection(
+        {
+            "rail_config": {
+                "enabled": True,
+                "transient_max_retries": 1,
+                "transient_base_delay_seconds": 3.5,
+            }
+        },
+        ctx,
+    )
+    assert isinstance(configured, ModelAnomalyDetectionRail)
+    assert configured.transient_max_retries == 1
+    assert configured.transient_base_delay_seconds == 3.5
+
+
+def test_deep_adapter_wires_transient_retry_settings() -> None:
+    """Deep adapter forwards the same transient retry fields from execution_guard."""
+    from openjiuwen.harness.rails import ModelAnomalyDetectionRail
+
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    rail = JiuWenSwarmDeepAdapter._build_model_anomaly_detection_rail(
+        {
+            "execution_guard": {
+                "model_anomaly_detection_rail": {
+                    "enabled": True,
+                    "transient_max_retries": 1,
+                    "transient_base_delay_seconds": 3.5,
+                }
+            }
+        }
+    )
+    assert isinstance(rail, ModelAnomalyDetectionRail)
+    assert rail.transient_max_retries == 1
+    assert rail.transient_base_delay_seconds == 3.5
+
+
 def test_model_anomaly_detection_params_from_execution_guard() -> None:
     """config_specs forwards execution_guard.model_anomaly_detection_rail section."""
     from jiuwenswarm.agents.swarm.config_specs import _model_anomaly_detection_params
