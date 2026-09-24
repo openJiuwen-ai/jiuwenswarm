@@ -13872,7 +13872,11 @@ class JiuWenSwarmDeepAdapter:
             )
         except ValueError as exc:
             return {"accepted": False, "resolved": False, "reason": str(exc)}
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        service = get_swarm_symphony_service()
         if not answers_select_option(answers, ("安装", "install")):
+            service.defer_candidate(recipe_id, recipe_version)
             return {
                 "accepted": True,
                 "resolved": True,
@@ -13882,9 +13886,6 @@ class JiuWenSwarmDeepAdapter:
                 "recipe_version": recipe_version,
                 "request_id": request_id,
             }
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
-
-        service = get_swarm_symphony_service()
         receipt = await service.install_candidate(
             request_id=request_id,
             recipe_id=recipe_id,
@@ -15521,13 +15522,15 @@ class JiuWenSwarmDeepAdapter:
             sdk_input_mode,
         )
 
+        from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
         instance = self._instance
         if instance is None or instance.active_round is None:
             return False
         if not instance.has_output_stream():
             return False
         if self._stream_completion_state(had_interaction=False) == "suspended":
-            raise RuntimeError(
+            raise SessionInputRejectedError(
                 "session is waiting for an interaction answer; "
                 "supplemental input was not sent"
             )
@@ -15542,7 +15545,7 @@ class JiuWenSwarmDeepAdapter:
                 else:
                     accepting = guard.accepting
                 if not accepting:
-                    raise RuntimeError(
+                    raise SessionInputRejectedError(
                         "session is finishing or changing execution state; "
                         "supplemental input was not sent, "
                         "retry after it settles"

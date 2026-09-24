@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from functools import wraps
 
 
@@ -202,8 +203,10 @@ class CronController:
         """
         # Keep admission closed until the AgentServer commits hidden=True.
         self._scheduler.close_project_admission(project_id)
+        enabled_job_ids: list[str] = []
         try:
             jobs = [job for job in await self._store.list_jobs() if job.project_id == project_id]
+            enabled_job_ids = [job.id for job in jobs if job.enabled]
             disable = getattr(self._store, "disable_project_jobs", None)
             if callable(disable):
                 await disable(project_id)
@@ -216,6 +219,21 @@ class CronController:
             if commit is not None:
                 await commit()
             return {"stopped_cron_jobs": len(jobs)}
+        except Exception:
+            # A rejected AgentServer commit must not leave visible-project jobs
+            # disabled. Restore only jobs that were enabled before this attempt.
+            try:
+                for job_id in enabled_job_ids:
+                    await self._store.update_job(job_id, {"enabled": True})
+                if enabled_job_ids:
+                    await self._scheduler.reload()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "failed to restore cron jobs after project remove failure: %s",
+                    project_id,
+                )
+                raise
+            raise
         finally:
             self._scheduler.reopen_project_admission(project_id)
 

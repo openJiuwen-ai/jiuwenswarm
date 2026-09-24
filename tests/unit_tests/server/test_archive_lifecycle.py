@@ -477,7 +477,7 @@ def test_conflicts_and_batch_validation(archive):
 
 
 @pytest.mark.asyncio
-async def test_delete_cron_sessions_removes_running_and_idle_children(archive):
+async def test_delete_cron_sessions_refuses_running_child_and_removes_idle(archive):
     import shutil
 
     service, create, root, runtime = archive
@@ -486,7 +486,10 @@ async def test_delete_cron_sessions_removes_running_and_idle_children(archive):
         meta = lc.raw_metadata(sid)
         meta["cron_id"] = "job_a"
         lc.atomic_json(directory / "metadata.json", meta)
-    runtime.is_session_running.return_value = True
+    # delete_job stops the cron runs (stop_job_runs) before deleting their
+    # sessions; a child still running here means the run leaked.  Refuse it
+    # with SESSION_BUSY rather than force-deleting a live stream underneath.
+    runtime.is_session_running.side_effect = lambda sid: sid == "cron_running"
 
     async def delete_session(*, channel_id, session_id):
         shutil.rmtree(lc.resolve_session(session_id))
@@ -494,9 +497,14 @@ async def test_delete_cron_sessions_removes_running_and_idle_children(archive):
 
     runtime.delete_session.side_effect = delete_session
     result = await service.delete_cron_sessions("job_a", "web")
-    assert result["succeeded_count"] == 2
-    assert result["failed_count"] == 0
-    assert service.cron_sessions("job_a") == []
+    assert result["succeeded_count"] == 1
+    assert result["failed_count"] == 1
+    failures = [item for item in result["results"] if not item["ok"]]
+    assert [item["session_id"] for item in failures] == ["cron_running"]
+    assert failures[0]["code"] == "SESSION_BUSY"
+    # The idle child is gone; the running one and its data survive.
+    assert service.cron_sessions("job_a") == ["cron_running"]
+    assert lc.session_paths("cron_running")[0].exists()
 
 
 @pytest.mark.asyncio
@@ -885,27 +893,28 @@ async def test_parked_team_stream_archive_proceeds_without_touching_stream(
 
 
 @pytest.mark.asyncio
-async def test_parked_team_stream_still_blocks_delete(archive, monkeypatch):
-    from jiuwenswarm.agents.harness.team import team_manager
-
+async def test_parked_team_stream_delete_proceeds_and_stops_runtime(archive):
     service, create, _, runtime = archive
     create()
-    stop_session_runtime = AsyncMock()
-    monkeypatch.setattr(
-        team_manager,
-        "_team_manager",
-        SimpleNamespace(
-            has_stream_task=lambda sid: True,
-            is_round_ended_request=lambda sid, rid: True,
-            stop_session_runtime=stop_session_runtime,
-        ),
-    )
+    # The runtime would report the session busy (parked handler pending);
+    # the parked exemption lets the delete through, and unlike archive the
+    # delete's stop path tears the team runtime (and the persistent stream
+    # parked on it) down before the directory goes away.
     runtime.is_session_running = Mock(return_value=True)
     runtime.has_parked_team_streams = Mock(return_value=True)
+
+    payload = await service.session("sess_a", "delete", "web")
+
+    assert payload["ok"] is True
+    runtime.stop_session_for_archive.assert_awaited_once()
+    runtime.delete_session.assert_awaited_once()
+    # A stream that is not fully parked — a request still preparing or
+    # mid-round — keeps the delete busy.
+    create("sess_b")
+    runtime.has_parked_team_streams = Mock(return_value=False)
     with pytest.raises(lc.LifecycleError) as error:
-        await service.session("sess_a", "delete", "web")
+        await service.session("sess_b", "delete", "web")
     assert error.value.code == "SESSION_BUSY"
-    stop_session_runtime.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -454,6 +454,10 @@
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
       },
+      "ttse_enabled": {
+        "title": "本地环境事实与任务经验自动演进",
+        "description": "控制智能体对于环境事实和任务经验学习"
+      },
       "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
       "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
       "jina_api_key": { "title": "Jina API 密钥" },
@@ -560,6 +564,10 @@
     "team": {
       "memberLanes": "成员轨迹泳道",
       "members": "成员"
+    },
+    "composer": {
+      "collapse": "收起输入框",
+      "expand": "展开输入框"
     },
     "layout": {
       "hideSessions": "收起会话栏",
@@ -790,6 +798,9 @@
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
     "modelNotConfigured": "还没有配置可用的模型。请在「设置 → 模型」里配置一个模型，或登录获取限时免费模型。",
+    "sessionArchived": "该会话已归档，无法继续对话。请恢复会话或新建会话。",
+    "sessionDeleted": "该会话已被删除，无法继续对话。",
+    "sessionOperationInProgress": "该会话正在执行归档或删除操作，请稍后再试。",
     "placeholderAwaitingApproval": "请先处理上方待确认项",
     "placeholderProcessing": "处理中，输入新指令可中断...",
     "placeholderProcessingQueue": "处理中，输入新指令将加入等待队列...",
@@ -1716,6 +1727,7 @@
       "updateFailed": "更新任务失败",
       "updateFailedWithReason": "更新任务失败：{{reason}}",
       "deleteFailed": "删除任务失败",
+      "deleteSessionBusy": "该定时任务关联的会话正在运行，无法删除。请先手动停止会话，再重试删除。",
       "toggleFailed": "更新任务状态失败",
       "previewFailed": "预览触发时间失败",
       "runNowFailed": "立即执行失败",
@@ -3544,7 +3556,8 @@
         "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
         "archiveFailed": "归档操作失败，请稍后重试",
         "projectNameConflict": "已有同名项目占用了该名称，无法恢复项目。请先重命名同名项目。",
-        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。"
+        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
+        "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。"
       },
       "cancel": "取消",
       "confirm": "确定"
@@ -3657,6 +3670,9 @@
     "customOption": "自定义",
     "customPlaceholder": "没有合适的选项？输入您的答案...",
     "skippedSummary": "已跳过"
+  },
+  "skillPackagePrompt": {
+    "creating": "正在创建…"
   },
   "qaSummary": {
     "title": "问题澄清"

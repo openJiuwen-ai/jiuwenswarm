@@ -160,6 +160,15 @@ def _has_persistable_assistant_payload(
         return True
     if et == "chat.subagent_activity" and isinstance(payload.get("subagent_activity"), dict):
         return True
+    # chat.ask_user_question 的载荷在 questions[] 数组里（无 content），
+    # 否则会被下面的「空 chat.* 壳」规则丢弃，导致问题澄清对话框刷新后无法恢复。
+    if et == "chat.ask_user_question":
+        questions = payload.get("questions")
+        return isinstance(questions, list) and bool(questions)
+    # chat.ask_user_answer 的载荷在 answers[] 数组里（无 content），同理需要放行。
+    if et == "chat.ask_user_answer":
+        answers = payload.get("answers")
+        return isinstance(answers, list) and bool(answers)
     # Empty chat.final / chat.* status shells and other blank assistants: skip.
     if et.startswith("chat.") or et in {"", "chat.final"}:
         return False

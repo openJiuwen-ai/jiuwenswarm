@@ -282,13 +282,13 @@ class TestHandleSwarmflowControl:
 
 
 class TestSwarmflowControlDispatch:
-    """Structural test that the dispatch chain routes the new req_methods."""
+    """Structural test that Runtime dispatch routes the new req_methods."""
 
     async def test_dispatch_has_three_swarmflow_branches(self) -> None:
         import inspect
 
         from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
-        source = inspect.getsource(AgentWebSocketServer._handle_message)
+        source = inspect.getsource(AgentWebSocketServer.dispatch_parsed_request)
         for method in (ReqMethod.SWARMFLOW_PAUSE, ReqMethod.SWARMFLOW_RESUME, ReqMethod.SWARMFLOW_STOP):
             assert f"ReqMethod.{method.name}" in source

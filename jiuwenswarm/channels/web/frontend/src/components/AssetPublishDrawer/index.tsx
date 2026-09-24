@@ -13,6 +13,7 @@ import {
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { publishOutcome, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+import { publishIssueKey } from '../../features/assetPublishErrors';
 import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
 import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
 import githubIcon from '../../assets/settings/channels/GitHub.svg';
@@ -98,6 +99,12 @@ const messages = {
     unknown: '结果待核实',
     observed: '这里显示后端已知结果，不自动查询远端审核进度。',
     requestFailed: '请求未完成，请重试或重新登录。',
+    invalidPluginStructure: '资源包结构不符合 Hub 要求，请检查清单文件和目录结构。',
+    pluginNotFound: 'Hub 中找不到要更新的资源，请检查“更新目标 Hub ID”后重试。',
+    sessionExchangeFailed: 'Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。',
+    authRequired: '登录状态已失效，请重新登录。',
+    resourceNotFound: '找不到本地资源，请确认资源仍然存在。',
+    versionConflict: '该版本已提交过，请修改版本；确认需要覆盖时可在高级设置中开启覆盖。',
     statusFailed: '任务查询暂时失败；后台任务仍可能运行，可刷新恢复。',
     commitUncertain: '提交响应未收到。请找回此次提交或刷新记录，不要创建新提交。',
     commitRejected: '后台拒绝了此次提交。请返回修改并重新检查。',
@@ -179,6 +186,14 @@ const messages = {
     unknown: 'Result needs verification',
     observed: 'This is the result known to the backend; remote moderation is not polled.',
     requestFailed: 'The request did not complete. Retry or sign in again.',
+    invalidPluginStructure: 'The package structure does not meet Hub requirements. Check its manifest and folders.',
+    pluginNotFound: 'The Hub resource to update was not found. Check the target Hub ID and retry.',
+    sessionExchangeFailed:
+      'Hub could not exchange the sign-in result. Authorize again or contact the Hub administrator.',
+    authRequired: 'Your sign-in has expired. Sign in again.',
+    resourceNotFound: 'The local resource was not found. Confirm that it still exists.',
+    versionConflict:
+      'This version was already submitted. Change it, or explicitly enable overwrite in advanced settings.',
     statusFailed: 'Status is temporarily unavailable. The background task may still be running; refresh to recover.',
     commitUncertain:
       'No submission response was received. Recover this submission or refresh records before starting another.',
@@ -223,9 +238,6 @@ const messages = {
   },
 };
 type MessageKey = keyof typeof messages.en;
-function display(value: unknown): string {
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-}
 function hubHost(value?: string): string {
   if (!value) return '';
   try {
@@ -273,7 +285,9 @@ function AssetPublishDrawer({
         'This version exists. Change the version or explicitly enable overwrite.',
       ],
     };
-    return code && known[code] ? known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '') : display(value);
+    if (code && known[code]) return known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '');
+    const safeKey = publishIssueKey(code || value);
+    return safeKey === 'requestFailed' ? text('requestFailed') : text(safeKey);
   };
   const panel = useRef<HTMLElement | null>(null);
   const [review, setReview] = useState(false);
@@ -281,6 +295,8 @@ function AssetPublishDrawer({
   const [loginError, setLoginError] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
   const loginAbort = useRef<AbortController | null>(null);
+  const loginWindow = useRef<Window | null>(null);
+  const loginGeneration = useRef(0);
   useEffect(() => () => loginAbort.current?.abort(), []);
   const [avatarFailed, setAvatarFailed] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -318,9 +334,12 @@ function AssetPublishDrawer({
     };
   }, [onClose]);
   const login = async (provider: OAuthProvider) => {
-    if (loginBusy) return;
+    loginAbort.current?.abort();
+    loginWindow.current?.close();
+    const generation = ++loginGeneration.current;
     const desktopOpen = window.pywebview?.api?.open_external_url;
     const browserTab = desktopOpen || window.__JIUWEN_DESKTOP__ ? null : window.open('', '_blank');
+    loginWindow.current = browserTab;
     try {
       setLoginError('');
       setLoginBusy(true);
@@ -335,13 +354,19 @@ function AssetPublishDrawer({
       loginAbort.current?.abort();
       const controller = new AbortController();
       loginAbort.current = controller;
-      await waitForHubOAuth(attempt, controller.signal);
+      await waitForHubOAuth(attempt, controller.signal, () => Boolean(browserTab?.closed));
+      if (generation !== loginGeneration.current) return;
       setSwitchingAccount(false);
     } catch (failure) {
       browserTab?.close();
+      if (failure instanceof DOMException && failure.name === 'AbortError') return;
+      if (generation !== loginGeneration.current) return;
       setLoginError(failure instanceof Error ? failure.message : 'OAuth 登录不可用');
     } finally {
-      setLoginBusy(false);
+      if (generation === loginGeneration.current) {
+        loginWindow.current = null;
+        setLoginBusy(false);
+      }
     }
   };
   const invalid = validateMetadata(state.metadata).length > 0;
@@ -556,8 +581,9 @@ function AssetPublishDrawer({
                   key={nextProvider}
                   data-testid="asset-publish-provider"
                   data-variant={nextProvider}
+                  aria-busy={loginBusy}
                   onClick={() => login(nextProvider)}
-                  disabled={state.busy || loginBusy}
+                  disabled={state.busy}
                 >
                   <img src={providerIcon(nextProvider)} alt="" aria-hidden="true" />
                   {nextProvider === 'github' ? 'GitHub' : 'GitCode'}
@@ -580,8 +606,9 @@ function AssetPublishDrawer({
               key={nextProvider}
               data-testid="asset-publish-provider"
               data-variant={nextProvider}
+              aria-busy={loginBusy}
               onClick={() => login(nextProvider)}
-              disabled={state.busy || loginBusy}
+              disabled={state.busy}
             >
               <img src={providerIcon(nextProvider)} alt="" aria-hidden="true" />
               {text('loginWith')} {nextProvider === 'github' ? 'GitHub' : 'GitCode'}
@@ -764,13 +791,6 @@ function AssetPublishDrawer({
             </span>
             <h3>{text(outcome as MessageKey)}</h3>
           </header>
-          {state.record.result?.visibility === null && (
-            <p role="status" className="asset-publish-result-notice" data-testid="asset-publish-visibility-unconfirmed">
-              {i18n.language.startsWith('zh')
-                ? '可见范围暂未确认，请到 Hub 查看。'
-                : 'Visibility is not yet confirmed. Check it in Hub.'}
-            </p>
-          )}
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (
               <div>
@@ -790,9 +810,7 @@ function AssetPublishDrawer({
             )}
           </dl>
           {state.record.error && (
-            <p className="asset-publish-result-error text-danger">
-              {state.record.error.code}: {state.record.error.message}
-            </p>
+            <p className="asset-publish-result-error text-danger">{issueText(state.record.error)}</p>
           )}
           <footer className="asset-publish-result-footer" data-testid="asset-publish-result-footer">
             <p data-testid="asset-publish-observed-note">{text('observed')}</p>

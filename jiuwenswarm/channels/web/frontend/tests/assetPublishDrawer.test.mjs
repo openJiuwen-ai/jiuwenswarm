@@ -184,7 +184,7 @@ test('all four kinds open the shared review, retain moderation result, and never
     assert.match(find('asset-publish-result-metadata').textContent, /1\.0\.0/);
     assert.ok(find('asset-publish-result-footer'));
     assert.equal(find('asset-publish-new-version').closest('[data-testid="asset-publish-result-footer"]') !== null, true);
-    assert.match(find('asset-publish-visibility-unconfirmed').textContent, /Visibility is not yet confirmed/);
+    assert.equal(find('asset-publish-visibility-unconfirmed'), null);
     await act(async () => find('asset-publish-close').click());
   }
   assert.deepEqual(

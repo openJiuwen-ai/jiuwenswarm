@@ -18,6 +18,8 @@ import {
   Image as ImageIcon,
   Info,
   LoaderCircle,
+  PanelBottomClose,
+  PanelBottomOpen,
   Presentation,
   Share2,
   Sparkles,
@@ -173,6 +175,20 @@ interface ChatPanelProps {
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
   /** 专家团「通过聊天创建」入口的 4.9 高保真欢迎态。 */
   welcomeVariant?: 'group-create' | null;
+  /**
+   * 轨迹视图停靠模式：消息区让位给轨迹表格，输入区仍保留在底部可用。
+   * 见 App.css 中 `.single-agent-surface--trajectory` 的可见性例外。
+   */
+  composerDocked?: boolean;
+  /** 停靠模式下输入区是否收起为“仅观看”。非停靠模式忽略。 */
+  composerCollapsed?: boolean;
+  /** 切换停靠模式下的输入区收起状态；缺省时不渲染收起按钮。 */
+  onToggleComposerCollapsed?: () => void;
+  /**
+   * 上报输入区实测高度，供轨迹视图留出底部空白，避免末尾记录被输入区遮住。
+   * 仅在停靠模式下回调；收起时上报 0。
+   */
+  onComposerHeightChange?: (height: number) => void;
 }
 
 // 邀请指令只对 human_agent 成员存在（见 upsertHumanShareCommandFromEvent 的
@@ -999,6 +1015,10 @@ export const ChatPanel = React.memo(function ChatPanel({
   onClearGoal,
   onDrainTaskQueueIfIdle,
   welcomeVariant = null,
+  composerDocked = false,
+  composerCollapsed = false,
+  onToggleComposerCollapsed,
+  onComposerHeightChange,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -1027,6 +1047,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const panelShellRef = useRef<HTMLDivElement>(null);
+  const composeRef = useRef<HTMLDivElement>(null);
   const bubbleRef = useRef<HTMLDivElement>(null);
   const inputAreaRef = useRef<InputAreaHandle>(null);
   const desktopFileDropAcceptUntilRef = useRef(0);
@@ -1069,6 +1090,32 @@ export const ChatPanel = React.memo(function ChatPanel({
     : 'chat-content chat-content--welcome';
   const suggestions = [t('chat.welcomeSuggestions.journey'), t('chat.welcomeSuggestions.skills')];
   const shouldShowChatHeader = hasConversation;
+  const composerDockVisible = composerDocked && hasConversation;
+  // Report the composer's measured height so the docked trajectory view can
+  // keep its last records clear of it. A collapsed or undocked composer covers
+  // nothing, so it reports zero rather than its laid-out size.
+  useEffect(() => {
+    if (onComposerHeightChange === undefined) return undefined;
+    const element = composeRef.current;
+    if (!composerDockVisible || composerCollapsed || element === null) {
+      onComposerHeightChange(0);
+      return undefined;
+    }
+    let reported = -1;
+    const publish = () => {
+      const height = Math.ceil(element.getBoundingClientRect().height);
+      if (height === reported) return;
+      reported = height;
+      onComposerHeightChange(height);
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      onComposerHeightChange(0);
+    };
+  }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
   const shareExportTitle = getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
@@ -1678,7 +1725,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   return (
     <div
       ref={panelShellRef}
-      className={`chat-panel-shell flex flex-col h-full ${teamAreaExpanded === false ? 'chat-panel-shell--team-floating' : ''}`}
+      className={`chat-panel-shell flex flex-col h-full ${teamAreaExpanded === false ? 'chat-panel-shell--team-floating' : ''} ${composerDockVisible ? 'chat-panel-shell--composer-docked' : ''} ${composerDockVisible && composerCollapsed ? 'chat-panel-shell--composer-collapsed' : ''}`}
       data-testid="chat-panel"
       onDragEnter={handleDesktopFileDragEnter}
       onDragOver={handleDesktopFileDragOver}
@@ -1723,6 +1770,22 @@ export const ChatPanel = React.memo(function ChatPanel({
             )}
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
+            {composerDockVisible && onToggleComposerCollapsed && (
+              <button
+                type="button"
+                className={`chat-header-icon-btn ${composerCollapsed ? '' : 'chat-header-icon-btn--active'}`}
+                data-testid="chat-panel-header-composer-toggle"
+                data-variant={composerCollapsed ? 'expand' : 'collapse'}
+                aria-expanded={!composerCollapsed}
+                title={composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                aria-label={composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                onClick={onToggleComposerCollapsed}
+              >
+                {composerCollapsed
+                  ? <PanelBottomOpen size={16} strokeWidth={2} aria-hidden />
+                  : <PanelBottomClose size={16} strokeWidth={2} aria-hidden />}
+              </button>
+            )}
             {shouldShowShareExport && (
               <button
                 type="button"
@@ -1958,7 +2021,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       </div>
 
       {hasConversation && (
-        <div className="chat-compose" data-testid="chat-panel-compose">
+        <div ref={composeRef} className="chat-compose" data-testid="chat-panel-compose">
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
           <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
           <InterruptResultBubble />

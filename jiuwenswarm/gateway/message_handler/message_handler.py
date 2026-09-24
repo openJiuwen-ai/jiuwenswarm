@@ -452,6 +452,14 @@ class MessageHandler(ABC):
             config_payload if isinstance(config_payload, dict) else {}
         )
 
+    def auto_accepts_evolution_approval(self, payload: Any) -> bool:
+        """Whether this question is answered automatically by the gateway."""
+        return (
+            self._evolution_auto_save_enabled
+            and is_evolution_approval_payload(payload)
+            and not is_interrupt_evolution_approval_answer_payload(payload)
+        )
+
     @classmethod
     def get_instance(cls, agent_client: "AgentServerClient | None" = None) -> "MessageHandler":
         """获取单例实例。
@@ -3288,10 +3296,23 @@ class MessageHandler(ABC):
             )
             return
         if self._is_terminal_stream_chunk(chunk):
-            logger.debug(
-                "[MessageHandler] 忽略 server_push 终止 chunk: request_id=%s",
-                chunk.request_id,
-            )
+            # AgentServer 通过 send_push 发来流的终止哨兵 chunk（例如
+            # session.delete 连带取消流时）。不能只丢弃——否则网关侧
+            # process_stream 协程仍挂在 queue.get() 上等待更多 chunk，形成
+            # 僵尸流，导致该会话被生命周期守卫永久锁定。取消对应的 Task，
+            # 触发 process_stream 的 CancelledError → finally 清理 _stream_modes。
+            task = self._stream_tasks.get(rid)
+            if task is not None and not task.done():
+                logger.info(
+                    "[MessageHandler] server_push 终止 chunk → 取消流式 Task: request_id=%s",
+                    rid,
+                )
+                task.cancel()
+            else:
+                logger.debug(
+                    "[MessageHandler] server_push 终止 chunk（无活跃 Task）: request_id=%s",
+                    rid,
+                )
             return
 
         # Track evolution state on the server_push path as well.
@@ -4061,14 +4082,9 @@ class MessageHandler(ABC):
         """
         payload = getattr(chunk, "payload", None)
         auto_save_enabled = (
-            self._evolution_auto_save_enabled
-            if (
-                isinstance(payload, dict)
-                and payload.get("event_type") == "chat.ask_user_question"
-                and self._is_evolution_approval_payload(payload)
-                and not self._is_interrupt_evolution_approval_answer_payload(payload)
-            )
-            else False
+            isinstance(payload, dict)
+            and payload.get("event_type") == "chat.ask_user_question"
+            and self.auto_accepts_evolution_approval(payload)
         )
         decision = self._evolution_approval.handle_chunk(
             chunk,

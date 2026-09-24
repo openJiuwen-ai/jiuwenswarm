@@ -457,6 +457,10 @@
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
       },
+      "ttse_enabled": {
+        "title": "Local environment facts and task experience auto-evolution",
+        "description": "Control the agent's learning of environment facts and task experience"
+      },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
         "description": "Enable the free DuckDuckGo search source."
@@ -569,6 +573,10 @@
     "team": {
       "memberLanes": "Member trajectory lanes",
       "members": "Members"
+    },
+    "composer": {
+      "collapse": "Collapse composer",
+      "expand": "Expand composer"
     },
     "layout": {
       "hideSessions": "Collapse sessions",
@@ -799,6 +807,9 @@
     "placeholder": "What can I do for you? Type \"/\" to quickly reference skills and commands",
     "placeholderCompacting": "Context compression in progress. Messages are temporarily disabled",
     "modelNotConfigured": "No model is configured yet. Configure one in Settings → Models, or sign in to get the limited-time free models.",
+    "sessionArchived": "This session has been archived. Restore it or start a new session to continue.",
+    "sessionDeleted": "This session has been deleted and can no longer be used.",
+    "sessionOperationInProgress": "An archive or delete operation is in progress for this session. Please try again later.",
     "placeholderAwaitingApproval": "Please respond to the pending confirmation above",
     "placeholderProcessing": "Processing, enter to interrupt...",
     "placeholderProcessingQueue": "Processing, new input will join the queue...",
@@ -1725,6 +1736,7 @@
       "updateFailed": "Failed to update task",
       "updateFailedWithReason": "Failed to update task: {{reason}}",
       "deleteFailed": "Failed to delete task",
+      "deleteSessionBusy": "The session associated with this scheduled task is still running and cannot be deleted. Please stop the session manually and try again.",
       "toggleFailed": "Failed to update task status",
       "previewFailed": "Failed to preview next runs",
       "runNowFailed": "Failed to trigger the task immediately",
@@ -3558,7 +3570,8 @@
         "archiveNotFound": "The resource no longer exists or has changed. Refresh and try again.",
         "archiveFailed": "The archive operation failed. Please try again later.",
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
-        "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again."
+        "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
+        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
@@ -3671,6 +3684,9 @@
     "customOption": "Custom",
     "customPlaceholder": "No suitable option? Type your answer...",
     "skippedSummary": "Skipped"
+  },
+  "skillPackagePrompt": {
+    "creating": "Creating…"
   },
   "qaSummary": {
     "title": "Clarifications"

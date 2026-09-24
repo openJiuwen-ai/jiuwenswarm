@@ -573,6 +573,11 @@ trajectory_ui:
   batch_size: 64                    # writer 单事务最大记录数
   flush_interval_ms: 200            # writer 最大合批等待时间
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
+  # 流式帧只在 Span 未结束期间充当"尚未写完的输出"；Span 终态记录落库后，
+  # 记录本身即权威输出，前端会丢弃帧、详情查询不读帧、归档导出也不含帧。
+  # 置 true 时随终态记录一并删除这些帧（实测可省约 20% 轨迹库体积）；
+  # 若将来要做"逐帧回放已完成回答"，改为 false 可让帧保留至所属 turn 页被淘汰。
+  discard_final_span_frames: true
 
 experimental:
   task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口

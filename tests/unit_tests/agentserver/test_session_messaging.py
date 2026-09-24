@@ -9,6 +9,7 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     SessionMessagingRouteRail,
@@ -2255,3 +2256,257 @@ def test_store_supersede_only_touches_waiting_rows(tmp_path) -> None:
     assert store.get(waiting.message_id).status == "failed"
     assert store.get(finished.message_id).status == "succeeded"
     assert store.get(queued.message_id).status == "queued"
+
+@pytest.mark.asyncio
+async def test_steer_bypasses_waiting_task_admission_and_keeps_default_fifo(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    store = SessionMessageStore(tmp_path / 'messages.sqlite3')
+    entered, release = asyncio.Event(), asyncio.Event()
+    executions = []
+
+    class Admission(_RecordingAdmission):
+        async def begin_session_message(self, sid, run):
+            entered.set()
+            await release.wait()
+            await super().begin_session_message(sid, run)
+
+    async def execute(record):
+        executions.append(record)
+        return SessionMessageExecutionResult('delivered' if record.input_mode else 'succeeded')
+
+    service = SessionMessageService(store=store, admission=Admission(), execute=execute)
+    monkeypatch.setattr(service, '_session_metadata', _metadata)
+    try:
+        ordinary = await service.send_message(_source('ordinary'), target_session_id='target-1', message='independent task')
+        await asyncio.wait_for(entered.wait(), 2)
+        source = replace(_source('steer'), chain_id='chain-parent', parent_message_id='parent', hop_count=2)
+        steer = await service.send_message(source, target_session_id='target-1', message='adjust current task', input_mode='steer')
+        await _wait_for_status(store, steer['message_id'], 'delivered')
+        assert store.get(ordinary['message_id']).status == 'queued'
+        assert len(executions) == 1
+        received = executions[0]
+        assert (received.source_session_id, received.source_request_id, received.source_tool_call_id) == ('source-1', 'request-1', 'steer')
+        assert (received.chain_id, received.parent_message_id, received.hop_count) == ('chain-parent', 'parent', 3)
+        duplicate = await service.send_message(source, target_session_id='target-1', message='adjust current task', input_mode='steer')
+        assert duplicate['deduplicated'] and duplicate['status'] == 'delivered'
+        with pytest.raises(SessionMessagingError) as exc:
+            await service.send_message(source, target_session_id='target-1', message='adjust current task')
+        assert exc.value.code == 'IDEMPOTENCY_CONFLICT'
+        release.set()
+        await _wait_for_status(store, ordinary['message_id'], 'succeeded')
+        assert [r.input_mode for r in executions] == ['steer', '']
+        listing = await service.list_messages(source)
+        assert next(r for r in listing['messages'] if r['message_id'] == steer['message_id'])['input_mode'] == 'steer'
+        assert SessionMessageStore(store.path).get(steer['message_id']).status == 'delivered'
+    finally:
+        release.set()
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_steer_bypasses_running_mailbox_task_and_delete_stops_both_consumers(tmp_path, monkeypatch):
+    store = SessionMessageStore(tmp_path / 'messages.sqlite3')
+    entered = {mode: asyncio.Event() for mode in ('', 'steer')}
+    async def execute(record):
+        entered[record.input_mode].set()
+        await asyncio.Event().wait()
+    service = SessionMessageService(store=store, admission=_RecordingAdmission(), execute=execute)
+    monkeypatch.setattr(service, '_session_metadata', _metadata)
+    try:
+        ordinary = await service.send_message(_source('ordinary'), target_session_id='target-1', message='task')
+        await asyncio.wait_for(entered[''].wait(), 2)
+        steer = await service.send_message(_source('steer'), target_session_id='target-1', message='adjust', input_mode='steer')
+        await asyncio.wait_for(entered['steer'].wait(), 2)
+        await service.begin_target_delete('target-1')
+        assert store.get(ordinary['message_id']).status == 'unknown'
+        assert store.get(steer['message_id']).status == 'unknown'
+        assert not service._workers
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_steer_restart_preserves_mode_and_quarantines_uncertain_delivery(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    store = SessionMessageStore(tmp_path / 'messages.sqlite3')
+    execute = AsyncMock(return_value=SessionMessageExecutionResult('delivered'))
+    service = SessionMessageService(store=store, admission=_RecordingAdmission(), execute=execute, available=False)
+    monkeypatch.setattr(service, '_session_metadata', _metadata)
+    first = await service.send_message(_source('first'), target_session_id='target-1', message='one', input_mode='steer')
+    second = await service.send_message(_source('second'), target_session_id='target-1', message='two', input_mode='steer')
+    await service.stop()
+    store.claim(first['message_id'], 'lost', 'lost')
+    restarted = SessionMessageService(store=SessionMessageStore(store.path), admission=_RecordingAdmission(), execute=execute)
+    monkeypatch.setattr(restarted, '_session_metadata', _metadata)
+    try:
+        await restarted.start()
+        assert restarted.store.get(first['message_id']).status == 'unknown'
+        assert restarted.store.next_queued('target-1', 'steer') is None
+        execute.assert_not_called()
+        await restarted.resolve_unknown(_source('resolve'), message_id=first['message_id'], resolution='cancelled')
+        await _wait_for_status(store, second['message_id'], 'delivered')
+        assert execute.call_args.args[0].input_mode == 'steer'
+    finally:
+        await restarted.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('disposition,expected', [('stream', 'delivered'), ('chat', 'succeeded'), ('ack_only', 'unknown'), ('error', 'failed'), ('unknown_error', 'unknown')])
+async def test_cross_session_steer_runtime_receipt_is_not_task_completion(tmp_path, monkeypatch, disposition, expected):
+    from unittest.mock import AsyncMock, Mock
+    store = SessionMessageStore(tmp_path / 'messages.sqlite3')
+    service = SessionMessageService(store=store, admission=_RecordingAdmission(), execute=AsyncMock(), available=False)
+    monkeypatch.setattr(service, '_session_metadata', _metadata)
+    sent = await service.send_message(_source('steer'), target_session_id='target-1', message='adjust current task', input_mode='steer')
+    await service.stop()
+    record = store.claim(sent['message_id'], 'delivery-id', 'delivery-run')
+    class Runtime:
+        start = AsyncMock()
+        create_or_resume_session = AsyncMock(return_value='target-1')
+        async def stream(self, request, **kwargs):
+            assert kwargs == {'trigger_hook': False, 'background': False}
+            assert request.params['input_mode'] == 'steer'
+            origin = request.params[SESSION_MESSAGE_INTERNAL_KEY]
+            assert origin['source_session_id'] == 'source-1'
+            assert origin['source_tool_call_id'] == 'steer'
+            payload = {'event_type': 'runtime.accepted'}
+            if disposition == 'stream':
+                payload['input_boundary'] = 'stream'
+            elif disposition == 'chat':
+                payload['input_delivery'] = 'chat'
+            elif disposition in {'error', 'unknown_error'}:
+                code = 'SESSION_INPUT_DELIVERY_UNKNOWN' if disposition == 'unknown_error' else 'SESSION_INPUT_TARGET_CHANGED'
+                payload = {'event_type': 'chat.error', 'code': code, 'error': 'target ended'}
+            yield RuntimeEvent(request_id=request.request_id, channel_id='web', session_id='target-1', payload=payload)
+            if disposition == 'chat':
+                yield RuntimeEvent(request_id=request.request_id, channel_id='web', session_id='target-1', payload={'event_type': 'chat.final', 'content': 'done'}, is_complete=True)
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._execution_runtime = lambda: Runtime()
+    server.send_push = AsyncMock()
+    completion = Mock(return_value=None)
+    monkeypatch.setattr(agent_ws_server_module, 'get_session_metadata', lambda *a, **k: _metadata('target-1'))
+    monkeypatch.setattr(agent_ws_server_module, 'build_server_push_message', lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(agent_ws_server_module, 'enqueue_history_request_completion', completion)
+    result = await server.execute_internal_session_message(record)
+    assert result.status == expected
+    if disposition != 'chat':
+        server.send_push.assert_not_called()
+        completion.assert_not_called()
+    else:
+        completion.assert_called_once()
+        statuses = [c.args[0]['payload']['is_processing'] for c in server.send_push.call_args_list if c.args[0]['payload'].get('event_type') == 'chat.processing_status']
+        assert statuses == [True, False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change,error', [('owner', 'NOT_FOUND_OR_FORBIDDEN'), ('hop', 'LIMIT_EXCEEDED'), ('mode', 'INVALID_ARGUMENT')])
+async def test_steer_retains_authorization_hop_and_mode_guards(tmp_path, monkeypatch, change, error):
+    from dataclasses import replace
+    from unittest.mock import AsyncMock
+    service = SessionMessageService(store=SessionMessageStore(tmp_path / 'messages.sqlite3'), admission=_RecordingAdmission(), execute=AsyncMock(), available=False)
+    monkeypatch.setattr(service, '_session_metadata', lambda sid: {**_metadata(sid), **({'user_id': 'foreign'} if change == 'owner' and sid == 'target-1' else {})})
+    try:
+        source = replace(_source('steer'), hop_count=4) if change == 'hop' else _source('steer')
+        with pytest.raises(SessionMessagingError) as exc:
+            await service.send_message(source, target_session_id='target-1', message='adjust', input_mode='follow_up' if change == 'mode' else 'steer')
+        assert exc.value.code == error
+        assert not service.store.list_messages(owner_scope_id='user-1', session_id='source-1')
+    finally:
+        await service.stop()
+
+@pytest.mark.parametrize('container', ['params', 'metadata', 'nested_metadata'])
+def test_cross_session_input_is_never_external_user_authorization(container):
+    from jiuwenswarm.server.runtime.agent_adapter.interface import is_external_user_authored_dispatch
+    marker = {SESSION_MESSAGE_INTERNAL_KEY: {'message_id': 'sm-agent', 'source_session_id': 'source-1'}}
+    params = {'query': 'Agent request', 'input_mode': 'steer'}
+    metadata = {}
+    if container == 'params':
+        params.update(marker)
+    elif container == 'metadata':
+        metadata.update(marker)
+    else:
+        params['metadata'] = marker
+    assert not is_external_user_authored_dispatch(params, channel_id='web', request_method=ReqMethod.CHAT_SEND, metadata=metadata)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('uncertain', [False, True])
+async def test_steer_rejection_and_uncertain_delivery_have_distinct_results(tmp_path, monkeypatch, uncertain):
+    from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import SessionInputDeliveryUnknown
+    store = SessionMessageStore(tmp_path / 'messages.sqlite3')
+    async def execute(record):
+        if uncertain:
+            raise SessionInputDeliveryUnknown('input may have reached the target')
+        raise SessionInputRejectedError('target is waiting for an interaction answer')
+    service = SessionMessageService(store=store, admission=_RecordingAdmission(), execute=execute)
+    monkeypatch.setattr(service, '_session_metadata', _metadata)
+    try:
+        sent = await service.send_message(_source('steer'), target_session_id='target-1', message='adjust', input_mode='steer')
+        await _wait_for_status(store, sent['message_id'], 'unknown' if uncertain else 'failed')
+        assert store.get(sent['message_id']).last_error_code == ('SESSION_INPUT_DELIVERY_UNKNOWN' if uncertain else 'SESSION_INPUT_REJECTED')
+    finally:
+        await service.stop()
+
+
+def test_legacy_mailbox_migration_preserves_default_delivery(tmp_path):
+    path = tmp_path / 'messages.sqlite3'
+    store = SessionMessageStore(path)
+    record, _ = _enqueue(store, key='legacy')
+    with sqlite3.connect(path) as conn:
+        conn.execute('ALTER TABLE session_messages DROP COLUMN input_mode')
+    reopened = SessionMessageStore(path)
+    assert reopened.get(record.message_id).input_mode == ''
+    assert reopened.next_queued('target-1').message_id == record.message_id
+    assert reopened.next_queued('target-1', 'steer') is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('agent_source', [False, True])
+async def test_mailbox_task_does_not_overwrite_incoming_steer_author(tmp_path, monkeypatch, agent_source):
+    from unittest.mock import AsyncMock
+    store = SessionMessageStore(tmp_path / 'messages.sqlite3')
+    queued, _ = _enqueue(store, key='original')
+    record = store.claim(queued.message_id, 'original-execution', 'run')
+    boundary = {'event_type': 'chat.input_received', 'input_request_id': 'new-input', 'content': 'adjust'}
+    if agent_source:
+        boundary.update(message_origin='cross_session_agent', session_message_id='sm-new',
+                        cross_session={'message_id': 'sm-new', 'source_session_id': 'other-source'})
+    class Runtime:
+        async def stream(self, request, **kwargs):
+            yield RuntimeEvent(request_id=request.request_id, channel_id='web', session_id='target-1', payload=boundary)
+            yield RuntimeEvent(request_id=request.request_id, channel_id='web', session_id='target-1', payload={'event_type': 'chat.final', 'content': 'done'})
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._execution_runtime = lambda: Runtime()
+    server.send_push = AsyncMock()
+    monkeypatch.setattr(agent_ws_server_module, 'get_session_metadata', lambda *a, **k: _metadata('target-1'))
+    monkeypatch.setattr(agent_ws_server_module, 'build_server_push_message', lambda **kwargs: dict(kwargs))
+    monkeypatch.setattr(agent_ws_server_module, 'enqueue_history_request_completion', lambda *a, **k: None)
+    result = await server.execute_internal_session_message(record)
+    assert result.status == 'succeeded'
+    pushed = [call.args[0]['payload'] for call in server.send_push.call_args_list]
+    assert next(p for p in pushed if p.get('event_type') == 'chat.input_received') == boundary
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('shutdown', ['stop', 'delete'])
+async def test_steer_idle_fallback_remains_owned_during_shutdown(tmp_path, monkeypatch, shutdown):
+    store = SessionMessageStore(tmp_path / 'messages.sqlite3')
+    started = asyncio.Event()
+    async def execute(record):
+        service.on_steering_fallback_started(record)
+        started.set()
+        await asyncio.Event().wait()
+    service = SessionMessageService(store=store, admission=_RecordingAdmission(), execute=execute)
+    monkeypatch.setattr(service, '_session_metadata', _metadata)
+    try:
+        sent = await service.send_message(_source('idle-steer'), target_session_id='target-1', message='task', input_mode='steer')
+        await asyncio.wait_for(started.wait(), 2)
+        if shutdown == 'stop':
+            await service.stop()
+        else:
+            await service.begin_target_delete('target-1')
+        assert store.get(sent['message_id']).status == 'unknown'
+        assert not service._running_fallbacks
+        assert not service._executing_workers
+    finally:
+        await service.stop()

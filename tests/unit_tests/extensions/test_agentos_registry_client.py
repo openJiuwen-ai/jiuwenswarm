@@ -10,6 +10,7 @@ import pytest
 
 from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
+    PENDING_INSTANCE_ADDRESS,
     ImageEntry,
     RegistryClient,
     RegistryConfig,
@@ -399,9 +400,11 @@ async def test_http_register_agent_maps_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_register_agent_address_falls_back_to_instance_id() -> None:
+async def test_http_register_agent_pending_address_and_empty_node() -> None:
     transport = _FakeRegistryTransport()
-    client = RegistryClient(RegistryConfig(endpoint="http://registry.test"))
+    client = RegistryClient(
+        RegistryConfig(endpoint="http://registry.test", node="192.168.0.12")
+    )
     client._http = httpx.AsyncClient(  # noqa: SLF001
         base_url="http://registry.test/",
         transport=transport,
@@ -417,7 +420,8 @@ async def test_http_register_agent_address_falls_back_to_instance_id() -> None:
     post = next(call for call in transport.calls if call[0] == "POST")
     assert post[2] is not None
     assert post[2]["instance_id"] == "sbx-pending-ip"
-    assert post[2]["address"] == "sbx-pending-ip"
+    assert post[2]["address"] == PENDING_INSTANCE_ADDRESS
+    assert post[2]["node"] == ""
     await client.close()
 
 

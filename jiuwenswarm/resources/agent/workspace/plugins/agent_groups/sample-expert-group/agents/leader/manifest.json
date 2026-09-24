@@ -1,8 +1,0 @@
-{
-  "package_type": "agent_template",
-  "name": "专家团负责人",
-  "description": "负责任务拆解、专家调度、质量控制和最终汇总",
-  "persona": {
-    "dir": "."
-  }
-}

@@ -484,7 +484,10 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolResultDedupDropped: 0,
             },
             taskQueue: [],
-            pendingQuestions: [],
+            // pendingQuestions 是后端通过 chat.ask_user_question 实时推送的交互状态，
+            // 不属于历史消息范畴。历史恢复只重建消息列表，不应清空 pendingQuestions——
+            // 否则切到/切回一个正在等待 ask_user/权限确认的会话时，吸附条会永久消失
+            // （后端不会重发 pending question）。仅在新会话首次创建时由 clearMessages 清空。
             pendingGoalObjectiveBubble: null,
           },
         },

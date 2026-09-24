@@ -2188,6 +2188,62 @@ async def test_register_agent_skips_placement_when_ips_missing() -> None:
     await client.shutdown()
 
 
+class NeverRunningYuanRongClient(FakeYuanRongClient):
+    async def wait_until_running(self, instance_id: str, **_kwargs: Any) -> dict:
+        self.wait_running_calls.append(instance_id)
+        raise YuanrongAgentApiError(
+            f"agent instance not running after 60s: instance_id={instance_id}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_register_agent_deletes_sandbox_and_registry_when_never_running() -> None:
+    """create 已登记但一直未 running：删 YuanRong 沙箱并注销注册中心条目。"""
+    yuanrong = NeverRunningYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    info = await _seed_ready_runtime(agent_manager)
+    live = (await agent_manager.list_user_agents("u1"))[0]
+    agent_id = live.info.agent_id
+    client = _router_client(yuanrong, registry, agent_manager)
+
+    await client._register_agent(info)
+
+    assert yuanrong.wait_running_calls == ["sbx-1"]
+    assert yuanrong.delete_calls == ["sbx-1"]
+    assert len(registry.registered) == 1
+    assert registry.unregistered == [
+        {
+            "agent_id": agent_id,
+            "user_id": "u1",
+            "agent_type": "jiuwenswarm",
+        }
+    ]
+    assert registry.updated_instances == []
+    assert await agent_manager.list_user_agents("u1") == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_send_request_cleans_up_when_create_never_reaches_running() -> None:
+    """请求路径 create 成功后探针不过：删沙箱、注销登记、不留下 READY runtime。"""
+    yuanrong = NeverRunningYuanRongClient()
+    registry = FakeRegistryClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, registry, agent_manager)
+    try:
+        response = await client.send_request(_envelope())
+        await asyncio.sleep(0.05)
+
+        assert not response.ok
+        assert "agent instance unavailable" in str(response.payload.get("error"))
+        assert "sbx-1" in yuanrong.delete_calls
+        assert registry.unregistered
+        assert await agent_manager.list_user_agents("u1") == []
+    finally:
+        await client.shutdown()
+
+
 # ── YuanRong 删除幂等 + 强制清理不被中断（issue #3497 §7.3） ────────────────
 
 

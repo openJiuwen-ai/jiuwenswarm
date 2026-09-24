@@ -5,6 +5,7 @@
 # TEST ONLY: credential-shaped values are constructed synthetic fixtures and
 # URL literals use RFC-reserved domains; no external request is performed.
 
+import ast
 import importlib
 import json
 import os
@@ -399,6 +400,25 @@ class TestSourceRecordMasking:
             assert utils._source_record_masking_installed is True
         finally:
             self._restore_state(state)
+
+
+def test_sanitize_log_text_stays_linear_on_long_identifier_runs():
+    """A long identifier-like run must not make masking quadratic.
+
+    Tool results and model output routinely carry long unbroken runs (base64,
+    hashes, minified code). The named-key pattern once rescanned the run from
+    every offset, so 8k chars took seconds and 200k chars would take minutes.
+    """
+    run = "y" * 200_000
+    raw = f"{run} {{'CAT_CAFE_CALLBACK_TOKEN': 'tok-secret'}} {run}"
+
+    started = time.perf_counter()
+    masked = utils._sanitize_log_text(raw)
+    elapsed = time.perf_counter() - started
+
+    assert "tok-secret" not in masked
+    assert masked.startswith(run)
+    assert elapsed < 2.0, f"masking 400k chars took {elapsed:.2f}s"
 
 
 class TestUserWorkspace:
@@ -906,7 +926,6 @@ class TestCleanupStaleOpenjiuwenDescs:
         (
             "jiuwenswarm/app.py",
             "jiuwenswarm/gateway/app_gateway.py",
-            "jiuwenswarm/server/app_agentserver.py",
         ),
     )
     def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
@@ -921,3 +940,56 @@ class TestCleanupStaleOpenjiuwenDescs:
         ]
         if openjiuwen_imports:
             assert cleanup_call < min(openjiuwen_imports)
+
+    @staticmethod
+    def test_agentserver_runtime_backend_cleans_before_openjiuwen_import():
+        """Front defers OpenJiuwen; Runtime backend must still clean first."""
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "jiuwenswarm" / "server" / "app_agentserver.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(source)
+        func = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_preload_runtime_backend"
+        )
+        cleanup_lineno: int | None = None
+        openjiuwen_lineno: int | None = None
+        for node in ast.walk(func):
+            if isinstance(node, ast.Call):
+                name = None
+                if isinstance(node.func, ast.Name):
+                    name = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    name = node.func.attr
+                if name == "prepare_runtime_workspace":
+                    keywords = {kw.arg: kw.value for kw in node.keywords}
+                    flag = keywords.get("cleanup_stale_descs")
+                    if isinstance(flag, ast.Constant) and flag.value is True:
+                        cleanup_lineno = node.lineno
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "_configure_openjiuwen_logging"
+                ):
+                    openjiuwen_lineno = (
+                        node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
+                    )
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "openjiuwen"
+            ):
+                openjiuwen_lineno = (
+                    node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
+                )
+            if isinstance(node, ast.Import):
+                if any(
+                    alias.name == "openjiuwen" or alias.name.startswith("openjiuwen.")
+                    for alias in node.names
+                ):
+                    openjiuwen_lineno = (
+                        node.lineno if openjiuwen_lineno is None else min(openjiuwen_lineno, node.lineno)
+                    )
+        assert cleanup_lineno is not None
+        assert openjiuwen_lineno is not None
+        assert cleanup_lineno < openjiuwen_lineno

@@ -1504,13 +1504,21 @@ def _ensure_mcp_builtins(
         pass  # 仅登记到 diff 摘要，文件已解压就位
 
 
-def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
+def prepare_runtime_workspace(
+    *,
+    cleanup_stale_descs: bool = True,
+    migrate_config: bool = True,
+) -> None:
     """Perform the idempotent workspace work required before runtime children start.
 
     Desktop and the ``jiuwenswarm.app`` supervisor call this once before they
     launch AgentServer and Gateway.  The children can then skip the same disk
     work via ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``.  Standalone child
     entrypoints intentionally retain this function as their fallback.
+
+    AgentServer Front skips ``cleanup_stale_descs`` and ``migrate_config``
+    because both import OpenJiuwen / ``common.config``. Runtime backend
+    completes those steps after the port is listening.
     """
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
@@ -1535,7 +1543,8 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     if workspace_preparation_needed:
         prepare_workspace(overwrite=False, workspace_dir=workspace_dir)
 
-    ensure_config_migrated_from_template(workspace_dir)
+    if migrate_config:
+        ensure_config_migrated_from_template(workspace_dir)
     ensure_default_builtin_skills()
 
 
@@ -2488,6 +2497,8 @@ _KV_SENSITIVE_PATTERN = re.compile(
 # 引用组合在一个正则中。面对 10KB 连续标识符且最终不匹配时，Python ``re``
 # 会从大量位置反复回溯，呈近似 O(n²) 退化。这里用左边界保证每个 key token
 # 只尝试一次，并用单向扫描查找结束引号，避免日志输入阻塞事件循环。
+# 与 upstream 1236f407 的 lookbehind 单正则修复等价地消除该回溯，并在其
+# 之上额外修复未闭合引号场景的明文泄露——勿回退为单正则形态。
 _NAMED_QUOTED_KV_START_PATTERN = re.compile(
     r"(?i)(?<![A-Za-z0-9_.-])"
     r"(?P<prefix>[\"']?(?P<key>[A-Za-z0-9_.-]+)[\"']?\s*[:=]\s*)"
