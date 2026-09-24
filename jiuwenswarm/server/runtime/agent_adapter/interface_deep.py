@@ -3066,6 +3066,7 @@ class JiuWenSwarmDeepAdapter:
         session_id: str | None,
         *,
         request: AgentRequest | None = None,
+        history_before_request_id: str | None = None,
     ) -> "JiuWenSwarmDeepAdapter":
         """Return the session-owned adapter, creating and initializing it once."""
         if self._is_session_scoped_adapter:
@@ -3149,6 +3150,7 @@ class JiuWenSwarmDeepAdapter:
                 await warmup_session_context(
                     deep_agent=getattr(adapter, "_instance", None),
                     session_id=sid,
+                    history_before_request_id=history_before_request_id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -18115,7 +18117,9 @@ class JiuWenSwarmDeepAdapter:
                 or ""
             )
             session_adapter = await self._get_or_create_session_adapter(
-                request.session_id, request=request
+                request.session_id,
+                request=request,
+                history_before_request_id=request.request_id,
             )
             # 同流式路径：team 模式控制续接跳过 request-scoped MCP 注册，
             # 避免与持有生命周期锁的被中断原始请求死锁。
@@ -18887,7 +18891,9 @@ class JiuWenSwarmDeepAdapter:
                 or ""
             )
             session_adapter = await self._get_or_create_session_adapter(
-                request.session_id, request=request
+                request.session_id,
+                request=request,
+                history_before_request_id=request.request_id,
             )
             # team 模式控制续接（ask_user/permission 作答）只负责把答案经
             # interact() 投递给存活的 runtime，自身不执行工具；被中断的原始

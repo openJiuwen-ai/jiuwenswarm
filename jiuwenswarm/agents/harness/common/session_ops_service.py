@@ -970,6 +970,7 @@ async def warmup_session_context(
     *,
     deep_agent: "DeepAgent",
     session_id: str,
+    history_before_request_id: str | None = None,
 ) -> bool:
     """Restart-safe restore of context_engine messages from on-disk history.
 
@@ -979,10 +980,12 @@ async def warmup_session_context(
     "能看到历史列表但继续对话失忆"。
 
     在新建 session adapter（``start_interaction`` 之后）调用：若内存 context
-    缺失且磁盘上有历史记录，则将全量 history 转换为 openjiuwen 消息并灌回
-    context_engine。与 ``rewind_session_context`` 的区别：不截断 history、
-    不清理 Session state（agent/workflow 状态已由 checkpointer 在 pre_run
-    恢复）、不强写 checkpointer（消息持久化本就由 history.jsonl 承担）。
+    缺失且磁盘上有历史记录，则将 history 转换为 openjiuwen 消息并灌回
+    context_engine。chat.send 会先落盘当前用户消息再创建 adapter，因此传入
+    ``history_before_request_id`` 时只恢复该请求之前的记录，避免当前消息同时
+    作为历史和实时 query 注入。与 ``rewind_session_context`` 的区别：不改写
+    history、不清理 Session state（agent/workflow 状态已由 checkpointer 在
+    pre_run 恢复）、不强写 checkpointer（消息持久化本就由 history.jsonl 承担）。
     """
     react_agent = getattr(deep_agent, "react_agent", None)
     if react_agent is None:
@@ -1007,6 +1010,13 @@ async def warmup_session_context(
     if not isinstance(history_records, list) or not history_records:
         return False
 
+    boundary_request_id = str(history_before_request_id or "").strip()
+    if boundary_request_id:
+        for index, record in enumerate(history_records):
+            if str(record.get("request_id") or "").strip() == boundary_request_id:
+                history_records = history_records[:index]
+                break
+
     context_messages, skipped = _build_context_messages_from_history(history_records)
     if not context_messages:
         logger.info(
@@ -1014,7 +1024,7 @@ async def warmup_session_context(
         )
         return False
 
-    session = resolve_live_agent_session(deep_agent, session_id)
+    session = _resolve_live_agent_session(deep_agent, session_id)
     if session is None:
         # 正常调用点（start_interaction 之后）live session 必在；兜底临时 Session。
         try:
