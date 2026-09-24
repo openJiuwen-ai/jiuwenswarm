@@ -3818,6 +3818,76 @@ class JiuWenSwarm:
         team_a2ui_tasks: dict[tuple[str, str], asyncio.Task] = {}
         team_a2ui_pending_finals: dict[tuple[str, str], dict[str, Any]] = {}
 
+        # proactive 请求：source 标记在 request.params 里，由外层 proactive_adapter
+        # 消费流时注入到 chunk。这里（生产端）收不到注入后的 source，只能自己按同一
+        # 规则判定"话术轮"：工具轮总结 final / 延续轮 final 不带 proactive 标记落盘，
+        # 只有最后一个非工具轮非空 final（=推荐话术）落盘带 source/rec_id——否则刷新
+        # 后 history 里每一条 chat.final 都带 rec_id，被渲染成多张推荐卡片（bug）。
+        # "最后一个"要等流结束才能确定，故缓存话术轮候选、流末补落。
+        is_proactive_request = bool(
+            request.params.get("source") == "proactive_recommendation"
+        )
+        proactive_pending_final: dict[str, Any] | None = None
+        # 自上一个 chat.final 以来是否出现过 chat.tool_call（用于识别工具轮总结 final）。
+        saw_proactive_tool_call_since_final = False
+
+        async def _persist_proactive_final_record(
+            *,
+            content: str,
+            payload: dict[str, Any],
+            marked: bool,
+        ) -> None:
+            """落盘 proactive 流的一条 chat.final 记录。
+
+            marked=True（话术轮/最后一个非工具轮非空 final）时带
+            source/proactive_rec_id，刷新后前端渲染成推荐卡片；否则为普通
+            气泡（工具轮总结、延续轮文本等不参与卡片渲染）。
+            """
+            extra_fields: dict[str, Any] = {
+                k: v for k, v in payload.items()
+                if k not in ("event_type", "event", "content")
+            }
+            if marked:
+                # 只给话术轮补 proactive 标记（请求级参数仅这一条记录消费）。
+                for pk in (
+                    "source",
+                    "proactive_type",
+                    "proactive_target",
+                    "automation",
+                    "proactive_rec_id",
+                ):
+                    if pk not in extra_fields and pk in request.params:
+                        extra_fields[pk] = request.params[pk]
+            extra_fields = _attach_reasoning_content(extra_fields) or {}
+            extra_fields = _with_cross_session_history_metadata(
+                _with_heartbeat_history_metadata(
+                    _with_web_agent_template_metadata(
+                        extra_fields,
+                        request.params,
+                        cid,
+                        event_type="chat.final",
+                    ),
+                    request.params,
+                ),
+                request.params,
+            ) or {}
+            await _run_history_io(
+                append_history_record,
+                session_id=session_id,
+                request_id=rid,
+                channel_id=cid,
+                role="assistant",
+                event_type="chat.final",
+                content=content,
+                timestamp=_resolve_final_record_timestamp(
+                    event_type="chat.final",
+                    segment_started_at=None,
+                    extra_fields=extra_fields,
+                ),
+                extra=extra_fields if extra_fields else None,
+                mode=request.params.get("mode", "unknown"),
+            )
+
         async def _finalize_team_a2ui_block(payload: dict[str, Any], decision: Any) -> None:
             try:
                 finalized = await finalize_assistant_response_if_a2ui(
@@ -4108,6 +4178,8 @@ class JiuWenSwarm:
                                 "chat.ask_user_question",
                                 "harness.activate_interaction",
                             ):
+                                if is_proactive_request and et == "chat.tool_call":
+                                    saw_proactive_tool_call_since_final = True
                                 await _persist_pending_final_text()
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
@@ -4129,6 +4201,56 @@ class JiuWenSwarm:
                                         final_answer_chunks.clear()
                                     _reset_durable_pending_final()
                                     continue
+                                if is_proactive_request and payload_content:
+                                    # proactive 话术轮判定（与 proactive_adapter 同规则）：
+                                    # - 工具轮总结 final（该轮有 tool_call）：立即按普通气泡
+                                    #   落盘，不带 proactive 标记；
+                                    # - 第一个非工具轮非空 final（=推荐话术）：缓存为话术轮
+                                    #   候选，等流结束才带 source/rec_id 落盘（否则工具轮
+                                    #   总结/延续轮文本会带着 rec_id 落盘，刷新后被渲染成
+                                    #   第二张推荐卡片——bug）；其后的非工具轮 final（如话术
+                                    #   后的纯文本延续）不是交付物，立即落盘为普通气泡。
+                                    _reset_durable_pending_final()
+                                    final_segment_started_at = None
+                                    final_answer_content = payload_content
+                                    final_answer_chunks.clear()
+                                    durable_final_content = payload_content
+                                    if saw_proactive_tool_call_since_final:
+                                        saw_proactive_tool_call_since_final = False
+                                        await _persist_proactive_final_record(
+                                            content=payload_content,
+                                            payload=(
+                                                dict(data.payload)
+                                                if isinstance(data.payload, dict)
+                                                else {}
+                                            ),
+                                            marked=False,
+                                        )
+                                    else:
+                                        # 第一个非工具轮非空 final = 话术轮候选，缓存等
+                                        # 流末带标记落盘；其后的非工具轮 final（如话术后的
+                                        # 纯文本延续）不是交付物，立即落盘为普通气泡，
+                                        # 不覆盖候选。
+                                        if proactive_pending_final is None:
+                                            proactive_pending_final = {
+                                                "content": payload_content,
+                                                "payload": (
+                                                    dict(data.payload)
+                                                    if isinstance(data.payload, dict)
+                                                    else {}
+                                                ),
+                                            }
+                                        else:
+                                            await _persist_proactive_final_record(
+                                                content=payload_content,
+                                                payload=(
+                                                    dict(data.payload)
+                                                    if isinstance(data.payload, dict)
+                                                    else {}
+                                                ),
+                                                marked=False,
+                                            )
+                                    should_record = False
                                 # 先记住本段起始时刻：下面的 reset/flush 会把它清掉。
                                 final_segment_started_at = durable_pending_final_started_at
                                 if payload_content:
@@ -4306,6 +4428,8 @@ class JiuWenSwarm:
                             "chat.ask_user_question",
                             "harness.activate_interaction",
                         ):
+                            if is_proactive_request and et == "chat.tool_call":
+                                saw_proactive_tool_call_since_final = True
                             await _persist_pending_final_text()
                         elif et == "chat.final":
                             if suppress_a2ui_stream or a2ui_split is not None:
@@ -4325,6 +4449,36 @@ class JiuWenSwarm:
                                     final_answer_chunks.clear()
                                 _reset_durable_pending_final()
                                 continue
+                            if is_proactive_request and payload_content:
+                                # 与第一分支（AgentResponseChunk）相同的 proactive
+                                # 话术轮判定与延迟落盘（见上）。
+                                _reset_durable_pending_final()
+                                final_segment_started_at = None
+                                final_answer_content = payload_content
+                                final_answer_chunks.clear()
+                                durable_final_content = payload_content
+                                if saw_proactive_tool_call_since_final:
+                                    saw_proactive_tool_call_since_final = False
+                                    await _persist_proactive_final_record(
+                                        content=payload_content,
+                                        payload=dict(data),
+                                        marked=False,
+                                    )
+                                else:
+                                    # 同第一分支：第一个非工具轮 final 缓存为话术轮候选，
+                                    # 其后的非工具轮 final 立即落盘为普通气泡，不覆盖。
+                                    if proactive_pending_final is None:
+                                        proactive_pending_final = {
+                                            "content": payload_content,
+                                            "payload": dict(data),
+                                        }
+                                    else:
+                                        await _persist_proactive_final_record(
+                                            content=payload_content,
+                                            payload=dict(data),
+                                            marked=False,
+                                        )
+                                should_record = False
                             final_segment_started_at = durable_pending_final_started_at
                             if payload_content:
                                 _reset_durable_pending_final()
@@ -4408,6 +4562,15 @@ class JiuWenSwarm:
             raise
         finally:
             try:
+                # proactive 请求：流结束时把缓存的话术轮 final 补落（带 source/rec_id）。
+                # 流里的非空 final 都被延迟到此刻按序落盘，只有最后一个非工具轮 final
+                # （=推荐话术）带 proactive 标记，其余（工具轮总结/延续轮）为普通气泡。
+                if is_proactive_request and proactive_pending_final is not None:
+                    await _persist_proactive_final_record(
+                        content=str(proactive_pending_final["content"]),
+                        payload=proactive_pending_final["payload"],
+                        marked=True,
+                    )
                 # Goal 还在跑时这条流不会收到收尾的 chat.final，气泡里已经展示的正文
                 # 也就没有任何一处落盘。补一次，否则重新打开历史记录时这段回答凭空
                 # 消失，和实时看到的不是一回事。非 Goal 流不进这里。

@@ -390,10 +390,13 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     try {
       const projectId = deleteProjectTarget.project_id;
       if (projectAction === 'delete') {
-        await removeProject(projectId);
+        const removed = await removeProject(projectId);
         await loadCronJobs();
+        // 项目下没有定时任务时只提示“项目已移除”；字段缺失（旧网关）沿用原文案。
         toast.open({
-          content: t('multiSession.project.projectRemovedSummary'),
+          content: removed.stopped_cron_jobs === 0
+            ? t('multiSession.project.projectRemoved')
+            : t('multiSession.project.projectRemovedSummary'),
           variant: 'success',
           actions: [{
             label: t('multiSession.project.archiveUndo'),

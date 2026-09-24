@@ -31,7 +31,7 @@ rsi:
   enabled: true
 
 symphony:
-  enabled: false
+  enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
   paths:
     skills_root: ""
     graph_dir: ""
@@ -52,15 +52,12 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: false  # true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
-    # 以下 flow 参数仅供旧 Session-history 蒸馏接口兼容；Core 经验沉淀随 enabled 同步启停。
+    # Core Flow 沉淀：分组签名 = 轨迹全部成功边（确定性、不漂移），
+    # 一条新轨迹最多触发一个技能包的完整蒸馏；达标（成功次数 + 成功率）即 verified。
     flow:
-      enabled: false            # legacy 路径是否在任务结束后蒸馏 skill pack
-      min_edge_support: 1      # 边至少出现几次（调试=1，正式=2-3）
-      min_edge_success_rate: 0.5  # 边成功率阈值（调试=0.5，正式=0.8）
-      min_successes_candidate: 2  # 至少成功几次产出 candidate pack
-      min_successes_verified: 3   # 至少成功几次产出 verified pack
-      min_pack_success_rate_verified: 0.8
+      enabled: null              # null = 跟随程序默认；true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
+      min_successes: 3           # 同一结构至少成功几次且成功率达标后才可安装
+      min_pack_success_rate: 0.8  # pack 成功率阈值
 
   orchestration:
     # fast is the default one-shot path; beam enables bidirectional search.

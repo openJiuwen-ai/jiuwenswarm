@@ -131,6 +131,12 @@ from jiuwenswarm.common.work_mode import (
     is_default_project_id,
 )
 from jiuwenswarm.common.version import __version__
+from jiuwenswarm.symphony.config import (
+    DEFAULT_EVOLUTION_ENABLED,
+    DEFAULT_SYMPHONY_ENABLED,
+    resolve_symphony_enabled,
+    resolve_symphony_evolution_enabled,
+)
 from jiuwenswarm.gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
@@ -1275,8 +1281,12 @@ def _validate_wechat_numeric_params(params: dict) -> str | None:
 
 
 _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "symphony_enabled": (("enabled",), "bool", False),
-    "symphony_evolution_enabled": (("evolution", "enabled"), "bool", False),
+    "symphony_enabled": (("enabled",), "bool", DEFAULT_SYMPHONY_ENABLED),
+    "symphony_evolution_enabled": (
+        ("evolution", "flow", "enabled"),
+        "bool",
+        DEFAULT_EVOLUTION_ENABLED,
+    ),
 }
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
@@ -1372,7 +1382,20 @@ def _flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in _SYMPHONY_CONFIG_SPECS.items():
         value = _get_nested_config_value(symphony, path, default)
+        if key == "symphony_evolution_enabled":
+            # null 或缺失时回退旧配置；明确写 false 时保持关闭。
+            flow = _get_nested_config_value(symphony, ("evolution", "flow"), {})
+            legacy = _get_nested_config_value(symphony, ("evolution", "enabled"), None)
+            if (
+                (not isinstance(flow, dict) or flow.get("enabled") is None)
+                and legacy is not None
+            ):
+                value = legacy
         if value_type == "bool":
+            if key == "symphony_enabled":
+                value = resolve_symphony_enabled(value)
+            elif key == "symphony_evolution_enabled":
+                value = resolve_symphony_evolution_enabled(value)
             flat[key] = "true" if bool(value) else "false"
         else:
             flat[key] = str(value)
@@ -5155,7 +5178,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="cron service unavailable", code="CRON_STOP_FAILED")
             return
         try:
-            await cc.hide_project_jobs(project_id, commit=commit)
+            cron_stop = await cc.hide_project_jobs(project_id, commit=commit)
         except _RemoveCommitError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
             return
@@ -5163,6 +5186,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             logger.warning("project remove failed: %s", exc, exc_info=True)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CRON_STOP_FAILED")
             return
+        # stopped_cron_jobs 是项目下定时任务总数(含移除前已停用的);0 表示
+        # 项目下本就没有定时任务,前端据此只提示"项目已移除",不再附带
+        # "其定时任务已停止"。
+        if isinstance(cron_stop, dict) and "stopped_cron_jobs" in cron_stop:
+            remove_payload = {**remove_payload, "stopped_cron_jobs": cron_stop["stopped_cron_jobs"]}
         await channel.send_response(ws, req_id, ok=True, payload=remove_payload)
         await _after_remove()
 

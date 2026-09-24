@@ -279,9 +279,6 @@ ATTACHMENT_DIALOG_EXTENSIONS: tuple[str, ...] = (
     ".flv",
 )
 UPDATE_CLEANUP_PATTERNS = (
-    "*.exe",
-    "*.dmg",
-    "*.tar.gz",
     "*.exe.part",
     "*.dmg.part",
     "*.tar.gz.part",

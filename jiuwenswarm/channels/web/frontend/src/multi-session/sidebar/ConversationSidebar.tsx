@@ -885,7 +885,7 @@ export function ConversationSidebar({
     }
   }
 
-  function renderSession(session: Session, options: { nested?: boolean; projectMenu?: boolean } = {}) {
+function renderSession(session: Session, options: { nested?: boolean; projectMenu?: boolean } = {}) {
     const nested = options.nested === true;
     const projectMenu = options.projectMenu === true;
     return (

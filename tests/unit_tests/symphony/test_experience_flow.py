@@ -87,7 +87,8 @@ def test_candidate_question_uses_beginner_friendly_skill_package_copy() -> None:
     assert "**技能包名称**\n研究组合" in question["question"]
     assert "**适用场景**\n适合检索后生成报告" in question["question"]
     assert "**包含的技能及执行顺序**\n`search` → `writer`" in question["question"]
-    assert "**使用记录**\n执行 2 次，成功 2 次" in question["question"]
+    assert "**使用记录**" not in question["question"]
+    assert "执行 2 次，成功 2 次" not in question["question"]
     assert "沉淀" not in question["header"]
     assert "沉淀" not in question["question"]
     assert question["options"] == [
@@ -272,9 +273,9 @@ def rail_capture(monkeypatch):
 def test_evolution_is_the_only_core_experience_switch(tmp_path: Path) -> None:
     config = symphony_config_from_dict({"paths": {"graph_dir": str(tmp_path)}})
 
-    assert config.evolution.enabled is False
+    assert config.evolution.flow.enabled is False
     assert not hasattr(config.evolution, "backend")
-    assert not hasattr(config, "flow")
+    assert config.evolution.flow.min_successes == 3
 
 
 def test_experience_candidate_server_methods_are_routable() -> None:
@@ -867,12 +868,17 @@ def test_published_capability_snapshot_rejects_invalid_contracts(
     assert [item.capability_id for item in identities] == ["valid"]
 
 
-def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) -> None:
+def test_core_flow_uses_success_count_config_and_ignores_legacy_switch(
+    monkeypatch, tmp_path: Path
+) -> None:
     config = symphony_config_from_dict(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True, "flow": {"enabled": False}},
+            "evolution": {
+                "enabled": False,
+                "flow": {"enabled": True, "min_successes": 6},
+            },
         }
     )
     service = SwarmSymphonyService()
@@ -908,6 +914,8 @@ def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) ->
     assert created["review_agent"] is not None
     assert created["flow_root"] == tmp_path / "flow"
     assert created["llm_client"] is model
+    assert created["config"].min_successes_candidate == 6
+    assert created["config"].min_successes_verified == 6
     assert isinstance(created["skill_adapter"], SkillPackAdapter)
     assert isinstance(created["runtime"]["flow_engine"], Flow)
 

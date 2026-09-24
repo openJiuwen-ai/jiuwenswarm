@@ -32,6 +32,7 @@ import {
   usePersonalContextStore,
 } from '../../stores';
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
+import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
 import { applyGoalArm, evaluateGoalArm } from '../../features/goalMode/goalModeGate';
@@ -750,7 +751,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
-  const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>([]);
+  const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>(
+    () => [getSelectedAgentGroup()].filter((group): group is AgentGroupCatalogItem => group !== null),
+  );
   const [groupOptionsStatus, setGroupOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [failedGroupAvatarIds, setFailedGroupAvatarIds] = useState<ReadonlySet<string>>(() => new Set());
   const groupManagementClient = useMemo(() => createAgentGroupManagementClient(), []);
@@ -869,7 +872,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupBindingPending ?? null,
   );
   const agentGroupLocked = Boolean(agentGroupBinding || agentGroupBindingPending);
-  const selectedGroup = groupOptions.find((item) => item.id === selectedGroupId) ?? null;
+  const selectedGroup = groupOptions.find((item) => item.name === selectedGroupId || item.id === selectedGroupId) ?? null;
   const installedGroupOptions = useMemo(
     () => groupOptions.filter((item) => item.installed && item.capabilities.canUse),
     [groupOptions],
