@@ -9904,14 +9904,27 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 )
             else:
                 interaction_stream = await self._instance.attach_output()
-                if interaction_stream is not None:
-                    await self._instance.send_input(
-                        SendInputRequest(
-                            request_id=request.request_id,
-                            inputs=inputs,
-                            mode=dispatch_mode,
-                        )
+                if interaction_stream is None:
+                    # 普通对话轮，上一轮仍占用输出租约 → 非流式路径同样无处
+                    # 投递（原行为与流式版同罪：accepted 吞消息）。如实 busy。
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload={
+                            "event_type": "chat.error",
+                            "code": "busy",
+                            "error": "上一轮仍在执行，请稍后重试",
+                        },
+                        metadata=request.metadata,
                     )
+                await self._instance.send_input(
+                    SendInputRequest(
+                        request_id=request.request_id,
+                        inputs=inputs,
+                        mode=dispatch_mode,
+                    )
+                )
             if interaction_stream is None:
                 return AgentResponse(
                     request_id=request.request_id,
@@ -10571,6 +10584,23 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     is_complete=True,
                 )
 
+            async def _yield_runtime_busy() -> AsyncIterator[AgentResponseChunk]:
+                # 上一轮仍持有输出租约（未收口）且消息无法投递：不得以
+                # accepted+空终止帧谎报"收到并完成"——消息从未进 LLM，
+                # 用户得到"已完成却不回复"。返回如实的 busy 终止错误帧，
+                # 客户端据此可确定性地重试。编码映射现成：chat.error +
+                # is_complete（gateway_normalize:345 → is_final + FAILED）。
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=cid,
+                    payload={
+                        "event_type": "chat.error",
+                        "code": "busy",
+                        "error": "上一轮仍在执行，请稍后重试",
+                    },
+                    is_complete=True,
+                )
+
             if pending_goal_op is not None:
                 interaction_stream = await self._instance.attach_output()
                 control = await self._dispatch_goal_control(
@@ -10716,7 +10746,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 # _runner_session 的流），从而丢掉 output/notice chunk。
                 interaction_stream = await self._instance.attach_output()
                 if interaction_stream is None:
-                    async for chunk in _yield_runtime_accepted():
+                    # 普通对话轮，上一轮仍占用输出租约 → 消息无处投递。
+                    # 此处曾返回 accepted+空终止帧（谎报收到并完成，用户
+                    # 下一条消息静默蒸发）；改为如实 busy 终止错误帧。
+                    async for chunk in _yield_runtime_busy():
                         yield chunk
                     interaction_stream_abort = False
                     return
