@@ -770,6 +770,16 @@ _FORWARD_REQ_METHODS = frozenset({
     "issue.state.list",
     "issue.matrix",
     "issue.delete",
+    "im.hosting.status",
+    "im.hosting.discover",
+    "im.hosting.targets.list",
+    "im.hosting.targets.add",
+    "im.hosting.targets.patch",
+    "im.hosting.targets.delete",
+    "im.hosting.policy.get",
+    "im.hosting.policy.patch",
+    "im.hosting.poll_now",
+    "im.hosting.history",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -892,6 +902,16 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "mcp.server.update",
     "mcp.server.list",
     "mcp.server.get",
+    "im.hosting.status",
+    "im.hosting.discover",
+    "im.hosting.targets.list",
+    "im.hosting.targets.add",
+    "im.hosting.targets.patch",
+    "im.hosting.targets.delete",
+    "im.hosting.policy.get",
+    "im.hosting.policy.patch",
+    "im.hosting.poll_now",
+    "im.hosting.history",
 })
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）

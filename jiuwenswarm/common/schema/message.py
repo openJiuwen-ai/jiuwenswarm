@@ -308,6 +308,18 @@ class ReqMethod(Enum):
     # Long-horizon control (Gateway → AgentServer). Agent owns task JSON.
     LONG_HORIZON = "long_horizon"
 
+    # User-state IM hosting (数字分身)
+    IM_HOSTING_STATUS = "im.hosting.status"
+    IM_HOSTING_DISCOVER = "im.hosting.discover"
+    IM_HOSTING_TARGETS_LIST = "im.hosting.targets.list"
+    IM_HOSTING_TARGETS_ADD = "im.hosting.targets.add"
+    IM_HOSTING_TARGETS_PATCH = "im.hosting.targets.patch"
+    IM_HOSTING_TARGETS_DELETE = "im.hosting.targets.delete"
+    IM_HOSTING_POLICY_GET = "im.hosting.policy.get"
+    IM_HOSTING_POLICY_PATCH = "im.hosting.policy.patch"
+    IM_HOSTING_POLL_NOW = "im.hosting.poll_now"
+    IM_HOSTING_HISTORY = "im.hosting.history"
+
 
 class EventType(Enum):
     CONNECTION_ACK = "connection.ack"

@@ -139,6 +139,16 @@ const ROUTES: Record<string, RouteRow> = {
   'project.remove': { verb: 'DELETE', path: '/projects/{project_id}', kind: 'unary' },
   'project.restore': { verb: 'POST', path: '/projects/actions/restore', kind: 'unary' },
   'project.pinned_sessions': { verb: 'GET', path: '/projects/pinned-sessions', kind: 'unary' },
+  'im.hosting.status': { verb: 'GET', path: '/im/hosting/status', kind: 'unary' },
+  'im.hosting.discover': { verb: 'GET', path: '/im/hosting/discover', kind: 'unary' },
+  'im.hosting.targets.list': { verb: 'GET', path: '/im/hosting/targets', kind: 'unary' },
+  'im.hosting.targets.add': { verb: 'POST', path: '/im/hosting/targets', kind: 'unary' },
+  'im.hosting.targets.patch': { verb: 'PATCH', path: '/im/hosting/targets/{id}', kind: 'unary' },
+  'im.hosting.targets.delete': { verb: 'DELETE', path: '/im/hosting/targets/{id}', kind: 'unary' },
+  'im.hosting.policy.get': { verb: 'GET', path: '/im/hosting/policy', kind: 'unary' },
+  'im.hosting.policy.patch': { verb: 'PATCH', path: '/im/hosting/policy', kind: 'unary' },
+  'im.hosting.poll_now': { verb: 'POST', path: '/im/hosting/actions/poll-now', kind: 'unary' },
+  'im.hosting.history': { verb: 'GET', path: '/im/hosting/targets/{id}/history', kind: 'unary' },
 };
 
 const PATH_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;

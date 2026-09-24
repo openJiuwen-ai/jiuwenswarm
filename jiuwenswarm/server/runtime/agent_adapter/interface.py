@@ -228,6 +228,8 @@ def _history_user_content(params: Any, query: Any) -> Any:
             content = supplement_input
         else:
             content = query
+    elif isinstance(params.get("display_query"), str) and params.get("display_query").strip():
+        content = params.get("display_query")
     else:
         original_query = params.get(PLAN_REMINDER_ORIGINAL_QUERY_KEY)
         content = original_query if isinstance(original_query, str) else query

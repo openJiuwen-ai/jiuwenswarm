@@ -5,6 +5,14 @@
   overflow: hidden;
 }
 
+.app-section--stack {
+  flex-direction: column;
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+  gap: 0;
+}
+
 .app-section.is-hidden {
   display: none;
 }
