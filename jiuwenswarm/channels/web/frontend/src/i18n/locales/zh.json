@@ -4154,7 +4154,7 @@
       "nodeHint": "节点展示每轮候选、阶段和评测结果；点击节点查看完整信息",
       "harnessNodeHint": "节点代表一套 Harness 组合；点击节点查看本轮改动和评测结果",
       "paperNodeHint": "节点代表一个论文版本；点击节点查看改动、阶段和未采用原因",
-      "programNodeHint": "并行候选按完成顺序出现；运行中的领先版本并非最终结果，其他候选仍会继续执行",
+      "programNodeHint": "并行候选按完成顺序出现；候选达标后停止搜索，已在评测的候选可能稍后完成",
       "estimatedCost": "实际估算成本：{{cost}} 元",
       "selectedNode": "当前选中",
       "inherit": "继承",
