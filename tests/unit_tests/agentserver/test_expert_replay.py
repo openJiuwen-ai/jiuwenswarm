@@ -171,3 +171,168 @@ def test_switch_allowed_when_idle() -> None:
     assert root.expert_switch_blocked("sess-1") is False
     # 无子适配器（未装配）也不阻塞
     assert root.expert_switch_blocked("sess-new") is False
+
+
+async def _noop_refresh(**kwargs):
+    return None
+
+
+def _patch_session_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """隔掉既有分支里的会话上下文刷新（真实实现读历史落盘，与本测试无关）。"""
+    import jiuwenswarm.agents.harness.common.session_ops_service as sos
+
+    monkeypatch.setattr(sos, "refresh_session_context_if_stale", _noop_refresh)
+
+
+@pytest.mark.asyncio
+async def test_replayed_persona_survives_identity_rail(
+        experts_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """端到端钉：replay 装载人设后，IdentityRail 的 before_model_call 不得摘除它。
+
+    IdentityRail 每轮无条件 remove+重装 identity section——专家 persona 与
+    IDENTITY.md 共用 identity 槽位，rail 须对"外来"（非默认/非自装）identity 让路，
+    否则人设装载后活不过当轮第一次模型调用。
+    """
+    from jiuwenswarm.agents.harness.common.rails.identity_rail import IdentityRail
+
+    _make_package(experts_dir, "expert-a", "你是专家阿甲。")
+    monkeypatch.setattr(
+        sm,
+        "get_session_metadata",
+        lambda session_id, cache_bust=False, **_: {"expert_id": "expert-a"},
+    )
+    adapter = _make_child_adapter("sess-rail")
+    await adapter._replay_expert_from_metadata()
+    assert _identity_text(adapter) == "你是专家阿甲。"
+
+    rail = IdentityRail(identity_md_path=str(tmp_path / "IDENTITY.md"))  # 文件不存在 → 默认分支
+    rail.init(adapter._instance)
+    await rail.before_model_call(None)
+
+    assert _identity_text(adapter) == "你是专家阿甲。"
+
+
+@pytest.mark.asyncio
+async def test_reuse_reconcile_replays_when_metadata_has_expert(
+        experts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """预热洞回归钉：实例先于 metadata 建完（无专家），复用分支补挂人设。"""
+    _make_package(experts_dir, "expert-a", "你是专家阿甲。")
+    monkeypatch.setattr(
+        sm,
+        "get_session_metadata",
+        lambda session_id, cache_bust=False, **_: {"expert_id": "expert-a"},
+    )
+    _patch_session_refresh(monkeypatch)
+    root = JiuWenSwarmDeepAdapter()
+    child = _make_child_adapter("sess-pre")
+    root._session_adapters["sess-pre"] = child
+
+    adapter = await root._get_or_create_session_adapter("sess-pre")
+
+    assert adapter is child
+    assert child._current_expert_id == "expert-a"
+    assert _identity_text(child) == "你是专家阿甲。"
+
+
+@pytest.mark.asyncio
+async def test_reuse_reconcile_idempotent_when_expert_already_applied(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """已挂专家的适配器：对账早退，不重放（幂等）。"""
+    child = _make_child_adapter("sess-r1")
+    child._current_expert_id = "expert-a"
+    called = False
+
+    async def _spy():
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(child, "_replay_expert_from_metadata", _spy)
+
+    await child._reconcile_expert_binding_on_reuse()
+
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_reuse_reconcile_noop_without_expert_in_metadata(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无专家会话零打扰：metadata 无 expert_id，不重放。"""
+    monkeypatch.setattr(
+        sm,
+        "get_session_metadata",
+        lambda session_id, cache_bust=False, **_: {"title": "无专家会话"},
+    )
+    child = _make_child_adapter("sess-r2")
+    called = False
+
+    async def _spy():
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(child, "_replay_expert_from_metadata", _spy)
+
+    await child._reconcile_expert_binding_on_reuse()
+
+    assert called is False
+    assert child._expert_reuse_reconciled is False  # 未触发重放不消耗一次性旗标
+
+
+@pytest.mark.asyncio
+async def test_reuse_reconcile_skips_team_binding(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """专家团绑定走 team 线冷构造，对账不掺和（省读盘、防误挂）。"""
+    monkeypatch.setattr(
+        sm,
+        "get_session_metadata",
+        lambda session_id, cache_bust=False, **_: {
+            "expert_id": "some-team",
+            "expert_type": "team",
+        },
+    )
+    child = _make_child_adapter("sess-r3")
+    called = False
+
+    async def _spy():
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(child, "_replay_expert_from_metadata", _spy)
+
+    await child._reconcile_expert_binding_on_reuse()
+
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_reuse_reconcile_one_shot_on_failure(
+        experts_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """重放失败（包缺失）只试一次：旗标置位防逐轮重试刷日志，会话照常可用。"""
+    monkeypatch.setattr(
+        sm,
+        "get_session_metadata",
+        lambda session_id, cache_bust=False, **_: {"expert_id": "missing-pkg"},
+    )
+    child = _make_child_adapter("sess-r4")
+    calls = 0
+    real_replay = child._replay_expert_from_metadata
+
+    async def _spy():
+        nonlocal calls
+        calls += 1
+        await real_replay()
+
+    monkeypatch.setattr(child, "_replay_expert_from_metadata", _spy)
+
+    await child._reconcile_expert_binding_on_reuse()
+    await child._reconcile_expert_binding_on_reuse()
+
+    assert calls == 1
+    assert child._expert_reuse_reconciled is True
+    assert child._current_expert_id is None  # 降级无专家
+    assert ORIGINAL_IDENTITY in _identity_text(child)
