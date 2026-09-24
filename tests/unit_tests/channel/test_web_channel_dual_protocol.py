@@ -181,6 +181,24 @@ async def test_dual_protocol_ws_git_path_closes_without_registry() -> None:
 
 
 @pytest.mark.asyncio
+async def test_git_websocket_query_rejects_oversized_session_id_before_registration() -> None:
+    """/ws/git must reject an oversized query session_id like /ws does."""
+    channel = _make_channel()
+    oversized = "s" * 10_240
+    ws = _QueueWebSocket(f"/ws/git?user_id=alice&session_id={oversized}", [])
+
+    await channel.handle_connection(ws, path=ws.path)
+
+    assert ws.closed is True
+    assert ws.close_code == 1008
+    assert ws.close_reason == "session_id exceeds maximum length 80"
+    assert channel.clients == set()
+
+    # Rejection is connection-local; the channel remains responsive.
+    await _ping_roundtrip(channel, "/ws")
+
+
+@pytest.mark.asyncio
 async def test_websocket_query_rejects_oversized_session_id_before_registration() -> None:
     channel = _make_channel()
     oversized = "s" * 10_240

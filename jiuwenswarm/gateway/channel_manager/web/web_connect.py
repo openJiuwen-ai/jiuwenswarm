@@ -1392,6 +1392,24 @@ class WebChannel(BaseWsChannel):
         断连 ``finally`` 先后调 ``unregister_ws(ws)`` 和
         ``git_watcher_registry.cleanup_ws(ws)``,避免 watcher 仍继续轮询推送。
         """
+        # session_id 为传输层占位,不是聊天会话(设计文档 §5.3.7),但仍是路由键
+        # 与日志内容:非法输入须先于 registry 检查与注册被拒绝。
+        _raw_git_session_id = flat_query.get("session_id")
+        try:
+            _session_id = (
+                validate_session_id(_raw_git_session_id)
+                if _raw_git_session_id
+                else f"gitws_{uuid.uuid4().hex[:12]}"
+            )
+        except InvalidProtocolId as exc:
+            logger.warning(
+                "[WebChannel] rejected websocket with invalid session_id: reason=%s remote=%s path=/ws/git",
+                exc,
+                remote,
+            )
+            await ws.close(code=1008, reason=str(exc))
+            return
+
         registry = getattr(self, "git_watcher_registry", None)
         if registry is None:
             await ws.close(code=1011, reason="git watcher registry not available")
@@ -1406,8 +1424,6 @@ class WebChannel(BaseWsChannel):
             ws, flat_query, remote, route_type="git",
         )
         _app_id = flat_query.get("app_id", "default")
-        # session_id 为传输层占位,不是聊天会话(设计文档 §5.3.7)
-        _session_id = flat_query.get("session_id") or f"gitws_{uuid.uuid4().hex[:12]}"
         _rk = RoutingKey(
             user_id=_user_id,
             channel_id=self.channel_id,
