@@ -138,9 +138,10 @@ class ConfigUpdaterClient:
             return FetchResult(section={}, metadata={}, mod_revision=mod_revision)
 
         # Contract: the data plane picks a section by component name -- gateway
-        # reads the outer ``gateway:`` key. The keys *inside* that section
-        # mirror config.yaml's top-level keys (``gateway``, ``sandbox``), which
-        # is why the managed field paths in merge.py start with those names.
+        # reads the outer ``gateway:`` key. The keys inside that section mirror
+        # the Gateway config shape, so managed paths read like
+        # ``sandbox.sandbox_idle_timeout_seconds`` and
+        # ``sandbox.jiuwen_sandbox.cpu``.
         section, metadata = extract_section(document, "gateway")
         return FetchResult(
             section=section, metadata=metadata, mod_revision=mod_revision

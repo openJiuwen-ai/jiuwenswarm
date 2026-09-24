@@ -7,7 +7,7 @@ import asyncio
 import copy
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable
 
 from jiuwenswarm.extensions.agentos.config_updater.client import ConfigUpdaterClient
 from jiuwenswarm.extensions.agentos.config_updater.merge import (
@@ -23,14 +23,13 @@ _APPLY_RETRY_INITIAL_DELAY = 1.0
 _APPLY_RETRY_MAX_DELAY = 30.0
 
 RefreshHandler = Callable[[dict[str, Any]], Awaitable[bool | None]]
-ConfigProvider = Callable[[], Mapping[str, Any]]
 
 
 def build_refresh_handler(agent_client: Any) -> Callable[[dict[str, Any]], None]:
     """Wrap ``agent_client.apply_remote_overrides`` into a plain callable."""
     apply_overrides = getattr(agent_client, "apply_remote_overrides", None)
     if not callable(apply_overrides):
-        return lambda _merged: None
+        return lambda _overrides: None
     return apply_overrides
 
 
@@ -45,22 +44,18 @@ class ApplyResult:
 
 
 class ConfigUpdaterApplier:
-    """Merge managed fields into an in-memory full-config snapshot."""
+    """Apply management-plane managed fields to the running Gateway."""
 
     def __init__(
         self,
-        config: Mapping[str, Any],
         *,
-        config_provider: ConfigProvider | None = None,
         refresh_handler: RefreshHandler | None = None,
     ) -> None:
-        self._effective_config = copy.deepcopy(dict(config))
-        self._config_provider = config_provider or (lambda: self._effective_config)
+        # Last applied etcd-managed overrides, e.g. {"sandbox": {...}}.
         self._managed_overrides: dict[str, Any] = {}
         self._refresh_handler = refresh_handler
         self._last_applied_mod_revision = 0
         self._pending_refresh_mod_revision = 0
-        self._pending_config: dict[str, Any] | None = None
         self._pending_overrides: dict[str, Any] | None = None
 
     @property
@@ -107,33 +102,20 @@ class ConfigUpdaterApplier:
 
         if (
             mod_revision == self._pending_refresh_mod_revision
-            and self._pending_config is not None
+            and self._pending_overrides is not None
         ):
-            merged = self._pending_config
-            managed_overrides = self._pending_overrides or {}
+            managed_overrides = self._pending_overrides
         else:
             section = normalize_section(section)
             managed_overrides = copy.deepcopy(self._managed_overrides)
             merge_section(managed_overrides, section)
-            try:
-                merged = copy.deepcopy(dict(self._config_provider()))
-            except Exception as exc:  # noqa: BLE001 - retry current revision
-                logger.warning("[ConfigUpdater] failed to read base config: %s", exc)
-                return ApplyResult(
-                    skipped_reason="config-read-failed",
-                    errors=[str(exc)],
-                    retryable=True,
-                )
-            merge_section(merged, managed_overrides)
-            if merged == self._effective_config:
+            if managed_overrides == self._managed_overrides:
                 self._last_applied_mod_revision = mod_revision
                 return ApplyResult(skipped_reason="no-change")
             self._pending_refresh_mod_revision = mod_revision
-            self._pending_config = merged
             self._pending_overrides = managed_overrides
 
         return await self._refresh(
-            merged=merged,
             managed_overrides=managed_overrides,
             mod_revision=mod_revision,
         )
@@ -141,13 +123,17 @@ class ConfigUpdaterApplier:
     async def _refresh(
         self,
         *,
-        merged: dict[str, Any],
         managed_overrides: dict[str, Any],
         mod_revision: int,
     ) -> ApplyResult:
         if self._refresh_handler is not None:
             try:
-                refreshed = await self._refresh_handler(copy.deepcopy(merged))
+                # Hand the handler only the managed fields etcd actually owns.
+                # A field etcd did not push is left at the env/default value
+                # instead of being reset by local config.
+                refreshed = await self._refresh_handler(
+                    copy.deepcopy(managed_overrides)
+                )
                 if refreshed is False:
                     raise RuntimeError("refresh handler reported failure")
             except Exception as exc:  # noqa: BLE001 - revision remains pending
@@ -158,9 +144,7 @@ class ConfigUpdaterApplier:
                     retryable=True,
                 )
 
-        self._effective_config = merged
         self._managed_overrides = managed_overrides
-        self._pending_config = None
         self._pending_overrides = None
         self._pending_refresh_mod_revision = 0
         self._last_applied_mod_revision = mod_revision
@@ -174,16 +158,12 @@ class ConfigUpdaterService:
         self,
         *,
         etcd_endpoints: list[str],
-        config: Mapping[str, Any],
-        config_provider: ConfigProvider | None = None,
         refresh_handler: RefreshHandler | None = None,
         client: ConfigUpdaterClient | None = None,
     ) -> None:
         self._endpoints = [
             str(item).strip() for item in etcd_endpoints if str(item).strip()
         ]
-        self._config = copy.deepcopy(dict(config))
-        self._config_provider = config_provider
         self._refresh_handler = refresh_handler
         self._client = client
         self._task: asyncio.Task[None] | None = None
@@ -200,11 +180,7 @@ class ConfigUpdaterService:
             return
 
         client = self._client or ConfigUpdaterClient(etcd_endpoints=self._endpoints)
-        applier = ConfigUpdaterApplier(
-            self._config,
-            config_provider=self._config_provider,
-            refresh_handler=self._refresh_handler,
-        )
+        applier = ConfigUpdaterApplier(refresh_handler=self._refresh_handler)
         self._task = asyncio.create_task(
             self._watch(client, applier),
             name="config-updater-watcher",
@@ -253,7 +229,6 @@ class ConfigUpdaterService:
 
 __all__ = [
     "ApplyResult",
-    "ConfigProvider",
     "ConfigUpdaterApplier",
     "ConfigUpdaterService",
     "RefreshHandler",

@@ -58,6 +58,8 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
             ssh_channel_endpoint=config.ssh_channel,
             workspace_root=config.workspace_root,
             sandbox_idle_timeout_seconds=config.sandbox_idle_timeout_seconds,
+            jiuwen_sandbox_cpu=config.jiuwen_sandbox_cpu,
+            jiuwen_sandbox_memory=config.jiuwen_sandbox_memory,
             sandbox_idle_check_interval_seconds=(
                 config.sandbox_idle_check_interval_seconds
             ),

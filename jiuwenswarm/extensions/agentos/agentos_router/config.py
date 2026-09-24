@@ -25,8 +25,14 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
 )
 
 DEFAULT_AGENT_WORKSPACE_ROOT = "/home/agentos/users"
-# Env fallback for gateway.agentos.sandbox_idle_timeout_seconds.
+# Env override for the startup seed of
+# gateway.agentos.sandbox_idle_timeout_seconds. At runtime the management-plane
+# (etcd) value applied by ConfigUpdater outranks this.
 SANDBOX_IDLE_TIMEOUT_ENV = "SANDBOX_IDLE_TIMEOUT_SECONDS"
+# Env seeds for the builtin jiuwenswarm agent sandbox CPU/memory. The
+# management-plane (etcd) values applied by ConfigUpdater outrank these.
+BUILTIN_AGENT_CPU_ENV = "AGENTOS_BUILTIN_AGENT_CPU"
+BUILTIN_AGENT_MEMORY_ENV = "AGENTOS_BUILTIN_AGENT_MEMORY"
 # Env override for gateway.agentos.disconnect_cleanup_timeout_seconds.
 DISCONNECT_CLEANUP_TIMEOUT_ENV = "DISCONNECT_CLEANUP_TIMEOUT_SECONDS"
 # Env overrides for YuanRong TCP probes / GET wait (win over yaml).
@@ -65,6 +71,11 @@ class RouterConfig:
     # Idle sandbox reclamation: delete the YuanRong instance once an agent
     # has no held tasks (chat/SSH) for this long. <= 0 disables reclamation.
     sandbox_idle_timeout_seconds: float = 600.0
+    # Builtin jiuwenswarm agent sandbox resources, passed to the YuanRong
+    # ``/api/agent`` create call as ``runtime_spec.cpu`` / ``memory``. Only
+    # affect sandboxes created after the value changes.
+    jiuwen_sandbox_cpu: int = 2000
+    jiuwen_sandbox_memory: int = 4096
     sandbox_idle_check_interval_seconds: float = 30.0
     # Channel-disconnect cleanup: when a user has zero live channels, wait this
     # long before deleting their jiuwenswarm agent (gives a chance to reconnect
@@ -132,6 +143,15 @@ def read_optional_float(section: Any, key: str) -> float | None:
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None
     return float(raw)
+
+
+def read_optional_int(section: Any, key: str) -> int | None:
+    """Read an optional int from a mapping; missing or blank returns None."""
+    mapping = section if isinstance(section, Mapping) else {}
+    raw = mapping.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    return int(raw)
 
 
 def _read_float(section: Mapping[str, Any], key: str, default: float) -> float:
@@ -359,13 +379,21 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
     timeout = float(agentos.get("timeout") or 10)
     auth_enabled = str(agentos.get("auth_enabled", "false")).strip().lower() in ("true", "1", "yes")
 
-    # Persisted management-plane config wins; env is a startup fallback only.
+    # Local config path stays ``gateway.agentos.sandbox_idle_timeout_seconds``
+    # (unchanged for the 元戎 gateway config). Startup seed only:
+    # env > config.yaml > default. The management-plane (etcd) value uses the
+    # different etcd path ``sandbox.sandbox_idle_timeout_seconds`` and is
+    # applied later by ConfigUpdater, outranking this seed.
     sandbox_idle_timeout_seconds = resolve_float_setting(
         agentos,
         "sandbox_idle_timeout_seconds",
         SANDBOX_IDLE_TIMEOUT_ENV,
         600.0,
     )
+    # Agent sandbox CPU/memory are not stored in config.yaml; env seeds the
+    # startup value and the management plane overrides it at runtime.
+    jiuwen_sandbox_cpu = _overlay_int_env(2000, BUILTIN_AGENT_CPU_ENV)
+    jiuwen_sandbox_memory = _overlay_int_env(4096, BUILTIN_AGENT_MEMORY_ENV)
 
     disconnect_cleanup_env = _read_float_env(DISCONNECT_CLEANUP_TIMEOUT_ENV)
     disconnect_cleanup_timeout_seconds = (
@@ -397,6 +425,8 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
         ).strip()
         or DEFAULT_AGENT_WORKSPACE_ROOT,
         sandbox_idle_timeout_seconds=sandbox_idle_timeout_seconds,
+        jiuwen_sandbox_cpu=jiuwen_sandbox_cpu,
+        jiuwen_sandbox_memory=jiuwen_sandbox_memory,
         sandbox_idle_check_interval_seconds=_read_float(
             agentos, "sandbox_idle_check_interval_seconds", 30.0
         ),
