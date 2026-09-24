@@ -65,12 +65,22 @@ _NEW_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
     SlashCommandArgument("--persist-session", "为新会话启用持久记忆"),
 )
 
+_PLAN_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
+    SlashCommandArgument("on", "开启规划模式"),
+    SlashCommandArgument("off", "关闭规划模式"),
+    SlashCommandArgument("status", "查看规划模式"),
+)
+
 
 SLASH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/help", "查看所有命令"),
+    SlashCommand("/sessions", "列出进程式 CLI 会话"),
     SlashCommand("/mode", "查看或切换运行模式"),
+    SlashCommand("/model", "查看或选择下一轮模型"),
+    SlashCommand("/plan", "切换单 Agent 规划模式"),
     SlashCommand("/status", "查看当前状态"),
     SlashCommand("/skills", "查看可用技能"),
+    SlashCommand("/permissions", "查看有效权限（只读）"),
     SlashCommand("/new", "创建并切换到新会话"),
     SlashCommand("/resume", "按 ID 恢复会话", aliases=("/continue",)),
     SlashCommand("/branch", "从当前会话创建分支", aliases=("/fork",)),
@@ -134,6 +144,8 @@ def matching_slash_arguments(prefix: str) -> tuple[SlashCommandArgument, ...]:
         options = _SKILLS_ARGUMENTS
     elif command_name == "/new":
         options = _NEW_ARGUMENTS
+    elif command_name == "/plan":
+        options = _PLAN_ARGUMENTS
     else:
         return ()
     return tuple(option for option in options if option.value.startswith(fragment))
