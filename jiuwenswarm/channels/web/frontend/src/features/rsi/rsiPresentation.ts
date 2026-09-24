@@ -537,7 +537,10 @@ function titleForNode(
 ): string {
   const objectLabel = artifactObjectLabel(context.scenario, context.artifactType);
   if (lifecycle === 'baseline') return `基线${objectLabel}`;
-  if (lifecycle === 'adopted') return `${objectLabel}版本 ${round} · 当前最优`;
+  if (lifecycle === 'adopted') {
+    const runningProgram = context.artifactType === 'PROGRAM' && context.taskRunning;
+    return `${objectLabel}版本 ${round} · ${runningProgram ? '当前领先' : '当前最优'}`;
+  }
   const suffix = lifecycle === 'failed' ? '尝试' : lifecycle === 'pruned' ? '候选' : '候选';
   const attemptLabel = attempt ? ` ${attempt.index}/${attempt.total}` : '';
   return `第 ${round} 轮 · ${objectLabel}${suffix}${attemptLabel}`;
@@ -554,6 +557,8 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
   const changeItems = (node.changes ?? []).map(nodeChangeDisplayLabel).filter(Boolean);
   const summary = changeItems[0] ?? nodeDescriptionSummary(node);
   const reasonLabel = failureLabel(node, lifecycle, score, parentScore);
+  // Other program candidates can still overtake an adopted node while the task runs.
+  const runningProgramLeader = lifecycle === 'adopted' && context.artifactType === 'PROGRAM' && taskRunning;
   return {
     title: titleForNode(context, lifecycle, round, attempt),
     subtitle:
@@ -565,7 +570,7 @@ export function presentRsiNode(node: RsiTreeNode, context: RsiNodePresentationCo
     lifecycle,
     statusKind: lifecycleStatusKind(lifecycle),
     runtimeKind: lifecycleRuntimeKind(lifecycle),
-    runtimeLabel: lifecycleRuntimeLabel(lifecycle),
+    runtimeLabel: runningProgramLeader ? '当前领先' : lifecycleRuntimeLabel(lifecycle),
     runtimeIcon: runtimeIconKind(lifecycleRuntimeKind(lifecycle)),
     stageLabel: nodeStageLabel(node),
     summary,
