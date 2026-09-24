@@ -147,6 +147,28 @@ async def warmup_import_and_checkpointer() -> None:
         (time.perf_counter() - t0) * 1000,
     )
 
+    # 阶段2.5：租户模板批量补种（幂等）。请求路径已改为骨架存在即跳过，
+    # 缺失场景在此兜底；后台执行，不阻塞 listen。
+    t0 = time.perf_counter()
+    try:
+        from jiuwenswarm.common.utils import (
+            get_multi_tenant_user_workspace_dir,
+            seed_tenant_agent_workspace,
+        )
+
+        base = get_multi_tenant_user_workspace_dir(
+            None, service_id="default", agent_id="default"
+        )
+        seed_tenant_agent_workspace(base)
+        for tenant in sorted(base.parent.parent.glob("service_*/agent_*")):
+            seed_tenant_agent_workspace(tenant)
+    except Exception:  # noqa: BLE001
+        logger.warning("[Prewarm] stage=2.5 tenant workspace preseed failed", exc_info=True)
+    logger.info(
+        "[Prewarm] stage=2.5 name=tenant_workspace_preseed elapsed_ms=%.1f",
+        (time.perf_counter() - t0) * 1000,
+    )
+
 
 async def warmup_deep_agent_query(
     *,
