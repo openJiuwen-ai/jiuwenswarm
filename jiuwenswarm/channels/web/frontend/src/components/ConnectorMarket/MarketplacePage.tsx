@@ -7,12 +7,14 @@ import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { usePluginPackageStore } from '../../stores/pluginPackageStore';
-import { localizedText } from '../../types/pluginPackage';
+import { connectorApi } from '../../services/connectorApi';
+import { pluginPackagesApi } from '../../services/pluginPackagesApi';
+import { localizedText, type PluginPackageSummary } from '../../types/pluginPackage';
 import { MarketCard } from './MarketCard';
 import { MyMarketCard } from './MyMarketCard';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
-import type { ConnectorConnectResponse } from '../../types/connector';
+import type { ConnectorConnectResponse, ConnectorSummary } from '../../types/connector';
 import {
   deriveCardState,
   derivePluginCardState,
@@ -193,6 +195,10 @@ export function MarketplacePage({
   const [category, setCategory] = useState<string>('all');
   const [pluginCategory, setPluginCategory] = useState<string>('all');
   const [query, setQuery] = useState('');
+  const [marketConnectorResults, setMarketConnectorResults] = useState<ConnectorSummary[] | null>(null);
+  const [marketPluginResults, setMarketPluginResults] = useState<PluginPackageSummary[] | null>(null);
+  const [marketSearchLoading, setMarketSearchLoading] = useState(false);
+  const marketSearchRevisionRef = useRef(0);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const createMenuRef = useRef<HTMLDivElement>(null);
   useClickOutside(createMenuRef, () => setCreateMenuOpen(false));
@@ -234,6 +240,40 @@ export function MarketplacePage({
   const pluginIsLoading = usePluginPackageStore((s) => s.isLoading);
   const pluginInstallPendingMap = usePluginPackageStore((s) => s.installPendingMap);
   const clearPluginInstallPending = usePluginPackageStore((s) => s.clearInstallPending);
+
+  useEffect(() => {
+    const searchQuery = query.trim();
+    const isMarketplace = topTab === 'plugin' || topTab === 'mcp';
+    const revision = ++marketSearchRevisionRef.current;
+    if (!isMarketplace || !searchQuery) {
+      setMarketConnectorResults(null);
+      setMarketPluginResults(null);
+      setMarketSearchLoading(false);
+      return;
+    }
+
+    setMarketSearchLoading(true);
+    const timer = window.setTimeout(() => {
+      const search = topTab === 'mcp'
+        ? connectorApi.list('builtin', searchQuery)
+        : pluginPackagesApi.list('builtin+hub', searchQuery);
+      void search
+        .then((items) => {
+          if (revision !== marketSearchRevisionRef.current) return;
+          if (topTab === 'mcp') setMarketConnectorResults(items as ConnectorSummary[]);
+          else setMarketPluginResults(items as PluginPackageSummary[]);
+        })
+        .catch(() => {
+          if (revision !== marketSearchRevisionRef.current) return;
+          if (topTab === 'mcp') setMarketConnectorResults([]);
+          else setMarketPluginResults([]);
+        })
+        .finally(() => {
+          if (revision === marketSearchRevisionRef.current) setMarketSearchLoading(false);
+        });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [query, topTab]);
 
   // 派生 MCP 卡片态（见 mcpState.ts）。busy 用 busyMap[name]。这份 map 供下方 MCP 卡片渲染 +
   // statusFilter 共用，避免每个渲染点各自内联判断。
@@ -385,7 +425,11 @@ export function MarketplacePage({
     // 头注释），前端不用再按 source 二次过滤——2026-08-17 用户已确认按 MCP 接口文档 v2 实现，
     // 2026-08-10"我的 vs 广场只看 source、与连接状态无关"的旧结论作废：一个已连接的预置 MCP
     // 现在会同时出现在两个 tab 里。分类筛选（category）只在"广场"视角适用，"我的"没有分类 tab。
-    const base = topTab === 'my' ? myConnectors : builtinConnectors;
+    const base = topTab === 'my'
+      ? myConnectors
+      : q
+        ? marketConnectorResults ?? []
+        : builtinConnectors;
     return base.filter((connector) => {
       if (!matchesInstallation(connector.installed, installationFilter)) return false;
       if (topTab !== 'my' && category !== 'all') {
@@ -393,7 +437,7 @@ export function MarketplacePage({
         if (category === 'other' ? mcpTopCategorySet.has(cat) : cat !== category) return false;
       }
 
-      if (q && !connector.displayName.toLowerCase().includes(q)) return false;
+      if (topTab === 'my' && q && !connector.displayName.toLowerCase().includes(q)) return false;
       return true;
     });
   }, [
@@ -406,6 +450,7 @@ export function MarketplacePage({
     query,
     mcpCardStates,
     installationFilter,
+    marketConnectorResults,
   ]);
 
   const filteredPlugins = useMemo(() => {
@@ -414,7 +459,11 @@ export function MarketplacePage({
     // "我的插件"vs"插件广场"现在也由后端 filter 参数分好（builtin/local，见上面 packages/
     // localPackages 的注释），跟 filteredConnectors 同款，不用再按 pkg.source 二次过滤。分类
     // 筛选（category）只在"广场"视角适用，"我的"没有分类 tab。
-    const base = topTab === 'my' ? localPackages : packages;
+    const base = topTab === 'my'
+      ? localPackages
+      : q
+        ? marketPluginResults ?? []
+        : packages;
     return base.filter((pkg) => {
       if (!matchesInstallation(!!installed[pkg.id], installationFilter)) return false;
       if (topTab !== 'my' && pluginCategory !== 'all') {
@@ -423,7 +472,7 @@ export function MarketplacePage({
       }
 
       const title = localizedText(pkg.displayName, i18n.language);
-      if (q && !title.toLowerCase().includes(q)) return false;
+      if (topTab === 'my' && q && !title.toLowerCase().includes(q)) return false;
       return true;
     });
   }, [
@@ -438,6 +487,7 @@ export function MarketplacePage({
     pluginConnectionStateMap,
     query,
     i18n.language,
+    marketPluginResults,
   ]);
 
   // 当前实际展示的那份列表（四个渲染分支互斥，取其一即可），分页条/总数/isEmpty 都基于它算。
@@ -454,7 +504,11 @@ export function MarketplacePage({
   // 列表为空时要分清"数据还没回来"和"回来了但真的没有"——首次/切 tab 的非静默 loadList() 会把
   // 对应 store 的 isLoading 短暂置 true，10s 静默轮询不影响它（见两个 store 的 loadList 实现），
   // 用它区分空态文案该显示"加载中"还是"没有找到匹配的结果"。
-  const activeIsLoading = activeKindForEmpty === 'mcp' ? connectorIsLoading : pluginIsLoading;
+  const activeIsLoading = topTab !== 'my' && query.trim()
+    ? marketSearchLoading
+    : activeKindForEmpty === 'mcp'
+      ? connectorIsLoading
+      : pluginIsLoading;
 
   // 切换 tab/子筛选/分类/状态筛选/搜索词都会让 activeList 变成一份新列表，统一重置回第1页，
   // 避免停留在一个对新列表来说已经越界的页码上看到空白（同款处理见 CronPanel/index.tsx 的

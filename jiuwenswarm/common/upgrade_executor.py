@@ -150,6 +150,12 @@ class DesktopExecutor(UpgradeExecutor):
                     {"downloaded_bytes": downloaded, "total_bytes": total_bytes}
                 )
 
+            if total_bytes and downloaded != total_bytes:
+                raise RuntimeError(
+                    f"Incomplete download: expected {total_bytes} bytes, "
+                    f"received {downloaded}"
+                )
+
 
 class PipExecutor(UpgradeExecutor):
     upgrade_mode = "pip"

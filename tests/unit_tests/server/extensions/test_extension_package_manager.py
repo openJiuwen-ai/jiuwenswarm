@@ -29,6 +29,12 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
+def test_packaged_agent_group_resources_exclude_sample_group():
+    resources = catalog.get_equipment_resources_agent_groups_dir()
+
+    assert resources is None or not (resources / "sample-expert-group").exists()
+
+
 @pytest.mark.asyncio
 async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
     from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetSummary, HubSearchPage
@@ -751,6 +757,34 @@ class TestAgentGroupLifecycle:
             / "local"
             / "another-review"
         ).exists()
+
+    def test_import_rootless_hub_group_archive_writes_local_installed(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        source_workspace = tmp_path / "source-home" / "agent" / "workspace"
+        source = _seed_valid_agent_group(
+            source_workspace,
+            "hub-review",
+            under="local",
+        )
+        archive = tmp_path / "hub-review.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            for path in source.rglob("*"):
+                if path.is_file():
+                    zf.write(path, path.relative_to(source))
+
+        result = catalog.import_agent_group({"path": str(archive)})
+
+        assert result == {"id": "hub-review"}
+        imported = (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "local"
+            / "hub-review"
+        )
+        assert imported.is_dir()
+        assert catalog.is_agent_group_installed("hub-review") is True
 
     def test_resource_group_install_and_uninstall_preserves_shelf_card(
         self,

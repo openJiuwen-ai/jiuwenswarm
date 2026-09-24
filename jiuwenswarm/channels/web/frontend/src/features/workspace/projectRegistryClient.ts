@@ -6,7 +6,15 @@ export interface ProjectSessionBatchResult {
   project_id: string;
   succeeded_count: number;
   failed_count: number;
-  results: { session_id: string; ok: boolean; code?: string; error?: string }[];
+  results: { session_id: string; ok: boolean; code?: string; error?: string; finishing?: boolean }[];
+}
+
+export interface ProjectRemoveResult {
+  project_id: string;
+  hidden: boolean;
+  affected_sessions: number;
+  /** 项目下的定时任务总数（含移除前已停用的）；0 表示项目下没有定时任务。 */
+  stopped_cron_jobs?: number;
 }
 
 export const projectRegistryClient = {
@@ -38,7 +46,7 @@ export const projectRegistryClient = {
   pin: (projectId: string, pinned: boolean) => webRequest<{ pinned: boolean; pin_order: number }>('project.pin', { project_id: projectId, pinned }),
   // 移除要先停用并停止该项目下全部定时任务（在途执行最长等待 10s），
   // 再统计受影响的会话数；默认 15s 在大工作区会假超时，而后端不回滚。
-  remove: (projectId: string) => webRequest<{ project_id: string; hidden: boolean; affected_sessions: number }>('project.remove', { project_id: projectId }, { timeoutMs: 60000 }),
+  remove: (projectId: string) => webRequest<ProjectRemoveResult>('project.remove', { project_id: projectId }, { timeoutMs: 60000 }),
   restore: (projectId: string) => webRequest<{ project_id: string; restored: boolean; work_mode: WorkMode; affected_sessions: number }>('project.restore', { project_id: projectId }, { timeoutMs: 30000 }),
   archiveSessions: (projectId: string) => webRequest<ProjectSessionBatchResult>('project.sessions.archive', { project_id: projectId }, { timeoutMs: 120000 }),
   deleteArchivedSessions: (projectId: string) => webRequest<ProjectSessionBatchResult>('project.sessions.delete_archived', { project_id: projectId }, { timeoutMs: 120000 }),

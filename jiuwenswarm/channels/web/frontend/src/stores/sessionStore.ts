@@ -27,6 +27,11 @@ import {
   type TaskProgressBaseline,
 } from '../features/teamTaskProgressBaseline';
 import type { AgentGroupSelectionIntent, AgentSelectionIntent } from '../features/agentManagement/types';
+import {
+  loadTeamConnectionPresentation,
+  saveTeamConnectionPresentation,
+  type TeamConnectionPresentation,
+} from '../features/teamConnectionPresentation';
 import { isAgentGroupSelected } from '../features/agentManagement/port';
 import { isTeamAgentMode, stripPlanSuffix } from '../features/planMode/wireMode';
 import {
@@ -495,6 +500,7 @@ export interface SessionRuntime {
   teamTasks: TeamTask[];
   teamTaskProgressBaseline: TaskProgressBaseline;
   teamMembers: TeamMember[];
+  teamConnectionPresentation: TeamConnectionPresentation | null;
   teamLeaderMemberIds: string[];
   teamHumanShareCommands: HumanShareCommand[];
   teamMemberExecutionEvents: TeamMemberExecutionEvent[];
@@ -545,6 +551,7 @@ function createEmptyRuntime(sessionId?: string): SessionRuntime {
     teamTasks: [],
     teamTaskProgressBaseline: createTaskProgressBaseline(),
     teamMembers: [],
+    teamConnectionPresentation: sessionId ? loadTeamConnectionPresentation(sessionId) : null,
     teamLeaderMemberIds: [],
     teamHumanShareCommands: [],
     teamMemberExecutionEvents: [],
@@ -613,6 +620,8 @@ interface SessionState {
   upsertTeamTask: (sessionId: string, task: TeamTaskUpsert) => void;
   updateTeamTask: (sessionId: string, taskId: string, patch: Partial<TeamTask>) => void;
   setTeamMembers: (sessionId: string, members: TeamMember[]) => void;
+  setTeamConnectionPresentation: (sessionId: string, presentation: TeamConnectionPresentation | null) => void;
+  clearTeamConnectionPresentation: (sessionId: string, memberId?: string) => void;
   setTeamLeaderMemberIds: (sessionId: string, memberIds: string[]) => void;
   addTeamLeaderMemberId: (sessionId: string, memberId: string) => void;
   /** 输入栏已选技能：追加（去重） */
@@ -828,6 +837,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     if (normalizedMode !== 'team') {
       saveAgentGroupSelectionIntent(sessionId, { kind: 'clear' });
+      saveTeamConnectionPresentation(sessionId, null);
     }
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -848,6 +858,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ...runtime,
             mode: normalizedMode,
             contextUsageSnapshot: runtime.mode === normalizedMode ? runtime.contextUsageSnapshot : null,
+            teamConnectionPresentation:
+              normalizedMode === 'team'
+                ? (runtime.teamConnectionPresentation ?? loadTeamConnectionPresentation(sessionId))
+                : null,
             agentSelectionIntent,
             agentGroupSelectionIntent,
             ...(normalizedMode !== 'team' ? { agentGroupBinding: null } : {}),
@@ -1163,6 +1177,45 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ...runtime,
             teamMembers: members,
             teamMemberContextCompression: nextCompression,
+          },
+        },
+      };
+    });
+  },
+
+  setTeamConnectionPresentation: (sessionId, presentation) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.mode !== 'team') return state;
+      saveTeamConnectionPresentation(sessionId, presentation);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            teamConnectionPresentation: presentation,
+          },
+        },
+      };
+    });
+  },
+
+  clearTeamConnectionPresentation: (sessionId, memberId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      const presentation = runtime?.teamConnectionPresentation;
+      if (!runtime || !presentation) return state;
+      const memberIds = memberId ? presentation.memberIds.filter((id) => id !== memberId) : [];
+      if (memberIds.length === presentation.memberIds.length) {
+        return state;
+      }
+      saveTeamConnectionPresentation(sessionId, memberIds.length > 0 ? { memberIds } : null);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            teamConnectionPresentation: memberIds.length > 0 ? { memberIds } : null,
           },
         },
       };

@@ -44,7 +44,7 @@ OutputDir={#ProjectRoot}\dist
   #endif
 #endif
 SetupIconFile={#ProjectRoot}\jiuwenswarm\channels\web\frontend\public\logo.ico
-UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayIcon={app}\logo-{#MyAppVersion}.ico
 Compression=lzma2/normal
 SolidCompression=yes
 WizardStyle=modern
@@ -69,6 +69,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#ProjectRoot}\dist\{#MyAppName}-Electron\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ProjectRoot}\jiuwenswarm\channels\web\frontend\public\logo.ico"; DestDir: "{app}"; DestName: "logo-{#MyAppVersion}.ico"; Flags: ignoreversion
+
+[InstallDelete]
+Type: files; Name: "{app}\logo-*.ico"
 
 #ifndef ELECTRON_FRONTEND_ONLY
 [UninstallRun]
@@ -78,9 +82,9 @@ Filename: "{app}\resources\backend\{#BackendExecutableName}"; Parameters: "--des
 #endif
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\resources\app\logo.ico"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\logo-{#MyAppVersion}.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\resources\app\logo.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; IconFilename: "{app}\logo-{#MyAppVersion}.ico"
 
 [UninstallDelete]
 ; 清理运行期可能落在安装目录内的文件（后端子进程的工作目录在 resources\backend

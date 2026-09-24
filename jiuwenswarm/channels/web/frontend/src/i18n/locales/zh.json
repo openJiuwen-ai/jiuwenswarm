@@ -3477,11 +3477,13 @@
       "renamePlaceholder": "输入新名称",
       "archiveConversation": "归档",
       "conversationArchived": "已归档任务会话",
+      "conversationDeleted": "对话已删除",
       "archiveView": "查看",
       "archiveUndo": "撤销",
       "removeProject": "移除项目",
       "removeProjectConfirm": "移除",
       "removeProjectDescription": "从列表中移除“<name>{{projectName}}</name>”并隐藏其对话；已归档的对话仍可在归档页查看。其下的定时任务将停止并保留（恢复项目后默认保持停止，需手动重新启用），工作目录不受影响。可撤销，或通过同一目录重新创建项目恢复。",
+      "projectRemoved": "项目已移除",
       "projectRemovedSummary": "项目已移除，其定时任务已停止",
       "archiveSessions": "归档全部会话",
       "archiveConfirmTitle": "归档（{{count}}）个聊天",
@@ -3490,6 +3492,7 @@
       "archiveConfirmAll": "全部归档",
       "sessionsArchived": "已归档 {{count}} 个会话",
       "archiveBatchFailedRunning": "有 {{count}} 个聊天正在运行，无法归档",
+      "archiveBatchFailedFinishing": "有 {{count}} 个聊天的 swarm flow 已结束，回合收尾中，请稍后重试",
       "archiveBatchFailed": "有 {{count}} 个聊天归档失败",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
@@ -3499,12 +3502,15 @@
         "pathMissing": "项目目录不存在，请选择已存在的目录",
         "projectUnavailable": "项目不可用，请刷新后重试",
         "archiveSessionBusy": "对话正在运行，无法归档。请先手动停止，再重试归档。",
+        "archiveSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试归档。",
         "deleteSessionBusy": "对话正在运行，无法删除。请先手动停止，再重试删除。",
+        "deleteSessionFinishing": "swarm flow 已结束，会话回合收尾中，请稍后重试删除。",
         "archiveForbidden": "该任务不支持归档",
         "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
         "archiveFailed": "归档操作失败，请稍后重试",
         "projectNameConflict": "已有同名项目占用了该名称，无法恢复项目。请先重命名同名项目。",
-        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。"
+        "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
+        "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。"
       },
       "cancel": "取消",
       "confirm": "确定"
@@ -3514,7 +3520,9 @@
     },
     "deleteDialog": {
       "title": "删除",
-      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+      "attention": "注意",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。",
+      "permanentConfirm": "确定要永久删除该任务吗？"
     },
     "notFound": {
       "title": "对话不存在或已删除",
@@ -4091,7 +4099,6 @@
       "paperLabel": "论文文件夹（可选，优化指令和论文必须上传一个）",
       "paperPlaceholder": "选择论文文件夹路径",
       "paperPickerTitle": "选择论文文件夹",
-      "paperInfoBar": "论文优化将以 LaTeX 文件夹作为产物，并尝试生成 PDF。请确保运行环境已安装 MiKTeX 或 TeX Live，且 latexmk 或 pdflatex 可用，否则 PDF 可能无法生成。",
       "webProxyLabel": "文献检索代理（可选）",
       "webProxyPlaceholder": "例如：http://127.0.0.1:7890",
       "webProxyTip": "建议配置 HTTP/HTTPS 代理，以提高文献网页和全文下载的成功率。",
@@ -4109,7 +4116,7 @@
       "customModels": "自定义模型",
       "submit": "创建",
       "cancel": "取消",
-      "infoBar": "请预先安装、调用evolve-design技能，创建产物优化的依赖项，填写程序路径",
+      "infoBar": "请先调用rsi-program-dataset-creator创建程序优化需要的数据包",
       "validation": {
         "nameRequired": "请输入实验名称",
         "datasetRequired": "请选择数据集文件",
@@ -4169,7 +4176,6 @@
       "failureReasonMissing": "任务执行失败，未记录具体原因。",
       "statusPaused": "已暂停",
       "statusTerminated": "已终止",
-      "statusInstalled": "已安装",
       "actionConfig": "配置信息",
       "actionDelete": "删除",
       "actionPause": "暂停任务",

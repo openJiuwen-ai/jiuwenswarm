@@ -70,7 +70,7 @@ import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webRequest } from './services/webClient';
-import { getArchiveErrorCode } from './features/workspace/archivedTaskClient';
+import { getArchiveErrorCode, getArchiveErrorFinishing } from './features/workspace/archivedTaskClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
@@ -2575,7 +2575,7 @@ function AppContent({
       currentMode: currentRuntime?.mode ?? mode,
       pending: newConversationPreviousSessionRef.current,
       newConversationId: NEW_CONVERSATION_ID,
-      clear: lifecycle.clearPreviousSession,
+      clear: lifecycle.clearPreviousSession || options.clearPreviousSession,
     });
     // 返回尚未发送的新建任务时，恢复该临时会话自己的模式和模型；真正开始一个新任务时，
     // 仍固定使用配置的默认模型，不继承当前正式会话手动切换过的模型。
@@ -2648,9 +2648,10 @@ function AppContent({
     setCurrentSession(null);
     setTeamAreaExpanded(false);
     setSingleAgentPanelExpanded(false);
+    // 删除/归档当前会话后 replace，避免后退回到已失效的 /chat/session/:id
     navigate(
       { kind: 'chat-new' },
-      options.replaceHistory ? { replace: true } : undefined,
+      (lifecycle.clearPreviousSession || options.clearPreviousSession) ? { replace: true } : undefined,
     );
     setActiveNav('chat');
     requestComposerFocus();
@@ -3228,6 +3229,12 @@ function AppContent({
         resetHarnessStore(targetSessionId);
         historyRestoreFromPanelHintRef.current = true;
       }
+      if (options?.skipHistoryLoad) {
+        // The session returned by cron.run_now can precede its first persisted
+        // message. The sessionId effect must skip its initial history request too.
+        useChatStore.getState().setNewSession(targetSessionId, true);
+        historyRestoreFromPanelHintRef.current = false;
+      }
       // 确保 session runtime 存在；否则 useSessionStore.setMode 会因找不到 runtime 而直接跳过，
       // 导致从会话页签恢复后前端 mode 不会切换到目标会话对应的 mode。
       ensureSessionRuntimes(targetSessionId);
@@ -3478,7 +3485,9 @@ function AppContent({
     } catch (error) {
       console.error('Failed to close side conversation:', error);
       window.alert(t(getArchiveErrorCode(error) === 'SESSION_BUSY'
-        ? 'multiSession.project.errors.deleteSessionBusy'
+        ? (getArchiveErrorFinishing(error)
+          ? 'multiSession.project.errors.deleteSessionFinishing'
+          : 'multiSession.project.errors.deleteSessionBusy')
         : 'multiSession.errors.delete'));
     }
   }, [deleteSideConversation, t]);
@@ -3494,7 +3503,10 @@ function AppContent({
   }, [deleteSideConversation, sessionId]);
 
   const requestSessionNavigation = useCallback((target: Session | 'new', options?: NewConversationOptions) => {
-    if (target === 'new') { enterNewConversation(mode, options); return; }
+    if (target === 'new') {
+      enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
+      return;
+    }
     if (isToolPanelAutoHideViewport) {
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);

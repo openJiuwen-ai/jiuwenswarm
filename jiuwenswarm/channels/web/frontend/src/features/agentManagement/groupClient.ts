@@ -55,6 +55,7 @@ export function createLiveAgentGroupManagementClient(): AgentGroupManagementClie
         const payload = await webRequest<RawAgentGroupListPayload>('agent_groups.list', {
           ...filter,
           ...(options.cache_mode ? { cache_mode: options.cache_mode } : {}),
+          ...(options.query ? { query: options.query } : {}),
         });
         return withCatalogCache(
           (payload.agentGroups || []).map((item) => normalizeAgentGroupListItem(item, getAgentManagementLocale())),

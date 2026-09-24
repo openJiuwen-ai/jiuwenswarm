@@ -17,60 +17,102 @@ export type OAuthUser = {
   is_market_moderation_admin: boolean;
 };
 
+async function responseJson(response: Response): Promise<Record<string, any>> {
+  const text = await response.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
 // ── 存取函数 ──
 export function getStoredOAuthToken(): string | null {
-  try { return sessionStorage.getItem(TOKEN_KEY); } catch { return null; }
+  try {
+    return sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
 }
 
 export function getStoredOAuthProvider(): OAuthProvider {
   try {
     const p = (sessionStorage.getItem(PROVIDER_KEY) || '').trim().toLowerCase();
     return p === 'github' ? 'github' : 'gitcode';
-  } catch { return 'gitcode'; }
+  } catch {
+    return 'gitcode';
+  }
 }
 
 export function getStoredOAuthUser(): OAuthUser | null {
   try {
     const raw = sessionStorage.getItem(USER_KEY);
     return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export async function beginHubOAuth(provider: OAuthProvider): Promise<HubOAuthAttempt> {
   const response = await fetch('/marketplace-oauth/hub/start', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider }),
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider }),
   });
-  const result = await response.json();
+  const result = await responseJson(response);
   if (!response.ok || !result?.authorize_url || !result?.flow || !result?.claim)
     throw new Error('无法启动 Hub 授权，请检查本地服务。');
-  return result;
+  return {
+    authorize_url: String(result.authorize_url),
+    flow: String(result.flow),
+    claim: String(result.claim),
+  };
 }
 
-export async function waitForHubOAuth(attempt: HubOAuthAttempt, signal?: AbortSignal): Promise<void> {
+export async function waitForHubOAuth(
+  attempt: HubOAuthAttempt,
+  signal?: AbortSignal,
+  authorizationWindowClosed?: () => boolean,
+): Promise<void> {
   while (!signal?.aborted) {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
     if (signal?.aborted) break;
+    if (authorizationWindowClosed?.()) throw new Error('授权窗口已关闭，请重新登录。');
     const response = await fetch('/marketplace-oauth/hub/result', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ flow: attempt.flow, claim: attempt.claim }),
       signal,
     });
-    const result = await response.json();
+    const result = await responseJson(response);
     if (!response.ok) throw new Error('授权请求已过期，请重新登录。');
     if (result.status === 'pending') continue;
-    if (result.status !== 'complete' || !result.access_token) throw new Error(result.error || '授权失败，请重试。');
+    if (result.status !== 'complete' || !result.access_token) {
+      const code = typeof result.error === 'string' ? result.error.toLowerCase() : '';
+      if (code.includes('session_exchange_failed'))
+        throw new Error('Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。');
+      throw new Error('授权失败，请重试。');
+    }
     sessionStorage.setItem(TOKEN_KEY, result.access_token);
     sessionStorage.setItem(PROVIDER_KEY, result.provider);
     if (result.user) {
       const profile = result.user;
       const login = profile.login || profile.username || '';
-      sessionStorage.setItem(USER_KEY, JSON.stringify({
-        id: String(profile.id || ''), name: profile.name || login, login,
-        avatar_url: profile.avatar_url || profile.avatar || '', is_market_moderation_admin: false,
-      }));
+      sessionStorage.setItem(
+        USER_KEY,
+        JSON.stringify({
+          id: String(profile.id || ''),
+          name: profile.name || login,
+          login,
+          avatar_url: profile.avatar_url || profile.avatar || '',
+          is_market_moderation_admin: false,
+        }),
+      );
     } else sessionStorage.removeItem(USER_KEY);
     sessionStorage.removeItem('oauth_error');
     window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
     return;
   }
+  throw new DOMException('OAuth cancelled', 'AbortError');
 }

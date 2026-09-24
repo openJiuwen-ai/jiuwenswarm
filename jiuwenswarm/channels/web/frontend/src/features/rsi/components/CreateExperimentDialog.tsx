@@ -345,13 +345,6 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
           </div>
         )}
 
-        {branch === 'PAPER' && (
-          <div className="rsi-create-dialog__info-bar">
-            <TipIcon className="w-3.5 h-3.5 shrink-0" />
-            <span>{t('rsi.createDialog.paperInfoBar')}</span>
-          </div>
-        )}
-
         {/* 基础字段 */}
         <Field label={t('rsi.createDialog.nameLabel')}>
           <input

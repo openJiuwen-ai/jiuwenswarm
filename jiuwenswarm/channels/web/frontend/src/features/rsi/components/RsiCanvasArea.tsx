@@ -44,6 +44,8 @@ const LEGEND: Array<{ kind: NodeStatusKind; labelKey: string }> = [
   { kind: 'pruned', labelKey: 'rsi.detail.legendPruned' },
 ];
 
+const CANVAS_DRAG_THRESHOLD = 4;
+
 // 节点上层黑色徽章图标：圆形黑底 + 白色状态图标（皇冠/对号/双箭头/时钟/减号）
 const STATUS_ICON_PATHS: Record<NodeIconKind, ReactNode> = {
   // 小皇冠
@@ -206,7 +208,6 @@ const CANVAS_STATUS_ICON_SRCS: Partial<Record<StatusBadgeKind, string>> = {
   running: evaluatingIcon,
   paused: pauseIcon,
   completed: bestIcon,
-  installed: bestIcon,
 };
 
 function TaskStatusIcon({ kind, title }: { kind: StatusBadgeKind; title: string }) {
@@ -520,7 +521,14 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [scoreExpanded, setScoreExpanded] = useState<Set<string>>(new Set());
   const [hoveredEdgeParentId, setHoveredEdgeParentId] = useState<string | null>(null);
-  const dragStart = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  const dragStart = useRef<{
+    x: number;
+    y: number;
+    tx: number;
+    ty: number;
+    pointerId: number;
+    captured: boolean;
+  } | null>(null);
   /** 拖拽期间最新指针位置（rAF 节流读取）。 */
   const dragPointerRef = useRef<{ x: number; y: number } | null>(null);
   /** 待执行的拖拽帧 id，保证每帧最多一次 setTx/setTy。 */
@@ -595,10 +603,8 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0) return;
-      // 捕获指针：移出画布/窗口仍能收到 move/up，避免拖拽状态丢失或持续卡在 dragging
-      e.currentTarget.setPointerCapture(e.pointerId);
-      setDragging(true);
-      dragStart.current = { x: e.clientX, y: e.clientY, tx, ty };
+      // 等指针确实移动后再捕获，避免普通点击被重定向到画布、节点收不到 click。
+      dragStart.current = { x: e.clientX, y: e.clientY, tx, ty, pointerId: e.pointerId, captured: false };
       dragPointerRef.current = { x: e.clientX, y: e.clientY };
     },
     [tx, ty],
@@ -615,8 +621,18 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent) => {
-      if (!dragStart.current) return;
+      const start = dragStart.current;
+      if (!start || start.pointerId !== e.pointerId) return;
       dragPointerRef.current = { x: e.clientX, y: e.clientY };
+      if (!start.captured) {
+        const dx = e.clientX - start.x;
+        const dy = e.clientY - start.y;
+        if (Math.hypot(dx, dy) < CANVAS_DRAG_THRESHOLD) return;
+        // 捕获指针：开始真实拖动后，即使移出画布/窗口也能继续平移。
+        e.currentTarget.setPointerCapture(e.pointerId);
+        start.captured = true;
+        setDragging(true);
+      }
       if (dragFrameRef.current === null) {
         dragFrameRef.current = requestAnimationFrame(applyDrag);
       }
@@ -624,7 +640,8 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
     [applyDrag],
   );
 
-  const handlePointerUp = useCallback(() => {
+  const handlePointerUp = useCallback((e?: React.PointerEvent) => {
+    if (e && dragStart.current && dragStart.current.pointerId !== e.pointerId) return;
     setDragging(false);
     dragStart.current = null;
     dragPointerRef.current = null;
@@ -633,6 +650,24 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
       dragFrameRef.current = null;
     }
   }, []);
+
+  const handlePointerLeave = useCallback(
+    (e: React.PointerEvent) => {
+      const start = dragStart.current;
+      if (!start || start.pointerId !== e.pointerId) return;
+      dragPointerRef.current = { x: e.clientX, y: e.clientY };
+      if (!start.captured) {
+        // 指针按下后越出画布时开始捕获，避免边界处的拖动中断。
+        e.currentTarget.setPointerCapture(e.pointerId);
+        start.captured = true;
+        setDragging(true);
+      }
+      if (dragFrameRef.current === null) {
+        dragFrameRef.current = requestAnimationFrame(applyDrag);
+      }
+    },
+    [applyDrag],
+  );
 
   // 非被动监听滚轮缩放（capture 阶段阻止页面滚动）
   // 主画布与全屏画布各需独立 ref，否则单 ref 会指向后渲染的全屏元素
@@ -714,9 +749,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
 
   // 状态条数据：运行态进度/成本来自 P2 推送（liveProgress），回退 task.progress/usage（§3.3/§3.4）
   const liveProgress = useRsiStore((s) => s.detail[task.task_id]?.liveProgress ?? null);
-  const installedTask = useRsiStore((s) => Boolean(s.installedTaskIds[task.task_id]));
-  const installed = task.status === 'COMPLETED' && installedTask;
-  const statusInfo = statusBadgeInfo(task.status, installed);
+  const statusInfo = statusBadgeInfo(task.status);
   const provisionalNode =
     [...(tree?.nodes ?? [])]
       .filter((node) => node.type === 'PROVISIONAL')
@@ -798,6 +831,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
+            onPointerLeave={handlePointerLeave}
           >
             {layout ? (
               <div
@@ -903,6 +937,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onPointerCancel={handlePointerUp}
+                onPointerLeave={handlePointerLeave}
               >
                 {layout ? (
                   <div

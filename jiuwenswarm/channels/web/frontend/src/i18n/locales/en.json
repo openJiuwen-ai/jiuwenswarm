@@ -3491,11 +3491,13 @@
       "renamePlaceholder": "Enter a new name",
       "archiveConversation": "Archive",
       "conversationArchived": "Task session archived",
+      "conversationDeleted": "Conversation deleted",
       "archiveView": "View",
       "archiveUndo": "Undo",
       "removeProject": "Remove project",
       "removeProjectConfirm": "Remove",
       "removeProjectDescription": "Remove “<name>{{projectName}}</name>” from the list and hide its conversations. Archived conversations stay available in the archive page. Its cron jobs are stopped and kept (they stay stopped after the project is restored and must be re-enabled manually); the working directory is unaffected. Undo, or create a project with the same directory to restore it.",
+      "projectRemoved": "Project removed",
       "projectRemovedSummary": "Project removed; its cron jobs were stopped",
       "archiveSessions": "Archive all conversations",
       "archiveConfirmTitle": "Archive ({{count}}) conversations",
@@ -3504,6 +3506,7 @@
       "archiveConfirmAll": "Archive all",
       "sessionsArchived": "Archived {{count}} conversations",
       "archiveBatchFailedRunning": "{{count}} conversation(s) are running and could not be archived",
+      "archiveBatchFailedFinishing": "The swarm flow has ended and {{count}} conversation(s) are wrapping up. Please try again shortly.",
       "archiveBatchFailed": "{{count}} conversation(s) failed to archive",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
@@ -3513,12 +3516,15 @@
         "pathMissing": "Project directory does not exist. Choose an existing directory.",
         "projectUnavailable": "Project unavailable. Refresh and retry.",
         "archiveSessionBusy": "This conversation is running and cannot be archived. Stop it manually, then try again.",
+        "archiveSessionFinishing": "The swarm flow has ended and the conversation is wrapping up. Please try archiving again shortly.",
         "deleteSessionBusy": "This conversation is running and cannot be deleted. Stop it manually, then try again.",
+        "deleteSessionFinishing": "The swarm flow has ended and the conversation is wrapping up. Please try deleting again shortly.",
         "archiveForbidden": "This task does not support archiving.",
         "archiveNotFound": "The resource no longer exists or has changed. Refresh and try again.",
         "archiveFailed": "The archive operation failed. Please try again later.",
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
-        "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again."
+        "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
+        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
@@ -3528,7 +3534,9 @@
     },
     "deleteDialog": {
       "title": "Delete",
-      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone."
+      "attention": "Attention",
+      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone.",
+      "permanentConfirm": "Are you sure you want to permanently delete this task?"
     },
     "notFound": {
       "title": "Conversation not found or deleted",
@@ -4107,7 +4115,6 @@
       "paperLabel": "Paper folder (optional; one of instruction/paper required)",
       "paperPlaceholder": "Select a paper folder",
       "paperPickerTitle": "Select paper folder",
-      "paperInfoBar": "Paper optimization produces a LaTeX folder and attempts to generate a PDF. Make sure MiKTeX or TeX Live is installed and latexmk or pdflatex is available; otherwise, PDF generation may fail.",
       "webProxyLabel": "Literature proxy (optional)",
       "webProxyPlaceholder": "For example: http://127.0.0.1:7890",
       "webProxyTip": "An HTTP/HTTPS proxy is recommended to improve literature webpage and full-text download success.",
@@ -4125,7 +4132,7 @@
       "customModels": "Custom models",
       "submit": "Create",
       "cancel": "Cancel",
-      "infoBar": "Please pre-install and invoke the evolve-design skill, create artifact optimization dependencies, and fill in the program path.",
+      "infoBar": "Please invoke rsi-program-dataset-creator to create the dataset package required for program optimization.",
       "validation": {
         "nameRequired": "Please enter experiment name",
         "datasetRequired": "Please select dataset file",
@@ -4185,7 +4192,6 @@
       "failureReasonMissing": "The task failed without a recorded reason.",
       "statusPaused": "Paused",
       "statusTerminated": "Terminated",
-      "statusInstalled": "Installed",
       "actionConfig": "Configuration",
       "actionDelete": "Delete",
       "actionPause": "Pause task",

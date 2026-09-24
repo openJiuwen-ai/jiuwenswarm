@@ -8,18 +8,24 @@ from jiuwenswarm.llm_provider_compat_patch import (
 
 
 class _FakeAnthropicClient:
-    def __init__(self, api_base):
+    def __init__(self, api_base, model="openpangu-2.0-pro", thinking=None):
         self.model_client_config = SimpleNamespace(api_base=api_base)
+        self.model = model
+        self.thinking = thinking
 
-    def _build_request_params(self, *args, **kwargs):
+    def _build_anthropic_params(self, *args, **kwargs):
         del args, kwargs
-        return {
+        params = {
+            "model": self.model,
             "messages": [
                 {"role": "user", "content": [{"type": "text", "text": "hello"}]},
                 {"role": "user", "content": [{"type": "image", "source": {}}]},
             ],
             "system": [{"type": "text", "text": "system"}],
         }
+        if self.thinking is not None:
+            params["thinking"] = self.thinking
+        return params
 
 
 class _FakeOpenAIClient:
@@ -39,18 +45,40 @@ class _FakeOpenAIClient:
 
 def test_modelarts_anthropic_flattens_only_pure_text_blocks():
     _patch_anthropic_modelarts(_FakeAnthropicClient)
-    params = _FakeAnthropicClient("https://api.modelarts-maas.com/anthropic/v1")._build_request_params()
+    params = _FakeAnthropicClient("https://api.modelarts-maas.com/anthropic/v1")._build_anthropic_params()
 
     assert params["messages"][0]["content"] == "hello"
     assert params["messages"][1]["content"][0]["type"] == "image"
     assert params["system"] == "system"
+    assert params["thinking"] == {"type": "disabled"}
 
 
 def test_non_modelarts_anthropic_preserves_standard_blocks():
     _patch_anthropic_modelarts(_FakeAnthropicClient)
-    params = _FakeAnthropicClient("https://api.anthropic.com")._build_request_params()
+    params = _FakeAnthropicClient("https://api.anthropic.com")._build_anthropic_params()
 
     assert params["messages"][0]["content"] == [{"type": "text", "text": "hello"}]
+    assert "thinking" not in params
+
+
+def test_modelarts_anthropic_preserves_explicit_thinking():
+    _patch_anthropic_modelarts(_FakeAnthropicClient)
+    params = _FakeAnthropicClient(
+        "https://api.modelarts-maas.com/anthropic/v1",
+        thinking={"type": "enabled", "budget_tokens": 2048},
+    )._build_anthropic_params()
+
+    assert params["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+
+
+def test_modelarts_non_pangu_keeps_provider_thinking_default():
+    _patch_anthropic_modelarts(_FakeAnthropicClient)
+    params = _FakeAnthropicClient(
+        "https://api.modelarts-maas.com/anthropic/v1",
+        model="glm-5.2",
+    )._build_anthropic_params()
+
+    assert "thinking" not in params
 
 
 def test_modelarts_qwen_disables_unsupported_auto_tool_choice():
