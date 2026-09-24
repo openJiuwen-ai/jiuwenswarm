@@ -9023,7 +9023,7 @@ class JiuWenSwarmDeepAdapter:
         """Build the single-Agent execution-graph producer."""
 
         config = load_symphony_config(self._config_base_cache)
-        if not config.enabled or not config.evolution.enabled:
+        if not config.enabled or not config.evolution.flow.enabled:
             return None
         try:
             from jiuwenswarm.symphony.experience import _build_graph_evolution_rail

@@ -389,7 +389,7 @@ def canonical_permission_facade(profile: str) -> dict[str, str]:
 
 SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "symphony_enabled": (("enabled",), "bool", False),
-    "symphony_evolution_enabled": (("evolution", "enabled"), "bool", False),
+    "symphony_evolution_enabled": (("evolution", "flow", "enabled"), "bool", False),
 }
 SYMPHONY_CONFIG_KEYS = tuple(SYMPHONY_CONFIG_SPECS.keys())
 SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
@@ -485,6 +485,11 @@ def flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in SYMPHONY_CONFIG_SPECS.items():
         value = get_nested_config_value(symphony, path, default)
+        if key == "symphony_evolution_enabled" and value == default:
+            # enabled 已移到 evolution.flow 下；旧配置（evolution.enabled）回退显示
+            legacy = get_nested_config_value(symphony, ("evolution", "enabled"), None)
+            if legacy is not None:
+                value = legacy
         if value_type == "bool":
             flat[key] = "true" if bool(value) else "false"
         else:

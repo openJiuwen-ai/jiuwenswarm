@@ -129,7 +129,7 @@ def orchestration_config_from_swarm(
         top_k=orchestration.top_k,
         max_depth=orchestration.max_depth,
         min_edge_confidence=orchestration.min_edge_confidence,
-        dynamic_graph_enabled=config.evolution.enabled,
+        dynamic_graph_enabled=config.evolution.flow.enabled,
     )
 
 
@@ -144,7 +144,7 @@ def graph_build_orchestration_config_from_swarm(
         top_k=orchestration.top_k,
         max_depth=orchestration.max_depth,
         min_edge_confidence=config.build.min_edge_confidence,
-        dynamic_graph_enabled=config.evolution.enabled,
+        dynamic_graph_enabled=config.evolution.flow.enabled,
     )
 
 

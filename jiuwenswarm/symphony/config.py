@@ -23,12 +23,8 @@ DEFAULT_BUILD_MIN_EDGE_CONFIDENCE = 0.5
 DEFAULT_SYMPHONY_ENABLED = False
 DEFAULT_EVOLUTION_ENABLED = False
 
-DEFAULT_FLOW_ENABLED = True
-DEFAULT_FLOW_MIN_EDGE_SUPPORT = 1
-DEFAULT_FLOW_MIN_EDGE_SUCCESS_RATE = 0.5
-DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE = 1
-DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED = 3
-DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE_VERIFIED = 0.8
+DEFAULT_FLOW_MIN_SUCCESSES = 3
+DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE = 0.8
 
 DEFAULT_ORCHESTRATION_MODE = "fast"
 DEFAULT_ORCHESTRATION_TOP_K = 3
@@ -73,17 +69,20 @@ class SymphonyBuildConfig:
 
 @dataclass(frozen=True)
 class SymphonyFlowDistillConfig:
-    enabled: bool = DEFAULT_FLOW_ENABLED
-    min_edge_support: int = DEFAULT_FLOW_MIN_EDGE_SUPPORT
-    min_edge_success_rate: float = DEFAULT_FLOW_MIN_EDGE_SUCCESS_RATE
-    min_successes_candidate: int = DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE
-    min_successes_verified: int = DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED
-    min_pack_success_rate_verified: float = DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE_VERIFIED
+    """Core Flow 蒸馏参数（对称 openjiuwen SymphonyFlowConfig 的子集）。
+
+    enabled 为沉淀总开关（Core Graph-Evolution Rail / Flow 引擎启停）；
+    分组签名 = 轨迹全部成功边，确定性不漂移；判级只看 pack 级统计
+    （min_successes + min_pack_success_rate），达标即 verified。
+    """
+
+    enabled: bool = DEFAULT_EVOLUTION_ENABLED
+    min_successes: int = DEFAULT_FLOW_MIN_SUCCESSES
+    min_pack_success_rate: float = DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE
 
 
 @dataclass(frozen=True)
 class SymphonyEvolutionConfig:
-    enabled: bool = DEFAULT_EVOLUTION_ENABLED
     flow: SymphonyFlowDistillConfig = SymphonyFlowDistillConfig()
 
 
@@ -128,6 +127,7 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
     extraction = _mapping(fingerprint.get("extraction"))
     build = _mapping(data.get("build"))
     evolution = _mapping(data.get("evolution"))
+    flow_cfg = _mapping(evolution.get("flow"))
     orchestration = _mapping(data.get("orchestration"))
 
     return SymphonyConfig(
@@ -184,34 +184,19 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
             ),
         ),
         evolution=SymphonyEvolutionConfig(
-            enabled=_bool(
-                evolution.get("enabled"),
-                DEFAULT_EVOLUTION_ENABLED,
-            ),
             flow=SymphonyFlowDistillConfig(
+                # enabled 移到 flow 下；旧配置（enabled 在 evolution 层）向后兼容
                 enabled=_bool(
-                    evolution.get("flow", {}).get("enabled"),
-                    DEFAULT_FLOW_ENABLED,
+                    flow_cfg.get("enabled", evolution.get("enabled")),
+                    DEFAULT_EVOLUTION_ENABLED,
                 ),
-                min_edge_support=_positive_int(
-                    evolution.get("flow", {}).get("min_edge_support"),
-                    DEFAULT_FLOW_MIN_EDGE_SUPPORT,
+                min_successes=_positive_int(
+                    flow_cfg.get("min_successes"),
+                    DEFAULT_FLOW_MIN_SUCCESSES,
                 ),
-                min_edge_success_rate=_clamped_float(
-                    evolution.get("flow", {}).get("min_edge_success_rate"),
-                    DEFAULT_FLOW_MIN_EDGE_SUCCESS_RATE,
-                ),
-                min_successes_candidate=_positive_int(
-                    evolution.get("flow", {}).get("min_successes_candidate"),
-                    DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE,
-                ),
-                min_successes_verified=_positive_int(
-                    evolution.get("flow", {}).get("min_successes_verified"),
-                    DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED,
-                ),
-                min_pack_success_rate_verified=_clamped_float(
-                    evolution.get("flow", {}).get("min_pack_success_rate_verified"),
-                    DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE_VERIFIED,
+                min_pack_success_rate=_clamped_float(
+                    flow_cfg.get("min_pack_success_rate"),
+                    DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE,
                 ),
             ),
         ),
