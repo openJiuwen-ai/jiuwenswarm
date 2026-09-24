@@ -312,24 +312,27 @@ class SessionMessageService:
         }
 
     def _is_target_busy(self, session_id: str) -> bool:
-        return any(
-            getattr(self._admission, name, lambda _sid: False)(session_id)
-            for name in (
-                "is_user_active", "is_session_message_active",
-                "is_heartbeat_active", "is_session_message_blocked",
-            )
+        checks = (
+            "is_user_active", "is_session_message_active",
+            "is_heartbeat_active", "is_session_message_blocked",
         )
+        for name in checks:
+            probe = getattr(self._admission, name, None)
+            if probe is not None and probe(session_id):
+                return True
+        return False
 
     async def _require_session(self, session_id: str, user_id: str) -> dict[str, Any]:
         if not is_valid_session_id(session_id):
             raise SessionMessagingError("INVALID_ARGUMENT", "invalid session_id")
         metadata = await asyncio.to_thread(self._session_metadata, session_id)
-        if (
+        denied = (
             not metadata
+            or session_id in self._blocked_targets
             or not self._owner_matches(metadata, user_id)
             or not self._supported(metadata)
-            or session_id in self._blocked_targets
-        ):
+        )
+        if denied:
             raise SessionMessagingError(
                 "NOT_FOUND_OR_FORBIDDEN", "Session was not found"
             )
@@ -424,14 +427,16 @@ class SessionMessageService:
                 "HISTORY_CHANGED", "History changed; read again without a cursor"
             ) from exc
         messages = []
+        summary_keys = (
+            "id", "request_id", "role", "timestamp", "event_type",
+            "message_origin", "session_message_id",
+        )
         for record in page["messages"]:
             content = str(record.get("content") or record.get("error") or "")
-            messages.append({
-                key: record[key] for key in (
-                    "id", "request_id", "role", "timestamp", "event_type",
-                    "message_origin", "session_message_id",
-                ) if key in record
-            } | {"content": content[:max_output_chars], "truncated": len(content) > max_output_chars})
+            summary = {key: record[key] for key in summary_keys if key in record}
+            summary["content"] = content[:max_output_chars]
+            summary["truncated"] = len(content) > max_output_chars
+            messages.append(summary)
         return {
             "session_id": target_session_id,
             "title": str(metadata.get("title") or ""),
@@ -933,13 +938,11 @@ class SessionMessageService:
         key = (target_session_id, input_mode)
         task = self._workers.get(key)
         worker_busy = task is not None and not task.done()
-        target_blocked = target_session_id in self._blocked_targets
-        if (
-            self._stopping
-            or target_blocked
-            or worker_busy
+        target_blocked = (
+            target_session_id in self._blocked_targets
             or target_session_id in self._restart_held_targets
-        ):
+        )
+        if self._stopping or target_blocked or worker_busy:
             return
         worker = asyncio.create_task(
             self._consume_target(target_session_id, input_mode),
@@ -1232,13 +1235,9 @@ class SessionMessageService:
                 ):
                     self._executing_workers.pop(claimed.message_id, None)
                 try:
-                    if (
-                        claimed is not None
-                        and not waiting_confirmed
-                        and not submission_rejected
-                        and self._on_abandoned_wait is not None
-                    ):
-                        await self._on_abandoned_wait(claimed)
+                    if claimed is not None and self._on_abandoned_wait is not None:
+                        if not waiting_confirmed and not submission_rejected:
+                            await self._on_abandoned_wait(claimed)
                 finally:
                     if acquired:
                         await self._admission.end_session_message(target_session_id, run_id)

@@ -489,7 +489,11 @@ class SessionMessagingToolkit:
                                 "input_mode": {
                                     "type": "string",
                                     "enum": ["steer", "follow_up"],
-                                    "description": "默认 steer 在目标当前轮处理，空闲时启动新轮；follow_up 等待后独立执行。计划模式、活跃目标及暂不可注入时转为独立任务排队。",
+                                    "description": (
+                                        "默认 steer 在目标当前轮处理，空闲时启动新轮；"
+                                        "follow_up 等待后独立执行。"
+                                        "计划模式、活跃目标及暂不可注入时转为独立任务排队。"
+                                    ),
                                 },
                             },
                             "required": ["target_session_id", "message"],
