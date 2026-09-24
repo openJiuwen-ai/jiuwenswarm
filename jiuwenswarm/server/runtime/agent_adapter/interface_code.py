@@ -548,6 +548,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             auto_create_workspace=is_enterprise(),
             completion_timeout=config.get("completion_timeout", 3600.0),
         )
+        self._bind_subagent_timeout_wiring()
 
         # Keep ensure_initialized on the main event loop (same as interface_deep).
         # Running it via run_in_executor + asyncio.run in a worker thread poisons

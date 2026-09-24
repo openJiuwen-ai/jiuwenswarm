@@ -6717,6 +6717,14 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
+    def _bind_subagent_timeout_wiring(self) -> None:
+        """Enforce child invoke deadlines independently of Skill authorization."""
+        from jiuwenswarm.agents.harness.common.tools.subagent_executor.execution_timeout import (
+            install_subagent_timeout_wiring,
+        )
+
+        install_subagent_timeout_wiring(self._instance)
+
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
 
@@ -10780,6 +10788,7 @@ class JiuWenSwarmDeepAdapter:
                 )
                 self._bind_subagent_model_resolver()
                 self._bind_subagent_authorization_wiring()
+                self._bind_subagent_timeout_wiring()
 
                 _apply_llm_io_trace_patch()
 
