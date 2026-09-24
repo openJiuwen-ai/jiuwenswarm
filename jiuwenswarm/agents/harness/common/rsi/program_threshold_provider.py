@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from openjiuwen.rsi.artifact_rsi.program_opt import PuctProgramArtifactProvider
-from openjiuwen.rsi.artifact_rsi.program_opt.scorecard import solved_threshold
 from openjiuwen.rsi.events import EventNode
 
 logger = logging.getLogger(__name__)
+DEFAULT_SOLVED_THRESHOLD = 0.999
 
 
 def _solved_threshold(run_dir: str | Path) -> float | None:
@@ -21,7 +21,7 @@ def _solved_threshold(run_dir: str | Path) -> float | None:
     try:
         card = json.loads((Path(run_dir) / "scorecard.json").read_text(encoding="utf-8"))
         scorecard = card.get("scorecard", card)
-        threshold = solved_threshold(scorecard)
+        threshold = float(scorecard.get("solvedThreshold") or DEFAULT_SOLVED_THRESHOLD)
         return threshold if math.isfinite(threshold) else None
     except (OSError, ValueError, TypeError, AttributeError):
         logger.warning("无法读取程序优化的达标阈值: %s", run_dir)
@@ -31,9 +31,8 @@ def _solved_threshold(run_dir: str | Path) -> float | None:
 class ThresholdStoppingProgramProvider(PuctProgramArtifactProvider):
     """Complete a solved run and signal its other workers to stop.
 
-    The pinned Provider already prevents *new* expansions after a solved node.
-    Its stop flag also lets active model waits and the search thread wind down;
-    this adapter signals that flag without turning a solved task into a user
+    The Provider's stop flag prevents further expansions and lets active model
+    waits wind down. Signal it without turning a solved task into a user
     termination. A sandbox evaluation already in progress may still finish.
     """
 
