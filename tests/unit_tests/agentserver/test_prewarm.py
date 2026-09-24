@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -195,6 +196,16 @@ def _patch_phase12(monkeypatch: pytest.MonkeyPatch, *, import_exc=None, cp_exc=N
         cp,
         raising=False,
     )
+    # 阶段2.5 延迟 import common.utils，mock 模块属性即可拦截，
+    # 避免单测向真实 ~/.jiuwenswarm 写模板。
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.seed_tenant_agent_workspace", MagicMock(), raising=False
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_multi_tenant_user_workspace_dir",
+        MagicMock(side_effect=RuntimeError("isolated")),
+        raising=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -213,6 +224,37 @@ async def test_phase12_checkpointer_failure_does_not_raise(monkeypatch: pytest.M
 async def test_phase12_ok_completes(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_phase12(monkeypatch)
     await warmup_import_and_checkpointer()  # 全程不抛即通过
+
+
+@pytest.mark.asyncio
+async def test_phase25_preseeds_default_and_tenant_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """阶段2.5 对 default 租户与全部 service_*/agent_* 租户各补种一次。"""
+    base = tmp_path / "service_default" / "agent_default"
+    base.mkdir(parents=True)
+    for tenant in ("service_a/agent_1", "service_b/agent_2"):
+        (tmp_path / tenant).mkdir(parents=True)
+    # 非租户命名不参与批量补种
+    (tmp_path / "service_a" / "not_agent").mkdir(parents=True)
+
+    seed = MagicMock()
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.seed_tenant_agent_workspace", seed, raising=False
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_multi_tenant_user_workspace_dir",
+        MagicMock(return_value=base),
+        raising=False,
+    )
+
+    await warmup_import_and_checkpointer()
+
+    seeded = {call.args[0] for call in seed.call_args_list}
+    assert base in seeded
+    assert tmp_path / "service_a" / "agent_1" in seeded
+    assert tmp_path / "service_b" / "agent_2" in seeded
+    assert tmp_path / "service_a" / "not_agent" not in seeded
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.utils import (
     AsyncLRUCache,
+    get_agent_workspace_relative_dir,
     get_multi_tenant_user_workspace_dir,
     seed_tenant_agent_workspace,
 )
@@ -497,9 +498,12 @@ class TenantAgentPool:
                     agent_id=request_agent_id,
                 )
 
-                # 租户目录懒创建时补种 AGENT/SOUL/IDENTITY/HEARTBEAT/USER/MEMORY.md
-                # 等模板（prepare_workspace 只初始化默认租户；幂等，已存在跳过）。
-                seed_tenant_agent_workspace(agent_dir_path)
+                # 播种改为骨架存在即跳过：relay 连接段会为每个 agent 各调一次
+                # get_agent，逐个全量幂等检查拖慢首请求；补种由 Prewarm 启动期兜底。
+                if not (
+                    agent_dir_path / get_agent_workspace_relative_dir() / "AGENT.md"
+                ).is_file():
+                    seed_tenant_agent_workspace(agent_dir_path)
 
                 import os
                 # 企业版：stable string instance id (legacy "aid_sid" form).
