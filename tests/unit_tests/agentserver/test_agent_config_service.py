@@ -121,6 +121,13 @@ class TestAgentConfigService:
         assert agent.prompt  # 有 prompt 正文
 
     @staticmethod
+    def test_get_agent_strips_name(service):
+        agent = service.get_agent("  Explore  ")
+        assert agent is not None
+        assert agent.name == "Explore"
+        assert agent.source == "builtin"
+
+    @staticmethod
     def test_get_agent_returns_none_for_unknown(service):
         assert service.get_agent("nonexistent") is None
 

@@ -259,6 +259,7 @@ class AgentConfigService:
 
         返回活跃版本（未被 shadow 的），与 list_agents 保持一致的优先级语义。
         """
+        name = (name or "").strip()
         agents = self.list_agents()
         for a in agents:
             if a.name == name and a.shadowed_by is None:
