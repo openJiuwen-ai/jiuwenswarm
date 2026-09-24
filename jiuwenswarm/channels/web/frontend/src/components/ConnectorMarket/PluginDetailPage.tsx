@@ -11,6 +11,7 @@ import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { IconAvatar, PillButton, DetailLinkButton } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
+import { pluginUninstallDestination } from '../../features/equipmentMarketplace';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 
 interface PluginDetailPageProps {
@@ -18,7 +19,7 @@ interface PluginDetailPageProps {
   onBack: () => void;
   /** 从"我的扩展"里点进来的，还是从插件广场点进来的——面包屑和返回落点不一样。 */
   fromMy?: boolean;
-  /** "我的插件"卸载后 show() 探测发现条目已不存在时调用，退出到"我的插件"列表页。 */
+  /** 从“我的扩展”卸载成功后调用，退出到“我的扩展 / 插件”列表页。 */
   onDeleted?: () => void;
   /** "会话使用"点击——真正入口是 ChatPanel 输入框的"+"面板，这里没有真实目的地。 */
   onUse?: (runtimePackageName: string) => void;
@@ -49,19 +50,12 @@ interface PluginDetailPageProps {
 // 回调闭包会读到这次渲染里 setState 生效前的旧值，导致连完误判"不需要跳转"；ref 没有这个
 // 陈旧闭包问题）。
 //
-// 卸载后的收尾行为，广场和我的不对称（按新方案文案逐条对应）：
-// - 广场视角（!fromMy）："卸载后回到不可用状态"——留在详情页，卡片自然变成"未安装"展示，
-//   不用跳转。
-// - 我的视角（fromMy）："卸载后通过 show 去 get 这个插件，还有数据就留在详情页继续显示，
-//   没有就退出到我的插件列表页"——卸载完重新拉一次详情，probe 出这个条目还在不在。插件目前
-//   uninstall 从不会让条目从 plugin_packages.list/show 里消失（只是 installed 变 false，见
-//   pluginPackageStore.ts uninstall 的注释），所以这条"读不到就退出"分支在当前后端行为下大概率
-//   不会触发，但逻辑按方案原文实现，为将来后端行为变化（真的会让条目消失）留好退路。
+// 卸载会删除插件的本地文件。从“我的扩展”进入时，成功后返回“我的扩展 / 插件”；从广场进入时
+// 保持原来的详情页行为，由广场资产定义继续展示未安装状态。
 export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseExample }: PluginDetailPageProps) {
   const { t, i18n } = useTranslation();
   const detail = usePluginPackageStore((s) => s.detailCache[id]);
   const loadDetail = usePluginPackageStore((s) => s.loadDetail);
-  const probeExists = usePluginPackageStore((s) => s.probeExists);
   const storeBusy = usePluginPackageStore(s => s.busyId === id || !!s.installingIds[id]);
   const installed = usePluginPackageStore((s) => s.installed[id] ?? false);
   const connectionState = usePluginPackageStore((s) => s.connectionStateMap[id] ?? 'disconnected');
@@ -69,6 +63,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   const clearInstallPending = usePluginPackageStore((s) => s.clearInstallPending);
   const install = usePluginPackageStore((s) => s.install);
   const uninstall = usePluginPackageStore((s) => s.uninstall);
+  const deletePackage = usePluginPackageStore((s) => s.deletePackage);
   const [installing, setInstalling] = useState(false);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
@@ -167,19 +162,17 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
 
   async function handleUninstall() {
     setUninstalling(true);
+    if (fromMy) {
+      const removed = await deletePackage(id);
+      setUninstalling(false);
+      if (!removed) return;
+      setConfirmUninstall(false);
+      if (pluginUninstallDestination(true, removed) === 'my-plugin') onDeleted?.();
+      return;
+    }
     await uninstall(id);
     setConfirmUninstall(false);
-    if (fromMy) {
-      // 2026-08-21 用户反馈根因确认：后端卸载会把包目录整个删掉，探测"还在不在"用 probeExists
-      // （不是 loadDetail）——404 在这里是预期内的正常结果，不该像 loadDetail 那样在失败时顺带
-      // 弹一条红色错误 Toast，把"卸载完预期中的探测404"和"真错误"混在一起，见 pluginPackageStore.ts
-      // probeExists 的注释。
-      const stillExists = await probeExists(id);
-      setUninstalling(false);
-      if (!stillExists) onDeleted?.();
-    } else {
-      setUninstalling(false);
-    }
+    setUninstalling(false);
   }
 
   return (
@@ -215,11 +208,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   onClick={() => window.alert(t('connectorMarket.card.editNotSupportedYet'))}
                 />
               )}
-              {/* 2026-08-31 用户要求：自定义插件（source==='local'）无论安装/连接处于什么状态，
-              都要能卸载（刚 create 完还没安装时也不例外）——卸载走的就是后端
-              uninstall_plugin_package（会把包目录整个删掉，见 pluginPackageStore.ts），对自定义
-              插件语义上等同于"删除这个插件"。built-in 插件仍保持"装了才有卸载"。 */}
-              {(installed || detail.source === 'local') && (
+              {installed && (
                 <DetailLinkButton
                   icon={<Trash2 size={14} />}
                   label={t('connectorMarket.card.uninstall')}

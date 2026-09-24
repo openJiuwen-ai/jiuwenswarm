@@ -105,6 +105,8 @@ const messages = {
     authRequired: '登录状态已失效，请重新登录。',
     resourceNotFound: '找不到本地资源，请确认资源仍然存在。',
     versionConflict: '该版本已提交过，请修改版本；确认需要覆盖时可在高级设置中开启覆盖。',
+    hubRequestFailed:
+      'Hub 未接受本次发布请求，可能是版本已存在或发布信息不符合 Hub 要求。请检查版本和发布信息后重试；如仍失败，请联系 Hub 管理员。',
     statusFailed: '任务查询暂时失败；后台任务仍可能运行，可刷新恢复。',
     commitUncertain: '提交响应未收到。请找回此次提交或刷新记录，不要创建新提交。',
     commitRejected: '后台拒绝了此次提交。请返回修改并重新检查。',
@@ -194,6 +196,8 @@ const messages = {
     resourceNotFound: 'The local resource was not found. Confirm that it still exists.',
     versionConflict:
       'This version was already submitted. Change it, or explicitly enable overwrite in advanced settings.',
+    hubRequestFailed:
+      'Hub did not accept this publishing request. The version may already exist, or the publishing information may not meet Hub requirements. Check the version and publishing information, then retry. If the problem continues, contact the Hub administrator.',
     statusFailed: 'Status is temporarily unavailable. The background task may still be running; refresh to recover.',
     commitUncertain:
       'No submission response was received. Recover this submission or refresh records before starting another.',

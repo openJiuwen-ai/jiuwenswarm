@@ -530,6 +530,7 @@ class TestAgentGroupLifecycle:
             "en": "交付评审专家团",
         }
         assert card["installed"] is False
+        assert card["capabilities"]["canPublish"] is False
         assert card["persona"] == "先独立分析，再由 Leader 汇总结论。"
         assert card["tags"] == [
             {
@@ -629,6 +630,7 @@ class TestAgentGroupLifecycle:
         assert catalog.is_agent_group_installed("delivery-review-team") is True
         card = catalog.show_agent_group("delivery-review-team")
         assert card is not None and card["capabilities"]["canUse"] is True
+        assert card["capabilities"]["canPublish"] is True
 
         catalog.uninstall_agent_group({"id": "delivery-review-team"})
         assert catalog.show_agent_group("delivery-review-team") is None
@@ -1047,14 +1049,13 @@ class TestCreateInstallUninstall:
             assert package_id not in ids
 
     @pytest.mark.parametrize("origin", ["preset", "local"])
-    def test_uninstall_plugin_still_deletes(
+    def test_uninstall_plugin_deletes_local_files(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         extension_workspace: Path,
         origin: str,
     ) -> None:
-        """Plugin uninstall keeps the legacy destructive behavior."""
         package_id = "preset-pkg" if origin == "preset" else "my-local"
         if origin == "preset":
             point_resources_shelf(monkeypatch, tmp_path, plugins=[package_id])
