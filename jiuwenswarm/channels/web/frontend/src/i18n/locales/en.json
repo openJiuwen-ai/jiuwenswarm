@@ -1100,6 +1100,7 @@
     "toggleLabel": "Pursue Goal",
     "toolbarUnavailable": "A goal is already in progress. Finish or clear it first.",
     "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
+    "toolbarUnavailableProcessing": "A reply is in progress, so Goal isn't available",
     "overwriteConfirm": "The current goal \"{{currentObjective}}\" is unfinished. Replace it with \"{{requestedObjective}}\"?",
     "closeTag": "Cancel goal",
     "closeTagDisabled": "Cannot close the goal while the session is busy",
