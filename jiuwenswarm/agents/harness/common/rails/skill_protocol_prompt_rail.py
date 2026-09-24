@@ -60,6 +60,7 @@ _CN_PROTOCOL = """## 技能执行规范（强制）
    - 其他情况（无关问题、闲聊、新任务、同技能新需求、显式取消、意图不明）→ 一律视为放弃原任务：
      先用 `todo_modify` 把所有 `in_progress`/`pending` 项标为 `cancelled`，再回应新请求。
      若新请求需要技能，重新用 `skill_tool` 加载并**重建** todo，不要沿用旧 todo。
+10. **产物交付**：按 SKILL.md 完成导出与验收且最终交付物已落盘后，若可用工具列表中有 `send_file_to_user`，**必须**调用 `send_file_to_user` 交付给用户；**禁止**仅用文字告知本地路径。在 `send_file_to_user` 成功之前，**不得**用 `todo_modify` 将交付相关项标为 `completed`。
 
 ⚠️ 用户发 N 条消息 ≠ N 个并发任务；新消息**默认覆盖**旧任务，**不追加**。禁止措辞："让我先完成之前的"/"先把之前的收尾"/"两个都做"/"先 X 再 Y"（除非用户原话已明示并列）。仅凭 history 有两条任务消息就推断"用户想做两个"是错误推理。
 """
@@ -103,6 +104,7 @@ Then execute the workflow; the rules below govern execution.
      `todo_modify` to mark every `in_progress`/`pending` item `cancelled`, then respond to the new request.
      If the new request needs a skill, load it again via `skill_tool` and **rebuild** the todo list
      instead of reusing the old one.
+10. **Deliver artifacts**: After completing export and acceptance per SKILL.md and the final deliverable is on disk, if `send_file_to_user` is in your available tool list, you **must** call `send_file_to_user` to deliver it to the user; **never** substitute a text reply with a local path only. Do **not** call `todo_modify` to mark delivery-related items `completed` until `send_file_to_user` succeeds.
 
 ⚠️ N user messages ≠ N parallel tasks; a new substantive message **replaces** the prior request by default — it does NOT stack. Forbidden phrasing: "let me finish the previous task first" / "let me wrap that up" / "let me do both" / "first X then Y" (unless the user's own words explicitly stated parallel intent). Inferring multiple parallel tasks purely from history is a **wrong inference** that MUST be avoided.
 """
