@@ -25,7 +25,7 @@ import { CircleAlert } from 'lucide-react';
 import { ApplicationTaskControls } from '../../applicationPlugins/ApplicationTaskControls';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
-import RunningStatusIcon from '../../assets/subagent/loading.svg?react';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import statusSuccessIcon from '../../assets/work-mode/status-success.svg';
 import statusWaitingIcon from '../../assets/work-mode/status-waiting.svg';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
@@ -94,7 +94,7 @@ export function CompactTaskList({
             className="flex h-4 w-4 shrink-0 items-center justify-center overflow-hidden"
             data-testid="team-area-task-planning-task-status-icon"
           >
-            <RunningStatusIcon className="h-4 w-4 shrink-0 text-muted animate-spin" aria-hidden="true" />
+            <LoadingSpinner />
           </span>
         ) : columnKey === 'cancelled' ? (
           <span

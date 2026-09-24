@@ -8,6 +8,7 @@ import {
   definitiveCommitRejection,
 } from '../features/assetPublishState';
 import { getStoredOAuthProvider, getStoredOAuthToken } from '../utils/gitcodeOAuth';
+import { publishFailureKey } from '../features/assetPublishErrors';
 import type {
   AssetReference,
   PublishDescription,
@@ -107,8 +108,8 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
         else setRecord(null);
         setError('');
       }
-    } catch {
-      if (current(version)) setError('requestFailed');
+    } catch (failure) {
+      if (current(version)) setError(publishFailureKey(failure));
     }
   }, [reference.kind, reference.local_id, current, description, updateSubmission]);
   useEffect(() => {
@@ -137,8 +138,8 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
         if (!edited.current) setMetadata({ ...emptyMetadata, ...result.defaults });
         setError('');
       })
-      .catch(() => {
-        if (current(version)) setError('requestFailed');
+      .catch((failure) => {
+        if (current(version)) setError(publishFailureKey(failure));
       });
   }, [scope, reference.kind, reference.local_id, current, updateSubmission]);
   useEffect(() => {
@@ -198,8 +199,8 @@ export function useAssetPublish(reference: AssetReference, restored?: PublishMet
     try {
       const result = await assetPublishApi.prepare(reference, metadata, targetAssetId, force);
       if (current(version)) setDraft(result);
-    } catch {
-      if (current(version)) setError('requestFailed');
+    } catch (failure) {
+      if (current(version)) setError(publishFailureKey(failure));
     } finally {
       if (current(version)) {
         busyRef.current = false;

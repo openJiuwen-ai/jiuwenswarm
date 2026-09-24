@@ -257,4 +257,5 @@ export interface RsiArtifactFileGetResult {
   type: string;
   encoding: 'text' | 'base64';
   content: string;
+  download_url?: string;
 }

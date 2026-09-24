@@ -50,7 +50,7 @@ import DeleteIcon from '../../assets/work-mode/delete.svg?react';
 import EditIcon from '../../assets/work-mode/edit.svg?react';
 import FolderFoldIcon from '../../assets/work-mode/folder-fold.svg?react';
 import FolderIcon from '../../assets/work-mode/folder.svg?react';
-import LoadingIcon from '../../assets/subagent/loading.svg?react';
+import { LoadingSpinner } from '../../components/ui/LoadingSpinner/LoadingSpinner';
 import MoreIcon from '../../assets/work-mode/more-rimless.svg?react';
 import NewTaskIcon from '../../assets/work-mode/new-task.svg?react';
 import PinIcon from '../../assets/work-mode/pin.svg?react';
@@ -272,8 +272,8 @@ function ConversationListItem({
     );
   } else if (indicator === 'processing') {
     status = (
-      <span title={getTaskStatusLabel(indicator, t)} data-testid="multi-session-conversation-list-item-status-processing">
-        <LoadingIcon className="conversation-list-item__loader" aria-hidden="true" />
+      <span className="conversation-list-item__status-processing" title={getTaskStatusLabel(indicator, t)} data-testid="multi-session-conversation-list-item-status-processing">
+        <LoadingSpinner size={14} />
       </span>
     );
   } else if (indicator === 'unread') {
@@ -1186,7 +1186,7 @@ export function ConversationSidebar({
     return <Archive aria-hidden size={16} strokeWidth={1.8} />;
   }
 
-  // 移除/恢复项目失败时的可翻译文案；重名冲突与定时任务停止失败都给出可操作提示。
+  // 移除/恢复项目失败时的可翻译文案；重名冲突、定时任务停止失败与会话运行中都给出可操作提示。
   function projectActionErrorText(error: unknown): string {
     const code = getArchiveErrorCode(error);
     if (code === 'PROJECT_NAME_CONFLICT') {
@@ -1194,6 +1194,9 @@ export function ConversationSidebar({
     }
     if (code === 'CRON_STOP_FAILED') {
       return t('multiSession.project.errors.cronStopFailed');
+    }
+    if (code === 'SESSION_BUSY') {
+      return t('multiSession.project.errors.removeSessionBusy');
     }
     return error instanceof Error ? error.message : String(error);
   }

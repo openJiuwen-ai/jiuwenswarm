@@ -604,13 +604,6 @@
   white-space: nowrap;
 }
 
-.conversation-list-item__loader {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-  color: var(--color-text-meta);
-  animation: conversation-spin 0.9s linear infinite;
-}
 
 .conversation-list-item__status-dot {
   width: 8px;
@@ -628,6 +621,11 @@
 }
 
 .conversation-list-item__status-waiting {
+  display: inline-flex;
+  align-items: center;
+}
+
+.conversation-list-item__status-processing {
   display: inline-flex;
   align-items: center;
 }
@@ -893,11 +891,6 @@
   opacity: 0.5;
 }
 
-@keyframes conversation-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 
 /* ---- 定时任务折叠列表 ---- */
 

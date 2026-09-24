@@ -1,6 +1,6 @@
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import PendingIcon from '../../assets/pending.svg?react';
-import LoadingIcon from '../../assets/subagent/loading.svg?react';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { getMemberPlainName, getMemberStatusKey, type TeamMember } from './shared';
 
 interface TaskProgress {
@@ -76,7 +76,7 @@ export function MemberListItem({
       </div>
       {compact ? (
         isRunning && !showIdleStatus ? (
-          <LoadingIcon className="h-4 w-4 shrink-0 text-muted animate-spin" />
+          <LoadingSpinner testId="team-area-member-item-loading" />
         ) : (
           <PendingIcon className="w-4 h-4 text-text-muted" />
         )
@@ -112,7 +112,7 @@ export function MemberListItem({
           </span>
         </div>
       ) : isRunning && !showIdleStatus ? (
-        <LoadingIcon className="h-4 w-4 shrink-0 text-muted animate-spin" />
+        <LoadingSpinner testId="team-area-member-item-loading" />
       ) : (
         <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
       )}

@@ -1707,7 +1707,6 @@ class DesktopRuntime:
 
             dialog = WinForms.Form()
             dialog.Text = f"关闭 {DISPLAY_NAME}"
-            dialog.ClientSize = Size(430, 238)
             dialog.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog
             dialog.StartPosition = WinForms.FormStartPosition.CenterParent
             dialog.MaximizeBox = False
@@ -1720,37 +1719,39 @@ class DesktopRuntime:
             message = WinForms.Label()
             message.Text = "关闭窗口后，您希望隐藏到系统托盘，还是退出应用？"
             message.AutoSize = False
+            message.Size = Size(382, message.GetPreferredSize(Size(382, 0)).Height)
             message.Location = Point(24, 24)
-            message.Size = Size(382, 24)
+            first_option_top = max(62, message.Bottom + 14)
 
             hide_option = WinForms.RadioButton()
             hide_option.Text = "最小化到托盘"
             hide_option.Checked = True
             hide_option.AutoSize = True
-            hide_option.Location = Point(28, 62)
+            hide_option.Location = Point(28, first_option_top)
 
             quit_option = WinForms.RadioButton()
             quit_option.Text = "退出应用"
             quit_option.AutoSize = True
-            quit_option.Location = Point(28, 94)
+            quit_option.Location = Point(28, first_option_top + 32)
 
             remember = WinForms.CheckBox()
             remember.Text = "记住我的选择"
             remember.Checked = False
             remember.AutoSize = True
-            remember.Location = Point(24, 138)
+            remember.Location = Point(24, first_option_top + 76)
 
             confirm_button = WinForms.Button()
             confirm_button.Text = "确认"
             confirm_button.DialogResult = WinForms.DialogResult.OK
-            confirm_button.Location = Point(238, 186)
+            confirm_button.Location = Point(238, first_option_top + 124)
             confirm_button.Size = Size(80, 32)
 
             cancel_button = WinForms.Button()
             cancel_button.Text = "取消"
             cancel_button.DialogResult = WinForms.DialogResult.Cancel
-            cancel_button.Location = Point(326, 186)
+            cancel_button.Location = Point(326, first_option_top + 124)
             cancel_button.Size = Size(80, 32)
+            dialog.ClientSize = Size(430, cancel_button.Bottom + 20)
 
             dialog.Controls.Add(message)
             dialog.Controls.Add(hide_option)

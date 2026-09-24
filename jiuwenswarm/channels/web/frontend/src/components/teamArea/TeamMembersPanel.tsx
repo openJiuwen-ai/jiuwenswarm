@@ -15,7 +15,7 @@ import { contextCompressionRunningText } from '../../utils/contextCompression';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import teamIcon from '../../assets/team.svg';
 import PendingIcon from '../../assets/pending.svg?react';
-import LoadingIcon from '../../assets/subagent/loading.svg?react';
+import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 
 import BackIcon from '../../assets/back.svg?react';
 import { MemberListItem } from './MemberListItem';
@@ -488,7 +488,7 @@ const TeamMemberOverviewCard = memo(function TeamMemberOverviewCard({
   const showIdleStatus = shouldPresentTeamMemberIdle(member.member_id, member.status, connectionPresentation);
   const statusIcon =
     isRunning && !showIdleStatus ? (
-      <LoadingIcon className="h-4 w-4 shrink-0 text-muted animate-spin" />
+      <LoadingSpinner testId="team-area-member-overview-card-loading" />
     ) : (
       <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
     );

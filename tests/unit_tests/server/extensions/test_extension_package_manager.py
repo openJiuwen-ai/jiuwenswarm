@@ -29,6 +29,12 @@ from tests.unit_tests.server.extensions.conftest import (
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 
 
+def test_packaged_agent_group_resources_exclude_sample_group():
+    resources = catalog.get_equipment_resources_agent_groups_dir()
+
+    assert resources is None or not (resources / "sample-expert-group").exists()
+
+
 @pytest.mark.asyncio
 async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
     from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetSummary, HubSearchPage
@@ -700,6 +706,85 @@ class TestAgentGroupLifecycle:
         assert imported.is_dir()
         assert catalog.is_agent_group_installed("imported-review") is True
         assert catalog.resolve_agent_group_dir("imported-review") == imported.resolve()
+
+    def test_import_rejects_duplicate_display_name(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        existing = _seed_valid_agent_group(
+            extension_workspace,
+            "existing-review",
+            under="local",
+        )
+        existing_manifest = json.loads(
+            (existing / "manifest.json").read_text(encoding="utf-8")
+        )
+        existing_manifest["display_name"] = {
+            "zh": "交付评审专家团",
+            "en": "Delivery Review Team",
+        }
+        (existing / "manifest.json").write_text(
+            json.dumps(existing_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        source_workspace = tmp_path / "source-home" / "agent" / "workspace"
+        source = _seed_valid_agent_group(
+            source_workspace,
+            "another-review",
+            under="local",
+        )
+        source_manifest = json.loads(
+            (source / "manifest.json").read_text(encoding="utf-8")
+        )
+        source_manifest["display_name"] = {
+            "zh": "交付评审专家团",
+            "en": "Another Review Team",
+        }
+        (source / "manifest.json").write_text(
+            json.dumps(source_manifest, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(catalog.AgentGroupPackageError) as exc_info:
+            catalog.import_agent_group({"path": str(source)})
+
+        assert exc_info.value.code == "AGENT_GROUP_DUPLICATE"
+        assert "existing-review" in str(exc_info.value)
+        assert not (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "local"
+            / "another-review"
+        ).exists()
+
+    def test_import_rootless_hub_group_archive_writes_local_installed(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        source_workspace = tmp_path / "source-home" / "agent" / "workspace"
+        source = _seed_valid_agent_group(
+            source_workspace,
+            "hub-review",
+            under="local",
+        )
+        archive = tmp_path / "hub-review.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            for path in source.rglob("*"):
+                if path.is_file():
+                    zf.write(path, path.relative_to(source))
+
+        result = catalog.import_agent_group({"path": str(archive)})
+
+        assert result == {"id": "hub-review"}
+        imported = (
+            extension_workspace.parent.parent
+            / ".agent_teams"
+            / AGENT_GROUPS
+            / "local"
+            / "hub-review"
+        )
+        assert imported.is_dir()
+        assert catalog.is_agent_group_installed("hub-review") is True
 
     def test_resource_group_install_and_uninstall_preserves_shelf_card(
         self,

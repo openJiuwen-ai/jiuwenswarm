@@ -457,6 +457,24 @@ def update_skill_evolution_enabled_in_config(enabled: bool) -> None:
     update_config(mutator)
 
 
+def update_ttse_enabled_in_config(enabled: bool) -> None:
+    """Atomically update the canonical ``react.ttse.enabled`` switch."""
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        react = data.get("react")
+        if not isinstance(react, dict):
+            react = {}
+            data["react"] = react
+        ttse = react.get("ttse")
+        if not isinstance(ttse, dict):
+            ttse = {}
+            react["ttse"] = ttse
+        ttse["enabled"] = bool(enabled)
+        return data
+
+    update_config(mutator)
+
+
 def set_auto_memory_enabled(enabled: bool) -> None:
     """Set auto-memory enabled status in config.
 

@@ -288,6 +288,7 @@ class AssetPublishAPI:
                     metadata.get("version", ""),
                     params.get("target_asset_id") or None,
                 )
+                force = params.get("force", False)
                 prepared = await self.service.prepare(
                     scope,
                     local_id,
@@ -298,15 +299,25 @@ class AssetPublishAPI:
                             for k, v in metadata.items()
                             if k not in {"asset_name", "version"}
                         },
-                        "force": params.get("force", False),
+                        "force": force,
                     },
+                )
+                version_conflict = not force and any(
+                    record.get("package_name") == identity.package_name
+                    and record.get("version") == identity.version
+                    and record.get("execution_status") != "failed"
+                    for record in self.service.records(scope, kind, local_id)
                 )
                 return {
                     **prepared,
                     "artifact_sha256": prepared["checksum_sha256"],
-                    "can_submit": True,
+                    "can_submit": not version_conflict,
                     "warnings": [],
-                    "errors": [],
+                    "errors": (
+                        [{"code": "VERSION_CONFLICT", "field": "version"}]
+                        if version_conflict
+                        else []
+                    ),
                 }
             if method == "commit":
                 return await self.service.commit(

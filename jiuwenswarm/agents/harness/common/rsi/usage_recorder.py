@@ -32,27 +32,55 @@ class RsiUsageRecorder:
         # events do not get added together.
         self._cumulative: dict[str, Usage] = {}
         self._cumulative_by_iteration: dict[str, dict[int, Usage]] = {}
+        # EventUsage.event_id is the ModelUsageObserver call sequence.  It lets
+        # us add only calls beyond a cumulative snapshot's call_count watermark.
+        self._calls_by_sequence: dict[str, dict[int, Usage]] = {}
+        # Keep seen IDs after snapshots advance so replayed, already-covered calls
+        # remain idempotent in usage_by_node as well as in the task total.
+        self._seen_call_sequences: dict[str, set[int]] = {}
+        # Some legacy engine events have no call sequence.  Treat those received
+        # after a snapshot as deltas and fold them into the next changed snapshot.
+        self._after_cumulative: dict[str, Usage] = {}
 
     def record(
         self,
         task_id: str,
         node_ref: str | None,
         model_call: RsiModelCall,
+        *,
+        call_sequence: int | None = None,
     ) -> None:
+        sequence = _safe_positive_int(call_sequence)
+        included_in_cumulative = False
+        if sequence is not None:
+            cumulative = self._cumulative.get(task_id)
+            included_in_cumulative = cumulative is not None and sequence <= cumulative.call_count
+            seen = self._seen_call_sequences.setdefault(task_id, set())
+            if sequence in seen:
+                return
+            seen.add(sequence)
+
         node_id = node_ref or _ROOT_NODE
         if task_id not in self._by_node:
             self._by_node[task_id] = {}
         usage = self._by_node[task_id].setdefault(node_id, Usage())
         if node_id != _ROOT_NODE and node_id not in self._node_sequence.setdefault(task_id, []):
             self._node_sequence[task_id].append(node_id)
-        usage.merge(
-            Usage(
-                tokens=model_call.tokens,
-                call_count=model_call.call_count,
-            )
-        )
+        recorded = Usage(tokens=model_call.tokens, call_count=model_call.call_count)
+        usage.merge(recorded)
+        if sequence is not None and not included_in_cumulative:
+            self._calls_by_sequence.setdefault(task_id, {})[sequence] = _copy_usage(recorded)
+        elif task_id in self._cumulative:
+            if sequence is None:
+                self._after_cumulative.setdefault(task_id, Usage()).merge(recorded)
 
-    def record_engine_event(self, task_id: str, payload: dict[str, Any]) -> None:
+    def record_engine_event(
+        self,
+        task_id: str,
+        payload: dict[str, Any],
+        *,
+        call_sequence: int | None = None,
+    ) -> None:
         """从 ``progress.usage`` 事件载荷归一记录（内部 v3 §3.3）。"""
         model_call_raw = payload.get("model_call")
         if is_dataclass(model_call_raw):
@@ -72,14 +100,35 @@ class RsiUsageRecorder:
             call_count=int(model_call_raw.get("call_count") or 1),
             tokens=tokens,
         )
-        self.record(task_id, payload.get("node_ref"), model_call)
+        self.record(task_id, payload.get("node_ref"), model_call, call_sequence=call_sequence)
 
     def record_cumulative(self, task_id: str, usage: Any, *, iteration: int | None = None) -> None:
         """Record a Provider cumulative usage snapshot idempotently."""
         parsed = _usage_from_value(usage)
         if parsed is None:
             return
-        self._cumulative[task_id] = parsed
+        previous = self._cumulative.get(task_id)
+        if previous is None:
+            self._cumulative[task_id] = parsed
+            self._after_cumulative[task_id] = Usage()
+        elif parsed != previous:
+            # The changed snapshot may absorb some or all unsequenced deltas.
+            # Preserve their already-visible total while promoting the snapshot,
+            # then start a fresh delta window. Unchanged snapshots must not clear
+            # that window: they may be stale while calls continue arriving.
+            current = _copy_usage(previous)
+            current.merge(self._after_cumulative.get(task_id, Usage()))
+            self._cumulative[task_id] = _max_usage(current, parsed)
+            self._after_cumulative[task_id] = Usage()
+
+        watermark = self._cumulative[task_id].call_count
+        calls = self._calls_by_sequence.get(task_id)
+        if calls is not None:
+            self._calls_by_sequence[task_id] = {
+                sequence: call_usage
+                for sequence, call_usage in calls.items()
+                if sequence > watermark
+            }
         if iteration is not None:
             try:
                 index = int(iteration)
@@ -93,8 +142,15 @@ class RsiUsageRecorder:
         if task_id not in self._by_node and task_id not in self._cumulative:
             raise RsiTaskNotFound(task_id)
         nodes = self._by_node.get(task_id, {})
-        total = _copy_usage(self._cumulative.get(task_id)) if task_id in self._cumulative else Usage()
-        if task_id not in self._cumulative:
+        if task_id in self._cumulative:
+            total = _copy_usage(self._cumulative[task_id])
+            total.merge(self._after_cumulative.get(task_id, Usage()))
+            watermark = self._cumulative[task_id].call_count
+            for sequence, usage in self._calls_by_sequence.get(task_id, {}).items():
+                if sequence > watermark:
+                    total.merge(usage)
+        else:
+            total = Usage()
             for usage in nodes.values():
                 total.merge(usage)
         if task_id in self._cumulative:
@@ -178,6 +234,29 @@ def _copy_usage(value: Usage | None) -> Usage:
         cost_estimate=value.cost_estimate,
         call_count=value.call_count,
     )
+
+
+def _max_usage(left: Usage, right: Usage) -> Usage:
+    """Keep cumulative counters monotonic when promoting a refreshed snapshot."""
+    return Usage(
+        tokens=Tokens(
+            input=max(left.tokens.input, right.tokens.input),
+            output=max(left.tokens.output, right.tokens.output),
+            cache_hit=max(left.tokens.cache_hit, right.tokens.cache_hit),
+        ),
+        cost_estimate=max(left.cost_estimate, right.cost_estimate),
+        call_count=max(left.call_count, right.call_count),
+    )
+
+
+def _safe_positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _safe_int(value: Any) -> int:

@@ -56,6 +56,7 @@ export interface AgentCatalogListOptions {
   enrichTags?: boolean;
   filter?: 'builtin+hub' | 'mine';
   includeTeamCompatibility?: boolean;
+  query?: string;
 }
 
 export interface SkillListOptions {
@@ -83,6 +84,7 @@ export interface AgentManagementClient {
 export interface AgentGroupListOptions {
   filter?: 'builtin' | 'builtin+hub' | 'local' | 'all';
   cache_mode?: 'prefer_cache';
+  query?: string;
 }
 
 export interface AgentGroupManagementClient {

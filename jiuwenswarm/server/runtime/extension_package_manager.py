@@ -42,6 +42,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
     HubDownloadRequest,
     HubSearchRequest,
     create_default_hub_asset_port,
+    hub_asset_matches_visible_query,
 )
 from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
     HubInstallStateStore,
@@ -1597,7 +1598,7 @@ def _assert_package_id_available(
 
 
 def _assert_agent_group_name_available(name: str) -> None:
-    """Reject create when an AgentGroup already has the same display name."""
+    """Reject create/import when an AgentGroup has the same display name."""
     normalized_name = name.casefold()
     package_dirs = [
         *_iter_resource_package_dirs(_AGENT_GROUP_KIND),
@@ -1614,7 +1615,7 @@ def _assert_agent_group_name_available(name: str) -> None:
             for value in display_names.values()
         ):
             raise AgentGroupPackageError(
-                f"agent_group display name already exists: {name}",
+                f"agent_group display name already exists: {name} ({package_dir.name})",
                 "AGENT_GROUP_DUPLICATE",
             )
 
@@ -1776,7 +1777,7 @@ def _hub_list_card(item: HubAssetSummary) -> dict[str, Any]:
         "packageName": package_name,
         "displayName": _i18n(item.display_name, package_name),
         "displayDescription": _i18n(item.short_description),
-        "category": "",
+        "category": item.category_name,
         "source": "hub",
         "installed": False,
         "connection_state": "disconnected",
@@ -1784,6 +1785,33 @@ def _hub_list_card(item: HubAssetSummary) -> dict[str, Any]:
         "tags": [_i18n(tag, tag) for tag in item.tags],
         "version": item.public_latest_version,
     }
+
+
+def _matches_market_search(card: dict, query: str) -> bool:
+    """Match local market cards using the same user-visible fields as Hub."""
+    values: list[str] = []
+    for key in (
+        "name",
+        "packageName",
+        "displayName",
+        "description",
+        "displayDescription",
+        "category",
+        "tags",
+    ):
+        value = card.get(key)
+        if isinstance(value, dict):
+            values.extend(str(item) for item in value.values())
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                if isinstance(item, dict):
+                    values.extend(str(part) for part in item.values())
+                else:
+                    values.append(str(item))
+        elif value is not None:
+            values.append(str(value))
+    visible_text = " ".join(values).casefold()
+    return all(term in visible_text for term in query.casefold().split())
 
 
 async def _list_equipment_with_hub(
@@ -1823,12 +1851,26 @@ async def _list_equipment_with_hub(
     if source_filter in {"local", "mine"}:
         return _apply_list_source_filter(list(cards_by_id.values()), params)
 
+    query = str((params or {}).get("query") or "").strip()
+    if query:
+        cards_by_id = {
+            card_id: card
+            for card_id, card in cards_by_id.items()
+            if _matches_market_search(card, query)
+        }
+
     port = hub_port or create_default_hub_asset_port()
     cache_state = None
-    if isinstance(params, dict) and params.get("cache_mode") == "prefer_cache":
+    if (
+        not query
+        and isinstance(params, dict)
+        and params.get("cache_mode") == "prefer_cache"
+    ):
         from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import cached_asset_catalog
         remote_items, cache_state = await cached_asset_catalog(
-            port, hub_asset_kind, refresh=bool(params.get("refresh"))
+            port,
+            hub_asset_kind,
+            refresh=bool(params.get("refresh")),
         )
     else:
         try:
@@ -1838,6 +1880,7 @@ async def _list_equipment_with_hub(
                 page = await port.search_assets(
                     HubSearchRequest(
                         kind=hub_asset_kind,
+                        query=query,
                         page=page_number,
                         page_size=100,
                     )
@@ -1853,6 +1896,12 @@ async def _list_equipment_with_hub(
                 exc_info=True,
             )
             return _apply_list_source_filter(list(cards_by_id.values()), params)
+    if query:
+        remote_items = [
+            item
+            for item in remote_items
+            if hub_asset_matches_visible_query(item, query)
+        ]
     hub_icons: dict[str, str] = {}
     for item in remote_items:
         if item.kind != hub_asset_kind or not item.icon_uri:
@@ -1873,10 +1922,17 @@ async def _list_equipment_with_hub(
         existing = cards_by_id.get(item.asset_id)
         if kind == _AGENT_TEMPLATE_KIND and existing and existing.get("source") == "hub":
             remote_card = _hub_list_card(item)
-            cards_by_id[item.asset_id] = {
-                **existing,
-                **{key: remote_card[key] for key in ("displayName", "displayDescription", "avatar", "tags", "version")},
-            }
+            updated_card = dict(existing)
+            for key in (
+                "displayName",
+                "displayDescription",
+                "category",
+                "avatar",
+                "tags",
+                "version",
+            ):
+                updated_card[key] = remote_card[key]
+            cards_by_id[item.asset_id] = updated_card
             continue
         if item.asset_id in cards_by_id:
             continue
@@ -1998,24 +2054,44 @@ async def list_agent_groups_with_hub(
     if source_filter in {"local", "mine"}:
         return _apply_list_source_filter(list(by_id.values()), params)
 
+    query = str((params or {}).get("query") or "").strip()
+    if query:
+        by_id = {
+            card_id: card
+            for card_id, card in by_id.items()
+            if _matches_market_search(card, query)
+        }
+
     port = hub_port or create_default_hub_asset_port()
     cache_state = None
-    if isinstance(params, dict) and params.get("cache_mode") == "prefer_cache":
+    if (
+        not query
+        and isinstance(params, dict)
+        and params.get("cache_mode") == "prefer_cache"
+    ):
         from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import cached_asset_catalog
         remote, cache_state = await cached_asset_catalog(
-            port, "agent_group", refresh=bool(params.get("refresh"))
+            port,
+            "agent_group",
+            refresh=bool(params.get("refresh")),
         )
     else:
         try:
             remote = []
             for page_no in range(1, 101):
-                page = await port.search_assets(HubSearchRequest(kind="agent_group", page=page_no))
+                page = await port.search_assets(
+                    HubSearchRequest(kind="agent_group", query=query, page=page_no)
+                )
                 remote.extend(page.items)
                 if not page.items or len(remote) >= page.total:
                     break
         except Exception:
             logger.warning("Failed to list Hub agent groups", exc_info=True)
             remote = []
+    if query:
+        remote = [
+            item for item in remote if hub_asset_matches_visible_query(item, query)
+        ]
     for item in remote:
         if item.kind != "agent_group":
             continue
@@ -2025,6 +2101,7 @@ async def list_agent_groups_with_hub(
                 **existing,
                 "displayName": _i18n(item.display_name, item.package_name or item.asset_id),
                 "displayDescription": _i18n(item.short_description),
+                "category": item.category_name or existing.get("category", ""),
                 "avatar": item.icon_uri,
                 "tags": [_i18n(tag, tag) for tag in item.tags],
                 "version": item.public_latest_version,
@@ -2035,7 +2112,7 @@ async def list_agent_groups_with_hub(
             "name": item.package_name or item.asset_id,
             "displayName": _i18n(item.display_name, item.package_name or item.asset_id),
             "displayDescription": _i18n(item.short_description),
-            "category": "",
+            "category": item.category_name,
             "source": "hub",
             "installed": False,
             "avatar": item.icon_uri,
@@ -3709,6 +3786,10 @@ def _commit_imported_package(
     if kind == _AGENT_GROUP_KIND:
         from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
 
+        for display_name in dict.fromkeys(
+            _i18n(manifest.get("display_name"), package_id).values()
+        ):
+            _assert_agent_group_name_available(display_name.strip())
         if pkg_root.name != package_id:
             raise ValueError(
                 "agent_group manifest name must match its package directory"
@@ -3772,9 +3853,22 @@ def _import_package_from_path(
         )
     if src.is_file():
         with tempfile.TemporaryDirectory(prefix="jiuwenswarm_pkg_import_") as tmp:
-            extract_dir = Path(tmp)
+            extract_dir = Path(tmp) / "contents"
             _extract_archive(src, extract_dir)
             pkg_root = _find_package_root(extract_dir, kind_label)
+            if kind == _AGENT_GROUP_KIND and pkg_root == extract_dir:
+                manifest = _read_package_manifest(pkg_root)
+                if manifest is None:
+                    raise ValueError(
+                        f"{kind_label} package missing/corrupt manifest.json"
+                    )
+                package_id = _package_id_from_manifest(
+                    manifest, package_type=package_type, kind_label=kind_label
+                )
+                if pkg_root.name != package_id:
+                    canonical_root = Path(tmp) / package_id
+                    pkg_root.rename(canonical_root)
+                    pkg_root = canonical_root
             return _commit_imported_package(
                 pkg_root, kind=kind, kind_label=kind_label, package_type=package_type
             )

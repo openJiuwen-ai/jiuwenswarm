@@ -84,6 +84,7 @@ from jiuwenswarm.common.config import (
     update_trajectory_ui_in_config,
     update_task_full_duplex_in_config,
     update_skill_evolution_enabled_in_config,
+    update_ttse_enabled_in_config,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
     ASCEND_AFFINITY_PROVIDER,
@@ -1198,6 +1199,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "external_cli_agent_codex_cli_path",
     "setup_guide_enabled",
     "skill_evolution",
+    "ttse_enabled",
     "enable_free_models",
 })
 _EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
@@ -3195,6 +3197,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # Skill evolution is controlled solely by the canonical nested YAML key.
             evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
             payload["skill_evolution"] = "true" if evolution_cfg.get("skill_evolution", False) else "false"
+            ttse_cfg = (raw.get("react") or {}).get("ttse") or {}
+            payload["ttse_enabled"] = "true" if ttse_cfg.get("enabled", False) else "false"
             memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
             payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
             memory_desc = memory_cfg.get("description") or {}
@@ -3234,6 +3238,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("permissions_profile", "full_access")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("skill_evolution", "false")
+            payload.setdefault("ttse_enabled", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("memory_forbidden_description", "")
             payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")
@@ -3531,6 +3536,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         external_cli_agents_updated = True
                 elif param_key == "skill_evolution":
                     update_skill_evolution_enabled_in_config(parsed)
+                elif param_key == "ttse_enabled":
+                    update_ttse_enabled_in_config(parsed)
                 elif param_key.startswith("a2ui_"):
                     ok, update, error = validate_a2ui_config_update(param_key, val)
                     if not ok:
@@ -5073,7 +5080,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _project_remove(ws, req_id, params, session_id, user_id=None):
         """Forward project soft-deletion; stop its cron jobs, clean Git watchers."""
         from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
 
         project_id = str((params or {}).get("project_id") or "").strip()
 
@@ -5085,28 +5092,63 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
 
-        async def _after_remove(ok: bool, _payload: object) -> None:
-            if not ok:
-                return
+        # 移除前先问 AgentServer 项目下是否有会话在执行:必须在 hide_project_jobs
+        # 之前拦截,否则定时任务已被停用、移除却被取消,留下任务全部停用的
+        # 半残状态。预检失败或旧版 AgentServer 不认识该参数时不触碰 cron;
+        # 通过预检后仍由 commit 侧重新扫描,覆盖期间新启动的会话。
+        precheck_ok, precheck_payload = await fetch_agent_unary(
+            agent_client=_resolve(agent_client),
+            req_method=ReqMethod.PROJECT_LIFECYCLE,
+            params={"project_id": project_id, "running_sessions": True},
+            session_id=session_id,
+            user_id=user_id,
+            channel_id="web",
+            label="project.remove.precheck",
+            timeout_seconds=10,
+        )
+        if not precheck_ok or "has_running_sessions" not in precheck_payload:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error=str(precheck_payload.get("error") or "project remove precheck unavailable"),
+                code=str(precheck_payload.get("code") or "SERVICE_UNAVAILABLE"),
+            )
+            return
+        if precheck_payload["has_running_sessions"]:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="project has running sessions; stop them before removing",
+                code="SESSION_BUSY",
+            )
+            return
+
+        async def _after_remove() -> None:
             registry = getattr(channel, "git_watcher_registry", None)
             if registry is not None and project_id:
                 registry.cleanup_project(project_id)
             _schedule_agent_prewarm_sync("project.remove")
             await _broadcast_project_event("project.removed", project_id, user_id)
 
+        class _RemoveCommitError(Exception):
+            def __init__(self, payload: dict) -> None:
+                self.code = str(payload.get("code") or "BAD_REQUEST")
+                super().__init__(str(payload.get("error") or "project.remove failed"))
+
+        remove_payload: dict = {}
+
         async def commit():
-            await proxy_unary_request(
-                channel=channel,
+            nonlocal remove_payload
+            ok, payload = await fetch_agent_unary(
                 agent_client=_resolve(agent_client),
-                ws=ws,
-                req_id=req_id,
                 params=params if isinstance(params, dict) else {},
                 session_id=session_id,
                 user_id=user_id,
                 req_method=ReqMethod.PROJECT_REMOVE,
+                channel_id="web",
                 label="project.remove",
-                on_done=_after_remove,
             )
+            if not ok:
+                raise _RemoveCommitError(payload)
+            remove_payload = payload
 
         cc = _get_cron()
         if cc is None:
@@ -5114,9 +5156,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         try:
             await cc.hide_project_jobs(project_id, commit=commit)
+        except _RemoveCommitError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+            return
         except Exception as exc:
             logger.warning("project remove failed: %s", exc, exc_info=True)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CRON_STOP_FAILED")
+            return
+        await channel.send_response(ws, req_id, ok=True, payload=remove_payload)
+        await _after_remove()
 
     async def _project_restore(ws, req_id, params, session_id, user_id=None):
         """Forward project restoration to the target AgentServer."""

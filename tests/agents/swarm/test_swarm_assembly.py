@@ -1413,16 +1413,69 @@ def test_enriched_spec_serialization_round_trip() -> None:
     assert any(not name.startswith("swarm.") for name in rail_types)
 
 
-def test_enrich_applies_agent_group_as_hybrid_member_snapshots(monkeypatch) -> None:
+def _write_agent_group_assembly_fixture(root: Path) -> Path:
+    package_dir = root / "sample-expert-group"
+    manifests = {
+        "leader": ("专家团负责人", "负责人描述", "."),
+        "member1": ("方案分析专家", "方案分析描述", "./persona"),
+        "member2": ("风险与质量复核专家", "风险复核描述", "./persona"),
+    }
+    (package_dir / "manifest.json").parent.mkdir(parents=True)
+    (package_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "sample-expert-group",
+                "package_type": "agent_group",
+                "instruction": "Leader 负责理解用户目标",
+                "agents": list(manifests),
+                "skills": ["skill_name_1"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    headings = {
+        "leader": "专家团负责人",
+        "member1": "方案分析专家",
+        "member2": "风险与质量复核专家",
+    }
+    for member_id, (name, description, persona_dir) in manifests.items():
+        member_dir = package_dir / "agents" / member_id
+        (member_dir / "manifest.json").parent.mkdir(parents=True)
+        (member_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "package_type": "agent_template",
+                    "name": name,
+                    "description": description,
+                    "persona": {"dir": persona_dir},
+                }
+            ),
+            encoding="utf-8",
+        )
+        persona = member_dir / "persona" / f"{member_id}.md"
+        persona.parent.mkdir(parents=True)
+        persona.write_text(f"# {headings[member_id]}\n", encoding="utf-8")
+    (package_dir / "agents" / "leader" / "AGENT.md").write_text(
+        "# Expert Group Leader\n",
+        encoding="utf-8",
+    )
+    skill = package_dir / "skills" / "skill_name_1" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# Shared skill\n", encoding="utf-8")
+    return package_dir
+
+
+def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
+    monkeypatch, tmp_path: Path
+) -> None:
     """AgentGroup prompts stay Team-owned while capabilities use snapshots."""
     from jiuwenswarm.server.runtime import extension_package_manager as package_manager
 
-    resources = package_manager.get_equipment_resources_agent_groups_dir()
-    assert resources is not None
+    package_dir = _write_agent_group_assembly_fixture(tmp_path)
     monkeypatch.setattr(
         package_manager,
         "resolve_agent_group_dir",
-        lambda _name: resources / "sample-expert-group",
+        lambda _name: package_dir,
     )
     monkeypatch.setattr(
         package_manager,
