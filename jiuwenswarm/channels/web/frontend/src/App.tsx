@@ -70,7 +70,7 @@ import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webRequest } from './services/webClient';
-import { getArchiveErrorCode } from './features/workspace/archivedTaskClient';
+import { getArchiveErrorCode, getArchiveErrorFinishing } from './features/workspace/archivedTaskClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
@@ -3485,7 +3485,9 @@ function AppContent({
     } catch (error) {
       console.error('Failed to close side conversation:', error);
       window.alert(t(getArchiveErrorCode(error) === 'SESSION_BUSY'
-        ? 'multiSession.project.errors.deleteSessionBusy'
+        ? (getArchiveErrorFinishing(error)
+          ? 'multiSession.project.errors.deleteSessionFinishing'
+          : 'multiSession.project.errors.deleteSessionBusy')
         : 'multiSession.errors.delete'));
     }
   }, [deleteSideConversation, t]);

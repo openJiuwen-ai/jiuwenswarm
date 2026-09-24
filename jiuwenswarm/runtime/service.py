@@ -2301,6 +2301,21 @@ class AgentRuntime:
 
         return team_session_has_parked_request(session_id, requests)
 
+    @staticmethod
+    def is_team_round_finishing(session_id: str) -> bool:
+        """Whether a busy Team session is only wrapping up after its swarmflow runs ended.
+
+        ``swarmflow.stop`` and natural workflow completion keep the round
+        active while the leader reports the outcome.  Lifecycle actions use
+        this to tell the user to retry shortly instead of asking them to stop
+        a session that is already ending on its own.
+        """
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            team_round_finishing_after_flow,
+        )
+
+        return team_round_finishing_after_flow(session_id)
+
     async def stop_session_for_archive(
         self, *, channel_id: str, session_id: str
     ) -> None:

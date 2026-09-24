@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from '../../components/ui';
 import {
   getArchiveErrorCode,
+  getArchiveErrorFinishing,
   archivedTaskClient,
   findBatchSessionResult,
 } from '../../features/workspace/archivedTaskClient';
@@ -69,7 +70,12 @@ function getSessionTitle(session: Session, fallback: string): string {
 
 function archiveErrorKey(error: unknown): string {
   const code = getArchiveErrorCode(error);
-  if (code === 'SESSION_BUSY') return 'multiSession.project.errors.archiveSessionBusy';
+  if (code === 'SESSION_BUSY') {
+    // swarm flow 已结束、回合收尾中：会话会自行结束，引导稍后重试
+    return getArchiveErrorFinishing(error)
+      ? 'multiSession.project.errors.archiveSessionFinishing'
+      : 'multiSession.project.errors.archiveSessionBusy';
+  }
   if (code === 'FORBIDDEN') return 'multiSession.project.errors.archiveForbidden';
   if (code === 'NOT_FOUND') return 'multiSession.project.errors.archiveNotFound';
   return 'multiSession.project.errors.archiveFailed';
@@ -438,9 +444,12 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
           });
         }
         if (failedItems.length > 0) {
-          const runningItems = failedItems.filter((item) => item.code === 'SESSION_BUSY');
-          const failureContent = runningItems.length === failedItems.length
-            ? t('multiSession.project.archiveBatchFailedRunning', { count: runningItems.length })
+          const busyItems = failedItems.filter((item) => item.code === 'SESSION_BUSY');
+          const finishingItems = busyItems.filter((item) => item.finishing === true);
+          const failureContent = finishingItems.length === failedItems.length
+            ? t('multiSession.project.archiveBatchFailedFinishing', { count: finishingItems.length })
+            : busyItems.length === failedItems.length
+            ? t('multiSession.project.archiveBatchFailedRunning', { count: busyItems.length })
             : t('multiSession.project.archiveBatchFailed', { count: failedItems.length });
           openArchiveFailureToast(failureContent);
         }
