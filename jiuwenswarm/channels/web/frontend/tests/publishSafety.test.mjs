@@ -40,7 +40,6 @@ test('publish errors preserve actionable safe backend codes', () => {
   );
   assert.equal(publishFailureKey(new Error('internal details')), 'requestFailed');
   assert.equal(publishIssueKey('invalid_plugin_structure'), 'invalidPluginStructure');
-  assert.equal(publishIssueKey('unauthorized'), 'authRequired');
   assert.equal(publishIssueKey('hub_request_failed'), 'hubRequestFailed');
 });
 

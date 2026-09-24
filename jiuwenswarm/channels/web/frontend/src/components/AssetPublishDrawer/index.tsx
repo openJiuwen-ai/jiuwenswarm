@@ -288,10 +288,6 @@ function AssetPublishDrawer({
         '版本已存在，请修改版本或明确选择覆盖。',
         'This version exists. Change the version or explicitly enable overwrite.',
       ],
-      hub_request_failed: [
-        'Hub 未接受本次发布请求，可能是版本已存在或发布信息不符合 Hub 要求。请检查版本和发布信息后重试；如仍失败，请联系 Hub 管理员。',
-        'Hub did not accept this publishing request. The version may already exist, or the publishing information may not meet Hub requirements. Check the version and publishing information, then retry. If the problem continues, contact the Hub administrator.',
-      ],
     };
     if (code && known[code]) return known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '');
     const safeKey = publishIssueKey(code || value);
@@ -799,6 +795,13 @@ function AssetPublishDrawer({
             </span>
             <h3>{text(outcome as MessageKey)}</h3>
           </header>
+          {state.record.result?.visibility === null && (
+            <p role="status" className="asset-publish-result-notice" data-testid="asset-publish-visibility-unconfirmed">
+              {i18n.language.startsWith('zh')
+                ? '可见范围暂未确认，请到 Hub 查看。'
+                : 'Visibility is not yet confirmed. Check it in Hub.'}
+            </p>
+          )}
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (
               <div>

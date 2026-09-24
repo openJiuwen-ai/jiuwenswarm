@@ -3,7 +3,6 @@ const SAFE_FAILURE_KEYS = {
   PLUGIN_NOT_FOUND: 'pluginNotFound',
   SESSION_EXCHANGE_FAILED: 'sessionExchangeFailed',
   AUTH_REQUIRED: 'authRequired',
-  UNAUTHORIZED: 'authRequired',
   RESOURCE_NOT_FOUND: 'resourceNotFound',
   VERSION_CONFLICT: 'versionConflict',
   HUB_REQUEST_FAILED: 'hubRequestFailed',
