@@ -1630,6 +1630,9 @@ export function AgentManagementPanel({
       {view === 'group-detail' && (
         <AgentGroupDetailPage
           detail={groupDetail}
+          loadingSummary={
+            [...groupCatalogRef.current, ...groupMineRef.current].find(item => item.id === groupSelectedId) ?? null
+          }
           detailStatus={groupDetailStatus}
           detailError={groupDetailError}
           detailTab={groupDetailTab}

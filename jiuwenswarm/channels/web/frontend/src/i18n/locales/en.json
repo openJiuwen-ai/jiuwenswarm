@@ -3824,7 +3824,7 @@
       "message": "Deleting this custom connector removes its configuration, credentials, and skills for good — this cannot be undone. If you just want to reconnect later, disconnect instead of deleting."
     },
     "confirmUninstallPlugin": {
-      "message": "This plugin will become unavailable — you can reinstall it anytime."
+      "message": "Uninstalling will delete this plugin's related local files. Please confirm whether you want to continue."
     },
     "empty": {
       "myMcp": "No connectors yet",

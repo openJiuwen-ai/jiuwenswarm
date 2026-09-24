@@ -316,7 +316,11 @@ class HubPublishClient:
     ) -> PublishResult:
         status = response.status_code
         if status != 200:
-            code = "hub_request_failed"
+            code = {
+                401: "unauthorized",
+                403: "permission_denied",
+                429: "rate_limited",
+            }.get(status, "hub_request_failed")
             try:
                 detail = json.loads(raw).get("detail", {})
                 candidate = detail.get("error")

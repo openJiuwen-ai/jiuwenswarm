@@ -49,3 +49,12 @@ export function resolvePluginPickerIdentifiers(plugin: {
     sessionPluginName: plugin.runtimePackageName,
   };
 }
+
+export type PluginUninstallDestination = 'my-plugin' | 'stay';
+
+export function pluginUninstallDestination(
+  fromMy: boolean,
+  uninstallSucceeded: boolean,
+): PluginUninstallDestination {
+  return fromMy && uninstallSucceeded ? 'my-plugin' : 'stay';
+}

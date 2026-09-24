@@ -110,11 +110,8 @@ interface PluginPackageState {
   // 返回是否成功——PluginDetailPage.tsx 卸载后要重新 show() 探测这个插件还在不在（新方案
   // "我的插件"卸载后的收尾逻辑：还能读到就留在详情页，读不到才退出到列表页），需要知道结果。
   loadDetail: (id: string) => Promise<boolean>;
-  /** 跟 loadDetail 几乎一样，唯一区别是失败时不 set 全局 error——2026-08-21 用户反馈根因确认：
-   * 卸载插件（uninstall_plugin_package）后端会把整个包目录删掉（不是只翻 installed 标记），
-   * 卸载后探测"这个包还在不在"时 show() 404 是预期中的正常结果（走 onDeleted 退出到列表页），
-   * 不该弹一条吓人的红色错误提示——真正的卸载结果反馈已经由 uninstall()/deletePackage() 自己的
-   * successMessage/error 负责，这个探测只是导航判断用。 */
+  /** 跟 loadDetail 几乎一样，唯一区别是失败时不 set 全局 error。卸载后用它区分保留定义的
+   * 本地插件和已移除定义的 Hub/预置插件，探测本身不产生额外错误提示。 */
   probeExists: (id: string) => Promise<boolean>;
   create: (params: {
     id: string;
@@ -327,12 +324,8 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
     }
   },
 
-  // 2026-08-21 用户反馈根因确认：这条注释原来写的是"卸载只让 installed 变 false，不影响是否
-  // 还留在'我的'里"——实测发现是错的，后端 uninstall_plugin_package 会把整个包目录 rmtree 掉
-  // 并从 marketplace 名单里移除条目（不是只翻 installed 标记），卸载后这个包在 list/show 里
-  // 就是真的查不到了。PluginDetailPage.tsx 的"我的"视角卸载收尾（探测还在不在，不在就退出到
-  // 列表页）原来就是按这个真实行为写的，只是探测用的 loadDetail 会在探测失败时顺带弹一条红色
-  // 错误 Toast，把"预期内的 404"和"真错误"混在一起了，已经改成用不弹 error 的 probeExists。
+  // 后端卸载会删除插件的本地文件和市场记录。从“我的扩展”触发时使用 deletePackage，成功后
+  // 立即从本地列表移除卡片并返回列表页；广场视角仍使用 uninstall 保留广场资产卡片。
   //
   // 之前这里从来没有默认的"卸载成功"提示——只有后端返回 notice（该插件依赖的 connector 仍
   // 保持连接）时才会弹一条绿色 Toast，没有 notice 就什么反馈都没有，用户看不出卸载到底成没成功。
@@ -371,14 +364,19 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
       const { notice } = await pluginPackagesApi.uninstall(id);
       set((state) => {
         const nextInstalled = { ...state.installed, [id]: false };
+        const nextDetailCache = { ...state.detailCache };
+        delete nextDetailCache[id];
         persistLocalState({ installed: nextInstalled });
         return {
           installed: nextInstalled,
+          localPackages: state.localPackages.filter((item) => item.id !== id),
+          detailCache: nextDetailCache,
           busyId: null,
           noticeMessage: notice ?? null,
           successMessage: notice ? null : successKey.pluginUninstalled,
         };
       });
+      scheduleQuickRefresh();
       return true;
     } catch (error) {
       set({ busyId: null, error: error instanceof Error ? error.message : String(error) });
