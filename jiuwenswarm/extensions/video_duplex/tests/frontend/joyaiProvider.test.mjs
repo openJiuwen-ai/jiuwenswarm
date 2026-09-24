@@ -73,3 +73,18 @@ test('tool receipts wait for playback and do not leak into a restarted media ses
   await delivery;
   assert.deepEqual(speech, []);
 });
+
+
+test('English survives callback refresh and is sent with subsequent user requests', async (t) => {
+  const calls = [];
+  globalThis.joyaiTestRequest = async (...args) => { calls.push(args); return { response: '', search_job: null }; };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  const provider = new JoyAIProvider({ getSearchSessionId: () => 'scope', rememberSearchJob() {}, report() {} }, 'en');
+  provider.sessionId = 'language-session';
+  provider.setPreferredLanguage(undefined);
+  await provider.requestFrame('read screen', 'read screen', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[0][1].preferred_language, 'en');
+  provider.setPreferredLanguage('zh');
+  await provider.requestFrame('read screen', 'read screen', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[1][1].preferred_language, 'zh');
+});

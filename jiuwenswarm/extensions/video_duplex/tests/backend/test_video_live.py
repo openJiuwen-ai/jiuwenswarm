@@ -33,6 +33,7 @@ from jiuwenswarm.server.runtime.attachments.media_attachments import (
 
 @pytest.fixture(autouse=True)
 def _isolate_video_mode_environment(monkeypatch) -> None:
+    monkeypatch.setattr(video_live, "_preferred_language", lambda: "zh")
     for name in (
         "VIDEO_LIVE_MODE",
         "VIDEO_DUPLEX_ENABLED",
@@ -575,6 +576,7 @@ async def test_video_config_selects_joyai_without_realtime_reference_audio(
     assert channel.responses[-1][1]["payload"] == {
         "provider": "joyai",
         "model": "jdopensource/JoyAI-VL-Interaction",
+        "preferred_language": "zh",
     }
 
 
@@ -601,6 +603,7 @@ async def test_video_config_selects_qwen_gateway_without_reference_audio(
         "model": "qwen3.5-omni-flash-realtime",
         "voice": "Ethan",
         "tools": video_live.qwen_omni_tools(),
+        "preferred_language": "zh",
     }
 
 
@@ -1215,7 +1218,7 @@ async def test_joyai_frame_handler_returns_action_and_writes_metadata_only(
     assert calls == [
         (
             "data:image/jpeg;base64,ZmFrZQ==",
-            "持续观察画面变化",
+            joyai_provider.response_language_instruction("zh") + "\n持续观察画面变化",
             "joyai-session-1",
         )
     ]
@@ -1267,8 +1270,8 @@ async def test_joyai_user_instruction_preserves_native_silence(monkeypatch) -> N
     calls = []
     ground_calls = []
 
-    def fake_ground(instruction, tool_context):
-        ground_calls.append((instruction, tool_context))
+    def fake_ground(instruction, tool_context, preferred_language):
+        ground_calls.append((instruction, tool_context, preferred_language))
         return "grounded user instruction"
 
     async def fake_request(frame_data_url, instruction, joyai_session_id):
@@ -1299,6 +1302,7 @@ async def test_joyai_user_instruction_preserves_native_silence(monkeypatch) -> N
         (
             "每当画面出现瓶子时介绍它的样子。",
             "原问题：香港今天天气如何？\n最终结果：香港今日多云，局部地区有骤雨。",
+            "zh",
         )
     ]
     assert calls == [("grounded user instruction", "joyai-session-user")]
@@ -1395,7 +1399,7 @@ async def test_joyai_accepts_frame_only_request(monkeypatch) -> None:
     assert calls == [
         (
             "data:image/jpeg;base64,ZmFrZQ==",
-            "",
+            joyai_provider.response_language_instruction("zh"),
             "joyai-session-frame",
         )
     ]
@@ -2375,3 +2379,46 @@ async def test_tts_stream_cancel_stops_background_generation(monkeypatch) -> Non
         "video.tts.cancelled",
         {"stream_id": "stream-cancel"},
     )
+@pytest.mark.parametrize("language, expected", [("en", "natural English"), ("en-US", "natural English"), ("zh", "简体中文")])
+def test_joyai_response_language_is_grounded(language, expected):
+    assert expected in joyai_provider.ground_user_instruction("Read the screen", preferred_language=language)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["joyai", "qwen_omni"])
+async def test_realtime_config_propagates_english(monkeypatch, provider):
+    monkeypatch.setattr(video_live, "_preferred_language", lambda: "en")
+    monkeypatch.setenv("VIDEO_LIVE_MODE", "joyai" if provider == "joyai" else "realtime")
+    monkeypatch.setenv("VIDEO_REALTIME_PROVIDER", "qwen_omni")
+    monkeypatch.setenv("JOYAI_API_BASE", "https://example.test/v1")
+    monkeypatch.setenv("JOYAI_MODEL_NAME", "joyai-test")
+    monkeypatch.setenv("QWEN_OMNI_REALTIME_URL", "wss://example.test/realtime")
+    monkeypatch.setenv("QWEN_OMNI_API_KEY", "test-key")
+    monkeypatch.setenv("QWEN_OMNI_MODEL_NAME", "qwen-test")
+    channel = _video_channel()
+    await channel.handlers["video.realtime.config"](object(), "language-config", {}, "web-session")
+    response = channel.responses[-1][1]
+    assert response["ok"] is True
+    assert response["payload"]["preferred_language"] == "en"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["frame", "user"])
+async def test_joyai_requests_apply_english_to_model_prompt(monkeypatch, kind):
+    monkeypatch.setattr(video_live, "_preferred_language", lambda: "en")
+    calls = []
+    async def fake_request(frame_data_url, instruction, joyai_session_id):
+        calls.append(instruction)
+        return _joyai_result("silence", raw_content="</silence>")
+    monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda event: None)
+    channel = _video_channel()
+    await channel.handlers["video.joyai.frame"](object(), "english-frame", {
+        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==",
+        "instruction": "Read the screen", "request_kind": kind,
+        "joyai_session_id": "english-media",
+    }, "web-session")
+    assert channel.responses[-1][1]["ok"] is True
+    assert len(calls) == 1
+    assert "natural English" in calls[0]
+    assert "Read the screen" in calls[0]

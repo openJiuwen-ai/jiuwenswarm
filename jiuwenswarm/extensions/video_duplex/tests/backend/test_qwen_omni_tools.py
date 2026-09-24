@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import json
 
 import pytest
@@ -83,3 +84,27 @@ def test_parse_qwen_delegate_accepts_model_argument_aliases(argument_name) -> No
 def test_parse_qwen_tool_call_rejects_invalid_requests(value) -> None:
     with pytest.raises(ValueError):
         parse_qwen_omni_tool_call(value)
+RELAXED_CASES = json.loads((Path(__file__).parents[1] / "delegation_argument_contract.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", RELAXED_CASES, ids=lambda case: case["id"])
+def test_shared_delegation_argument_contract(case):
+    value = dict(name=QWEN_OMNI_DELEGATE_TOOL_NAME, call_id=case["id"], arguments=case["arguments"])
+    if case["expected"] is None:
+        with pytest.raises(ValueError):
+            parse_qwen_omni_tool_call(value)
+    else:
+        call = parse_qwen_omni_tool_call(value)
+        assert call.arguments == case["expected"]
+        assert call.task == next(v for k, v in case["expected"].items() if k in {"task", "query"})
+        assert parse_qwen_omni_tool_call({**value, "arguments": json.dumps(call.arguments)}).arguments == call.arguments
+
+
+@pytest.mark.parametrize("size", [2000, 2001])
+def test_delegation_task_limit_retained(size):
+    value = dict(name=QWEN_OMNI_DELEGATE_TOOL_NAME, call_id="long", arguments={"task": "x" * size})
+    if size == 2000:
+        assert len(parse_qwen_omni_tool_call(value).task) == size
+    else:
+        with pytest.raises(ValueError):
+            parse_qwen_omni_tool_call(value)

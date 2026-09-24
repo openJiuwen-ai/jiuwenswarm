@@ -28,7 +28,7 @@ import { useTranslation } from 'react-i18next';
 import { webClient, webRequest } from '../../../../channels/web/frontend/src/services/webClient';
 import { createRealtimeDuplexSession, RealtimeDuplexSession } from './qwenOmniSession';
 import { isVideoSourceReady, RealtimeVideoFrameScheduler, waitForFirstVideoFrame } from './videoSource';
-import { JoyAIProvider } from './joyaiProvider';
+import { JoyAIProvider, normalizeJoyAIResponseLanguage } from './joyaiProvider';
 import {
   mergeSearchProgressJob,
   searchAwareToolStatus,
@@ -243,7 +243,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     setSearchStatus('');
   };
 
-  const getJoyAIProvider = (): JoyAIProvider => {
+  const getJoyAIProvider = (preferredLanguage?: unknown): JoyAIProvider => {
     const callbacks = {
       getLatestFrameDataUrl: () => framesRef.current.at(-1)?.data_url || '',
       getFrameCount: () => framesRef.current.length,
@@ -276,9 +276,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       report: reportRealtimeEvent,
     };
     if (!joyaiProviderRef.current) {
-      joyaiProviderRef.current = new JoyAIProvider(callbacks);
+      joyaiProviderRef.current = new JoyAIProvider(callbacks, normalizeJoyAIResponseLanguage(preferredLanguage));
     } else {
       joyaiProviderRef.current.updateCallbacks(callbacks);
+      joyaiProviderRef.current.setPreferredLanguage(preferredLanguage);
     }
     return joyaiProviderRef.current;
   };
@@ -813,7 +814,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         });
         setModel(config.model);
         if (config.provider === 'joyai') {
-          await getJoyAIProvider().start();
+          await getJoyAIProvider(config.preferred_language).start();
           return;
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
@@ -822,6 +823,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             url: config.url || '',
             voice: config.voice,
             tools: config.tools,
+            preferredLanguage: config.preferred_language,
           },
           {
             getVideoFrame: () => {

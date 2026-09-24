@@ -28,6 +28,50 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function normalizeDelegateArguments(raw: unknown, legacy: boolean): Record<string, unknown> | null {
+  if (typeof raw === 'string') {
+    if (raw.length > 65_536) return null;
+    const candidate = raw.trim();
+    const fenced = candidate.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    const text = fenced ? fenced[1].trim() : candidate;
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      // Reject malformed structured arguments instead of executing their fragments.
+      if (fenced || !text || /^[{["'`]/.test(text) || !/\p{L}/u.test(text)) return null;
+      raw = { [legacy ? 'query' : 'task']: text };
+    }
+  }
+  const aliases: readonly string[] = [...QWEN_OMNI_DELEGATE_ARGUMENT_NAMES, 'prompt', 'input', 'content', 'text'];
+  const wrappers = ['arguments', 'parameters', 'payload', 'input'];
+  const scheduling: string[] = [];
+  const tasks: Array<[string, string]> = [];
+  const normalized: Record<string, unknown> = {};
+  const visit = (value: unknown, depth: number): boolean => {
+    const record = asRecord(value);
+    if (!record || depth > 8) return false;
+    for (const [key, item] of Object.entries(record)) {
+      if (wrappers.includes(key) && asRecord(item)) {
+        if (!visit(item, depth + 1)) return false;
+      } else if (aliases.includes(key)) {
+        if (typeof item !== 'string' || !item.trim()) return false;
+        tasks.push([key, item.trim()]);
+      } else if (scheduling.includes(key)) {
+        if (legacy || Object.prototype.hasOwnProperty.call(normalized, key)) return false;
+        normalized[key] = item;
+      } else if (key !== 'reason' && key !== 'priority') {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!visit(raw, 0) || tasks.length !== 1) return null;
+  const [alias, task] = tasks[0];
+  const key = legacy ? 'query' : (QWEN_OMNI_DELEGATE_ARGUMENT_NAMES as readonly string[]).includes(alias) ? alias : 'task';
+  normalized[key] = task;
+  return normalized;
+}
+
 export function parseQwenOmniFunctionCall(event: Record<string, unknown>): QwenOmniFunctionCall | null {
   if (event.type !== 'response.function_call_arguments.done') return null;
   const name = String(event.name || '').trim();
@@ -39,7 +83,7 @@ export function parseQwenOmniFunctionCall(event: Record<string, unknown>): QwenO
   const isLegacyResearch = name === QWEN_OMNI_LEGACY_RESEARCH_TOOL_NAME;
   if ((!isDelegate && !isLegacyResearch) || !callId || callId.length > 200 || !rawArguments) return null;
   try {
-    const argumentsObject = asRecord(typeof argumentsValue === 'string' ? JSON.parse(rawArguments) : argumentsValue);
+    const argumentsObject = normalizeDelegateArguments(argumentsValue, isLegacyResearch);
     if (!argumentsObject || Object.keys(argumentsObject).length !== 1) return null;
     const argumentName = isDelegate
       ? QWEN_OMNI_DELEGATE_ARGUMENT_NAMES.find((key) => typeof argumentsObject[key] === 'string')
@@ -47,7 +91,7 @@ export function parseQwenOmniFunctionCall(event: Record<string, unknown>): QwenO
     if (!argumentName || typeof argumentsObject[argumentName] !== 'string') return null;
     const task = argumentsObject[argumentName].trim();
     if (!task || task.length > 2_000) return null;
-    return { name, callId, arguments: rawArguments, task };
+    return { name, callId, arguments: JSON.stringify(argumentsObject), task };
   } catch {
     return null;
   }
@@ -92,7 +136,7 @@ export function createQwenOmniToolFollowupEvent(
               status: brief.status,
               summary: brief.summary,
             }),
-            '用一到两句自然的简体中文回应。先明确说出本次任务的动作或对象，再忠实转述上面 summary 的结果。任务名称以这份数据为依据，不能替换成最新一条用户指令。',
+            '遵循会话首选回应语言，用一到两句自然的话回应。先明确说出本次任务的动作或对象，再忠实转述上面 summary 的结果。任务名称以这份数据为依据，不能替换成最新一条用户指令。',
             '本次 status 只属于本次任务。其他请求可能仍在排队或执行；没有收到它们各自的结果，就不能说它们已经完成。你之前说过“我会处理”也不代表处理成功。',
             '例如：本次结果是代码已生成，即使用户后来要求转换 PDF，也只能汇报代码结果，不能说 PDF 已转换、已保存或已打开。',
             '如果本次状态是失败或摘要表示无法完成，就如实说明，不能报成功。任务指代不明确时只复述摘要中的明确事实，不从较新的问题中猜测对象。',

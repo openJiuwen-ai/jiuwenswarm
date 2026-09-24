@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 
@@ -59,6 +60,56 @@ def qwen_omni_tools() -> list[dict[str, Any]]:
     ]
 
 
+def _normalize_delegate_arguments(raw: Any, *, legacy: bool) -> dict[str, Any]:
+    """Normalize a bounded, unambiguous provider envelope without losing scheduling."""
+    if isinstance(raw, str):
+        if len(raw) > 65_536:
+            raise ValueError("arguments too long")
+        candidate = raw.strip()
+        fenced = re.fullmatch(r"```(?:json)?\s*([\s\S]*?)\s*```", candidate, re.IGNORECASE)
+        if fenced:
+            candidate = fenced.group(1).strip()
+        try:
+            raw = json.loads(candidate)
+        except (ValueError, RecursionError) as exc:
+            # Broken structured data must not become an executable task string.
+            if fenced or not candidate or candidate[0] in "{[\"'`" or not any(c.isalpha() for c in candidate):
+                raise ValueError("arguments must be valid JSON or a task string") from exc
+            raw = {"query" if legacy else "task": candidate}
+    if not isinstance(raw, dict):
+        raise ValueError("arguments must be a JSON object")
+    aliases = set(_DELEGATE_ARGUMENT_NAMES) | {"prompt", "input", "content", "text"}
+    wrappers = {"arguments", "parameters", "payload", "input"}
+    scheduling = set()
+    tasks = []
+    normalized = {}
+
+    def visit(record, depth):
+        if depth > 8 or not isinstance(record, dict):
+            raise ValueError("Invalid argument wrapper")
+        for key, item in record.items():
+            if key in wrappers and isinstance(item, dict):
+                visit(item, depth + 1)
+            elif key in aliases:
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError("task must be a nonempty string")
+                tasks.append((key, item.strip()))
+            elif key in scheduling:
+                if legacy or key in normalized:
+                    raise ValueError("Ambiguous scheduling arguments")
+                normalized[key] = item
+            elif key not in {"reason", "priority"}:
+                raise ValueError("Unsupported delegation argument")
+
+    visit(raw, 0)
+    if len(tasks) != 1:
+        raise ValueError("arguments must contain exactly one task field")
+    key, task = tasks[0]
+    key = "query" if legacy else key if key in _DELEGATE_ARGUMENT_NAMES else "task"
+    normalized[key] = task
+    return normalized
+
+
 def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
     """Validate the current delegation tool and legacy research calls."""
     if not isinstance(value, dict):
@@ -73,15 +124,9 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         raise ValueError(f"call_id must contain 1-{_MAX_CALL_ID_CHARS} characters")
 
     raw_arguments = value.get("arguments")
-    if isinstance(raw_arguments, str):
-        try:
-            arguments = json.loads(raw_arguments)
-        except json.JSONDecodeError as exc:
-            raise ValueError("arguments must be valid JSON") from exc
-    elif isinstance(raw_arguments, dict):
-        arguments = dict(raw_arguments)
-    else:
-        raise ValueError("arguments must be a JSON object")
+    arguments = _normalize_delegate_arguments(
+        raw_arguments, legacy=name == QWEN_OMNI_RESEARCH_TOOL_NAME,
+    )
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be a JSON object")
     if len(arguments) != 1:

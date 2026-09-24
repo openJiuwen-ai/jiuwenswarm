@@ -17,6 +17,7 @@ export interface RealtimeDuplexConfig {
   url: string;
   voice?: string;
   tools?: Array<Record<string, unknown>>;
+  preferredLanguage?: 'zh' | 'en';
 }
 
 export interface RealtimeToolResult {
@@ -145,6 +146,17 @@ export class RealtimeDuplexSession {
   private turnHasUserActivity = false;
   private assistantTranscript = '';
   private activeUserTurnId: string | null = null;
+  private lastInterruptedTurnId: string | null = null;
+  // A user can start speaking before the provider emits response.created. Keep
+  // the cancellation intent until the response lifecycle is established so
+  // the first response audio cannot race past the local VAD.
+  private pendingResponseInterrupt: {
+    turnId: string;
+    speechMs: number;
+    level: number;
+    threshold: number;
+    responseId?: string | null;
+  } | null = null;
   private turnSequence = 0;
   private qwenMedia = new QwenOmniMediaSequencer();
 
@@ -165,6 +177,7 @@ export class RealtimeDuplexSession {
         this.userActivityActive = false;
         this.turnHasUserActivity = false;
         this.activeUserTurnId = null;
+        this.pendingResponseInterrupt = null;
         this.emitDiagnostic('qwen_vad_error', { message });
         this.callbacks.onError(`本地人声检测暂不可用：${message}。`);
       },
@@ -173,6 +186,7 @@ export class RealtimeDuplexSession {
           this.userActivityActive = false;
           this.turnHasUserActivity = false;
           this.activeUserTurnId = null;
+          this.pendingResponseInterrupt = null;
         }
         this.emitDiagnostic(event, details);
       },
@@ -280,6 +294,8 @@ export class RealtimeDuplexSession {
     this.sessionReady = false;
     this.responseActive = false;
     this.activeUserTurnId = null;
+    this.lastInterruptedTurnId = null;
+    this.pendingResponseInterrupt = null;
     this.userSpeechMs = 0;
     this.userSilenceMs = 0;
     this.userActivityActive = false;
@@ -379,6 +395,7 @@ export class RealtimeDuplexSession {
             tools: this.config.tools,
             inputRate: INPUT_RATE,
             outputRate: OUTPUT_RATE,
+            preferredLanguage: this.config.preferredLanguage,
           }),
         );
       };
@@ -490,12 +507,20 @@ export class RealtimeDuplexSession {
       this.rejectedCandidateMs = 0;
     }
     if (detection.state !== 'started') {
+      if (detection.state === 'ended') this.pendingResponseInterrupt = null;
       this.interruptWhileUserSpeaking();
       return;
     }
     this.rejectedCandidateMs = 0;
     this.turnHasUserActivity = true;
     this.activeUserTurnId = this.newTurnId('voice');
+    this.pendingResponseInterrupt = {
+      turnId: this.activeUserTurnId,
+      speechMs: detection.speechMs,
+      level: detection.level,
+      threshold: 80,
+    };
+
     this.interruptQwenResponse(this.activeUserTurnId, detection.speechMs, detection.level, 80);
     this.emitDiagnostic('realtime_user_turn_started', {
       turn_id: this.activeUserTurnId,
@@ -610,7 +635,9 @@ export class RealtimeDuplexSession {
       this.responseActive = true;
       // Only VAD ends user speech. A model response must not re-arm interruption.
       this.assistantTranscript = '';
-      if (!this.interruptWhileUserSpeaking()) this.callbacks.onState('speaking');
+      if (!this.interruptPendingResponse(eventResponseId) && !this.interruptWhileUserSpeaking()) {
+        this.callbacks.onState('speaking');
+      }
     } else if (type === 'response.text.delta') {
       this.beginOfficialTurn(eventResponseId);
       const delta = String(event.delta || '');
@@ -696,9 +723,28 @@ export class RealtimeDuplexSession {
   }
 
   private interruptQwenResponse(turnId: string, speechMs: number, level: number, threshold: number): boolean {
-    if (!this.responseActive && !this.assistantPlaying) return false;
+    if (!this.responseActive && !this.assistantPlaying) {
+      if (this.lastInterruptedTurnId === turnId) return false;
+      const responseId = this.pendingResponseInterrupt?.turnId === turnId
+        ? this.pendingResponseInterrupt.responseId
+        : undefined;
+      this.pendingResponseInterrupt = {
+        turnId,
+        speechMs,
+        level,
+        threshold,
+        ...(responseId ? { responseId } : {}),
+      };
+      this.clearLocalPlaybackForInterruption();
+      this.lastInterruptedTurnId = turnId;
+      return false;
+    }
     const interruptedResponseId = this.responseId;
-    if (interruptedResponseId && this.interruptedResponseIds.has(interruptedResponseId)) return false;
+    if (
+      interruptedResponseId
+      && this.interruptedResponseIds.has(interruptedResponseId)
+      && !this.pendingResponseInterrupt
+    ) return false;
     if (interruptedResponseId) {
       this.interruptedResponseIds.add(interruptedResponseId);
       if (this.interruptedResponseIds.size > 64) {
@@ -707,15 +753,11 @@ export class RealtimeDuplexSession {
     }
     const cancelEventSent = this.responseActive;
     if (cancelEventSent) this.send(createQwenOmniCancelResponseEvent());
-    this.playbackGeneration += 1;
-    this.playbackOperation = Promise.resolve();
-    this.queuedDrainResponseId = null;
-    this.playbackNode?.port.postMessage({
-      type: 'clear',
-      cancelResponse: false,
-    });
+    this.clearLocalPlaybackForInterruption();
     this.responseActive = false;
     this.assistantPlaying = false;
+    this.lastInterruptedTurnId = turnId;
+    this.pendingResponseInterrupt = null;
     if (this.assistantTranscript) this.finishAssistantText();
     this.emitDiagnostic('qwen_response_interrupted_by_user', {
       turn_id: turnId,
@@ -730,12 +772,48 @@ export class RealtimeDuplexSession {
     return true;
   }
 
+  private clearLocalPlaybackForInterruption(): void {
+    this.playbackGeneration += 1;
+    this.playbackOperation = Promise.resolve();
+    this.queuedDrainResponseId = null;
+    this.playbackNode?.port.postMessage({
+      type: 'clear',
+      cancelResponse: false,
+    });
+    this.emitDiagnostic('qwen_local_audio_cleared_on_speech', {
+      response_id: this.responseId,
+      response_active: this.responseActive,
+      assistant_playing: this.assistantPlaying,
+    });
+  }
+
+  private interruptPendingResponse(responseId?: string | null): boolean {
+    const pending = this.pendingResponseInterrupt;
+    if (!pending) return false;
+    if (!this.userIsSpeakingNow() || !this.activeUserTurnId || pending.turnId !== this.activeUserTurnId) {
+      this.pendingResponseInterrupt = null;
+      return false;
+    }
+    if (pending.responseId && responseId && pending.responseId !== responseId) {
+      this.pendingResponseInterrupt = null;
+      return false;
+    }
+    return this.interruptQwenResponse(
+      pending.turnId,
+      pending.speechMs,
+      pending.level,
+      pending.threshold,
+    );
+  }
+
   private beginOfficialTurn(responseId: string | null): void {
     if (this.responseActive) return;
     if (responseId) this.responseId = responseId;
     this.responseActive = true;
     this.assistantTranscript = '';
-    this.callbacks.onState('speaking');
+    if (!this.interruptPendingResponse(responseId) && !this.interruptWhileUserSpeaking()) {
+      this.callbacks.onState('speaking');
+    }
   }
 
   private finishAssistantText(): void {
@@ -772,8 +850,11 @@ export class RealtimeDuplexSession {
   private enqueueAudioDelta(event: Record<string, unknown>, encoded: string, responseId: string | null): void {
     if (responseId && this.interruptedResponseIds.has(responseId)) return;
     if (this.userIsSpeakingNow()) {
-      this.interruptWhileUserSpeaking();
-      if (responseId) this.interruptedResponseIds.add(responseId);
+      const interrupted = this.interruptWhileUserSpeaking();
+      if (!interrupted && responseId && this.pendingResponseInterrupt) {
+        this.pendingResponseInterrupt.responseId = responseId;
+      }
+      if (responseId && interrupted) this.interruptedResponseIds.add(responseId);
       this.emitDiagnostic('qwen_audio_blocked_during_speech', { response_id: responseId });
       return;
     }
@@ -784,8 +865,11 @@ export class RealtimeDuplexSession {
         if (generation !== this.playbackGeneration || !output || !this.playbackNode) return;
         if (responseId && this.interruptedResponseIds.has(responseId)) return;
         if (this.userIsSpeakingNow()) {
-          this.interruptWhileUserSpeaking();
-          if (responseId) this.interruptedResponseIds.add(responseId);
+          const interrupted = this.interruptWhileUserSpeaking();
+          if (!interrupted && responseId && this.pendingResponseInterrupt) {
+            this.pendingResponseInterrupt.responseId = responseId;
+          }
+          if (responseId && interrupted) this.interruptedResponseIds.add(responseId);
           this.emitDiagnostic('qwen_audio_blocked_during_speech', { response_id: responseId });
           return;
         }

@@ -581,7 +581,7 @@ test('session update includes Gateway-provided tools', async () => {
   globalThis.window = globalThis;
   globalThis.WebSocket = StartupSocket;
   const session = new RealtimeDuplexSession(
-    { url: 'ws://example.test/realtime', tools },
+    { url: 'ws://example.test/realtime', tools, preferredLanguage: 'en' },
     {
       getVideoFrame: () => null,
       onAssistantText: () => undefined,
@@ -598,6 +598,7 @@ test('session update includes Gateway-provided tools', async () => {
   assert.deepEqual(socket.sent[0].session.tools, tools);
   assert.match(socket.sent[0].session.instructions, /MUST call jiuwen_delegate in the same turn/);
   assert.match(socket.sent[0].session.instructions, /brief, natural acknowledgement that you are handling the request/);
+  assert.match(socket.sent[0].session.instructions, /Answer and speak in natural English/);
   assert.match(socket.sent[0].session.instructions, /acknowledgement describes work in progress only/);
   assert.match(
     socket.sent[0].session.instructions,
@@ -708,3 +709,78 @@ test('remote disconnect releases media resources and pending receipts without lo
   assert.equal(texts.at(-1), '已经收到的回答');
   assert.equal(states.at(-1), 'closed');
 });
+test('speech before response.created defers cancellation until the response is established', () => {
+  const { session, sent, states } = createSession();
+  const gate = new SpeechGate();
+  for (let index = 0; index < 8; index += 1) {
+    session.handleSpeechDetection(gate.process(0.95, 1000));
+  }
+
+  // The local VAD has confirmed speech, but the provider has not announced a
+  // response yet, so there is no response.cancel to send at this point.
+  assert.deepEqual(sent, []);
+
+  session.handleEvent({ type: 'response.created', response: { id: 'raced-response' } });
+
+  assert.deepEqual(sent, [{ type: 'response.cancel' }]);
+  assert.equal(states.at(-1), 'listening');
+  session.handleSpeechDetection(gate.process(0.95, 1000));
+  assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 1);
+});
+
+test('only confirmed speech clears local playback before a remote response exists', () => {
+  const { session, posted, sent } = createSession();
+  const gate = new SpeechGate();
+
+  // Candidate/noise evidence must not cut off an answer prematurely.
+  session.handleSpeechDetection(gate.process(0.95, 1000));
+  assert.equal(posted.some((message) => message.type === 'clear'), false);
+
+  for (let index = 1; index < 8; index += 1) {
+    session.handleSpeechDetection(gate.process(0.95, 1000));
+  }
+
+  assert.equal(posted.filter((message) => message.type === 'clear').length, 1);
+  assert.equal(sent.some((event) => event.type === 'response.cancel'), false);
+});
+
+
+const relaxedCases = JSON.parse(readFileSync(new URL('../delegation_argument_contract.json', import.meta.url), 'utf8'));
+for (const sample of relaxedCases) {
+  test(`shared delegation argument contract: ${sample.id}`, () => {
+    const { session, functionCalls } = createSession();
+    session.handleEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_delegate',
+      call_id: sample.id, arguments: sample.arguments });
+    assert.equal(functionCalls.length, sample.expected ? 1 : 0);
+    if (sample.expected) {
+      assert.deepEqual(JSON.parse(functionCalls[0].arguments), sample.expected);
+      assert.equal(functionCalls[0].task, sample.expected.task || sample.expected.query);
+    }
+  });
+}
+
+test('deferred interruption expires with speech and does not cancel the next answer', () => {
+  const { session, sent } = createSession();
+  const gate = new SpeechGate();
+  for (let i = 0; i < 8; i++) session.handleSpeechDetection(gate.process(0.95, 1000));
+  session.handleSpeechDetection({ state: 'ended', speechMs: 256, silenceMs: 1200, level: 0, probability: 0, noiseFloor: 0 });
+  session.handleEvent({ type: 'response.created', response: { id: 'next-answer' } });
+  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
+});
+
+test('deferred interruption expires after a VAD worker stall', () => {
+  const { session, sent } = createSession();
+  const gate = new SpeechGate();
+  for (let i = 0; i < 8; i++) session.handleSpeechDetection(gate.process(0.95, 1000));
+  session.lastSpeechDetectionAt = performance.now() - 1000;
+  session.handleEvent({ type: 'response.created', response: { id: 'fresh-after-stall' } });
+  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
+});
+
+for (const size of [2000, 2001]) {
+  test(`delegation preserves task limit: ${size}`, () => {
+    const { session, functionCalls } = createSession();
+    session.handleEvent({type:'response.function_call_arguments.done', name:'jiuwen_delegate', call_id:'long', arguments:{task:'x'.repeat(size)}});
+    assert.equal(functionCalls.length, size === 2000 ? 1 : 0);
+  });
+}
