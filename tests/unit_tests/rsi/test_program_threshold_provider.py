@@ -150,3 +150,38 @@ def test_stopped_verdict_survives_provider_tree_refresh() -> None:
         failure_class="empty_reply",
     )
     assert RsiProjector._merge_node(stopped, provider) is stopped
+
+
+def test_completed_legacy_run_reclassifies_only_empty_replies_after_solve(tmp_path: Path) -> None:
+    task_id = "legacy"
+    task_dir = tmp_path / task_id
+    (task_dir / "run").mkdir(parents=True)
+    (task_dir / "run" / "scorecard.json").write_text(
+        json.dumps({"scorecard": {"solvedThreshold": 0.9}}), encoding="utf-8"
+    )
+    sequence = [
+        {"node_id": "attempt:1", "type": "rejected", "failure_class": "empty_reply", "score": None},
+        {"node_id": "attempt:2", "type": "adopted", "adopted": True, "score": 1.0},
+        {"node_id": "attempt:3", "type": "rejected", "failure_class": "empty_reply", "score": None},
+    ]
+    (task_dir / "events.jsonl").write_text("".join(
+        json.dumps({"event_type": "node", "event": {"node": node}}) + "\n"
+        for node in sequence
+    ), encoding="utf-8")
+    projector = RsiProjector(tmp_path)
+    projector.register_root(task_id)
+    for node in sequence:
+        projector.on_provider_node(task_id, _program_node(
+            node["node_id"], score=node["score"], node_type=node["type"],
+            failure_class=node.get("failure_class"),
+        ).node)
+
+    recovered = RsiProjector(tmp_path)
+    assert recovered.load_from_disk(task_id)
+    assert recovered.reconcile_program_threshold_stops(task_id) == 1
+    tree = recovered.derive_tree(task_id)
+    by_id = {node["node_id"]: node for node in tree["nodes"]}
+    assert by_id["attempt:1"]["type"] == "REJECTED"
+    assert by_id["attempt:3"]["type"] == "PRUNED"
+    assert by_id["attempt:3"]["extra"]["threshold_stop_cancelled"] is True
+    assert recovered.reconcile_program_threshold_stops(task_id) == 0

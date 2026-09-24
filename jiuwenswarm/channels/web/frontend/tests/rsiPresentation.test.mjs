@@ -9,6 +9,7 @@ import {
   nodeStageLocalizedLabel,
   nodeStageSpec,
   presentRsiNode,
+  visibleRsiTree,
   progressPercent,
   scoreScale,
   actionsForStatus,
@@ -334,7 +335,7 @@ test('pruned paper nodes expose a concise user-facing reason', () => {
   assert.equal(presentation.reasonDetail, null);
 });
 
-test('program candidates stopped after another candidate solves show stopped', () => {
+test('program candidates stopped after another candidate solves are hidden', () => {
   const stopped = {
     node_id: 'artifact:task:attempt:3',
     iteration: 3,
@@ -348,11 +349,11 @@ test('program candidates stopped after another candidate solves show stopped', (
     changes: [],
     extra: { threshold_stop_cancelled: true, program: { logical_kind: 'pruned' } },
   };
-  const presentation = presentRsiNode(stopped, context('ARTIFACT', 'PROGRAM', [stopped]));
-  assert.equal(presentation.lifecycle, 'pruned');
-  assert.equal(presentation.runtimeLabel, '已停止');
-  assert.equal(presentation.reasonLabel, '其他候选已达到目标分数');
-  assert.equal(presentation.reasonDetail, null);
+  const root = { node_id: 'ROOT', type: 'ROOT', extra: {} };
+  const realFailure = { node_id: 'failed-before-solve', type: 'REJECTED', extra: {} };
+  const tree = { nodes: [root, realFailure, stopped], depth: 1, iteration: 3 };
+  assert.deepEqual(visibleRsiTree(tree, 'PROGRAM').nodes, [root, realFailure]);
+  assert.equal(visibleRsiTree(tree, 'PAPER'), tree);
 });
 
 test('structured harness stage payloads localize by status instead of using the provider name', () => {
