@@ -78,7 +78,6 @@ export async function waitForHubOAuth(
   while (!signal?.aborted) {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
     if (signal?.aborted) break;
-    if (authorizationWindowClosed?.()) throw new Error('授权窗口已关闭，请重新登录。');
     const response = await fetch('/marketplace-oauth/hub/result', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -87,7 +86,10 @@ export async function waitForHubOAuth(
     });
     const result = await responseJson(response);
     if (!response.ok) throw new Error('授权请求已过期，请重新登录。');
-    if (result.status === 'pending') continue;
+    if (result.status === 'pending') {
+      if (authorizationWindowClosed?.()) throw new Error('授权窗口已关闭，请重新登录。');
+      continue;
+    }
     if (result.status !== 'complete' || !result.access_token) {
       const code = typeof result.error === 'string' ? result.error.toLowerCase() : '';
       if (code.includes('session_exchange_failed'))
