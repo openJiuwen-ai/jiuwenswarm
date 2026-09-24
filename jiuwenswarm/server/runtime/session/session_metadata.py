@@ -945,6 +945,7 @@ def update_session_metadata(
     sync_write: bool = False,
     work_mode: str | None = None,
     session_equipment: dict[str, Any] | None = None,
+    model_selection: dict[str, Any] | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1026,6 +1027,8 @@ def update_session_metadata(
             metadata["session_equipment"] = copy.deepcopy(session_equipment)
         if isinstance(team_leader_identity, dict):
             metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
+        if model_selection is not None:
+            metadata["model_selection"] = copy.deepcopy(model_selection)
     else:
         # 更新现有元数据
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
@@ -1052,6 +1055,8 @@ def update_session_metadata(
         # a changed package definition.
         if isinstance(team_leader_identity, dict) and "team_leader_identity" not in metadata:
             metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
+        if model_selection is not None:
+            metadata["model_selection"] = copy.deepcopy(model_selection)
         if accent_color is not None:
             metadata["accent_color"] = accent_color
         # model：覆盖式——每次请求更新为本次模型
@@ -1349,6 +1354,7 @@ def get_session_metadata(
         metadata.setdefault("team_name", "")
         metadata.setdefault("team_template_id", "")
         metadata.setdefault("agent_group_name", "")
+        metadata.setdefault("model_selection", None)
     return metadata
 
 

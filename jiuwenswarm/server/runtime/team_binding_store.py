@@ -42,6 +42,9 @@ class TeamBinding:
     last_session_id: str = ""
     legacy: bool = False
     template_snapshot: dict[str, Any] | None = None
+    # Stable business-level model choice.  Runtime model pools remain in the
+    # Team spec/checkpoint; this reference is re-resolved on each cold build.
+    model_selection: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TeamBinding":
@@ -64,10 +67,15 @@ class TeamBinding:
                 if isinstance(data.get("template_snapshot"), dict)
                 else None
             ),
+            model_selection=(
+                deepcopy(data.get("model_selection"))
+                if isinstance(data.get("model_selection"), dict)
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "team_name": self.team_name,
             "template_id": self.template_id,
             "created_at": self.created_at,
@@ -76,6 +84,9 @@ class TeamBinding:
             "last_session_id": self.last_session_id,
             "legacy": self.legacy,
         }
+        if self.model_selection is not None:
+            payload["model_selection"] = deepcopy(self.model_selection)
+        return payload
 
 
 def _replace_bound_sessions(
@@ -94,6 +105,7 @@ def _replace_bound_sessions(
         last_session_id=last_session_id,
         legacy=binding.legacy,
         template_snapshot=deepcopy(binding.template_snapshot) if binding.template_snapshot else None,
+        model_selection=deepcopy(binding.model_selection) if binding.model_selection else None,
     )
 
 
@@ -226,6 +238,48 @@ class TeamBindingStore:
                 )
                 self._write_unlocked(data)
             return data[normalized_name]
+
+    def get_team_selection(
+        self, team_name: str | None = None, *, team_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the stable model selection persisted for a Team."""
+        binding = self.get(team_name or team_id or "")
+        return deepcopy(binding.model_selection) if binding and binding.model_selection else None
+
+    def set_team_selection(
+        self, *, team_name: str | None = None, team_id: str | None = None,
+        selection: dict[str, Any] | Any,
+    ) -> TeamBinding:
+        """Persist a validated stable model selection for a Team."""
+        normalized_name = validate_team_name(team_name or team_id or "")
+        try:
+            from jiuwenswarm.common.model_selection import ModelSelection
+            normalized = ModelSelection.model_validate(selection).model_dump()
+        except Exception as exc:
+            raise TeamBindingStoreError(
+                f"invalid model selection: {exc}", code="BAD_REQUEST"
+            ) from exc
+        with self._lock:
+            data = self._read_unlocked()
+            binding = data.get(normalized_name)
+            if binding is None:
+                raise TeamBindingStoreError("team binding not found", code="NOT_FOUND")
+            if binding.model_selection == normalized:
+                return binding
+            updated = TeamBinding(
+                team_name=binding.team_name,
+                template_id=binding.template_id,
+                created_at=binding.created_at,
+                updated_at=time.time(),
+                session_ids=binding.session_ids,
+                last_session_id=binding.last_session_id,
+                legacy=binding.legacy,
+                template_snapshot=deepcopy(binding.template_snapshot) if binding.template_snapshot else None,
+                model_selection=deepcopy(normalized),
+            )
+            data[normalized_name] = updated
+            self._write_unlocked(data)
+            return updated
 
     def unbind_session(self, *, session_id: str, team_name: str | None = None) -> TeamBinding | None:
         normalized_session = str(session_id or "").strip()

@@ -22,6 +22,8 @@ from openjiuwen.agent_teams import observability as team_observability
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger
 from openjiuwen.harness import DeepAgent
+from openjiuwen.core.foundation.llm import ModelSelection, CompiledModelSelection
+from openjiuwen.agent_teams.models.pool import materialize_model_group
 from openjiuwen.harness.rails import (
     EvolutionInterruptRail,
     SkillEvolutionRail,
@@ -1031,6 +1033,151 @@ class TeamManager:
         )
 
     @staticmethod
+    def _resolve_and_compile_team_selection(
+        selection: ModelSelection,
+    ) -> CompiledModelSelection:
+        """Resolve a stable Team selection through the server-side boundary."""
+        from jiuwenswarm.common.model_errors import (
+            TEAM_MODEL_SELECTION_STALE,
+            ModelSelectionError,
+        )
+        from jiuwenswarm.common.model_selection import (
+            ModelSelection as SwarmModelSelection,
+        )
+        from jiuwenswarm.server.runtime.model_compiler_adapter import (
+            compile_model_selection,
+        )
+        from jiuwenswarm.server.runtime.model_routing_registry import (
+            ModelSelectionResolver,
+        )
+
+        try:
+            resolved = ModelSelectionResolver().resolve(
+                SwarmModelSelection(type=selection.type, id=selection.id)
+            )
+            compiled = compile_model_selection(resolved)
+        except ModelSelectionError:
+            # Stable catalog / permission failures are meaningful to callers.
+            raise
+        except Exception as exc:
+            # Foundation errors also expose a numeric ``code`` attribute, but
+            # those values are implementation details rather than Team's
+            # stable external contract.
+            raise ModelSelectionError(
+                TEAM_MODEL_SELECTION_STALE,
+                "Team model selection cannot be restored; choose a model again",
+                selection_type=selection.type,
+            ) from exc
+
+        if isinstance(compiled, CompiledModelSelection):
+            return compiled
+        try:
+            return CompiledModelSelection.model_validate(compiled)
+        except Exception as exc:
+            raise ModelSelectionError(
+                TEAM_MODEL_SELECTION_STALE,
+                "Team model selection compiler output is invalid",
+            ) from exc
+
+    @staticmethod
+    def _apply_compiled_team_selection(
+        spec_dict: dict[str, Any],
+        selection: ModelSelection,
+        compiled: CompiledModelSelection,
+    ) -> None:
+        """Materialize one compiled selection into the Team model pool."""
+        from jiuwenswarm.common.model_errors import (
+            MODEL_REQUEST_CONFIG_INVALID,
+            TEAM_MODEL_SELECTION_STALE,
+            ModelSelectionError,
+        )
+
+        if (
+            compiled.selected_type != selection.type
+            or compiled.selected_id != selection.id
+        ):
+            raise ModelSelectionError(
+                TEAM_MODEL_SELECTION_STALE,
+                "model selection does not match compiled selection",
+            )
+
+        # ``load_team_spec_dict`` normally supplies the leader object, but
+        # callers may provide a minimal/template snapshot without one.  Keep
+        # model selection authoritative in that case too; Pydantic will fill
+        # the remaining LeaderSpec defaults when the spec is validated.
+        leader = spec_dict.get("leader")
+        if not isinstance(leader, dict):
+            leader = {}
+            spec_dict["leader"] = leader
+        # The compiled selection is the sole authoritative model source for
+        # this build. Remove stale convenience router declarations from an
+        # older template before TeamAgentSpec validates mutual exclusion.
+        spec_dict["model_router"] = None
+        spec_dict["model_intelli_router"] = None
+        if selection.type == "model_group":
+            spec_dict["model_pool"] = [
+                entry.model_dump(exclude_none=True)
+                for entry in materialize_model_group(compiled, selection)
+            ]
+            spec_dict["model_pool_strategy"] = "intelli_router"
+            # The compiled selection is authoritative. Clear convenience
+            # sources from a legacy template and normalize every predefined
+            # member to the sole logical Team entry; physical deployment names
+            # stay inside the Foundation router.
+            spec_dict["model_router"] = None
+            spec_dict["model_intelli_router"] = None
+            if isinstance(leader, dict):
+                leader["model_name"] = "*"
+            predefined_members = spec_dict.get("predefined_members")
+            if isinstance(predefined_members, list):
+                for member in predefined_members:
+                    if isinstance(member, dict):
+                        member["model_name"] = "*"
+            return
+
+        client = compiled.model_client_config.model_dump(exclude_none=True)
+        request = (
+            compiled.model_request_config.model_dump(
+                exclude_none=True,
+                by_alias=True,
+            )
+            if compiled.model_request_config
+            else {}
+        )
+        name = request.get("model") or request.get("model_name") or ""
+        if not name:
+            raise ModelSelectionError(
+                MODEL_REQUEST_CONFIG_INVALID,
+                "compiled model selection has an empty model name",
+            )
+        provider = client.get("client_provider", "")
+        provider = getattr(provider, "value", provider)
+        spec_dict["model_pool"] = [
+            {
+                "model_name": name,
+                "api_key": client.get("api_key", ""),
+                "api_base_url": client.get("api_base", ""),
+                "api_provider": str(provider),
+                "metadata": {
+                    "client": {
+                        key: value
+                        for key, value in client.items()
+                        if key not in {"client_provider", "api_key", "api_base"}
+                    },
+                    "request": {
+                        key: value
+                        for key, value in request.items()
+                        if key not in {"model", "model_name"}
+                    },
+                },
+            }
+        ]
+        spec_dict["model_pool_strategy"] = "by_model_name"
+        # The stable selection is authoritative over stale template hints.
+        if isinstance(leader, dict):
+            leader["model_name"] = name
+
+    @staticmethod
     def _load_team_spec(
         session_id: str,
         *,
@@ -1039,6 +1186,8 @@ class TeamManager:
         template_id: str | None = None,
         template_snapshot: dict[str, Any] | None = None,
         strict_template: bool = False,
+        model_selection: ModelSelection | dict[str, Any] | None = None,
+        compiled_model_selection: Any | None = None,
     ) -> TeamAgentSpec:
         config_base = get_config()
         # Keep dependency checks scoped to distributed mode to make the
@@ -1073,6 +1222,36 @@ class TeamManager:
         spec_dict = TeamManager._normalize_team_identity_fields(spec_dict)
         if TeamManager._is_distributed_mode(config_base):
             spec_dict = TeamManager._normalize_distributed_transport_fields(config_base, spec_dict)
+
+        if model_selection is not None or compiled_model_selection is not None:
+            if model_selection is None:
+                raise ValueError("model_selection is required with compiled_model_selection")
+            selection = (
+                ModelSelection.model_validate(model_selection)
+                if not isinstance(model_selection, ModelSelection)
+                else model_selection
+            )
+            compiled = compiled_model_selection
+            if compiled is None:
+                compiled = TeamManager._resolve_and_compile_team_selection(selection)
+            if not isinstance(compiled, CompiledModelSelection):
+                try:
+                    compiled = CompiledModelSelection.model_validate(compiled)
+                except Exception as exc:
+                    from jiuwenswarm.common.model_errors import (
+                        TEAM_MODEL_SELECTION_STALE,
+                        ModelSelectionError,
+                    )
+                    raise ModelSelectionError(
+                        TEAM_MODEL_SELECTION_STALE,
+                        "Team model selection compiler output is invalid",
+                    ) from exc
+            TeamManager._apply_compiled_team_selection(
+                spec_dict,
+                selection,
+                compiled,
+            )
+            return TeamAgentSpec.model_validate(spec_dict)
 
         # Populate the pool from valid configured entries plus the effective
         # page-selected model. The latter may be an in-memory Zen model or a
@@ -1163,6 +1342,8 @@ class TeamManager:
         *,
         requested_model_name: str | None = None,
         login_model_entry: dict[str, Any] | None = None,
+        model_selection: ModelSelection | dict[str, Any] | None = None,
+        compiled_model_selection: Any | None = None,
     ) -> tuple[TeamAgentSpec, bool]:
         team_name, template_id, template_snapshot = self._lookup_bound_team_identity(session_id)
         load_kwargs: dict[str, Any] = {}
@@ -1175,6 +1356,32 @@ class TeamManager:
             load_kwargs["strict_template"] = template_snapshot is None
         if template_snapshot is not None:
             load_kwargs["template_snapshot"] = template_snapshot
+        # A persisted selection is a business reference, not a runtime
+        # snapshot.  Re-resolve it on every cold build so config/credentials
+        # and permissions are current.
+        if model_selection is None and compiled_model_selection is None:
+            metadata = get_session_metadata(session_id, cache_bust=True)
+            # Team bindings own the long-lived business selection.  Keep the
+            # session field as a read-only compatibility fallback for legacy
+            # sessions/checkpoints that predate Team-level persistence.
+            team_name = str(metadata.get("team_name") or "").strip()
+            if team_name:
+                try:
+                    from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
+                    stored_team = get_team_binding_store().get_team_selection(team_name)
+                except Exception:
+                    stored_team = None
+                if isinstance(stored_team, dict) and stored_team.get("type") and stored_team.get("id"):
+                    model_selection = stored_team
+            if model_selection is None:
+                stored = metadata.get("model_selection") if isinstance(metadata, dict) else None
+                if isinstance(stored, dict) and stored.get("type") and stored.get("id"):
+                    model_selection = stored
+
+        if model_selection is not None:
+            load_kwargs["model_selection"] = model_selection
+        if compiled_model_selection is not None:
+            load_kwargs["compiled_model_selection"] = compiled_model_selection
         spec = self._load_team_spec(session_id, **load_kwargs)
         if team_name:
             spec.team_name = team_name
@@ -1197,6 +1404,8 @@ class TeamManager:
         login_model_entry: dict[str, Any] | None = None,
         agent_group_name: str | None = None,
         swarmflow_config: dict | None = None,
+        model_selection: ModelSelection | dict[str, Any] | None = None,
+        compiled_model_selection: Any | None = None,
     ) -> TeamAgentSpec:
         """Build a team spec via provider-based assembly (no parent DeepAgent).
 
@@ -1230,6 +1439,8 @@ class TeamManager:
             session_id,
             requested_model_name=requested_model_name,
             login_model_entry=login_model_entry,
+            model_selection=model_selection,
+            compiled_model_selection=compiled_model_selection,
         )
         if not has_binding:
             self._apply_session_scoped_team_name(spec, session_id=session_id)
