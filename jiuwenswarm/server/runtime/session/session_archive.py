@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from jiuwenswarm.common.cron_session import cron_session_matches_job
 from jiuwenswarm.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.session import lifecycle as lc, project_store
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
@@ -1037,9 +1038,9 @@ class SessionArchiveService:
 
     @staticmethod
     def _cron_session_name_matches(session_id: str, cron_id: str) -> bool:
-        if session_id == f"cron_{cron_id}":
-            return True
-        return session_id.startswith("cron_") and session_id.endswith(f"_{cron_id}")
+        # 共享实现见 common/cron_session.py（project.get_cron_sessions 的兜底
+        # 匹配与此同源，避免两处约定漂移）。
+        return cron_session_matches_job(session_id, cron_id)
 
     @staticmethod
     def cron_sessions(cron_id: str) -> list[str]:

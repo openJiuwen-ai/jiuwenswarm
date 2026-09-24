@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.cron_session import is_cron_execution_session
+from jiuwenswarm.common.cron_session import (
+    cron_session_matches_job,
+    is_cron_execution_session,
+)
 
 
 @pytest.mark.parametrize(
@@ -22,3 +25,23 @@ from jiuwenswarm.common.cron_session import is_cron_execution_session
 )
 def test_is_cron_execution_session(session_id, expected):
     assert is_cron_execution_session(session_id) is expected
+
+
+@pytest.mark.parametrize(
+    ("session_id", "cron_id", "expected"),
+    [
+        # team 执行会话（cron_<ts>_<jobid>）与 proactive 稳定会话（cron_<jobid>）。
+        ("cron_1a0d273b71b_9c29c6a6", "9c29c6a6", True),
+        ("cron_9c29c6a6", "9c29c6a6", True),
+        # 其它任务/非约定命名不命中。
+        ("cron_1a0d273b71b_9c29c6a6", "f669b114", False),
+        ("__cron___1a0d26c410a_rand", "rand", False),
+        ("cron-session", "session", False),
+        ("sess_19abc", "9c29c6a6", False),
+        ("", "9c29c6a6", False),
+        ("cron_1a0d273b71b_9c29c6a6", "", False),
+        (None, "9c29c6a6", False),
+    ],
+)
+def test_cron_session_matches_job(session_id, cron_id, expected):
+    assert cron_session_matches_job(session_id, cron_id) is expected
