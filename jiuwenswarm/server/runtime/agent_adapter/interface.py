@@ -1677,6 +1677,13 @@ class JiuWenSwarm:
             channel=request_channel,
             skip_a2ui=skip_a2ui,
         )
+        # Only Host-authenticated provenance may select Agent/tool input. Never
+        # trust a client-supplied copy inside the SDK's extensible run context.
+        run_extra = inputs["run"]["context"]["extra"]
+        run_extra.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
+        cross_session = metadata.get(SESSION_MESSAGE_INTERNAL_KEY)
+        if isinstance(cross_session, dict):
+            run_extra[SESSION_MESSAGE_INTERNAL_KEY] = dict(cross_session)
 
         # Per-request workspace_dir scopes one prompt's cwd to the given
         # directory; threaded into inputs["cwd"] which downstream init_cwd
@@ -5201,6 +5208,11 @@ class JiuWenSwarm:
         if session_id is None:
             return bool(has_runtime())
         return bool(has_runtime(session_id))
+
+    def has_active_goal(self, session_id: str) -> bool:
+        """Inspect existing Goal work without creating or attaching a session."""
+        checker = getattr(self._adapter, "has_active_goal", None)
+        return bool(callable(checker) and checker(session_id))
 
     def has_auto_permission_session(self, session_id: str | None) -> bool:
         adapter = self._adapter

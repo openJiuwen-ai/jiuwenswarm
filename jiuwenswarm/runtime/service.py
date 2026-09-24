@@ -17,6 +17,7 @@ from contextlib import aclosing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
@@ -54,7 +55,10 @@ from jiuwenswarm.runtime.session_lifecycle import (
     SessionPrepareDisposition,
     SessionPrepareEvent,
 )
-from jiuwenswarm.runtime.session.model import SessionExecutionSnapshot
+from jiuwenswarm.runtime.session.model import (
+    SessionExecutionSnapshot,
+    SessionExecutionState,
+)
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
@@ -370,6 +374,7 @@ class AgentRuntime:
         self._pending_session_provisions: set[PreparedSessionProvision[Any]] = set()
         self._started = False
         self._closed = False
+        self.set_admission_controller(admission_controller)
 
     @property
     def agent_manager(self) -> AgentManager:
@@ -383,6 +388,44 @@ class AgentRuntime:
     def set_admission_controller(self, controller: Any | None) -> None:
         """Attach optional host-owned scheduling admission to chat execution."""
         self._admission_controller = controller
+        setter = getattr(controller, "set_session_message_blocker", None)
+        if callable(setter):
+            setter(self._session_message_goal_busy)
+
+    def session_message_requires_queue(self, session_id: str) -> bool:
+        """Prevent cross-session steering from interrupting plans or active goals."""
+        return (
+            session_id in self._plan_controller.active_sessions
+            or self._session_message_goal_busy(session_id)
+        )
+
+    def _require_cross_session_input_admission(self, request: AgentRequest) -> None:
+        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+
+        if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict) and (
+            is_plan_mode(request.params.get("mode"))
+            or self.session_message_requires_queue(request.session_id)
+        ):
+            raise SessionInputQueueRequiredError(
+                "cross-session messages must queue while a plan or goal is active"
+            )
+
+    def _session_message_goal_busy(self, session_id: str) -> bool:
+        """Check Goal ownership, including rounds without an output consumer."""
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is None:
+            return False
+        if any(
+            execution.work_kind in {
+                SessionWorkKind.GOAL_STREAM, SessionWorkKind.GOAL_ATTACH,
+            }
+            and not execution.state.terminal
+            for execution in snapshot.executions
+        ):
+            return True
+        checker = getattr(self._agent_manager, "has_active_goal", None)
+        return bool(callable(checker) and checker(snapshot.channel_id, session_id))
 
     async def _mark_pending_interaction(self, event: RuntimeEvent) -> None:
         if event.event_type != "chat.ask_user_question":
@@ -396,6 +439,9 @@ class AgentRuntime:
     async def _mark_pending_interaction_id(
         self, session_id: str, request_id: str
     ) -> None:
+        request_id = str(request_id or "").strip()
+        if not request_id:
+            return
         marker = getattr(self._admission_controller, "mark_interaction_pending", None)
         if callable(marker):
             await marker(session_id, request_id)
@@ -1331,7 +1377,10 @@ class AgentRuntime:
         )
         activity_execution_started = False
         activity_execution_succeeded = False
-        admitted = foreground and not self._request_targets_team(request)
+        admitted = (
+            (foreground or self._starts_goal(request))
+            and not self._request_targets_team(request)
+        )
         interrupt_resume = self._is_interrupt_resume_request(request)
         interaction_answer = (
             interrupt_resume or request.req_method == ReqMethod.CHAT_ANSWER
@@ -1700,6 +1749,7 @@ class AgentRuntime:
             validate_session_input(request.params)
             if background:
                 raise ValueError("session input must use foreground delivery")
+            self._require_cross_session_input_admission(request)
             if not request.session_id or not self._is_single_agent_session_mode(
                 request.params.get("mode"), work_mode=request.params.get("work_mode"),
             ):
@@ -1720,9 +1770,12 @@ class AgentRuntime:
                     yield event
                 return
             if work_kind is SessionWorkKind.SESSION_INPUT:
+                self._require_cross_session_input_admission(request)
+
                 async def idle_input():
                     from jiuwenswarm.runtime.events import RuntimeEvent
 
+                    self._require_cross_session_input_admission(request)
                     # Web stream clients need the idle disposition before ordinary output.
                     # Unary clients must retain their single final response.
                     if request.is_stream:
@@ -1844,7 +1897,9 @@ class AgentRuntime:
         activity_execution_started = False
         activity_execution_succeeded = False
         admitted = (
-            is_chat_turn and not background and not self._request_targets_team(request)
+            (is_chat_turn or self._starts_goal(request))
+            and not background
+            and not self._request_targets_team(request)
         )
         interrupt_resume = self._is_interrupt_resume_request(request)
         interaction_answer = (
@@ -1861,6 +1916,18 @@ class AgentRuntime:
         cancellation: asyncio.CancelledError | None = None
         generator_exit: GeneratorExit | None = None
         supersede_attempted = False
+        mailbox_turn = background and isinstance(
+            (request.params or {}).get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        pending_mailbox_interactions: set[str] = set()
+
+        async def mark_interaction(event: RuntimeEvent) -> None:
+            await self._mark_pending_interaction(event)
+            if mailbox_turn:
+                control_id = self._waiting_control_id(event)
+                if control_id:
+                    pending_mailbox_interactions.add(control_id)
+
         try:
             if activity_participants:
                 activity_execution_started = (
@@ -1906,11 +1973,11 @@ class AgentRuntime:
                     control_events = self._control_events(request, plan_result.events)
                     if on_control_event is not None:
                         for event in control_events:
-                            await self._mark_pending_interaction(event)
+                            await mark_interaction(event)
                             await on_control_event(event)
                     else:
                         for event in control_events:
-                            await self._mark_pending_interaction(event)
+                            await mark_interaction(event)
                             yield event
             if on_agent_ready is not None:
                 ready_result = on_agent_ready(agent)
@@ -1918,6 +1985,7 @@ class AgentRuntime:
                     await ready_result
             managed_heartbeat = (
                 background
+                and not mailbox_turn
                 and self._is_single_agent_session_mode(
                     (request.params or {}).get("mode"),
                     work_mode=(request.params or {}).get("work_mode"),
@@ -1959,7 +2027,7 @@ class AgentRuntime:
                             )
                             continue
                     else:
-                        await self._mark_pending_interaction(event)
+                        await mark_interaction(event)
                     if (
                         admission_started
                         and not supersede_attempted
@@ -1998,11 +2066,11 @@ class AgentRuntime:
                     )
                     if on_control_event is not None:
                         for event in control_events:
-                            await self._mark_pending_interaction(event)
+                            await mark_interaction(event)
                             await on_control_event(event)
                     elif generator_exit is None:
                         for event in control_events:
-                            await self._mark_pending_interaction(event)
+                            await mark_interaction(event)
                             yield event
             except BaseException as exc:  # preserve execution/cancellation below
                 plan_error = exc
@@ -2023,6 +2091,14 @@ class AgentRuntime:
                     self._record_session_execution_finished(
                         request,
                         succeeded=activity_execution_succeeded,
+                    )
+
+            if mailbox_turn and (
+                not activity_execution_succeeded or plan_error is not None
+            ):
+                for control_id in pending_mailbox_interactions:
+                    await self._clear_pending_interaction(
+                        request.session_id or "default", control_id
                     )
 
             primary_error: BaseException | None = (
@@ -2665,8 +2741,6 @@ class AgentRuntime:
     ) -> None:
         """Resolve stale mailbox waits while this user still owns admission."""
 
-        from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
-
         if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME):
             return
         params = request.params if isinstance(request.params, dict) else {}
@@ -2690,11 +2764,39 @@ class AgentRuntime:
             )
             return
         if superseded:
+            await self.release_session_message_interactions(target_session_id)
             logger.info(
                 "[SessionMessaging] user turn superseded %d waiting message(s): "
                 "session_id=%s",
                 superseded,
                 target_session_id,
+            )
+
+    async def release_session_message_interactions(
+        self, session_id: str, *, request_id: str | None = None
+    ) -> None:
+        """Release questions whose mailbox turn was superseded or failed."""
+        coordinator = getattr(self, "_session_coordinator", None)
+        snapshot = coordinator.snapshot_session(session_id) if coordinator else None
+        if snapshot is None:
+            return
+        for execution in snapshot.executions:
+            if execution.state is not SessionExecutionState.WAITING_FOR_CONTROL:
+                continue
+            if (
+                (execution.root_work_kind or execution.work_kind)
+                is not SessionWorkKind.SESSION_MESSAGE
+                or (
+                    request_id is not None
+                    and (execution.root_request_id or execution.request_id) != request_id
+                )
+            ):
+                continue
+            await coordinator.cancel_execution(
+                session_id, execution_id=execution.execution_id
+            )
+            await self._clear_pending_interaction(
+                session_id, execution.waiting_control_id
             )
 
     def _should_admit_interrupt_resume(self, request: AgentRequest) -> bool:
@@ -2776,6 +2878,14 @@ class AgentRuntime:
             and not cls._is_interrupt_resume_request(request)
         )
 
+    @staticmethod
+    def _starts_goal(request: AgentRequest) -> bool:
+        params = request.params if isinstance(request.params, dict) else {}
+        return (
+            request.req_method is ReqMethod.COMMAND_GOAL
+            and str(params.get("action") or "get").strip().lower() in {"set", "resume"}
+        )
+
     @classmethod
     def session_work_kind(
         cls,
@@ -2784,9 +2894,19 @@ class AgentRuntime:
         background: bool = False,
     ) -> SessionWorkKind | None:
         """Classify product Session work at the Runtime boundary."""
-        if background or not request.session_id:
+        if not request.session_id:
             return None
         params = request.params if isinstance(request.params, dict) else {}
+        if background:
+            return (
+                SessionWorkKind.SESSION_MESSAGE
+                if request.req_method in cls._chat_turn_methods()
+                and isinstance(params.get(SESSION_MESSAGE_INTERNAL_KEY), dict)
+                and cls._is_single_agent_session_mode(
+                    params.get("mode"), work_mode=params.get("work_mode")
+                )
+                else None
+            )
         if not cls._is_single_agent_session_mode(
             params.get("mode"),
             work_mode=params.get("work_mode"),

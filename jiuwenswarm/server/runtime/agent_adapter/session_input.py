@@ -3,18 +3,29 @@
 
 import asyncio
 import time
+from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.session.stream import OutputSchema
-from openjiuwen.core.single_agent.rail.base import AgentRail
+from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent, AgentRail
+from openjiuwen.core.foundation.llm.schema.message import (
+    OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+    OPENJIUWEN_MESSAGE_ORIGIN_METADATA,
+    OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
+    UserMessage,
+)
 from openjiuwen.harness.schema.interaction import InputDispatchMode
 
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY, SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.runtime.context import get_current_runtime
 from jiuwenswarm.runtime.session.model import SessionExecutionState
 from jiuwenswarm.runtime.session_input import SessionInputTargetError, resolve_session_input_mode
+from jiuwenswarm.server.runtime.agent_adapter.session_message_input import cross_session_model_messages
+
+
+_INPUT_BOUNDARY_TIMEOUT_SECONDS = 5.0
 
 
 class QueuedSessionInput(str):
@@ -99,6 +110,22 @@ def sdk_input_mode(params: Any) -> InputDispatchMode | None:
     return InputDispatchMode(mode.value) if mode is not None else None
 
 
+class SessionInputBoundaryGuard(AgentRail):
+    """Remove failed publications before memory or other input observers run."""
+
+    priority = 1000
+
+    async def on_user_message(self, ctx):
+        admitted = []
+        for part in ctx.inputs.parts:
+            if isinstance(part, QueuedSessionInput):
+                await part.boundary_ready.wait()
+                if part.boundary_error is not None:
+                    continue
+            admitted.append(part)
+        ctx.inputs.parts[:] = admitted
+
+
 class SessionInputGuard(AgentRail):
     """Guard admission and reconnect the SDK queue when an interaction resumes.
 
@@ -114,13 +141,20 @@ class SessionInputGuard(AgentRail):
         self._active_tools = 0
         self._generation_boundary_pending = False
         self._session = None
+        self.boundary_guard = SessionInputBoundaryGuard()
+
+    def callback_priority(self, event: AgentCallbackEvent) -> int:
+        # Admit the final batch after other rails have removed/reordered inputs.
+        if event is AgentCallbackEvent.ON_USER_MESSAGE:
+            return -1000
+        return super().callback_priority(event)
 
     async def publish_input_received(self, entry: QueuedSessionInput) -> None:
         """Insert the user boundary into the SAME queue as model output.
 
-        The next model call waits for this marker, even if it drained the input
-        while write_stream was backpressured. ACK and output transport timing
-        therefore cannot move the user bubble across already emitted text.
+        Admission waits for this marker before adding the input to model history.
+        Failed or cancelled publication discards that input without failing the
+        original task. Bound backpressure so it cannot stall the target forever.
         """
         try:
             provenance = {}
@@ -130,11 +164,14 @@ class SessionInputGuard(AgentRail):
                     "session_message_id": entry.cross_session["message_id"],
                     "cross_session": entry.cross_session,
                 }
-            await self._session.write_stream(OutputSchema(
-                type="session_input_received", index=0,
-                payload={"input_request_id": entry.request_id, "content": entry.display_content,
-                         "timestamp": time.time() * 1000, **provenance},
-            ))
+            await asyncio.wait_for(
+                self._session.write_stream(OutputSchema(
+                    type="session_input_received", index=0,
+                    payload={"input_request_id": entry.request_id, "content": entry.display_content,
+                             "timestamp": time.time() * 1000, **provenance},
+                )),
+                timeout=_INPUT_BOUNDARY_TIMEOUT_SECONDS,
+            )
         except (Exception, asyncio.CancelledError) as exc:
             entry.boundary_error = exc
             if isinstance(exc, asyncio.CancelledError):
@@ -146,9 +183,36 @@ class SessionInputGuard(AgentRail):
             entry.boundary_ready.set()
 
     async def on_user_message(self, ctx):
+        parts = ctx.inputs.parts
         if ctx.inputs.source == "steering":
-            # Keep the mutable batch itself: other rails may remove/reorder parts.
-            ctx.extra["session_input_parts"] = ctx.inputs.parts
+            ctx.extra["session_input_parts"] = list(parts)
+
+        run_context = ctx.extra.get("run_context")
+        extra = (
+            run_context.get("extra", {})
+            if isinstance(run_context, Mapping)
+            else getattr(run_context, "extra", {})
+        )
+        cross_session = extra.get(SESSION_MESSAGE_INTERNAL_KEY) if isinstance(extra, Mapping) else None
+        if ctx.inputs.source == "query" and isinstance(cross_session, dict) and parts:
+            await ctx.context.add_messages(cross_session_model_messages("\n".join(parts), cross_session))
+            parts.clear()
+        elif any(isinstance(part, QueuedSessionInput) and part.cross_session for part in parts):
+            # Preserve batch order, including interleaved human and Agent input.
+            messages = []
+            for part in parts:
+                if isinstance(part, QueuedSessionInput) and part.cross_session:
+                    messages.extend(cross_session_model_messages(part, part.cross_session))
+                else:
+                    messages.append(UserMessage(
+                        content=f"[STEERING] {part}",
+                        metadata={
+                            OPENJIUWEN_MESSAGE_ORIGIN_METADATA: OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+                            OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: ctx.inputs.source,
+                        },
+                    ))
+            await ctx.context.add_messages(messages)
+            parts.clear()
 
     async def before_invoke(self, ctx):
         # DeepAgent's InteractiveInput path bypasses the task-loop executor,
@@ -175,10 +239,6 @@ class SessionInputGuard(AgentRail):
             ctx.extra["session_input_message_route"] = (
                 max(routes, key=lambda route: route["hop_count"]) if routes else None
             )
-        for entry in entries:
-            await entry.boundary_ready.wait()
-            if entry.boundary_error is not None:
-                raise RuntimeError("supplemental input boundary was not published") from entry.boundary_error
         if entries or "session_output_phase" not in ctx.extra:
             phase_id = uuid4().hex
             ctx.extra["session_output_phase"] = phase_id

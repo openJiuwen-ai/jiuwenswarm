@@ -11588,6 +11588,9 @@ class JiuWenSwarmDeepAdapter:
             and not is_team_mode(deprecate_mode(self._last_mode))
             and getattr(runtime, "session_message_service", None) is not None
         )
+        messaging_rail = getattr(self, "_session_messaging_route_rail", None)
+        if messaging_rail is not None:
+            messaging_rail.set_service(runtime.session_message_service if eligible else None)
         if not eligible:
             if self._session_messaging_toolkit is not None:
                 registered_tools = [
@@ -11604,6 +11607,8 @@ class JiuWenSwarmDeepAdapter:
                 "session_send_message",
                 "session_message_list",
                 "session_message_resolve",
+                "session_continue_queued",
+                "session_read",
             } & registered_names:
                 self._instance.ability_manager.remove(name)
             return
@@ -11612,6 +11617,8 @@ class JiuWenSwarmDeepAdapter:
             "session_send_message",
             "session_message_list",
             "session_message_resolve",
+            "session_continue_queued",
+            "session_read",
         }
         if self._session_messaging_toolkit is None:
             # A restored adapter may still carry the retired multi-session
@@ -12579,7 +12586,7 @@ class JiuWenSwarmDeepAdapter:
     def _goal_record_is_active(self) -> bool:
         """Whether GoalRecord is ACTIVE (persistent objective still running).
 
-        Unlike ``_has_active_goal_interaction``, this ignores an in-flight goal
+        Unlike ``has_active_goal_interaction``, this ignores an in-flight goal
         round.  Used when deciding whether to demote ``chat.final``: after user
         cancel/pause the record is no longer ACTIVE, so a terminal final must
         reach the frontend even while the aborted round is still unwinding.
@@ -12599,7 +12606,21 @@ class JiuWenSwarmDeepAdapter:
         status_value = getattr(status, "value", status)
         return status_value == "active"
 
-    def _has_active_goal_interaction(self) -> bool:
+    def has_active_goal(self, session_id: str) -> bool:
+        """Read the cached Goal owner, including between autonomous rounds."""
+        if (
+            self._is_session_scoped_adapter
+            and self._session_adapter_key(self._parent_session_id)
+            != self._session_adapter_key(session_id)
+        ):
+            return False
+        adapter = (
+            self if self._is_session_scoped_adapter
+            else self._get_cached_session_adapter(session_id)
+        )
+        return bool(adapter and adapter.has_active_goal_interaction())
+
+    def has_active_goal_interaction(self) -> bool:
         """Whether the shared DeepAgent still owns an active goal interaction."""
         if self._has_active_goal_round():
             return True
@@ -15509,9 +15530,11 @@ class JiuWenSwarmDeepAdapter:
         else:
             self._session_input_guard = None
             await instance.unregister_rail(guard)
+            await instance.unregister_rail(guard.boundary_guard)
         await instance.ensure_initialized()
-        await register(guard)
         try:
+            await register(guard.boundary_guard)
+            await register(guard)
             # DeepAgent routes BEFORE_INVOKE to the outer agent only. Resume
             # queue binding must also run on the inner ReAct invocation.
             event = AgentCallbackEvent.BEFORE_INVOKE
@@ -15519,8 +15542,35 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             # DeepAgent unregisters all of this rail's callbacks on both agents.
             await instance.unregister_rail(guard)
+            await instance.unregister_rail(guard.boundary_guard)
             raise exc
         self._session_input_guard = guard
+
+    def _require_cross_session_task_admission(self, request: AgentRequest) -> None:
+        """Refuse protected-mode steering before any SDK submission."""
+        from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
+        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from jiuwenswarm.runtime.context import get_current_runtime
+        from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+
+        runtime = get_current_runtime()
+        checker = getattr(runtime, "session_message_requires_queue", None)
+        protected = (
+            is_plan_mode(self._last_mode)
+            or is_plan_mode(request.params.get("mode"))
+            or self.has_active_goal_interaction()
+            or bool(callable(checker) and checker(request.session_id))
+        )
+        if not protected and self._instance is not None:
+            session = resolve_live_agent_session(self._instance, request.session_id)
+            if session is not None:
+                # enter_plan_mode may run after the request mode was selected.
+                protected = self._instance.load_state(session).plan_mode.mode == "plan"
+        if protected:
+            raise SessionInputQueueRequiredError(
+                "cross-session messages must queue while a plan or goal is active; "
+                "supplemental input was not sent"
+            )
 
     async def deliver_active_session_input(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -15537,6 +15587,12 @@ class JiuWenSwarmDeepAdapter:
 
         from jiuwenswarm.runtime.session_input import SessionInputRejectedError
 
+        mode = sdk_input_mode(request.params)
+        cross_session_steer = mode is InputDispatchMode.STEER and isinstance(
+            request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        if cross_session_steer:
+            self._require_cross_session_task_admission(request)
         instance = self._instance
         if instance is None or instance.active_round is None:
             return False
@@ -15547,10 +15603,11 @@ class JiuWenSwarmDeepAdapter:
                 "session is waiting for an interaction answer; "
                 "supplemental input was not sent"
             )
-        mode = sdk_input_mode(request.params)
         bound_round = instance.active_round
 
         def require_open_input() -> None:
+            if cross_session_steer:
+                self._require_cross_session_task_admission(request)
             if mode is InputDispatchMode.STEER:
                 guard = self._session_input_guard
                 if guard is None or guard.owner is not instance:
@@ -15637,6 +15694,15 @@ class JiuWenSwarmDeepAdapter:
                 return
             # The original execution can finish between Runtime routing and
             # SDK admission. Reuse normal output ownership for the idle case.
+            if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict):
+                from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
+                # Runtime selected an active parent. Let the durable mailbox
+                # reacquire task admission rather than starting an unbound turn
+                # while that parent is starting or releasing its output owner.
+                raise SessionInputRejectedError(
+                    "target execution changed before submission; queue the message"
+                )
             if request.params.get("expected_execution_id"):
                 from jiuwenswarm.runtime.session_input import SessionInputTargetError
 

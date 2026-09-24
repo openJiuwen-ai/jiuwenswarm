@@ -31,6 +31,10 @@ from jiuwenswarm.common.security.ws_origin import (
     get_header_value,
 )
 from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+)
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
@@ -104,6 +108,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.symphony_status",
         "chat.notice",
         "chat.message_updated",
+        "session.message.updated",
         "history.message",
         "chat.session_result",
         "chat.usage_metadata",
@@ -417,7 +422,11 @@ class WebChannel(BaseWsChannel):
 
     @classmethod
     def _resolve_connection_user_id(cls, flat_query: dict[str, str], ws: Any) -> str | None:
-        connection_user_id = cls._extract_query_user_id(flat_query) or cls._extract_ws_header_user_id(ws)
+        authenticated_user_id = getattr(ws, "authenticated_user_id", None)
+        if authenticated_user_id is not None:
+            connection_user_id = str(authenticated_user_id).strip() or None
+        else:
+            connection_user_id = cls._extract_query_user_id(flat_query) or cls._extract_ws_header_user_id(ws)
         setattr(ws, _WEB_CONNECTION_USER_ID_ATTR, connection_user_id)
         return connection_user_id
 
@@ -973,6 +982,21 @@ class WebChannel(BaseWsChannel):
             )
             return
 
+        if _et == "session.message.updated":
+            metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+            owner_scope_id = str(metadata.get(SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY) or "").strip()
+            if not owner_scope_id or not msg.session_id:
+                logger.warning("[WebChannel] dropping session.message.updated without owner or session")
+                return
+            anonymous_owner = metadata.get(SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY)
+            if owner_scope_id == "local" and not isinstance(anonymous_owner, bool):
+                return
+            clients = self._session_message_target_clients(
+                msg.session_id, owner_scope_id, anonymous_owner
+            )
+            await self._broadcast_to(self._serialize_frame(msg), clients)
+            return
+
         if msg.type == "res":
             if isinstance(msg.payload, dict):
                 res_payload = {**msg.payload}
@@ -1152,6 +1176,33 @@ class WebChannel(BaseWsChannel):
                 "event": "chat.processing_status",
                 "payload": {"session_id": msg.session_id, "is_processing": is_processing},
             }, all_clients)
+
+    def _session_message_target_clients(
+        self,
+        session_id: str,
+        owner_scope_id: str,
+        anonymous_owner: Any,
+    ) -> set[Any]:
+        """收集绑定到指定 session 且匹配 owner 归属的活跃 websocket。
+
+        anonymous_owner 为真时无主连接（user_id 为 None）可见，
+        否则仅 user_id 等于 owner_scope_id 的连接可见。
+        """
+        clients: set[Any] = set()
+        for rk, ws_list in self._clients_by_key.items():
+            if rk.session_id != session_id:
+                continue
+            for ws in ws_list:
+                if getattr(ws, "closed", False):
+                    continue
+                ws_user_id = self.connection_user_id(ws)
+                owner_matched = (
+                    ws_user_id is None if anonymous_owner
+                    else ws_user_id == owner_scope_id
+                )
+                if owner_matched:
+                    clients.add(ws)
+        return clients
 
     def _track_session_busy(self, msg: Message) -> None:
         """在所有路由分支之前维护 session busy 映射(供 /ws/git 写操作查询)。

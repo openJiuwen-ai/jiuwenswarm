@@ -378,38 +378,30 @@ def test_first_batch_registry_ids() -> None:
 def test_web_slash_picker_command_contract() -> None:
     commands = list_builtin_commands({"work_mode": "code.normal"})["commands"]
     assert [command["name"] for command in commands] == [
-        "new", "fork", "side", "compact", "plan", "goal", "persist",
+        "fork", "compact", "plan", "goal", "persist",
     ]
-    assert commands[0]["usage"] == "/new"
-    assert commands[0]["execution"] == "client"
-    assert commands[0]["requires_session"] is False
-    assert commands[1]["usage"] == "/fork"
-    assert commands[1]["req_method"] == "session.fork"
-    assert commands[1]["requires_session"] is True
-    assert commands[2]["usage"] == "/side [问题]"
-    assert commands[2]["takesArgs"] is True
-    assert commands[2]["req_method"] == "session.fork"
-    assert commands[3]["req_method"] == "command.compact"
-    assert commands[4]["execution"] == "chat.send_with_mode"
-    assert commands[4]["takesArgs"] is False
-    assert commands[4]["usage"] == "/plan"
-    assert commands[4]["example"] is None
-    assert commands[4]["plan_entry_source"] == "slash_command"
-    assert commands[5]["usage"] == "/goal [set <目标>|pause|resume|clear]"
-    assert commands[5]["takesArgs"] is True
-    assert commands[5]["req_method"] == "command.goal"
-    assert commands[5]["requires_session"] is False
-    assert commands[6]["usage"] == "/persist <任务>"
-    assert commands[6]["execution"] == "session.create"
-    assert commands[6]["requires_session"] is False
+    assert commands[0]["usage"] == "/fork"
+    assert commands[0]["req_method"] == "session.fork"
+    assert commands[0]["requires_session"] is True
+    assert commands[1]["req_method"] == "command.compact"
+    assert commands[2]["execution"] == "chat.send_with_mode"
+    assert commands[2]["takesArgs"] is False
+    assert commands[2]["usage"] == "/plan"
+    assert commands[2]["example"] is None
+    assert commands[2]["plan_entry_source"] == "slash_command"
+    assert commands[3]["usage"] == "/goal [set <目标>|pause|resume|clear]"
+    assert commands[3]["takesArgs"] is True
+    assert commands[3]["req_method"] == "command.goal"
+    assert commands[3]["requires_session"] is False
+    assert commands[4]["usage"] == "/persist <任务>"
+    assert commands[4]["execution"] == "session.create"
+    assert commands[4]["requires_session"] is False
 
 
 def test_web_slash_picker_descriptions_are_bilingual_and_backward_compatible() -> None:
     commands = list_builtin_commands()["commands"]
     expected_legacy_descriptions = [
-        "新建一个空白会话",
         "分叉当前会话并切换到副本",
-        "基于当前上下文创建一个临时侧会话",
         "压缩对话历史，保留摘要以节省上下文",
         "切换计划模式（只读规划 → 审批 → 执行）",
         "设置、查看、暂停、恢复或清除持续目标",

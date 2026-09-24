@@ -37,6 +37,8 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     SESSION_MESSAGE_ORIGIN,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
 )
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
@@ -89,6 +91,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
 from jiuwenswarm.server.runtime.session.session_message_service import (
     SessionMessageExecutionResult,
     SessionMessageService,
+    SessionMessagingError,
 )
 from jiuwenswarm.server.runtime.session.session_message_store import (
     SessionMessageRecord,
@@ -1186,10 +1189,20 @@ class AgentWebSocketServer:
             admission=self._heartbeat_runtime.admission,
             execute=self.execute_internal_session_message,
             status_callback=self._push_session_message_status,
+            on_abandoned_wait=self._release_abandoned_session_message_wait,
+            requires_task_queue=self._runtime.session_message_requires_queue,
             available=self._current_ws is not None,
         )
         self._session_message_service = service
         self._runtime.set_session_message_service(service)
+
+    async def _release_abandoned_session_message_wait(
+        self, record: SessionMessageRecord
+    ) -> None:
+        await self._execution_runtime().release_session_message_interactions(
+            record.target_session_id,
+            request_id=record.execution_request_id,
+        )
 
     def set_proactive_engine(self, engine: Any) -> None:
         """Store the proactive engine instance for debug trigger interface."""
@@ -2128,6 +2141,26 @@ class AgentWebSocketServer:
                 payload={"error": str(exc), "code": "INTERNAL_ERROR"},
                 metadata=request.metadata,
             )
+        # The mailbox belongs to this AgentServer, not the metadata adapter.
+        if (
+            request.req_method == ReqMethod.SESSION_GET_METADATA
+            and request.channel_id == "web"
+            and response.ok
+        ):
+            service = getattr(self, "_session_message_service", None)
+            if service is not None and isinstance(response.payload, dict):
+                try:
+                    params = request.params if isinstance(request.params, dict) else {}
+                    session_id = str(params.get("session_id") or "")
+                    response.payload["queued_session_messages"] = (
+                        await service.queued_for_target(session_id, request.user_id)
+                    )
+                except Exception:
+                    logger.warning(
+                        "[AgentWebSocketServer] queue snapshot failed: session_id=%s",
+                        session_id,
+                        exc_info=True,
+                    )
         if getattr(response, "agent_ref", None) is None:
             response.agent_ref = request.agent_ref
         wire = encode_agent_response_for_wire(response, response_id=request.request_id)
@@ -2351,6 +2384,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.SESSION_KVC_PREPARE:
                 await self._handle_session_kvc_prepare(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED:
+                await self._handle_session_message_continue_queued(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.SESSION_REWIND:
                 await self._handle_session_rewind_full(ws, request, send_lock)
@@ -3581,6 +3617,22 @@ class AgentWebSocketServer:
             },
             fallback_channel_id="web",
         )
+        if message["channel_id"] == "web":
+            message["payload"]["message"]["content"] = record.content
+        message.setdefault("metadata", {})[SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY] = record.owner_scope_id
+        message["metadata"][SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY] = False
+        if record.owner_scope_id == "local":
+            target_metadata = await asyncio.to_thread(
+                get_session_metadata,
+                record.target_session_id,
+                cache_bust=True,
+                enable_writeback=False,
+            )
+            if not target_metadata or str(target_metadata.get("user_id") or "").strip() not in {"", "local"}:
+                return
+            message["metadata"][SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY] = not bool(
+                str(target_metadata.get("user_id") or "").strip()
+            )
         await self.send_push(message)
 
     async def execute_internal_session_message(
@@ -3724,6 +3776,7 @@ class AgentWebSocketServer:
             trigger_hook=False,
             background=not supplemental_delivery,
         )
+        stream_completed = False
         try:
             async for event in runtime_stream:
                 payload = (
@@ -3785,6 +3838,11 @@ class AgentWebSocketServer:
                         outcome_tracker.fail(
                             "Failed to persist user-question correlation"
                         )
+                    if outcome_tracker.saw_error:
+                        payload = {
+                            "event_type": "chat.error",
+                            "error": outcome_tracker.error,
+                        }
                 if isinstance(payload, dict):
                     payload = _with_cross_session_marker(
                         payload,
@@ -3805,27 +3863,40 @@ class AgentWebSocketServer:
                 )
                 push["is_complete"] = event.is_complete
                 await self.send_push(push)
+            stream_completed = True
         finally:
             try:
                 await runtime_stream.aclose()
             finally:
-                if not supplemental_delivery and not processing_finished:
-                    await self.send_push(
-                        build_server_push_message(
-                            session_id=record.target_session_id,
-                            request_id=request.request_id,
-                            payload=_with_cross_session_marker(
-                                {
-                                    "event_type": "chat.processing_status",
-                                    "session_id": record.target_session_id,
-                                    "is_processing": False,
-                                    "is_complete": True,
-                                },
+                try:
+                    if not supplemental_delivery and not processing_finished:
+                        await self.send_push(
+                            build_server_push_message(
+                                session_id=record.target_session_id,
                                 request_id=request.request_id,
-                            ),
-                            fallback_channel_id=channel_id,
+                                payload=_with_cross_session_marker(
+                                    {
+                                        "event_type": "chat.processing_status",
+                                        "session_id": record.target_session_id,
+                                        "is_processing": False,
+                                        "is_complete": True,
+                                    },
+                                    request_id=request.request_id,
+                                ),
+                                fallback_channel_id=channel_id,
+                            )
                         )
-                    )
+                finally:
+                    if not stream_completed or outcome_tracker.outcome() in {
+                        "failed", "unknown"
+                    }:
+                        release = getattr(
+                            runtime, "release_session_message_interactions", None
+                        )
+                        if callable(release):
+                            await release(
+                                record.target_session_id, request_id=request.request_id
+                            )
 
         if supplemental_delivery:
             if outcome_tracker.outcome() == "failed":
@@ -3848,13 +3919,22 @@ class AgentWebSocketServer:
             "waiting_user": "waiting_user",
             "unknown": "unknown",
         }[outcome]
-        receipt = enqueue_history_request_completion(
-            record.target_session_id,
-            request.request_id,
-            terminal_status=terminal_status,
-        )
-        if receipt is not None:
-            await wait_for_history_receipt(receipt, timeout=5.0)
+        try:
+            receipt = enqueue_history_request_completion(
+                record.target_session_id,
+                request.request_id,
+                terminal_status=terminal_status,
+            )
+            if receipt is not None:
+                await wait_for_history_receipt(receipt, timeout=5.0)
+        except BaseException:
+            if outcome == "waiting_user":
+                release = getattr(runtime, "release_session_message_interactions", None)
+                if callable(release):
+                    await release(
+                        record.target_session_id, request_id=request.request_id
+                    )
+            raise
 
         if outcome == "failed":
             return SessionMessageExecutionResult(
@@ -4133,6 +4213,15 @@ class AgentWebSocketServer:
             error_code=error_code,
             error=error,
         )
+        if outcome in {"failed", "unknown"}:
+            release = getattr(
+                self._execution_runtime(), "release_session_message_interactions", None
+            )
+            if callable(release):
+                await release(
+                    resume_state.target_session_id,
+                    request_id=f"session-message-{resume_state.message_id}",
+                )
 
     async def _complete_waiting_session_message_after_external_turn(
         self,
@@ -4554,6 +4643,36 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+
+    async def _handle_session_message_continue_queued(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = str(params.get("session_id") or request.session_id or "").strip()
+        service = getattr(self, "_session_message_service", None)
+        try:
+            if not session_id:
+                raise SessionMessagingError("INVALID_ARGUMENT", "session_id is required")
+            if service is None:
+                raise SessionMessagingError(
+                    "HOST_CAPABILITY_UNAVAILABLE", "Session messaging is unavailable"
+                )
+            payload = await service.continue_queued_for_target(session_id, request.user_id)
+            ok = True
+        except SessionMessagingError as exc:
+            payload = {"code": exc.code, "error": str(exc)}
+            ok = False
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=payload,
+            metadata=request.metadata,
+        )
+        async with send_lock:
+            await send_wire_payload(
+                ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+            )
 
     async def _handle_session_switch(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Translate ``session.switch`` between WebSocket wire and Runtime."""
@@ -10832,18 +10951,6 @@ class AgentWebSocketServer:
         if not isinstance(raw, list):
             return None
 
-        if normalized_subagent_id is None:
-            metadata = get_session_metadata(
-                normalized_session_id,
-                enable_writeback=False,
-            )
-            if (
-                isinstance(metadata, dict)
-                and metadata.get("ephemeral") is True
-                and metadata.get("side_parent_session_id")
-            ):
-                raw = [item for item in raw if not item.get("forked_from")]
-
         page_size = _HISTORY_PAGE_SIZE
         restorable = [
             item for item in raw
@@ -11189,10 +11296,20 @@ class AgentWebSocketServer:
         prepared = None
         try:
             params = request.params if isinstance(request.params, dict) else {}
+            if "side_conversation" in params:
+                raise SessionProvisionError(
+                    "side_conversation is no longer supported",
+                    code="BAD_REQUEST",
+                )
             source = str(params.get("source_session_id") or "").strip()
             target = str(params.get("target_session_id") or "").strip()
             fork_title = str(params.get("title") or "").strip()
-            side_conversation = params.get("side_conversation") is True
+            equipment_override = params.get("session_equipment_override")
+            if equipment_override is not None and not isinstance(equipment_override, dict):
+                raise SessionProvisionError(
+                    "session_equipment_override must be an object",
+                    code="BAD_REQUEST",
+                )
             fork_point = params.get("fork_point")
             if not isinstance(fork_point, dict):
                 fork_point = {}
@@ -11218,7 +11335,7 @@ class AgentWebSocketServer:
                     cutoff_role=str(fork_point.get("role") or "").strip(),
                     cutoff_content=str(fork_point.get("content") or ""),
                     cutoff_timestamp=fork_point.get("timestamp"),
-                    side_conversation=side_conversation,
+                    session_equipment_override=equipment_override,
                 )
             )
             result = await runtime.commit_session_provision(
@@ -11234,7 +11351,6 @@ class AgentWebSocketServer:
                     "session_id": result.session_id,
                     "source_session_id": result.source_session_id,
                     "title": result.title,
-                    **({"ephemeral": True} if result.ephemeral else {}),
                 },
             )
             wire = encode_agent_response_for_wire(
