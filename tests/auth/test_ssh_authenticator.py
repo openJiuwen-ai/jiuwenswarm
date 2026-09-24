@@ -46,6 +46,7 @@ def test_verify_accepts_registered_fingerprint_and_username():
     result = auth.verify(fingerprint="SHA256:ok", username="u1")
     assert result.success is True
     assert result.user_id == "u1"
+    assert result.user_name == "u1"
     assert result.extensions["username"] == "u1"
     assert result.extensions["auth_method"] == "ssh_public_key"
 

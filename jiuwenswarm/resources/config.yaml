@@ -972,6 +972,20 @@ channels:
       # 过期清理间隔（秒）
       cleanup_interval_sec: 60
 
+  web_proxy:
+    # 3rd-agent Web UI。同一 agent_type 共用一个北向端口，不挂在 :19000/<agent_type>。
+    # 需要 gateway.agent_client.type == agentos_router。
+    # 已鉴权的 ws://<gateway>:19000/ws 调用 3rdagent.web，返回
+    # http://<advertise_host>:<port>/?user_id=<uid>&token=<iam>
+    # 端口段 [port_base, port_base+port_span)，默认 19101–19300（19100 留给 A2A）。
+    enabled: false
+    auth_enabled: true
+    listen_host: "0.0.0.0"
+    advertise_host: ""
+    port_base: 19101
+    port_span: 200
+    idle_timeout_sec: 900
+
 # ========== 细粒度权限管控（tiered_policy）==========
 #
 # schema: tiered_policy（或兼容 v_cc / v4.2）时由 tiered_policy.evaluate_tiered_policy 求值；
