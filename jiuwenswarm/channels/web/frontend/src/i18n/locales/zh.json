@@ -4211,7 +4211,6 @@
       "statusFailed": "任务失败",
       "statusPaused": "已暂停",
       "statusTerminated": "已终止",
-      "statusInstalled": "已安装",
       "actionConfig": "配置信息",
       "actionDelete": "删除",
       "actionPause": "暂停任务",

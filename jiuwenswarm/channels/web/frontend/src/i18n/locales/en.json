@@ -4227,7 +4227,6 @@
       "statusFailed": "Task failed",
       "statusPaused": "Paused",
       "statusTerminated": "Terminated",
-      "statusInstalled": "Installed",
       "actionConfig": "Configuration",
       "actionDelete": "Delete",
       "actionPause": "Pause task",
