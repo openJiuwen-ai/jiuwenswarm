@@ -46,6 +46,8 @@ import logging
 from logging.handlers import BaseRotatingHandler
 from ruamel.yaml import YAML
 
+from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
+
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
 
@@ -2856,6 +2858,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
     （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
     """
+    install_runtime_log_filter()
     # 必须在创建 StreamHandler 之前完成：cp1252 → UTF-8，否则中文日志会触发 UnicodeEncodeError。
     _reconfigure_stdio_utf8()
     logs_root = get_logs_dir()

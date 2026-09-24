@@ -3711,78 +3711,43 @@ class MessageHandler(ABC):
         await self.publish_robot_messages(out)
         return True
 
-    async def _publish_stream_cancelled_final(
+    async def _publish_stream_error(
         self,
-        request_id: str,
-        channel_id: str,
+        env: "E2AEnvelope",
         session_id: str | None,
         request_metadata: dict[str, Any] | None,
+        error: Exception,
     ) -> None:
-        """流式任务被网关取消时补发 chat.final，带 is_complete（供飞书等通道合并缓冲）。"""
+        """Finish a failed stream with a visible error, preserving its routing."""
         from jiuwenswarm.common.schema.message import Message, EventType
 
-        group_digital_avatar = bool(request_metadata.get("group_digital_avatar", False)) if request_metadata else False
-        enable_memory = bool(request_metadata.get("enable_memory", True)) if request_metadata else True
-
+        request_id = env.request_id or ""
+        code = getattr(error, "code", None)
+        if not isinstance(code, str) or not code:
+            code = "AGENT_SERVER_ERROR"
+            if isinstance(error, TimeoutError):
+                code = "AGENT_SERVER_TIMEOUT"
+            elif "AgentServer WebSocket connection closed" in str(error):
+                code = "AGENT_SERVER_CONNECTION_CLOSED"
         out = Message(
             id=request_id,
             type="event",
-            channel_id=channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            payload={
-                "event_type": EventType.CHAT_FINAL.value,
-                "content": "",
-                "is_complete": True,
-            },
-            event_type=EventType.CHAT_FINAL,
-            metadata=request_metadata,
-            group_digital_avatar=group_digital_avatar,
-            enable_memory=enable_memory,
-        )
-        await self.publish_robot_messages(out)
-        logger.info(
-            "[MessageHandler] 已发送流式取消结束帧: request_id=%s session_id=%s",
-            request_id,
-            session_id,
-        )
-
-    async def _publish_stream_connection_error(
-        self,
-        request_id: str,
-        channel_id: str,
-        session_id: str | None,
-        request_metadata: dict[str, Any] | None,
-        error: str,
-    ) -> None:
-        """Publish a visible stream error when the AgentServer connection drops."""
-        from jiuwenswarm.common.schema.message import Message, EventType
-
-        out = Message(
-            id=request_id,
-            type="event",
-            channel_id=channel_id,
+            channel_id=env.channel or "",
             session_id=session_id,
             params={},
             timestamp=time.time(),
             ok=False,
             payload={
                 "event_type": EventType.CHAT_ERROR.value,
-                "error": error,
-                "code": "AGENT_SERVER_CONNECTION_CLOSED",
+                "error": str(error) or type(error).__name__,
+                "code": code,
                 "is_complete": True,
             },
             event_type=EventType.CHAT_ERROR,
             metadata=request_metadata,
+            app_id=self._stream_app_ids.get(request_id, ""),
         )
         await self.publish_robot_messages(out)
-        logger.warning(
-            "[MessageHandler] Stream 因 AgentServer WebSocket 断开而结束: request_id=%s error=%s",
-            request_id,
-            error,
-        )
 
     @staticmethod
     def _non_stream_rpc_may_run_parallel(env: "E2AEnvelope") -> bool:
@@ -4914,7 +4879,8 @@ class MessageHandler(ABC):
                 "[MessageHandler] Stream 被取消: request_id=%s total_chunks=%s",
                 rid, _proc_count,
             )
-        except Exception as exc:
+        # Background stream failures must reach the client before per-request cleanup.
+        except Exception as exc:  # pylint: disable=broad-exception-caught
             if resolve_session_input_mode(env.params) is not None:
                 from jiuwenswarm.common.schema.message import Message, ReqMethod
 
@@ -4925,21 +4891,13 @@ class MessageHandler(ABC):
                 )
                 await self.publish_robot_messages(self._build_error_out_message(request_message, exc))
                 return
-            if isinstance(exc, RuntimeError):
-                if "AgentServer WebSocket connection closed" not in str(exc):
-                    raise exc
-                await self._publish_stream_connection_error(
-                    rid, channel_id, session_id, request_metadata, str(exc),
-                )
-                return
             logger.exception(
                 "[MessageHandler] Stream 异常: request_id=%s total_chunks=%s error=%s",
                 rid, _proc_count, exc,
             )
-            await self._publish_stream_cancelled_final(
-                rid, channel_id, session_id, request_metadata,
+            await self._publish_stream_error(
+                env, session_id, request_metadata, exc,
             )
-            raise  # 重新抛出，让调用者知道任务被取消
         finally:
             if (
                 not cancelled
