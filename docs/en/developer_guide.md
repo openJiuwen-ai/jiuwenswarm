@@ -282,8 +282,7 @@ The project contains two independent wheel packages:
 
 | Package | Description | Config File |
 |---------|-------------|-------------|
-| `jiuwenswarm` | Backend service main package (includes Web frontend build artifacts) | `pyproject.toml` |
-| `jiuwenswarm-tui` | TUI terminal interface sidecar package (includes Bun-compiled native binaries) | `packages/jiuwenswarm-tui/pyproject.toml` |
+| `workswarm` | Backend service main package (includes Web frontend build artifacts) | `pyproject.toml` |
 
 #### 6.1.1 Build All (Recommended)
 
@@ -296,12 +295,10 @@ bash scripts/build.sh
 
 The script will execute the following steps in order:
 1. Build the Web frontend (runs `npm run build` in `jiuwenswarm/channels/web/frontend`)
-2. Build the main package `jiuwenswarm.whl`
-3. If `bun` is detected, continue to build the TUI native binary and `jiuwenswarm-tui.whl`
+2. Build the main package `workswarm.whl`
 
-Artifacts are output to two directories:
-- `./dist/jiuwenswarm-<version>-py3-none-any.whl` (main package)
-- `./packages/jiuwenswarm-tui/dist/jiuwenswarm_tui-<version>-<platform>.whl` (TUI sidecar package)
+Artifacts are output to the following directory:
+- `./dist/workswarm-<version>-py3-none-any.whl` (main package)
 
 #### 6.1.2 Build the jiuwenbox Package Alone
 

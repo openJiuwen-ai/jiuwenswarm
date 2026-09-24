@@ -2354,7 +2354,7 @@ async def _run(
                 logger.error(
                     "[App] A2A server failed to start: %s. "
                     "If A2A is enabled, install optional dependency with "
-                    "`uv sync --extra a2a` or `pip install \"jiuwenswarm[a2a]\"`.",
+                    "`uv sync --extra a2a` or `pip install \"workswarm[a2a]\"`.",
                     exc,
                 )
 
@@ -3020,7 +3020,7 @@ async def _run(
                             logger.error(
                                 "[App] SSH channel failed to start: %s. "
                                 "If SSH is enabled, install optional dependency with "
-                                "`uv sync --extra ssh` or `pip install \"jiuwenswarm[ssh]\"`.",
+                                "`uv sync --extra ssh` or `pip install \"workswarm[ssh]\"`.",
                                 exc,
                             )
 

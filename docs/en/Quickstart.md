@@ -35,7 +35,7 @@ jiuwenswarm\Scripts\activate
 source jiuwenswarm/bin/activate
 
 # Install JiuwenSwarm
-pip install jiuwenswarm
+pip install workswarm
 ```
 
 ## Start Service

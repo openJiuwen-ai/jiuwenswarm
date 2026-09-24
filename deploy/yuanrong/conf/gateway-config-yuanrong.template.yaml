@@ -695,7 +695,7 @@ channels:
     # SSH channel -> MessageHandler（北向）；南向经 gateway.agent_client
     # （type=agentos_router 时由 AgentOS Router 创建 YuanRong 实例并
     # 以 yr:instance:<instance_id>:port=2222 中继到 frontend）。
-    # 启用前请安装可选依赖: pip install "jiuwenswarm[ssh]" 或 uv sync --extra ssh
+    # 启用前请安装可选依赖: pip install "workswarm[ssh]" 或 uv sync --extra ssh
     # 客户端: ssh -p <listen_port> user@<gateway-host>
     # 南向连接参数见 gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。
     enabled: true

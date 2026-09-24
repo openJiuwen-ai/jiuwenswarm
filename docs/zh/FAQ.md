@@ -32,10 +32,10 @@ node --version
 
 ```bash
 # 清华源（推荐）
-pip install jiuwenswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install workswarm -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 阿里云源
-pip install jiuwenswarm -i https://mirrors.aliyun.com/pypi/simple/
+pip install workswarm -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
 ### Q: 如何查看当前安装的版本？
@@ -47,13 +47,13 @@ jiuwenswarm --version
 或：
 
 ```bash
-pip show jiuwenswarm
+pip show workswarm
 ```
 
 ### Q: 如何卸载 JiuwenSwarm？
 
 ```bash
-pip uninstall jiuwenswarm
+pip uninstall workswarm
 ```
 
 ---
@@ -120,16 +120,7 @@ jiuwenswarm-app
 
 然后通过 `http://<服务器IP>:<端口>` 访问。
 
-### Q: TUI 模式如何启动？
 
-TUI 需要单独安装，在启动 JiuwenSwarm 后另开终端：
-
-```bash
-pip install jiuwenswarm-tui
-jiuwenswarm-tui
-```
-
----
 
 ## 版本升级
 
@@ -138,7 +129,7 @@ jiuwenswarm-tui
 **常规升级**（如 0.2.0 → 0.2.1）：
 
 ```bash
-pip install --upgrade jiuwenswarm
+pip install --upgrade workswarm
 ```
 
 **重大版本升级**（跨 0.1.7 版本）：
@@ -154,7 +145,7 @@ pip install --upgrade jiuwenswarm
 2. 升级并重新初始化：
 
 ```bash
-pip install --upgrade jiuwenswarm
+pip install --upgrade workswarm
 jiuwenswarm-init
 ```
 
