@@ -1677,6 +1677,13 @@ class JiuWenSwarm:
             channel=request_channel,
             skip_a2ui=skip_a2ui,
         )
+        # Only Host-authenticated provenance may select Agent/tool input. Never
+        # trust a client-supplied copy inside the SDK's extensible run context.
+        run_extra = inputs["run"]["context"]["extra"]
+        run_extra.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
+        cross_session = metadata.get(SESSION_MESSAGE_INTERNAL_KEY)
+        if isinstance(cross_session, dict):
+            run_extra[SESSION_MESSAGE_INTERNAL_KEY] = dict(cross_session)
 
         # Per-request workspace_dir scopes one prompt's cwd to the given
         # directory; threaded into inputs["cwd"] which downstream init_cwd

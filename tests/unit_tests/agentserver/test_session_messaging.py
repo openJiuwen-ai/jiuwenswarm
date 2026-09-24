@@ -490,7 +490,7 @@ async def test_service_persists_while_disconnected_then_runs_target_fifo(
     monkeypatch.setattr(service, "_session_metadata", _metadata)
 
     first = await service.send_message(
-        _source("call-1"), target_session_id="target-1", message="first"
+        _source("call-1"), input_mode="follow_up", target_session_id="target-1", message="first"
     )
     await asyncio.sleep(0)
     assert executed == []
@@ -499,7 +499,7 @@ async def test_service_persists_while_disconnected_then_runs_target_fifo(
     await service.set_available(True)
     await asyncio.wait_for(first_started.wait(), timeout=1)
     second = await service.send_message(
-        _source("call-2"), target_session_id="target-1", message="second"
+        _source("call-2"), input_mode="follow_up", target_session_id="target-1", message="second"
     )
     await asyncio.sleep(0)
     assert executed == ["first"]
@@ -538,10 +538,10 @@ async def test_busy_target_accepts_messages_without_executing_until_released(
     monkeypatch.setattr(service, "_metadata", lambda: ([_metadata("target-1")], 1))
     try:
         first = await asyncio.wait_for(service.send_message(
-            _source("first"), target_session_id="target-1", message="first",
+            _source("first"), input_mode="follow_up", target_session_id="target-1", message="first",
         ), 1)
         second = await asyncio.wait_for(service.send_message(
-            _source("second"), target_session_id="target-1", message="second",
+            _source("second"), input_mode="follow_up", target_session_id="target-1", message="second",
         ), 1)
         listed = await service.list_targets(_source("list"))
         assert listed["sessions"][0]["runtime_state"] == "busy"
@@ -577,10 +577,10 @@ async def test_uncertain_execution_blocks_later_messages_without_replay(
     )
     monkeypatch.setattr(service, "_session_metadata", _metadata)
     first = await service.send_message(
-        _source("uncertain-1"), target_session_id="target-1", message="first"
+        _source("uncertain-1"), input_mode="follow_up", target_session_id="target-1", message="first"
     )
     second = await service.send_message(
-        _source("uncertain-2"), target_session_id="target-1", message="second"
+        _source("uncertain-2"), input_mode="follow_up", target_session_id="target-1", message="second"
     )
     await asyncio.wait_for(attempted.wait(), timeout=1)
     await _wait_for_status(store, first["message_id"], "unknown")
@@ -618,10 +618,10 @@ async def test_unconfirmed_execution_result_blocks_fifo_as_unknown(
     )
     monkeypatch.setattr(service, "_session_metadata", _metadata)
     first = await service.send_message(
-        _source("ack-only-1"), target_session_id="target-1", message="first"
+        _source("ack-only-1"), input_mode="follow_up", target_session_id="target-1", message="first"
     )
     second = await service.send_message(
-        _source("ack-only-2"), target_session_id="target-1", message="second"
+        _source("ack-only-2"), input_mode="follow_up", target_session_id="target-1", message="second"
     )
     await asyncio.wait_for(finished.wait(), timeout=1)
 
@@ -1003,10 +1003,10 @@ async def test_deleting_target_cancels_running_and_queued_messages(
     )
     monkeypatch.setattr(service, "_session_metadata", _metadata)
     running = await service.send_message(
-        _source("delete-1"), target_session_id="target-1", message="running"
+        _source("delete-1"), input_mode="follow_up", target_session_id="target-1", message="running"
     )
     queued = await service.send_message(
-        _source("delete-2"), target_session_id="target-1", message="queued"
+        _source("delete-2"), input_mode="follow_up", target_session_id="target-1", message="queued"
     )
     await asyncio.wait_for(started.wait(), timeout=1)
 
@@ -1037,13 +1037,13 @@ async def test_failed_target_delete_resumes_queued_consumer(
     )
     monkeypatch.setattr(service, "_session_metadata", _metadata)
     sent = await service.send_message(
-        _source("delete-abort"), target_session_id="target-1", message="queued"
+        _source("delete-abort"), input_mode="follow_up", target_session_id="target-1", message="queued"
     )
     await service.begin_target_delete("target-1")
     with pytest.raises(SessionMessagingError) as exc_info:
         await service.send_message(
             _source("delete-blocked"),
-            target_session_id="target-1",
+            input_mode="follow_up", target_session_id="target-1",
             message="too late",
         )
     assert exc_info.value.code == "NOT_FOUND_OR_FORBIDDEN"
@@ -1186,7 +1186,7 @@ async def test_service_hides_cross_user_and_unsupported_targets(
     with pytest.raises(SessionMessagingError) as exc_info:
         await service.send_message(
             _source("call-other"),
-            target_session_id="other-user",
+            input_mode="follow_up", target_session_id="other-user",
             message="secret",
         )
     assert exc_info.value.code == "NOT_FOUND_OR_FORBIDDEN"
@@ -1230,7 +1230,7 @@ async def test_empty_user_id_only_matches_unowned_local_sessions(
     with pytest.raises(SessionMessagingError) as exc_info:
         await service.send_message(
             anonymous,
-            target_session_id="owned-target",
+            input_mode="follow_up", target_session_id="owned-target",
             message="secret",
         )
     assert exc_info.value.code == "NOT_FOUND_OR_FORBIDDEN"
@@ -1298,7 +1298,7 @@ async def test_transient_sqlite_claim_error_retries_without_dropping_message(
     monkeypatch.setattr(store, "claim", flaky_claim)
     sent = await service.send_message(
         _source("transient-lock"),
-        target_session_id="target-1",
+        input_mode="follow_up", target_session_id="target-1",
         message="retry me",
     )
 
@@ -1341,7 +1341,7 @@ async def test_exhausted_claim_retry_keeps_message_queued_for_next_worker_loop(
     monkeypatch.setattr(store, "claim", busy_claim)
     sent = await service.send_message(
         _source("exhausted-transient-lock"),
-        target_session_id="target-1",
+        input_mode="follow_up", target_session_id="target-1",
         message="retry on the next loop",
     )
 
@@ -1482,7 +1482,7 @@ async def test_resume_completion_wins_race_with_original_waiting_result(
     )
     monkeypatch.setattr(service, "_session_metadata", _metadata)
     sent = await service.send_message(
-        _source("waiting-race"), target_session_id="target-1", message="ask"
+        _source("waiting-race"), input_mode="follow_up", target_session_id="target-1", message="ask"
     )
     await asyncio.wait_for(waiting_persisted.wait(), timeout=1)
 
@@ -1533,7 +1533,7 @@ async def test_failure_after_question_does_not_leave_message_waiting(
     monkeypatch.setattr(service, "_session_metadata", _metadata)
     sent = await service.send_message(
         _source("question-then-fail"),
-        target_session_id="target-1",
+        input_mode="follow_up", target_session_id="target-1",
         message="ask",
     )
     await asyncio.wait_for(finished.wait(), timeout=1)
@@ -1685,7 +1685,8 @@ async def test_toolkit_rail_keeps_concurrent_invocation_routes_isolated() -> Non
     bound_count = 0
 
     class _Service:
-        async def send_message(self, source, *, target_session_id, message):
+        async def send_message(self, source, *, target_session_id, message, input_mode):
+            assert input_mode == "steer"
             captured.append((source, target_session_id, message))
             return {"accepted": True, "status": "queued"}
 
@@ -2960,7 +2961,7 @@ async def test_execution_watchdog_moves_wedged_execution_to_unknown(
     monkeypatch.setattr(service, "_session_metadata", _metadata)
     try:
         sent = await service.send_message(
-            _source("watchdog"), target_session_id="target-1", message="stuck"
+            _source("watchdog"), input_mode="follow_up", target_session_id="target-1", message="stuck"
         )
         await _wait_for_status(store, sent["message_id"], "unknown")
 
@@ -3013,7 +3014,7 @@ async def test_worker_store_failure_after_question_releases_runtime_wait(
     try:
         sent = await service.send_message(
             _source("failed-waiting-read"),
-            target_session_id="target-1",
+            input_mode="follow_up", target_session_id="target-1",
             message="ask",
         )
         await _wait_for_status(store, sent["message_id"], "unknown")
@@ -3051,7 +3052,7 @@ async def test_worker_preserves_confirmed_waiting_question(
     try:
         sent = await service.send_message(
             _source("confirmed-waiting"),
-            target_session_id="target-1",
+            input_mode="follow_up", target_session_id="target-1",
             message="ask",
         )
         await _wait_for_status(store, sent["message_id"], "waiting_user")
@@ -3088,8 +3089,9 @@ def test_store_supersede_only_touches_waiting_rows(tmp_path) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protected_mode", ["agent.code.plan", "agent.work.plan", "goal"])
+@pytest.mark.parametrize("explicit_steer", [False, True])
 async def test_protected_steer_queues_deduplicates_and_survives_restart(
-    tmp_path, monkeypatch, protected_mode,
+    tmp_path, monkeypatch, protected_mode, explicit_steer,
 ):
     store = SessionMessageStore(tmp_path / "messages.sqlite3")
     admission = SessionRunAdmission()
@@ -3119,10 +3121,11 @@ async def test_protected_steer_queues_deduplicates_and_survives_restart(
     service = make_service()
     try:
         first = await service.send_message(
-            _source("first"), target_session_id="target-1", message="first",
+            _source("first"), input_mode="follow_up", target_session_id="target-1", message="first",
         )
         steer = await service.send_message(
-            _source("steer"), target_session_id="target-1", message="second", input_mode="steer",
+            _source("steer"), target_session_id="target-1", message="second",
+            **({"input_mode": "steer"} if explicit_steer else {}),
         )
         assert steer["status"] == "queued"
         assert steer["input_mode"] == ""
@@ -3158,7 +3161,7 @@ async def test_protected_steer_queues_deduplicates_and_survives_restart(
         assert duplicate["deduplicated"] is True
         with pytest.raises(SessionMessagingError) as exc:
             await service.send_message(
-                _source("steer"), target_session_id="target-1", message="second",
+                _source("steer"), input_mode="follow_up", target_session_id="target-1", message="second",
             )
         assert exc.value.code == "IDEMPOTENCY_CONFLICT"
     finally:
@@ -3188,7 +3191,7 @@ async def test_queued_steer_rechecks_mode_and_retains_fifo(tmp_path, monkeypatch
             _source("steer"), target_session_id="target-1", message="first", input_mode="steer",
         )
         second = await service.send_message(
-            _source("ordinary"), target_session_id="target-1", message="second",
+            _source("ordinary"), input_mode="follow_up", target_session_id="target-1", message="second",
         )
         assert first["input_mode"] == "steer"
         mode = "agent.code.plan"
@@ -3227,7 +3230,7 @@ async def test_protected_queue_resumes_in_order_without_waiting_for_steer_worker
             _source("steer"), target_session_id="target-1", message="first", input_mode="steer",
         )
         second = await service.send_message(
-            _source("ordinary"), target_session_id="target-1", message="second",
+            _source("ordinary"), input_mode="follow_up", target_session_id="target-1", message="second",
         )
         mode = "agent.code.plan"
         await service.set_available(True)
@@ -3291,8 +3294,11 @@ async def test_stop_during_rejected_steer_deferral_keeps_message_queued(tmp_path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("refusal", ["exception", "runtime_receipt"])
-async def test_steer_rejected_at_delivery_returns_to_task_queue(tmp_path, monkeypatch, refusal):
-    from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
+@pytest.mark.parametrize("reason", ["protected", "waiting_user", "target_changed"])
+async def test_steer_rejected_at_delivery_returns_to_task_queue(tmp_path, monkeypatch, refusal, reason):
+    from jiuwenswarm.runtime.session_input import (
+        SessionInputQueueRequiredError, SessionInputRejectedError, SessionInputTargetError,
+    )
 
     store = SessionMessageStore(tmp_path / "messages.sqlite3")
     admission = SessionRunAdmission()
@@ -3302,7 +3308,11 @@ async def test_steer_rejected_at_delivery_returns_to_task_queue(tmp_path, monkey
 
     async def execute(record):
         if record.input_mode == "steer":
-            error = SessionInputQueueRequiredError("target entered plan mode")
+            error = {
+                "protected": SessionInputQueueRequiredError,
+                "waiting_user": SessionInputRejectedError,
+                "target_changed": SessionInputTargetError,
+            }[reason]("target temporarily cannot accept input")
             if refusal == "exception":
                 raise error
             return SessionMessageExecutionResult("failed", error.code, str(error))
@@ -3436,7 +3446,8 @@ def test_protected_queue_normalization_preserves_steer_barriers(tmp_path, blocke
 
 
 @pytest.mark.asyncio
-async def test_steer_bypasses_waiting_task_admission_and_keeps_default_fifo(tmp_path, monkeypatch):
+@pytest.mark.parametrize("explicit_steer", [False, True])
+async def test_steer_bypasses_waiting_task_admission_and_keeps_default_fifo(tmp_path, monkeypatch, explicit_steer):
     from dataclasses import replace
 
     store = SessionMessageStore(tmp_path / 'messages.sqlite3')
@@ -3456,10 +3467,13 @@ async def test_steer_bypasses_waiting_task_admission_and_keeps_default_fifo(tmp_
     service = SessionMessageService(store=store, admission=Admission(), execute=execute)
     monkeypatch.setattr(service, '_session_metadata', _metadata)
     try:
-        ordinary = await service.send_message(_source('ordinary'), target_session_id='target-1', message='independent task')
+        ordinary = await service.send_message(_source('ordinary'), input_mode="follow_up", target_session_id='target-1', message='independent task')
         await asyncio.wait_for(entered.wait(), 2)
         source = replace(_source('steer'), chain_id='chain-parent', parent_message_id='parent', hop_count=2)
-        steer = await service.send_message(source, target_session_id='target-1', message='adjust current task', input_mode='steer')
+        steer = await service.send_message(
+            source, target_session_id='target-1', message='adjust current task',
+            **({'input_mode': 'steer'} if explicit_steer else {}),
+        )
         await _wait_for_status(store, steer['message_id'], 'delivered')
         assert store.get(ordinary['message_id']).status == 'queued'
         assert len(executions) == 1
@@ -3469,7 +3483,7 @@ async def test_steer_bypasses_waiting_task_admission_and_keeps_default_fifo(tmp_
         duplicate = await service.send_message(source, target_session_id='target-1', message='adjust current task', input_mode='steer')
         assert duplicate['deduplicated'] and duplicate['status'] == 'delivered'
         with pytest.raises(SessionMessagingError) as exc:
-            await service.send_message(source, target_session_id='target-1', message='adjust current task')
+            await service.send_message(source, input_mode="follow_up", target_session_id='target-1', message='adjust current task')
         assert exc.value.code == 'IDEMPOTENCY_CONFLICT'
         release.set()
         await _wait_for_status(store, ordinary['message_id'], 'succeeded')
@@ -3492,7 +3506,7 @@ async def test_steer_bypasses_running_mailbox_task_and_delete_stops_both_consume
     service = SessionMessageService(store=store, admission=_RecordingAdmission(), execute=execute)
     monkeypatch.setattr(service, '_session_metadata', _metadata)
     try:
-        ordinary = await service.send_message(_source('ordinary'), target_session_id='target-1', message='task')
+        ordinary = await service.send_message(_source('ordinary'), input_mode="follow_up", target_session_id='target-1', message='task')
         await asyncio.wait_for(entered[''].wait(), 2)
         steer = await service.send_message(_source('steer'), target_session_id='target-1', message='adjust', input_mode='steer')
         await asyncio.wait_for(entered['steer'].wait(), 2)
@@ -3587,7 +3601,7 @@ async def test_steer_retains_authorization_hop_and_mode_guards(tmp_path, monkeyp
     try:
         source = replace(_source('steer'), hop_count=4) if change == 'hop' else _source('steer')
         with pytest.raises(SessionMessagingError) as exc:
-            await service.send_message(source, target_session_id='target-1', message='adjust', input_mode='follow_up' if change == 'mode' else 'steer')
+            await service.send_message(source, target_session_id='target-1', message='adjust', input_mode='invalid' if change == 'mode' else 'steer')
         assert exc.value.code == error
         assert not service.store.list_messages(owner_scope_id='user-1', session_id='source-1')
     finally:
@@ -3616,13 +3630,15 @@ async def test_steer_rejection_and_uncertain_delivery_have_distinct_results(tmp_
     async def execute(record):
         if uncertain:
             raise SessionInputDeliveryUnknown('input may have reached the target')
-        raise SessionInputRejectedError('target is waiting for an interaction answer')
+        if record.input_mode == 'steer':
+            raise SessionInputRejectedError('target is waiting for an interaction answer')
+        return SessionMessageExecutionResult('succeeded')
     service = SessionMessageService(store=store, admission=_RecordingAdmission(), execute=execute)
     monkeypatch.setattr(service, '_session_metadata', _metadata)
     try:
         sent = await service.send_message(_source('steer'), target_session_id='target-1', message='adjust', input_mode='steer')
-        await _wait_for_status(store, sent['message_id'], 'unknown' if uncertain else 'failed')
-        assert store.get(sent['message_id']).last_error_code == ('SESSION_INPUT_DELIVERY_UNKNOWN' if uncertain else 'SESSION_INPUT_REJECTED')
+        await _wait_for_status(store, sent['message_id'], 'unknown' if uncertain else 'succeeded')
+        assert store.get(sent['message_id']).last_error_code == ('SESSION_INPUT_DELIVERY_UNKNOWN' if uncertain else '')
     finally:
         await service.stop()
 

@@ -1152,7 +1152,6 @@ def _build_context_messages_from_history(
     """
     from openjiuwen.core.foundation.llm.schema.message import (
         OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
-        OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL,
         OPENJIUWEN_MESSAGE_ORIGIN_METADATA,
         OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
         UserMessage,
@@ -1168,6 +1167,17 @@ def _build_context_messages_from_history(
     # Used to detect orphaned tool_results (e.g. ask_user's preliminary
     # empty result that arrives before the actual chat.tool_call event).
     emitted_tool_call_ids: set[str] = set()
+    completed_tool_call_ids = {
+        record.get("tool_call_id")
+        for record in history_records
+        if record.get("role") == "assistant" and record.get("event_type") == "chat.tool_result"
+    }
+    open_tool_call_ids: set[str] = set()
+    pending_model_inputs: list[Any] = []
+
+    def _flush_model_inputs() -> None:
+        context_messages.extend(pending_model_inputs)
+        pending_model_inputs.clear()
 
     def _flush_pending_assistant() -> None:
         """Create an AssistantMessage from buffered reasoning + tool_calls."""
@@ -1181,6 +1191,8 @@ def _build_context_messages_from_history(
         # Record emitted tool_call_ids for orphan detection
         for tc in tool_calls:
             emitted_tool_call_ids.add(tc["id"])
+            if tc["id"] in completed_tool_call_ids:
+                open_tool_call_ids.add(tc["id"])
         context_messages.append(AssistantMessage(
             content="",
             reasoning_content=reasoning if reasoning else None,
@@ -1205,6 +1217,9 @@ def _build_context_messages_from_history(
                     record.get("message_origin") == SESSION_MESSAGE_ORIGIN
                 )
                 if internal_session_message:
+                    from jiuwenswarm.server.runtime.agent_adapter.session_message_input import (
+                        cross_session_model_messages,
+                    )
                     from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
                         render_cross_session_history_content,
                     )
@@ -1221,23 +1236,25 @@ def _build_context_messages_from_history(
                         cross_session,
                         language=language,
                     )
-                source_kind = (
-                    "agent_session"
-                    if internal_session_message
-                    else str(record.get("channel_id") or "history").strip()
-                )
-                context_messages.append(UserMessage(
-                    content=content,
-                    metadata={
-                        OPENJIUWEN_MESSAGE_ORIGIN_METADATA:
-                            (
-                                OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL
-                                if internal_session_message
-                                else OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER
-                            ),
-                        OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
-                    },
-                ))
+                    messages = cross_session_model_messages(content, cross_session)
+                else:
+                    source_kind = str(record.get("channel_id") or "history").strip()
+                    messages = [UserMessage(
+                        content=content,
+                        metadata={
+                            OPENJIUWEN_MESSAGE_ORIGIN_METADATA: OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+                            OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
+                        },
+                    )]
+                # UI receipt order can place a supplement inside a parallel
+                # tool batch. Model consumption happens after its results.
+                if open_tool_call_ids or any(
+                    tc["id"] in completed_tool_call_ids for tc in current_tool_calls
+                ):
+                    pending_model_inputs.extend(messages)
+                else:
+                    _flush_pending_assistant()
+                    context_messages.extend(messages)
             continue
 
         # ── Only process assistant events below ──
@@ -1305,11 +1322,15 @@ def _build_context_messages_from_history(
                 tool_call_id=tc_id,
                 content=result_content,
             ))
+            open_tool_call_ids.discard(tc_id)
+            if not open_tool_call_ids:
+                _flush_model_inputs()
 
         elif event_type == "chat.final":
             # Final text response — flush any pending state first
             if current_tool_calls:
                 _flush_pending_assistant()
+            _flush_model_inputs()
             reasoning = "".join(reasoning_buffer).strip()
             reasoning_buffer = []
             if content.strip() or reasoning:
@@ -1339,6 +1360,9 @@ def _build_context_messages_from_history(
     # Flush any remaining state (e.g. interrupted turn with only reasoning)
     if reasoning_buffer or current_tool_calls:
         _flush_pending_assistant()
+    # Incomplete tool calls are removed below; retain inputs received before
+    # interruption without leaving their synthetic call/result pair split.
+    _flush_model_inputs()
 
     # --- Post-processing (aligned with claude-code's deserialization pipeline) ---
 

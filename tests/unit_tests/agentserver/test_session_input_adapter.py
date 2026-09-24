@@ -108,10 +108,10 @@ async def test_guard_install_failure_is_retryable_and_reload_replaces_registrati
     await adapter.install_session_input_guard()
     guard = adapter._session_input_guard
     await adapter.install_session_input_guard()
-    assert instance.register_rail.await_count == 2
-    await adapter.install_session_input_guard(reload=True)
-    instance.unregister_rail.assert_awaited_once_with(guard)
     assert instance.register_rail.await_count == 3
+    await adapter.install_session_input_guard(reload=True)
+    assert [call.args[0] for call in instance.unregister_rail.await_args_list[-2:]] == [guard, guard.boundary_guard]
+    assert instance.register_rail.await_count == 5
     assert instance.react_agent.register_callback.await_count == 2
 
 
@@ -130,7 +130,7 @@ async def test_resume_callback_install_failure_rolls_back_and_can_retry(monkeypa
     with pytest.raises(RuntimeError, match="callback failed"):
         await adapter.install_session_input_guard(reload=reload)
     assert adapter._session_input_guard is None
-    assert instance.unregister_rail.await_count == (2 if reload else 1)
+    assert instance.unregister_rail.await_count == (4 if reload else 2)
     instance.react_agent.register_callback.side_effect = None
     await adapter.install_session_input_guard()
     assert adapter._session_input_guard is not None
@@ -299,8 +299,10 @@ async def test_protected_steer_is_refused_before_sdk_submission(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_stream", [False, True])
-async def test_bound_input_cannot_fall_back_after_sdk_round_ends(monkeypatch, is_stream):
+@pytest.mark.parametrize("cross_session", [False, True])
+async def test_bound_input_cannot_fall_back_after_sdk_round_ends(monkeypatch, is_stream, cross_session):
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     @asynccontextmanager
     async def admission(*_args):
@@ -319,10 +321,13 @@ async def test_bound_input_cannot_fall_back_after_sdk_round_ends(monkeypatch, is
         process_message_impl=AsyncMock(), process_message_stream_impl=Mock(),
     )
     request = SimpleNamespace(
-        params={"input_mode": "steer", "expected_execution_id": "execution-A"},
+        params={"input_mode": "steer", **(
+            {SESSION_MESSAGE_INTERNAL_KEY: {"message_id": "sm-cross"}}
+            if cross_session else {"expected_execution_id": "execution-A"}
+        )},
         session_id="session", is_stream=is_stream,
     )
-    with pytest.raises(RuntimeError, match="targeted execution has ended"):
+    with pytest.raises(RuntimeError, match="queue the message" if cross_session else "targeted execution has ended"):
         async for _chunk in JiuWenSwarmDeepAdapter.deliver_session_input_impl(adapter, request, {}):
             pytest.fail("An ended target must not emit accepted or output")
     adapter.process_message_impl.assert_not_awaited()
@@ -352,10 +357,16 @@ async def test_model_phase_waits_for_input_boundary_under_backpressure():
     entry = QueuedSessionInput('same body', 'input-id')
     ctx = AgentCallbackContext(agent=SimpleNamespace(config=SimpleNamespace(max_iterations=5)),
                                inputs=ModelCallInputs(react_iteration=2), session=session)
-    ctx.extra['session_input_parts'] = [entry]
+    ctx.inputs = SimpleNamespace(parts=[entry], source="steering")
     publish = asyncio.create_task(guard.publish_input_received(entry))
     await entered.wait()
-    model = asyncio.create_task(guard.before_model_call(ctx))
+    async def admit_and_call():
+        await guard.boundary_guard.on_user_message(ctx)
+        await guard.on_user_message(ctx)
+        ctx.inputs = ModelCallInputs(react_iteration=2)
+        await guard.before_model_call(ctx)
+
+    model = asyncio.create_task(admit_and_call())
     assert not entry.boundary_ready.is_set()
     assert not model.done()
     release.set()
@@ -365,7 +376,7 @@ async def test_model_phase_waits_for_input_boundary_under_backpressure():
 
 
 @pytest.mark.asyncio
-async def test_cancelled_input_boundary_releases_model_waiter_without_accepting_input():
+async def test_cancelled_input_boundary_drops_input_without_failing_original_task():
     import asyncio
     from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ModelCallInputs
     from jiuwenswarm.server.runtime.agent_adapter.session_input import QueuedSessionInput
@@ -382,9 +393,14 @@ async def test_cancelled_input_boundary_releases_model_waiter_without_accepting_
         inputs=ModelCallInputs(react_iteration=2),
         session=guard._session,
     )
-    ctx.extra["session_input_parts"] = [entry]
-    with pytest.raises(RuntimeError, match="boundary was not published"):
-        await guard.before_model_call(ctx)
+    ctx.extra["session_output_phase"] = "original-phase"
+    ctx.inputs = SimpleNamespace(parts=[entry], source="steering")
+    await guard.boundary_guard.on_user_message(ctx)
+    await guard.on_user_message(ctx)
+    assert ctx.inputs.parts == []
+    ctx.inputs = ModelCallInputs(react_iteration=2)
+    await guard.before_model_call(ctx)
+    assert guard.accepting
     assert guard._session.write_stream.await_count == 1
 
 

@@ -359,7 +359,7 @@ class SessionMessagingToolkit:
         self,
         target_session_id: str,
         message: str,
-        input_mode: str = "",
+        input_mode: str = "steer",
     ) -> dict[str, Any]:
         try:
             service, route = self._service_and_route()
@@ -372,7 +372,7 @@ class SessionMessagingToolkit:
                 source,
                 target_session_id=target_session_id,
                 message=message,
-                **({"input_mode": input_mode} if input_mode else {}),
+                input_mode=input_mode,
             )
         except SessionMessagingError as exc:
             return {"accepted": False, "code": exc.code, "error": str(exc)}
@@ -471,7 +471,7 @@ class SessionMessagingToolkit:
                         description=(
                             "向同一用户的另一个持久化会话发送文本，让目标 Agent 异步处理。"
                             "成功只表示消息已保存并排队，不表示目标已经完成。"
-                            "省略 input_mode 保持独立任务排队；显式 steer 补充目标当前任务，"
+                            "默认 steer 补充目标当前任务；follow_up 显式选择独立任务排队。"
                             "但目标处于计划模式或活跃目标任务时仍会排队，等待任务释放后执行。"
                             "目标空闲时按普通消息执行。delivered 仅表示补充已送达，不代表任务成功。"
                         ),
@@ -488,8 +488,8 @@ class SessionMessagingToolkit:
                                 },
                                 "input_mode": {
                                     "type": "string",
-                                    "enum": ["steer"],
-                                    "description": "可选：steer 补充目标运行中的任务；计划模式或活跃目标任务仍排队。省略保持原投递方式。",
+                                    "enum": ["steer", "follow_up"],
+                                    "description": "默认 steer 在目标当前轮处理，空闲时启动新轮；follow_up 等待后独立执行。计划模式、活跃目标及暂不可注入时转为独立任务排队。",
                                 },
                             },
                             "required": ["target_session_id", "message"],

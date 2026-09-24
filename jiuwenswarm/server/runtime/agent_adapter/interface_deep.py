@@ -15527,9 +15527,11 @@ class JiuWenSwarmDeepAdapter:
         else:
             self._session_input_guard = None
             await instance.unregister_rail(guard)
+            await instance.unregister_rail(guard.boundary_guard)
         await instance.ensure_initialized()
-        await register(guard)
         try:
+            await register(guard.boundary_guard)
+            await register(guard)
             # DeepAgent routes BEFORE_INVOKE to the outer agent only. Resume
             # queue binding must also run on the inner ReAct invocation.
             event = AgentCallbackEvent.BEFORE_INVOKE
@@ -15537,6 +15539,7 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             # DeepAgent unregisters all of this rail's callbacks on both agents.
             await instance.unregister_rail(guard)
+            await instance.unregister_rail(guard.boundary_guard)
             raise exc
         self._session_input_guard = guard
 
@@ -15688,6 +15691,15 @@ class JiuWenSwarmDeepAdapter:
                 return
             # The original execution can finish between Runtime routing and
             # SDK admission. Reuse normal output ownership for the idle case.
+            if isinstance(request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict):
+                from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+
+                # Runtime selected an active parent. Let the durable mailbox
+                # reacquire task admission rather than starting an unbound turn
+                # while that parent is starting or releasing its output owner.
+                raise SessionInputRejectedError(
+                    "target execution changed before submission; queue the message"
+                )
             if request.params.get("expected_execution_id"):
                 from jiuwenswarm.runtime.session_input import SessionInputTargetError
 

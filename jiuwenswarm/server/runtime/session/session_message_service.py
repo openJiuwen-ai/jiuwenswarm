@@ -17,6 +17,7 @@ from jiuwenswarm.common.mode_matrix import deprecate_mode, is_plan_mode, is_sing
 from jiuwenswarm.runtime.session_input import (
     SessionInputQueueRequiredError,
     SessionInputRejectedError,
+    SessionInputTargetError,
 )
 from jiuwenswarm.server.runtime.session.session_history import (
     HistorySnapshotChanged,
@@ -473,13 +474,17 @@ class SessionMessageService:
         *,
         target_session_id: str,
         message: str,
-        input_mode: str = "",
+        input_mode: str = "steer",
     ) -> dict[str, Any]:
         await self.start()
         target_session_id = str(target_session_id or "").strip()
         content = str(message or "").strip()
-        if input_mode not in ("", "steer"):
+        if input_mode not in ("", "steer", "follow_up"):
             raise SessionMessagingError("INVALID_ARGUMENT", "unsupported input_mode")
+        # Keep the existing durable representation and replay identity for
+        # independent tasks, including messages persisted before this default changed.
+        if input_mode == "follow_up":
+            input_mode = ""
         if not is_valid_session_id(target_session_id):
             raise SessionMessagingError("INVALID_ARGUMENT", "invalid target_session_id")
         if target_session_id == source.session_id:
@@ -1068,7 +1073,7 @@ class SessionMessageService:
                         self._execute(claimed),
                         timeout=self._execution_watchdog_timeout,
                     )
-                except SessionInputQueueRequiredError as exc:
+                except SessionInputRejectedError as exc:
                     result = SessionMessageExecutionResult(
                         status="failed", error_code=exc.code, error=str(exc)
                     )
@@ -1099,7 +1104,11 @@ class SessionMessageService:
                 if (
                     input_mode == "steer"
                     and result.status == "failed"
-                    and result.error_code == SessionInputQueueRequiredError.code
+                    and result.error_code in {
+                        SessionInputQueueRequiredError.code,
+                        SessionInputRejectedError.code,
+                        SessionInputTargetError.code,
+                    }
                 ):
                     # This refusal is emitted only before SDK submission. An
                     # uncertain delivery must never take this automatic path.
