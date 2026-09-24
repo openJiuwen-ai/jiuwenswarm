@@ -5155,7 +5155,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="cron service unavailable", code="CRON_STOP_FAILED")
             return
         try:
-            await cc.hide_project_jobs(project_id, commit=commit)
+            cron_stop = await cc.hide_project_jobs(project_id, commit=commit)
         except _RemoveCommitError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
             return
@@ -5163,6 +5163,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             logger.warning("project remove failed: %s", exc, exc_info=True)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CRON_STOP_FAILED")
             return
+        # stopped_cron_jobs 是项目下定时任务总数(含移除前已停用的);0 表示
+        # 项目下本就没有定时任务,前端据此只提示"项目已移除",不再附带
+        # "其定时任务已停止"。
+        if isinstance(cron_stop, dict) and "stopped_cron_jobs" in cron_stop:
+            remove_payload = {**remove_payload, "stopped_cron_jobs": cron_stop["stopped_cron_jobs"]}
         await channel.send_response(ws, req_id, ok=True, payload=remove_payload)
         await _after_remove()
 
