@@ -461,12 +461,12 @@ function AssetPublishDrawer({
       className="asset-publish-drawer"
       panelRef={panel}
       closeTestId="asset-publish-close"
-      notice={
+      notice={review && !state.record ? (
         <div className="asset-publish-notice" data-testid="asset-publish-notice">
           <img src={tipIcon} alt="" aria-hidden="true" className="w-4 h-4" />
           <span>{text('review')}</span>
         </div>
-      }
+      ) : undefined}
       footer={
         <>
           {!review && !state.record && invalid && (
@@ -798,8 +798,8 @@ function AssetPublishDrawer({
           {state.record.result?.visibility === null && (
             <p role="status" className="asset-publish-result-notice" data-testid="asset-publish-visibility-unconfirmed">
               {i18n.language.startsWith('zh')
-                ? '可见范围暂未确认，请到 Hub 查看。'
-                : 'Visibility is not yet confirmed. Check it in Hub.'}
+                ? `Hub 已接收发布请求，并已按“${text(state.metadata.visibility)}”范围提交；最终可见状态将在 Hub 处理后确认。`
+                : `Hub accepted the submission with ${text(state.metadata.visibility)} visibility requested. Final visibility will be confirmed after Hub processing.`}
             </p>
           )}
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
