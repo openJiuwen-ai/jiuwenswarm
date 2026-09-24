@@ -303,16 +303,27 @@ class ArtifactEngineAdapter:
     ) -> None:
         """Reconnect agent-core's process-local snapshot index after restart."""
 
-        if self.artifact_type != "PROGRAM" or not task_id:
+        if not task_id:
             return
         run_dir = self._task_run_dir(task_id, persisted_run_dir)
         if run_dir is None or not run_dir.is_dir():
             return
-        try:
-            from openjiuwen.rsi.artifact_rsi.program_opt.state import register_run_dir
-        except (ImportError, AttributeError):
-            return
-        register_run_dir(task_id, run_dir)
+        if self.artifact_type == "PROGRAM":
+            try:
+                from openjiuwen.rsi.artifact_rsi.program_opt.state import register_run_dir
+            except (ImportError, AttributeError):
+                return
+            register_run_dir(task_id, run_dir)
+        elif self.artifact_type == "PAPER":
+            # agent-core's paper Provider records task_id -> run_dir in an
+            # instance-local dict that a restart empties, so read_state and
+            # read_report raise KeyError afterwards. The durable snapshots
+            # (state.json/report.json) stay on disk under the same run_dir;
+            # re-seeding the index restores the read path. Defensive duck
+            # typing: degrade silently if agent-core renames the attribute.
+            run_dirs = getattr(self.provider, "_run_dirs", None)
+            if isinstance(run_dirs, dict):
+                run_dirs.setdefault(task_id, str(run_dir))
 
     def build_request(self, task: RsiTaskView, *, resume: bool = False) -> Any:
         """Build the current agent-core request without Provider-side policy."""
@@ -398,11 +409,65 @@ class ArtifactEngineAdapter:
         return RsiDatasetResult(valid=bool(raw.get("valid")), sample_count=sample_count, errors=errors)
 
     async def run(self, request: Any, *, on_event: Any = None) -> Any:
-        self._register_program_run_dir(
-            str(getattr(request, "task_id", "") or ""),
-            getattr(request, "run_dir", None),
+        task_id = str(getattr(request, "task_id", "") or "")
+        self._register_program_run_dir(task_id, getattr(request, "run_dir", None))
+        if (
+            self.artifact_type != "PAPER"
+            or not self._requires_model
+            or bool(getattr(self.provider, "tracks_model_usage", False))
+        ):
+            return await self.provider.run(request, on_event=on_event)
+        return await self._run_paper_with_usage(request, on_event=on_event)
+
+    async def _run_paper_with_usage(self, request: Any, *, on_event: Any = None) -> Any:
+        """Observe AgentCore paper model calls and persist their final totals.
+
+        The bundled PaperArtifactProviderImpl persists task snapshots but does
+        not currently populate their usage field.  Keep usage capture at this
+        adapter boundary so the provider can retain ownership of execution and
+        pause behavior while AgentServer still exposes durable token totals.
+        """
+
+        from openjiuwen.rsi.usage import ModelUsageObserver
+
+        task_id = str(getattr(request, "task_id", "") or "")
+        run_dir = self._task_run_dir(task_id, getattr(request, "run_dir", None))
+        if run_dir is None:
+            return await self.provider.run(request, on_event=on_event)
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        observer = ModelUsageObserver(on_event)
+        try:
+            async with observer.observe():
+                await observer.bind({"task_id": task_id}, run_dir)
+                try:
+                    result = await self.provider.run(request, on_event=on_event)
+                finally:
+                    await observer.finish_pending()
+        finally:
+            if observer.totals.call_count:
+                self._persist_paper_usage(run_dir, observer.totals)
+        return result
+
+    @staticmethod
+    def _persist_paper_usage(run_dir: Path, usage: Any) -> None:
+        """Write the observed aggregate into the Provider's durable snapshot."""
+
+        from openjiuwen.rsi.artifact_rsi.paper_opt.auto_research.tree_provider.storage import (
+            TaskStorage,
         )
-        return await self.provider.run(request, on_event=on_event)
+
+        storage = TaskStorage(run_dir)
+        state = storage.load_task_state()
+        if state is None:
+            return
+        state_payload = state.model_dump(mode="python")
+        usage_payload = _plain(usage)
+        if isinstance(usage_payload, dict) and usage_payload.get("cost_estimate") is None:
+            usage_payload["cost_estimate"] = 0.0
+        state_payload["usage"] = usage_payload
+        state = type(state).model_validate(state_payload)
+        storage.save_task_state(state)
 
     async def resume(self, request: Any, *, on_event: Any = None) -> Any:
         self._register_program_run_dir(

@@ -110,6 +110,7 @@ function openArchiveFailureToast(content: string) {
   });
 }
 
+/** 移除/恢复项目失败时的可翻译文案；重名冲突、定时任务停止失败与会话运行中都给出可操作提示。 */
 function projectActionErrorText(error: unknown, translate: Translate): string {
   const code = getArchiveErrorCode(error);
   if (code === 'PROJECT_NAME_CONFLICT') {
@@ -117,6 +118,9 @@ function projectActionErrorText(error: unknown, translate: Translate): string {
   }
   if (code === 'CRON_STOP_FAILED') {
     return translate('multiSession.project.errors.cronStopFailed');
+  }
+  if (code === 'SESSION_BUSY') {
+    return translate('multiSession.project.errors.removeSessionBusy');
   }
   return error instanceof Error ? error.message : String(error);
 }

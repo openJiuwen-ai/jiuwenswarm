@@ -39,7 +39,7 @@ import CloseIcon from '../../assets/work-mode/close.svg?react';
 import CronIcon from '../../assets/定时任务.svg?react';
 import FolderFoldIcon from '../../assets/work-mode/folder-fold.svg?react';
 import FolderIcon from '../../assets/work-mode/folder.svg?react';
-import LoadingIcon from '../../assets/subagent/loading.svg?react';
+import { LoadingSpinner } from '../../components/ui/LoadingSpinner/LoadingSpinner';
 import NewTaskIcon from '../../assets/work-mode/new-task.svg?react';
 import PinIcon from '../../assets/work-mode/pin.svg?react';
 import PlusIcon from '../../assets/work-mode/plus.svg?react';
@@ -216,8 +216,8 @@ function ConversationListItem({
     );
   } else if (indicator === 'processing') {
     status = (
-      <span title={getTaskStatusLabel(indicator, t)} data-testid="multi-session-conversation-list-item-status-processing">
-        <LoadingIcon className="conversation-list-item__loader" aria-hidden="true" />
+      <span className="conversation-list-item__status-processing" title={getTaskStatusLabel(indicator, t)} data-testid="multi-session-conversation-list-item-status-processing">
+        <LoadingSpinner size={14} />
       </span>
     );
   } else if (indicator === 'unread') {
