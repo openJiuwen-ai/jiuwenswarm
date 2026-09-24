@@ -104,13 +104,18 @@ async def test_fetch_once_decodes_section_and_metadata():
     fake = FakeEtcd()
     fake.set(
         KEY,
-        "gateway:\n  sandbox:\n    cpu: 2000\n_version: 1\n_revision: 3\n",
+        "gateway:\n  sandbox:\n    sandbox_idle_timeout_seconds: 120\n    jiuwen_sandbox:\n      cpu: 2000\n      memory: 4096\n_version: 1\n_revision: 3\n",
         7,
     )
     fetched = await _client(fake).fetch_once()
 
     assert fetched is not None
-    assert fetched.section == {"sandbox": {"cpu": 2000}}
+    assert fetched.section == {
+        "sandbox": {
+            "sandbox_idle_timeout_seconds": 120,
+            "jiuwen_sandbox": {"cpu": 2000, "memory": 4096},
+        }
+    }
     assert fetched.metadata == {"_version": 1, "_revision": 3}
     assert fetched.mod_revision == 7
 

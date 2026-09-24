@@ -50,7 +50,6 @@ def _service(*, endpoints: list[str], client: FakeClient | None = None,
               refresh_handler=None):
     return ConfigUpdaterService(
         etcd_endpoints=endpoints,
-        config={"sandbox": {"type": "yuanrong"}},
         refresh_handler=refresh_handler,
         client=client,  # type: ignore[arg-type]
     )
@@ -63,17 +62,17 @@ def _service(*, endpoints: list[str], client: FakeClient | None = None,
 def test_build_refresh_handler_noop_without_method():
     handler = build_refresh_handler(WithoutOverrides())
     # Must be callable and harmless, not None.
-    assert handler({"gateway": {}}) is None
+    assert handler({"sandbox": {}}) is None
 
 
-def test_build_refresh_handler_forwards_merged_document():
+def test_build_refresh_handler_forwards_overrides():
     client = WithOverrides()
     handler = build_refresh_handler(client)
 
-    merged = {"gateway": {"agentos": {"sandbox_idle_timeout_seconds": 120}}}
-    handler(merged)
+    overrides = {"sandbox": {"sandbox_idle_timeout_seconds": 120}}
+    handler(overrides)
 
-    assert client.applied == [merged]
+    assert client.applied == [overrides]
 
 
 # --------------------------------------------------------------------------
@@ -147,8 +146,8 @@ async def test_refresh_handler_is_wired_into_applier():
     fake = FakeClient()
     seen: list[dict] = []
 
-    async def refresh(merged: dict) -> None:
-        seen.append(merged)
+    async def refresh(overrides: dict) -> None:
+        seen.append(overrides)
 
     service = _service(
         endpoints=["http://etcd.test:2379"],
@@ -163,19 +162,15 @@ async def test_refresh_handler_is_wired_into_applier():
     assert seen == []
 
 
-async def test_watch_event_refreshes_full_merged_snapshot():
+async def test_watch_event_refreshes_timeout_snapshot():
     fake = FakeClient()
     seen: list[dict] = []
 
-    async def refresh(merged: dict) -> None:
-        seen.append(merged)
+    async def refresh(overrides: dict) -> None:
+        seen.append(overrides)
 
     service = ConfigUpdaterService(
         etcd_endpoints=["http://etcd.test:2379"],
-        config={
-            "gateway": {"cron": {"store_backend": "etcd"}},
-            "sandbox": {"type": "yuanrong", "cpu": 1000},
-        },
         refresh_handler=refresh,
         client=fake,  # type: ignore[arg-type]
     )
@@ -186,10 +181,10 @@ async def test_watch_event_refreshes_full_merged_snapshot():
             (),
             {
                 "section": {
-                    "gateway": {
-                        "agentos": {"sandbox_idle_timeout_seconds": 120}
-                    },
-                    "sandbox": {"cpu": 2000, "memory": 4096},
+                    "sandbox": {
+                        "sandbox_idle_timeout_seconds": 120,
+                        "jiuwen_sandbox": {"cpu": 2000, "memory": 4096},
+                    }
                 },
                 "mod_revision": 5,
             },
@@ -204,11 +199,10 @@ async def test_watch_event_refreshes_full_merged_snapshot():
 
     assert seen == [
         {
-            "gateway": {
-                "cron": {"store_backend": "etcd"},
-                "agentos": {"sandbox_idle_timeout_seconds": 120},
-            },
-            "sandbox": {"type": "yuanrong", "cpu": 2000, "memory": 4096},
+            "sandbox": {
+                "sandbox_idle_timeout_seconds": 120,
+                "jiuwen_sandbox": {"cpu": 2000, "memory": 4096},
+            }
         }
     ]
     await service.stop()
