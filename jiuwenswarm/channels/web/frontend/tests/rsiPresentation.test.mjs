@@ -287,6 +287,27 @@ test('pruned paper nodes expose a concise user-facing reason', () => {
   assert.equal(presentation.reasonDetail, null);
 });
 
+test('program candidates stopped after another candidate solves show stopped', () => {
+  const stopped = {
+    node_id: 'artifact:task:attempt:3',
+    iteration: 3,
+    parent_id: 'ROOT',
+    type: 'PRUNED',
+    adopted: false,
+    score: null,
+    description: '已达标，停止此候选',
+    failure_reason: '其他候选已达到目标分数',
+    failure_class: null,
+    changes: [],
+    extra: { threshold_stop_cancelled: true, program: { logical_kind: 'pruned' } },
+  };
+  const presentation = presentRsiNode(stopped, context('ARTIFACT', 'PROGRAM', [stopped]));
+  assert.equal(presentation.lifecycle, 'pruned');
+  assert.equal(presentation.runtimeLabel, '已停止');
+  assert.equal(presentation.reasonLabel, '其他候选已达到目标分数');
+  assert.equal(presentation.reasonDetail, null);
+});
+
 test('structured harness stage payloads localize by status instead of using the provider name', () => {
   const node = {
     node_id: 'rsi:node:case',

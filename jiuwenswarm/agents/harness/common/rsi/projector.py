@@ -390,6 +390,11 @@ class RsiProjector:
 
     @classmethod
     def _merge_node(cls, local: RsiTreeNode, provider: RsiTreeNode) -> RsiTreeNode:
+        if (local.extra or {}).get("threshold_stop_cancelled"):
+            # The Provider's durable tree records an abandoned model wait as
+            # an empty-reply rejection. The service saw the winning threshold
+            # event first and persisted the more accurate stopped verdict.
+            return local
         if (provider.extra or {}).get("iteration_unit") == "epoch":
             provider.snapshot_artifact_id = local.snapshot_artifact_id or provider.snapshot_artifact_id
             if provider.type == "PROVISIONAL":
