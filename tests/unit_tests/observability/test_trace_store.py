@@ -39,6 +39,7 @@ def _raw_record(
     parent_span_id: str = "",
     name: str = "agent.run",
     status_code: str = "STATUS_CODE_UNSET",
+    attributes: list[dict[str, Any]] | None = None,
 ) -> bytes:
     return json.dumps(
         {
@@ -57,7 +58,7 @@ def _raw_record(
                                     "startTimeUnixNano": "100",
                                     "endTimeUnixNano": "200",
                                     "status": {"code": status_code},
-                                    "attributes": [],
+                                    "attributes": attributes or [],
                                 }
                             ],
                         }
@@ -68,6 +69,13 @@ def _raw_record(
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _turn_attributes(turn_id: str, turn_number: int) -> list[dict[str, Any]]:
+    return [
+        {"key": "openjiuwen.turn.id", "value": {"stringValue": turn_id}},
+        {"key": "openjiuwen.turn.number", "value": {"intValue": str(turn_number)}},
+    ]
 
 
 def _core_record(
@@ -258,6 +266,111 @@ def test_frames_name_their_span_once_instead_of_on_every_row(
     # Stored as a code, not as the word spelled out 64 times.
     assert kinds == [(1,)]
     test_logger.info("64 frames name their span through one row")
+
+
+def _frame_rows(database_path: Path) -> tuple[list[int], int]:
+    """Return the frame sequences held, and how many spans are named."""
+    connection = sqlite3.connect(database_path)
+    try:
+        frames = [
+            int(row[0])
+            for row in connection.execute(
+                "SELECT sequence FROM trajectory_stream_frames ORDER BY sequence"
+            )
+        ]
+        spans = int(
+            connection.execute("SELECT COUNT(*) FROM trajectory_frame_spans").fetchone()[0]
+        )
+    finally:
+        connection.close()
+    return frames, spans
+
+
+def test_a_terminal_record_discards_the_frames_it_supersedes(tmp_path: Path) -> None:
+    """Frames stand in for an answer being written; the record states it in full.
+
+    From the moment a span's terminal record lands, nothing reads its frames:
+    the reader drops its own copy, the detail read never consults them, and an
+    archive excludes them. They are the largest table in the database, so they
+    go with the record that supersedes them rather than waiting for the turn
+    page to be retired.
+    """
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        store.write_records([], frames=[_frame(index) for index in range(8)])
+        assert _frame_rows(database_path) == ([0, 1, 2, 3, 4, 5, 6, 7], 1)
+        # The same flush window may carry a span's last frames and its record.
+        store.write_records([_stored_record()], frames=[_frame(8), _frame(9)])
+    finally:
+        store.close()
+
+    # The span was named only so its frames could point at it.
+    assert _frame_rows(database_path) == ([], 0)
+    test_logger.info("a terminal record took its span's frames with it")
+
+
+def test_frames_of_a_running_span_outlive_its_snapshots(tmp_path: Path) -> None:
+    """Only a terminal record supersedes frames -- a snapshot is still partial.
+
+    A running span's snapshots restate what it has produced so far, but the
+    reader reaches a still-streaming answer through the frames. Discarding them
+    on a snapshot would blank a live answer mid-sentence.
+    """
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        store.write_records([], frames=[_frame(0), _frame(1)])
+        store.write_records([_snapshot_record(1, name="agent.run")], frames=[_frame(2)])
+    finally:
+        store.close()
+
+    assert _frame_rows(database_path) == ([0, 1, 2], 1)
+    test_logger.info("a snapshot left the live answer's frames in place")
+
+
+def test_frames_landing_after_their_span_ended_are_not_stored(tmp_path: Path) -> None:
+    """Records and frames queue separately, so a frame can arrive too late.
+
+    Nothing would delete such a frame afterwards: the discard runs as a record
+    lands, and that record has already landed. Retention's orphan sweep does
+    not reach it either, because that ages out frames of spans holding no
+    record at all. So it is refused at the door instead.
+    """
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        store.write_records([_stored_record()])
+        store.write_records([], frames=[_frame(0), _frame(1)])
+    finally:
+        store.close()
+
+    assert _frame_rows(database_path) == ([], 0)
+    test_logger.info("frames of an ended span were refused rather than stranded")
+
+
+def test_keeping_the_frames_of_ended_spans_is_configurable(tmp_path: Path) -> None:
+    """Replaying a finished answer frame by frame needs those frames kept.
+
+    Nothing reads them today, so they are discarded by default. This is the
+    switch that a frame-by-frame replay of a completed turn would need, and
+    with it off the frames live as long as their turn page does.
+    """
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path, discard_final_span_frames=False)
+    store.initialize()
+    try:
+        store.write_records([_stored_record()], frames=[_frame(0)])
+        # Also kept when the frame arrives after its span's record.
+        store.write_records([], frames=[_frame(1)])
+    finally:
+        store.close()
+
+    assert _frame_rows(database_path) == ([0, 1], 1)
+    test_logger.info("frames of ended spans were kept for replay")
 
 
 def test_a_span_name_lives_exactly_as_long_as_its_frames(tmp_path: Path) -> None:
@@ -1252,11 +1365,19 @@ async def test_partial_retention_rotates_epoch_and_rebuilds_remaining_view(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "trajectory.sqlite3"
-    expired = TraceRecordData.from_core_record(_core_record(), created_at=1)
+    # Retention removes whole turns: the expired turn goes, the turn written
+    # inside the window stays.
+    expired = TraceRecordData.from_core_record(
+        _core_record(
+            raw_json=_raw_record(_TRACE_ID, _ROOT_SPAN_ID, attributes=_turn_attributes("turn-1", 1)),
+        ),
+        created_at=1,
+    )
     retained = TraceRecordData.from_core_record(
         _core_record(
+            trace_id=_SECOND_TRACE_ID,
             span_id=_CHILD_SPAN_ID,
-            raw_json=_raw_record(_TRACE_ID, _CHILD_SPAN_ID),
+            raw_json=_raw_record(_SECOND_TRACE_ID, _CHILD_SPAN_ID, attributes=_turn_attributes("turn-2", 2)),
         ),
         created_at=100,
     )
@@ -1507,13 +1628,13 @@ def test_error_probe_skips_parsing_when_no_status_code_is_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     parses: list[bytes] = []
-    original = store_module._strict_otlp_payload
+    original = store_module.strict_otlp_payload
 
     def _counting(raw_json: bytes) -> Any:
         parses.append(raw_json)
         return original(raw_json)
 
-    monkeypatch.setattr(store_module, "_strict_otlp_payload", _counting)
+    monkeypatch.setattr(store_module, "strict_otlp_payload", _counting)
     # Core serializes an unset span status as {}, so the whole payload can be
     # ruled out without decoding it.
     without_code = json.dumps(

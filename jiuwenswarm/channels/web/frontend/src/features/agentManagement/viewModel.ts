@@ -171,7 +171,7 @@ export function buildGroupCatalogViewModel(
     if (options.scope === 'catalog' && !matchesGroupCategory(options.category, item.category)) return false;
     if (!query) return true;
     const tags = item.tags.map(tag => tag.label).join(' ');
-    return `${item.id} ${item.name} ${item.displayName} ${item.description} ${item.category} ${tags}`
+    return `${item.name} ${item.displayName} ${item.description} ${item.category} ${tags}`
       .toLocaleLowerCase()
       .includes(query);
   });

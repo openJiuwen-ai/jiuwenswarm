@@ -13,8 +13,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.gateway.cron.models import CronJob, CronRunState
 from jiuwenswarm.gateway.cron.scheduler import (
+    CRON_INTERRUPT_RESULT_TEXT,
     CronSchedulerService,
     _Event,
 )
@@ -167,6 +169,23 @@ class _TestableScheduler(CronSchedulerService):
     async def run_stream_cron_job(self, *, envelope, timeout_seconds, state):
         return await self._run_stream_cron_job(
             envelope=envelope, timeout_seconds=timeout_seconds, state=state
+        )
+
+    async def run_team_stream_job(
+        self,
+        *,
+        envelope,
+        exec_session_id,
+        cron_meta,
+        mode,
+        timeout_seconds,
+    ):
+        return await self._run_team_stream_job(
+            envelope=envelope,
+            exec_session_id=exec_session_id,
+            cron_meta=cron_meta,
+            mode=mode,
+            timeout_seconds=timeout_seconds,
         )
 
     @property
@@ -478,6 +497,87 @@ class TestCronLastSessionId:
         assert state.exec_mode == "team.work.normal"
         assert state.execution_session_allocated is False
         assert not agent.unary_requests
+
+
+class TestCronFailureDelivery:
+    @pytest.mark.parametrize(
+        ("raised_exception", "expected_error"),
+        [(OSError(), "OSError"), (RuntimeError("cancelled"), "cancelled")],
+    )
+    @pytest.mark.asyncio
+    async def test_exception_produces_visible_failure_and_push_update(
+        self, tmp_path, raised_exception, expected_error
+    ):
+        class ExceptionAgentClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id or "",
+                    channel_id=envelope.channel or "",
+                    payload={"event_type": "chat.reasoning", "content": ""},
+                    is_complete=False,
+                )
+                raise raised_exception
+
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="web")
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(
+            store,
+            handler=handler,
+            agent_client=ExceptionAgentClient(),
+        )
+        run_id = f"{job.id}:1234"
+
+        with patch.object(cron_scheduler_module.logger, "warning") as warning_mock:
+            await svc.on_wake(job, run_id)
+            await svc.run_tasks[run_id]
+
+        state = svc.runs[run_id]
+        assert state.status == "failed"
+        assert state.error == expected_error
+        assert state.result_text == f"[cron] 任务执行失败: {expected_error}"
+        push_event = next(ev for _, _, ev in svc.events if ev.kind == "push_update")
+        await svc.handle_event(push_event)
+        assert len(handler.published) == 1
+        assert _cron_published_content(handler.published[0]) == state.result_text
+        failure_log = next(
+            call
+            for call in warning_mock.call_args_list
+            if "agent run failed" in call.args[0]
+        )
+        assert failure_log.args[3] == type(raised_exception).__name__
+        assert failure_log.kwargs["exc_info"] is True
+
+    @pytest.mark.asyncio
+    async def test_failed_empty_result_uses_generic_failure_and_push_update(
+        self, tmp_path
+    ):
+        class EmptyFailedResultScheduler(_TestableScheduler):
+            async def _run_stream_cron_job(self, **_kwargs):
+                return "", False
+
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="web")
+        handler = FakeMessageHandler()
+        svc = EmptyFailedResultScheduler(
+            store=store,
+            agent_client=FakeAgentClient(),
+            message_handler=handler,
+        )
+        run_id = f"{job.id}:1234"
+
+        await svc.on_wake(job, run_id)
+        await svc.run_tasks[run_id]
+
+        state = svc.runs[run_id]
+        assert state.status == "failed"
+        assert state.error == "未知错误"
+        assert state.result_text == "[cron] 任务执行失败: 未知错误"
+        push_event = next(ev for _, _, ev in svc.events if ev.kind == "push_update")
+        await svc.handle_event(push_event)
+        assert len(handler.published) == 1
+        assert _cron_published_content(handler.published[0]) == state.result_text
 
 
 class TestCheckStoreChanged:
@@ -1077,49 +1177,6 @@ class TestGhostTaskCancelledNoPushUpdate:
         ]
         # push_update count should not increase (ghost task finally skipped)
         assert len(push_update_after) <= len(push_update_before)
-
-    @pytest.mark.asyncio
-    async def test_cancelled_task_finally_skips_result_text_and_push(self, tmp_path):
-        """state.error == "cancelled" should prevent result_text and push_update."""
-        store_file = tmp_path / "cron_jobs.json"
-        store = CronJobStore(path=store_file)
-        job = await _create_one_job(store)
-
-        handler = FakeMessageHandler()
-        svc = _make_scheduler(store, handler)
-        await svc.reload()
-
-        run_id = f"{job.id}:1234"
-        state = CronRunState(
-            run_id=run_id,
-            job_id=job.id,
-            wake_at_iso="2026-06-09T08:55:00+08:00",
-            push_at_iso="2026-06-09T09:00:00+08:00",
-            job_name=job.name,
-            targets=job.targets,
-            session_id=None,
-            chat_type=None,
-            timezone=job.timezone,
-            status="running",
-            placeholder_sent=True,
-        )
-
-        # Simulate CancelledError in _run_agent: state.error = "cancelled"
-        state.error = "cancelled"
-
-        # The finally block logic uses `is_cancelled_ghost = state.error == "cancelled"`
-        # to skip push_update. Verify the flag works correctly:
-        # Even with placeholder_sent=True, cancelled ghost should not push.
-        is_cancelled_ghost = state.error == "cancelled"
-        assert is_cancelled_ghost is True
-
-        # result_text should NOT be set for cancelled ghost (finally block check)
-        # (In real code: `if not state.result_text and state.error and not is_cancelled_ghost`)
-        if not state.result_text and state.error and not is_cancelled_ghost:
-            state.result_text = f"[cron] 任务执行失败: {state.error}"
-
-        assert state.result_text is None  # No result_text for ghost
-
 
 # ── Ghost task CHAT_CANCEL notification ────────────────────────────────────────────
 
@@ -1875,6 +1932,111 @@ class TestTeamModeWake:
         assert "模型调用失败: 429" in (state.result_text or "")
         assert "未产生有效报告" not in (state.result_text or "")
 
+    @pytest.mark.asyncio
+    async def test_team_stream_fails_fast_on_leader_interrupt(self, tmp_path):
+        """leader 的 ask_user 中断在 cron 团队会话里同样无人可答，必须快速失败。
+
+        此前轮次状态机只认 workflow/team/chat 终态事件，ask_user 中断既不结束
+        轮次也不留结果，只能等流自然结束或挂满 timeout。中断之后流一直挂着，
+        若未快速失败就会等到超时并报「任务执行超时」。
+        """
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(mode="team", targets="tui")
+
+        class InterruptingTeamStreamClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id or "",
+                    channel_id=envelope.channel or "",
+                    payload={
+                        "event_type": "chat.ask_user_question",
+                        "request_id": "req-ask-1",
+                        "source": "ask_user_interrupt",
+                        "questions": [{"question": "用哪个分支？"}],
+                    },
+                    is_complete=False,
+                )
+                await asyncio.Event().wait()
+
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=InterruptingTeamStreamClient())
+        envelope = SimpleNamespace(
+            request_id="cron-team-interrupt:1",
+            channel="tui",
+            channel_context={},
+            params={},
+        )
+
+        text, ok = await svc.run_team_stream_job(
+            envelope=envelope,
+            exec_session_id=f"cron_ts_{job.id}",
+            cron_meta={"job_id": job.id},
+            mode="team",
+            timeout_seconds=0.5,
+        )
+
+        assert ok is False
+        assert text == CRON_INTERRUPT_RESULT_TEXT
+        # 提前收尾必须取消团队会话，否则 leader 停在中断点上继续占用后端。
+        assert handler.cancel_calls
+
+    @pytest.mark.asyncio
+    async def test_team_stream_continues_after_auto_accepted_evolution_approval(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+
+        class AutoAcceptedTeamStreamClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                for payload in (
+                    {
+                        "event_type": "chat.ask_user_question",
+                        "request_id": "skill_evolve_1",
+                        "source": "skill_evolution_approval",
+                    },
+                    {
+                        "event_type": "workflow.updated",
+                        "workflow": {"id": "wf-1", "status": "completed"},
+                    },
+                    {"event_type": "chat.final", "content": "team report"},
+                ):
+                    yield AgentResponseChunk(
+                        request_id=envelope.request_id or "",
+                        channel_id=envelope.channel or "",
+                        payload=payload,
+                        is_complete=False,
+                    )
+
+        class AutoAcceptingHandler(FakeMessageHandler):
+            def auto_accepts_evolution_approval(self, payload):
+                return payload.get("request_id") == "skill_evolve_1"
+
+            async def publish_stream_chunk(self, chunk, *, session_id, request_metadata=None):
+                if self.auto_accepts_evolution_approval(chunk.payload or {}):
+                    return False
+                return await super().publish_stream_chunk(
+                    chunk, session_id=session_id, request_metadata=request_metadata
+                )
+
+        handler = AutoAcceptingHandler()
+        svc = _make_scheduler(store, handler, agent_client=AutoAcceptedTeamStreamClient())
+        envelope = SimpleNamespace(
+            request_id="cron-team-auto-approval:1",
+            channel="tui",
+            channel_context={},
+            params={},
+        )
+
+        text, ok = await svc.run_team_stream_job(
+            envelope=envelope,
+            exec_session_id="cron_team_auto_approval",
+            cron_meta={"job_id": "job-1"},
+            mode="team",
+            timeout_seconds=0.5,
+        )
+
+        assert (text, ok) == ("team report", True)
+
 
 class TestResolveCronExecutionContext:
     @staticmethod
@@ -2239,6 +2401,112 @@ class TestSingleAgentCronStream:
 
         assert ok is True
         assert text == "请记得开会。"
+
+    @pytest.mark.parametrize(
+        "event_type",
+        ["chat.ask_user_question", "plan.approval_required"],
+    )
+    @pytest.mark.asyncio
+    async def test_interrupt_event_fails_fast_with_interrupt_message(
+        self, tmp_path, event_type
+    ):
+        """无人值守的 cron 会话遇到中断事件必须立刻失败，而不是挂到超时。
+
+        中断事件之后流不再产出任何结果（真实场景里会话停在等 resume 的状态），
+        所以这里让流一直挂着：若未快速失败，就会等到 timeout 并报「任务执行超时」。
+        """
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="web")
+
+        class InterruptingAgentClient:
+            def __init__(self):
+                self.cancel_requests = []
+
+            async def send_request_stream(self, envelope):
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id,
+                    channel_id=envelope.channel,
+                    payload={
+                        "event_type": event_type,
+                        "request_id": "req-ask-1",
+                        "source": "ask_user_interrupt",
+                        "questions": [{"question": "选哪个环境？", "options": ["dev", "prod"]}],
+                    },
+                    is_complete=False,
+                )
+                await asyncio.Event().wait()
+
+            async def send_request(self, envelope, *args, **kwargs):
+                self.cancel_requests.append(envelope)
+                return AgentResponse(
+                    request_id=envelope.request_id,
+                    channel_id=envelope.channel,
+                    ok=True,
+                    payload={},
+                )
+
+        agent_client = InterruptingAgentClient()
+        svc = _TestableScheduler(
+            store=store,
+            agent_client=agent_client,
+            message_handler=FakeMessageHandler(),
+        )
+        envelope = SimpleNamespace(request_id="cron-job-interrupt:1", channel="__cron__")
+        state = CronRunState(
+            run_id="job-interrupt:1", job_id=job.id,
+            wake_at_iso="2026-08-22T15:00:00+08:00",
+            push_at_iso="2026-08-22T15:00:00+08:00",
+            job_name=job.name, targets=job.targets, session_id=None,
+            chat_type=None, timezone=job.timezone,
+        )
+        state.exec_session_id = "cron_agentserver_allocated"
+        state.exec_channel_id = "__cron__"
+
+        text, ok = await svc.run_stream_cron_job(
+            envelope=envelope, timeout_seconds=0.5, state=state
+        )
+
+        assert ok is False
+        assert text == CRON_INTERRUPT_RESULT_TEXT
+        assert len(agent_client.cancel_requests) == 1
+        assert agent_client.cancel_requests[0].method == ReqMethod.CHAT_CANCEL.value
+        assert agent_client.cancel_requests[0].session_id == state.exec_session_id
+
+    @pytest.mark.asyncio
+    async def test_plain_empty_stream_keeps_legacy_message(self, tmp_path):
+        """非中断的空结果仍走原文案，不被中断文案顶替。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="web")
+
+        class EmptyStreamClient:
+            async def send_request_stream(self, envelope):
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id,
+                    channel_id=envelope.channel,
+                    payload={"is_complete": True},
+                    is_complete=True,
+                )
+
+        svc = _TestableScheduler(
+            store=store,
+            agent_client=EmptyStreamClient(),
+            message_handler=FakeMessageHandler(),
+        )
+        envelope = SimpleNamespace(request_id="cron-job-empty:1", channel="__cron__")
+        state = CronRunState(
+            run_id="job-empty:1", job_id=job.id,
+            wake_at_iso="2026-08-22T15:00:00+08:00",
+            push_at_iso="2026-08-22T15:00:00+08:00",
+            job_name=job.name, targets=job.targets, session_id=None,
+            chat_type=None, timezone=job.timezone,
+        )
+
+        text, ok = await svc.run_stream_cron_job(
+            envelope=envelope, timeout_seconds=30.0, state=state
+        )
+
+        assert ok is False
+        assert text == "[cron] 任务执行完成但未返回结果内容"
 
 
 class TestCronJobStoreFileLock:

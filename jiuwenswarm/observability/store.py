@@ -13,12 +13,14 @@ import sqlite3
 import time
 import uuid
 import zlib
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 from openjiuwen.extensions.observability.content_addressing import (
+    build_sequence,
     parse_sequence_reference,
     rebuild_value,
 )
@@ -29,6 +31,7 @@ from jiuwenswarm.common.mode_matrix import (
 )
 from jiuwenswarm.observability.config import (
     DEFAULT_DETAIL_MAX_BYTES,
+    DEFAULT_DISCARD_FINAL_SPAN_FRAMES,
     database_files,
     session_database_path,
 )
@@ -38,20 +41,36 @@ from jiuwenswarm.observability.models import (
     TraceRecordData,
     WriteBatchResult,
 )
+from jiuwenswarm.observability.otlp_payload import (
+    MAX_SAFE_INTEGER,
+    int64_attribute_value,
+    parse_otlp_payload,
+    strict_otlp_payload,
+)
+from jiuwenswarm.observability.retention import (
+    RetentionCheckpoint,
+    RetentionRow,
+    advance_checkpoint,
+    checkpoint_sequence_heads,
+    plan_session_retention,
+    record_view_facts,
+)
 
 logger = logging.getLogger(__name__)
 
 # A database written under any other version is discarded, not migrated:
 # trajectories are diagnostic data with a retention window of days, and every
 # migration kept here was code that outlived the data it existed for.
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 6
 _BUSY_TIMEOUT_MS = 5000
-_MAX_SQLITE_INTEGER = (1 << 63) - 1
-_MAX_JSON_NESTING_DEPTH = 256
 # Serialized name of the OTLP span status code, used to skip parsing a payload
 # that cannot carry an error status. See ``_record_has_error``.
 _STATUS_CODE_KEY = b'"code"'
 _ABSENT_STORE_EPOCH = "absent"
+# Archive line contract. Version 3 is a JSONL stream of content-addressed
+# lines in commit order; see ``AsyncTrajectoryReader.iter_session_archive_lines``.
+TRAJECTORY_ARCHIVE_FORMAT = "openjiuwen.trajectory.archive"
+TRAJECTORY_ARCHIVE_VERSION = 3
 _TRAJECTORY_MODE_VALUES = tuple(
     sorted(SINGLE_AGENT_CANONICAL_MODES | TEAM_CANONICAL_MODES),
 )
@@ -160,6 +179,15 @@ CREATE TABLE IF NOT EXISTS trajectory_current_records (
     raw_size_bytes INTEGER NOT NULL DEFAULT 0,
     raw_sha256 TEXT NOT NULL,
     update_kind TEXT NOT NULL,
+    -- What retention groups and pages this record by, read from its payload
+    -- once when it is written: the subject the viewer lists it under, whether
+    -- the viewer projects it at all, and the turn it states.
+    view_subject_id TEXT NOT NULL,
+    view_subject_kind TEXT NOT NULL,
+    view_subject_session_id TEXT,
+    view_projected INTEGER NOT NULL DEFAULT 0,
+    turn_id TEXT,
+    turn_number INTEGER,
     PRIMARY KEY(trace_id, span_id)
 );
 
@@ -191,6 +219,12 @@ CREATE TABLE IF NOT EXISTS trajectory_frame_spans (
 -- What a frame says is text, arguments_delta and a tool's identity. Its own
 -- identity is span_ref and sequence, and nothing else about where it came
 -- from is repeated here.
+--
+-- A frame lives only as long as the answer it stands in for is unfinished. The
+-- terminal record of its span states that answer in full, so by default the
+-- frames go as that record is committed; ``discard_final_span_frames: false``
+-- keeps them for the lifetime of the turn page instead, which is what
+-- replaying a finished answer frame by frame would need.
 CREATE TABLE IF NOT EXISTS trajectory_stream_frames (
     frame_seq INTEGER PRIMARY KEY AUTOINCREMENT,
     span_ref INTEGER NOT NULL REFERENCES trajectory_frame_spans(span_ref),
@@ -212,15 +246,16 @@ CREATE TABLE IF NOT EXISTS trajectory_stream_frames (
 -- 33,000 rows. Catching up walks the file in commit order, which frame_seq
 -- already is -- it is the rowid, so that walk is a primary-key scan.
 --
--- Replaying one answer, and discarding the frames of a span that turned out
--- to be incomplete, both address frames by the span that produced them.
+-- Replaying one answer, discarding the frames a terminal record supersedes,
+-- and discarding those of a span that turned out to be incomplete all address
+-- frames by the span that produced them.
 CREATE INDEX IF NOT EXISTS idx_trajectory_frames_span_ref
     ON trajectory_stream_frames(span_ref, sequence);
 
 -- One piece of content, stored once however many records state it. The GenAI
 -- convention has every model call restate its whole input; this is where that
--- repetition stops. created_at is refreshed on every reference, so content a
--- live conversation keeps restating never ages out from under it.
+-- repetition stops. Retention keeps content while trajectory_sequence_refs
+-- still reaches it, whenever it was last restated.
 CREATE TABLE IF NOT EXISTS trajectory_blobs (
     blob_hash  TEXT PRIMARY KEY,
     content    BLOB NOT NULL,
@@ -250,6 +285,31 @@ CREATE TABLE IF NOT EXISTS trajectory_sequences (
 -- Walking a chain back to its root follows prev_hash.
 CREATE INDEX IF NOT EXISTS idx_trajectory_sequences_prev
     ON trajectory_sequences(prev_hash);
+
+-- Which chains each record and each retention checkpoint refers to. Content
+-- is kept for as long as something still refers to it, so retention reclaims
+-- what nothing reaches any more instead of what has merely not been restated
+-- for a while.
+CREATE TABLE IF NOT EXISTS trajectory_sequence_refs (
+    owner_kind TEXT NOT NULL,
+    owner_id   TEXT NOT NULL,
+    seq_hash   TEXT NOT NULL,
+    PRIMARY KEY (owner_kind, owner_id, seq_hash)
+);
+
+-- The derived state retention left behind for one execution subject of one
+-- session, so the turns that remain render as they did before older ones
+-- were removed. The contract of state_json is documented in
+-- jiuwenswarm/observability/retention.py.
+CREATE TABLE IF NOT EXISTS trajectory_retention_checkpoints (
+    session_id TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    boundary_turn_id TEXT,
+    boundary_change_seq INTEGER NOT NULL,
+    state_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, subject_id)
+);
 """
 
 # What a model stream can say is a closed set, so storage names each kind by a
@@ -283,6 +343,30 @@ _CURRENT_RAW_JSON = "COALESCE(NULLIF(current.raw_json, X''), archive.raw_json)"
 # fetching the elements one page of records refers to.
 _SEQUENCE_FETCH_CHUNK = 400
 _PAYLOAD_COMPRESSION_LEVEL = 3
+# Records read per cursor batch while exporting an archive. The content a batch
+# refers to is resolved in one round of queries, so this bounds both the rows
+# and the chain nodes held at once.
+_ARCHIVE_RECORD_BATCH = 500
+# Every chain node reachable from a set of heads, walking prev_hash back to the
+# root. ``placeholders`` is filled with one bound variable per head.
+_REACHABLE_NODES_SQL = """
+    WITH RECURSIVE reachable(seq_hash, prev_hash, blob_hash, depth) AS (
+        SELECT seq_hash, prev_hash, blob_hash, depth
+        FROM trajectory_sequences
+        WHERE seq_hash IN ({placeholders})
+        UNION
+        SELECT s.seq_hash, s.prev_hash, s.blob_hash, s.depth
+        FROM trajectory_sequences AS s
+        JOIN reachable AS r ON s.seq_hash = r.prev_hash
+    )
+    SELECT seq_hash, prev_hash, blob_hash, depth FROM reachable
+"""
+# Owners in trajectory_sequence_refs.
+_RECORD_OWNER_KIND = "record"
+_CHECKPOINT_OWNER_KIND = "checkpoint"
+# Attribute key a checkpoint's message lists are addressed under. The key names
+# no attribute; it only labels the sequence while it is being built.
+_CHECKPOINT_MESSAGES_KEY = "openjiuwen.retention.messages"
 
 
 def _encode_payload(raw_json: bytes) -> bytes:
@@ -304,9 +388,16 @@ def _decode_payload(stored: bytes | None) -> bytes:
 class TrajectoryStore:
     """Single-threaded SQLite writer that preserves raw record bytes unchanged."""
 
-    def __init__(self, database_path: Path, *, retention_days: int = 7) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        retention_days: int = 7,
+        discard_final_span_frames: bool = DEFAULT_DISCARD_FINAL_SPAN_FRAMES,
+    ) -> None:
         self.database_path = Path(database_path)
         self.retention_days = max(1, int(retention_days))
+        self.discard_final_span_frames = bool(discard_final_span_frames)
         self._connection: sqlite3.Connection | None = None
 
     def initialize(self) -> None:
@@ -322,6 +413,11 @@ class TrajectoryStore:
                 self._discard_incompatible_database(version)
                 connection = self._open_writer_connection()
             connection.execute("PRAGMA foreign_keys=ON")
+            # Retention frees whole turns at a time, and only an incremental
+            # vacuum hands those pages back to the file system. The mode can be
+            # chosen only before the first table exists, so it precedes WAL
+            # and the schema; on an existing database it changes nothing.
+            connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=NORMAL")
             connection.executescript(_SCHEMA_SQL)
@@ -506,6 +602,9 @@ class TrajectoryStore:
 
             self._store_addressed_sequences(connection, records)
             frame_watermarks = self._append_stream_frames(connection, frames)
+            # Append first, then discard: one flush window can carry both the
+            # last frames of a span and the record that ends it.
+            self._discard_final_span_frames(connection, records)
             # A span whose record did not change in this batch can still have
             # produced frames, and a reader learns about those only if that
             # trace is reported as changed.
@@ -537,8 +636,8 @@ class TrajectoryStore:
             updates=updates,
         )
 
-    @staticmethod
     def _append_stream_frames(
+        self,
         connection: sqlite3.Connection,
         frames: Sequence[StreamFrameData],
     ) -> dict[tuple[str, str], int]:
@@ -548,6 +647,14 @@ class TrajectoryStore:
         later frame repeats. The rowid of the last insert for a trace is its
         watermark, because the sequence is monotonic within a transaction.
 
+        Frames and records reach the writer through queues of their own, so a
+        span's record can be committed before the last of its frames arrives.
+        Those late frames are dropped rather than stored: their span already
+        states its complete output, and no reader consults the frames of a span
+        that ended. Without this they would be stored with nothing left to
+        delete them -- ``_discard_final_span_frames`` runs as a record lands,
+        and that record has already landed.
+
         Args:
             connection: The open write transaction.
             frames: Frames to append, in the order they were produced.
@@ -556,13 +663,17 @@ class TrajectoryStore:
             Highest committed ``frame_seq`` keyed by session and trace.
         """
         watermarks: dict[tuple[str, str], int] = {}
-        span_refs: dict[tuple[str, str], int] = {}
+        # A span maps to its ref, or to None once it is known to have ended.
+        span_refs: dict[tuple[str, str], int | None] = {}
         for frame in frames:
             identity = (frame.trace_id, frame.span_id)
-            span_ref = span_refs.get(identity)
-            if span_ref is None:
-                span_ref = TrajectoryStore._resolve_frame_span(connection, frame)
+            if identity in span_refs:
+                span_ref = span_refs[identity]
+            else:
+                span_ref = self._resolve_frame_span(connection, frame)
                 span_refs[identity] = span_ref
+            if span_ref is None:
+                continue
             cursor = connection.execute(
                 """
                 INSERT INTO trajectory_stream_frames (
@@ -584,11 +695,11 @@ class TrajectoryStore:
             watermarks[(frame.session_id, frame.trace_id)] = int(cursor.lastrowid)
         return watermarks
 
-    @staticmethod
     def _resolve_frame_span(
+        self,
         connection: sqlite3.Connection,
         frame: StreamFrameData,
-    ) -> int:
+    ) -> int | None:
         """Name the span a frame came from, registering it the first time.
 
         No cache spans transactions: the batch a writer flushes almost always
@@ -602,9 +713,12 @@ class TrajectoryStore:
             frame: Any frame of the span to name.
 
         Returns:
-            The integer this database names that span by.
+            The integer this database names that span by, or None when the span
+            already has a terminal record and its frames are to be dropped.
         """
         identity = (frame.trace_id, frame.span_id)
+        if self.discard_final_span_frames and _has_final_record(connection, *identity):
+            return None
         connection.execute(
             """
             INSERT INTO trajectory_frame_spans (
@@ -619,6 +733,59 @@ class TrajectoryStore:
             identity,
         ).fetchone()
         return int(row["span_ref"])
+
+    def _discard_final_span_frames(
+        self,
+        connection: sqlite3.Connection,
+        records: Sequence[TraceRecordData],
+    ) -> None:
+        """Drop the frames of every span this batch brought to a terminal state.
+
+        A frame is a stand-in for an answer still being written. The record of
+        a finished span states that answer in full, so from the moment it is
+        committed the frames of that span are read by nothing: the reader drops
+        its own copy of them, the detail read never consults them, and an
+        archive excludes them. Keeping them would leave the largest table in
+        the database holding only content no code path reaches.
+        ``_delete_orphan_frames`` does not reach them either -- it ages out the
+        frames of spans that never produced a record, and these have one.
+
+        This runs after the batch's own frames are appended, so a flush window
+        that carries both a span's last frames and its record still discards
+        them. The trace's frame watermark is left as appended: it reports the
+        revision frames were last committed at, and a reader that comes back
+        for frames now gone is told to reset, which costs it the frame state of
+        a span whose record already supersedes it.
+
+        Args:
+            connection: The open write transaction.
+            records: Records committed in this batch, terminal or not.
+        """
+        if not self.discard_final_span_frames:
+            return
+        finished = {
+            (record.trace_id, record.span_id)
+            for record in records
+            if record.lifecycle == "final"
+        }
+        if not finished:
+            return
+        # Deleting by span_ref keeps the frame delete on the index the frames
+        # are clustered by, and resolving the ref first means a span that never
+        # streamed costs one lookup instead of a scan.
+        refs: list[tuple[int]] = []
+        for identity in finished:
+            rows = connection.execute(
+                "SELECT span_ref FROM trajectory_frame_spans WHERE trace_id = ? AND span_id = ?",
+                identity,
+            )
+            refs.extend((int(row["span_ref"]),) for row in rows)
+        if not refs:
+            return
+        connection.executemany("DELETE FROM trajectory_stream_frames WHERE span_ref = ?", refs)
+        # The span was named only so its frames could point at it. Foreign keys
+        # are on, so this must follow the frames it owns.
+        connection.executemany("DELETE FROM trajectory_frame_spans WHERE span_ref = ?", refs)
 
     @staticmethod
     def _upsert_current_record(
@@ -653,6 +820,7 @@ class TrajectoryStore:
         # reader budgets pages by it before it fetches any payload.
         is_final = record.lifecycle == "final"
         stored_raw_json = b"" if is_final else _encode_payload(record.raw_json)
+        view_facts = record_view_facts(record.raw_json, record.trace_id, record.span_id)
         connection.execute(
             """
             INSERT INTO trajectory_current_records (
@@ -662,8 +830,13 @@ class TrajectoryStore:
                 execution_subject_parent_id, lifecycle, record_revision, change_seq,
                 start_time_unix_nano, observed_time_unix_nano,
                 end_time_unix_nano, schema_version, source, created_at,
-                has_error, raw_json, raw_size_bytes, raw_sha256, update_kind
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                has_error, raw_json, raw_size_bytes, raw_sha256, update_kind,
+                view_subject_id, view_subject_kind, view_subject_session_id,
+                view_projected, turn_id, turn_number
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             ON CONFLICT(trace_id, span_id) DO UPDATE SET
                 parent_span_id = excluded.parent_span_id,
                 session_id = COALESCE(excluded.session_id, trajectory_current_records.session_id),
@@ -696,7 +869,13 @@ class TrajectoryStore:
                 raw_json = excluded.raw_json,
                 raw_size_bytes = excluded.raw_size_bytes,
                 raw_sha256 = excluded.raw_sha256,
-                update_kind = excluded.update_kind
+                update_kind = excluded.update_kind,
+                view_subject_id = excluded.view_subject_id,
+                view_subject_kind = excluded.view_subject_kind,
+                view_subject_session_id = excluded.view_subject_session_id,
+                view_projected = excluded.view_projected,
+                turn_id = excluded.turn_id,
+                turn_number = excluded.turn_number
             """,
             (
                 record.trace_id,
@@ -724,6 +903,12 @@ class TrajectoryStore:
                 record.logical_size_bytes or len(record.raw_json),
                 record.raw_sha256,
                 record.update_kind,
+                view_facts.subject_id,
+                view_facts.subject_kind,
+                view_facts.subject_session_id,
+                int(view_facts.projected),
+                view_facts.turn_id,
+                view_facts.turn_number,
             ),
         )
         return True
@@ -745,8 +930,10 @@ class TrajectoryStore:
         """
         blobs: dict[str, tuple[bytes, int]] = {}
         nodes: dict[str, tuple[str | None, str, int, int]] = {}
+        references: set[tuple[str, str]] = set()
         for record in records:
             for sequence in record.sequences:
+                references.add((_record_owner_id(record.trace_id, record.span_id), sequence.seq_hash))
                 for blob_hash, content in sequence.blobs.items():
                     blobs[blob_hash] = (content, record.created_at)
                 for node in sequence.nodes:
@@ -794,6 +981,21 @@ class TrajectoryStore:
                     for seq_hash, (prev_hash, blob_hash, depth, created_at) in nodes.items()
                 ],
             )
+        if references:
+            # A running record restates its references on every revision and
+            # may drop one it had; the stale reference only keeps content a
+            # little longer, until the record itself is retired.
+            connection.executemany(
+                """
+                INSERT INTO trajectory_sequence_refs (owner_kind, owner_id, seq_hash)
+                VALUES (?, ?, ?)
+                ON CONFLICT(owner_kind, owner_id, seq_hash) DO NOTHING
+                """,
+                [
+                    (_RECORD_OWNER_KIND, owner_id, seq_hash)
+                    for owner_id, seq_hash in sorted(references)
+                ],
+            )
 
     @staticmethod
     def _abandon_running_current(connection: sqlite3.Connection) -> int:
@@ -829,62 +1031,292 @@ class TrajectoryStore:
         return len(rows)
 
     def delete_expired(self, *, now: int | None = None) -> int:
-        """Delete records older than the configured retention window."""
+        """Retire the oldest expired turn pages of every session, as whole pages.
+
+        One transaction removes the pages ``retention.plan_session_retention``
+        chooses, folds what they leave behind into each subject's checkpoint,
+        and then reclaims whatever content no remaining record or checkpoint
+        reaches. Readers see the removal as a new store epoch and rebuild from
+        the checkpoints. The file shrinks by an incremental vacuum afterwards.
+
+        Args:
+            now: Unix second to measure the retention window from.
+
+        Returns:
+            The number of records removed.
+        """
         connection = self._require_connection()
         cutoff = int(now if now is not None else time.time()) - self.retention_days * 86400
         try:
             connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                "DELETE FROM otlp_span_records WHERE created_at < ?",
-                (cutoff,),
-            )
-            current_cursor = connection.execute(
-                "DELETE FROM trajectory_current_records WHERE created_at < ?",
-                (cutoff,),
-            )
-            connection.execute(
-                "DELETE FROM otlp_record_conflicts WHERE created_at < ?",
-                (cutoff,),
-            )
-            # Frames are kept past their span's completion so an answer can be
-            # replayed, which makes them the one append-only table that grows
-            # with how much the models say. Retention has to reach them, and
-            # ages them by when the model said it -- the only timestamp a
-            # frame carries.
-            connection.execute(
-                "DELETE FROM trajectory_stream_frames WHERE timestamp_unix_nano < ?",
-                (cutoff * 1_000_000_000,),
-            )
-            # A span is named so its frames can point at it, so its name is
-            # worth nothing once retention has taken the last of them.
-            connection.execute(
-                """
-                DELETE FROM trajectory_frame_spans
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM trajectory_stream_frames AS frames
-                    WHERE frames.span_ref = trajectory_frame_spans.span_ref
-                )
-                """
-            )
-            # Addressed content ages by when it was last referenced, not when
-            # it first appeared: a tool definition restated all session long
-            # keeps being refreshed, and so outlives the records that named it
-            # only at the start.
-            connection.execute(
-                "DELETE FROM trajectory_sequences WHERE created_at < ?",
-                (cutoff,),
-            )
-            connection.execute(
-                "DELETE FROM trajectory_blobs WHERE created_at < ?",
-                (cutoff,),
-            )
-            if cursor.rowcount > 0 or current_cursor.rowcount > 0:
+            removed = self._retire_expired_pages(connection, cutoff)
+            if removed > 0:
+                self._collect_unreachable_content(connection)
                 self._rotate_store_epoch(connection)
             connection.commit()
         except Exception:
             connection.rollback()
             raise
-        return max(0, int(cursor.rowcount))
+        if removed > 0:
+            connection.execute("PRAGMA incremental_vacuum").fetchall()
+        return removed
+
+    def _retire_expired_pages(self, connection: sqlite3.Connection, cutoff: int) -> int:
+        """Remove expired turn pages and advance the checkpoints they leave.
+
+        Args:
+            connection: The open write transaction.
+            cutoff: Unix second before which a record's last write has expired.
+
+        Returns:
+            The number of records removed.
+        """
+        # A page expires only once every record on it has, so a store without
+        # a single expired record has nothing to plan.
+        expired = connection.execute(
+            "SELECT 1 FROM trajectory_current_records WHERE created_at < ? LIMIT 1",
+            (cutoff,),
+        ).fetchone()
+        if expired is None:
+            self._delete_orphan_frames(connection, cutoff)
+            return 0
+        rows_by_session: dict[str | None, list[RetentionRow]] = {}
+        for row in connection.execute(
+            """
+            SELECT session_id, trace_id, span_id, parent_span_id, agent_mode,
+                   view_subject_id, view_subject_kind, view_subject_session_id, view_projected,
+                   turn_id, turn_number, start_time_unix_nano,
+                   observed_time_unix_nano, lifecycle, created_at, change_seq
+            FROM trajectory_current_records
+            ORDER BY change_seq ASC
+            """
+        ):
+            rows_by_session.setdefault(row["session_id"], []).append(_retention_row(row))
+        resolver = _SequenceValueResolver(connection)
+        removed = 0
+        for session_id, session_rows in rows_by_session.items():
+            if all(row.created_at >= cutoff for row in session_rows):
+                continue
+            plan = plan_session_retention(
+                session_id,
+                session_rows,
+                _checkpoint_trace_turn_ids(connection, session_id),
+                cutoff=cutoff,
+                trajectory_modes=frozenset(_TRAJECTORY_MODE_VALUES),
+            )
+            if not plan.deleted_rows:
+                continue
+            # Only a session that loses pages pays for reading its checkpoints
+            # back, message lists and all.
+            checkpoints = self._load_checkpoints(connection, session_id, resolver)
+            payloads = _retired_payloads(connection, plan.deleted_rows)
+            updated: dict[str, RetentionCheckpoint] = {}
+            for subject_id, retention in plan.groups.items():
+                updated[subject_id] = advance_checkpoint(
+                    checkpoints.get(subject_id),
+                    retention,
+                    payloads,
+                    resolver.value,
+                )
+            for subject_id, usage in _retired_usage(plan.deleted_rows, payloads).items():
+                checkpoint = updated.get(subject_id) or checkpoints.get(subject_id)
+                if checkpoint is None:
+                    checkpoint = RetentionCheckpoint(subject_id=subject_id)
+                checkpoint.add_usage(usage)
+                updated[subject_id] = checkpoint
+            self._delete_retired_records(connection, plan.deleted_rows)
+            self._write_checkpoints(connection, session_id, updated.values())
+            removed += len(plan.deleted_rows)
+        self._delete_orphan_frames(connection, cutoff)
+        return removed
+
+    @staticmethod
+    def _load_checkpoints(
+        connection: sqlite3.Connection,
+        session_id: str | None,
+        resolver: _SequenceValueResolver,
+    ) -> dict[str, RetentionCheckpoint]:
+        """Read one session's checkpoints, with their message lists resolved."""
+        checkpoints: dict[str, RetentionCheckpoint] = {}
+        for row in connection.execute(
+            """
+            SELECT subject_id, boundary_turn_id, boundary_change_seq, state_json
+            FROM trajectory_retention_checkpoints
+            WHERE session_id = ?
+            """,
+            (_checkpoint_session_key(session_id),),
+        ):
+            subject_id = str(row["subject_id"])
+            checkpoints[subject_id] = RetentionCheckpoint.from_state(
+                subject_id,
+                json.loads(row["state_json"]),
+                resolver.messages,
+                boundary_turn_key=row["boundary_turn_id"],
+                boundary_change_seq=int(row["boundary_change_seq"]),
+            )
+        return checkpoints
+
+    @staticmethod
+    def _delete_retired_records(
+        connection: sqlite3.Connection,
+        rows: Sequence[RetentionRow],
+    ) -> None:
+        """Remove retired records with their archive copies, conflicts, frames and references."""
+        connection.execute(
+            """
+            CREATE TEMP TABLE IF NOT EXISTS retention_retired (
+                trace_id TEXT NOT NULL,
+                span_id TEXT NOT NULL,
+                PRIMARY KEY (trace_id, span_id)
+            )
+            """
+        )
+        connection.execute("DELETE FROM temp.retention_retired")
+        connection.executemany(
+            "INSERT OR IGNORE INTO temp.retention_retired (trace_id, span_id) VALUES (?, ?)",
+            [row.identity for row in rows],
+        )
+        retired = "(trace_id, span_id) IN (SELECT trace_id, span_id FROM temp.retention_retired)"
+        for table in (
+            "trajectory_current_records",
+            "otlp_span_records",
+            "otlp_record_conflicts",
+        ):
+            connection.execute(f"DELETE FROM {table} WHERE {retired}")
+        connection.execute(
+            f"""
+            DELETE FROM trajectory_stream_frames
+            WHERE span_ref IN (SELECT span_ref FROM trajectory_frame_spans WHERE {retired})
+            """
+        )
+        connection.execute(f"DELETE FROM trajectory_frame_spans WHERE {retired}")
+        connection.executemany(
+            "DELETE FROM trajectory_sequence_refs WHERE owner_kind = ? AND owner_id = ?",
+            [(_RECORD_OWNER_KIND, _record_owner_id(*row.identity)) for row in rows],
+        )
+        connection.execute("DELETE FROM temp.retention_retired")
+
+    @staticmethod
+    def _delete_orphan_frames(connection: sqlite3.Connection, cutoff: int) -> None:
+        """Age out frames of spans that never produced a record.
+
+        Frames of a span with a record are released by that record -- as it is
+        committed, or with its turn page where the store is configured to keep
+        them. A stream cut off before its span ended leaves frames no record
+        will ever release, and those still age by when the model produced them.
+        """
+        connection.execute(
+            """
+            DELETE FROM trajectory_stream_frames
+            WHERE timestamp_unix_nano < ?
+              AND span_ref IN (
+                  SELECT spans.span_ref FROM trajectory_frame_spans AS spans
+                  WHERE NOT EXISTS (
+                      SELECT 1 FROM trajectory_current_records AS current
+                      WHERE current.trace_id = spans.trace_id
+                        AND current.span_id = spans.span_id
+                  )
+              )
+            """,
+            (cutoff * 1_000_000_000,),
+        )
+        # A span is named so its frames can point at it, so its name is
+        # worth nothing once retention has taken the last of them.
+        connection.execute(
+            """
+            DELETE FROM trajectory_frame_spans
+            WHERE NOT EXISTS (
+                SELECT 1 FROM trajectory_stream_frames AS frames
+                WHERE frames.span_ref = trajectory_frame_spans.span_ref
+            )
+            """
+        )
+
+    @staticmethod
+    def _write_checkpoints(
+        connection: sqlite3.Connection,
+        session_id: str | None,
+        checkpoints: Iterable[RetentionCheckpoint],
+    ) -> None:
+        """Persist checkpoints, their message lists as content and their references."""
+        session_key = _checkpoint_session_key(session_id)
+        updated_at = int(time.time())
+        for checkpoint in checkpoints:
+            state = checkpoint.to_state(
+                lambda messages: _store_message_sequence(connection, messages, updated_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO trajectory_retention_checkpoints (
+                    session_id, subject_id, boundary_turn_id,
+                    boundary_change_seq, state_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, subject_id) DO UPDATE SET
+                    boundary_turn_id = excluded.boundary_turn_id,
+                    boundary_change_seq = excluded.boundary_change_seq,
+                    state_json = excluded.state_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    session_key,
+                    checkpoint.subject_id,
+                    checkpoint.boundary_turn_key,
+                    checkpoint.boundary_change_seq,
+                    json.dumps(state, ensure_ascii=False, separators=(",", ":")),
+                    updated_at,
+                ),
+            )
+            owner_id = _checkpoint_owner_id(session_key, checkpoint.subject_id)
+            connection.execute(
+                "DELETE FROM trajectory_sequence_refs WHERE owner_kind = ? AND owner_id = ?",
+                (_CHECKPOINT_OWNER_KIND, owner_id),
+            )
+            connection.executemany(
+                """
+                INSERT INTO trajectory_sequence_refs (owner_kind, owner_id, seq_hash)
+                VALUES (?, ?, ?)
+                ON CONFLICT(owner_kind, owner_id, seq_hash) DO NOTHING
+                """,
+                [
+                    (_CHECKPOINT_OWNER_KIND, owner_id, seq_hash)
+                    for seq_hash in checkpoint_sequence_heads(state)
+                ],
+            )
+
+    @staticmethod
+    def _collect_unreachable_content(connection: sqlite3.Connection) -> None:
+        """Delete chain nodes and elements no record or checkpoint reaches."""
+        connection.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS retention_reachable (seq_hash TEXT PRIMARY KEY)"
+        )
+        connection.execute("DELETE FROM temp.retention_reachable")
+        connection.execute(
+            """
+            WITH RECURSIVE reachable(seq_hash) AS (
+                SELECT seq_hash FROM trajectory_sequence_refs
+                UNION
+                SELECT sequences.prev_hash
+                FROM trajectory_sequences AS sequences
+                JOIN reachable ON sequences.seq_hash = reachable.seq_hash
+                WHERE sequences.prev_hash IS NOT NULL
+            )
+            INSERT INTO temp.retention_reachable (seq_hash)
+            SELECT seq_hash FROM reachable
+            """
+        )
+        connection.execute(
+            """
+            DELETE FROM trajectory_sequences
+            WHERE seq_hash NOT IN (SELECT seq_hash FROM temp.retention_reachable)
+            """
+        )
+        connection.execute(
+            """
+            DELETE FROM trajectory_blobs
+            WHERE blob_hash NOT IN (SELECT blob_hash FROM trajectory_sequences)
+            """
+        )
+        connection.execute("DELETE FROM temp.retention_reachable")
 
     def fetch_raw(self, trace_id: str, span_id: str) -> bytes | None:
         """Return exact stored bytes for writer-side diagnostics and tests."""
@@ -1256,40 +1688,145 @@ class AsyncTrajectoryReader:
                     "watermark": watermark,
                     "facts": facts,
                 }
+                retired = {
+                    str(row["subject_id"]): dict(row["state"].get("usage") or {})
+                    for row in await _read_checkpoint_rows(connection, session_id)
+                }
             finally:
                 await connection.rollback()
                 await connection.close()
-        return _cumulative_request_usage(tuple(facts.values())), store_epoch
+        return _cumulative_request_usage(tuple(facts.values()), retired), store_epoch
 
-    async def get_session_archive_records(
-        self,
-        session_id: str,
-        *,
-        rehydrate: bool = True,
-    ) -> tuple[list[dict[str, Any]], str, int, dict[str, Any]]:
-        """Read every current record for one session from one SQLite snapshot.
+    async def get_retention_checkpoints(self, session_id: str) -> dict[str, Any] | None:
+        """Return the checkpoints retention left for one session, with their content.
+
+        Every chain a checkpoint refers to is resolved in the same snapshot and
+        all of its content is included, so a reader seeds itself before it
+        loads a single record, whatever it already holds.
 
         Args:
-            session_id: Session to export.
-            rehydrate: Put referenced content back into each record, so the
-                export is valid OTLP for a reader that knows nothing of this
-                store. False exports references plus the dictionaries that
-                resolve them: far smaller, still self-contained, but only
-                readable by a tool that understands the addressing.
+            session_id: Session to read.
 
         Returns:
-            The records, the store epoch, the session revision, and the
-            resolution dictionaries -- empty when *rehydrate* is true, because
-            the records then state their content directly.
+            ``store_epoch``, ``checkpoints`` (subject, boundary and ``state``
+            per row, see ``jiuwenswarm.observability.retention``), and the
+            ``sequences`` and ``blobs`` they refer to; None when the session
+            has no database.
         """
         connection = await self._connect(session_id)
         if connection is None:
-            return [], _ABSENT_STORE_EPOCH, 0, {"sequences": {}, "blobs": {}}
+            return None
         try:
             await connection.execute("BEGIN")
             store_epoch = await _read_store_epoch(connection)
-            revision = await _session_revision_watermark(connection, session_id)
-            query = f"""
+            rows = await _read_checkpoint_rows(connection, session_id)
+            heads = list(dict.fromkeys(
+                head for row in rows for head in checkpoint_sequence_heads(row["state"])
+            ))
+            nodes = await _fetch_sequence_nodes(connection, heads)
+            sequences: dict[str, list[str]] = {}
+            for head in heads:
+                elements = _chain_elements(head, nodes)
+                if elements:
+                    sequences[head] = elements
+            blobs = await _fetch_blob_texts(
+                connection,
+                list(dict.fromkeys(element for elements in sequences.values() for element in elements)),
+            )
+        finally:
+            await connection.rollback()
+            await connection.close()
+        return {
+            "store_epoch": store_epoch,
+            "checkpoints": [_checkpoint_response(row) for row in rows],
+            "sequences": sequences,
+            "blobs": blobs,
+        }
+
+    async def iter_session_archive_lines(
+        self,
+        session_id: str,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Yield one session's archive as content-addressed lines, in commit order.
+
+        The whole walk reads one SQLite snapshot, so the lines describe a
+        single consistent state however long the export takes. Records are
+        read in change_seq order through one cursor a batch at a time, and the
+        content they refer to is resolved per batch: a ``blob`` or
+        ``sequence`` line is emitted just before the first line that needs it,
+        parents before children. What is held in memory across batches is only
+        the set of hashes already emitted, so any prefix of the lines can be
+        replayed on its own. Stream frames are not part of an archive.
+
+        Args:
+            session_id: Session to export.
+
+        Yields:
+            ``header`` first, then one ``checkpoint`` line per retention
+            checkpoint, then ``record`` lines, each ``blob``/``sequence`` line
+            just before the first line that needs it, then one ``usage`` line
+            per request, and ``end`` last.
+        """
+        header: dict[str, Any] = {
+            "type": "header",
+            "format": TRAJECTORY_ARCHIVE_FORMAT,
+            "archive_version": TRAJECTORY_ARCHIVE_VERSION,
+            "session_id": session_id,
+            "exported_at": datetime.now(timezone.utc).isoformat().replace(
+                "+00:00",
+                "Z",
+            ),
+            "store_epoch": _ABSENT_STORE_EPOCH,
+            "revision": "0",
+            "stream_frames": False,
+        }
+        connection = await self._connect(session_id)
+        if connection is None:
+            yield header
+            yield {"type": "end", "records": 0, "lines": 1}
+            return
+        line_count = 0
+        record_count = 0
+        emitted_sequences: set[str] = set()
+        emitted_blobs: set[str] = set()
+        facts: dict[tuple[str, str], dict[str, Any]] = {}
+        retired_usage: dict[str, dict[str, int]] = {}
+        try:
+            await connection.execute("BEGIN")
+            header["store_epoch"] = await _read_store_epoch(connection)
+            header["revision"] = str(
+                await _session_revision_watermark(connection, session_id)
+            )
+            yield header
+            line_count += 1
+            checkpoint_rows = await _read_checkpoint_rows(connection, session_id)
+            retired_usage = {
+                str(row["subject_id"]): dict(row["state"].get("usage") or {})
+                for row in checkpoint_rows
+            }
+            for row in checkpoint_rows:
+                checkpoint_heads = checkpoint_sequence_heads(row["state"])
+                nodes = await _fetch_sequence_nodes(
+                    connection,
+                    [head for head in checkpoint_heads if head not in emitted_sequences],
+                )
+                blobs = await _fetch_blob_texts(
+                    connection,
+                    sorted({blob_hash for _, blob_hash, _ in nodes.values()} - emitted_blobs),
+                )
+                for line in _archive_content_lines(
+                    checkpoint_heads,
+                    nodes,
+                    blobs,
+                    emitted_sequences=emitted_sequences,
+                    emitted_blobs=emitted_blobs,
+                ):
+                    yield line
+                    line_count += 1
+                yield {"type": "checkpoint", **_checkpoint_response(row)}
+                line_count += 1
+            async with connection.execute(
+                f"""
                 WITH {_ELIGIBLE_TRACES_CTE}
                 SELECT current.trace_id AS trace_id,
                        current.span_id AS span_id,
@@ -1298,6 +1835,7 @@ class AsyncTrajectoryReader:
                        current.request_id AS request_id,
                        current.run_id AS run_id,
                        current.agent_mode AS agent_mode,
+                       current.execution_subject_id AS execution_subject_id,
                        current.lifecycle AS lifecycle,
                        current.record_revision AS record_revision,
                        current.change_seq AS change_seq,
@@ -1308,6 +1846,7 @@ class AsyncTrajectoryReader:
                        current.source AS source,
                        current.created_at AS created_at,
                        {_CURRENT_RAW_JSON} AS raw_json,
+                       current.raw_size_bytes AS raw_size_bytes,
                        current.raw_sha256 AS raw_sha256,
                        current.update_kind AS update_kind
                 FROM trajectory_current_records AS current
@@ -1315,54 +1854,63 @@ class AsyncTrajectoryReader:
                 INNER JOIN eligible_traces
                     ON eligible_traces.trace_id = current.trace_id
                 WHERE current.session_id = ?
-                ORDER BY current.start_time_unix_nano ASC,
-                         current.trace_id ASC,
-                         current.span_id ASC
-            """
-            params: tuple[Any, ...] = (
-                *_trajectory_scope_params(),
-                session_id,
-            )
-            async with connection.execute(query, params) as statement:
-                rows = await statement.fetchall()
+                ORDER BY current.change_seq ASC
+                """,
+                (
+                    *_trajectory_scope_params(),
+                    session_id,
+                ),
+            ) as statement:
+                while True:
+                    rows = await statement.fetchmany(_ARCHIVE_RECORD_BATCH)
+                    if not rows:
+                        break
+                    decoded: list[tuple[aiosqlite.Row, bytes, dict[str, Any] | None]] = []
+                    for row in rows:
+                        raw_json = _decode_payload(row["raw_json"])
+                        try:
+                            otlp: dict[str, Any] | None = strict_otlp_payload(raw_json)
+                        except (RecursionError, TypeError, ValueError, OverflowError):
+                            otlp = None
+                        decoded.append((row, raw_json, otlp))
+                    references = [_record_sequence_references(otlp) for _, _, otlp in decoded]
+                    pending_heads: set[str] = set()
+                    for record_references in references:
+                        pending_heads.update(_reference_heads(record_references))
+                    pending_heads -= emitted_sequences
+                    nodes = await _fetch_sequence_nodes(connection, sorted(pending_heads))
+                    pending_blobs = {blob_hash for _, blob_hash, _ in nodes.values()}
+                    pending_blobs -= emitted_blobs
+                    blobs = await _fetch_blob_texts(connection, sorted(pending_blobs))
+                    for (row, raw_json, otlp), record_references in zip(decoded, references):
+                        for line in _archive_content_lines(
+                            _reference_heads(record_references),
+                            nodes,
+                            blobs,
+                            emitted_sequences=emitted_sequences,
+                            emitted_blobs=emitted_blobs,
+                        ):
+                            yield line
+                            line_count += 1
+                        yield _archive_record_line(row, raw_json, otlp, record_references)
+                        line_count += 1
+                        record_count += 1
+                        if otlp is None:
+                            continue
+                        fact = _request_usage_fact_from_payload(
+                            otlp,
+                            trace_id=str(row["trace_id"]),
+                            start_time_unix_nano=int(row["start_time_unix_nano"]),
+                        )
+                        if fact is not None:
+                            facts[(fact["trace_id"], fact["inference_id"])] = fact
         finally:
             await connection.rollback()
             await connection.close()
-        records = [_archive_record_from_row(row) for row in rows]
-        head_hashes: set[str] = set()
-        for record in records:
-            for reference in (record.get("sequences") or {}).values():
-                if reference.get("hash"):
-                    head_hashes.add(str(reference["hash"]))
-        heads = sorted(head_hashes)
-        empty: dict[str, Any] = {"sequences": {}, "blobs": {}}
-        if not heads:
-            return records, store_epoch, revision, empty
-        resolved = await self.resolve_sequences(session_id, heads, since_revision=0)
-        if resolved is None:
-            resolved = empty
-        if not rehydrate:
-            return records, store_epoch, revision, resolved
-        chains = {key: list(value) for key, value in resolved["sequences"].items()}
-        blobs = dict(resolved["blobs"])
-        rebuilt: list[dict[str, Any]] = []
-        for record in records:
-            raw = base64.b64decode(record["raw_json_base64"])
-            restored = _rehydrate_payload(raw, chains, blobs)
-            if restored is raw:
-                rebuilt.append(record)
-                continue
-            entry = dict(record)
-            entry["raw_json_base64"] = base64.b64encode(restored).decode("ascii")
-            try:
-                entry["otlp"] = _strict_otlp_payload(restored)
-                entry["raw_valid"] = True
-            except (RecursionError, TypeError, ValueError, OverflowError):
-                entry["otlp"] = None
-                entry["raw_valid"] = False
-            entry.pop("sequences", None)
-            rebuilt.append(entry)
-        return rebuilt, store_epoch, revision, empty
+        for item in _cumulative_request_usage(tuple(facts.values()), retired_usage):
+            yield {"type": "usage", **item}
+            line_count += 1
+        yield {"type": "end", "records": record_count, "lines": line_count}
 
     async def list_subjects(
         self,
@@ -1623,63 +2171,19 @@ class AsyncTrajectoryReader:
         if connection is None:
             return None
         try:
-            placeholders = ",".join("?" for _ in wanted)
-            async with connection.execute(
-                f"""
-                WITH RECURSIVE reachable(seq_hash, prev_hash, blob_hash, depth) AS (
-                    SELECT seq_hash, prev_hash, blob_hash, depth
-                    FROM trajectory_sequences
-                    WHERE seq_hash IN ({placeholders})
-                    UNION
-                    SELECT s.seq_hash, s.prev_hash, s.blob_hash, s.depth
-                    FROM trajectory_sequences AS s
-                    JOIN reachable AS r ON s.seq_hash = r.prev_hash
-                )
-                SELECT seq_hash, prev_hash, blob_hash, depth FROM reachable
-                """,
-                tuple(wanted),
-            ) as statement:
-                rows = await statement.fetchall()
-            nodes = {
-                str(row["seq_hash"]): (
-                    None if row["prev_hash"] is None else str(row["prev_hash"]),
-                    str(row["blob_hash"]),
-                )
-                for row in rows
-            }
+            nodes = await _fetch_sequence_nodes(connection, wanted)
             sequences: dict[str, list[str]] = {}
             needed: list[str] = []
             for head in wanted:
-                elements: list[str] = []
-                cursor = head
-                # Walking in memory costs one dictionary lookup per element,
-                # and a chain that lost an ancestor simply stops early rather
-                # than looping.
-                while cursor is not None and cursor in nodes:
-                    previous, blob_hash = nodes[cursor]
-                    elements.append(blob_hash)
-                    cursor = previous
-                elements.reverse()
+                elements = _chain_elements(head, nodes)
                 if elements:
                     sequences[head] = elements
                     needed.extend(elements)
-            blobs: dict[str, str] = {}
-            unique_needed = list(dict.fromkeys(needed))
-            for start in range(0, len(unique_needed), _SEQUENCE_FETCH_CHUNK):
-                chunk = unique_needed[start:start + _SEQUENCE_FETCH_CHUNK]
-                marks = ",".join("?" for _ in chunk)
-                async with connection.execute(
-                    f"""
-                    SELECT blob_hash, content, first_change_seq
-                    FROM trajectory_blobs
-                    WHERE blob_hash IN ({marks}) AND first_change_seq > ?
-                    """,
-                    (*chunk, max(0, int(since_revision))),
-                ) as statement:
-                    for row in await statement.fetchall():
-                        blobs[str(row["blob_hash"])] = _decode_payload(
-                            row["content"]
-                        ).decode("utf-8", "replace")
+            blobs = await _fetch_blob_texts(
+                connection,
+                list(dict.fromkeys(needed)),
+                since_revision=since_revision,
+            )
         finally:
             await connection.close()
         return {"sequences": sequences, "blobs": blobs}
@@ -1740,9 +2244,11 @@ class AsyncTrajectoryReader:
             first_frame_seq = int(aggregate["first_frame_seq"])
             current_frame_seq = int(aggregate["current_frame_seq"])
             # Ahead of the store means the database was rebuilt; behind its
-            # first frame means retention removed what the reader wanted next.
-            # Either way the reader has to start over rather than resume into
-            # a gap it cannot see.
+            # first frame means what the reader wanted next is gone -- retired
+            # by retention, or released by the terminal record of the span that
+            # produced it. Either way the reader has to start over rather than
+            # resume into a gap it cannot see. Starting over costs it only the
+            # frames of spans whose own records now state more than they did.
             reset = since_frame_seq > current_frame_seq or (
                 since_frame_seq > 0 and since_frame_seq < first_frame_seq - 1
             )
@@ -1887,6 +2393,131 @@ async def _read_store_epoch(connection: aiosqlite.Connection) -> str:
     return store_epoch if store_epoch else _ABSENT_STORE_EPOCH
 
 
+async def _fetch_sequence_nodes(
+    connection: aiosqlite.Connection,
+    heads: Sequence[str],
+) -> dict[str, tuple[str | None, str, int]]:
+    """Fetch every chain node reachable from the given heads.
+
+    The walk is one recursive query per chunk of heads, and it deduplicates as
+    it goes: several spans of one conversation share a prefix, so that prefix
+    is visited once however many of them asked for it.
+
+    Args:
+        connection: Open reader connection.
+        heads: Chain heads to walk back from.
+
+    Returns:
+        ``(prev_hash, blob_hash, depth)`` by ``seq_hash`` for every node found.
+        A chain that lost an ancestor simply contributes fewer nodes.
+    """
+    nodes: dict[str, tuple[str | None, str, int]] = {}
+    for start in range(0, len(heads), _SEQUENCE_FETCH_CHUNK):
+        chunk = heads[start:start + _SEQUENCE_FETCH_CHUNK]
+        placeholders = ",".join("?" for _ in chunk)
+        async with connection.execute(
+            _REACHABLE_NODES_SQL.format(placeholders=placeholders),
+            tuple(chunk),
+        ) as statement:
+            for row in await statement.fetchall():
+                nodes[str(row["seq_hash"])] = (
+                    None if row["prev_hash"] is None else str(row["prev_hash"]),
+                    str(row["blob_hash"]),
+                    int(row["depth"]),
+                )
+    return nodes
+
+
+def _chain_elements(
+    head: str,
+    nodes: Mapping[str, tuple[str | None, str, int]],
+) -> list[str]:
+    """Return the element hashes of one chain, root first, from fetched nodes."""
+    elements: list[str] = []
+    cursor: str | None = head
+    # Walking in memory costs one dictionary lookup per element, and a chain
+    # that lost an ancestor simply stops early rather than looping.
+    while cursor is not None and cursor in nodes:
+        previous, blob_hash, _depth = nodes[cursor]
+        elements.append(blob_hash)
+        cursor = previous
+    elements.reverse()
+    return elements
+
+
+async def _read_checkpoint_rows(
+    connection: aiosqlite.Connection,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """Read one session's retention checkpoints, their state parsed."""
+    async with connection.execute(
+        """
+        SELECT subject_id, boundary_turn_id, boundary_change_seq, state_json, updated_at
+        FROM trajectory_retention_checkpoints
+        WHERE session_id = ?
+        ORDER BY subject_id ASC
+        """,
+        (_checkpoint_session_key(session_id),),
+    ) as statement:
+        rows = await statement.fetchall()
+    return [
+        {
+            "subject_id": str(row["subject_id"]),
+            "boundary_turn_id": row["boundary_turn_id"],
+            "boundary_change_seq": int(row["boundary_change_seq"]),
+            "updated_at": int(row["updated_at"]),
+            "state": json.loads(row["state_json"]),
+        }
+        for row in rows
+    ]
+
+
+def _checkpoint_response(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Shape one checkpoint row for the wire and for an archive line."""
+    return {
+        "subject_id": row["subject_id"],
+        "boundary_turn_id": row["boundary_turn_id"],
+        "boundary_change_seq": str(row["boundary_change_seq"]),
+        "state": row["state"],
+    }
+
+
+async def _fetch_blob_texts(
+    connection: aiosqlite.Connection,
+    blob_hashes: Sequence[str],
+    *,
+    since_revision: int = 0,
+) -> dict[str, str]:
+    """Fetch element content by hash, in chunks the bound-variable limit allows.
+
+    Args:
+        connection: Open reader connection.
+        blob_hashes: Distinct element hashes to fetch.
+        since_revision: Content first seen at or before this revision is
+            assumed held by the reader and is skipped.
+
+    Returns:
+        Decoded content by hash for every element found.
+    """
+    blobs: dict[str, str] = {}
+    for start in range(0, len(blob_hashes), _SEQUENCE_FETCH_CHUNK):
+        chunk = blob_hashes[start:start + _SEQUENCE_FETCH_CHUNK]
+        marks = ",".join("?" for _ in chunk)
+        async with connection.execute(
+            f"""
+            SELECT blob_hash, content, first_change_seq
+            FROM trajectory_blobs
+            WHERE blob_hash IN ({marks}) AND first_change_seq > ?
+            """,
+            (*chunk, max(0, int(since_revision))),
+        ) as statement:
+            for row in await statement.fetchall():
+                blobs[str(row["blob_hash"])] = _decode_payload(
+                    row["content"]
+                ).decode("utf-8", "replace")
+    return blobs
+
+
 def _current_max_ingest_seq(connection: sqlite3.Connection) -> int:
     row = connection.execute(
         "SELECT COALESCE(MAX(ingest_seq), 0) AS max_ingest_seq FROM otlp_span_records"
@@ -1906,6 +2537,32 @@ def _stored_max_change_seq(connection: sqlite3.Connection) -> int:
         "SELECT max_change_seq FROM trajectory_store_state WHERE singleton = 1"
     ).fetchone()
     return int(row["max_change_seq"]) if row is not None else 0
+
+
+def _has_final_record(
+    connection: sqlite3.Connection,
+    trace_id: str,
+    span_id: str,
+) -> bool:
+    """Report whether one span already holds a terminal record.
+
+    Args:
+        connection: The open write transaction.
+        trace_id: Trace the span belongs to.
+        span_id: Span to test.
+
+    Returns:
+        True when the span's record states its complete output.
+    """
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM trajectory_current_records
+        WHERE trace_id = ? AND span_id = ? AND lifecycle = 'final'
+        """,
+        (trace_id, span_id),
+    ).fetchone()
+    return row is not None
 
 
 def _next_change_seq(connection: sqlite3.Connection) -> int:
@@ -1931,6 +2588,212 @@ def _next_change_seq(connection: sqlite3.Connection) -> int:
 
 def _new_store_epoch() -> str:
     return uuid.uuid4().hex
+
+
+def _record_owner_id(trace_id: str, span_id: str) -> str:
+    """Name a record as the owner of the chains it refers to."""
+    return f"{trace_id}:{span_id}"
+
+
+def _checkpoint_session_key(session_id: str | None) -> str:
+    """Key a checkpoint by session; records without a session share the empty key."""
+    return session_id or ""
+
+
+def _checkpoint_owner_id(session_key: str, subject_id: str) -> str:
+    """Name a checkpoint as the owner of the chains it refers to."""
+    return json.dumps([session_key, subject_id], ensure_ascii=False, separators=(",", ":"))
+
+
+def _checkpoint_trace_turn_ids(
+    connection: sqlite3.Connection,
+    session_id: str | None,
+) -> dict[str, dict[str, list[str]]]:
+    """Read the turn ids each checkpoint of a session recorded, by subject and trace."""
+    turn_ids: dict[str, dict[str, list[str]]] = {}
+    for row in connection.execute(
+        "SELECT subject_id, state_json FROM trajectory_retention_checkpoints WHERE session_id = ?",
+        (_checkpoint_session_key(session_id),),
+    ):
+        turns = json.loads(row["state_json"]).get("turns") or {}
+        turn_ids[str(row["subject_id"])] = dict(turns.get("trace_turn_ids") or {})
+    return turn_ids
+
+
+def _retention_row(row: sqlite3.Row) -> RetentionRow:
+    return RetentionRow(
+        session_id=row["session_id"],
+        trace_id=str(row["trace_id"]),
+        span_id=str(row["span_id"]),
+        parent_span_id=row["parent_span_id"],
+        agent_mode=row["agent_mode"],
+        subject_id=str(row["view_subject_id"]),
+        subject_kind=str(row["view_subject_kind"]),
+        subject_session_id=row["view_subject_session_id"],
+        projected=bool(row["view_projected"]),
+        turn_id=row["turn_id"],
+        turn_number=None if row["turn_number"] is None else int(row["turn_number"]),
+        start_time_unix_nano=int(row["start_time_unix_nano"]),
+        observed_time_unix_nano=int(row["observed_time_unix_nano"]),
+        lifecycle=str(row["lifecycle"]),
+        created_at=int(row["created_at"]),
+        change_seq=int(row["change_seq"]),
+    )
+
+
+def _retired_payloads(
+    connection: sqlite3.Connection,
+    rows: Sequence[RetentionRow],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Read the stored OTLP payload of each record about to be retired."""
+    payloads: dict[tuple[str, str], dict[str, Any]] = {}
+    for start in range(0, len(rows), _SEQUENCE_FETCH_CHUNK // 2):
+        chunk = rows[start:start + _SEQUENCE_FETCH_CHUNK // 2]
+        clauses = " OR ".join("(current.trace_id = ? AND current.span_id = ?)" for _ in chunk)
+        parameters = [value for row in chunk for value in row.identity]
+        for stored in connection.execute(
+            f"""
+            SELECT current.trace_id AS trace_id,
+                   current.span_id AS span_id,
+                   {_CURRENT_RAW_JSON} AS raw_json
+            FROM trajectory_current_records AS current
+            {_CURRENT_ARCHIVE_JOIN}
+            WHERE {clauses}
+            """,
+            parameters,
+        ):
+            if stored["raw_json"] is None:
+                continue
+            payload = parse_otlp_payload(_decode_payload(stored["raw_json"]))
+            if payload is not None:
+                payloads[(str(stored["trace_id"]), str(stored["span_id"]))] = payload
+    return payloads
+
+
+def _retired_usage(
+    rows: Sequence[RetentionRow],
+    payloads: Mapping[tuple[str, str], dict[str, Any]],
+) -> dict[str, dict[str, int]]:
+    """Sum the token usage of retired requests per usage subject."""
+    facts: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        payload = payloads.get(row.identity)
+        if payload is None:
+            continue
+        fact = _request_usage_fact_from_payload(
+            payload,
+            trace_id=row.trace_id,
+            start_time_unix_nano=row.start_time_unix_nano,
+        )
+        if fact is not None:
+            facts[(fact["trace_id"], fact["inference_id"])] = fact
+    totals: dict[str, dict[str, int]] = {}
+    for fact in facts.values():
+        subject_totals = totals.setdefault(str(fact["subject_id"]), {})
+        for key, value in dict(fact["usage"]).items():
+            subject_totals[key] = subject_totals.get(key, 0) + int(value)
+    return totals
+
+
+def _store_message_sequence(
+    connection: sqlite3.Connection,
+    messages: list[dict[str, Any]],
+    created_at: int,
+) -> dict[str, Any]:
+    """Store one message list as a content-addressed chain and return its reference.
+
+    The chain shares nodes and elements with every other list holding the same
+    messages, so a checkpoint costs what its windows add.
+    """
+    sequence = build_sequence(
+        _CHECKPOINT_MESSAGES_KEY,
+        json.dumps(messages, ensure_ascii=False, separators=(",", ":")),
+    )
+    if sequence is None:
+        return {"hash": None, "depth": 0}
+    first_change_seq = _stored_max_change_seq(connection)
+    connection.executemany(
+        """
+        INSERT INTO trajectory_blobs (
+            blob_hash, content, byte_size, first_change_seq, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(blob_hash) DO NOTHING
+        """,
+        [
+            (
+                blob_hash,
+                sqlite3.Binary(_encode_payload(content)),
+                len(content),
+                first_change_seq,
+                created_at,
+            )
+            for blob_hash, content in sequence.blobs.items()
+        ],
+    )
+    connection.executemany(
+        """
+        INSERT INTO trajectory_sequences (
+            seq_hash, prev_hash, blob_hash, depth, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(seq_hash) DO NOTHING
+        """,
+        [
+            (node.seq_hash, node.prev_hash, node.blob_hash, node.depth, created_at)
+            for node in sequence.nodes
+        ],
+    )
+    return {"hash": sequence.seq_hash, "depth": sequence.depth}
+
+
+class _SequenceValueResolver:
+    """Rebuild chain values inside the writer transaction, each chain once."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+        self._values: dict[str, str | None] = {}
+
+    def value(self, seq_hash: str) -> str | None:
+        """Return the value a chain states, or None when it cannot be rebuilt."""
+        if seq_hash in self._values:
+            return self._values[seq_hash]
+        nodes: dict[str, tuple[str | None, str]] = {}
+        for row in self._connection.execute(_REACHABLE_NODES_SQL.format(placeholders="?"), (seq_hash,)):
+            nodes[str(row["seq_hash"])] = (row["prev_hash"], str(row["blob_hash"]))
+        elements: list[str] = []
+        cursor: str | None = seq_hash
+        while cursor is not None and cursor in nodes:
+            previous, blob_hash = nodes[cursor]
+            elements.append(blob_hash)
+            cursor = previous
+        elements.reverse()
+        contents: dict[str, str] = {}
+        distinct = list(dict.fromkeys(elements))
+        for start in range(0, len(distinct), _SEQUENCE_FETCH_CHUNK):
+            chunk = distinct[start:start + _SEQUENCE_FETCH_CHUNK]
+            marks = ",".join("?" for _ in chunk)
+            for row in self._connection.execute(
+                f"SELECT blob_hash, content FROM trajectory_blobs WHERE blob_hash IN ({marks})",
+                chunk,
+            ):
+                contents[str(row["blob_hash"])] = _decode_payload(row["content"]).decode("utf-8", "replace")
+        resolved = None
+        if elements and all(element in contents for element in elements):
+            resolved = rebuild_value([contents[element] for element in elements])
+        self._values[seq_hash] = resolved
+        return resolved
+
+    def messages(self, reference: Any) -> list[dict[str, Any]] | None:
+        """Return the message list a checkpoint reference states, or None."""
+        if not isinstance(reference, dict):
+            return None
+        seq_hash = reference.get("hash")
+        if seq_hash is None:
+            return [] if reference.get("depth") == 0 else None
+        value = self.value(str(seq_hash))
+        if value is None:
+            return None
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, list) else None
 
 
 def _unique_text_hint(rows: Sequence[sqlite3.Row], column: str) -> str | None:
@@ -1985,7 +2848,7 @@ def _record_has_error(raw_json: bytes) -> bool:
     if _STATUS_CODE_KEY not in raw_json:
         return False
     try:
-        payload = _strict_otlp_payload(raw_json)
+        payload = strict_otlp_payload(raw_json)
     except Exception:
         return False
     resource_spans = payload.get("resourceSpans")
@@ -2038,9 +2901,23 @@ def _request_usage_fact(
     start_time_unix_nano: int,
 ) -> dict[str, Any] | None:
     try:
-        payload = _strict_otlp_payload(raw_json)
+        payload = strict_otlp_payload(raw_json)
     except Exception:
         return None
+    return _request_usage_fact_from_payload(
+        payload,
+        trace_id=trace_id,
+        start_time_unix_nano=start_time_unix_nano,
+    )
+
+
+def _request_usage_fact_from_payload(
+    payload: dict[str, Any],
+    *,
+    trace_id: str,
+    start_time_unix_nano: int,
+) -> dict[str, Any] | None:
+    """Extract one inference's usage from an already parsed OTLP payload."""
     spans = []
     for resource_span in payload.get("resourceSpans", []):
         if not isinstance(resource_span, dict):
@@ -2050,45 +2927,42 @@ def _request_usage_fact(
                 spans.extend(scope_span.get("spans", []))
     if len(spans) != 1 or not isinstance(spans[0], dict):
         return None
-    attributes = {
-        str(attribute.get("key")): _otlp_attribute_value(attribute.get("value"))
+    attribute_entries = {
+        str(attribute.get("key")): attribute.get("value")
         for attribute in spans[0].get("attributes", [])
         if isinstance(attribute, dict) and isinstance(attribute.get("key"), str)
     }
+    attributes = {
+        key: _otlp_attribute_value(value) for key, value in attribute_entries.items()
+    }
     if attributes.get("gen_ai.operation.name") not in {"chat", "generate_content", "text_completion"}:
         return None
-    inference_id = str(attributes.get("openjiuwen.inference.id") or "").strip()
-    if not inference_id:
+    # The viewer joins cumulative usage to a request by the inference id it
+    # reads, which is the exact string value, so it is keyed the same way.
+    inference_value = attribute_entries.get("openjiuwen.inference.id")
+    inference_id = inference_value.get("stringValue") if isinstance(inference_value, dict) else None
+    if not isinstance(inference_id, str) or not inference_id.strip():
         return None
     subject_id = str(attributes.get("openjiuwen.execution.subject.id") or "main").strip()
     usage_keys = {
-        "input": ("gen_ai.usage.input_tokens",),
-        "cacheRead": ("gen_ai.usage.cache_read.input_tokens",),
-        "cacheWrite": ("gen_ai.usage.cache_write.input_tokens",),
-        "output": ("gen_ai.usage.output_tokens",),
-        "reasoning": ("gen_ai.usage.reasoning.output_tokens",),
+        "input": "gen_ai.usage.input_tokens",
+        "cacheRead": "gen_ai.usage.cache_read.input_tokens",
+        "cacheWrite": "gen_ai.usage.cache_write.input_tokens",
+        "output": "gen_ai.usage.output_tokens",
+        "reasoning": "gen_ai.usage.reasoning.output_tokens",
     }
+    # Token counts are read as the viewer reads a request's own usage: the
+    # int64 arm only, as a non-negative integer it can represent exactly.
     usage: dict[str, int] = {}
-    for output_key, attribute_keys in usage_keys.items():
-        raw_value = next(
-            (
-                attributes[key]
-                for key in attribute_keys
-                if attributes.get(key) is not None
-            ),
-            None,
-        )
-        try:
-            value = int(raw_value)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if 0 <= value <= _MAX_SQLITE_INTEGER:
+    for output_key, attribute_key in usage_keys.items():
+        value = int64_attribute_value(attribute_entries.get(attribute_key))
+        if value is not None and 0 <= value <= MAX_SAFE_INTEGER:
             usage[output_key] = value
     input_tokens = usage.get("input")
     output_tokens = usage.get("output")
     if input_tokens is not None and output_tokens is not None:
         total_tokens = input_tokens + output_tokens
-        if total_tokens <= _MAX_SQLITE_INTEGER:
+        if total_tokens <= MAX_SAFE_INTEGER:
             usage["total"] = total_tokens
     return {
         "trace_id": trace_id,
@@ -2101,8 +2975,21 @@ def _request_usage_fact(
 
 def _cumulative_request_usage(
     facts: Sequence[dict[str, Any]],
+    retired: Mapping[str, Mapping[str, int]],
 ) -> list[dict[str, Any]]:
-    cumulative_by_subject: dict[str, dict[str, int]] = {}
+    """Accumulate usage per subject in request order.
+
+    Args:
+        facts: One usage fact per current request.
+        retired: Usage of each subject's retired requests, which its
+            cumulative figures continue from.
+
+    Returns:
+        Each fact with its cumulative usage.
+    """
+    cumulative_by_subject: dict[str, dict[str, int]] = {
+        subject_id: dict(usage) for subject_id, usage in retired.items()
+    }
     result: list[dict[str, Any]] = []
     for fact in sorted(
         facts,
@@ -2123,82 +3010,6 @@ def _cumulative_request_usage(
             "cumulative_usage": dict(cumulative),
         })
     return result
-
-
-def _rebuilt_sequence_value(elements: list[str], blobs: dict[str, str]) -> str | None:
-    """Return the attribute value a chain states, or None if an element is gone.
-
-    Always an array: a chain is built only from one, so it rebuilds into one
-    at any depth. Nothing here inspects the count.
-    """
-    parts: list[str] = []
-    for element in elements:
-        content = blobs.get(element)
-        if content is None:
-            return None
-        parts.append(content)
-    if not parts:
-        return None
-    return rebuild_value(parts)
-
-
-def _rehydrate_payload(
-    raw_json: bytes,
-    chains: dict[str, list[str]],
-    blobs: dict[str, str],
-) -> bytes:
-    """Put the content back where a stored record kept only a reference.
-
-    An export has to be valid OTLP on its own: it is read by tools that know
-    nothing of this store's addressing, and a reference they cannot resolve is
-    worse than the bytes it saved.
-
-    Args:
-        raw_json: The stored payload, carrying references.
-        chains: Element hashes of each chain, in order.
-        blobs: Element content by hash.
-
-    Returns:
-        The payload with every resolvable reference replaced, or the original
-        bytes when nothing needed replacing. A reference whose content is gone
-        is left as it is rather than dropping the span that carries it.
-    """
-    try:
-        payload = json.loads(raw_json)
-    except (TypeError, ValueError):
-        return raw_json
-    if not isinstance(payload, dict):
-        return raw_json
-    changed = False
-    for resource_span in payload.get("resourceSpans") or ():
-        if not isinstance(resource_span, dict):
-            continue
-        for scope_span in resource_span.get("scopeSpans") or ():
-            if not isinstance(scope_span, dict):
-                continue
-            for span in scope_span.get("spans") or ():
-                if not isinstance(span, dict):
-                    continue
-                for attribute in span.get("attributes") or ():
-                    if not isinstance(attribute, dict):
-                        continue
-                    value = attribute.get("value")
-                    if not isinstance(value, dict):
-                        continue
-                    parsed = parse_sequence_reference(value.get("stringValue"))
-                    if parsed is None:
-                        continue
-                    elements = chains.get(parsed[0])
-                    if elements is None:
-                        continue
-                    rebuilt = _rebuilt_sequence_value(elements, blobs)
-                    if rebuilt is None:
-                        continue
-                    value["stringValue"] = rebuilt
-                    changed = True
-    if not changed:
-        return raw_json
-    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
 def _record_sequence_references(otlp: Any) -> dict[str, dict[str, Any]]:
@@ -2239,7 +3050,7 @@ def _record_sequence_references(otlp: Any) -> dict[str, dict[str, Any]]:
 def _detail_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     raw_json = _decode_payload(row["raw_json"])
     try:
-        otlp = _strict_otlp_payload(raw_json)
+        otlp = strict_otlp_payload(raw_json)
     except (RecursionError, TypeError, ValueError, OverflowError):
         otlp = None
     references = _record_sequence_references(otlp)
@@ -2319,19 +3130,93 @@ def _subject_summary_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     }
 
 
-def _archive_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
-    """Build one lossless, version-independent archive current record."""
-    raw_json = _decode_payload(row["raw_json"])
-    try:
-        otlp = _strict_otlp_payload(raw_json)
-    except (RecursionError, TypeError, ValueError, OverflowError):
-        otlp = None
-    references = _record_sequence_references(otlp)
-    return {
+def _reference_heads(references: dict[str, dict[str, Any]]) -> list[str]:
+    """Return the chain heads one record's references name, in attribute order."""
+    return [
+        str(reference["hash"])
+        for reference in references.values()
+        if reference.get("hash")
+    ]
+
+
+def _archive_content_lines(
+    heads: Sequence[str],
+    nodes: dict[str, tuple[str | None, str, int]],
+    blobs: dict[str, str],
+    *,
+    emitted_sequences: set[str],
+    emitted_blobs: set[str],
+) -> list[dict[str, Any]]:
+    """Define the content a record is about to reference and no line has yet.
+
+    Each chain is walked back only to the first node already emitted, then
+    stated root first: a ``sequence`` line follows the ``blob`` line of its
+    element and the ``sequence`` line of its parent, so a reader resolves
+    every hash as soon as it reads it. A node or element the store no longer
+    holds is skipped; the reference that needed it stays unresolved, exactly
+    as it would for a live reader.
+
+    Args:
+        heads: Chain heads the next record refers to.
+        nodes: Chain nodes fetched for the current batch, by hash.
+        blobs: Element content fetched for the current batch, by hash.
+        emitted_sequences: Chain hashes already written; updated in place.
+        emitted_blobs: Element hashes already written; updated in place.
+
+    Returns:
+        The ``blob`` and ``sequence`` lines to write before the record.
+    """
+    lines: list[dict[str, Any]] = []
+    for head in heads:
+        path: list[str] = []
+        cursor = head
+        while cursor is not None and cursor not in emitted_sequences and cursor in nodes:
+            path.append(cursor)
+            cursor = nodes[cursor][0]
+        for seq_hash in reversed(path):
+            previous, blob_hash, depth = nodes[seq_hash]
+            if blob_hash not in emitted_blobs and blob_hash in blobs:
+                emitted_blobs.add(blob_hash)
+                lines.append({"type": "blob", "hash": blob_hash, "text": blobs[blob_hash]})
+            emitted_sequences.add(seq_hash)
+            lines.append({
+                "type": "sequence",
+                "hash": seq_hash,
+                "prev": previous,
+                "blob": blob_hash,
+                "depth": depth,
+            })
+    return lines
+
+
+def _archive_record_line(
+    row: aiosqlite.Row,
+    raw_json: bytes,
+    otlp: dict[str, Any] | None,
+    references: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Build one lossless, version-independent archive record line.
+
+    The payload is carried once, as the stored bytes: UTF-8 text when it
+    decodes, base64 otherwise. A reader parses it itself, so the line does not
+    restate it a second time as parsed OTLP.
+
+    Args:
+        row: Current-record row, joined with its archived payload.
+        raw_json: The decoded payload bytes of *row*.
+        otlp: *raw_json* parsed as strict OTLP, or None when it is not.
+        references: The chains the payload refers to, by attribute key.
+
+    Returns:
+        The ``record`` line.
+    """
+    line: dict[str, Any] = {
+        "type": "record",
         "record_id": f'{row["trace_id"]}:{row["span_id"]}',
         "trace_id": str(row["trace_id"]),
         "span_id": str(row["span_id"]),
         "parent_span_id": row["parent_span_id"],
+        "subject_id": str(row["execution_subject_id"]),
         "record_revision": int(row["record_revision"]),
         "lifecycle": str(row["lifecycle"]),
         "operation": "upsert",
@@ -2348,65 +3233,21 @@ def _archive_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
         "created_at": int(row["created_at"]),
         "update_kind": str(row["update_kind"]),
         "raw_sha256": str(row["raw_sha256"]),
-        "raw_json_base64": base64.b64encode(raw_json).decode("ascii"),
-        "otlp": otlp,
+        "raw_size_bytes": int(row["raw_size_bytes"]),
         "raw_valid": otlp is not None,
-        **({} if not references else {"sequences": references}),
     }
-
-
-def _strict_otlp_payload(raw_json: bytes) -> dict[str, Any]:
-    """Parse strict finite JSON and validate the minimum OTLP envelope shape."""
-
-    _validate_json_nesting(raw_json)
-
-    def _reject_constant(value: str) -> Any:
-        raise ValueError(f"non-finite JSON constant: {value}")
-
-    def _finite_float(value: str) -> float:
-        parsed = float(value)
-        if not math.isfinite(parsed):
-            raise ValueError("non-finite JSON number")
-        return parsed
-
-    payload = json.loads(
-        raw_json,
-        parse_constant=_reject_constant,
-        parse_float=_finite_float,
-    )
-    if not isinstance(payload, dict):
-        raise ValueError("OTLP record must be a JSON object")
-    if not isinstance(payload.get("resourceSpans"), list):
-        raise ValueError("OTLP record resourceSpans must be an array")
-    return payload
-
-
-def _validate_json_nesting(raw_json: bytes) -> None:
-    """Reject excessive JSON nesting without decoding or recursive traversal."""
-    depth = 0
-    in_string = False
-    escaped = False
-    for character in raw_json:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == 0x5C:
-                escaped = True
-            elif character == 0x22:
-                in_string = False
-            continue
-        if character == 0x22:
-            in_string = True
-            continue
-        if character in (0x5B, 0x7B):
-            depth += 1
-            if depth > _MAX_JSON_NESTING_DEPTH:
-                raise ValueError("JSON nesting depth exceeds projection limit")
-        elif character in (0x5D, 0x7D):
-            depth -= 1
+    try:
+        line["raw_json"] = raw_json.decode("utf-8")
+    except UnicodeDecodeError:
+        line["raw_json_base64"] = base64.b64encode(raw_json).decode("ascii")
+    if references:
+        line["sequences"] = references
+    return line
 
 
 __all__ = [
+    "TRAJECTORY_ARCHIVE_FORMAT",
+    "TRAJECTORY_ARCHIVE_VERSION",
     "AsyncTrajectoryReader",
     "TrajectoryStore",
 ]

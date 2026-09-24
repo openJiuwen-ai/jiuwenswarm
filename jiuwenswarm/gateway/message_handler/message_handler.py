@@ -452,6 +452,14 @@ class MessageHandler(ABC):
             config_payload if isinstance(config_payload, dict) else {}
         )
 
+    def auto_accepts_evolution_approval(self, payload: Any) -> bool:
+        """Whether this question is answered automatically by the gateway."""
+        return (
+            self._evolution_auto_save_enabled
+            and is_evolution_approval_payload(payload)
+            and not is_interrupt_evolution_approval_answer_payload(payload)
+        )
+
     @classmethod
     def get_instance(cls, agent_client: "AgentServerClient | None" = None) -> "MessageHandler":
         """获取单例实例。
@@ -4074,14 +4082,9 @@ class MessageHandler(ABC):
         """
         payload = getattr(chunk, "payload", None)
         auto_save_enabled = (
-            self._evolution_auto_save_enabled
-            if (
-                isinstance(payload, dict)
-                and payload.get("event_type") == "chat.ask_user_question"
-                and self._is_evolution_approval_payload(payload)
-                and not self._is_interrupt_evolution_approval_answer_payload(payload)
-            )
-            else False
+            isinstance(payload, dict)
+            and payload.get("event_type") == "chat.ask_user_question"
+            and self.auto_accepts_evolution_approval(payload)
         )
         decision = self._evolution_approval.handle_chunk(
             chunk,

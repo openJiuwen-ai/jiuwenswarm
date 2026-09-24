@@ -791,13 +791,6 @@ function AssetPublishDrawer({
             </span>
             <h3>{text(outcome as MessageKey)}</h3>
           </header>
-          {state.record.result?.visibility === null && (
-            <p role="status" className="asset-publish-result-notice" data-testid="asset-publish-visibility-unconfirmed">
-              {i18n.language.startsWith('zh')
-                ? '可见范围暂未确认，请到 Hub 查看。'
-                : 'Visibility is not yet confirmed. Check it in Hub.'}
-            </p>
-          )}
           <dl className="asset-publish-result-metadata" data-testid="asset-publish-result-metadata">
             {state.record.result?.asset_id && (
               <div>

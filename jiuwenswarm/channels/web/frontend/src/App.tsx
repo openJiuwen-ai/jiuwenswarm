@@ -7,7 +7,7 @@ import { AssetPublishHost } from './components/AssetPublishDrawer';
  * 应用主布局，整合所有组件
  */
 
-import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type PointerEvent as ReactPointerEvent } from 'react';
+import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo, lazy, Suspense, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { ChatPanel } from './components/ChatPanel';
 import { SideConversationPanel } from './components/ChatPanel/SideConversationPanel';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
@@ -175,6 +175,7 @@ import {
 } from './features/trajectory/SingleAgentSurface';
 import {
   shouldInsetTrajectoryForFloatingTasks,
+  trajectoryComposerClearance,
 } from './features/trajectory/trajectoryLayout';
 import {
   normalizeTrajectoryUiEnabled,
@@ -394,6 +395,10 @@ function AppContent({
     return 'new';
   });
   const [chatSurfaceViews, setChatSurfaceViews] = useState<Record<string, ChatSurfaceView>>({});
+  // Whether the composer kept available on the trajectory view is collapsed to
+  // watch-only, per session, alongside which view that session last showed.
+  const [trajectoryComposerCollapsed, setTrajectoryComposerCollapsed] = useState<Record<string, boolean>>({});
+  const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
 
@@ -702,6 +707,14 @@ function AppContent({
         ? current
         : { ...current, [sessionId]: nextView }
     ));
+  }, [sessionId]);
+  const composerDocked = chatSurfaceView === 'trajectory';
+  const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
+  const toggleTrajectoryComposer = useCallback(() => {
+    setTrajectoryComposerCollapsed((current) => ({
+      ...current,
+      [sessionId]: !(current[sessionId] ?? false),
+    }));
   }, [sessionId]);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
@@ -3781,7 +3794,14 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 {/* Chat Panel - 在展开时可拖拽调整宽度 */}
                 <div
                   className={`${showConversationNotFound || shouldFullscreen ? 'hidden' : 'flex'} chat-layout__surface  pt-0 flex-col ${effectiveTeamAreaExpanded ? '' : 'min-w-0'} min-h-0 ${effectiveTeamAreaExpanded ? '' : 'flex-1'}`}
-                  style={effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : undefined}
+                  style={{
+                    ...(effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : {}),
+                    '--trajectory-composer-clearance': `${trajectoryComposerClearance(
+                      composerDocked,
+                      composerCollapsed,
+                      trajectoryComposerHeight,
+                    )}px`,
+                  } as CSSProperties}
                   data-testid="app-chat-surface"
                 >
 <SingleAgentSurface
@@ -3835,6 +3855,10 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onRefreshGoal={refreshGoal}
                         onClearGoal={handleClearGoal}
                         onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
+                        composerDocked={composerDocked}
+                        composerCollapsed={composerCollapsed}
+                        onToggleComposerCollapsed={toggleTrajectoryComposer}
+                        onComposerHeightChange={setTrajectoryComposerHeight}
                       />
                     )}
                     chatLabel={t('nav.chat')}
