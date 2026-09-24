@@ -269,6 +269,30 @@ test('parallel program candidates get attempt numbering without exposing provide
   assert.equal(nodeChangeDisplayLabel({ group: 'program', operation: 'modify' }), '程序逻辑 · 调整');
 });
 
+test('a program candidate adopted before parallel peers finish is only the current leader', () => {
+  const node = {
+    node_id: 'artifact:task:attempt:2',
+    iteration: 2,
+    parent_id: 'ROOT',
+    type: 'ADOPTED',
+    adopted: true,
+    score: 0.8,
+    changes: [],
+    extra: { program: { logical_kind: 'adopted' } },
+  };
+
+  const running = presentRsiNode(node, context('ARTIFACT', 'PROGRAM', [node], true));
+  assert.equal(running.title, '程序版本 2 · 当前领先');
+  assert.equal(running.runtimeLabel, '当前领先');
+
+  const completed = presentRsiNode(node, context('ARTIFACT', 'PROGRAM', [node], false));
+  assert.equal(completed.title, '程序版本 2 · 当前最优');
+  assert.equal(completed.runtimeLabel, '当前最优');
+
+  const paper = presentRsiNode(node, context('ARTIFACT', 'PAPER', [node], true));
+  assert.equal(paper.title, '论文版本 2 · 当前最优');
+});
+
 test('runtime failures are separated from score-based rejection', () => {
   const failed = {
     node_id: 'paper-failed',
