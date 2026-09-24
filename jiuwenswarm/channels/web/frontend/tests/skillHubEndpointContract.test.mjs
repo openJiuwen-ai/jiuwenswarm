@@ -40,7 +40,7 @@ test('Skill Hub marketplace and installation rely on the server-configured Hub',
   assert.match(marketplaceSource, /['"]swarmskill['"]/);
   assert.match(marketplaceSource, /['"]skill['"]/);
   assert.match(hubMarketplaceSource, /const HUB_HOME_TOP_K = 6/);
-  assert.match(hubMarketplaceSource, /const HUB_MORE_TOP_K = 500/);
+  assert.match(hubMarketplaceSource, /const HUB_MORE_TOP_K = 50/);
   assert.match(marketplaceSource, /category_id: category/);
   assert.match(hubMarketplaceSource, /hubHomeLoadedCategoryRef/);
   assert.match(hubMarketplaceSource, /const silent = hubHomeLoadedCategoryRef\.current === category/);

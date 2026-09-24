@@ -9,7 +9,8 @@ import {
 /**
  * 技能广场（SkillHub 推荐 / 在线搜索 / 广场详情）数据 hook
  *
- * 首页按类型各拉 HUB_HOME_TOP_K（仅 swarmskill / skill；skillpack 不向 Hub 要货）。
+ * 首页按类型各拉 HUB_HOME_TOP_K（仅 swarmskill / skill；不单独请求 skillpack，
+ * 技能包区块展示两路推荐/搜索结果中捎带的 skillpack 条目）。
  * 推荐一律先 prefer_cache；cold miss 且无内存旧卡时立刻直连 Hub（不空等轮询），
  * miss 后台回填会写入目录缓存，二次打开即可命中。同分类再进仍 SWR（保留旧卡）。
  * 「更多」专页按需拉 HUB_MORE_TOP_K（同样 cache→miss 直连）。
@@ -21,7 +22,7 @@ import type { HubSkillDetail, LoadState, MarketplacePluginItem } from './types';
 /** 技能广场首页：团队 / 普通技能各拉取条数 */
 export const HUB_HOME_TOP_K = 6;
 /** 技能广场「更多」专页：单类型最多拉取条数 */
-export const HUB_MORE_TOP_K = 500;
+export const HUB_MORE_TOP_K = 50;
 
 type HubRecommendSkill = {
   asset_id: string;
@@ -94,15 +95,13 @@ export function useHubMarketplace({
       hubMoreFetchSeqRef.current += 1;
     };
   }, []);
-  /** 首页推荐：团队 / 普通技能各最多 HUB_HOME_TOP_K */
+  /** 首页推荐：团队 / 普通技能各最多 HUB_HOME_TOP_K（不再单独请求技能包推荐，
+      技能包区块仅展示两路推荐结果中捎带返回的 skillpack 条目） */
   const [hubTeamHome, setHubTeamHome] = useState<MarketplacePluginItem[]>([]);
   const [hubSkillHome, setHubSkillHome] = useState<MarketplacePluginItem[]>([]);
-  /** 首页推荐：技能包最多 HUB_HOME_TOP_K */
-  const [hubPackHome, setHubPackHome] = useState<MarketplacePluginItem[]>([]);
   /** 「更多」专页：单类型最多 HUB_MORE_TOP_K */
   const [hubTeamMore, setHubTeamMore] = useState<MarketplacePluginItem[]>([]);
   const [hubSkillMore, setHubSkillMore] = useState<MarketplacePluginItem[]>([]);
-  const [hubPackMore, setHubPackMore] = useState<MarketplacePluginItem[]>([]);
   // 默认落在技能广场：首帧即转圈，避免 prefer_cache miss 前误画「暂无匹配」
   const [hubLoading, setHubLoading] = useState(true);
   const [hubMoreLoading, setHubMoreLoading] = useState(false);
@@ -111,7 +110,6 @@ export function useHubMarketplace({
     category: string;
     team: boolean;
     skill: boolean;
-    pack: boolean;
   } | null>(null);
   /** 技能广场请求序号：防抖搜索/分类切换时丢弃过期响应 */
   const hubFetchSeqRef = useRef(0);
@@ -125,7 +123,7 @@ export function useHubMarketplace({
   const fetchHubRecommendByType = useCallback(
     async (
       category: string,
-      pluginType: 'swarmskill' | 'skill' | 'skillpack',
+      pluginType: 'swarmskill' | 'skill',
       topK: number,
       options?: { preferCache?: boolean },
     ) => {
@@ -156,10 +154,8 @@ export function useHubMarketplace({
       const silent = hubHomeLoadedCategoryRef.current === category;
       if (!silent) {
         setHubLoading(true);
-        setHubPackHome([]);
         setHubTeamMore([]);
         setHubSkillMore([]);
-        setHubPackMore([]);
         setHubMoreLoadedFor(null);
       }
       let pending = 2;
@@ -214,7 +210,7 @@ export function useHubMarketplace({
       };
 
       try {
-        // Hub 目录无 skillpack 货源；首页两路并行，互不等待更新 UI。
+        // 首页两路并行，互不等待更新 UI；技能包不单独请求。
         const [teamItems, skillItems] = await Promise.all([
           loadOne('swarmskill', setHubTeamHome, () => setHubTeamHome([]), 'team'),
           loadOne('skill', setHubSkillHome, () => setHubSkillHome([]), 'skill'),
@@ -259,7 +255,7 @@ export function useHubMarketplace({
   );
 
   const fetchHubMoreSkills = useCallback(
-    async (kind: 'swarmskill' | 'skill' | 'skillpack', category: string, options?: { silent?: boolean }) => {
+    async (kind: 'swarmskill' | 'skill', category: string, options?: { silent?: boolean }) => {
       const silent = Boolean(options?.silent);
       const seq = ++hubMoreFetchSeqRef.current;
       const requestScope = catalogScope();
@@ -305,30 +301,18 @@ export function useHubMarketplace({
         if (kind === 'swarmskill') {
           setHubTeamMore(items);
           setHubMoreLoadedFor((prev) =>
-            prev && prev.category === category
-              ? { ...prev, team: true }
-              : { category, team: true, skill: false, pack: false },
-          );
-        } else if (kind === 'skillpack') {
-          setHubPackMore(items);
-          setHubMoreLoadedFor((prev) =>
-            prev && prev.category === category
-              ? { ...prev, pack: true }
-              : { category, team: false, skill: false, pack: true },
+            prev && prev.category === category ? { ...prev, team: true } : { category, team: true, skill: false },
           );
         } else {
           setHubSkillMore(items);
           setHubMoreLoadedFor((prev) =>
-            prev && prev.category === category
-              ? { ...prev, skill: true }
-              : { category, team: false, skill: true, pack: false },
+            prev && prev.category === category ? { ...prev, skill: true } : { category, team: false, skill: true },
           );
         }
       } catch (error) {
         console.error(`Failed to fetch more ${kind} SkillHub recommend:`, error);
         if (requestScope !== catalogScope() || seq !== hubMoreFetchSeqRef.current) return;
         if (kind === 'swarmskill') setHubTeamMore([]);
-        else if (kind === 'skillpack') setHubPackMore([]);
         else setHubSkillMore([]);
       } finally {
         if (seq === hubMoreFetchSeqRef.current) {
@@ -353,17 +337,10 @@ export function useHubMarketplace({
     [fetchHubMoreSkills, hubMoreLoadedFor, marketplaceCategory, setMarketplaceSubView],
   );
 
-  /** 进入"全部技能包"专页，并按需拉取全量技能包（HUB_MORE_TOP_K） */
+  /** 进入"全部技能包"专页：不再单独请求技能包推荐，仅展示已有数据（首页两路推荐捎带 / 搜索结果） */
   const openHubAllPacks = useCallback(() => {
     setMarketplaceSubView('packs');
-    const needFetch =
-      !hubMoreLoadedFor ||
-      hubMoreLoadedFor.category !== marketplaceCategory ||
-      !hubMoreLoadedFor.pack;
-    if (needFetch) {
-      void fetchHubMoreSkills('skillpack', marketplaceCategory);
-    }
-  }, [fetchHubMoreSkills, hubMoreLoadedFor, marketplaceCategory, setMarketplaceSubView]);
+  }, [setMarketplaceSubView]);
 
   const fetchOnlineSearch = useCallback(
     async (query: string, options?: { silent?: boolean }) => {
@@ -495,14 +472,13 @@ export function useHubMarketplace({
   }, [activeTab, marketplaceCategory, searchKeyword, fetchHubHomeSkills, fetchOnlineSearch]);
 
   // 分组：skillpack → 精选技能包，swarmskill → 精选团队技能，其余 → 精选技能
-  // （搜索时取搜索结果；无搜索词时取首页推荐 + 全量技能包合并，保持互斥分桶）
+  // （搜索时取搜索结果；无搜索词时取首页两路推荐结果合并，保持互斥分桶；
+  //   技能包不再单独请求，区块内容来自推荐/搜索结果中捎带的 skillpack 条目）
   const { teamSkills, featuredSkills, skillPacks } = useMemo(() => {
     const team: MarketplacePluginItem[] = [];
     const featured: MarketplacePluginItem[] = [];
     const packs: MarketplacePluginItem[] = [];
-    const all = searchKeyword
-      ? hubSkills
-      : [...hubTeamHome, ...hubSkillHome, ...hubPackHome, ...hubPackMore];
+    const all = searchKeyword ? hubSkills : [...hubTeamHome, ...hubSkillHome];
     for (const skill of all) {
       if (skill.skill_type === 'skillpack' || skill.plugin_type === 'skillpack') {
         packs.push(skill);
@@ -513,7 +489,7 @@ export function useHubMarketplace({
       }
     }
     return { teamSkills: team, featuredSkills: featured, skillPacks: packs };
-  }, [searchKeyword, hubSkills, hubTeamHome, hubSkillHome, hubPackHome, hubPackMore]);
+  }, [searchKeyword, hubSkills, hubTeamHome, hubSkillHome]);
 
   // 广场详情页签（内容详情 / 包含技能，仅技能包显示"包含技能"）
   const [hubDetailTab, setHubDetailTab] = useState<'content' | 'members'>('content');
