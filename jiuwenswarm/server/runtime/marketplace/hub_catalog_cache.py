@@ -11,6 +11,7 @@ import copy
 import hashlib
 import hmac
 import json
+import logging
 import sqlite3
 import time
 import secrets
@@ -19,6 +20,8 @@ import weakref
 from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlsplit
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED = frozenset(
     (
@@ -365,7 +368,13 @@ async def start_hub_catalog_preload(skill_manager=None):
                 'top_k': top_k,
             })
         except Exception:
-            pass
+            # Preload must not block startup; recommend warm is best-effort.
+            logger.warning(
+                "Hub catalog preload recommend failed plugin_type=%s top_k=%s",
+                plugin_type,
+                top_k,
+                exc_info=True,
+            )
 
     await asyncio.gather(
         _warm_skill_recommend('swarmskill', 6),
