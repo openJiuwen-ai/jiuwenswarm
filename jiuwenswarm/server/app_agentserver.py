@@ -143,10 +143,57 @@ from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
 
 install_shell_tool_safety_hooks()
 
-# 兼容 SSE-only 网关：让非流式 invoke()（subagent / 心跳等）能解析 text/event-stream 响应
-from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
+# LLM 客户端补丁分两类：
+#   1) 与渠道无关：GLM XML 标签清洗、tip Authorization 保留（Huawei MaaS Basic）、
+#      华为 MaaS x-span-id 注入——OfficeClaw + Huawei MaaS 生产链路硬依赖，无条件应用；
+#   2) 仅对 SSE-only 网关有意义：非流式 invoke()（subagent / 心跳等）把
+#      text/event-stream 文本组装成 ChatCompletion——按渠道门控，见下方函数。
+from jiuwenswarm.llm_sse_patch import (
+    apply_glm_tool_xml_sanitize_patch,
+    apply_huawei_maas_span_id_patch,
+    apply_openai_auth_header_patch,
+    apply_openai_response_assembly_patch,
+)
 
-apply_openai_sse_invoke_patch()
+apply_openai_auth_header_patch()
+apply_glm_tool_xml_sanitize_patch()
+apply_huawei_maas_span_id_patch()
+
+
+def _should_apply_sse_invoke_patch() -> bool:
+    """检测是否存在 ``mode == "xiaoyi_claw"`` 的小艺渠道（决定是否启用 SSE 响应组装补丁）。
+
+    ``mode`` 的规范位置是 ``channels.xiaoyi.apps[].mode``：Web UI 保存小艺渠道配置时
+    只保留 ``{"apps", "send_file_allowed"}``，顶层平铺键会被清理，因此这里优先遍历
+    ``apps``；同时兼容旧的顶层平铺格式 ``channels.xiaoyi.mode``。
+    """
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        xiaoyi = (get_config().get("channels", {}) or {}).get("xiaoyi", {}) or {}
+    except Exception as exc:  # noqa: BLE001 - 启动早期读配置失败时保守兜底
+        logger.warning(
+            "[app_agentserver] 读取 channels.xiaoyi 配置失败，默认应用 SSE 兼容补丁: %s",
+            exc,
+        )
+        return True
+
+    modes: list[str] = []
+    apps = xiaoyi.get("apps")
+    if isinstance(apps, list):
+        for app in apps:
+            if isinstance(app, dict) and app.get("mode") is not None:
+                modes.append(str(app.get("mode")).strip())
+    # 兼容旧平铺格式（channels.xiaoyi.mode）
+    legacy_mode = xiaoyi.get("mode")
+    if legacy_mode is not None:
+        modes.append(str(legacy_mode).strip())
+
+    return "xiaoyi_claw" in modes
+
+
+if _should_apply_sse_invoke_patch():
+    apply_openai_response_assembly_patch()
 
 # [PERF 实验] symphony 关闭时短路 evolution rail 轨迹采集(实测占回合 ~40%)
 from jiuwenswarm.perf.evolution_rail_short_circuit import (

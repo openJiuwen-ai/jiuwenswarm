@@ -873,10 +873,7 @@ async def _wait_for_cron_team_round_events(
             continue
         if not isinstance(event, dict):
             continue
-        evt_type = str(event.get("event_type") or "").strip()
         yield event
-        if evt_type == "team.error":
-            break
         apply_cron_team_round_event(round_state, event)
         if cron_team_round_should_end(round_state):
             if _cron_solo_harness_end_pending(round_state):
@@ -1022,8 +1019,16 @@ _TEAM_BUILDING_EVENT_TYPES = frozenset({
 def _broadcast_event(
     channel_id: str | None, session_id: str, event: dict[str, Any]
 ) -> None:
-    """Broadcast an event to all request queues waiting on the same session."""
+    """Broadcast an event to all request queues waiting on the same session.
+
+    ``team.error`` is remapped to ``chat.error`` here so the frontend receives a
+    single unified error event type.  This is the **only** write path into the
+    request queues (``TeamManager.broadcast_event`` is called nowhere else), so
+    consumers never observe ``team.error`` — do not add checks for it downstream.
+    """
     tm = get_team_manager(channel_id)
+    if event and event.get("event_type") == 'team.error':
+        event.update({"event_type": "chat.error"})
     tm.broadcast_event(session_id, event)
     # Track team-building events so chat.final can be gated correctly.
     if (not tm.has_seen_team_events(session_id)) and event.get("event_type") in _TEAM_BUILDING_EVENT_TYPES:
@@ -2349,7 +2354,7 @@ async def process_team_message_stream(
                             metadata=_metadata,
                             is_complete=False,
                         )
-                        if event.get("event_type") in {"team.completed", "team.error"}:
+                        if event.get("event_type") == "team.completed":
                             break
                 finally:
                     team_manager.remove_waiter(session_id, rid)
@@ -2418,8 +2423,6 @@ async def process_team_message_stream(
                             metadata=_metadata,
                             is_complete=False,
                         )
-                        if isinstance(event, dict) and event.get("event_type") == "team.error":
-                            break
                     except asyncio.TimeoutError:
                         if not team_manager.has_stream_task(session_id):
                             break
@@ -2448,9 +2451,6 @@ async def process_team_message_stream(
                             payload=event,
                             is_complete=False,
                         )
-                        if isinstance(event, dict):
-                            if event.get("event_type") == "team.error":
-                                break
                     if drained:
                         logger.info(
                             "[TeamHelpers] drained remaining events after has_stream_task loop: "
@@ -2856,7 +2856,7 @@ async def _consume_stream_with_query(
                 channel_id,
                 session_id,
                 {
-                    "event_type": "team.error",
+                    "event_type": "chat.error",
                     "error": "Team stream ended with no output (possible pool/DB inconsistency or internal error)",
                     "session_id": session_id,
                 },
@@ -2889,7 +2889,7 @@ async def _consume_stream_with_query(
             channel_id,
             session_id,
             {
-                "event_type": "team.error",
+                "event_type": "chat.error",
                 "error": str(exc),
                 "session_id": session_id,
             },
