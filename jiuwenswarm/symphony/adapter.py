@@ -15,7 +15,7 @@ from openjiuwen.symphony import (
     SourceSnapshot,
 )
 
-from jiuwenswarm.symphony.config import SymphonyConfig
+from jiuwenswarm.symphony.config import SymphonyConfig, evolution_flow_enabled
 from jiuwenswarm.symphony.llm import LLMConfig, create_model_response_observer
 
 
@@ -129,7 +129,7 @@ def orchestration_config_from_swarm(
         top_k=orchestration.top_k,
         max_depth=orchestration.max_depth,
         min_edge_confidence=orchestration.min_edge_confidence,
-        dynamic_graph_enabled=config.evolution.flow.enabled,
+        dynamic_graph_enabled=evolution_flow_enabled(config),
     )
 
 
@@ -144,7 +144,7 @@ def graph_build_orchestration_config_from_swarm(
         top_k=orchestration.top_k,
         max_depth=orchestration.max_depth,
         min_edge_confidence=config.build.min_edge_confidence,
-        dynamic_graph_enabled=config.evolution.flow.enabled,
+        dynamic_graph_enabled=evolution_flow_enabled(config),
     )
 
 

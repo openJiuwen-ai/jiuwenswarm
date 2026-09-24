@@ -86,6 +86,16 @@ class SymphonyEvolutionConfig:
     flow: SymphonyFlowDistillConfig = SymphonyFlowDistillConfig()
 
 
+def evolution_flow_enabled(config: Any) -> bool:
+    """Read the Flow switch, including test doubles that only set ``evolution.enabled``."""
+
+    evolution = getattr(config, "evolution", None)
+    flow = getattr(evolution, "flow", None)
+    if flow is not None and hasattr(flow, "enabled"):
+        return bool(flow.enabled)
+    return bool(getattr(evolution, "enabled", False))
+
+
 @dataclass(frozen=True)
 class SymphonyOrchestrationConfig:
     mode: str = DEFAULT_ORCHESTRATION_MODE

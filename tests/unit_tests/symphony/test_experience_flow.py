@@ -867,7 +867,7 @@ def test_published_capability_snapshot_rejects_invalid_contracts(
     assert [item.capability_id for item in identities] == ["valid"]
 
 
-def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) -> None:
+def test_explicit_flow_enabled_false_skips_core_flow(monkeypatch, tmp_path: Path) -> None:
     config = symphony_config_from_dict(
         {
             "enabled": True,
@@ -904,12 +904,8 @@ def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) ->
     runtime = service._runtime_for(config)
 
     assert runtime is service._runtime
-    assert created["review_model"] is model
-    assert created["review_agent"] is not None
-    assert created["flow_root"] == tmp_path / "flow"
-    assert created["llm_client"] is model
-    assert isinstance(created["skill_adapter"], SkillPackAdapter)
-    assert isinstance(created["runtime"]["flow_engine"], Flow)
+    assert "review_model" not in created
+    assert created["runtime"]["flow_engine"] is None
 
 
 @pytest.mark.asyncio

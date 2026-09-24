@@ -32,7 +32,11 @@ from jiuwenswarm.symphony.adapter import (
     orchestration_config_from_swarm,
 )
 from jiuwenswarm.symphony.llm import LLMConfig, probe_model_connection
-from jiuwenswarm.symphony.config import SymphonyConfig, load_symphony_config
+from jiuwenswarm.symphony.config import (
+    SymphonyConfig,
+    evolution_flow_enabled,
+    load_symphony_config,
+)
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
 from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
@@ -50,6 +54,18 @@ SymphonyFlowEngine = core_symphony.flow.SymphonyFlowEngine
 SymphonyFlowConfig = core_symphony.orchestration.config.SymphonyFlowConfig
 SkillPackAdapter = core_symphony.flow.SkillPackAdapter
 VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
+
+
+def _symphony_flow_config(flow_cfg: Any) -> SymphonyFlowConfig:
+    """Pass distill thresholds only when this openjiuwen build accepts them."""
+
+    accepted = inspect.signature(SymphonyFlowConfig).parameters
+    kwargs: dict[str, Any] = {}
+    if "min_successes" in accepted:
+        kwargs["min_successes"] = flow_cfg.min_successes
+    if "min_pack_success_rate" in accepted:
+        kwargs["min_pack_success_rate"] = flow_cfg.min_pack_success_rate
+    return SymphonyFlowConfig(**kwargs)
 
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
@@ -632,7 +648,7 @@ class SwarmSymphonyService:
             config.orchestration.top_k,
             config.orchestration.max_depth,
             config.orchestration.min_edge_confidence,
-            config.evolution.flow.enabled,
+            evolution_flow_enabled(config),
             llm_signature,
         )
         if self._runtime is None or self._runtime_key != key:
@@ -661,15 +677,12 @@ class SwarmSymphonyService:
     ) -> SymphonyRuntimeType:
         model = model_from_config(llm_config)
         flow_engine = None
-        if with_flow and config.evolution.flow.enabled:
+        if with_flow and evolution_flow_enabled(config):
             flow_dir = config.paths.graph_dir.parent / "flow"
             flow_cfg = config.evolution.flow
             flow_engine = SymphonyFlowEngine(
                 flow_dir,
-                config=SymphonyFlowConfig(
-                    min_successes=flow_cfg.min_successes,
-                    min_pack_success_rate=flow_cfg.min_pack_success_rate,
-                ),
+                config=_symphony_flow_config(flow_cfg),
                 llm_client=model,
                 gate=PackageReviewGate(LLMPackageReviewAgent(model)),
                 skill_adapter=SkillPackAdapter(),
@@ -741,7 +754,7 @@ class SwarmSymphonyService:
         """Submit one Rail graph pair and deliver any new install candidates."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.flow.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return
         runtime = self._runtime_for(config)
         result = await runtime.submit_evolution(
@@ -793,7 +806,7 @@ class SwarmSymphonyService:
         """Start Flow recovery when the feature is enabled."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.flow.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return
         runtime = self._runtime_for(config)
         recovered = await self._start_flow(runtime)
@@ -875,7 +888,7 @@ class SwarmSymphonyService:
         """Return installable Recipe versions retained by the Core Flow store."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.flow.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return {"success": True, "enabled": False, "candidates": []}
         flow = self._runtime_for(config).flow_engine
         candidates = flow.list_candidates() if flow is not None else ()
@@ -896,7 +909,7 @@ class SwarmSymphonyService:
         """Re-send one retained candidate through the existing Host question flow."""
 
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.flow.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return {"success": False, "reason": "flow_disabled"}
         flow = self._runtime_for(config).flow_engine
         candidate = (
@@ -934,7 +947,7 @@ class SwarmSymphonyService:
         if request_id != expected_request_id:
             return {"installed": False, "reason": "invalid_request_id"}
         config = load_symphony_config()
-        if not config.enabled or not config.evolution.flow.enabled:
+        if not config.enabled or not evolution_flow_enabled(config):
             return {"installed": False, "reason": "flow_disabled"}
         async with self._install_lock:
             previous = self._install_receipts.get(request_id)
