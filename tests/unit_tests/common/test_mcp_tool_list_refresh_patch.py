@@ -146,3 +146,124 @@ async def test_refresh_registered_helper_detects_change(
     infos = await mgr.get_mcp_tool_infos(server_id=cfg.server_id)
     names = {str(getattr(i, "name", "") or "") for i in (infos or [])}
     assert names == {"echo", "new_tool"}
+
+
+def _seed_mcp_server(
+    mgr: ResourceMgr,
+    *,
+    server_id: str,
+    server_name: str,
+    client: _FakeMcpClient,
+    cards: list[McpToolCard],
+    expiry_time: float | None = 60.0,
+) -> None:
+    from openjiuwen.core.foundation.tool import MCPTool
+    from openjiuwen.core.runner.resources_manager.tool_manager import McpServerResource
+
+    tool_mgr: ToolMgr = mgr._resource_registry.tool()  # noqa: SLF001
+    for card in cards:
+        card.id = ToolMgr.generate_mcp_tool_id(server_id, server_name, card.name)
+        tool_mgr._tools[card.id] = MCPTool(  # noqa: SLF001
+            mcp_client=client, tool_info=deepcopy(card)
+        )
+        mgr._id_to_card[card.id] = card  # noqa: SLF001
+    cfg = McpServerConfig(
+        server_id=server_id,
+        server_name=server_name,
+        server_path="http://127.0.0.1:19090/mcp",
+        client_type="streamable-http",
+    )
+    tool_mgr._mcp_server_resources[server_id] = McpServerResource(  # noqa: SLF001
+        config=cfg,
+        client=client,
+        tool_ids=[c.id for c in cards],
+        last_update_time=time.time(),
+        expiry_time=expiry_time,
+    )
+    tool_mgr._mcp_server_name_to_ids[server_name] = [server_id]  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_refresh_removes_deleted_tools_from_id_to_card(
+    patched_refresh: None,
+) -> None:
+    """Force refresh must drop removed tools from `_id_to_card` (including empty)."""
+    mgr = ResourceMgr()
+    cfg_id = "svc-mock-del"
+    cfg_name = "mock-del"
+    client = _FakeMcpClient(
+        [["echo", "ping", "new_tool"], ["echo", "ping"], []],
+        server_name=cfg_name,
+    )
+    cards1 = await client.list_tools()
+    _seed_mcp_server(
+        mgr,
+        server_id=cfg_id,
+        server_name=cfg_name,
+        client=client,
+        cards=cards1,
+    )
+    new_tool_id = ToolMgr.generate_mcp_tool_id(cfg_id, cfg_name, "new_tool")
+    assert new_tool_id in mgr._id_to_card  # noqa: SLF001
+
+    # Partial delete: new_tool gone, echo/ping remain.
+    await mgr.refresh_mcp_server(server_id=cfg_id, force=True)
+    names_partial = {
+        str(getattr(i, "name", "") or "")
+        for i in (await mgr.get_mcp_tool_infos(server_id=cfg_id) or [])
+    }
+    assert names_partial == {"echo", "ping"}
+    assert new_tool_id not in mgr._id_to_card  # noqa: SLF001
+
+    # Full delete: remote returns no tools — `_id_to_card` must clear orphans.
+    await mgr.refresh_mcp_server(server_id=cfg_id, force=True)
+    names_empty = [
+        i for i in (await mgr.get_mcp_tool_infos(server_id=cfg_id) or []) if i
+    ]
+    assert names_empty == []
+    leftover = [
+        tid
+        for tid in mgr._id_to_card  # noqa: SLF001
+        if str(tid).startswith(f"{cfg_id}.{cfg_name}.")
+    ]
+    assert leftover == []
+
+
+@pytest.mark.asyncio
+async def test_list_tools_failure_keeps_previous_tools(
+    patched_refresh: None,
+) -> None:
+    """list_tools error must not wipe the previous ToolMgr snapshot."""
+    mgr = ResourceMgr()
+    tool_mgr: ToolMgr = mgr._resource_registry.tool()  # noqa: SLF001
+    cfg_id = "svc-mock-fail"
+    cfg_name = "mock-fail"
+
+    class _FailingClient(_FakeMcpClient):
+        async def list_tools(self, *, timeout: float = -1):  # noqa: ARG002
+            if self._batches:
+                return await super().list_tools()
+            raise RuntimeError("remote mcp down")
+
+    client = _FailingClient([["echo", "ping"]], server_name=cfg_name)
+    cards1 = await client.list_tools()
+    _seed_mcp_server(
+        mgr,
+        server_id=cfg_id,
+        server_name=cfg_name,
+        client=client,
+        cards=cards1,
+    )
+    before_ids = set(tool_mgr.get_mcp_tool_ids(cfg_id) or [])
+    assert before_ids
+
+    with pytest.raises(RuntimeError, match="remote mcp down"):
+        await mgr.refresh_mcp_server(server_id=cfg_id, force=True)
+
+    after_ids = set(tool_mgr.get_mcp_tool_ids(cfg_id) or [])
+    assert after_ids == before_ids
+    names = {
+        str(getattr(i, "name", "") or "")
+        for i in (await mgr.get_mcp_tool_infos(server_id=cfg_id) or [])
+    }
+    assert names == {"echo", "ping"}

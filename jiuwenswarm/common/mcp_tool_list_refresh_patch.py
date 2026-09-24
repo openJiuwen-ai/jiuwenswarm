@@ -17,6 +17,7 @@ Idempotent via ``_PATCHED``.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from copy import deepcopy
 from typing import Any, Optional
@@ -36,21 +37,27 @@ def resolve_mcp_tool_list_ttl_s(config: dict[str, Any] | None = None) -> float:
     → default 60. ``0`` means "every user turn" (turn hook force-refreshes;
     ``add_mcp_server`` still gets no expiry because SDK rejects ``<= 0``).
     """
-    import os
-
     raw_env = str(os.environ.get("MCP_TOOL_LIST_TTL_S", "") or "").strip()
     if raw_env:
         try:
             return max(0.0, float(raw_env))
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.debug(
+                "[mcp-tool-refresh] ignore invalid MCP_TOOL_LIST_TTL_S=%r: %s",
+                raw_env,
+                exc,
+            )
     if isinstance(config, dict):
         mcp = config.get("mcp")
         if isinstance(mcp, dict) and "tool_list_ttl_s" in mcp:
             try:
                 return max(0.0, float(mcp.get("tool_list_ttl_s")))
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError) as exc:
+                logger.debug(
+                    "[mcp-tool-refresh] ignore invalid mcp.tool_list_ttl_s=%r: %s",
+                    mcp.get("tool_list_ttl_s"),
+                    exc,
+                )
     return DEFAULT_MCP_TOOL_LIST_TTL_S
 
 
@@ -62,17 +69,23 @@ def _sync_id_to_card(
     tag: Any = None,
 ) -> None:
     """Replace ResourceMgr tool cards for one MCP server after list_tools."""
-    id_to_card = getattr(resource_mgr, "_id_to_card", None)
+    id_to_card_attr = "_id_to_card"
+    id_to_card = getattr(resource_mgr, id_to_card_attr, None)
     if not isinstance(id_to_card, dict):
         return
-    tag_mgr = getattr(resource_mgr, "_tag_mgr", None)
+    tag_mgr_attr = "_tag_mgr"
+    tag_mgr = getattr(resource_mgr, tag_mgr_attr, None)
     for tool_id in old_tool_ids or []:
         id_to_card.pop(tool_id, None)
         if tag_mgr is not None:
             try:
                 tag_mgr.remove_resource(tool_id)
-            except Exception:  # noqa: BLE001 — best-effort cleanup
-                pass
+            except Exception as exc:  # noqa: BLE001 — best-effort tag cleanup
+                logger.debug(
+                    "[mcp-tool-refresh] tag_mgr.remove_resource failed id=%s: %s",
+                    tool_id,
+                    exc,
+                )
     for card in new_cards or []:
         card_id = getattr(card, "id", None)
         if not card_id:
@@ -81,8 +94,12 @@ def _sync_id_to_card(
         if tag_mgr is not None and tag is not None:
             try:
                 tag_mgr.tag_resource(card_id, tag)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001 — best-effort tag attach
+                logger.debug(
+                    "[mcp-tool-refresh] tag_mgr.tag_resource failed id=%s: %s",
+                    card_id,
+                    exc,
+                )
 
 
 def apply_mcp_tool_list_refresh_patch() -> None:
@@ -93,6 +110,7 @@ def apply_mcp_tool_list_refresh_patch() -> None:
     _PATCHED = True
 
     from openjiuwen.core.common.exception.codes import StatusCode
+    from openjiuwen.core.common.exception.errors import build_error
     from openjiuwen.core.common.logging import LogEventType
     from openjiuwen.core.common.logging import runner_logger as oj_logger
     from openjiuwen.core.foundation.tool import MCPTool
@@ -108,15 +126,18 @@ def apply_mcp_tool_list_refresh_patch() -> None:
         ToolMgr,
     )
 
-    # ---- ToolMgr: remove old tools before re-adding --------------------------
-    _orig_inner = ToolMgr._inner_refresh_mcp_tools
+    # ---- ToolMgr: list_tools first, then replace local tools -----------------
+    _orig_inner = ToolMgr._inner_refresh_mcp_tools  # noqa: SLF001 — monkeypatch target
 
     async def _inner_refresh_mcp_tools_safe(self, client, server_config, expiry_time):
+        # List remote tools *before* removing locals so a failed list_tools
+        # leaves the previous snapshot intact.
         existing = self._mcp_server_resources.get(server_config.server_id)
-        if existing is not None and existing.tool_ids:
-            self._inner_remove_mcp_tools(existing.tool_ids)
+        old_ids = list(existing.tool_ids) if existing is not None and existing.tool_ids else []
         mcp_cards = await client.list_tools()
         mcp_cards = mcp_cards if mcp_cards else []
+        if old_ids:
+            self._inner_remove_mcp_tools(old_ids)
         for card in mcp_cards:
             card.id = self.generate_mcp_tool_id(
                 server_config.server_id, server_config.server_name, card.name
@@ -133,9 +154,38 @@ def apply_mcp_tool_list_refresh_patch() -> None:
         )
         return mcp_cards
 
-    # Keep a reference so tests can call the original if needed.
     setattr(ToolMgr, "_inner_refresh_mcp_tools_unpatched", _orig_inner)
     setattr(ToolMgr, "_inner_refresh_mcp_tools", _inner_refresh_mcp_tools_safe)
+
+    # ---- ToolMgr.refresh_tool_server: None = skipped (not empty refresh) -----
+    async def _refresh_tool_server_safe(
+        self,
+        server_id: str,
+        skip_not_exist: bool = False,
+        force: bool = False,
+    ):
+        """Like stock, but return None when TTL says skip (vs [] after empty list)."""
+        mcp_resource = self._mcp_server_resources.get(server_id)
+        if not mcp_resource:
+            if not skip_not_exist:
+                raise build_error(
+                    StatusCode.RESOURCE_MCP_SERVER_REFRESH_ERROR,
+                    server_id=server_id,
+                    reason="server is not exist",
+                )
+            return None
+        need_refresh = force
+        if not force:
+            expiry = mcp_resource.expiry_time
+            if expiry and time.time() - mcp_resource.last_update_time >= expiry:
+                need_refresh = True
+        if not need_refresh:
+            return None
+        return await self._inner_refresh_mcp_tools(
+            mcp_resource.client, mcp_resource.config, mcp_resource.expiry_time
+        )
+
+    setattr(ToolMgr, "refresh_tool_server", _refresh_tool_server_safe)
 
     # ---- ResourceMgr.refresh_mcp_server: real implementation -----------------
     async def _refresh_mcp_server(
@@ -165,11 +215,13 @@ def apply_mcp_tool_list_refresh_patch() -> None:
                 cards = await tool_mgr.refresh_tool_server(
                     mcp_server_id, skip_not_exist=True, force=force
                 )
-                if cards:
+                # None → TTL skip (leave _id_to_card alone).
+                # list (possibly empty) → refresh ran; always rewrite cards.
+                if cards is not None:
                     _sync_id_to_card(
                         self,
                         old_tool_ids=old_ids,
-                        new_cards=cards,
+                        new_cards=list(cards),
                         tag=tag if tag else GLOBAL,
                     )
                     oj_logger.info(
@@ -220,11 +272,11 @@ def apply_mcp_tool_list_refresh_patch() -> None:
                 cards = await tool_mgr.refresh_tool_server(
                     mcp_server_id, skip_not_exist=True, force=False
                 )
-                if cards:
+                if cards is not None:
                     _sync_id_to_card(
                         self,
                         old_tool_ids=old_ids,
-                        new_cards=cards,
+                        new_cards=list(cards),
                         tag=kwargs.get("tag") or GLOBAL,
                     )
             except Exception as exc:  # noqa: BLE001
@@ -252,7 +304,6 @@ def apply_mcp_tool_list_refresh_patch() -> None:
                     results.append(tool_card.tool_info())
         return results
 
-    # Prefer keeping original for teardown/tests; override method.
     setattr(ResourceMgr, "get_mcp_tool_infos_unpatched", _orig_get_infos)
     setattr(ResourceMgr, "get_mcp_tool_infos", _get_mcp_tool_infos)
 
@@ -275,12 +326,14 @@ async def refresh_registered_mcp_tool_lists(
     if not server_ids:
         return False
 
-    tool_mgr = Runner.resource_mgr._resource_registry.tool()  # noqa: SLF001
+    registry_attr = "_resource_registry"
+    resources_attr = "_mcp_server_resources"
+    tool_mgr = getattr(Runner.resource_mgr, registry_attr).tool()
     changed = False
     now = time.time()
     # force=None → auto: always when ttl_s==0, else only when stale
     for server_id in server_ids:
-        resource = tool_mgr._mcp_server_resources.get(server_id)  # noqa: SLF001
+        resource = getattr(tool_mgr, resources_attr).get(server_id)
         if resource is None:
             continue
         do_force = True if force is True else False if force is False else (ttl_s <= 0)
@@ -303,11 +356,11 @@ async def refresh_registered_mcp_tool_lists(
             cards = await tool_mgr.refresh_tool_server(
                 server_id, skip_not_exist=True, force=True
             )
-            if cards:
+            if cards is not None:
                 _sync_id_to_card(
                     Runner.resource_mgr,
                     old_tool_ids=list(old_ids),
-                    new_cards=cards,
+                    new_cards=list(cards),
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
