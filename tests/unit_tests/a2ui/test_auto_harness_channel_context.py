@@ -47,6 +47,9 @@ async def test_auto_harness_syncs_tui_channel_before_service(monkeypatch):
     adapter._auto_harness_service = _FakeAutoHarnessService()
     adapter._stream_event_rail = None
     adapter._deepresearch_rewrite_tx_uncertain = False
+    # process_message_stream_impl refreshes enterprise MCP lists before mode
+    # routing; __new__ skips __init__, so seed the set used by that hook.
+    adapter._registered_mcp_server_ids = set()
 
     captured = {}
 

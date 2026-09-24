@@ -4396,11 +4396,12 @@ class JiuWenSwarmDeepAdapter:
         Enterprise templates register tools once at add_mcp_server. Without this
         hook, mid-session tool additions on the MCP server stay invisible.
         """
-        if not self._registered_mcp_server_ids:
+        registered_ids = getattr(self, "_registered_mcp_server_ids", None)
+        if not registered_ids:
             return
         try:
             changed = await refresh_registered_mcp_tool_lists(
-                server_ids=sorted(self._registered_mcp_server_ids),
+                server_ids=sorted(registered_ids),
                 ttl_s=self._mcp_tool_list_ttl_s(),
             )
         except Exception as exc:  # noqa: BLE001 — never block the user turn

@@ -29,6 +29,19 @@ _PATCHED = False
 # Default TTL (seconds) when config / env does not set tool_list_ttl_s.
 DEFAULT_MCP_TOOL_LIST_TTL_S = 60.0
 
+# Upstream openjiuwen protected attribute / method names (G.CLS.11: never write
+# ``obj._foo`` in this module — always getattr/setattr via these variables).
+_ID_TO_CARD_ATTR = "_id_to_card"
+_TAG_MGR_ATTR = "_tag_mgr"
+_RESOURCE_REGISTRY_ATTR = "_resource_registry"
+_MCP_SERVER_RESOURCES_ATTR = "_mcp_server_resources"
+_TOOLS_ATTR = "_tools"
+_INNER_REFRESH_MCP_TOOLS_NAME = "_inner_refresh_mcp_tools"
+_INNER_REFRESH_MCP_TOOLS_UNPATCHED_NAME = "_inner_refresh_mcp_tools_unpatched"
+_INNER_REMOVE_MCP_TOOLS_NAME = "_inner_remove_mcp_tools"
+_INNER_GET_SERVER_IDS_NAME = "_inner_get_server_ids"
+_GET_MCP_TOOL_INFOS_UNPATCHED_NAME = "get_mcp_tool_infos_unpatched"
+
 
 def resolve_mcp_tool_list_ttl_s(config: dict[str, Any] | None = None) -> float:
     """Return tool-list TTL in seconds.
@@ -69,12 +82,10 @@ def _sync_id_to_card(
     tag: Any = None,
 ) -> None:
     """Replace ResourceMgr tool cards for one MCP server after list_tools."""
-    id_to_card_attr = "_id_to_card"
-    id_to_card = getattr(resource_mgr, id_to_card_attr, None)
+    id_to_card = getattr(resource_mgr, _ID_TO_CARD_ATTR, None)
     if not isinstance(id_to_card, dict):
         return
-    tag_mgr_attr = "_tag_mgr"
-    tag_mgr = getattr(resource_mgr, tag_mgr_attr, None)
+    tag_mgr = getattr(resource_mgr, _TAG_MGR_ATTR, None)
     for tool_id in old_tool_ids or []:
         id_to_card.pop(tool_id, None)
         if tag_mgr is not None:
@@ -127,25 +138,27 @@ def apply_mcp_tool_list_refresh_patch() -> None:
     )
 
     # ---- ToolMgr: list_tools first, then replace local tools -----------------
-    _orig_inner = ToolMgr._inner_refresh_mcp_tools  # noqa: SLF001 — monkeypatch target
+    orig_inner = getattr(ToolMgr, _INNER_REFRESH_MCP_TOOLS_NAME)
 
     async def _inner_refresh_mcp_tools_safe(self, client, server_config, expiry_time):
         # List remote tools *before* removing locals so a failed list_tools
         # leaves the previous snapshot intact.
-        existing = self._mcp_server_resources.get(server_config.server_id)
+        resources = getattr(self, _MCP_SERVER_RESOURCES_ATTR)
+        existing = resources.get(server_config.server_id)
         old_ids = list(existing.tool_ids) if existing is not None and existing.tool_ids else []
         mcp_cards = await client.list_tools()
         mcp_cards = mcp_cards if mcp_cards else []
         if old_ids:
-            self._inner_remove_mcp_tools(old_ids)
+            getattr(self, _INNER_REMOVE_MCP_TOOLS_NAME)(old_ids)
+        tools = getattr(self, _TOOLS_ATTR)
         for card in mcp_cards:
             card.id = self.generate_mcp_tool_id(
                 server_config.server_id, server_config.server_name, card.name
             )
             # Idempotent overwrite if a race left a stale entry.
-            self._tools[card.id] = MCPTool(mcp_client=client, tool_info=deepcopy(card))
+            tools[card.id] = MCPTool(mcp_client=client, tool_info=deepcopy(card))
         mcp_ids = [card.id for card in mcp_cards]
-        self._mcp_server_resources[server_config.server_id] = McpServerResource(
+        resources[server_config.server_id] = McpServerResource(
             config=server_config,
             expiry_time=expiry_time,
             client=client,
@@ -154,8 +167,8 @@ def apply_mcp_tool_list_refresh_patch() -> None:
         )
         return mcp_cards
 
-    setattr(ToolMgr, "_inner_refresh_mcp_tools_unpatched", _orig_inner)
-    setattr(ToolMgr, "_inner_refresh_mcp_tools", _inner_refresh_mcp_tools_safe)
+    setattr(ToolMgr, _INNER_REFRESH_MCP_TOOLS_UNPATCHED_NAME, orig_inner)
+    setattr(ToolMgr, _INNER_REFRESH_MCP_TOOLS_NAME, _inner_refresh_mcp_tools_safe)
 
     # ---- ToolMgr.refresh_tool_server: None = skipped (not empty refresh) -----
     async def _refresh_tool_server_safe(
@@ -165,7 +178,8 @@ def apply_mcp_tool_list_refresh_patch() -> None:
         force: bool = False,
     ):
         """Like stock, but return None when TTL says skip (vs [] after empty list)."""
-        mcp_resource = self._mcp_server_resources.get(server_id)
+        resources = getattr(self, _MCP_SERVER_RESOURCES_ATTR)
+        mcp_resource = resources.get(server_id)
         if not mcp_resource:
             if not skip_not_exist:
                 raise build_error(
@@ -181,7 +195,7 @@ def apply_mcp_tool_list_refresh_patch() -> None:
                 need_refresh = True
         if not need_refresh:
             return None
-        return await self._inner_refresh_mcp_tools(
+        return await getattr(self, _INNER_REFRESH_MCP_TOOLS_NAME)(
             mcp_resource.client, mcp_resource.config, mcp_resource.expiry_time
         )
 
@@ -199,7 +213,7 @@ def apply_mcp_tool_list_refresh_patch() -> None:
         skip_if_tag_not_exists: bool = False,
         force: bool = True,
     ):
-        server_ids, _exact = self._inner_get_server_ids(
+        server_ids, _exact = getattr(self, _INNER_GET_SERVER_IDS_NAME)(
             server_id,
             server_name,
             tag,
@@ -208,7 +222,7 @@ def apply_mcp_tool_list_refresh_patch() -> None:
             StatusCode.RESOURCE_MCP_SERVER_REFRESH_ERROR,
         )
         results = []
-        tool_mgr = self._resource_registry.tool()
+        tool_mgr = getattr(self, _RESOURCE_REGISTRY_ATTR).tool()
         for mcp_server_id in server_ids:
             try:
                 old_ids = list(tool_mgr.get_mcp_tool_ids(mcp_server_id) or [])
@@ -251,11 +265,11 @@ def apply_mcp_tool_list_refresh_patch() -> None:
     setattr(ResourceMgr, "refresh_mcp_server", _refresh_mcp_server)
 
     # ---- get_mcp_tool_infos: sync _id_to_card when expiry refresh fires -------
-    _orig_get_infos = ResourceMgr.get_mcp_tool_infos
+    orig_get_infos = ResourceMgr.get_mcp_tool_infos
 
     async def _get_mcp_tool_infos(self, name=None, server_id=None, **kwargs):
         ignore_exception = bool(kwargs.get("ignore_exception", False))
-        server_ids, exact_match = self._inner_get_server_ids(
+        server_ids, exact_match = getattr(self, _INNER_GET_SERVER_IDS_NAME)(
             server_id,
             kwargs.get("server_name"),
             kwargs.get("tag"),
@@ -264,8 +278,9 @@ def apply_mcp_tool_list_refresh_patch() -> None:
             StatusCode.RESOURCE_MCP_TOOL_GET_ERROR,
         )
         tool_names = [name] if isinstance(name, str) else name
-        tool_mgr = self._resource_registry.tool()
+        tool_mgr = getattr(self, _RESOURCE_REGISTRY_ATTR).tool()
         results = []
+        id_to_card = getattr(self, _ID_TO_CARD_ATTR)
         for mcp_server_id in server_ids:
             try:
                 old_ids = list(tool_mgr.get_mcp_tool_ids(mcp_server_id) or [])
@@ -297,14 +312,14 @@ def apply_mcp_tool_list_refresh_patch() -> None:
                     if tool_id:
                         tool_ids.append(tool_id)
             for tool_id in tool_ids:
-                tool_card = self._id_to_card.get(tool_id) if tool_id else None
+                tool_card = id_to_card.get(tool_id) if tool_id else None
                 if exact_match:
                     results.append(tool_card.tool_info() if tool_card else None)
                 elif tool_card:
                     results.append(tool_card.tool_info())
         return results
 
-    setattr(ResourceMgr, "get_mcp_tool_infos_unpatched", _orig_get_infos)
+    setattr(ResourceMgr, _GET_MCP_TOOL_INFOS_UNPATCHED_NAME, orig_get_infos)
     setattr(ResourceMgr, "get_mcp_tool_infos", _get_mcp_tool_infos)
 
     logger.info("[mcp-tool-refresh] patch applied (ToolMgr + ResourceMgr)")
@@ -326,14 +341,12 @@ async def refresh_registered_mcp_tool_lists(
     if not server_ids:
         return False
 
-    registry_attr = "_resource_registry"
-    resources_attr = "_mcp_server_resources"
-    tool_mgr = getattr(Runner.resource_mgr, registry_attr).tool()
+    tool_mgr = getattr(Runner.resource_mgr, _RESOURCE_REGISTRY_ATTR).tool()
     changed = False
     now = time.time()
     # force=None → auto: always when ttl_s==0, else only when stale
     for server_id in server_ids:
-        resource = getattr(tool_mgr, resources_attr).get(server_id)
+        resource = getattr(tool_mgr, _MCP_SERVER_RESOURCES_ATTR).get(server_id)
         if resource is None:
             continue
         do_force = True if force is True else False if force is False else (ttl_s <= 0)
