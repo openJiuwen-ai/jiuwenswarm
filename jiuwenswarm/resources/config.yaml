@@ -512,6 +512,25 @@ trajectory_ui:
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
 
 # ============================================================
+# Trace 问题自动分析定位（Diagnosis）配置
+# ============================================================
+# 用户在 Web 上一键触发自动分析定位，产出结构化诊断报告（根因假设/可疑环节/
+# 代码定位/建议下一步）。证据主来自 trajectory store（raw_json），日志为辅。
+# 编排放 Gateway 进程，独立于会话 agent 配额。
+# 依赖：enabled=true 隐含 trajectory_ui.enabled=true（证据主来源）；
+#       建议同时调大 agent_observability.attribute_value_max_length（10240→51200），
+#       否则超长 prompt/工具结果在 span 采集端就被截断，诊断时看不全。
+# 报告/证据包落在 ~/.jiuwenswarm/.trace/diagnosis/<session>/，随 keep_evidence_days 清理。
+# ============================================================
+diagnosis:
+  enabled: false                    # 一键分析总开关
+  include_logs: true                # 是否纳入日志辅助证据（ERROR/Traceback 行）
+  history_summary_records: 20       # 被诊断会话 history 尾部摘要条数（辅助证据）
+  keep_evidence_days: 7             # 证据包/报告保留天数
+  allow_log_upload: true            # 是否允许上传日志文件（G5）
+  max_upload_log_mb: 50             # 单个上传日志文件大小上限（G5）
+
+# ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置
 # ============================================================
 # 控制非 team 模式（agent.* / code.*）的人类可读本地 dump。

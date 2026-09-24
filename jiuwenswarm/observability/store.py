@@ -1166,6 +1166,7 @@ class AsyncTrajectoryReader:
                        records.schema_version,
                        records.source,
                        records.created_at,
+                       records.has_error,
                        records.raw_json,
                        records.raw_sha256,
                        records.update_kind
@@ -2170,6 +2171,7 @@ def _archive_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
         "raw_json_base64": base64.b64encode(raw_json).decode("ascii"),
         "otlp": otlp,
         "raw_valid": otlp is not None,
+        "has_error": bool(row["has_error"]),
     }
 
 

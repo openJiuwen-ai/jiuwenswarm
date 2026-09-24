@@ -50,7 +50,8 @@
     "logs": "日志",
     "update": "更新",
     "a2aIngress": "A2A 调度中心",
-    "personalContext": "个人\n上下文"
+    "personalContext": "个人\n上下文",
+    "diagnosis": "一键定位"
   },
   "team": {
     "members": "团队成员",
@@ -1266,6 +1267,7 @@
       "permissions": { "label": "工具安全护栏", "hint": "控制工具调用时的权限检查" },
       "a2ui": { "label": "A2UI", "hint": "开启或关闭生成式界面渲染与 A2UI 运行时提示词" },
       "trajectoryUi": { "label": "轨迹界面", "hint": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路" },
+      "diagnosis": { "label": "轨迹诊断", "hint": "开启后可在「一键定位」对会话进行自动问题分析；在线诊断依赖轨迹界面已开启，离线模式仅需上传/导入日志" },
       "swarmflow": { "label": "SwarmFlow", "hint": "控制 Team 模式是否启用 SwarmFlow 流程视图与监控" },
       "symphony": { "label": "技能交响乐", "hint": "控制技能交响乐" },
       "skillRetrieval": { "label": "技能交响乐", "hint": "控制技能交响乐" },

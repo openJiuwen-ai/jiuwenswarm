@@ -1163,6 +1163,15 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_diagnosis_in_config(enabled: bool) -> None:
+    """Update the trace auto-diagnosis feature switch and persist config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "diagnosis" not in data or data["diagnosis"] is None:
+        data["diagnosis"] = {}
+    data["diagnosis"]["enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_updater_in_config(updates: dict[str, Any]) -> None:
     """只更新 updater 段并写回。"""
     data = load_yaml_round_trip(_current_config_yaml_path())

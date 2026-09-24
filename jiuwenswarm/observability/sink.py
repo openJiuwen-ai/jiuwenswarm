@@ -181,11 +181,14 @@ class TrajectoryRecordSink:
         self._increment("accepted")
 
     def consume_snapshot(self, record: OtlpSpanSnapshotRecordLike) -> None:
-        """Accept a live snapshot using identity-keyed latest-wins coalescing."""
-        if not isinstance(getattr(record, "raw_json", None), bytes):
-            self._increment("failed")
-            logger.warning("Trajectory snapshot rejected before queueing: raw_json must be bytes")
-            return
+        """Accept a live snapshot using identity-keyed latest-wins coalescing.
+
+        ``raw_json`` is deliberately not read here. A deferred snapshot carries
+        its span state and encodes itself on first access, while most snapshots
+        are replaced by a newer revision before the writer drains them. The
+        batch writer validates and materialises the bytes, so a superseded
+        snapshot is never encoded at all.
+        """
         if not _record_owner_is_consistent(record):
             self._increment("failed")
             return
@@ -641,6 +644,17 @@ class TrajectorySessionSinkRouter:
         """Accept a provisional Core snapshot using one constant-cost enqueue."""
         self._consume(record, snapshot=True)
 
+    def consume_snapshot_source(self, record: OtlpSpanSnapshotRecordLike) -> None:
+        """Accept a deferred snapshot whose bytes the writer thread encodes.
+
+        Agent Core publishes live snapshots from the streaming model callback,
+        i.e. on the event loop, while this router drops every snapshot a newer
+        revision supersedes. Enqueueing the source therefore lets the writer
+        thread encode only the snapshots that actually reach storage, keeping
+        OTLP serialisation off the event loop.
+        """
+        self._consume(record, snapshot=True, deferred=True)
+
     def close(self, *, timeout: float = 15.0) -> bool:
         """Stop accepting and drain the router and every session writer."""
         deadline = time.monotonic() + max(0.1, float(timeout))
@@ -754,6 +768,7 @@ class TrajectorySessionSinkRouter:
         record: OtlpSpanRecordLike | OtlpSpanSnapshotRecordLike,
         *,
         snapshot: bool,
+        deferred: bool = False,
     ) -> None:
         raw_session_id = str(getattr(record, "session_id", "") or "")
         session_id = raw_session_id.strip()
@@ -762,11 +777,26 @@ class TrajectorySessionSinkRouter:
         malformed_identity = (
             (session_id and session_id != raw_session_id) or not trace_id or not span_id
         )
-        if malformed_identity or not isinstance(getattr(record, "raw_json", None), bytes):
+        # A deferred snapshot carries span state instead of encoded bytes, so
+        # reading raw_json here would pull the OTLP encoding back onto the
+        # publishing (event-loop) thread. The session writer validates and
+        # materialises the bytes on its own thread, and only for the snapshots
+        # that survive latest-wins coalescing.
+        if malformed_identity or (
+            not (deferred and snapshot)
+            and not isinstance(getattr(record, "raw_json", None), bytes)
+        ):
             self._increment("failed")
             return
         if not _record_owner_is_consistent(record):
             self._increment("failed")
+            return
+        # 诊断 Agent 自身的 span 不落库：诊断行为若进 trace store 会污染
+        # 后续诊断的分析对象（自引用）。与 tombstone 同口径 drop。
+        if session_id.startswith("diagnosis_"):
+            self._increment("dropped")
+            if not snapshot:
+                self._increment("dropped_final")
             return
         if session_id and not trajectory_session_accepts_records(session_id):
             self._increment("dropped")
