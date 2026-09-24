@@ -3859,19 +3859,6 @@
     }
   },
   "auth": {
-    "title": "Sign in to JiuwenSwarm",
-    "subtitle": "Enter your account and password to continue",
-    "username": "Account",
-    "usernamePlaceholder": "Enter account",
-    "password": "Password",
-    "passwordPlaceholder": "Enter password",
-    "login": "Sign in",
-    "loggingIn": "Signing in…",
-    "invalidCredentials": "Invalid account or password",
-    "loginFailed": "Sign-in failed, please retry later",
-    "authRequired": "Sign-in required to access",
-    "secureHint": "You'll stay signed in after login",
-    "logout": "Sign out",
     "huawei": {
       "title": "Sign in with HUAWEI ID",
       "subtitle": "Sign in to use the models your account provides — no API key needed.",
