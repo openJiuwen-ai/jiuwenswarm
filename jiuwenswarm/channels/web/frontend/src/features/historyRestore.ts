@@ -4,6 +4,7 @@ import { normalizeFinalContent } from '../utils/finalContent';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { extractAutomation } from '../utils/heartbeatAutomation';
+import { proactiveAssistantMessageId } from '../utils/proactiveRecommendation';
 import {
   crossSessionAssistantMessageId,
   crossSessionUserMessageId,
@@ -1171,7 +1172,9 @@ function parseHistoryTimelineEntry(
       extractCrossSessionMessage(payload) ?? extractCrossSessionMessage(record);
     const id = assistantCrossSession
       ? crossSessionAssistantMessageId(record.request_id, assistantCrossSession.messageId)
-      : restoredId;
+      : isProactiveRecommendation && histProactiveRecId
+        ? proactiveAssistantMessageId(histProactiveRecId)
+        : restoredId;
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const completedAt =
       (typeof record.completed_at === 'number' || typeof record.completed_at === 'string'

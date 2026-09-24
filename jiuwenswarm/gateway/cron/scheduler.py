@@ -1388,6 +1388,7 @@ class CronSchedulerService:
             state.status = "running"
             state.started_at = self._now_fn()
             ok = False
+            is_cancelled_ghost = False
             mode = state.exec_mode or CRON_JOB_DEFAULT_MODE
             channel_id = ""
             exec_session_id = ""
@@ -1505,23 +1506,34 @@ class CronSchedulerService:
             except asyncio.CancelledError:
                 state.status = "failed"
                 state.error = "cancelled"
+                is_cancelled_ghost = True
                 # Ghost task: cancelled by reload because job no longer in store.
                 # Do NOT schedule push_update — the user has removed this job and
                 # should not see any result from it. Raising CancelledError here
-                # so the finally block can detect it via state.error == "cancelled"
-                # and skip push_update scheduling.
+                # so the finally block can skip push_update scheduling.
                 raise
             except Exception as exc:  # noqa: BLE001
                 state.status = "failed"
-                state.error = str(exc)
+                state.error = str(exc).strip() or type(exc).__name__
+                logger.warning(
+                    "[Cron] agent run failed job=%s run_id=%s error_type=%s error=%s",
+                    job.id,
+                    run_id,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
             finally:
                 state.finished_at = self._now_fn()
-                is_cancelled_ghost = state.error == "cancelled"
-                should_deliver_result = bool(state.result_text) and not is_cancelled_ghost
                 # Ensure failed runs also produce result_text so push logic can deliver it.
                 # But for cancelled ghost tasks, skip — no result should be pushed for
                 # a job the user has removed.
-                if not state.result_text and state.error and not is_cancelled_ghost:
+                if (
+                    state.status == "failed"
+                    and not state.result_text
+                    and not is_cancelled_ghost
+                ):
+                    state.error = str(state.error or "").strip() or "未知错误"
                     state.result_text = f"[cron] 任务执行失败: {state.error}"
                 if state.result_text and not ok and not is_cancelled_ghost:
                     await self._append_failure_history_on_agentserver(

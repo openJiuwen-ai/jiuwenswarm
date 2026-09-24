@@ -99,6 +99,7 @@ export interface VideoSessionConfig {
   model: string;
   voice?: string;
   tools?: Array<Record<string, unknown>>;
+  preferred_language?: 'zh' | 'en';
 }
 
 export interface JoyAIFrameResult extends AgentAction {

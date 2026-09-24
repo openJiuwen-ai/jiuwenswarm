@@ -22,11 +22,18 @@ const QWEN_SESSION_INSTRUCTIONS = [
   QWEN_OMNI_TOOL_INSTRUCTIONS,
 ].join('\n');
 
+function responseLanguageInstruction(language: 'zh' | 'en'): string {
+  return language === 'en'
+    ? 'Jiuwen preferred response language is English. Answer and speak in natural English unless the user explicitly asks for Chinese.'
+    : '九问首选回应语言是简体中文。请使用自然、简体中文回答和播报，除非用户明确要求英语。';
+}
+
 export interface QwenOmniSessionOptions {
   voice?: string;
   tools?: Array<Record<string, unknown>>;
   inputRate: number;
   outputRate: number;
+  preferredLanguage?: 'zh' | 'en';
 }
 
 export interface QwenOmniMediaBatch {
@@ -46,7 +53,7 @@ export function createQwenOmniSessionUpdate(options: QwenOmniSessionOptions): Re
     session: {
       modalities: ['audio', 'text'],
       voice: options.voice || 'Ethan',
-      instructions: QWEN_SESSION_INSTRUCTIONS,
+      instructions: QWEN_SESSION_INSTRUCTIONS + '\n' + responseLanguageInstruction(options.preferredLanguage || 'zh'),
       audio: {
         input: { format: { type: 'pcm', sample_rate: options.inputRate } },
         output: { format: { type: 'pcm', sample_rate: options.outputRate } },

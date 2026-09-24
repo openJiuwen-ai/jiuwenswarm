@@ -68,6 +68,11 @@ export interface BatchSessionResultEntry {
   /** 失败项的可读错误信息。 */
   error?: string;
   stop_pending?: boolean;
+  /**
+   * SESSION_BUSY 的细分：swarm flow 已结束、Team 回合仍在收尾（leader 汇报
+   * 中），会话会自行结束——提示稍后重试，而不是让用户先手动停止。
+   */
+  finishing?: boolean;
   warnings?: ArchiveWarning[];
 }
 
@@ -87,6 +92,23 @@ export function getArchiveErrorCode(error: unknown): string | null {
   if (!error || typeof error !== 'object' || !('code' in error)) return null;
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' && code ? code : null;
+}
+
+/**
+ * SESSION_BUSY 的收尾细分标记。兼容两种错误形态：workspaceStore 归档把
+ * 批量结果项的 finishing 挂到 Error 上；直接走 webRequest 的入口（删除）
+ * 由 WebError.payload 透传服务端平铺的 details。
+ */
+export function getArchiveErrorFinishing(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  if ('finishing' in error) {
+    return (error as { finishing?: unknown }).finishing === true;
+  }
+  const payload = (error as { payload?: unknown }).payload;
+  if (payload && typeof payload === 'object' && 'finishing' in payload) {
+    return (payload as { finishing?: unknown }).finishing === true;
+  }
+  return false;
 }
 
 /** 批量会话恢复/归档响应中取单个会话的结果；信封 ok 不代表该会话成功。 */

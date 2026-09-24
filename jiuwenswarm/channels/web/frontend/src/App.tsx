@@ -60,8 +60,6 @@ import {
 } from './features/historyPagination';
 import { isPlanWireMode, resolvePlanWireMode } from './features/planMode/wireMode';
 import { queueOrAddGoalObjectiveMessage } from './features/goalPendingObjectiveBubble';
-import { LoginPage } from './features/auth/LoginPage';
-import { LogoutButton } from './features/auth/LogoutButton';
 import {
   normalizeToolCallPayload,
   normalizeToolResultPayload,
@@ -70,7 +68,7 @@ import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webRequest } from './services/webClient';
-import { getArchiveErrorCode } from './features/workspace/archivedTaskClient';
+import { getArchiveErrorCode, getArchiveErrorFinishing } from './features/workspace/archivedTaskClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
@@ -2575,7 +2573,7 @@ function AppContent({
       currentMode: currentRuntime?.mode ?? mode,
       pending: newConversationPreviousSessionRef.current,
       newConversationId: NEW_CONVERSATION_ID,
-      clear: lifecycle.clearPreviousSession,
+      clear: lifecycle.clearPreviousSession || options.clearPreviousSession,
     });
     // 返回尚未发送的新建任务时，恢复该临时会话自己的模式和模型；真正开始一个新任务时，
     // 仍固定使用配置的默认模型，不继承当前正式会话手动切换过的模型。
@@ -2648,9 +2646,10 @@ function AppContent({
     setCurrentSession(null);
     setTeamAreaExpanded(false);
     setSingleAgentPanelExpanded(false);
+    // 删除/归档当前会话后 replace，避免后退回到已失效的 /chat/session/:id
     navigate(
       { kind: 'chat-new' },
-      options.replaceHistory ? { replace: true } : undefined,
+      (lifecycle.clearPreviousSession || options.clearPreviousSession) ? { replace: true } : undefined,
     );
     setActiveNav('chat');
     requestComposerFocus();
@@ -3484,7 +3483,9 @@ function AppContent({
     } catch (error) {
       console.error('Failed to close side conversation:', error);
       window.alert(t(getArchiveErrorCode(error) === 'SESSION_BUSY'
-        ? 'multiSession.project.errors.deleteSessionBusy'
+        ? (getArchiveErrorFinishing(error)
+          ? 'multiSession.project.errors.deleteSessionFinishing'
+          : 'multiSession.project.errors.deleteSessionBusy')
         : 'multiSession.errors.delete'));
     }
   }, [deleteSideConversation, t]);
@@ -3500,7 +3501,10 @@ function AppContent({
   }, [deleteSideConversation, sessionId]);
 
   const requestSessionNavigation = useCallback((target: Session | 'new', options?: NewConversationOptions) => {
-    if (target === 'new') { enterNewConversation(mode, options); return; }
+    if (target === 'new') {
+      enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
+      return;
+    }
     if (isToolPanelAutoHideViewport) {
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
@@ -4064,10 +4068,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-page-body">
             <div className="page-content">
               <ConnectorMarketPanel
-                applicationPlugins={applicationPlugins}
-                applicationPluginsLoading={applicationPluginState.loading}
-                applicationPluginsError={applicationPluginState.error}
-                onRefreshApplicationPlugins={applicationPluginState.refresh}
                 onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
                   detail: {
                     skillName: 'plugin-creator',
@@ -4244,98 +4244,9 @@ function App({
         settingsPageDefinition={settingsPageDefinition}
         resolveSettingsRequest={resolveSettingsRequest}
       />
+      <AssetPublishHost />
     </ErrorBoundary>
   );
 }
 
-/**
- * 鉴权外壳: 进入前探测 cookie 是否携带有效 access_token + 是否一体机模式。
- * - GET /api/web-config: 本地端点, 拿 {remote: bool, iam_enabled: bool}
- *   - iam_enabled=false: 未配置 IAM, 无鉴权, 直接渲染主 App
- *   - iam_enabled=true: 配置了 IAM, 继续探测登录态
- * - GET /auth-api/v1/auth/permissions (同源, 浏览器自动带 HttpOnly cookie)
- *   - 200 -> 已登录, 渲染主 App (+ 一体机模式时浮 LogoutButton)
- *   - 401/其他 -> 未登录, 渲染 LoginPage
- * control-panel 只认 Authorization: Bearer, app_web.py 的 _proxy_auth_http
- * 会从 jw_token cookie 取 token 注入头, 故前端只需同源请求。
- */
-function AppWithAuth({
-  settingsPageDefinition,
-  resolveSettingsRequest,
-}: {
-  settingsPageDefinition: SettingsPageDefinition;
-  resolveSettingsRequest: (openSourceRequest: SettingsRequest) => SettingsRequest;
-}) {
-  const [authStatus, setAuthStatus] = useState<'checking' | 'loggedOut' | 'loggedIn' | 'noIam'>('checking');
-  const [remote, setRemote] = useState(false);
-
-  useEffect(() => {
-    if (window.jiuwenDesktop?.isElectron) {
-      setAuthStatus('noIam');
-      return;
-    }
-    let cancelled = false;
-    // 先拿 web-config: 如果 iam_enabled=false, 直接跳过鉴权探测
-    fetch('/api/web-config', { credentials: 'same-origin' })
-      .then((r) => r.json())
-      .then((cfg) => {
-        if (cancelled) return;
-        if (cfg && typeof cfg.remote === 'boolean') setRemote(cfg.remote);
-        if (cfg && cfg.iam_enabled === false) {
-          setAuthStatus('noIam');
-          return;
-        }
-        // IAM 已配置, 探测登录态
-        fetch('/auth-api/v1/auth/permissions', { credentials: 'same-origin' })
-          .then((resp) => {
-            if (cancelled) return;
-            if (resp.ok) {
-              setAuthStatus('loggedIn');
-            } else {
-              setAuthStatus('loggedOut');
-            }
-          })
-          .catch(() => {
-            if (!cancelled) setAuthStatus('loggedOut');
-          });
-      })
-      .catch(() => {
-        // web-config 获取失败, 回退到探测登录态
-        fetch('/auth-api/v1/auth/permissions', { credentials: 'same-origin' })
-          .then((resp) => {
-            if (cancelled) return;
-            if (resp.ok) {
-              setAuthStatus('loggedIn');
-            } else {
-              setAuthStatus('loggedOut');
-            }
-          })
-          .catch(() => {
-            if (!cancelled) setAuthStatus('loggedOut');
-          });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (authStatus === 'checking') {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-900">
-        <div className="text-slate-400 text-sm">Loading…</div>
-      </div>
-    );
-  }
-  if (authStatus === 'loggedOut') {
-    return <LoginPage />;
-  }
-  return (
-    <>
-      {remote && <LogoutButton />}
-      <App settingsPageDefinition={settingsPageDefinition} resolveSettingsRequest={resolveSettingsRequest} />
-      <AssetPublishHost />
-    </>
-  );
-}
-
-export default AppWithAuth;
+export default App;

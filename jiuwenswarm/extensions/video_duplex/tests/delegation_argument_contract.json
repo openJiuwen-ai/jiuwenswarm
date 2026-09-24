@@ -1,0 +1,196 @@
+[
+  {
+    "id": "plain-task",
+    "arguments": "读取桌面文件",
+    "expected": {
+      "task": "读取桌面文件"
+    }
+  },
+  {
+    "id": "fenced-json",
+    "arguments": "```json\n{\"task\":\"read file\"}\n```",
+    "expected": {
+      "task": "read file"
+    }
+  },
+  {
+    "id": "alias-prompt",
+    "arguments": {
+      "prompt": "read file"
+    },
+    "expected": {
+      "task": "read file"
+    }
+  },
+  {
+    "id": "alias-input",
+    "arguments": {
+      "input": "read file"
+    },
+    "expected": {
+      "task": "read file"
+    }
+  },
+  {
+    "id": "alias-content",
+    "arguments": {
+      "content": "read file"
+    },
+    "expected": {
+      "task": "read file"
+    }
+  },
+  {
+    "id": "alias-text",
+    "arguments": {
+      "text": "read file"
+    },
+    "expected": {
+      "task": "read file"
+    }
+  },
+  {
+    "id": "wrapper-scheduling",
+    "arguments": {
+      "independent": true,
+      "parameters": {
+        "task": "read file",
+        "depends_on": [
+          "job-a"
+        ],
+        "resources": [
+          "file-a"
+        ]
+      }
+    },
+    "expected": null
+  },
+  {
+    "id": "metadata",
+    "arguments": {
+      "task": "read file",
+      "reason": "needs tool",
+      "priority": "high"
+    },
+    "expected": {
+      "task": "read file"
+    }
+  },
+  {
+    "id": "nested-input",
+    "arguments": {
+      "input": {
+        "query": "read file"
+      }
+    },
+    "expected": {
+      "query": "read file"
+    }
+  },
+  {
+    "id": "broken-json",
+    "arguments": "{",
+    "expected": null
+  },
+  {
+    "id": "truncated-json",
+    "arguments": "{\"task\":\"read",
+    "expected": null
+  },
+  {
+    "id": "python-dict",
+    "arguments": "{'task':'read file'}",
+    "expected": null
+  },
+  {
+    "id": "broken-fence",
+    "arguments": "```json\nread file\n```",
+    "expected": null
+  },
+  {
+    "id": "numeric",
+    "arguments": "123",
+    "expected": null
+  },
+  {
+    "id": "empty",
+    "arguments": "",
+    "expected": null
+  },
+  {
+    "id": "array",
+    "arguments": "[\"read file\"]",
+    "expected": null
+  },
+  {
+    "id": "top-nested-conflict",
+    "arguments": {
+      "task": "outer",
+      "parameters": {
+        "task": "inner"
+      }
+    },
+    "expected": null
+  },
+  {
+    "id": "two-aliases",
+    "arguments": {
+      "task": "outer",
+      "prompt": "inner"
+    },
+    "expected": null
+  },
+  {
+    "id": "metadata-only",
+    "arguments": {
+      "reason": "read file"
+    },
+    "expected": null
+  },
+  {
+    "id": "invalid-schedule",
+    "arguments": {
+      "task": "read file",
+      "independent": "true"
+    },
+    "expected": null
+  },
+  {
+    "id": "duplicate-schedule",
+    "arguments": {
+      "independent": true,
+      "parameters": {
+        "task": "read file",
+        "independent": false
+      }
+    },
+    "expected": null
+  },
+  {
+    "id": "deep-wrapper",
+    "arguments": {
+      "parameters": {
+        "parameters": {
+          "parameters": {
+            "parameters": {
+              "parameters": {
+                "parameters": {
+                  "parameters": {
+                    "parameters": {
+                      "parameters": {
+                        "parameters": {
+                          "task": "read file"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "expected": null
+  }
+]

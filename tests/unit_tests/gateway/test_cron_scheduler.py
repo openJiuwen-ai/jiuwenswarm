@@ -499,6 +499,87 @@ class TestCronLastSessionId:
         assert not agent.unary_requests
 
 
+class TestCronFailureDelivery:
+    @pytest.mark.parametrize(
+        ("raised_exception", "expected_error"),
+        [(OSError(), "OSError"), (RuntimeError("cancelled"), "cancelled")],
+    )
+    @pytest.mark.asyncio
+    async def test_exception_produces_visible_failure_and_push_update(
+        self, tmp_path, raised_exception, expected_error
+    ):
+        class ExceptionAgentClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id or "",
+                    channel_id=envelope.channel or "",
+                    payload={"event_type": "chat.reasoning", "content": ""},
+                    is_complete=False,
+                )
+                raise raised_exception
+
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="web")
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(
+            store,
+            handler=handler,
+            agent_client=ExceptionAgentClient(),
+        )
+        run_id = f"{job.id}:1234"
+
+        with patch.object(cron_scheduler_module.logger, "warning") as warning_mock:
+            await svc.on_wake(job, run_id)
+            await svc.run_tasks[run_id]
+
+        state = svc.runs[run_id]
+        assert state.status == "failed"
+        assert state.error == expected_error
+        assert state.result_text == f"[cron] 任务执行失败: {expected_error}"
+        push_event = next(ev for _, _, ev in svc.events if ev.kind == "push_update")
+        await svc.handle_event(push_event)
+        assert len(handler.published) == 1
+        assert _cron_published_content(handler.published[0]) == state.result_text
+        failure_log = next(
+            call
+            for call in warning_mock.call_args_list
+            if "agent run failed" in call.args[0]
+        )
+        assert failure_log.args[3] == type(raised_exception).__name__
+        assert failure_log.kwargs["exc_info"] is True
+
+    @pytest.mark.asyncio
+    async def test_failed_empty_result_uses_generic_failure_and_push_update(
+        self, tmp_path
+    ):
+        class EmptyFailedResultScheduler(_TestableScheduler):
+            async def _run_stream_cron_job(self, **_kwargs):
+                return "", False
+
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="web")
+        handler = FakeMessageHandler()
+        svc = EmptyFailedResultScheduler(
+            store=store,
+            agent_client=FakeAgentClient(),
+            message_handler=handler,
+        )
+        run_id = f"{job.id}:1234"
+
+        await svc.on_wake(job, run_id)
+        await svc.run_tasks[run_id]
+
+        state = svc.runs[run_id]
+        assert state.status == "failed"
+        assert state.error == "未知错误"
+        assert state.result_text == "[cron] 任务执行失败: 未知错误"
+        push_event = next(ev for _, _, ev in svc.events if ev.kind == "push_update")
+        await svc.handle_event(push_event)
+        assert len(handler.published) == 1
+        assert _cron_published_content(handler.published[0]) == state.result_text
+
+
 class TestCheckStoreChanged:
     """_check_store_changed detects file deletion, modification, recreation."""
 
@@ -1096,49 +1177,6 @@ class TestGhostTaskCancelledNoPushUpdate:
         ]
         # push_update count should not increase (ghost task finally skipped)
         assert len(push_update_after) <= len(push_update_before)
-
-    @pytest.mark.asyncio
-    async def test_cancelled_task_finally_skips_result_text_and_push(self, tmp_path):
-        """state.error == "cancelled" should prevent result_text and push_update."""
-        store_file = tmp_path / "cron_jobs.json"
-        store = CronJobStore(path=store_file)
-        job = await _create_one_job(store)
-
-        handler = FakeMessageHandler()
-        svc = _make_scheduler(store, handler)
-        await svc.reload()
-
-        run_id = f"{job.id}:1234"
-        state = CronRunState(
-            run_id=run_id,
-            job_id=job.id,
-            wake_at_iso="2026-06-09T08:55:00+08:00",
-            push_at_iso="2026-06-09T09:00:00+08:00",
-            job_name=job.name,
-            targets=job.targets,
-            session_id=None,
-            chat_type=None,
-            timezone=job.timezone,
-            status="running",
-            placeholder_sent=True,
-        )
-
-        # Simulate CancelledError in _run_agent: state.error = "cancelled"
-        state.error = "cancelled"
-
-        # The finally block logic uses `is_cancelled_ghost = state.error == "cancelled"`
-        # to skip push_update. Verify the flag works correctly:
-        # Even with placeholder_sent=True, cancelled ghost should not push.
-        is_cancelled_ghost = state.error == "cancelled"
-        assert is_cancelled_ghost is True
-
-        # result_text should NOT be set for cancelled ghost (finally block check)
-        # (In real code: `if not state.result_text and state.error and not is_cancelled_ghost`)
-        if not state.result_text and state.error and not is_cancelled_ghost:
-            state.result_text = f"[cron] 任务执行失败: {state.error}"
-
-        assert state.result_text is None  # No result_text for ghost
-
 
 # ── Ghost task CHAT_CANCEL notification ────────────────────────────────────────────
 

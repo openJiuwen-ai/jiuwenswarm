@@ -1204,3 +1204,159 @@ async def test_pin_reindex_failure_keeps_operation_retryable(archive, monkeypatc
     assert result["archived"] is True
     assert repaired == [1]
     assert lc.state("session", "sess_a")["operation"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_busy_after_flow_end_reports_finishing_hint(archive):
+    service, create, _, runtime = archive
+    create()
+    # swarmflow.stop/自然完成后：round 仍在收尾（busy），但已无用户可停止的
+    # 执行——报错改为"稍后重试"并携带 finishing 标记供前端区分文案。
+    runtime.is_session_running = Mock(return_value=True)
+    runtime.has_parked_team_streams = Mock(return_value=False)
+    runtime.is_team_round_finishing = Mock(return_value=True)
+
+    with pytest.raises(lc.LifecycleError) as error:
+        await service.session("sess_a", "archive", "web")
+
+    assert error.value.code == "SESSION_BUSY"
+    assert error.value.details["finishing"] is True
+    assert "收尾" in str(error.value)
+    assert "stop it before" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_busy_running_round_keeps_stop_hint(archive):
+    service, create, _, runtime = archive
+    create()
+    # flow 仍在执行（或 round 与 flow 无关）：保持原有"先停止"引导。
+    runtime.is_session_running = Mock(return_value=True)
+    runtime.has_parked_team_streams = Mock(return_value=False)
+    runtime.is_team_round_finishing = Mock(return_value=False)
+
+    with pytest.raises(lc.LifecycleError) as error:
+        await service.session("sess_a", "archive", "web")
+
+    assert error.value.code == "SESSION_BUSY"
+    assert "finishing" not in error.value.details
+    assert "stop it before" in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_team_round_finishing_after_flow_probe(monkeypatch):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    # 无 waiter 的 flow 终态事件会走 gateway 推送兜底，单测里没有 server 实例。
+    monkeypatch.setattr(manager, "_push_workflow_event_without_waiter", AsyncMock())
+
+    def run_state(status):
+        return SimpleNamespace(is_terminal=status in ("completed", "failed", "stopped"))
+
+    handler = SimpleNamespace(get_run_states=lambda: {})
+    manager._workflow_handlers["sess_a"] = handler
+
+    async def broadcast_flow_terminal(status="stopped"):
+        await manager.broadcast_event("sess_a", {
+            "event_type": "workflow.updated",
+            "workflow": {"id": "wf_1", "status": status},
+        })
+
+    # 无活跃 round：终态事件不置位，探测不成立。
+    await broadcast_flow_terminal()
+    assert not team_manager.team_round_finishing_after_flow("sess_a")
+
+
+    # 新回合带着上一回合遗留的终态 run：run 状态跨回合保留，但本回合
+    # 未见证过 flow 终态，不得误判为收尾（回归：P2 误判场景）。
+    manager.begin_round("sess_a", "req_1")
+    handler.get_run_states = lambda: {"wf_1": run_state("stopped")}
+    assert not team_manager.team_round_finishing_after_flow("sess_a")
+
+    # 本回合见证 flow 终态 + 全部 run 已终态：收尾窗口。
+    await broadcast_flow_terminal()
+    assert team_manager.team_round_finishing_after_flow("sess_a")
+
+    # 见证过终态但仍有 run 在跑：不判收尾。
+    handler.get_run_states = lambda: {"wf_1": run_state("running")}
+    assert not team_manager.team_round_finishing_after_flow("sess_a")
+
+    # 回合释放后标记随回合消亡：再开新回合，遗留终态 run 不再误判。
+    await manager.release_round("sess_a", "req_1")
+    manager.begin_round("sess_a", "req_2")
+    handler.get_run_states = lambda: {
+        "wf_1": run_state("stopped"),
+        "wf_2": run_state("completed"),
+    }
+    assert not team_manager.team_round_finishing_after_flow("sess_a")
+
+    # 新回合里新的 flow 走到终态：判收尾。
+    await broadcast_flow_terminal("completed")
+    assert team_manager.team_round_finishing_after_flow("sess_a")
+
+    # paused 的 flow 没有结束，用户还有可恢复的东西：不判收尾。
+    handler.get_run_states = lambda: {"wf_1": run_state("paused")}
+    assert not team_manager.team_round_finishing_after_flow("sess_a")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", [
+    {"event_type": "chat.tool_call", "tool_call": {"name": "shell"}},
+    {"event_type": "chat.ask_user_question"},
+    {"event_type": "team.task", "event": {
+        "type": "team.task.created", "task_id": "task_1", "status": "pending",
+    }},
+])
+async def test_flow_finishing_excludes_subsequent_work(monkeypatch, event):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    monkeypatch.setattr(manager, "_push_workflow_event_without_waiter", AsyncMock())
+    manager._workflow_handlers["sess_a"] = SimpleNamespace(
+        get_run_states=lambda: {"wf_1": SimpleNamespace(is_terminal=True)},
+    )
+    terminal = {"event_type": "workflow.updated", "workflow": {
+        "id": "wf_1", "status": "completed",
+    }}
+    manager.begin_round("sess_a", "req_1", defer_terminal_release=True)
+    await manager.broadcast_event("sess_a", terminal)
+    await manager.broadcast_event("sess_a", {
+        "event_type": "chat.delta", "content": "Reporting the result",
+    })
+    assert team_manager.team_round_finishing_after_flow("sess_a")
+    await manager.broadcast_event("sess_a", event)
+    assert not team_manager.team_round_finishing_after_flow("sess_a")
+    # Repeated terminal updates must not mask the later execution.
+    await manager.broadcast_event("sess_a", terminal)
+    assert not team_manager.team_round_finishing_after_flow("sess_a")
+    await manager.release_round("sess_a", "req_1")
+    manager.begin_round("sess_a", "req_2", defer_terminal_release=True)
+    await manager.broadcast_event("sess_a", terminal)
+    assert team_manager.team_round_finishing_after_flow("sess_a")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["completed", "cancelled", "failed"])
+async def test_flow_finishing_waits_for_existing_team_task(monkeypatch, status):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    monkeypatch.setattr(manager, "_push_workflow_event_without_waiter", AsyncMock())
+    manager._workflow_handlers["sess_a"] = SimpleNamespace(
+        get_run_states=lambda: {"wf_1": SimpleNamespace(is_terminal=True)},
+    )
+    manager.begin_round("sess_a", "req_1", defer_terminal_release=True)
+    await manager.broadcast_event("sess_a", {"event_type": "team.task", "event": {
+        "type": "team.task.created", "task_id": "task_1", "status": "pending",
+    }})
+    await manager.broadcast_event("sess_a", {
+        "event_type": "workflow.updated", "workflow": {"id": "wf_1", "status": "stopped"},
+    })
+    assert not team_manager.team_round_finishing_after_flow("sess_a")
+    await manager.broadcast_event("sess_a", {"event_type": "team.task", "event": {
+        "type": "team.task.updated", "task_id": "task_1", "status": status,
+    }})
+    assert team_manager.team_round_finishing_after_flow("sess_a")

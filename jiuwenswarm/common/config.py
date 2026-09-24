@@ -303,18 +303,28 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Return whether both Symphony and its evolution switch are enabled."""
+
+    from jiuwenswarm.symphony.config import (
+        resolve_symphony_enabled,
+        resolve_symphony_evolution_enabled,
+    )
+
     if not isinstance(config, dict):
         return False
     symphony = config.get("symphony")
     if not isinstance(symphony, dict):
-        return False
+        symphony = {}
     evolution = symphony.get("evolution")
     if not isinstance(evolution, dict):
-        return False
-    enabled_values = {"1", "true", "yes", "on"}
+        evolution = {}
+    # enabled 位于 evolution.flow 下；旧配置（evolution.enabled）向后兼容
+    flow = evolution.get("flow")
+    flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
+    if flow_enabled is None:
+        flow_enabled = evolution.get("enabled")
     return (
-        str(symphony.get("enabled")).strip().lower() in enabled_values
-        and str(evolution.get("enabled")).strip().lower() in enabled_values
+        resolve_symphony_enabled(symphony.get("enabled"))
+        and resolve_symphony_evolution_enabled(flow_enabled)
     )
 
 
@@ -989,6 +999,15 @@ def update_task_full_duplex_in_config(enabled: bool) -> None:
     if "experimental" not in data or data["experimental"] is None:
         data["experimental"] = {}
     data["experimental"]["task_full_duplex_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_task_asr_in_config(enabled: bool) -> None:
+    """Update the task-chat speech transcription switch in config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["task_asr_enabled"] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 

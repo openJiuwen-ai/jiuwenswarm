@@ -134,7 +134,7 @@ def _validated_values(values: Mapping[str, Any]) -> dict[str, str]:
     return normalized
 
 
-def update_settings(values: Mapping[str, Any]) -> None:
+def update_settings(values: Mapping[str, Any], *, clear_secrets: bool = False) -> None:
     normalized = _validated_values(values)
     provider = normalized.pop("video_live_provider", _provider())
     updates = {
@@ -142,7 +142,7 @@ def update_settings(values: Mapping[str, Any]) -> None:
         "VIDEO_REALTIME_PROVIDER": "qwen_omni" if provider == "qwen_omni" else "",
     }
     for key, value in normalized.items():
-        if key in SECRET_SETTINGS and not value:
+        if key in SECRET_SETTINGS and not value and not clear_secrets:
             continue
         updates[SETTING_ENV_KEYS[key]] = value
     os.environ.update(updates)

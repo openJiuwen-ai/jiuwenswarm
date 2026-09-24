@@ -2,12 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { settingsActionIcons } from '../../../../assets/settings';
 import { Button, Switch } from '../../../../components/ui';
 import { Form, FormDialog, useForm } from '../../../../components/form';
 import { setA2UIFeatureEnabled } from '../../../../features/a2ui/featureConfig';
 import { normalizeRSIEnabled, setRSIFeatureEnabled } from '../../../../features/rsi/featureConfig';
 import { setTrajectoryUiEnabled } from '../../../../features/trajectory/featureConfig';
 import { setTaskFullDuplexEnabled } from '../../../../features/taskFullDuplex/featureFlag';
+import { setTaskAsrEnabled } from '../../../../features/taskAsr/featureFlag';
+import { VideoDuplexModelSettings } from './VideoDuplexModelSettings';
+import '../agent/AgentSettings.css';
+import './VideoDuplexModelSettings.css';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
   ExternalCliAgentsSection,
@@ -589,17 +594,229 @@ export function TaskFullDuplexSetting({ disabled }: SettingsCustomItemProps) {
   }
 
   return (
-    <SettingRow
-      title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
-      description={t('settingsPanel.fields.task_full_duplex_enabled.description')}
-    >
-      <Switch
-        aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
-        checked={enabled}
-        disabled={disabled || !isConnected || source.savingKeys.has('task_full_duplex_enabled')}
-        onChange={(next) => void updateTaskFullDuplex(next).catch(() => undefined)}
+    <>
+      <SettingRow
+        className="settings-agent-media__row"
+        title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+        description={t('settingsPanel.fields.task_full_duplex_enabled.description')}
+        subSettings={enabled ? <VideoDuplexModelSettings /> : undefined}
+      >
+        <Switch
+          aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+          checked={enabled}
+          disabled={disabled || !isConnected || source.savingKeys.has('task_full_duplex_enabled')}
+          onChange={(next) => void updateTaskFullDuplex(next).catch(() => undefined)}
+          data-testid="settings-task-full-duplex-switch"
+        />
+      </SettingRow>
+    </>
+  );
+}
+
+type TaskAsrDraft = {
+  api_base: string;
+  api_key: string;
+  model: string;
+};
+
+function TaskAsrConfigDialog({
+  initialValues,
+  enableOnSave,
+  save,
+  onClose,
+}: {
+  initialValues: TaskAsrDraft;
+  enableOnSave: boolean;
+  save: (updates: Record<string, string>, operation: string) => Promise<unknown>;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const [draft, setDraft] = useState(initialValues);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const update = (key: keyof TaskAsrDraft, value: string) => setDraft((current) => ({ ...current, [key]: value }));
+  const confirm = async () => {
+    const missing = (Object.keys(draft) as Array<keyof TaskAsrDraft>).find((key) => !draft[key].trim());
+    if (missing) {
+      setError(t('settingsPanel.taskAsr.validationRequired'));
+      return;
+    }
+    setSubmitting(true);
+    setError('');
+    try {
+      await save(
+        {
+          asr_api_base: draft.api_base.trim(),
+          asr_api_key: draft.api_key.trim(),
+          asr_model: draft.model.trim(),
+          ...(enableOnSave ? { task_asr_enabled: 'true' } : {}),
+        },
+        'task-asr-model-settings',
+      );
+      if (enableOnSave) setTaskAsrEnabled(true);
+      onClose();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  const field = (key: keyof TaskAsrDraft, label: string, secret = false) => (
+    <label className="video-duplex-model-settings__field" key={key}>
+      <span>{label}</span>
+      <input
+        type={secret ? 'password' : 'text'}
+        value={draft[key]}
+        onChange={(event) => update(key, event.target.value)}
+        autoComplete="off"
       />
-    </SettingRow>
+    </label>
+  );
+  return (
+    <FormDialog
+      open
+      title={t('settingsPanel.taskAsr.dialogTitle')}
+      submitting={submitting}
+      confirmDisabled={!isConnected}
+      confirmLabel={enableOnSave ? t('settingsPanel.agent.saveAndEnable') : t('common.save')}
+      cancelLabel={t('common.cancel')}
+      dialogClassName="settings-model-dialog"
+      testIdPrefix="settings-task-asr-config-dialog"
+      onConfirm={() => void confirm()}
+      onCancel={onClose}
+    >
+      <div className="video-duplex-model-settings__dialog-fields">
+        {field('api_base', t('settingsPanel.fields.asr_api_base.title'))}
+        {field('api_key', t('settingsPanel.fields.asr_api_key.title'), true)}
+        {field('model', t('settingsPanel.fields.asr_model.title'))}
+      </div>
+      {error ? <div className="settings-page__error" role="alert">{error}</div> : null}
+    </FormDialog>
+  );
+}
+
+export function TaskAsrSetting({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const source = useSettingsSource();
+  const enabled = parseConfigBoolean(source.values.task_asr_enabled ?? 'false');
+  const configFields = ['asr_api_base', 'asr_api_key', 'asr_model'] as const;
+  const configured = configFields.every((key) => String(source.values[key] ?? '').trim());
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const busy = configFields.some((key) => source.savingKeys.has(key)) || source.savingKeys.has('task_asr_enabled');
+  const modelName = String(source.values.asr_model ?? '');
+  const name = t('settingsPanel.fields.task_asr_enabled.title');
+
+  async function updateTaskAsr(next: boolean): Promise<void> {
+    if (next && !configured) {
+      setDialogOpen(true);
+      return;
+    }
+    await source.save({ task_asr_enabled: next }, 'task-asr-enabled');
+    setTaskAsrEnabled(next);
+  }
+
+  const clearConfig = async () => {
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await source.save(
+        { asr_api_base: '', asr_api_key: '', asr_model: '', task_asr_enabled: 'false' },
+        'task-asr-model-delete',
+      );
+      setTaskAsrEnabled(false);
+      setDeleteOpen(false);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const subSettings = enabled ? (
+    configured ? (
+      <div className="settings-agent-media__model-card">
+        <strong className="settings-agent-media__model-name">{modelName}</strong>
+        <div className="settings-agent-media__actions">
+          <Button
+            variant="quiet"
+            size="sm"
+            icon={<settingsActionIcons.edit aria-hidden />}
+            title={t('common.modify')}
+            aria-label={`${t('common.modify')} ${name}`}
+            disabled={disabled || !isConnected || busy}
+            onClick={() => setDialogOpen(true)}
+            data-testid="settings-task-asr-edit-btn"
+          />
+          <Button
+            variant="quiet"
+            size="sm"
+            icon={<settingsActionIcons.delete aria-hidden />}
+            title={t('common.delete')}
+            aria-label={`${t('common.delete')} ${name}`}
+            disabled={disabled || !isConnected || busy}
+            onClick={() => {
+              setDeleteError('');
+              setDeleteOpen(true);
+            }}
+            data-testid="settings-task-asr-delete-btn"
+          />
+        </div>
+      </div>
+    ) : (
+      <div className="settings-agent-media__model-card">
+        <span className="settings-agent-media__model-name">{t('settingsPanel.taskAsr.notConfigured')}</span>
+        <Button size="sm" variant="primary" disabled={disabled || !isConnected} onClick={() => setDialogOpen(true)}>
+          {t('settingsPanel.common.configure')}
+        </Button>
+      </div>
+    )
+  ) : undefined;
+
+  return (
+    <>
+      <SettingRow
+        className="settings-agent-media__row"
+        title={name}
+        description={t('settingsPanel.fields.task_asr_enabled.description')}
+        subSettings={subSettings}
+      >
+        <Switch
+          aria-label={name}
+          checked={enabled}
+          disabled={disabled || !isConnected || busy}
+          onChange={(next) => void updateTaskAsr(next).catch(() => undefined)}
+          data-testid="settings-task-asr-switch"
+        />
+      </SettingRow>
+      {dialogOpen ? (
+        <TaskAsrConfigDialog
+          initialValues={{
+            api_base: String(source.values.asr_api_base ?? ''),
+            api_key: String(source.values.asr_api_key ?? ''),
+            model: String(source.values.asr_model ?? ''),
+          }}
+          enableOnSave={!enabled}
+          save={source.save}
+          onClose={() => setDialogOpen(false)}
+        />
+      ) : null}
+      <SettingsConfirmDialog
+        open={deleteOpen}
+        title={t('settingsPanel.agent.deleteModelTitle')}
+        message={t('settingsPanel.agent.deleteModelConfirm', { name })}
+        confirming={deleting}
+        error={deleteError}
+        onConfirm={() => void clearConfig()}
+        onCancel={() => {
+          if (!deleting) setDeleteOpen(false);
+        }}
+      />
+    </>
   );
 }
 

@@ -12,12 +12,14 @@ export function MemberListItem({
   member,
   selected,
   compact,
+  showIdleStatus = false,
   onClick,
   taskProgress,
 }: {
   member: TeamMember;
   selected?: boolean;
   compact?: boolean;
+  showIdleStatus?: boolean;
   onClick?: () => void;
   taskProgress?: TaskProgress;
 }) {
@@ -73,8 +75,8 @@ export function MemberListItem({
         </div>
       </div>
       {compact ? (
-        isRunning ? (
-          <LoadingSpinner />
+        isRunning && !showIdleStatus ? (
+          <LoadingSpinner testId="team-area-member-item-loading" />
         ) : (
           <PendingIcon className="w-4 h-4 text-text-muted" />
         )
@@ -109,8 +111,8 @@ export function MemberListItem({
             {taskProgress.completed}/{taskProgress.total}
           </span>
         </div>
-      ) : isRunning ? (
-        <LoadingSpinner />
+      ) : isRunning && !showIdleStatus ? (
+        <LoadingSpinner testId="team-area-member-item-loading" />
       ) : (
         <PendingIcon className="w-4 h-4 shrink-0 text-text-muted" />
       )}

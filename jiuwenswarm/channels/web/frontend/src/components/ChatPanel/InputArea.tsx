@@ -32,6 +32,7 @@ import {
   usePersonalContextStore,
 } from '../../stores';
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
+import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
 import { applyGoalArm, evaluateGoalArm } from '../../features/goalMode/goalModeGate';
@@ -170,6 +171,7 @@ import {
 } from '../../features/agentManagement';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
+import { useTaskAsrEnabled } from '../../features/taskAsr/featureFlag';
 import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
 import { ApplicationPluginTaskInputActions } from '../../applicationPlugins/ApplicationPluginOutlet';
 
@@ -711,6 +713,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   },
   ref,
 ) {
+  const taskAsrEnabled = useTaskAsrEnabled();
   const [speechError, setSpeechError] = useState('');
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
@@ -750,7 +753,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
-  const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>([]);
+  const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>(
+    () => [getSelectedAgentGroup()].filter((group): group is AgentGroupCatalogItem => group !== null),
+  );
   const [groupOptionsStatus, setGroupOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [failedGroupAvatarIds, setFailedGroupAvatarIds] = useState<ReadonlySet<string>>(() => new Set());
   const groupManagementClient = useMemo(() => createAgentGroupManagementClient(), []);
@@ -869,7 +874,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupBindingPending ?? null,
   );
   const agentGroupLocked = Boolean(agentGroupBinding || agentGroupBindingPending);
-  const selectedGroup = groupOptions.find((item) => item.id === selectedGroupId) ?? null;
+  const selectedGroup = groupOptions.find((item) => item.name === selectedGroupId || item.id === selectedGroupId) ?? null;
   const installedGroupOptions = useMemo(
     () => groupOptions.filter((item) => item.installed && item.capabilities.canUse),
     [groupOptions],
@@ -4438,7 +4443,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   }
                 />
 
-                <button
+                {taskAsrEnabled && <button
                   type="button"
                   onClick={toggleRecording}
                   disabled={composerDisabled || isTranscribing || !taskAsrSupported}
@@ -4470,7 +4475,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   ) : (
                     <Mic className="chat-input-btn-icon" strokeWidth={1.8} aria-hidden="true" />
                   )}
-                </button>
+                </button>}
                 {micTooltipNode}
 
                 <ApplicationPluginTaskInputActions

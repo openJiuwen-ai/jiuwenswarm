@@ -79,13 +79,8 @@ web_start_systemd() {
     # 单机场景 WEB_HOST 可设 127.0.0.1 走回环; 多机场景用 ingress VIP / MASTER_NODE_IP 跨机可达。
     local web_host_target="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
     local proxy_target="http://${web_host_target}:${web_port_target}"
-    # /auth-api 反代目标:control-panel (IAM), 由 check_web_up_dependency 解析
-    local iam_target="${DEPLOY_VARS["IAM_AUTH_SERVICE_URL"]}"
-    # 一体机模式: WEB_REMOTE_MODE=true 时带 --remote, 前端显示登出按钮
-    local remote_flag=""
-    [ "${DEPLOY_VARS["WEB_REMOTE_MODE"]:-}" = "true" ] && remote_flag="--remote"
 
-    # unit 文件:ExecStart 显式传 --host/--port/--proxy-target/--iam-target, 不依赖 app_web.py 的 FRONTEND_HOST/PORT 默认
+    # unit 文件:ExecStart 显式传 --host/--port/--proxy-target, 不依赖 app_web.py 的 FRONTEND_HOST/PORT 默认
     local unit_content
     unit_content="[Unit]
 Description=JiuwenSwarm Web Static Server
@@ -94,7 +89,7 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-ExecStart=${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target} --iam-target ${iam_target} ${remote_flag}
+ExecStart=${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target}
 Restart=on-failure
 RestartSec=3
 
@@ -171,11 +166,6 @@ web_start_nohup() {
 
     local web_host_target="${DEPLOY_VARS["WEB_HOST"]:-127.0.0.1}"
     local proxy_target="http://${web_host_target}:${web_port_target}"
-    # /auth-api 反代目标:control-panel (IAM), 由 check_web_up_dependency 解析
-    local iam_target="${DEPLOY_VARS["IAM_AUTH_SERVICE_URL"]}"
-    # 一体机模式: WEB_REMOTE_MODE=true 时带 --remote, 前端显示登出按钮
-    local remote_flag=""
-    [ "${DEPLOY_VARS["WEB_REMOTE_MODE"]:-}" = "true" ] && remote_flag="--remote"
     local instance_env=""
     local pidfile="/tmp/jiuwenswarm-web.pid"
     if [ -n "${instance_name}" ]; then
@@ -183,12 +173,12 @@ web_start_nohup() {
         pidfile="/tmp/jiuwenswarm-web-${instance_name}.pid"
     fi
 
-    # 显式传 --host/--port/--proxy-target/--iam-target, 避开 app_web.py 的 FRONTEND_HOST/PORT 默认值。
+    # 显式传 --host/--port/--proxy-target, 避开 app_web.py 的 FRONTEND_HOST/PORT 默认值。
     # JIUWENSWARM_DATA_DIR 等环境变量前缀只进子进程环境、不会出现在 /proc/PID/cmdline,
     # pkill -f 匹配不到, 故启动时把 PID 写入 pidfile, 停止时按 PID 精确结束。
-    local start_cmd="${home_prefix}${instance_env}nohup ${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target} --iam-target ${iam_target} ${remote_flag} </dev/null > /tmp/jiuwenswarm-web.log 2>&1 & echo \$! > ${pidfile}"
+    local start_cmd="${home_prefix}${instance_env}nohup ${web_bin} --host ${web_host} --port ${web_port} --proxy-target ${proxy_target} </dev/null > /tmp/jiuwenswarm-web.log 2>&1 & echo \$! > ${pidfile}"
 
-    info "Starting jiuwenswarm-web on ${master_host} (nohup) -> http://${web_host}:${web_port} (proxy /ws -> ${proxy_target}, /auth-api -> ${iam_target}, remote=${remote_flag:-false})..."
+    info "Starting jiuwenswarm-web on ${master_host} (nohup) -> http://${web_host}:${web_port} (proxy /ws -> ${proxy_target})..."
     exec_on_host "${master_host}" "bash -c '${start_cmd}'"
 
     local retry=0

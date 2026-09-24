@@ -14,7 +14,10 @@ const compiled = await build({
       builder.onResolve({ filter: /\/services\/webClient$/ }, () => ({ path: 'web-client', namespace: 'offline' }));
       builder.onLoad({ filter: /.*/, namespace: 'offline' }, () => ({ contents: `
         export const webClient = { on() { throw new Error('Unexpected network subscription'); } };
-        export function webRequest() { throw new Error('Unexpected network request'); }
+        export function webRequest(...args) {
+          if (globalThis.joyaiTestRequest) return globalThis.joyaiTestRequest(...args);
+          throw new Error('Unexpected network request');
+        }
       ` }));
     },
   }],
@@ -72,4 +75,19 @@ test('tool receipts wait for playback and do not leak into a restarted media ses
   release();
   await delivery;
   assert.deepEqual(speech, []);
+});
+
+
+test('English survives callback refresh and is sent with subsequent user requests', async (t) => {
+  const calls = [];
+  globalThis.joyaiTestRequest = async (...args) => { calls.push(args); return { response: '', search_job: null }; };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  const provider = new JoyAIProvider({ getSearchSessionId: () => 'scope', rememberSearchJob() {}, report() {} }, 'en');
+  provider.sessionId = 'language-session';
+  provider.setPreferredLanguage(undefined);
+  await provider.requestFrame('read screen', 'read screen', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[0][1].preferred_language, 'en');
+  provider.setPreferredLanguage('zh');
+  await provider.requestFrame('read screen', 'read screen', 'data:image/jpeg;base64,ZmFrZQ==');
+  assert.equal(calls[1][1].preferred_language, 'zh');
 });
