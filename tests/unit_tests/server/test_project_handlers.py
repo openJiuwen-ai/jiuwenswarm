@@ -190,18 +190,37 @@ class _FakeRemoveRuntime:
 
     ``running``/``parked`` 分别控制 ``is_session_running`` 与
     ``has_parked_team_streams`` 的应答,模拟执行中会话与 parked 的
-    Team 常驻流。
+    Team 常驻流。``heartbeats`` 是"仅因后台心跳在跑"的会话子集:
+    ``ignore_heartbeats`` 读时排除它们,``stop_heartbeat_runs`` 停掉它们。
     """
 
-    def __init__(self, running=(), parked=()):
+    def __init__(self, running=(), parked=(), heartbeats=(), stop_heartbeats=True):
         self._running = set(running)
         self._parked = set(parked)
+        self._heartbeats = set(heartbeats)
+        self._stop_heartbeats = stop_heartbeats
+        self.stopped_heartbeats: list[str] = []
+        # 心跳准入控制器桩:active_heartbeat_sessions 让移除先判断有没有心跳在跑,
+        # 没有就不必再扫一遍会话元数据。
+        self._admission_controller = SimpleNamespace(
+            active_heartbeat_sessions=lambda: set(self._heartbeats),
+        )
 
-    def is_session_running(self, session_id):
+    def is_session_running(self, session_id, *, ignore_heartbeats=False):
+        if ignore_heartbeats and session_id in self._heartbeats:
+            return False
         return session_id in self._running
 
     def has_parked_team_streams(self, session_id):
         return session_id in self._parked
+
+    async def stop_heartbeat_runs(self, session_id):
+        if session_id not in self._heartbeats or not self._stop_heartbeats:
+            return False
+        self._heartbeats.discard(session_id)
+        self._running.discard(session_id)
+        self.stopped_heartbeats.append(session_id)
+        return True
 
 
 @pytest.fixture()
@@ -1306,6 +1325,99 @@ class TestProjectRemoveRestore:
 
     @staticmethod
     @pytest.mark.asyncio
+    async def test_remove_stops_heartbeat_instead_of_reporting_busy(tmp_path):
+        """后台心跳不阻塞移除:移除停掉心跳,再读到已落定的会话。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+            ProjectAdapter,
+            _project_busy_sessions,
+        )
+
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_hb", project_id=proj.project_id, project_dir=pa)
+        runtime = _FakeRemoveRuntime(running={"s_hb"}, heartbeats={"s_hb"})
+
+        # 预检按"心跳已被停掉"读,不放行就会被心跳永久卡住。
+        assert _project_busy_sessions(proj.project_id, runtime) == []
+        response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
+            AgentRequest(
+                request_id="req-remove-heartbeat",
+                channel_id="web",
+                session_id="",
+                req_method=ReqMethod.PROJECT_REMOVE,
+                params={"project_id": proj.project_id},
+                user_id="",
+            )
+        )
+        assert response.ok is True
+        assert runtime.stopped_heartbeats == ["s_hb"]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_keeps_heartbeat_when_real_work_also_runs(tmp_path):
+        """真实工作仍在跑时移除照旧被挡,且不为注定被拒的移除取消心跳。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+            ProjectAdapter,
+        )
+
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_work", project_id=proj.project_id, project_dir=pa)
+        _make_session("s_hb", project_id=proj.project_id, project_dir=pa)
+        runtime = _FakeRemoveRuntime(
+            running={"s_work", "s_hb"}, heartbeats={"s_hb"},
+        )
+
+        response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
+            AgentRequest(
+                request_id="req-remove-busy",
+                channel_id="web",
+                session_id="",
+                req_method=ReqMethod.PROJECT_REMOVE,
+                params={"project_id": proj.project_id},
+                user_id="",
+            )
+        )
+        assert response.ok is False
+        assert response.payload.get("code") == "SESSION_BUSY"
+        assert runtime.stopped_heartbeats == []
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remove_stays_busy_when_heartbeat_refuses_to_stop(tmp_path):
+        """心跳停不掉时移除仍报 SESSION_BUSY,不隐藏还在跑的工作。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+            ProjectAdapter,
+        )
+
+        pa = _abspath(tmp_path, "app")
+        proj = _make_project("P", pa)
+        _make_session("s_hb", project_id=proj.project_id, project_dir=pa)
+        runtime = _FakeRemoveRuntime(
+            running={"s_hb"}, heartbeats={"s_hb"}, stop_heartbeats=False,
+        )
+
+        response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
+            AgentRequest(
+                request_id="req-remove-stubborn-heartbeat",
+                channel_id="web",
+                session_id="",
+                req_method=ReqMethod.PROJECT_REMOVE,
+                params={"project_id": proj.project_id},
+                user_id="",
+            )
+        )
+        assert response.ok is False
+        assert response.payload.get("code") == "SESSION_BUSY"
+
+    @staticmethod
+    @pytest.mark.asyncio
     async def test_restore_returns_pinned_sessions_to_pinned_area(registered_channel, tmp_path):
         """恢复项目时置顶会话回到置顶区,并保留原 pin_order。"""
         pa = _abspath(tmp_path, "app")
@@ -1429,3 +1541,19 @@ async def test_project_soft_delete_contract(registered_channel, tmp_path):
     restored, was_restored = project_store.create_project_checked("RestoreMe", directory)
     assert was_restored and restored.project_id == project.project_id
     assert not restored.hidden
+
+
+def test_project_busy_scan_covers_all_channels_and_legacy_cron(monkeypatch):
+    from jiuwenswarm.server.runtime.gateway_adapter import project_adapter
+
+    sessions = [
+        dict(session_id="web_idle", channel_id="web", project_id="p"),
+        dict(session_id="feishu_running", channel_id="feishu", project_id="p"),
+        dict(session_id="cron_legacy", channel_id="web", project_id="p"),
+        dict(session_id="cron_meta", channel_id="feishu", project_id="p", cron_id="job"),
+        dict(session_id="other_running", channel_id="feishu", project_id="other"),
+    ]
+    monkeypatch.setattr(project_adapter, "collect_all_sessions_metadata", lambda: sessions)
+    runtime = _FakeRemoveRuntime(running={s["session_id"] for s in sessions[1:]})
+    assert project_adapter._project_conversation_state("p", runtime) == (1, ["feishu_running"])
+    assert project_adapter._project_conversation_state("p") == (1, [])
