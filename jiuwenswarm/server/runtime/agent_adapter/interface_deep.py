@@ -303,6 +303,8 @@ from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail imp
     coalesce_config_skill_envs,
     coalesce_skill_envs,
 )
+from jiuwenswarm.agents.harness.common.rails.skill_sleep_rail import SkillSleepRail
+from jiuwenswarm.agents.harness.common.skill_sleep import SkillCallCounter, SkillSleepRunner
 from jiuwenswarm.agents.harness.common.rails.concurrent_safe_rails import (
     ConcurrentSafeSysOperationRail,
     ConcurrentSafeTaskPlanningRail,
@@ -508,6 +510,9 @@ from jiuwenswarm.common.config import (
     get_sandbox_runtime,
     get_sandbox_startup_mode,
     get_skill_create_enabled,
+    get_skill_sleep_call_threshold,
+    get_skill_sleep_config,
+    get_skill_sleep_enabled,
     coerce_config_bool,
     _get_ttse_config,
     get_ttse_embedding_config,
@@ -2534,6 +2539,7 @@ class JiuWenSwarmDeepAdapter:
         self._agent_permissions_body: dict[str, Any] | None = None
         self._permissions_persist_agent_id: str | None = None
         self._skill_active_state_rail: SkillActiveStateRail | None = None
+        self._skill_sleep_rail: SkillSleepRail | None = None
         self._skill_credential_injection_rail: SkillCredentialInjectionRail | None = None
         self._avatar_rail: Any = None
         self._tool_cards = None
@@ -7453,6 +7459,7 @@ class JiuWenSwarmDeepAdapter:
             "_progressive_tool_rail",
             "_skill_authorization_rail",
             "_skill_active_state_rail",
+            "_skill_sleep_rail",
             "_skill_credential_injection_rail",
             "_llm_retry_rail",
             "_skill_create_rail",
@@ -8179,6 +8186,123 @@ class JiuWenSwarmDeepAdapter:
                 exc,
             )
             return None
+
+    @staticmethod
+    def _resolve_skill_sleep_traces_dir() -> Path:
+        """Resolve OTel file-exporter traces dir for skill sleep harvest."""
+        try:
+            full = get_config()
+        except Exception:
+            full = {}
+        if not isinstance(full, dict):
+            full = {}
+        for key in ("agent_observability", "team_observability"):
+            block = full.get(key)
+            if isinstance(block, dict):
+                raw = str(block.get("traces_dir") or "").strip()
+                if raw:
+                    return Path(raw).expanduser()
+        return get_user_workspace_dir() / ".trace"
+
+    def _resolve_skill_sleep_skills_dir(self) -> Path:
+        dirs = self._resolve_skill_dirs()
+        if dirs:
+            return Path(dirs[0])
+        return get_agent_skills_dir()
+
+    def _resolve_skill_sleep_state_dir(self, sleep_cfg: dict[str, Any]) -> Path:
+        raw = str(sleep_cfg.get("state_dir") or "").strip()
+        if raw:
+            return Path(raw).expanduser()
+        root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
+        return root / ".skill_sleep"
+
+    def _build_skill_sleep_rail(self, config: dict[str, Any]) -> SkillSleepRail | None:
+        """Build SkillSleepRail when evolution.enabled + signal_trigger are on."""
+        if not get_skill_sleep_enabled(config):
+            return None
+        try:
+            sleep_cfg = get_skill_sleep_config(config)
+            state_dir = self._resolve_skill_sleep_state_dir(sleep_cfg)
+            counter = SkillCallCounter(state_dir / "call_counts.json")
+            runner = SkillSleepRunner(
+                counter=counter,
+                trajectory_dir=self._resolve_skill_sleep_traces_dir(),
+                skills_base_dir=self._resolve_skill_sleep_skills_dir(),
+                state_dir=state_dir,
+                backend=str(sleep_cfg.get("backend") or "model"),
+                gate_mode=str(sleep_cfg.get("gate_mode") or "on"),
+                rubric_synthesis=str(sleep_cfg.get("rubric_synthesis") or "off"),
+                on_task_created=self._track_skill_sleep_task,
+            )
+            rail = SkillSleepRail(
+                counter=counter,
+                runner=runner,
+                call_threshold=get_skill_sleep_call_threshold(config),
+                last_skills_path=state_dir / "last_skills.json",
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] SkillSleepRail create success "
+                "threshold=%s trajectory=%s skills=%s state=%s",
+                rail.call_threshold,
+                self._resolve_skill_sleep_traces_dir(),
+                self._resolve_skill_sleep_skills_dir(),
+                state_dir,
+            )
+            return rail
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SkillSleepRail create failed: %s",
+                exc,
+            )
+            return None
+
+    def _track_skill_sleep_task(self, task: asyncio.Task) -> None:
+        """Track background sleep tasks with evolution watcher set."""
+        task.add_done_callback(self._on_evolution_watcher_done)
+        self._evolution_watcher_tasks.add(task)
+
+    async def _reconcile_skill_sleep_rail(self) -> None:
+        """Register or unregister SkillSleepRail according to config."""
+        if self._instance is None:
+            return
+        enabled = get_skill_sleep_enabled(self._config_cache)
+        if enabled:
+            if self._skill_sleep_rail is None:
+                rail = self._build_skill_sleep_rail(self._config_cache)
+                if rail is None:
+                    logger.info(
+                        "[JiuWenSwarmDeepAdapter] SkillSleepRail enabled but build "
+                        "returned None; skip register"
+                    )
+                    return
+                try:
+                    await self._instance.register_rail(rail)
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] SkillSleepRail register failed: %s",
+                        exc,
+                    )
+                    return
+                self._skill_sleep_rail = rail
+                logger.info("[JiuWenSwarmDeepAdapter] SkillSleepRail registered")
+            return
+
+        if self._skill_sleep_rail is not None:
+            try:
+                await self._instance.unregister_rail(self._skill_sleep_rail)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] SkillSleepRail unregister failed: %s",
+                    exc,
+                )
+            self._skill_sleep_rail = None
+            logger.info("[JiuWenSwarmDeepAdapter] SkillSleepRail unregistered")
+        else:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] SkillSleepRail disabled "
+                "(evolution.enabled/signal_trigger off); not mounted"
+            )
 
     def _build_skill_credential_injection_rail(
         self,
@@ -9681,6 +9805,16 @@ class JiuWenSwarmDeepAdapter:
         rail_infos.insert(
             1,
             _RailBuildInfo("_skill_active_state_rail", self._build_skill_active_state_rail),
+        )
+        # SkillSleepRail: cold-start mount so session adapters always get it when
+        # evolution.enabled + signal_trigger are on (reconcile handles hot toggle).
+        rail_infos.insert(
+            2,
+            _RailBuildInfo(
+                "_skill_sleep_rail",
+                self._build_skill_sleep_rail,
+                {"config": config},
+            ),
         )
 
         rail_infos.append(
@@ -11716,6 +11850,8 @@ class JiuWenSwarmDeepAdapter:
                 self._sync_ttse_rail_config(self._config_cache)
         elif self._ttse_rail is not None:
             await self._unconfigure_ttse_rail()
+
+        await self._reconcile_skill_sleep_rail()
 
     @staticmethod
     def _user_interaction_rail_attribute() -> str:
