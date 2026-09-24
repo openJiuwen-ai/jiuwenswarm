@@ -303,8 +303,15 @@ async def test_startup_uses_configured_recommendation_credentials(tmp_path, monk
     monkeypatch.setattr(module, 'cached_asset_catalog', asset)
     monkeypatch.setattr(manager, '_team_skills_hub_http_post_data', post)
     await module.start_hub_catalog_preload(manager)
-    await asyncio.sleep(.01)
-    result = await manager.handle_skills_swarm_skills_hub_recommend({'cache_mode': 'prefer_cache', 'top_k': 50, 'session_id': 'page'})
-    assert result['cache']['state'] == 'fresh' and kinds == ['agent_template', 'agent_group', 'plugin', 'mcp']
+    await asyncio.sleep(.05)
+    for plugin_type in ('swarmskill', 'skill'):
+        result = await manager.handle_skills_swarm_skills_hub_recommend({
+            'cache_mode': 'prefer_cache',
+            'top_k': 6,
+            'plugin_type': plugin_type,
+            'session_id': 'page',
+        })
+        assert result['cache']['state'] == 'fresh'
+    assert kinds == ['agent_template', 'agent_group', 'plugin', 'mcp']
     assert cache.db.execute('SELECT COUNT(*) FROM catalog').fetchone()[0] == 0
     await cache.close()

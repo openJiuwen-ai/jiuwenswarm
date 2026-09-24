@@ -346,12 +346,28 @@ def invalidate_hub_catalog(kind: str):
 
 
 async def start_hub_catalog_preload(skill_manager=None):
-    """Schedule the four configured defaults, returning without network waits."""
+    """Schedule configured catalog defaults without waiting on Hub network I/O.
+
+    Skill Plaza home keys are swarmskill/skill × top_k=6 (see useHubMarketplace).
+    """
     from .hub_asset_port import create_default_hub_asset_port
     port = create_default_hub_asset_port()
     for kind in ('agent_template', 'agent_group', 'plugin', 'mcp'):
         await cached_asset_catalog(port, kind, preload=True)
-    if skill_manager is not None:
-        await skill_manager.handle_skills_swarm_skills_hub_recommend({
-            'cache_mode': 'prefer_cache', 'top_k': 50,
-        })
+    if skill_manager is None:
+        return
+
+    async def _warm_skill_recommend(plugin_type: str, top_k: int) -> None:
+        try:
+            await skill_manager.handle_skills_swarm_skills_hub_recommend({
+                'cache_mode': 'prefer_cache',
+                'plugin_type': plugin_type,
+                'top_k': top_k,
+            })
+        except Exception:
+            pass
+
+    await asyncio.gather(
+        _warm_skill_recommend('swarmskill', 6),
+        _warm_skill_recommend('skill', 6),
+    )

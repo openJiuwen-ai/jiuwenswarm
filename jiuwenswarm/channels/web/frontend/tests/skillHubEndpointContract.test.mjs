@@ -22,6 +22,11 @@ test('Skill Hub marketplace and installation rely on the server-configured Hub',
     'const fetchHubRecommendByType = useCallback',
     'const fetchOnlineSearch = useCallback',
   );
+  const homeSource = sourceBetween(
+    hubMarketplaceSource,
+    'const fetchHubHomeSkills = useCallback',
+    'const fetchHubMoreSkills = useCallback',
+  );
   const installationSource = sourceBetween(
     skillPanelSource,
     'const handleInstallHubSkill = useCallback',
@@ -39,6 +44,11 @@ test('Skill Hub marketplace and installation rely on the server-configured Hub',
   assert.match(marketplaceSource, /category_id: category/);
   assert.match(hubMarketplaceSource, /hubHomeLoadedCategoryRef/);
   assert.match(hubMarketplaceSource, /const silent = hubHomeLoadedCategoryRef\.current === category/);
+  // 首开直连 Hub；同分类再进才 prefer_cache
+  assert.match(homeSource, /const preferCache = silent/);
+  assert.match(homeSource, /loadOne\('swarmskill'/);
+  assert.match(homeSource, /loadOne\('skill'/);
+  assert.doesNotMatch(homeSource, /loadOne\('skillpack'|fetchHubRecommendByType\(category,\s*'skillpack'/);
   assert.match(
     sourceBetween(hubMarketplaceSource, 'const pauseHubFetching = useCallback', 'return {'),
     /setHubSkills\(\[\]\)/,
