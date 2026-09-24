@@ -1822,6 +1822,7 @@
       "enable": "Collect Personal Context",
       "enableHint": "Periodic context harvesting & graph building.",
       "strategyProfile": "Context strategy",
+      "strategyLockedByFetch": "A fetch task is running or stopping. You can change the strategy when it finishes.",
       "strategy_agent": "Agent",
       "strategy_balanced": "LLM",
       "strategy_rules": "Rules",
@@ -1831,7 +1832,9 @@
       "modelHint": "Select a model configured in JiuwenSwarm.",
       "collectionStopPending": "A fetch task is running; the setting takes effect shortly.",
       "collectionStoppingRetry": "A fetch task is still running or stopping. Please try again in a moment.",
-      "operationTimeout": "Request timed out. Please try again in a moment."
+      "operationTimeout": "Request timed out. Please try again in a moment.",
+      "collectionTimeoutReconciling": "Request timed out. Checking the actual collection state.",
+      "collectionReconciling": "Request result is still unknown. Checking the actual collection state."
     },
     "authorization": {
       "title": "Content source authorization",
@@ -1931,6 +1934,7 @@
       "colActions": "Actions",
       "stateCollecting": "Fetching",
       "stateCompleted": "Completed",
+      "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
       "stateFailed": "Failed",
       "stateWaiting": "Waiting",
       "stateStopped": "Stopped",
@@ -1956,10 +1960,10 @@
       "collectAll": "Collect All",
       "statSources": "Sources",
       "statKnowledge": "Context Nodes",
-      "statCollecting": "Collecting",
+      "statCollecting": "Active fetch tasks",
       "knowledgeSource": "Context Source",
       "lastRun": "Last Run",
-      "fetchTaskRunning": "A fetch task is currently running. Please wait for it to complete before changing settings."
+      "fetchTaskRunning": "A fetch task is running or stopping. Please wait for it to finish before changing settings."
     },
     "addContent": {
       "title": "Add content",

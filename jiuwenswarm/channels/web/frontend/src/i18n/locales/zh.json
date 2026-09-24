@@ -1812,6 +1812,7 @@
       "enable": "采集个人上下文内容",
       "enableHint": "支持自动周期性采集上下文内容并自动构建图谱。",
       "strategyProfile": "上下文采集模式",
+      "strategyLockedByFetch": "采集任务正在运行或停止中，结束后可切换模式。",
       "strategy_agent": "智能体处理",
       "strategy_balanced": "大模型处理",
       "strategy_rules": "规则处理",
@@ -1822,7 +1823,9 @@
       "modelHint": "选择已在 JiuwenSwarm 中配置的模型。",
       "collectionStopPending": "采集任务运行中，稍后生效",
       "collectionStoppingRetry": "采集任务仍在运行或停止中，请稍后再试",
-      "operationTimeout": "请求超时，请稍后重试"
+      "operationTimeout": "请求超时，请稍后重试",
+      "collectionTimeoutReconciling": "请求超时，正在核对实际采集状态",
+      "collectionReconciling": "请求结果尚未确认，正在核对实际采集状态"
     },
     "authorization": {
       "title": "内容采集授权",
@@ -1922,6 +1925,7 @@
       "colActions": "操作",
       "stateCollecting": "正在采集",
       "stateCompleted": "采集完成",
+      "statePartial": "部分成功：{{completed}}/{{total}}，{{failed}} 项失败",
       "stateFailed": "采集失败",
       "stateWaiting": "等待采集",
       "stateStopped": "已停止",
@@ -1947,10 +1951,10 @@
       "collectAll": "全部开始采集",
       "statSources": "来源",
       "statKnowledge": "上下文节点数",
-      "statCollecting": "正在采集",
+      "statCollecting": "进行中的采集任务",
       "knowledgeSource": "上下文来源",
       "lastRun": "上次采集",
-      "fetchTaskRunning": "当前有采集任务正在运行，请等待完成后再修改配置"
+      "fetchTaskRunning": "当前有采集任务正在运行或停止中，请等待结束后再修改配置"
     },
     "addContent": {
       "title": "添加内容",
@@ -2012,7 +2016,7 @@
         "bookmarksPathLabel": "书签文件路径",
         "bookmarksPathPlaceholder": "留空使用 Edge 默认 Bookmarks 路径",
         "foldersLabel": "需采集的书签文件夹",
-        "foldersPlaceholder": "如 收藏栏/技术，多个用逗号分隔",
+        "foldersPlaceholder": "如 收藏夹栏/技术，多个用逗号分隔",
         "foldersHint": "可选，留空采集全部"
       },
       "github": {
