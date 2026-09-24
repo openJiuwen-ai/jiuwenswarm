@@ -3488,7 +3488,11 @@ def update_log_levels(
     agent_server: Optional[str] = None,
     full: Optional[str] = None,
 ) -> logging.Logger:
-    """运行时动态更新 ``jiuwenswarm`` 根日志及各 handler 的级别，无需重建 handler。"""
+    """运行时动态更新 ``jiuwenswarm`` 根日志及各 handler 的级别。
+
+    企业版同时把解析后的 ``agent_server`` 级别写到 openjiuwen core。单机版不改
+    core，避免覆盖 ``logging.yaml`` 或启动时的 INFO 默认。
+    """
     levels = _resolve_logging_levels(log_level)
 
     if console_level is not None:
@@ -3518,7 +3522,22 @@ def update_log_levels(
         elif isinstance(h, logging.StreamHandler):
             h.setLevel(levels.console)
 
+    if is_enterprise():
+        _sync_openjiuwen_log_level(levels.agent_server)
     return root
+
+
+def _sync_openjiuwen_log_level(level: int) -> None:
+    """Push the managed AgentServer level onto openjiuwen core loggers."""
+    try:
+        from jiuwenswarm.common.openjiuwen_logging import apply_openjiuwen_log_level
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[logging_config] openjiuwen level sync import failed: %s", exc)
+        return
+    try:
+        apply_openjiuwen_log_level(level)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[logging_config] openjiuwen level sync failed: %s", exc)
 
 
 _LOGGING_CONFIG_TABLE = "logging_config"
