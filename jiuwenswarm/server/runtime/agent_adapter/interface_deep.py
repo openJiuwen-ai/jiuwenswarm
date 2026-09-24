@@ -12360,6 +12360,16 @@ class JiuWenSwarmDeepAdapter:
             self._mcp_prewarm_task.cancel()
         self._mcp_prewarm_task = None
         await self._close_a2x_client()
+        # 释放本实例在全局 RailManager 中的 per-agent 注册状态，避免会话
+        # adapter 销毁后状态泄漏（issue #3711）。
+        if self._instance is not None:
+            try:
+                get_rail_manager().release_agent_state(self._instance)
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] release rail manager state failed",
+                    exc_info=True,
+                )
 
     async def _cleanup_evolution_background_tasks(self) -> None:
         """Drain detached evolution work before adapter-owned state is released."""
