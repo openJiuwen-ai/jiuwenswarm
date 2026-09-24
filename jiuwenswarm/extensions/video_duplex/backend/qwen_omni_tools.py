@@ -61,7 +61,7 @@ def qwen_omni_tools() -> list[dict[str, Any]]:
 
 
 def _normalize_delegate_arguments(raw: Any, *, legacy: bool) -> dict[str, Any]:
-    """Normalize a bounded, unambiguous provider envelope without losing scheduling."""
+    """Normalize a bounded, unambiguous provider envelope with exactly one task."""
     if isinstance(raw, str):
         if len(raw) > 65_536:
             raise ValueError("arguments too long")
@@ -80,7 +80,6 @@ def _normalize_delegate_arguments(raw: Any, *, legacy: bool) -> dict[str, Any]:
         raise ValueError("arguments must be a JSON object")
     aliases = set(_DELEGATE_ARGUMENT_NAMES) | {"prompt", "input", "content", "text"}
     wrappers = {"arguments", "parameters", "payload", "input"}
-    scheduling = set()
     tasks = []
     normalized = {}
 
@@ -94,10 +93,6 @@ def _normalize_delegate_arguments(raw: Any, *, legacy: bool) -> dict[str, Any]:
                 if not isinstance(item, str) or not item.strip():
                     raise ValueError("task must be a nonempty string")
                 tasks.append((key, item.strip()))
-            elif key in scheduling:
-                if legacy or key in normalized:
-                    raise ValueError("Ambiguous scheduling arguments")
-                normalized[key] = item
             elif key not in {"reason", "priority"}:
                 raise ValueError("Unsupported delegation argument")
 

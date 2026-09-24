@@ -14,7 +14,10 @@ const compiled = await build({
       builder.onResolve({ filter: /\/services\/webClient$/ }, () => ({ path: 'web-client', namespace: 'offline' }));
       builder.onLoad({ filter: /.*/, namespace: 'offline' }, () => ({ contents: `
         export const webClient = { on() { throw new Error('Unexpected network subscription'); } };
-        export function webRequest() { throw new Error('Unexpected network request'); }
+        export function webRequest(...args) {
+          if (globalThis.joyaiTestRequest) return globalThis.joyaiTestRequest(...args);
+          throw new Error('Unexpected network request');
+        }
       ` }));
     },
   }],

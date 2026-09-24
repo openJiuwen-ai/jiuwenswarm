@@ -44,7 +44,6 @@ function normalizeDelegateArguments(raw: unknown, legacy: boolean): Record<strin
   }
   const aliases: readonly string[] = [...QWEN_OMNI_DELEGATE_ARGUMENT_NAMES, 'prompt', 'input', 'content', 'text'];
   const wrappers = ['arguments', 'parameters', 'payload', 'input'];
-  const scheduling: string[] = [];
   const tasks: Array<[string, string]> = [];
   const normalized: Record<string, unknown> = {};
   const visit = (value: unknown, depth: number): boolean => {
@@ -56,9 +55,7 @@ function normalizeDelegateArguments(raw: unknown, legacy: boolean): Record<strin
       } else if (aliases.includes(key)) {
         if (typeof item !== 'string' || !item.trim()) return false;
         tasks.push([key, item.trim()]);
-      } else if (scheduling.includes(key)) {
-        if (legacy || Object.prototype.hasOwnProperty.call(normalized, key)) return false;
-        normalized[key] = item;
+
       } else if (key !== 'reason' && key !== 'priority') {
         return false;
       }

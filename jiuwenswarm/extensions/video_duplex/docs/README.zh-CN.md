@@ -1,6 +1,6 @@
 # 全双工视频对话
 
-> 更新日期：2026-09-24。本文按本地 `0.2.7 + Xiangyu` 合并版本的界面与实现核对。
+> 更新日期：2026-09-24。本文对应以 `0.2.7` 为基础、定向移植 Xiangyu 作者本人改动的版本。
 > 当前设置入口为 **设置 → 实验功能 → 任务对话全双工**。
 > 版本依据、更新内容和验证边界见 [更新说明](UPDATE_NOTES.zh-CN.md)。
 
@@ -160,7 +160,7 @@ VOICE_TTS_VOICE=your-voice
 3. 对当前屏幕内容提问，检查文字回答、语音播放与说话打断。
 4. 提交需要 Core Agent 处理的请求，检查「进度」中的状态、完整结果与文件产物。
 5. 点击全双工停止按钮，检查媒体采集停止；已提交的委托任务仍可继续。
-6. 回到同一对话重新启动，检查新连接正常建立；刷新后检查任务记录恢复。
+6. 回到同一对话重新启动，检查新连接正常建立；重新打开对话后检查已写入历史的结果与文件。
 
 以上是建议的人工验收步骤。本次文档更新只核对配置界面和代码，
 没有实际发起上游语音会话或提交付费模型请求。
@@ -174,32 +174,15 @@ VOICE_TTS_VOICE=your-voice
 | 切到 HTTP 后语音失败 | 是否仍保留 `ws://` 端点，是否填写 HTTP 语音模型、密钥与音色 |
 | 改配置后会话仍使用旧值 | 保存后停止并重新启动全双工；手改 dotenv 后重启 Gateway |
 | 停止后任务仍在运行 | 停止媒体不取消任务；需要在「进度」中对具体任务执行停止 |
-| 重启后任务显示未知 | 执行归属丢失时保留不确定状态，不自动重放工具；先核实实际执行结果 |
 
-## 6. 停止、重连与任务恢复
-
-Jiuwen 对话、持久化委托任务和实时媒体连接分别管理：
-
-```mermaid
-flowchart LR
-    C[Jiuwen 对话] --> J[持久化 Core Agent 委托任务]
-    J --> R[进度、完整结果和文件]
-    R --> C
-    C --> M[可停止或重新连接的媒体会话]
-    R -. 当前连接的语音回执 .-> M
-```
+## 6. 停止、重连与任务记录
 
 - 停止全双工会释放媒体资源，不等于取消已提交的 Core Agent 任务。
 - 任务按原对话归属，切换对话不会把其他对话的任务接入当前上下文。
-- 前端订阅任务事件并查询未完成任务状态；进入有效对话后，通过 `video.search.list`
-  分页恢复持久化任务，并定期重新同步。
-- 任务记录存放在 Agent 数据根目录的 `voice-agent-tasks.sqlite`；对话时间线和文件历史另行保存。
-  刷新后能够重新读取已保存记录，不应再描述为“仅保存在任务页运行时”。
-- 恢复记录不恢复浏览器屏幕/麦克风授权，也不恢复 Qwen/JoyAI 上游实时连接或模型对话历史。
-  旧结果恢复时不自动补播语音，旧 Qwen `call_id` 不交给新连接。
-- 后端重新取得任务服务所有权时，原 `running`、`cancelling`、`waiting_user`
-  及携带恢复回答的排队任务会标为 `unknown`；不会自动重放可能已经产生副作用的工具。
-  普通未执行排队任务仍受依赖、资源与并发条件控制，不能把持久化恢复理解成所有任务自动续跑。
+- 当前运行时在内存中跟踪委托任务，通过事件与状态查询更新进度。
+  后端任务队列没有 SQLite 持久化恢复；刷新页面或重启服务不能视为恢复运行中的任务。
+- 已写入对话历史的结果、时间线及文件可以重新读取；历史记录与运行中的任务队列是不同的数据。
+- 重连需要重新建立媒体会话，并按浏览器要求授权屏幕和麦克风；不恢复上游实时连接或模型对话历史。
 
 ### 手动调整委托任务
 
@@ -209,8 +192,7 @@ flowchart LR
 
 「正在停止」表示尚未确认终止；已完成的外部操作不会回滚。
 队列顺序由后端确认，过期请求会被拒绝并刷新。
-调整作用于整项委托任务，不重排内部工具步骤；依赖和资源约束仍然生效，
-不能通过手动排序强行绕过前置条件。
+调整作用于整项委托任务，不重排内部工具步骤。
 
 ### 文件产物
 
@@ -237,7 +219,7 @@ sequenceDiagram
     B->>M: 媒体与指令
     M-->>B: 回答或委托意图
     opt 需要工具任务
-        B->>C: 持久化任务与执行请求
+        B->>C: 委托任务与执行请求
         C-->>B: 进度、文件与完整结果
         B-->>P: 更新原对话
         B->>M: 当前连接的工具结果
@@ -281,15 +263,13 @@ sequenceDiagram
 | 当前模型配置表单 | 同目录的 `VideoDuplexModelSettings.tsx` |
 | 配置读取与持久化 | `backend/settings.py` |
 | 任务输入区按钮 | `frontend/TaskFullDuplexAction.tsx` |
-| 任务结果订阅、恢复与历史写入 | `frontend/TaskFullDuplexRuntime.tsx` |
+| 任务结果订阅与历史写入 | `frontend/TaskFullDuplexRuntime.tsx` |
 | 任务归属与结果去重 | `frontend/taskDuplexJobs.ts` |
 | 媒体页面 | `frontend/VideoLivePanel/index.tsx` |
 | JoyAI / Qwen 会话 | `frontend/VideoLivePanel/joyaiProvider.ts`、`qwenOmniSession.ts` |
 | 后端 RPC / WebSocket | `backend/video_live.py` |
 | ASR/TTS | `backend/video_voice.py` |
 | Core Agent 执行与结果展示 | `backend/video_search.py` |
-| 任务协议适配 | `backend/task_adapter.py` |
-| 任务生命周期与 SQLite 持久化 | `backend/tasks/service.py`、`backend/tasks/store.py` |
 
 前端目录 `jiuwenswarm/channels/web/frontend/`：
 
@@ -301,7 +281,7 @@ npm run test:qwen-barge-in
 仓库根目录：
 
 ```shell
-python -m pytest jiuwenswarm/extensions/video_duplex/tests/backend/test_video_task_queue.py jiuwenswarm/extensions/video_duplex/tests/backend/test_managed_tasks.py
+python -m pytest -o addopts= --asyncio-mode=auto jiuwenswarm/extensions/video_duplex/tests/backend/test_video_task_queue.py jiuwenswarm/extensions/video_duplex/tests/backend/test_qwen_omni_tools.py jiuwenswarm/extensions/video_duplex/tests/backend/test_video_live.py
 ```
 
-这些是后续功能修改的验证入口；本次仅更新文档及截图，未运行上述功能测试。
+这些是后续功能修改的验证入口；本次移植的验证范围见更新说明。
