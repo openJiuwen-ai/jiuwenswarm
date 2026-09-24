@@ -183,6 +183,45 @@ class TestLoggerSetup:
         assert sanitized == raw
         assert elapsed < 1.0, f"log sanitization took {elapsed:.3f}s"
 
+    @staticmethod
+    def test_log_sanitizer_unclosed_quote_does_not_leak_next_line_secret():
+        """A truncated secret must not swallow a later line's masking.
+
+        The closing-quote lookup must not cross the newline: otherwise the
+        next line's value-opening quote is consumed as this value's closing
+        quote and that secret stays in plaintext.
+        """
+        raw = "'my_auth_token': 'oops-truncated\npassword_v2: 'hunter2'"
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert "oops-truncated" not in sanitized
+        assert "hunter2" not in sanitized
+
+    @staticmethod
+    def test_log_sanitizer_unclosed_quote_masks_only_current_line():
+        """An unclosed quote masks to end of line; later lines stay readable.
+
+        Uses a quoted key so only the named-KV channel (not the earlier
+        unquoted-key pass) can match, exercising the unclosed-quote branch.
+        """
+        raw = "'user_token': 'abc\ncritical error detail: disk full"
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert "abc" not in sanitized
+        assert "critical error detail: disk full" in sanitized
+
+    @staticmethod
+    def test_log_sanitizer_quoted_value_does_not_cross_newline():
+        """Closing-quote lookup stays on the current line (old-regex semantics)."""
+        raw = "'auth_token': \"a\nb\""
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert '"a' not in sanitized
+        assert '\nb"' in sanitized
+
 
 class TestSourceRecordMasking:
     """Test install_source_record_masking (source-level LogRecord factory masking).

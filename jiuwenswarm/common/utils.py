@@ -2588,26 +2588,39 @@ def _mask_named_sensitive_kv(text: str) -> str:
     The scan advances monotonically.  In particular, a long identifier that
     is not a quoted key/value pair is inspected once instead of being retried
     from every character position by a backtracking regular expression.
+    The closing-quote lookup never crosses a newline: an unclosed quote masks
+    only to the end of the current line, and scanning resumes on the next
+    line so its sensitive pairs stay matchable and unrelated lines stay
+    readable.
     """
     chunks: list[str] = []
     copy_from = 0
     search_from = 0
 
-    while match := _NAMED_QUOTED_KV_START_PATTERN.search(text, search_from):
+    while True:
+        match = _NAMED_QUOTED_KV_START_PATTERN.search(text, search_from)
+        if match is None:
+            break
         search_from = match.end()
         if _NAMED_SENSITIVE_KEY_PATTERN.search(match.group("key")) is None:
             continue
 
         quote = match.group("quote")
         value_start = match.end()
-        value_end = text.find(quote, value_start)
+        line_end = text.find("\n", value_start)
+        if line_end < 0:
+            line_end = len(text)
+        value_end = text.find(quote, value_start, line_end)
         if value_end < 0:
-            # A malformed quoted secret must not leak.  Mask the remaining
-            # tail and stop, avoiding repeated scans of the same suffix.
+            # A malformed quoted secret must not leak.  Mask the rest of the
+            # current line and resume after the newline instead of swallowing
+            # later lines: their quotes must remain available as value
+            # boundaries for their own sensitive keys.
             chunks.append(text[copy_from:value_start])
-            chunks.append(_masked_with_fp(text[value_start:]))
-            copy_from = len(text)
-            break
+            chunks.append(_masked_with_fp(text[value_start:line_end]))
+            copy_from = line_end
+            search_from = line_end
+            continue
 
         chunks.append(text[copy_from:value_start])
         chunks.append(_masked_with_fp(text[value_start:value_end]))
@@ -2678,7 +2691,7 @@ class SensitiveDataFilter(logging.Filter):
     """Mask sensitive data in all log messages and tracebacks."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if getattr(record, "_jiuwen_sensitive_sanitized", False):
+        if getattr(record, "jiuwen_sensitive_sanitized", False):
             return True
 
         sanitized = True
@@ -2714,7 +2727,7 @@ class SensitiveDataFilter(logging.Filter):
             # 同样不因脱敏失败而阻断日志输出。
             sanitized = False
         if sanitized:
-            record._jiuwen_sensitive_sanitized = True
+            record.jiuwen_sensitive_sanitized = True
         return True
 
 
@@ -2775,7 +2788,7 @@ def install_source_record_masking() -> None:
                 record.exc_info = None
             elif record.exc_text:
                 record.exc_text = _sanitize_log_text(record.exc_text)
-            record._jiuwen_sensitive_sanitized = True
+            record.jiuwen_sensitive_sanitized = True
         except Exception:
             # 永不因脱敏失败而阻断日志输出。但记录失败（计数 + 首次 stderr 提示），
             # 避免静默吞掉异常导致 api_key 在无感知下明文泄露。
