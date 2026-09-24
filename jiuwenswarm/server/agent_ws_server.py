@@ -366,12 +366,6 @@ _session_switch_locks: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
 
-# Serialize automatic team creation per session. The lock is weakly held so
-# one-shot chat sessions do not accumulate process-lifetime state.
-_session_team_binding_locks: WeakValueDictionary[str, asyncio.Lock] = (
-    WeakValueDictionary()
-)
-
 # Sessions that have successfully exited plan mode via exit_plan_mode tool.
 # Set by _check_post_process_plan_exit, consumed by _ensure_code_mode_state
 # to prevent TUI-race re-entrance to plan mode.
@@ -2976,14 +2970,6 @@ class AgentWebSocketServer:
     def _session_mode_sync_lock(session_id: str) -> asyncio.Lock:
         return _SERVER_PLAN_CONTROLLER.lock_for(session_id)
 
-    @staticmethod
-    def _session_team_binding_lock(session_id: str) -> asyncio.Lock:
-        lock = _session_team_binding_locks.get(session_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            _session_team_binding_locks[session_id] = lock
-        return lock
-
     async def _push_plan_mode_exited(
         self,
         request: AgentRequest,
@@ -4779,21 +4765,16 @@ class AgentWebSocketServer:
         )
 
     async def _ensure_auto_team_binding_for_chat(self, request: AgentRequest) -> Any | None:
-        """Create and bind a team before the first team chat without consuming its query."""
+        """Forward an existing team binding without creating one from the query."""
         if request.req_method != ReqMethod.CHAT_SEND:
             return None
 
         params = request.params if isinstance(request.params, dict) else {}
         if not isinstance(request.params, dict):
             request.params = params
-        requested_agent_group_name = ""
         session_id = str(request.session_id or params.get("session_id") or "").strip()
         if not session_id:
             return None
-
-        from jiuwenswarm.server.runtime.session.session_metadata import (
-            update_session_metadata,
-        )
 
         metadata = get_session_metadata(session_id, cache_bust=True)
         raw_mode = params.get("mode")
@@ -4806,32 +4787,6 @@ class AgentWebSocketServer:
         if not self._is_team_metadata_mode({"mode": canonical_mode}):
             return None
 
-        if "agent_group_name" in params:
-            raw_agent_group_name = params.get("agent_group_name")
-            if not isinstance(raw_agent_group_name, str) or not raw_agent_group_name.strip():
-                from jiuwenswarm.server.runtime.extension_package_manager import (
-                    AgentGroupPackageError,
-                )
-
-                raise AgentGroupPackageError(
-                    "agent_group_name must be a non-empty string",
-                    "AGENT_GROUP_NAME_INVALID",
-                )
-            requested_agent_group_name = raw_agent_group_name.strip()
-            # Validate before creating the generated Team so an invalid package
-            # cannot leave behind a partially bound session.
-            from jiuwenswarm.server.runtime.extension_package_manager import (
-                AgentGroupPackageError,
-                resolve_agent_group_dir,
-            )
-
-            try:
-                resolve_agent_group_dir(requested_agent_group_name)
-            except AgentGroupPackageError:
-                raise
-            except ValueError as exc:
-                raise AgentGroupPackageError(str(exc), "AGENT_GROUP_NOT_FOUND") from exc
-
         existing_team_name = str(metadata.get("team_name") or "").strip()
         if existing_team_name:
             params.setdefault("team_name", existing_team_name)
@@ -4839,115 +4794,7 @@ class AgentWebSocketServer:
             if template_id:
                 params.setdefault("team_template_id", template_id)
             return existing_team_name
-
-        query = _request_query_text(request)
-        if not query:
-            return None
-
-        async with self._session_team_binding_lock(session_id):
-            metadata = get_session_metadata(session_id, cache_bust=True)
-            existing_team_name = str(metadata.get("team_name") or "").strip()
-            if existing_team_name:
-                params.setdefault("team_name", existing_team_name)
-                template_id = str(metadata.get("team_template_id") or "").strip()
-                if template_id:
-                    params.setdefault("team_template_id", template_id)
-                return existing_team_name
-
-            from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
-            from jiuwenswarm.server.runtime.team_entity_store import get_team_entity_store
-
-            team_leader_identity = None
-            if requested_agent_group_name:
-                # The session binding is created before TeamHelpers sees the
-                # first chat request, so the latter cannot use
-                # ``persist_agent_group`` to detect this first-binding edge.
-                # Resolve the packaged leader only for this new binding; an
-                # existing legacy session without a snapshot must keep its
-                # historical fallback identity.
-                from jiuwenswarm.server.runtime.extension_package_manager import (
-                    resolve_agent_group_leader_identity,
-                )
-
-                try:
-                    team_leader_identity = resolve_agent_group_leader_identity(
-                        requested_agent_group_name
-                    )
-                except Exception as identity_exc:  # noqa: BLE001 — identity is optional
-                    logger.warning(
-                        "[AgentWebSocketServer] unable to resolve AgentGroup leader identity: "
-                        "session_id=%s agent_group_name=%s error=%s",
-                        session_id,
-                        requested_agent_group_name,
-                        identity_exc,
-                    )
-
-            binding, _template = await self._create_generated_team_binding(
-                description=query,
-                config_base=get_config(),
-            )
-            binding_store = get_team_binding_store()
-            entity_store = get_team_entity_store()
-            try:
-                from jiuwenswarm.runtime.session_delete import TEAM_DELETION_GATE
-
-                async with TEAM_DELETION_GATE.mutation_lock(binding.team_name):
-                    TEAM_DELETION_GATE.assert_not_deleting_locked(binding.team_name)
-                    binding = binding_store.bind_session(
-                        team_name=binding.team_name,
-                        session_id=session_id,
-                    )
-                    update_session_metadata(
-                        session_id=session_id,
-                        channel_id=request.channel_id or None,
-                        user_content=query,
-                        mode=canonical_mode,
-                        team_name=binding.team_name,
-                        team_template_id=binding.template_id,
-                        agent_group_name=requested_agent_group_name or None,
-                        team_leader_identity=team_leader_identity,
-                        touch_last_message_at=False,
-                        cache_bust=bool(requested_agent_group_name),
-                        sync_write=True,
-                    )
-            except Exception:
-                cleanup_errors: list[str] = []
-                cleanup_steps = (
-                    lambda: binding_store.unbind_session(
-                        team_name=binding.team_name,
-                        session_id=session_id,
-                    ),
-                    lambda: binding_store.delete(binding.team_name),
-                    lambda: entity_store.delete_team_directory(binding.team_name),
-                )
-                for cleanup_step in cleanup_steps:
-                    try:
-                        cleanup_step()
-                    except Exception as cleanup_exc:  # noqa: BLE001
-                        cleanup_errors.append(str(cleanup_exc))
-                if cleanup_errors:
-                    logger.warning(
-                        "[AgentWebSocketServer] auto team binding rollback incomplete: "
-                        "session_id=%s team_name=%s errors=%s",
-                        session_id,
-                        binding.team_name,
-                        cleanup_errors,
-                    )
-                raise
-
-            params["team_name"] = binding.team_name
-            params["team_template_id"] = binding.template_id
-            request.metadata = dict(request.metadata or {})
-            request.metadata["team_name"] = binding.team_name
-            request.metadata["team_template_id"] = binding.template_id
-            logger.info(
-                "[AgentWebSocketServer] auto-created and bound team before chat: "
-                "session_id=%s team_name=%s template_id=%s",
-                session_id,
-                binding.team_name,
-                binding.template_id,
-            )
-            return binding
+        return None
 
     @staticmethod
     def _is_team_metadata_mode(metadata: dict[str, Any]) -> bool:
