@@ -664,8 +664,8 @@ class SwarmSymphonyService:
             flow_engine = SymphonyFlowEngine(
                 flow_dir,
                 config=CoreSymphonyFlowConfig(
-                    min_successes_candidate=config.flow.min_successes_candidate,
-                    min_successes_verified=config.flow.min_successes_verified,
+                    min_successes_candidate=flow_cfg.min_successes,
+                    min_successes_verified=flow_cfg.min_successes,
                     min_pack_success_rate_verified=flow_cfg.min_pack_success_rate,
                 ),
                 llm_client=model,

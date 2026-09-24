@@ -275,8 +275,7 @@ def test_evolution_is_the_only_core_experience_switch(tmp_path: Path) -> None:
 
     assert config.evolution.flow.enabled is False
     assert not hasattr(config.evolution, "backend")
-    assert config.flow.min_successes_candidate == 2
-    assert config.flow.min_successes_verified == 3
+    assert config.evolution.flow.min_successes == 3
 
 
 def test_experience_candidate_server_methods_are_routable() -> None:
@@ -876,10 +875,9 @@ def test_core_flow_uses_success_count_config_and_ignores_legacy_switch(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": False, "flow": {"enabled": True}},
-            "flow": {
-                "min_successes_candidate": 4,
-                "min_successes_verified": 6,
+            "evolution": {
+                "enabled": False,
+                "flow": {"enabled": True, "min_successes": 6},
             },
         }
     )
@@ -916,7 +914,7 @@ def test_core_flow_uses_success_count_config_and_ignores_legacy_switch(
     assert created["review_agent"] is not None
     assert created["flow_root"] == tmp_path / "flow"
     assert created["llm_client"] is model
-    assert created["config"].min_successes_candidate == 4
+    assert created["config"].min_successes_candidate == 6
     assert created["config"].min_successes_verified == 6
     assert isinstance(created["skill_adapter"], SkillPackAdapter)
     assert isinstance(created["runtime"]["flow_engine"], Flow)

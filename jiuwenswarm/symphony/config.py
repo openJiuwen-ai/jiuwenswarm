@@ -22,9 +22,7 @@ DEFAULT_BUILD_MIN_EDGE_CONFIDENCE = 0.5
 
 DEFAULT_SYMPHONY_ENABLED = False
 DEFAULT_EVOLUTION_ENABLED = False
-DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE = 2
-DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED = 3
-
+DEFAULT_FLOW_MIN_SUCCESSES = 3
 DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE = 0.8
 
 DEFAULT_ORCHESTRATION_MODE = "fast"
@@ -70,21 +68,16 @@ class SymphonyBuildConfig:
 
 @dataclass(frozen=True)
 class SymphonyFlowDistillConfig:
-    """Core Graph-Evolution Rail 和 Flow 引擎的启停及成功率阈值。"""
+    """Core Graph-Evolution Rail 和 Flow 引擎的启停及沉淀阈值。"""
 
     enabled: bool = DEFAULT_EVOLUTION_ENABLED
+    min_successes: int = DEFAULT_FLOW_MIN_SUCCESSES
     min_pack_success_rate: float = DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE
 
 
 @dataclass(frozen=True)
 class SymphonyEvolutionConfig:
     flow: SymphonyFlowDistillConfig = SymphonyFlowDistillConfig()
-
-
-@dataclass(frozen=True)
-class SymphonyFlowConfig:
-    min_successes_candidate: int = DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE
-    min_successes_verified: int = DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED
 
 
 @dataclass(frozen=True)
@@ -102,7 +95,6 @@ class SymphonyConfig:
     fingerprint: SymphonyFingerprintConfig
     build: SymphonyBuildConfig
     evolution: SymphonyEvolutionConfig
-    flow: SymphonyFlowConfig
     orchestration: SymphonyOrchestrationConfig
 
 
@@ -133,7 +125,6 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
     flow_enabled = flow_cfg.get("enabled")
     if flow_enabled is None:
         flow_enabled = evolution.get("enabled")
-    flow = _mapping(data.get("flow"))
     orchestration = _mapping(data.get("orchestration"))
 
     return SymphonyConfig(
@@ -193,21 +184,14 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
             flow=SymphonyFlowDistillConfig(
                 # enabled 移到 flow 下；旧配置（enabled 在 evolution 层）向后兼容
                 enabled=resolve_symphony_evolution_enabled(flow_enabled),
+                min_successes=_positive_int(
+                    flow_cfg.get("min_successes"),
+                    DEFAULT_FLOW_MIN_SUCCESSES,
+                ),
                 min_pack_success_rate=_clamped_float(
                     flow_cfg.get("min_pack_success_rate"),
                     DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE,
                 ),
-            ),
-        ),
-        flow=SymphonyFlowConfig(
-            min_successes_candidate=_positive_int(
-                flow.get("min_successes_candidate"),
-                DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE,
-            ),
-            min_successes_verified=_positive_int(
-                # 兼容 0.2.7 先前的 evolution.flow.min_successes 配置。
-                flow.get("min_successes_verified", flow_cfg.get("min_successes")),
-                DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED,
             ),
         ),
         orchestration=SymphonyOrchestrationConfig(

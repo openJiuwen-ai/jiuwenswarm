@@ -27,8 +27,7 @@ def test_symphony_config_defaults_paths(monkeypatch, tmp_path):
     assert cfg.orchestration.mode == "fast"
     assert cfg.orchestration.min_edge_confidence == 0.5
     assert cfg.evolution.flow.enabled is False
-    assert cfg.flow.min_successes_candidate == 2
-    assert cfg.flow.min_successes_verified == 3
+    assert cfg.evolution.flow.min_successes == 3
     assert cfg.enabled is False
 
 
@@ -84,11 +83,7 @@ def test_symphony_config_normalizes_values(monkeypatch, tmp_path):
                 "max_depth": "7",
                 "min_edge_confidence": -1,
             },
-            "evolution": {"enabled": "false"},
-            "flow": {
-                "min_successes_candidate": "4",
-                "min_successes_verified": 6,
-            },
+            "evolution": {"enabled": "false", "flow": {"min_successes": "6"}},
             "enabled": "true",
         }
     )
@@ -108,8 +103,7 @@ def test_symphony_config_normalizes_values(monkeypatch, tmp_path):
     assert cfg.orchestration.max_depth == 7
     assert cfg.orchestration.min_edge_confidence == 0.0
     assert cfg.evolution.flow.enabled is False
-    assert cfg.flow.min_successes_candidate == 4
-    assert cfg.flow.min_successes_verified == 6
+    assert cfg.evolution.flow.min_successes == 6
     assert cfg.enabled is True
 
 
