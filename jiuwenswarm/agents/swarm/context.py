@@ -43,7 +43,9 @@ class SwarmBuildContext(BuildContext):
         team_id: Team name.
         team_ws_root: Team shared workspace root path.
         team_skills_dir: Team shared skills directory (``team_ws_root/skills``).
-        global_skills_dir: Global agent skills directory.
+        global_skills_dir: Global agent skills directory (skill authoring target).
+        shared_skills_dirs: Ordered skill roots matching the runtime skill_tool
+            resolution (tip/env shared dirs); source for member skill linking.
         config: The resolved ``config.yaml`` mapping (``get_config()``).
     """
 
@@ -59,6 +61,7 @@ class SwarmBuildContext(BuildContext):
     team_ws_root: str | None = None
     team_skills_dir: str | None = None
     global_skills_dir: str | None = None
+    shared_skills_dirs: list[str] | None = None
     config: dict[str, Any] | None = None
 
     def to_seed(self) -> dict[str, Any]:
@@ -88,6 +91,7 @@ class SwarmBuildContext(BuildContext):
             "team_ws_root": self.team_ws_root,
             "team_skills_dir": self.team_skills_dir,
             "global_skills_dir": self.global_skills_dir,
+            "shared_skills_dirs": self.shared_skills_dirs,
             "language": self.language,
         }
 
@@ -124,6 +128,7 @@ class SwarmBuildContext(BuildContext):
             team_ws_root=seed.get("team_ws_root"),
             team_skills_dir=seed.get("team_skills_dir"),
             global_skills_dir=seed.get("global_skills_dir"),
+            shared_skills_dirs=seed.get("shared_skills_dirs"),
             config=config,
             language=language,
         )

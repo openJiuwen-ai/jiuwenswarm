@@ -223,8 +223,8 @@ def test_refresh_team_shared_skill_links_across_managers_uses_registered_session
     team_shared_skills = tmp_path / "team-workspace" / "skills"
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.team_manager.get_agent_skills_dir",
-        lambda: global_skills_dir,
+        "jiuwenswarm.agents.harness.team.team_manager.resolve_agent_registered_skill_dirs",
+        lambda: [global_skills_dir],
     )
 
     manager = get_team_manager("web")

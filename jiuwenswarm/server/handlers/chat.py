@@ -468,6 +468,28 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
             params.setdefault("team_template_id", template_id)
         return existing_team_name
 
+    # 请求已显式携带 team_name（relay 从会话绑定透传）：这是权威绑定，绝不能被
+    # 下方的"自动生成团队"抢占——自动建队会从 modes.team 挑第一个模板生成新团，
+    # 把用户自选的（自定义）专家团静默替换成预置团。这里只同步元数据并返回。
+    requested_team_name = str(params.get("team_name") or "").strip()
+    if requested_team_name:
+        update_session_metadata(
+            session_id=session_id,
+            channel_id=request.channel_id or None,
+            mode=canonical_mode,
+            team_name=requested_team_name,
+            runtime_team_name=TeamManager.build_session_scoped_team_name(
+                requested_team_name,
+                session_id,
+            ),
+            touch_last_message_at=False,
+            sync_write=True,
+            sessions_root=sessions_root,
+        )
+        request.metadata = dict(request.metadata or {})
+        request.metadata["team_name"] = requested_team_name
+        return requested_team_name
+
     query = _request_query_text(request)
     if not query:
         return None
