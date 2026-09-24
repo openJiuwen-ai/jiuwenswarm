@@ -2,13 +2,18 @@ import {
   scheduleCatalogRefresh,
   catalogScope,
   withCatalogCache,
+  isCatalogMissRefreshing,
   type CatalogCacheMetadata,
+  type CatalogItems,
 } from '../../features/catalogCache';
 /**
  * 技能广场（SkillHub 推荐 / 在线搜索 / 广场详情）数据 hook
  *
- * 首页按类型各拉 HUB_HOME_TOP_K；「更多」专页按需拉 HUB_MORE_TOP_K。
- * 离开页签保留首页/更多列表；再进入同分类时 stale-while-revalidate（先展示旧数据再静默刷新）。
+ * 首页按类型各拉 HUB_HOME_TOP_K（仅 swarmskill / skill；不单独请求 skillpack，
+ * 技能包区块展示两路推荐/搜索结果中捎带的 skillpack 条目）。
+ * 推荐一律先 prefer_cache；cold miss 且无内存旧卡时立刻直连 Hub（不空等轮询），
+ * miss 后台回填会写入目录缓存，二次打开即可命中。同分类再进仍 SWR（保留旧卡）。
+ * 「更多」专页按需拉 HUB_MORE_TOP_K（同样 cache→miss 直连）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { webRequest } from '../../services/webClient';
@@ -97,7 +102,8 @@ export function useHubMarketplace({
   /** 「更多」专页：单类型最多 HUB_MORE_TOP_K */
   const [hubTeamMore, setHubTeamMore] = useState<MarketplacePluginItem[]>([]);
   const [hubSkillMore, setHubSkillMore] = useState<MarketplacePluginItem[]>([]);
-  const [hubLoading, setHubLoading] = useState(false);
+  // 默认落在技能广场：首帧即转圈，避免 prefer_cache miss 前误画「暂无匹配」
+  const [hubLoading, setHubLoading] = useState(true);
   const [hubMoreLoading, setHubMoreLoading] = useState(false);
   /** 更多列表已加载的分类 + 类型，避免同分类重复请求 */
   const [hubMoreLoadedFor, setHubMoreLoadedFor] = useState<{
@@ -115,10 +121,16 @@ export function useHubMarketplace({
   const [hubDetailState, setHubDetailState] = useState<LoadState>('idle');
 
   const fetchHubRecommendByType = useCallback(
-    async (category: string, pluginType: 'swarmskill' | 'skill', topK: number) => {
+    async (
+      category: string,
+      pluginType: 'swarmskill' | 'skill',
+      topK: number,
+      options?: { preferCache?: boolean },
+    ) => {
+      const preferCache = options?.preferCache !== false;
       const params = withSession({
         top_k: topK,
-        cache_mode: 'prefer_cache',
+        ...(preferCache ? { cache_mode: 'prefer_cache' as const } : {}),
         plugin_type: pluginType,
         ...(category !== 'all' ? { category_id: category } : {}),
       });
@@ -138,6 +150,7 @@ export function useHubMarketplace({
     async (category: string) => {
       const seq = ++hubFetchSeqRef.current;
       const requestScope = catalogScope();
+      // silent：同分类已有内存卡片 → SWR，不整页转圈、不空写覆盖。
       const silent = hubHomeLoadedCategoryRef.current === category;
       if (!silent) {
         setHubLoading(true);
@@ -145,19 +158,71 @@ export function useHubMarketplace({
         setHubSkillMore([]);
         setHubMoreLoadedFor(null);
       }
-      try {
-        const [teamResult, skillResult] = await Promise.allSettled([
-          fetchHubRecommendByType(category, 'swarmskill', HUB_HOME_TOP_K),
-          fetchHubRecommendByType(category, 'skill', HUB_HOME_TOP_K),
-        ]);
+      let pending = 2;
+      let revealed = silent;
+      const onOneDone = (hasItems: boolean) => {
         if (seq !== hubFetchSeqRef.current) return;
+        pending -= 1;
+        // 任一路先出货，或两路都结束：结束转圈，剩余一路到位后原地补齐。
+        if (!revealed && (hasItems || pending <= 0)) {
+          revealed = true;
+          setHubLoading(false);
+        }
+      };
 
-        if (requestScope !== catalogScope()) return;
-        const caches = [teamResult, skillResult].flatMap((result) =>
-          result.status === 'fulfilled' && result.value.cache ? [result.value.cache] : [],
-        );
+      const loadOne = async (
+        pluginType: 'swarmskill' | 'skill',
+        apply: (items: MarketplacePluginItem[]) => void,
+        clearOnError: () => void,
+        label: string,
+      ): Promise<CatalogItems<MarketplacePluginItem> | null> => {
+        try {
+          // 一律先 prefer_cache：二次打开/预热命中可秒出；cold miss 再直连。
+          let items = await fetchHubRecommendByType(category, pluginType, HUB_HOME_TOP_K, {
+            preferCache: true,
+          });
+          if (seq !== hubFetchSeqRef.current || requestScope !== catalogScope()) return null;
+
+          const coldMiss = isCatalogMissRefreshing(items.cache) && items.length === 0;
+          if (coldMiss && silent) {
+            // 保留旧卡；由 scheduleCatalogRefresh 静默重拉，勿用空列表覆盖。
+            onOneDone(false);
+            return items;
+          }
+          if (coldMiss) {
+            // miss 后台会回填 sqlite；前台立刻直连 Hub，避免空等轮询。
+            items = await fetchHubRecommendByType(category, pluginType, HUB_HOME_TOP_K, {
+              preferCache: false,
+            });
+            if (seq !== hubFetchSeqRef.current || requestScope !== catalogScope()) return null;
+          }
+
+          apply(items);
+          onOneDone(items.length > 0);
+          return items;
+        } catch (error) {
+          console.error(`Failed to fetch ${label} SkillHub recommend:`, error);
+          if (seq !== hubFetchSeqRef.current || requestScope !== catalogScope()) return null;
+          if (!silent) clearOnError();
+          onOneDone(false);
+          return null;
+        }
+      };
+
+      try {
+        // 首页两路并行，互不等待更新 UI；技能包不单独请求。
+        const [teamItems, skillItems] = await Promise.all([
+          loadOne('swarmskill', setHubTeamHome, () => setHubTeamHome([]), 'team'),
+          loadOne('skill', setHubSkillHome, () => setHubSkillHome([]), 'skill'),
+        ]);
+        if (seq !== hubFetchSeqRef.current || requestScope !== catalogScope()) return;
+
+        const caches = [teamItems, skillItems]
+          .filter((items): items is CatalogItems<MarketplacePluginItem> => items != null)
+          .flatMap((items) => (items.cache ? [items.cache] : []));
         const cache = caches.find((value) => value.refreshing) || caches[0];
         setHubCache(cache);
+        // 静默轮询：后台填库/刷新后更新列表（不打断已有卡片）。
         scheduleCatalogRefresh(
           'skill-recommend',
           cache,
@@ -167,46 +232,69 @@ export function useHubMarketplace({
           () => mountedRef.current && seq === hubFetchSeqRef.current,
         );
 
-        if (teamResult.status === 'fulfilled') {
-          setHubTeamHome(teamResult.value);
-        } else {
-          console.error('Failed to fetch team SkillHub recommend:', teamResult.reason);
-          if (!silent) setHubTeamHome([]);
-        }
-
-        if (skillResult.status === 'fulfilled') {
-          setHubSkillHome(skillResult.value);
-        } else {
-          console.error('Failed to fetch skill SkillHub recommend:', skillResult.reason);
-          if (!silent) setHubSkillHome([]);
-        }
-
-        if (teamResult.status === 'fulfilled' || skillResult.status === 'fulfilled') {
+        // 同分类 silent miss（未覆盖旧卡）不改 ref；其余成功返回则标记已加载。
+        const onlySilentMiss =
+          silent &&
+          [teamItems, skillItems].every(
+            (items) => items == null || (isCatalogMissRefreshing(items.cache) && items.length === 0),
+          );
+        if (onlySilentMiss) {
+          // keep hubHomeLoadedCategoryRef
+        } else if (teamItems || skillItems) {
           hubHomeLoadedCategoryRef.current = category;
         } else if (!silent) {
           hubHomeLoadedCategoryRef.current = null;
         }
       } finally {
-        if (seq === hubFetchSeqRef.current) setHubLoading(false);
+        if (seq === hubFetchSeqRef.current && !revealed) {
+          setHubLoading(false);
+        }
       }
     },
     [fetchHubRecommendByType],
   );
 
   const fetchHubMoreSkills = useCallback(
-    async (kind: 'swarmskill' | 'skill', category: string) => {
+    async (kind: 'swarmskill' | 'skill', category: string, options?: { silent?: boolean }) => {
+      const silent = Boolean(options?.silent);
       const seq = ++hubMoreFetchSeqRef.current;
       const requestScope = catalogScope();
-      setHubMoreLoading(true);
+      // 先 prefer_cache；cold miss 且非静默时立刻直连（与首页一致）。
+      if (!silent) {
+        setHubMoreLoading(true);
+      }
       try {
-        const items = await fetchHubRecommendByType(category, kind, HUB_MORE_TOP_K);
+        let items = await fetchHubRecommendByType(category, kind, HUB_MORE_TOP_K, {
+          preferCache: true,
+        });
         if (requestScope !== catalogScope() || seq !== hubMoreFetchSeqRef.current) return;
+
+        const coldMiss = isCatalogMissRefreshing(items.cache) && items.length === 0;
+        if (coldMiss && silent) {
+          setHubCache(items.cache);
+          scheduleCatalogRefresh(
+            'skill-more',
+            items.cache,
+            () => {
+              void fetchHubMoreSkills(kind, category, { silent: true });
+            },
+            () => mountedRef.current && seq === hubMoreFetchSeqRef.current,
+          );
+          return;
+        }
+        if (coldMiss) {
+          items = await fetchHubRecommendByType(category, kind, HUB_MORE_TOP_K, {
+            preferCache: false,
+          });
+          if (requestScope !== catalogScope() || seq !== hubMoreFetchSeqRef.current) return;
+        }
+
         setHubCache(items.cache);
         scheduleCatalogRefresh(
           'skill-more',
           items.cache,
           () => {
-            void fetchHubMoreSkills(kind, category);
+            void fetchHubMoreSkills(kind, category, { silent: true });
           },
           () => mountedRef.current && seq === hubMoreFetchSeqRef.current,
         );
@@ -227,7 +315,9 @@ export function useHubMarketplace({
         if (kind === 'swarmskill') setHubTeamMore([]);
         else setHubSkillMore([]);
       } finally {
-        if (seq === hubMoreFetchSeqRef.current) setHubMoreLoading(false);
+        if (seq === hubMoreFetchSeqRef.current) {
+          setHubMoreLoading(false);
+        }
       }
     },
     [fetchHubRecommendByType],
@@ -253,10 +343,14 @@ export function useHubMarketplace({
   }, [setMarketplaceSubView]);
 
   const fetchOnlineSearch = useCallback(
-    async (query: string) => {
+    async (query: string, options?: { silent?: boolean }) => {
+      const silent = Boolean(options?.silent);
       const seq = ++hubFetchSeqRef.current;
       const requestScope = catalogScope();
-      setHubLoading(true);
+      // 后台轮询不得再拉起整页转圈，否则会出现「结果→转圈→结果」
+      if (!silent) {
+        setHubLoading(true);
+      }
       try {
         const data = await webRequest<{
           success: boolean;
@@ -296,7 +390,9 @@ export function useHubMarketplace({
           'skills.online_search.search',
           withSession({
             q: query,
-            cache_mode: 'prefer_cache',
+            // 搜索词每次不同，prefer_cache 几乎必 miss（空返回 + 后台刷新 + 轮询），
+            // 比直连 Hub 更慢；广场搜索不走缓存，一次 RPC 等结果即可。
+            // 首页 recommend / 其他页面的 prefer_cache 不受影响。
             limit: 50,
           }),
           { timeoutMs: 45000 },
@@ -304,11 +400,12 @@ export function useHubMarketplace({
 
         if (requestScope !== catalogScope() || seq !== hubFetchSeqRef.current) return;
         setHubCache(data.cache);
+        // 广场搜索已不传 prefer_cache；若后端仍带回 cache.refreshing，静默刷新且不打断 UI
         scheduleCatalogRefresh(
           'skill-search',
           data.cache,
           () => {
-            void fetchOnlineSearch(query);
+            void fetchOnlineSearch(query, { silent: true });
           },
           () => mountedRef.current && seq === hubFetchSeqRef.current,
         );
@@ -351,7 +448,9 @@ export function useHubMarketplace({
         console.error('Failed to fetch online search:', error);
         if (seq !== hubFetchSeqRef.current) return;
       } finally {
-        if (seq === hubFetchSeqRef.current) setHubLoading(false);
+        if (seq === hubFetchSeqRef.current) {
+          setHubLoading(false);
+        }
       }
     },
     [withSession],

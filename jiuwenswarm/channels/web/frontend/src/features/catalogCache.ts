@@ -59,7 +59,19 @@ export function catalogScope(): string {
   }
 }
 const refreshes = new Map<string, { timer: ReturnType<typeof setTimeout>; count: number }>();
-/** Poll only an in-progress local cache refresh; retain cards and stop after two minutes. */
+/** Cold miss: poll quickly so the first paint is not delayed by a multi-second gap. */
+const MISS_POLL_MS = 400;
+/** Stale-while-revalidate: slower poll; cards are already visible. */
+const STALE_POLL_MS = 4000;
+const MISS_MAX_POLLS = 150; // ~60s at MISS_POLL_MS
+const STALE_MAX_POLLS = 30; // ~120s at STALE_POLL_MS
+
+/** True when prefer_cache returned no payload and a background fill is in flight. */
+export function isCatalogMissRefreshing(cache?: CatalogCacheMetadata): boolean {
+  return Boolean(cache && cache.state === 'miss' && cache.refreshing);
+}
+
+/** Poll only an in-progress local cache refresh; retain cards and stop after ~1–2 minutes. */
 export function scheduleCatalogRefresh(
   key: string,
   cache: CatalogCacheMetadata | undefined,
@@ -68,15 +80,18 @@ export function scheduleCatalogRefresh(
 ) {
   const previous = refreshes.get(key);
   if (previous) clearTimeout(previous.timer);
-  if (!cache?.refreshing || (previous?.count || 0) >= 30) {
+  const miss = cache?.state === 'miss';
+  const maxPolls = miss ? MISS_MAX_POLLS : STALE_MAX_POLLS;
+  if (!cache?.refreshing || (previous?.count || 0) >= maxPolls) {
     refreshes.delete(key);
     return;
   }
   const scope = catalogScope();
+  const delayMs = miss ? MISS_POLL_MS : STALE_POLL_MS;
   const timer = setTimeout(() => {
     if (scope === catalogScope() && isCurrent()) refresh();
     else refreshes.delete(key);
-  }, 4000);
+  }, delayMs);
   refreshes.set(key, { timer, count: (previous?.count || 0) + 1 });
 }
 export function catalogCacheOf(items: unknown): CatalogCacheMetadata | undefined {
