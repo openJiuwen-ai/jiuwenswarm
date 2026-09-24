@@ -459,11 +459,16 @@ class SessionArchiveService:
                 is_cron_session,
                 parked_team_streams=parked_team_streams,
             ):
-                raise lc.LifecycleError(
-                    "SESSION_BUSY",
-                    f"Session is running; stop it before {action}",
-                    {"stop_pending": False},
-                )
+                details = {"stop_pending": False}
+                message = f"Session is running; stop it before {action}"
+                probe = getattr(self.runtime, "is_team_round_finishing", None)
+                if callable(probe) and probe(session_id):
+                    # swarmflow.stop/自然完成后 leader 仍在收尾汇报：会话正在
+                    # 自行结束，引导稍后重试，而不是让用户先停止一个无活可停的
+                    # 会话。finishing 标记供前端区分两种 busy 文案。
+                    details["finishing"] = True
+                    message = "swarm flow 已结束，会话回合收尾中，请稍后重试"
+                raise lc.LifecycleError("SESSION_BUSY", message, details)
             operation = lc.begin(
                 "session", session_id, action, block_execution=action != "archive"
             )

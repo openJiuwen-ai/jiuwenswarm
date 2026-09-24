@@ -6,7 +6,7 @@ export interface ProjectSessionBatchResult {
   project_id: string;
   succeeded_count: number;
   failed_count: number;
-  results: { session_id: string; ok: boolean; code?: string; error?: string }[];
+  results: { session_id: string; ok: boolean; code?: string; error?: string; finishing?: boolean }[];
 }
 
 export const projectRegistryClient = {
