@@ -113,12 +113,23 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         """
         import json
 
+        output_dir = str(inputs.get("output_dir") or "").strip()
+        path_guard = (
+            "\n## 路径纪律（必须遵守）\n"
+            f"- 产物根目录 output_dir：`{output_dir}`\n"
+            "- 落盘文件必须使用输入参数中已给出的绝对路径，或基于上述 output_dir "
+            "拼接的完整绝对路径；严禁凭记忆重新拼写、缩略或改造目录名。\n"
+            if output_dir
+            else ""
+        )
+
         return (
             f"你正在替代一个失败的 SkillTurbo 规划节点完成任务。\n"
             f"节点名称: {node_name}\n"
             f"任务说明: {instruction}\n"
             f"原失败原因: {type(error).__name__}: {error}\n"
-            f"输入参数: {json.dumps(inputs, ensure_ascii=False, default=str)}\n\n"
+            f"输入参数: {json.dumps(inputs, ensure_ascii=False, default=str)}\n"
+            f"{path_guard}\n"
             f"## 强制输出格式\n"
             f"先输出给用户看的正文内容，然后在末尾另起一行输出契约声明（单行内联代码）：\n"
             f"---\n"
@@ -328,6 +339,64 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
             return False, {"reason": reason}
         return True, contract_result
 
+    @staticmethod
+    def _reconcile_contract_artifacts(
+        inputs: dict[str, Any],
+        contract_result: dict[str, Any],
+    ) -> None:
+        """契约通过后，把产物路径归位到 output_dir（原地修正 contract_result）。
+
+        纠正 subagent 自行拼接路径、把产物写到 output_dir 之外导致下游
+        按约定路径读取失败的问题。仅当同时满足以下条件才动作：
+        - key 以 _path/_file 结尾，且值为已存在的文件；
+        - 该文件不在 output_dir 之下；
+        - output_dir 下无同名文件（不覆盖已有产物）。
+        动作为复制（非移动）；任何失败仅记 WARNING，不影响契约结果。
+        skill 流水线将产物根目录写入 inputs["output_dir"] 即可启用本防护。
+        """
+        import shutil
+        from pathlib import Path
+
+        output_dir = str(inputs.get("output_dir") or "").strip()
+        if not output_dir:
+            return
+        out_root = Path(output_dir)
+        path_key_suffixes = ("_path", "_file")
+        for key, value in list(contract_result.items()):
+            if not isinstance(value, str) or not value.strip():
+                continue
+            if not any(key.endswith(s) for s in path_key_suffixes):
+                continue
+            src = Path(value.strip())
+            if not src.is_file():
+                continue
+            try:
+                src.resolve().relative_to(out_root.resolve())
+                continue
+            except ValueError:
+                pass
+            dst = out_root / src.name
+            if dst.exists():
+                continue
+            try:
+                shutil.copy2(src, dst)
+            except OSError as exc:
+                logger.warning(
+                    "[DeepAgentFallbackHandler] fallback artifact relocate failed "
+                    "key=%s src=%s error=%s",
+                    key,
+                    src,
+                    exc,
+                )
+                continue
+            contract_result[key] = str(dst)
+            logger.warning(
+                "[DeepAgentFallbackHandler] fallback artifact relocated key=%s src=%s dst=%s",
+                key,
+                src,
+                dst,
+            )
+
     async def _execute_spawn_fallback(self, call: FallbackCall) -> str:
         """通过 adapter 的 ``spawn_fallback`` 执行 SkillTurbo fallback，返回子代理输出文本。"""
         query = self._build_fallback_query(
@@ -367,6 +436,8 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         # 抛出异常让 SkillTurbo 降级到 DeepAgent。
         success, contract_result = self._parse_fallback_output(fallback_output)
         if success:
+            # 先归位产物再校验交付物，validator 才能看到正确位置的产物
+            self._reconcile_contract_artifacts(inputs, contract_result)
             success, contract_result = self._apply_result_validator(
                 result_validator, node_name, inputs, contract_result
             )
@@ -457,6 +528,8 @@ class DeepAgentFallbackHandler(SkillTurboFallbackHandler):
         # 抛出异常让 SkillTurbo 降级到 DeepAgent。
         contract_success, contract_result = self._parse_fallback_output(fallback_output)
         if contract_success:
+            # 先归位产物再校验交付物，validator 才能看到正确位置的产物
+            self._reconcile_contract_artifacts(inputs, contract_result)
             contract_success, contract_result = self._apply_result_validator(
                 result_validator, node_name, inputs, contract_result
             )
