@@ -3543,6 +3543,7 @@
       "renamePlaceholder": "Enter a new name",
       "archiveConversation": "Archive",
       "conversationArchived": "Task session archived",
+      "conversationDeleted": "Conversation deleted",
       "archiveView": "View",
       "archiveUndo": "Undo",
       "removeProject": "Remove project",
@@ -3582,7 +3583,9 @@
     },
     "deleteDialog": {
       "title": "Delete",
-      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone."
+      "attention": "Attention",
+      "description": "Delete “<name>{{title}}</name>”? This action cannot be undone.",
+      "permanentConfirm": "Are you sure you want to permanently delete this task?"
     },
     "notFound": {
       "title": "Conversation not found or deleted",
