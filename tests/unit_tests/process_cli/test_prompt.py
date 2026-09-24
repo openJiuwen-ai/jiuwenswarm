@@ -129,7 +129,7 @@ def test_completer_displays_all_commands_and_chinese_descriptions_for_slash() ->
         "/cancel",
         "/exit",
     ]
-    assert [completion.start_position for completion in completions] == [-1] * 11
+    assert [completion.start_position for completion in completions] == [-1] * len(SLASH_COMMANDS)
     assert all(len(completion.display_text) == 22 for completion in completions)
     assert completions[0].display_text.startswith("/help")
     assert [completion.display_meta_text for completion in completions] == [
