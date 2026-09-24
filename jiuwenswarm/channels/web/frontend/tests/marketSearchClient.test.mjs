@@ -53,3 +53,19 @@ test('market catalog clients forward the debounced query to their list RPCs', as
     ['mcp.list', { filter: 'builtin', query: '销售' }],
   ]);
 });
+
+test('expert and expert team detail requests use the same 90 second timeout', async () => {
+  const calls = [];
+  webClient.request = async (method, params, options) => {
+    calls.push([method, params, options]);
+    return {};
+  };
+
+  await assert.rejects(createLiveAgentManagementClient().getDefinition('expert-id'));
+  await assert.rejects(createLiveAgentGroupManagementClient().getGroup('team-id'));
+
+  assert.deepEqual(calls, [
+    ['agent_templates.show', { id: 'expert-id' }, { timeoutMs: 90_000 }],
+    ['agent_groups.show', { id: 'team-id' }, { timeoutMs: 90_000 }],
+  ]);
+});
