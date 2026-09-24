@@ -1258,12 +1258,14 @@ async def test_discover_passes_stdio_and_remote_timeouts(
         "jiuwenswarm.common.mcp_server_registry.asyncio.wait_for",
         capture_wait_for,
     )
-    _, _, err = await registry._discover("local", {"command": "node", "args": ["mcp.js"]})
+    _, _, err, error_kind = await registry._discover("local", {"command": "node", "args": ["mcp.js"]})
     assert err == ""
-    _, _, err = await registry._discover(
+    assert error_kind == ""
+    _, _, err, error_kind = await registry._discover(
         "remote", {"type": "streamable-http", "url": "https://example.com/mcp"}
     )
     assert err == ""
+    assert error_kind == ""
     assert seen == [300.0, 30.0]
 
 

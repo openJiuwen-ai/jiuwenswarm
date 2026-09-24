@@ -11,6 +11,8 @@ import pytest
 from openjiuwen.core.foundation.tool import ToolCard
 
 from jiuwenswarm.common.mcp_config import (
+    MCP_CONNECTOR_ERROR_KIND_AUTH,
+    MCP_CONNECTOR_ERROR_KIND_TIMEOUT,
     OfficeClawMcpRegistration,
     RequestScopedOfficeClawMcpTool,
     bind_active_office_claw_mcp_tools,
@@ -1240,3 +1242,151 @@ def test_rail_set_office_claw_binding_stores_thread_and_invocation() -> None:
     rail.set_office_claw_active_tool_ids(None)
     assert rail._office_claw_delivery_thread_id is None
     assert rail._office_claw_invocation_id is None
+
+
+@pytest.fixture(autouse=True)
+def _reset_mcp_failure_report_buffer() -> None:
+    interface_deep._pending_mcp_registration_failures.clear()
+    yield
+    interface_deep._pending_mcp_registration_failures.clear()
+
+
+class _FakePushTransport:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def send_push(self, msg: dict) -> int:
+        self.calls.append(msg)
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_registration_failure_reports_classified_servers_via_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """注册失败（分类为 auth）必须经 server_push 旁路回传，payload 含失败连接器。"""
+    fake_transport = _FakePushTransport()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.gateway_push.transport.WebSocketGatewayPushTransport",
+        lambda: fake_transport,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.push_registry.get_push_registry",
+        lambda: SimpleNamespace(subscriber_count=lambda: 1),
+    )
+
+    async def _fail_discover(server_name, config):
+        raise interface_deep.McpConnectorDiscoveryError(
+            MCP_CONNECTOR_ERROR_KIND_AUTH,
+            f"connector '{server_name}' unauthorized",
+        )
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", _fail_discover)
+
+    adapter = _bare_session_adapter()
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={
+                "qichacha": {
+                    "type": "streamable-http",
+                    "url": "https://agent.qcc.com/mcp/company/stream",
+                }
+            }
+        )
+    )
+
+    assert registration is not None
+    assert len(fake_transport.calls) == 1
+    msg = fake_transport.calls[0]
+    assert msg["request_id"] == "req-123"
+    assert msg["channel_id"] == "officeclaw"
+    assert msg["session_id"] == "session-456"
+    assert msg["payload"]["event_type"] == interface_deep.MCP_REGISTRATION_FAILURE_EVENT
+    assert msg["payload"]["failedServers"] == [
+        {
+            "name": "qichacha",
+            "url": "https://agent.qcc.com/mcp/company/stream",
+            "error_kind": MCP_CONNECTOR_ERROR_KIND_AUTH,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_registration_success_does_not_report_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """全部注册成功时不得发送失败回报。"""
+    fake_transport = _FakePushTransport()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.gateway_push.transport.WebSocketGatewayPushTransport",
+        lambda: fake_transport,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.push_registry.get_push_registry",
+        lambda: SimpleNamespace(subscriber_count=lambda: 1),
+    )
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+
+    async def _ok_discover(server_name, config):
+        return (
+            [
+                {
+                    "name": "qichacha_tool",
+                    "description": "d",
+                    "input_params": {"type": "object"},
+                }
+            ],
+            {
+                "_mcp_client_type": "streamable-http",
+                "url": "https://agent.qcc.com/mcp/company/stream",
+            },
+        )
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", _ok_discover)
+
+    adapter = _bare_session_adapter()
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={
+                "qichacha": {
+                    "type": "streamable-http",
+                    "url": "https://agent.qcc.com/mcp/company/stream",
+                }
+            }
+        )
+    )
+
+    assert registration is not None
+    assert registration.tool_names == ("qichacha_tool",)
+    assert fake_transport.calls == []
+
+
+@pytest.mark.asyncio
+async def test_registration_failure_report_skipped_without_subscribers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """无 Gateway 订阅者时跳过回报（不构造传输、不抛错）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.push_registry.get_push_registry",
+        lambda: SimpleNamespace(subscriber_count=lambda: 0),
+    )
+
+    async def _fail_discover(server_name, config):
+        raise interface_deep.McpConnectorDiscoveryError(
+            MCP_CONNECTOR_ERROR_KIND_TIMEOUT,
+            "timeout",
+        )
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", _fail_discover)
+
+    adapter = _bare_session_adapter()
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={
+                "qichacha": {"type": "sse", "url": "https://example.com/sse"}
+            }
+        )
+    )
+
+    assert registration is not None
