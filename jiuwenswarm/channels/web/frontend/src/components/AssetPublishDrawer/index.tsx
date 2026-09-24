@@ -272,6 +272,10 @@ function AssetPublishDrawer({
         '版本已存在，请修改版本或明确选择覆盖。',
         'This version exists. Change the version or explicitly enable overwrite.',
       ],
+      hub_request_failed: [
+        'Hub 未接受本次发布请求，可能是版本已存在或发布信息不符合 Hub 要求。请检查版本和发布信息后重试；如仍失败，请联系 Hub 管理员。',
+        'Hub did not accept this publishing request. The version may already exist, or the publishing information may not meet Hub requirements. Check the version and publishing information, then retry. If the problem continues, contact the Hub administrator.',
+      ],
     };
     return code && known[code] ? known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '') : display(value);
   };
@@ -784,7 +788,7 @@ function AssetPublishDrawer({
           </dl>
           {state.record.error && (
             <p className="asset-publish-result-error text-danger">
-              {state.record.error.code}: {state.record.error.message}
+              {issueText(state.record.error)}
             </p>
           )}
           <footer className="asset-publish-result-footer" data-testid="asset-publish-result-footer">
