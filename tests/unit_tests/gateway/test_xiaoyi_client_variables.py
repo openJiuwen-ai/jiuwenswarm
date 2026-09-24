@@ -81,6 +81,10 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     ch._ws_flush_tasks = {}
     ch._push_merge_buffers = {}
     ch._push_flush_tasks = {}
+    # 连发顶替收口路径引用（_cancel_superseded_platform_task）
+    ch._canceled_platform_tasks = {}
+    ch._text_stream_prefix = {}
+    ch._text_stream_pending = {}
     ch._data_event_handlers = {}
     ch._gui_agent_handlers = []
     ch._device_command_locks = {}

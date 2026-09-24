@@ -2845,6 +2845,16 @@ class XiaoyiChannel(BaseChannel):
             and previous_task_id != task_id
         ):
             await self._retire_superseded_team_task(session_id, previous_task_id)
+        elif (
+            task_id
+            and previous_task_id
+            and previous_task_id != task_id
+            and (session_id, previous_task_id) in self._active_tasks
+        ):
+            # 手机端快速连发：后一条消息才是真实意图，上一条仍在跑的平台任务
+            # 就地按取消收口（AgentServer 侧运行由 MessageHandler 派发新
+            # chat.send 前的流式顶替 cancel-then-start 取消）。
+            await self._cancel_superseded_platform_task(session_id, previous_task_id)
 
         self._mark_session_active(session_id, task_id)
         self._remember_active_platform_task(session_id, task_id)
@@ -3349,6 +3359,65 @@ class XiaoyiChannel(BaseChannel):
             preserve_team_session=True,
         )
         self._session_task_map.pop(task_id, None)
+
+    async def _cancel_superseded_platform_task(
+        self, session_id: str, task_id: str
+    ) -> None:
+        """手机连发新消息时收口上一条仍在跑的平台任务（非 team 会话）。
+
+        后一条消息才是用户真实意图：AgentServer 侧旧运行由 MessageHandler 派发
+        新 chat.send 前的流式顶替（cancel-then-start）负责取消，这里只补齐渠道
+        侧平台任务生命周期——否则旧任务永远等不到终态帧：手机气泡/桌面镜像悬挂，
+        周期保活持续上报"处理中"，1 小时超时后还会误发"任务还在处理中"。
+        清理面对齐 ``_handle_tasks_cancel`` 的 was_active 分支；但不路由 stop
+        消息（AgentServer 取消由新消息派发承担，chat.interrupt 会取消会话内
+        全部流任务，这里再发一条会与新流任务竞争、可能误杀新轮次），
+        也不回 RPC 结果（渠道主动收口，无对端请求可答）。
+        """
+        logger.info(
+            "[XiaoyiChannel] 连发顶替：收口上一条仍在跑的平台任务: "
+            "session_id=%s task_id=%s",
+            session_id,
+            task_id,
+        )
+        # 登记取消时间戳：旧任务的迟到出站帧按 _should_drop_canceled_output 丢弃。
+        self._canceled_platform_tasks[(session_id, task_id)] = time.time()
+        if len(self._canceled_platform_tasks) > 1024:
+            self._canceled_platform_tasks.pop(next(iter(self._canceled_platform_tasks)))
+        # 先同步撤销活跃状态与保活映射，收口期间不再向端侧上报 working。
+        self._pending_approvals.pop(session_id, None)
+        self._clear_session_waiting_for_push(session_id, task_id)
+        self._clear_task_timeout(session_id, task_id)
+        self._clear_session_timeout(session_id, task_id)
+        self._mark_session_completed(session_id, task_id)
+        self._team_tasks.discard((session_id, task_id))
+        self._team_last_leader_finals.pop((session_id, task_id), None)
+        for agent_id, entry in list(self._active_push_sessions.items()):
+            if entry[1] == task_id:
+                self._active_push_sessions.pop(agent_id, None)
+        self._ws_flush_buffers.pop(task_id, None)
+        flush_task = self._ws_flush_tasks.pop(task_id, None)
+        if flush_task is not None:
+            flush_task.cancel()
+        # 正文分片与累积文本就地清理：扣住的尾片不得串进新任务正文
+        # （session 与 task 两个键都清，防串轮，对齐非 team 收尾路径）。
+        task_key = (session_id, task_id)
+        self._accumulated_texts.pop(task_key, None)
+        self._accumulated_texts.pop(session_id, None)
+        self._text_stream_prefix.pop(task_key, None)
+        self._text_stream_prefix.pop(session_id, None)
+        self._text_stream_pending.pop(task_key, None)
+        self._text_stream_pending.pop(session_id, None)
+        # 终态帧：手机气泡按 canceled 收口；桌面镜像转 assistant-done 关闭运行。
+        for url_key in list(self._ws_connections.keys()):
+            await self._send_status_update_with_state(
+                task_id, session_id, "", "canceled", url_key,
+            )
+        if not self._is_session_active(session_id):
+            if session_id:
+                await self._stop_session_heartbeat(session_id)
+            self._clear_task_timeout(session_id)
+            self._clear_session_timeout(session_id)
 
     def _mark_session_active(self, session_id: str, task_id: str | None = None) -> None:
         """标记会话为活跃状态."""
