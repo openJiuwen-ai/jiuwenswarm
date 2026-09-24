@@ -107,12 +107,8 @@ interface PluginPackageState {
   installingIds: Record<string, boolean>;
 
   loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean }) => Promise<void>;
-  // 返回是否成功——PluginDetailPage.tsx 卸载后要重新 show() 探测这个插件还在不在（新方案
-  // "我的插件"卸载后的收尾逻辑：还能读到就留在详情页，读不到才退出到列表页），需要知道结果。
+  // 返回是否成功，供详情页在加载失败时保留当前导航状态。
   loadDetail: (id: string) => Promise<boolean>;
-  /** 跟 loadDetail 几乎一样，唯一区别是失败时不 set 全局 error。卸载后用它区分保留定义的
-   * 本地插件和已移除定义的 Hub/预置插件，探测本身不产生额外错误提示。 */
-  probeExists: (id: string) => Promise<boolean>;
   create: (params: {
     id: string;
     name: string;
@@ -225,19 +221,6 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
       return true;
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error) });
-      return false;
-    }
-  },
-
-  probeExists: async (id: string) => {
-    try {
-      const detail = await pluginPackagesApi.show(id);
-      set((state) => ({
-        detailCache: { ...state.detailCache, [id]: detail },
-        connectionStateMap: { ...state.connectionStateMap, [id]: detail.connectionState },
-      }));
-      return true;
-    } catch {
       return false;
     }
   },
@@ -356,8 +339,8 @@ export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
 
   // 插件没有真正的"删除"接口（backend-requests.md 需求20，全文档没有 plugin_packages.delete），
   // 复用 plugin_packages.uninstall——和上面的 uninstall action 调用的是同一个后端方法，只是
-  // "我的插件"详情页调用这个入口，方便调用方（PluginDetailPage.tsx）在卸载后按需要做
-  // 探测收尾（见该组件注释）。等后端真的给出独立的删除接口再拆开。
+  // "我的插件"详情页调用这个入口，成功后同步清理本地列表与详情缓存。等后端真的给出独立的
+  // 删除接口再拆开。
   deletePackage: async (id: string) => {
     set({ busyId: id, error: null, successMessage: null });
     try {

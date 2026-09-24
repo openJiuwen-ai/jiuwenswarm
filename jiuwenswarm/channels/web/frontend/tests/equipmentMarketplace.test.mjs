@@ -7,7 +7,6 @@ import {
   normalizeEquipmentSource,
   resolvePluginPickerIdentifiers,
 } from '../node_modules/.cache/equipment-marketplace/features/equipmentMarketplace.js';
-import * as equipmentMarketplace from '../node_modules/.cache/equipment-marketplace/features/equipmentMarketplace.js';
 import {
   deriveMcpAvailability,
   nextMcpQuickAction,
@@ -75,12 +74,4 @@ test('uses the explicit MCP installation state independently from connection sta
   assert.equal(nextMcpQuickAction(true, 'idle'), 'connect');
   assert.equal(nextMcpQuickAction(true, 'connected'), 'use');
   assert.equal(nextMcpQuickAction(true, 'connecting'), 'busy');
-});
-
-test('returns to My Extensions only after a successful uninstall opened from there', () => {
-  assert.equal(typeof equipmentMarketplace.pluginUninstallDestination, 'function');
-  const { pluginUninstallDestination } = equipmentMarketplace;
-  assert.equal(pluginUninstallDestination(true, true), 'my-plugin');
-  assert.equal(pluginUninstallDestination(true, false), 'stay');
-  assert.equal(pluginUninstallDestination(false, true), 'stay');
 });

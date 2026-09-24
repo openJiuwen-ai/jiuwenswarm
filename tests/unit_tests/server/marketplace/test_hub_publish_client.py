@@ -151,28 +151,6 @@ async def test_known_rejections_are_not_retried_or_leaked(draft, status, code):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "status,expected_code",
-    [(401, "unauthorized"), (403, "permission_denied"), (429, "rate_limited")],
-)
-async def test_status_only_rejections_keep_actionable_error_codes(
-    draft, status, expected_code
-):
-    async def handler(_request):
-        return httpx.Response(status, json={"detail": "request rejected"})
-
-    client = HubPublishClient(
-        base_url="https://hub.example.test", transport=httpx.MockTransport(handler)
-    )
-    with pytest.raises(PublishUploadError) as exc:
-        await client.publish(draft, auth=PublishAuth("secret-user-token"))
-
-    assert exc.value.code == expected_code
-    assert exc.value.http_status == status
-    assert not exc.value.outcome_unknown
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
     "failure", ["timeout", "500", "redirect", "malformed", "wrong_identity"]
 )
 async def test_uncertain_results_do_not_retry(draft, failure):

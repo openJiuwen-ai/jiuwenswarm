@@ -1049,13 +1049,14 @@ class TestCreateInstallUninstall:
             assert package_id not in ids
 
     @pytest.mark.parametrize("origin", ["preset", "local"])
-    def test_uninstall_plugin_deletes_local_files(
+    def test_uninstall_plugin_still_deletes(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         extension_workspace: Path,
         origin: str,
     ) -> None:
+        """Plugin uninstall keeps the legacy destructive behavior."""
         package_id = "preset-pkg" if origin == "preset" else "my-local"
         if origin == "preset":
             point_resources_shelf(monkeypatch, tmp_path, plugins=[package_id])

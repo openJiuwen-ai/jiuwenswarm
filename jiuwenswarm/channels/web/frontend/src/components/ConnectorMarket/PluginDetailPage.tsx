@@ -11,7 +11,6 @@ import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { IconAvatar, PillButton, DetailLinkButton } from './Buttons';
 import { ConfirmDialog } from './ConfirmDialog';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
-import { pluginUninstallDestination } from '../../features/equipmentMarketplace';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 
 interface PluginDetailPageProps {
@@ -167,7 +166,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
       setUninstalling(false);
       if (!removed) return;
       setConfirmUninstall(false);
-      if (pluginUninstallDestination(true, removed) === 'my-plugin') onDeleted?.();
+      onDeleted?.();
       return;
     }
     await uninstall(id);
@@ -208,7 +207,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   onClick={() => window.alert(t('connectorMarket.card.editNotSupportedYet'))}
                 />
               )}
-              {installed && (
+              {(installed || detail.source === 'local') && (
                 <DetailLinkButton
                   icon={<Trash2 size={14} />}
                   label={t('connectorMarket.card.uninstall')}
