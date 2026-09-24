@@ -1009,6 +1009,9 @@
       }
     },
     "inputAttachment": {
+      "imageLimitTooltip": "Images: up to {{limit}}M each",
+      "fileLimitTooltip": "Files: up to {{limit}}M each",
+      "countLimitTooltip": "Up to {{limit}} attachments per message",
       "unnamedFile": "Unnamed file",
       "unsupportedFileType": "Unsupported file type: {{name}}",
       "fileSizeExceeded": "File size exceeds limit: {{name}} (max {{limit}})",

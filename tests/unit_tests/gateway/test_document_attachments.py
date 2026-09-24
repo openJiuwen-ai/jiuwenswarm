@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,36 @@ def test_document_blacklist_helpers():
     assert is_forbidden_document(filename="malware.bin")
     assert is_forbidden_document(suffix=".ps1")
     assert not is_forbidden_document(filename="readme.md")
+
+
+@pytest.mark.parametrize("extra_bytes", [0, 1])
+def test_browser_document_100_mib_boundary(tmp_path: Path, monkeypatch, extra_bytes):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.attachments.document_attachments.get_agent_sessions_dir",
+        lambda: tmp_path,
+    )
+    content = b"x" * (100 * 1024 * 1024 + extra_bytes)
+    result = persist_and_parse_documents(
+        {"documents": [{"filename": "boundary.txt", "base64_data": base64.b64encode(content).decode("ascii")}]},
+        session_id="size-boundary",
+    )
+    if extra_bytes:
+        assert not result.get("media_items")
+        assert "Document too large" in result["document_errors"][0]["error"]
+        assert not list(tmp_path.rglob("boundary.txt"))
+    else:
+        assert not result.get("document_errors")
+        assert Path(result["media_items"][0]["path"]).read_bytes() == content
+
+
+def test_local_document_reference_above_100_mib_remains_unlimited(tmp_path: Path):
+    source = tmp_path / "large-local.txt"
+    with source.open("wb") as stream:
+        stream.truncate(101 * 1024 * 1024)
+    result = persist_and_parse_documents({"documents": [{"filename": source.name, "path": str(source)}]})
+    assert not result.get("document_errors")
+    assert result["media_items"][0]["path"] == str(source)
+    assert result["media_items"][0]["size_bytes"] == source.stat().st_size
 
 
 @pytest.mark.asyncio
